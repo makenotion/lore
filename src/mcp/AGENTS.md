@@ -1,0 +1,167 @@
+# AGENTS.md -- src/mcp/
+
+> Read the root `AGENTS.md` first. This file covers the MCP server layer only.
+
+## Purpose
+
+This directory implements Lore's MCP (Model Context Protocol) server. It is the
+primary interface for AI assistants. The server runs as a stdio process and
+exposes 15 tools across five registration files.
+
+## Files
+
+| File | Responsibility |
+|------|---------------|
+| `server.ts` | Server entry point: init services, register tools, start stdio transport |
+| `helpers.ts` | `toolError()` helper for formatting error responses |
+| `tools/context.ts` | `lore-status`, `lore-wake-up` |
+| `tools/memory.ts` | `lore-remember`, `lore-search`, `lore-recall`, `lore-forget`, `lore-update` |
+| `tools/project.ts` | `lore-list-projects`, `lore-get-project` |
+| `tools/knowledge.ts` | `lore-learn`, `lore-ask`, `lore-correct` |
+| `tools/journal.ts` | `lore-journal`, `lore-read-journal` |
+
+## Tool Registration Pattern
+
+Every tool file exports a single `registerFooTools(server, services)` function
+that calls `server.registerTool()` for each tool. The pattern:
+
+```typescript
+import { z } from "zod"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { LoreServices } from "../server.js"
+import { toolError } from "../helpers.js"
+
+export function registerFooTools(
+  server: McpServer,
+  services: LoreServices
+): void {
+  server.registerTool("lore-verb-noun", {
+    title: "Human-readable title",
+    description: "What this tool does. Include usage guidance for the AI.",
+    inputSchema: {
+      paramName: z.string().describe("What this parameter is for"),
+      optionalParam: z.string().optional().describe("Optional context"),
+    },
+    annotations: { readOnlyHint: true },  // if tool only reads data
+  }, async ({ paramName, optionalParam }) => {
+    try {
+      // ... tool logic ...
+      return { content: [{ type: "text", text: "result" }] }
+    } catch (err) {
+      return toolError(err)
+    }
+  })
+}
+```
+
+### Mandatory conventions
+
+1. **Tool names**: Always `lore-<verb>` or `lore-<verb>-<noun>` in kebab-case.
+
+2. **try/catch**: Every tool callback must wrap its body in try/catch and return
+   `toolError(err)` on failure. MCP protocol requires tools to report errors as
+   content, not throw exceptions.
+
+3. **inputSchema**: Always uses Zod objects. Each field must have a `.describe()`
+   call explaining the parameter to the AI.
+
+4. **annotations**: Set `readOnlyHint: true` for tools that only read data.
+   Set `destructiveHint: true` for tools that delete or archive.
+
+5. **Project resolution**: Most tools accept an optional `projectName` parameter.
+   When absent, use `services.context.project` (auto-detected from cwd). The
+   pattern:
+   ```typescript
+   let projectId = services.context.project?.id
+   if (projectName) {
+     const found = await services.projects.findByName(projectName)
+     if (found) projectId = found.id
+   }
+   ```
+
+6. **Return format**: Always return `{ content: [{ type: "text", text: "..." }] }`.
+   Format output as readable markdown when returning multiple items.
+
+## Tool Reference
+
+### Context Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-status` | Vault status, database counts, active project | Yes |
+| `lore-wake-up` | Load recent memories + facts for session priming | Yes |
+
+### Memory Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-remember` | Save a new memory to the vault | No |
+| `lore-search` | Semantic search across memories (uses Notion search) | Yes |
+| `lore-recall` | List recent memories with optional filters | Yes |
+| `lore-forget` | Archive a memory by ID | No (destructive) |
+| `lore-update` | Update a memory's title, content, tags, or categorization | No |
+
+### Project Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-list-projects` | List all projects in the vault | Yes |
+| `lore-get-project` | Get project details including topics and recent activity | Yes |
+
+### Knowledge Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-learn` | Add a subject-predicate-object fact triple | No |
+| `lore-ask` | Query facts about an entity (as subject or object) | Yes |
+| `lore-correct` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) |
+
+### Journal Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-journal` | Write an agent diary entry | No |
+| `lore-read-journal` | Read recent journal entries | Yes |
+
+## Adding a New Tool
+
+1. Decide which tool file it belongs in, or create a new file if it represents a
+   new domain.
+2. Follow the registration pattern above exactly.
+3. Register it in `server.ts` if you created a new file:
+   ```typescript
+   import { registerNewTools } from "./tools/new.js"
+   // ... in main():
+   registerNewTools(server, services)
+   ```
+4. Do not forget the try/catch + `toolError()` wrapper.
+5. Add the tool to the table in this file and in the root `README.md`.
+
+## Error Handling
+
+The `toolError()` helper in `helpers.ts` formats errors for MCP:
+
+```typescript
+export function toolError(err: unknown): ToolResult {
+  const message = err instanceof Error ? err.message : String(err)
+  return {
+    content: [{ type: "text" as const, text: `Error: ${message}` }],
+    isError: true,
+  }
+}
+```
+
+**Rule**: Never let exceptions propagate out of a tool callback. The MCP transport
+does not handle thrown errors gracefully. Always catch and return `toolError()`.
+
+## Server Startup
+
+`server.ts` runs as a standalone process (the `dist/mcp.js` entry point):
+
+1. Creates an `McpServer` instance with `tools` and `resources` capabilities.
+2. Calls `initServices()` to load config, connect to Notion, and resolve context.
+3. Registers all tool groups.
+4. Connects to a `StdioServerTransport`.
+
+If `initServices()` fails (no config, bad token, etc.), the process exits with
+code 1 and logs the error to stderr.

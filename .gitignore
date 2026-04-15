@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# Lore config with secrets
+.lore.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Claude Code project settings (contains absolute paths)
+.claude/settings.json

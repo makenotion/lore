@@ -1,0 +1,32 @@
+# Lore configuration
+# Copy to .lore.yaml and fill in your values.
+
+vault:
+  # Notion page ID where Lore databases live.
+  # Create a page in Notion, share it with your integration, and paste the ID here.
+  pageId: "your-page-id-here"
+
+# Authentication (optional if LORE_NOTION_TOKEN env var is set)
+# auth:
+#   token: "ntn_..."
+
+# Project definitions for monorepo support.
+# Map sub-directories to named projects.
+projects:
+  - name: "Server"
+    path: "src/server"
+    tags: ["backend"]
+  - name: "Client"
+    path: "src/client"
+    tags: ["frontend"]
+
+# Auto-detect projects from workspace patterns (optional)
+# detect:
+#   patterns: ["src/*/package.json"]
+#   exclude: ["node_modules"]
+
+# Claude Code hook settings
+hooks:
+  autoSave: true
+  wakeUp: true
+  saveInterval: "on_compress"

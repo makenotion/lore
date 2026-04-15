@@ -1,0 +1,62 @@
+{
+  "name": "@notionhq/lore",
+  "version": "0.1.0",
+  "description": "AI memory system backed by Notion",
+  "type": "module",
+  "bin": {
+    "lore": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./mcp": {
+      "import": "./dist/mcp.js",
+      "types": "./dist/mcp.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "hooks"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "mcp": "node dist/mcp.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@notionhq/client": "^5.1.0",
+    "commander": "^13.1.0",
+    "yaml": "^2.7.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.15.3",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.3",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.58.2",
+    "vitest": "^3.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/makenotion/lore.git"
+  }
+}
