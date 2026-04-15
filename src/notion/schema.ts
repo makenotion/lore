@@ -62,7 +62,7 @@ export function topicsProperties(projectsDbId: string): PropertyConfig {
     Project: {
       relation: {
         single_property: {},
-        database_id: projectsDbId,
+        data_source_id: projectsDbId,
       },
     },
     Description: { rich_text: {} },
@@ -85,13 +85,13 @@ export function memoriesProperties(
     Project: {
       relation: {
         single_property: {},
-        database_id: projectsDbId,
+        data_source_id: projectsDbId,
       },
     },
     Topic: {
       relation: {
         single_property: {},
-        database_id: topicsDbId,
+        data_source_id: topicsDbId,
       },
     },
     Source: {
@@ -144,7 +144,7 @@ export function factsProperties(
     Project: {
       relation: {
         single_property: {},
-        database_id: projectsDbId,
+        data_source_id: projectsDbId,
       },
     },
     "Valid From": { date: {} },
@@ -152,7 +152,7 @@ export function factsProperties(
     Source: {
       relation: {
         single_property: {},
-        database_id: memoriesDbId,
+        data_source_id: memoriesDbId,
       },
     },
     Confidence: {
