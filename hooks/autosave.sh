@@ -3,11 +3,10 @@ set -euo pipefail
 
 # Lore auto-save hook for Claude Code
 #
-# Fires on: Stop, PreCompact events.
+# Fires on: Stop event.
 # Registration lives in .claude/settings.json (via `lore install`).
 #
 # Stop: sync, stdout passthrough for blocking decisions.
-# PreCompact: sync so the save completes before compaction.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -21,13 +20,5 @@ fi
 export LORE_AUTOSAVE_CONTENT="$CONTENT"
 export LORE_AGENT_NAME="Claude Code"
 
-if echo "$CONTENT" | grep -qE '"Stop"'; then
-  # Stop: sync, stdout passthrough for blocking decisions
-  node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave
-elif echo "$CONTENT" | grep -qE '"PreCompact"'; then
-  # PreCompact: sync so the save completes before compaction
-  node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave 2>/dev/null || true
-else
-  # Unknown events: background
-  node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave 2>/dev/null &
-fi
+# Sync execution — stdout passthrough for blocking decisions
+node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave

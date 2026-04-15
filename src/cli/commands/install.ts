@@ -215,15 +215,15 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>
   const mcpServers = (settings.mcpServers ?? {}) as Record<string, unknown>
 
-  // Autosave registers under Stop and PreCompact.
-  // Check Stop as the primary indicator.
+  // Autosave registers under Stop only.
   const autosaveStatus = detectHook(hooks["Stop"], "autosave.sh", autosavePath)
   const wakeupStatus = detectHook(hooks["UserPromptSubmit"], "wakeup.sh", wakeupPath)
 
-  // Detect legacy (broken) registrations that need cleanup
+  // Detect legacy registrations that need cleanup
   const hasLegacyAutosave = detectHook(hooks["PostToolUse"], "autosave.sh", "") !== "missing"
   const hasLegacyWakeup = detectHook(hooks["PreToolUse"], "wakeup.sh", "") !== "missing"
   const hasLegacySessionEnd = detectHook(hooks["SessionEnd"], "autosave.sh", "") !== "missing"
+  const hasLegacyPreCompact = detectHook(hooks["PreCompact"], "autosave.sh", "") !== "missing"
 
   const existingMcp = mcpServers["lore"] as { args?: string[]; cwd?: string } | undefined
   const mcpStatus: HookStatus = !existingMcp
@@ -243,6 +243,7 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   if (hasLegacyAutosave) console.log("  Legacy hook:   PostToolUse/Stop → will migrate")
   if (hasLegacyWakeup) console.log("  Legacy hook:   PreToolUse/Task → will migrate")
   if (hasLegacySessionEnd) console.log("  Legacy hook:   SessionEnd → will remove")
+  if (hasLegacyPreCompact) console.log("  Legacy hook:   PreCompact → will remove")
 
   const allCurrent =
     autosaveStatus === "current" &&
@@ -250,7 +251,8 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     mcpStatus === "current" &&
     !hasLegacyAutosave &&
     !hasLegacyWakeup &&
-    !hasLegacySessionEnd
+    !hasLegacySessionEnd &&
+    !hasLegacyPreCompact
 
   if (allCurrent) {
     console.log()
@@ -279,15 +281,12 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     }
 
     if (autosaveStatus !== "current") {
-      const autosaveConfig = { matcher: "", timeout: 10000 }
-      for (const event of ["Stop", "PreCompact"]) {
-        mergedHooks[event] = mergeHookEntries(
-          hooks[event],
-          "autosave.sh",
-          autosavePath,
-          autosaveConfig
-        )
-      }
+      mergedHooks["Stop"] = mergeHookEntries(
+        hooks["Stop"],
+        "autosave.sh",
+        autosavePath,
+        { matcher: "", timeout: 10000 }
+      )
     }
 
     if (wakeupStatus !== "current") {
@@ -311,6 +310,10 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     if (hasLegacySessionEnd) {
       mergedHooks["SessionEnd"] = removeScriptEntries(hooks["SessionEnd"], "autosave.sh")
       if (!mergedHooks["SessionEnd"]) delete mergedHooks["SessionEnd"]
+    }
+    if (hasLegacyPreCompact) {
+      mergedHooks["PreCompact"] = removeScriptEntries(hooks["PreCompact"], "autosave.sh")
+      if (!mergedHooks["PreCompact"]) delete mergedHooks["PreCompact"]
     }
 
     merged.hooks = mergedHooks

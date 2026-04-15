@@ -5,15 +5,15 @@
  * The hooks call `node dist/hooks/helpers.js <action>` with
  * relevant context passed via environment variables.
  *
- * Autosave fires on two Claude Code hook events:
- *   - Stop:        count-based trigger → blocks AI → AI writes structured
- *                  content via MCP tools (lore-journal, lore-remember, lore-learn)
- *   - PreCompact:  passive transcript save (safety net before compaction)
+ * Autosave fires on the Stop hook event:
+ *   - Count-based trigger → blocks AI → AI writes structured
+ *     content via MCP tools (lore-journal, lore-remember, lore-learn)
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { resolve, relative } from "node:path"
 import { findConfigFile, loadConfig } from "../config.js"
 import { initServices } from "../services.js"
 import { TRACKING_PREDICATES } from "../types.js"
@@ -32,16 +32,19 @@ interface HookEvent {
 
 const DEFAULT_SAVE_INTERVAL = 5
 
-const SAVE_PROMPT = `[Lore auto-save] A transcript snapshot was saved to Lore. Before stopping, enrich it with structured context.
+function buildSavePrompt(projectName: string | null): string {
+  const scope = projectName ? `the "${projectName}" project` : "this project"
+  return `[Lore auto-save] Assess whether this session produced context worth saving for ${scope}.
 
-If lore-* MCP tools are available in this session, use them:
+If this session's work is unrelated to ${scope}, respond with "No Lore context to save." and stop.
+
+Otherwise, save structured context using lore-* MCP tools (if available) or file-based memory:
 • lore-journal — Brief summary of accomplishments and key decisions
 • lore-remember — Specific discoveries or decisions for future sessions
 • lore-learn — Entity relationships discovered (e.g., "AuthService uses JWT")
 
-If lore MCP tools are not available, save key context to file-based memory instead.
-
 Focus on decisions and discoveries, not play-by-play. Be concise. Then stop.`
+}
 
 // ---------------------------------------------------------------------------
 // State management — per-session save count in $TMPDIR
@@ -119,35 +122,67 @@ function countUserMessages(transcriptRaw: string): number {
   return count
 }
 
-/**
- * Read the tail of a transcript file for passive saves.
- */
-async function readTranscriptTail(
-  path: string | undefined,
-  maxChars: number,
-): Promise<string | undefined> {
-  if (!path) return undefined
-  try {
-    const raw = await readFile(path, "utf-8")
-    if (raw.length <= maxChars) return raw
-    return `…${raw.slice(-maxChars)}`
-  } catch {
-    return undefined
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-async function loadSaveInterval(): Promise<number> {
+interface HookConfig {
+  saveInterval: number
+  autoSave: boolean
+  projectName: string | null
+}
+
+/**
+ * Lightweight project name resolution from .lore.yaml — no Notion API calls.
+ * Mirrors resolveProject's longest-prefix logic from core/context.ts.
+ */
+function resolveProjectName(
+  cwd: string,
+  configRoot: string,
+  projects: Array<{ name: string; path: string }> | undefined,
+): string | null {
+  if (!projects?.length) return null
+
+  const relPath = relative(resolve(configRoot), resolve(cwd))
+  if (relPath.startsWith("..")) return null
+
+  let bestName: string | null = null
+  let bestLength = -1
+
+  for (const project of projects) {
+    const projectPath = project.path === "." ? "" : project.path.replace(/^\//, "")
+    if (
+      relPath === projectPath ||
+      relPath.startsWith(projectPath + "/") ||
+      projectPath === ""
+    ) {
+      if (projectPath.length > bestLength) {
+        bestName = project.name
+        bestLength = projectPath.length
+      }
+    }
+  }
+
+  return bestName
+}
+
+async function loadHookConfig(): Promise<HookConfig> {
+  const defaults: HookConfig = {
+    saveInterval: DEFAULT_SAVE_INTERVAL,
+    autoSave: true,
+    projectName: null,
+  }
   try {
     const found = await findConfigFile(process.cwd())
-    if (!found) return DEFAULT_SAVE_INTERVAL
+    if (!found) return defaults
     const config = await loadConfig(found.path)
-    return config.hooks?.saveInterval ?? DEFAULT_SAVE_INTERVAL
+    return {
+      saveInterval: config.hooks?.saveInterval ?? defaults.saveInterval,
+      autoSave: config.hooks?.autoSave ?? defaults.autoSave,
+      projectName: resolveProjectName(process.cwd(), found.root, config.projects),
+    }
   } catch {
-    return DEFAULT_SAVE_INTERVAL
+    return defaults
   }
 }
 
@@ -174,9 +209,22 @@ async function main(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function autosave(): Promise<void> {
+  // Env var opt-out: LORE_AUTOSAVE=false disables for this session
+  if (process.env["LORE_AUTOSAVE"] === "false") {
+    process.stdout.write("{}\n")
+    return
+  }
+
   const raw = process.env["LORE_AUTOSAVE_CONTENT"]
   if (!raw) {
     process.stderr.write("LORE_AUTOSAVE_CONTENT not set, skipping.\n")
+    return
+  }
+
+  // Config opt-out: hooks.autoSave: false in .lore.yaml
+  const hookConfig = await loadHookConfig()
+  if (!hookConfig.autoSave) {
+    process.stdout.write("{}\n")
     return
   }
 
@@ -187,16 +235,7 @@ async function autosave(): Promise<void> {
     event = { last_assistant_message: raw }
   }
 
-  switch (event.hook_event_name) {
-    case "Stop":
-      await handleStop(event)
-      break
-    case "PreCompact":
-      await handlePassiveSave(event)
-      break
-    default:
-      await handlePassiveSave(event)
-  }
+  await handleStop(event, hookConfig)
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +250,7 @@ async function autosave(): Promise<void> {
  * No Notion API calls — just file I/O. Outputs JSON to stdout for
  * Claude Code to interpret.
  */
-async function handleStop(event: HookEvent): Promise<void> {
+async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
   // Loop guard: AI already processed a block reason, let it stop
   if (event.stop_hook_active) {
     process.stdout.write("{}\n")
@@ -227,7 +266,7 @@ async function handleStop(event: HookEvent): Promise<void> {
     const transcriptRaw = await readFile(event.transcript_path, "utf-8")
     const currentCount = countUserMessages(transcriptRaw)
     const lastSaveCount = await readSaveCount(event.session_id)
-    const saveInterval = await loadSaveInterval()
+    const { saveInterval } = config
     // First save fires sooner to catch short sessions (min 2 messages).
     // Subsequent saves use the full configured interval.
     const isFirstSave = lastSaveCount === 0
@@ -236,11 +275,8 @@ async function handleStop(event: HookEvent): Promise<void> {
 
     if (sinceLast >= threshold) {
       await writeSaveCount(event.session_id, currentCount)
-      // Guaranteed baseline: save transcript to Notion before blocking.
-      // The agent's MCP-based structured save is an optional enhancement.
-      await handlePassiveSave(event).catch(() => {})
       process.stdout.write(
-        JSON.stringify({ decision: "block", reason: SAVE_PROMPT }) + "\n",
+        JSON.stringify({ decision: "block", reason: buildSavePrompt(config.projectName) }) + "\n",
       )
     } else {
       process.stdout.write("{}\n")
@@ -251,50 +287,6 @@ async function handleStop(event: HookEvent): Promise<void> {
       `[lore] Stop hook error: ${err instanceof Error ? err.message : err}\n`,
     )
     process.stdout.write("{}\n")
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Passive save — safety-net transcript dump for PreCompact
-// ---------------------------------------------------------------------------
-
-async function handlePassiveSave(event: HookEvent): Promise<void> {
-  const now = new Date()
-  const dateStr = now.toISOString().split("T")[0]
-  const timeStr = now.toTimeString().slice(0, 5)
-  const agent = process.env["LORE_AGENT_NAME"] ?? "Claude Code"
-  const eventName = event.hook_event_name ?? "unknown"
-
-  const label =
-    eventName === "PreCompact"
-      ? "Context snapshot"
-      : "Session notes"
-
-  const content =
-    (await readTranscriptTail(event.transcript_path, 4000)) ??
-    `${label} at ${now.toISOString()}`
-
-  const tag =
-    eventName === "PreCompact"
-      ? "compact"
-      : "auto-save"
-
-  try {
-    const services = await initServices()
-    await services.memories.create({
-      title: `${label} — ${dateStr} ${timeStr}`,
-      content,
-      projectIds: services.context.project ? [services.context.project.id] : undefined,
-      source: "agent_diary",
-      agent,
-      session: event.session_id,
-      tags: ["auto-save", tag],
-    })
-    process.stderr.write(`[lore] Auto-saved: "${label} — ${dateStr} ${timeStr}"\n`)
-  } catch (err) {
-    process.stderr.write(
-      `[lore] Passive save error: ${err instanceof Error ? err.message : err}\n`,
-    )
   }
 }
 
