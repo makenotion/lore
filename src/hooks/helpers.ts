@@ -5,12 +5,10 @@
  * The hooks call `node dist/hooks/helpers.js <action>` with
  * relevant context passed via environment variables.
  *
- * Autosave fires on three Claude Code hook events:
+ * Autosave fires on two Claude Code hook events:
  *   - Stop:        count-based trigger → blocks AI → AI writes structured
  *                  content via MCP tools (lore-journal, lore-remember, lore-learn)
  *   - PreCompact:  passive transcript save (safety net before compaction)
- *   - SessionEnd:  blocks AI if no structured save happened yet (catch-all
- *                  for 1-message sessions); passive save otherwise
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
@@ -191,9 +189,6 @@ async function autosave(): Promise<void> {
     case "Stop":
       await handleStop(event)
       break
-    case "SessionEnd":
-      await handleSessionEnd(event)
-      break
     case "PreCompact":
       await handlePassiveSave(event)
       break
@@ -255,68 +250,6 @@ async function handleStop(event: HookEvent): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// SessionEnd — block if no structured save happened, passive save otherwise
-// ---------------------------------------------------------------------------
-
-/**
- * SessionEnd handler: if the session had real interaction but no structured
- * save fired (e.g. a 1-message session), block the AI to write one now.
- * If a structured save already happened, fall through to a passive save.
- *
- * If Claude Code doesn't support blocking on SessionEnd, this degrades
- * gracefully — the stdout is ignored and nothing breaks.
- */
-async function handleSessionEnd(event: HookEvent): Promise<void> {
-  // Same loop guard as Stop
-  if (event.stop_hook_active) {
-    process.stdout.write("{}\n")
-    return
-  }
-
-  try {
-    const lastSaveCount = await readSaveCount(event.session_id)
-
-    if (lastSaveCount > 0) {
-      // Structured save already happened — passive safety net only
-      await handlePassiveSave(event)
-      process.stdout.write("{}\n")
-      return
-    }
-
-    // No structured save this session — check if it was substantive
-    if (!event.transcript_path) {
-      process.stdout.write("{}\n")
-      return
-    }
-
-    const transcriptRaw = await readFile(event.transcript_path, "utf-8")
-    const messageCount = countUserMessages(transcriptRaw)
-
-    if (messageCount === 0) {
-      process.stdout.write("{}\n")
-      return
-    }
-
-    // Substantive session with no save — block for a structured save
-    await writeSaveCount(event.session_id, messageCount)
-    process.stdout.write(
-      JSON.stringify({ decision: "block", reason: SAVE_PROMPT }) + "\n",
-    )
-  } catch (err) {
-    // Fail open — try passive save, output {} either way
-    process.stderr.write(
-      `[lore] SessionEnd error: ${err instanceof Error ? err.message : err}\n`,
-    )
-    try {
-      await handlePassiveSave(event)
-    } catch {
-      /* already logged */
-    }
-    process.stdout.write("{}\n")
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Passive save — safety-net transcript dump for PreCompact
 // ---------------------------------------------------------------------------
 
@@ -330,9 +263,7 @@ async function handlePassiveSave(event: HookEvent): Promise<void> {
   const label =
     eventName === "PreCompact"
       ? "Context snapshot"
-      : eventName === "SessionEnd"
-        ? "Session end"
-        : "Session notes"
+      : "Session notes"
 
   const content =
     (await readTranscriptTail(event.transcript_path, 4000)) ??
@@ -341,9 +272,7 @@ async function handlePassiveSave(event: HookEvent): Promise<void> {
   const tag =
     eventName === "PreCompact"
       ? "compact"
-      : eventName === "SessionEnd"
-        ? "session-end"
-        : "auto-save"
+      : "auto-save"
 
   try {
     const services = await initServices()
