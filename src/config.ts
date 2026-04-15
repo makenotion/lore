@@ -13,6 +13,7 @@ const configSchema = z.object({
   auth: z
     .object({
       token: z.string().optional(),
+      baseUrl: z.string().url().optional(),
     })
     .optional(),
   projects: z
@@ -82,13 +83,15 @@ export interface ResolvedAuth {
  * Also returns baseUrl if it was stored with OAuth credentials.
  */
 export async function resolveAuth(config?: LoreConfig): Promise<ResolvedAuth> {
+  const configBaseUrl = config?.auth?.baseUrl
+
   // 1. Explicit token in config
   const fromConfig = config?.auth?.token
-  if (fromConfig) return { token: fromConfig }
+  if (fromConfig) return { token: fromConfig, baseUrl: configBaseUrl }
 
   // 2. Environment variable
   const fromEnv = process.env["LORE_NOTION_TOKEN"]
-  if (fromEnv) return { token: fromEnv }
+  if (fromEnv) return { token: fromEnv, baseUrl: configBaseUrl }
 
   // 3. Saved OAuth credentials
   const { loadCredentials } = await import("./auth/oauth.js")
@@ -96,7 +99,7 @@ export async function resolveAuth(config?: LoreConfig): Promise<ResolvedAuth> {
   if (creds?.access_token) {
     return {
       token: creds.access_token,
-      baseUrl: creds.base_url,
+      baseUrl: configBaseUrl ?? creds.base_url,
     }
   }
 

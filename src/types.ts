@@ -185,6 +185,7 @@ export interface LoreConfig {
   }
   auth?: {
     token?: string
+    baseUrl?: string
   }
   projects?: Array<{
     name: string
