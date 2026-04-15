@@ -11,7 +11,9 @@
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { existsSync, writeFileSync, openSync, closeSync, unlinkSync } from "node:fs"
+import { spawn, execFileSync } from "node:child_process"
+import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
 import { resolve, relative } from "node:path"
 import { findConfigFile, loadConfig } from "../config.js"
@@ -198,6 +200,9 @@ async function main(): Promise<void> {
     case "wakeup":
       await wakeup()
       break
+    case "session-end":
+      await handleSessionEnd()
+      break
     default:
       process.stderr.write(`Unknown hook action: ${action}\n`)
       process.exit(1)
@@ -379,6 +384,213 @@ async function wakeup(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// SessionEnd — background claude -p for structured saves
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract readable session content from a JSONL transcript.
+ *
+ * Keeps user and assistant text messages, strips system-reminder tags and
+ * tool_use/tool_result blocks. Truncates from the front to keep the most
+ * recent context within a reasonable size for the background save prompt.
+ */
+function extractSessionContent(transcriptRaw: string): string {
+  const MAX_LENGTH = 100_000
+  const parts: string[] = []
+
+  for (const line of transcriptRaw.split("\n")) {
+    if (!line.trim()) continue
+    try {
+      const entry = JSON.parse(line)
+      if (entry.type !== "user" && entry.type !== "assistant") continue
+
+      const content = entry.message?.content
+      if (!content) continue
+
+      let text: string
+      if (Array.isArray(content)) {
+        text = content
+          .filter((p: Record<string, unknown>) => p.type === "text")
+          .map((p: Record<string, unknown>) => (p.text as string) ?? "")
+          .join("")
+      } else if (typeof content === "string") {
+        text = content
+      } else {
+        continue
+      }
+
+      text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim()
+      if (!text) continue
+
+      const role = entry.type === "user" ? "User" : "Assistant"
+      parts.push(`${role}: ${text}`)
+    } catch {
+      continue
+    }
+  }
+
+  let result = parts.join("\n\n")
+  if (result.length > MAX_LENGTH) {
+    result = "...(truncated)\n\n" + result.slice(-MAX_LENGTH)
+  }
+  return result
+}
+
+function buildSessionEndPrompt(
+  projectName: string | null,
+  sessionContent: string,
+): string {
+  const scope = projectName ? `the "${projectName}" project` : "this project"
+  return `[Lore session-end save] You are reviewing a completed Claude Code session for ${scope}. The session transcript follows:
+
+---
+${sessionContent}
+---
+
+Assess whether this session produced context worth saving.
+
+If this session's work is unrelated to ${scope}, respond with "No Lore context to save." and stop.
+
+Otherwise, save structured context using lore-* MCP tools:
+• lore-journal — Brief summary of accomplishments and key decisions
+• lore-remember — Specific discoveries or decisions for future sessions
+• lore-learn — Entity relationships discovered (e.g., "AuthService uses JWT")
+
+Focus on decisions and discoveries, not play-by-play. Be concise. Then stop.`
+}
+
+function findClaudeBinary(): string | null {
+  try {
+    return execFileSync("which", ["claude"], { encoding: "utf-8" }).trim() || null
+  } catch {
+    // which failed — try common install locations
+  }
+  const candidates = [
+    join(homedir(), ".local", "bin", "claude"),
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return null
+}
+
+function spawnBackgroundSave(cwd: string, prompt: string): void {
+  const claudeBin = findClaudeBinary()
+  if (!claudeBin) {
+    process.stderr.write("[lore] session-end: claude binary not found, skipping\n")
+    return
+  }
+
+  // Write prompt to a temp file and pipe via stdin fd to avoid exposing
+  // session transcript content in process arguments (visible via `ps`).
+  const promptFile = join(tmpdir(), `lore-prompt-${Date.now()}.txt`)
+  let stdinFd: number
+  try {
+    writeFileSync(promptFile, prompt, { mode: 0o600 })
+    stdinFd = openSync(promptFile, "r")
+    // Unlink immediately — child still reads via its inherited fd copy (Unix)
+    unlinkSync(promptFile)
+  } catch (err) {
+    process.stderr.write(
+      `[lore] session-end: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`,
+    )
+    return
+  }
+
+  const args = [
+    "-p",
+    "--allowedTools",
+    "mcp__lore__lore-journal,mcp__lore__lore-remember,mcp__lore__lore-learn",
+    "--dangerously-skip-permissions",
+    "--no-session-persistence",
+    "--model",
+    "sonnet",
+  ]
+
+  // Minimal env — only what the background process needs
+  const safeEnv: Record<string, string> = {
+    PATH: process.env["PATH"] ?? "",
+    HOME: process.env["HOME"] ?? "",
+    LORE_AUTOSAVE: "false",
+  }
+  const notionToken = process.env["LORE_NOTION_TOKEN"]
+  if (notionToken) safeEnv["LORE_NOTION_TOKEN"] = notionToken
+  const notionBaseUrl = process.env["LORE_NOTION_BASE_URL"]
+  if (notionBaseUrl) safeEnv["LORE_NOTION_BASE_URL"] = notionBaseUrl
+
+  try {
+    const child = spawn(claudeBin, args, {
+      cwd,
+      detached: true,
+      stdio: [stdinFd, "ignore", "ignore"],
+      env: safeEnv,
+    })
+    child.unref()
+  } catch (err) {
+    process.stderr.write(
+      `[lore] session-end: spawn failed: ${err instanceof Error ? err.message : err}\n`,
+    )
+  } finally {
+    closeSync(stdinFd)
+  }
+}
+
+/**
+ * SessionEnd handler: spawns a background `claude -p` process to do
+ * structured saves when the Stop hook didn't fire or left unsaved messages.
+ *
+ * The background process inherits MCP config from the project's settings.json
+ * and uses lore-* tools for journal, memory, and fact saves.
+ *
+ * Completely non-blocking — never prevents session exit.
+ */
+async function handleSessionEnd(): Promise<void> {
+  if (process.env["LORE_AUTOSAVE"] === "false") return
+
+  const raw = process.env["LORE_SESSION_END_CONTENT"]
+  if (!raw) return
+
+  const hookConfig = await loadHookConfig()
+  if (!hookConfig.autoSave) return
+
+  let event: HookEvent
+  try {
+    event = JSON.parse(raw) as HookEvent
+  } catch (err) {
+    process.stderr.write(
+      `[lore] session-end: failed to parse event JSON: ${err instanceof Error ? err.message : err}\n`,
+    )
+    return
+  }
+
+  if (!event.transcript_path) return
+
+  let transcriptRaw: string
+  try {
+    transcriptRaw = await readFile(event.transcript_path, "utf-8")
+  } catch (err) {
+    process.stderr.write(
+      `[lore] session-end: failed to read transcript: ${err instanceof Error ? err.message : err}\n`,
+    )
+    return
+  }
+
+  const currentCount = countUserMessages(transcriptRaw)
+  if (currentCount < 2) return
+
+  const lastSaveCount = await readSaveCount(event.session_id)
+  if (currentCount - lastSaveCount < 1) return
+
+  const sessionContent = extractSessionContent(transcriptRaw)
+  if (!sessionContent) return
+
+  const prompt = buildSessionEndPrompt(hookConfig.projectName, sessionContent)
+  spawnBackgroundSave(event.cwd ?? process.cwd(), prompt)
+}
+
+// ---------------------------------------------------------------------------
 // Entry — fail open for autosave so the AI can always stop
 // ---------------------------------------------------------------------------
 
@@ -390,5 +602,5 @@ main().catch((err) => {
     process.stdout.write("{}\n")
     process.exit(0)
   }
-  process.exit(1)
+  process.exit(action === "session-end" ? 0 : 1)
 })

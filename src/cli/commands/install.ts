@@ -146,6 +146,7 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
 
   const autosavePath = join(pkgRoot, "hooks", "autosave.sh")
   const wakeupPath = join(pkgRoot, "hooks", "wakeup.sh")
+  const sessionEndPath = join(pkgRoot, "hooks", "session-end.sh")
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
   console.log()
@@ -156,16 +157,18 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
 
   // --- Phase 1: Verify built artifacts exist ---
 
-  const [hasAutosave, hasWakeup, hasMcpJs] = await Promise.all([
+  const [hasAutosave, hasWakeup, hasSessionEnd, hasMcpJs] = await Promise.all([
     fileExists(autosavePath),
     fileExists(wakeupPath),
+    fileExists(sessionEndPath),
     fileExists(mcpJsPath),
   ])
 
-  if (!hasAutosave || !hasWakeup || !hasMcpJs) {
+  if (!hasAutosave || !hasWakeup || !hasSessionEnd || !hasMcpJs) {
     const missing: string[] = []
     if (!hasAutosave) missing.push("  hooks/autosave.sh")
     if (!hasWakeup) missing.push("  hooks/wakeup.sh")
+    if (!hasSessionEnd) missing.push("  hooks/session-end.sh")
     if (!hasMcpJs) missing.push("  dist/mcp.js")
     console.error("Required files not found:")
     for (const m of missing) console.error(m)
@@ -175,7 +178,11 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   }
 
   // Ensure hook scripts are executable
-  await Promise.all([chmod(autosavePath, 0o755), chmod(wakeupPath, 0o755)])
+  await Promise.all([
+    chmod(autosavePath, 0o755),
+    chmod(wakeupPath, 0o755),
+    chmod(sessionEndPath, 0o755),
+  ])
 
   // --- Phase 2: Check prerequisites ---
 
@@ -218,6 +225,7 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   // Autosave registers under Stop only.
   const autosaveStatus = detectHook(hooks["Stop"], "autosave.sh", autosavePath)
   const wakeupStatus = detectHook(hooks["UserPromptSubmit"], "wakeup.sh", wakeupPath)
+  const sessionEndStatus = detectHook(hooks["SessionEnd"], "session-end.sh", sessionEndPath)
 
   // Detect legacy registrations that need cleanup
   const hasLegacyAutosave = detectHook(hooks["PostToolUse"], "autosave.sh", "") !== "missing"
@@ -237,8 +245,9 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
 
   console.log("Components:")
   console.log(`  MCP server:    ${statusLabel(mcpStatus)}`)
-  console.log(`  Autosave hook: ${statusLabel(autosaveStatus)}`)
-  console.log(`  Wakeup hook:   ${statusLabel(wakeupStatus)}`)
+  console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
+  console.log(`  Wakeup hook:       ${statusLabel(wakeupStatus)}`)
+  console.log(`  Session-end hook:  ${statusLabel(sessionEndStatus)}`)
 
   if (hasLegacyAutosave) console.log("  Legacy hook:   PostToolUse/Stop → will migrate")
   if (hasLegacyWakeup) console.log("  Legacy hook:   PreToolUse/Task → will migrate")
@@ -248,6 +257,7 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const allCurrent =
     autosaveStatus === "current" &&
     wakeupStatus === "current" &&
+    sessionEndStatus === "current" &&
     mcpStatus === "current" &&
     !hasLegacyAutosave &&
     !hasLegacyWakeup &&
@@ -308,8 +318,18 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
       if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
     }
     if (hasLegacySessionEnd) {
+      // Remove legacy autosave.sh from SessionEnd — distinct from session-end.sh
       mergedHooks["SessionEnd"] = removeScriptEntries(hooks["SessionEnd"], "autosave.sh")
       if (!mergedHooks["SessionEnd"]) delete mergedHooks["SessionEnd"]
+    }
+    // Register session-end.sh after legacy cleanup so the base array is clean
+    if (sessionEndStatus !== "current") {
+      mergedHooks["SessionEnd"] = mergeHookEntries(
+        mergedHooks["SessionEnd"] as HookEntry[] | undefined,
+        "session-end.sh",
+        sessionEndPath,
+        { matcher: "" }
+      )
     }
     if (hasLegacyPreCompact) {
       mergedHooks["PreCompact"] = removeScriptEntries(hooks["PreCompact"], "autosave.sh")
@@ -342,9 +362,10 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     await writeJsonFile(settingsPath, merged)
 
     console.log()
-    if (mcpStatus !== "current") console.log("  MCP server:    installed")
-    if (autosaveStatus !== "current") console.log("  Autosave hook: installed")
-    if (wakeupStatus !== "current") console.log("  Wakeup hook:   installed")
+    if (mcpStatus !== "current") console.log("  MCP server:        installed")
+    if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
+    if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
+    if (sessionEndStatus !== "current") console.log("  Session-end hook:  installed")
 
     console.log()
     console.log("Restart Claude Code for changes to take effect.")
