@@ -80,7 +80,7 @@ export interface CreateTopicInput {
 // Memory
 // ---------------------------------------------------------------------------
 
-export type MemorySource = "conversation" | "file" | "manual" | "agent_diary"
+export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | "digest"
 
 export interface Memory {
   id: string
@@ -140,6 +140,16 @@ export type FactPredicate =
   | "replaces"
   | "extends"
   | "conflicts_with"
+  | "needs_action"
+  | "waiting_on"
+  | "blocked_by"
+
+/** Predicates that represent open loops / tracked items. */
+export const TRACKING_PREDICATES: FactPredicate[] = [
+  "needs_action",
+  "waiting_on",
+  "blocked_by",
+]
 
 export type FactConfidence = "certain" | "likely" | "speculative"
 

@@ -2,6 +2,16 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
+import { TRACKING_PREDICATES } from "../../types.js"
+
+function dateBucket(isoDate: string): "Today" | "Yesterday" | "Earlier" {
+  const d = isoDate.split("T")[0]
+  const today = new Date().toISOString().split("T")[0]
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().split("T")[0]
+  if (d === today) return "Today"
+  if (d === yesterday) return "Yesterday"
+  return "Earlier"
+}
 
 export function registerContextTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -88,6 +98,11 @@ export function registerContextTools(server: McpServer, services: LoreServices):
             : Promise.resolve([]),
         ])
 
+        // Partition facts into open loops vs knowledge
+        const trackingSet = new Set<string>(TRACKING_PREDICATES)
+        const openLoops = facts.filter((f) => trackingSet.has(f.predicate))
+        const knowledgeFacts = facts.filter((f) => !trackingSet.has(f.predicate))
+
         const sections: string[] = []
 
         if (services.context.project) {
@@ -98,21 +113,44 @@ export function registerContextTools(server: McpServer, services: LoreServices):
 
         if (memories.length > 0) {
           sections.push("## Recent Memories\n")
+          // Group by date bucket
+          const buckets = new Map<string, typeof memories>()
           for (const mem of memories) {
-            sections.push(
-              `### ${mem.title}`,
-              `*${mem.source} | ${mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"} | ${mem.updatedAt.split("T")[0]}*\n`,
-              mem.content || "(no content loaded)",
-              ""
-            )
+            const bucket = dateBucket(mem.createdAt)
+            if (!buckets.has(bucket)) buckets.set(bucket, [])
+            buckets.get(bucket)!.push(mem)
+          }
+          for (const label of ["Today", "Yesterday", "Earlier"] as const) {
+            const mems = buckets.get(label)
+            if (!mems) continue
+            sections.push(`### ${label}\n`)
+            for (const mem of mems) {
+              sections.push(
+                `#### ${mem.title}`,
+                `*${mem.source} | ${mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"} | ${mem.createdAt.split("T")[0]}*\n`,
+                mem.content || "(no content loaded)",
+                ""
+              )
+            }
           }
         } else {
           sections.push("No memories found for this context.\n")
         }
 
-        if (facts.length > 0) {
+        if (openLoops.length > 0) {
+          sections.push("## Open Loops\n")
+          for (const fact of openLoops) {
+            const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+            sections.push(
+              `- **${fact.subject}** \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 **${fact.object}** [${fact.confidence}]${since}`
+            )
+          }
+          sections.push("")
+        }
+
+        if (knowledgeFacts.length > 0) {
           sections.push("## Active Facts\n")
-          for (const fact of facts) {
+          for (const fact of knowledgeFacts) {
             sections.push(
               `- **${fact.subject}** ${fact.predicate.replace(/_/g, " ")} **${fact.object}** (${fact.confidence})`
             )

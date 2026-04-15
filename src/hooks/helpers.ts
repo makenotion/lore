@@ -16,6 +16,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { findConfigFile, loadConfig } from "../config.js"
 import { initServices } from "../services.js"
+import { TRACKING_PREDICATES } from "../types.js"
 
 const action = process.argv[2]
 
@@ -297,6 +298,15 @@ async function handlePassiveSave(event: HookEvent): Promise<void> {
 // Wakeup — load context at session start
 // ---------------------------------------------------------------------------
 
+function dateBucket(isoDate: string): "Today" | "Yesterday" | "Earlier" {
+  const d = isoDate.split("T")[0]
+  const today = new Date().toISOString().split("T")[0]
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().split("T")[0]
+  if (d === today) return "Today"
+  if (d === yesterday) return "Yesterday"
+  return "Earlier"
+}
+
 async function wakeup(): Promise<void> {
   let services: Awaited<ReturnType<typeof initServices>>
   try {
@@ -308,14 +318,20 @@ async function wakeup(): Promise<void> {
   }
   const project = services.context.project
 
-  const memories = await services.memories.list({
-    projectId: project?.id,
-    limit: 5,
-  })
+  const [memories, facts] = await Promise.all([
+    services.memories.list({
+      projectId: project?.id,
+      limit: 10,
+    }),
+    project
+      ? services.facts.queryBySubject("", { projectId: project.id })
+      : Promise.resolve([]),
+  ])
 
-  const facts = project
-    ? await services.facts.queryBySubject("", { projectId: project.id })
-    : []
+  // Partition facts into open loops vs knowledge
+  const trackingSet = new Set<string>(TRACKING_PREDICATES)
+  const openLoops = facts.filter((f) => trackingSet.has(f.predicate))
+  const knowledgeFacts = facts.filter((f) => !trackingSet.has(f.predicate))
 
   const sections: string[] = []
 
@@ -325,14 +341,36 @@ async function wakeup(): Promise<void> {
 
   if (memories.length > 0) {
     sections.push("\n## Recent Memories")
+    // Group by date bucket
+    const buckets = new Map<string, typeof memories>()
     for (const mem of memories) {
-      sections.push(`- **${mem.title}** (${mem.source}, ${mem.updatedAt.split("T")[0]})`)
+      const bucket = dateBucket(mem.createdAt)
+      if (!buckets.has(bucket)) buckets.set(bucket, [])
+      buckets.get(bucket)!.push(mem)
+    }
+    for (const label of ["Today", "Yesterday", "Earlier"] as const) {
+      const mems = buckets.get(label)
+      if (!mems) continue
+      sections.push(`### ${label}`)
+      for (const mem of mems) {
+        sections.push(`- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`)
+      }
     }
   }
 
-  if (facts.length > 0) {
+  if (openLoops.length > 0) {
+    sections.push("\n## Open Loops")
+    for (const fact of openLoops) {
+      const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
+      sections.push(
+        `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since})`,
+      )
+    }
+  }
+
+  if (knowledgeFacts.length > 0) {
     sections.push("\n## Active Facts")
-    for (const fact of facts) {
+    for (const fact of knowledgeFacts) {
       sections.push(
         `- ${fact.subject} ${fact.predicate.replace(/_/g, " ")} ${fact.object}`,
       )

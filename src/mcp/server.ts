@@ -15,6 +15,7 @@ import { registerMemoryTools } from "./tools/memory.js"
 import { registerProjectTools } from "./tools/project.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerJournalTools } from "./tools/journal.js"
+import { registerDigestTools } from "./tools/digest.js"
 
 // Re-export for consumers that already import from this module
 export type { LoreServices } from "../services.js"
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
   registerProjectTools(server, services)
   registerKnowledgeTools(server, services)
   registerJournalTools(server, services)
+  registerDigestTools(server, services)
 
   // Start the stdio transport
   const transport = new StdioServerTransport()

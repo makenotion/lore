@@ -8,6 +8,12 @@
 import type { Client } from "@notionhq/client"
 import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
 import type { Fact, CreateFactInput, FactPredicate, FactConfidence, DatabaseRef } from "../types.js"
+
+type QueryBySubjectOpts = {
+  projectId?: string
+  includeInvalidated?: boolean
+  predicates?: FactPredicate[]
+}
 import { buildFactProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import {
@@ -44,7 +50,7 @@ export class FactService {
 
   async queryBySubject(
     subject: string,
-    opts?: { projectId?: string; includeInvalidated?: boolean }
+    opts?: QueryBySubjectOpts,
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = []
 
@@ -62,6 +68,22 @@ export class FactService {
         property: "Valid Until",
         date: { is_empty: true },
       })
+    }
+
+    if (opts?.predicates?.length) {
+      if (opts.predicates.length === 1) {
+        filters.push({
+          property: "Predicate",
+          select: { equals: opts.predicates[0] },
+        })
+      } else {
+        filters.push({
+          or: opts.predicates.map((p) => ({
+            property: "Predicate",
+            select: { equals: p },
+          })),
+        })
+      }
     }
 
     const filter =

@@ -4,6 +4,8 @@ import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 
+import { TRACKING_PREDICATES } from "../../types.js"
+
 const PREDICATE_VALUES = [
   "is_a",
   "has_a",
@@ -15,6 +17,9 @@ const PREDICATE_VALUES = [
   "replaces",
   "extends",
   "conflicts_with",
+  "needs_action",
+  "waiting_on",
+  "blocked_by",
 ] as const
 
 export function registerKnowledgeTools(server: McpServer, services: LoreServices): void {
@@ -152,6 +157,79 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         await services.facts.invalidate(factId)
         return {
           content: [{ type: "text", text: `Invalidated fact ${factId}` }],
+        }
+      } catch (err) {
+        return toolError(err)
+      }
+    }
+  )
+
+  // -------------------------------------------------------------------------
+  // lore-open-loops
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    "lore-open-loops",
+    {
+      title: "List open loops",
+      description:
+        "List active open loops — tracked items that need action, are waiting on something, " +
+        "or are blocked. These are facts with tracking predicates (needs_action, waiting_on, " +
+        "blocked_by) that haven't been resolved yet.\n\n" +
+        "To create an open loop, use lore-learn with a tracking predicate. " +
+        "To resolve one, use lore-correct to invalidate the fact.",
+      inputSchema: {
+        projectName: z
+          .string()
+          .optional()
+          .describe("Override the auto-detected project."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ projectName }) => {
+      try {
+        let projectId: string | undefined
+        const warnings: string[] = []
+
+        if (projectName) {
+          const found = await services.projects.findByName(projectName)
+          if (found) {
+            projectId = found.id
+          } else {
+            warnings.push(`Project "${projectName}" not found — falling back to auto-detected project.`)
+          }
+        }
+        if (!projectId && services.context.project) {
+          projectId = services.context.project.id
+        }
+
+        const loops = await services.facts.queryBySubject("", {
+          projectId,
+          predicates: TRACKING_PREDICATES,
+        })
+
+        if (loops.length === 0) {
+          const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+          return {
+            content: [{ type: "text", text: `No open loops found.${warn}` }],
+          }
+        }
+
+        const text = loops
+          .map((f) => {
+            const since = f.validFrom ? ` (since ${f.validFrom})` : ""
+            return `- **${f.subject}** \u2192 ${f.predicate.replace(/_/g, " ")} \u2192 **${f.object}** [${f.confidence}]${since}  \n  ID: ${f.id}`
+          })
+          .join("\n")
+
+        const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${loops.length} open loop${loops.length === 1 ? "" : "s"}:\n\n${text}${warn}`,
+            },
+          ],
         }
       } catch (err) {
         return toolError(err)

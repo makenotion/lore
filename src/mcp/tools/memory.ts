@@ -33,7 +33,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
             "Topic name within the project. Created automatically if it doesn't exist."
           ),
         source: z
-          .enum(["conversation", "file", "manual", "agent_diary"])
+          .enum(["conversation", "file", "manual", "agent_diary", "digest"])
           .optional()
           .describe("How this memory was captured (default: conversation)"),
         tags: z.array(z.string()).optional().describe("Tags for categorization"),
@@ -178,7 +178,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         projectName: z.string().optional().describe("Filter by project name"),
         topicName: z.string().optional().describe("Filter by topic name"),
         source: z
-          .enum(["conversation", "file", "manual", "agent_diary"])
+          .enum(["conversation", "file", "manual", "agent_diary", "digest"])
           .optional()
           .describe("Filter by source type"),
         limit: z

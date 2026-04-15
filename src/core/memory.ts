@@ -130,6 +130,8 @@ export class MemoryService {
     topicId?: string
     source?: MemorySource
     limit?: number
+    since?: string
+    until?: string
   }): Promise<Memory[]> {
     const filters: Array<Record<string, unknown>> = []
 
@@ -146,6 +148,18 @@ export class MemoryService {
       filters.push({
         property: "Source",
         select: { equals: opts.source },
+      })
+    }
+    if (opts?.since) {
+      filters.push({
+        timestamp: "created_time",
+        created_time: { on_or_after: opts.since },
+      })
+    }
+    if (opts?.until) {
+      filters.push({
+        timestamp: "created_time",
+        created_time: { before: opts.until },
       })
     }
 
