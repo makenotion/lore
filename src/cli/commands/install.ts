@@ -225,10 +225,10 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const hasLegacyWakeup = detectHook(hooks["PreToolUse"], "wakeup.sh", "") !== "missing"
   const hasLegacySessionEnd = detectHook(hooks["SessionEnd"], "autosave.sh", "") !== "missing"
 
-  const existingMcp = mcpServers["lore"] as { args?: string[] } | undefined
+  const existingMcp = mcpServers["lore"] as { args?: string[]; cwd?: string } | undefined
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
-    : existingMcp.args?.[0] === mcpJsPath
+    : existingMcp.args?.[0] === mcpJsPath && existingMcp.cwd === pkgRoot
       ? "current"
       : "stale"
 

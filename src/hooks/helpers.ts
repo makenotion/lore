@@ -32,13 +32,14 @@ interface HookEvent {
 
 const DEFAULT_SAVE_INTERVAL = 5
 
-const SAVE_PROMPT = `[Lore auto-save] Before stopping, save your work context for the team.
+const SAVE_PROMPT = `[Lore auto-save] A transcript snapshot was saved to Lore. Before stopping, enrich it with structured context.
 
-Use these Lore tools to persist what matters from this session:
+If lore-* MCP tools are available in this session, use them:
+• lore-journal — Brief summary of accomplishments and key decisions
+• lore-remember — Specific discoveries or decisions for future sessions
+• lore-learn — Entity relationships discovered (e.g., "AuthService uses JWT")
 
-• lore-journal — Write a brief summary of what was accomplished and key decisions made.
-• lore-remember — Save specific discoveries, context, or decisions that would help future sessions. Use descriptive titles and tags.
-• lore-learn — Record entity relationships discovered (e.g., "AuthService uses JWT").
+If lore MCP tools are not available, save key context to file-based memory instead.
 
 Focus on decisions and discoveries, not play-by-play. Be concise. Then stop.`
 
@@ -235,6 +236,9 @@ async function handleStop(event: HookEvent): Promise<void> {
 
     if (sinceLast >= threshold) {
       await writeSaveCount(event.session_id, currentCount)
+      // Guaranteed baseline: save transcript to Notion before blocking.
+      // The agent's MCP-based structured save is an optional enhancement.
+      await handlePassiveSave(event).catch(() => {})
       process.stdout.write(
         JSON.stringify({ decision: "block", reason: SAVE_PROMPT }) + "\n",
       )
