@@ -156,7 +156,7 @@ export const mineCommand = new Command("mine")
           await services.memories.create({
             title: `${basename(file)} — ${relPath}`,
             content: `# ${relPath}\n\n\`\`\`${extname(file).slice(1)}\n${content}\n\`\`\``,
-            projectId,
+            projectIds: projectId ? [projectId] : undefined,
             topicId,
             source: "file",
             tags: [extname(file).slice(1), "mined"],

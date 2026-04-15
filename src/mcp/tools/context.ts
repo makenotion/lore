@@ -53,7 +53,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
     {
       title: "Load session context",
       description:
-        "Load relevant context for the current session. Returns recent memories and active facts for the current project (or vault-wide if no project is resolved). Call this at the start of a conversation to prime context.",
+        "Load relevant context for the current session. Returns recent memories and active facts for the current project plus any repo-wide (unscoped) entries. Call this at the start of a conversation to prime context.",
       inputSchema: {
         projectName: z
           .string()

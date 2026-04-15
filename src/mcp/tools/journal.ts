@@ -28,12 +28,14 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
     },
     async ({ title, content, agent, session, tags }) => {
       try {
-        const projectId = services.context.project?.id
+        const projectIds = services.context.project
+          ? [services.context.project.id]
+          : undefined
 
         const memory = await services.memories.create({
           title,
           content,
-          projectId,
+          projectIds,
           source: "agent_diary",
           agent: agent ?? "unknown",
           session,

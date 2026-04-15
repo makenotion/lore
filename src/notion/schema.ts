@@ -214,7 +214,7 @@ export function buildTopicProps(input: {
 
 export function buildMemoryProps(input: {
   title: string
-  projectId?: string
+  projectIds?: string[]
   topicId?: string
   source?: string
   author?: string
@@ -225,8 +225,8 @@ export function buildMemoryProps(input: {
   const props: PageProperties = {
     Title: { title: [{ text: { content: input.title } }] },
   }
-  if (input.projectId) {
-    props["Project"] = { relation: [{ id: input.projectId }] }
+  if (input.projectIds?.length) {
+    props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
   }
   if (input.topicId) {
     props["Topic"] = { relation: [{ id: input.topicId }] }
@@ -255,7 +255,7 @@ export function buildFactProps(input: {
   subject: string
   predicate: string
   object: string
-  projectId?: string
+  projectIds?: string[]
   validFrom?: string
   sourceMemoryId?: string
   confidence?: string
@@ -265,8 +265,8 @@ export function buildFactProps(input: {
     Predicate: { select: { name: input.predicate } },
     Object: { rich_text: [{ text: { content: input.object } }] },
   }
-  if (input.projectId) {
-    props["Project"] = { relation: [{ id: input.projectId }] }
+  if (input.projectIds?.length) {
+    props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
   }
   if (input.validFrom) {
     props["Valid From"] = { date: { start: input.validFrom } }

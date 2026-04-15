@@ -25,6 +25,7 @@ import type {
   DatabaseRef,
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import {
   isFullPage,
   extractTitle,
@@ -46,7 +47,7 @@ export class MemoryService {
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildMemoryProps({
         title: input.title,
-        projectId: input.projectId,
+        projectIds: input.projectIds,
         topicId: input.topicId,
         source: input.source ?? "manual",
         author: input.author,
@@ -82,8 +83,8 @@ export class MemoryService {
     if (input.title) {
       props["Title"] = { title: [{ text: { content: input.title } }] }
     }
-    if (input.projectId) {
-      props["Project"] = { relation: [{ id: input.projectId }] }
+    if (input.projectIds) {
+      props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
     }
     if (input.topicId) {
       props["Topic"] = { relation: [{ id: input.topicId }] }
@@ -133,10 +134,7 @@ export class MemoryService {
     const filters: Array<Record<string, unknown>> = []
 
     if (opts?.projectId) {
-      filters.push({
-        property: "Project",
-        relation: { contains: opts.projectId },
-      })
+      filters.push(projectOrUnscopedFilter(opts.projectId))
     }
     if (opts?.topicId) {
       filters.push({
@@ -200,7 +198,7 @@ export class MemoryService {
     if (input.projectId) {
       filtered = filtered.filter((page) => {
         const ids = extractRelationIds(page.properties["Project"])
-        return ids.includes(input.projectId!)
+        return ids.length === 0 || ids.includes(input.projectId!)
       })
     }
     if (input.topicId) {
@@ -226,13 +224,12 @@ export class MemoryService {
 
   private pageToMemory(page: PageObjectResponse, content?: string): Memory {
     const props = page.properties
-    const projectIds = extractRelationIds(props["Project"])
     const topicIds = extractRelationIds(props["Topic"])
 
     return {
       id: page.id,
       title: extractTitle(props["Title"]),
-      projectId: projectIds[0] ?? null,
+      projectIds: extractRelationIds(props["Project"]),
       topicId: topicIds[0] ?? null,
       source: extractSelect(props["Source"], "manual") as MemorySource,
       author: extractRichText(props["Author"]),

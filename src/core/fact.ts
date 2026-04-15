@@ -9,6 +9,7 @@ import type { Client } from "@notionhq/client"
 import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
 import type { Fact, CreateFactInput, FactPredicate, FactConfidence, DatabaseRef } from "../types.js"
 import { buildFactProps } from "../notion/schema.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import {
   isFullPage,
   extractTitle,
@@ -31,7 +32,7 @@ export class FactService {
         subject: input.subject,
         predicate: input.predicate,
         object: input.object,
-        projectId: input.projectId,
+        projectIds: input.projectIds,
         validFrom: input.validFrom ?? new Date().toISOString().split("T")[0],
         sourceMemoryId: input.sourceMemoryId,
         confidence: input.confidence ?? "certain",
@@ -53,10 +54,7 @@ export class FactService {
     }
 
     if (opts?.projectId) {
-      filters.push({
-        property: "Project",
-        relation: { contains: opts.projectId },
-      })
+      filters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
     if (!opts?.includeInvalidated) {
@@ -92,10 +90,7 @@ export class FactService {
       { property: "Valid Until", date: { is_empty: true } },
     ]
     if (opts?.projectId) {
-      objectFilters.push({
-        property: "Project",
-        relation: { contains: opts.projectId },
-      })
+      objectFilters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
     const response = await this.client.dataSources.query({
@@ -124,7 +119,6 @@ export class FactService {
 
   private pageToFact(page: PageObjectResponse): Fact {
     const props = page.properties
-    const projectIds = extractRelationIds(props["Project"])
     const sourceIds = extractRelationIds(props["Source"])
 
     return {
@@ -132,7 +126,7 @@ export class FactService {
       subject: extractTitle(props["Subject"]),
       predicate: extractSelect(props["Predicate"], "related_to") as FactPredicate,
       object: extractRichText(props["Object"]),
-      projectId: projectIds[0] ?? null,
+      projectIds: extractRelationIds(props["Project"]),
       validFrom: extractDate(props["Valid From"]),
       validUntil: extractDate(props["Valid Until"]),
       sourceMemoryId: sourceIds[0] ?? null,
