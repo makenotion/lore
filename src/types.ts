@@ -85,7 +85,7 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary"
 export interface Memory {
   id: string
   title: string
-  projectId: string | null
+  projectIds: string[]
   topicId: string | null
   source: MemorySource
   author: string
@@ -100,7 +100,7 @@ export interface Memory {
 export interface CreateMemoryInput {
   title: string
   content: string
-  projectId?: string
+  projectIds?: string[]
   topicId?: string
   source?: MemorySource
   author?: string
@@ -112,7 +112,7 @@ export interface CreateMemoryInput {
 export interface UpdateMemoryInput {
   title?: string
   content?: string
-  projectId?: string
+  projectIds?: string[]
   topicId?: string
   tags?: string[]
 }
@@ -148,7 +148,7 @@ export interface Fact {
   subject: string
   predicate: FactPredicate
   object: string
-  projectId: string | null
+  projectIds: string[]
   validFrom: string | null
   validUntil: string | null
   sourceMemoryId: string | null
@@ -159,7 +159,7 @@ export interface CreateFactInput {
   subject: string
   predicate: FactPredicate
   object: string
-  projectId?: string
+  projectIds?: string[]
   validFrom?: string
   sourceMemoryId?: string
   confidence?: FactConfidence

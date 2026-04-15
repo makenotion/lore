@@ -36,6 +36,7 @@ export {
   extractRelationIds,
   extractDate,
 } from "./notion/extractors.js"
+export { projectOrUnscopedFilter } from "./notion/filters.js"
 export type { LoreServices } from "./services.js"
 export { initServices } from "./services.js"
 export { TopicService } from "./core/topic.js"

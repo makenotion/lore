@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
+import { resolveProjectIds } from "../resolve.js"
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -20,7 +21,11 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         projectName: z
           .string()
           .optional()
-          .describe("Project name. Defaults to auto-detected project."),
+          .describe("Project name. Defaults to auto-detected project from cwd."),
+        projectNames: z
+          .array(z.string())
+          .optional()
+          .describe("Multiple project names for cross-project memories (e.g., a decision affecting Router and backend but not iOS)."),
         topicName: z
           .string()
           .optional()
@@ -36,25 +41,24 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         session: z.string().optional().describe("Session ID to group related memories"),
       },
     },
-    async ({ title, content, projectName, topicName, source, tags, agent, session }) => {
+    async ({ title, content, projectName, projectNames, topicName, source, tags, agent, session }) => {
       try {
-        let projectId = services.context.project?.id
-
-        if (projectName) {
-          const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
-        }
+        const resolved = await resolveProjectIds(services, projectName, projectNames)
 
         let topicId: string | undefined
-        if (topicName && projectId) {
-          const topic = await services.topics.getOrCreate(topicName, projectId)
+        let topicLabel = "none"
+        if (topicName && resolved.ids.length === 1) {
+          const topic = await services.topics.getOrCreate(topicName, resolved.ids[0])
           topicId = topic.id
+          topicLabel = topicName
+        } else if (topicName && resolved.ids.length > 1) {
+          resolved.warnings.push(`Topic "${topicName}" skipped (not supported for multi-project memories)`)
         }
 
         const memory = await services.memories.create({
           title,
           content,
-          projectId,
+          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
           topicId,
           source: source ?? "conversation",
           tags,
@@ -62,13 +66,21 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           session,
         })
 
+        const projectLabel = projectNames?.length
+          ? projectNames.join(", ")
+          : projectName ?? services.context.project?.name ?? "none (repo-wide)"
+
+        const lines = [
+          `Saved memory: "${memory.title}" (${memory.id})`,
+          `Project: ${projectLabel}`,
+          `Topic: ${topicLabel}`,
+        ]
+        if (resolved.warnings.length > 0) {
+          lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
+        }
+
         return {
-          content: [
-            {
-              type: "text",
-              text: `Saved memory: "${memory.title}" (${memory.id})\nProject: ${projectName ?? services.context.project?.name ?? "none"}\nTopic: ${topicName ?? "none"}`,
-            },
-          ],
+          content: [{ type: "text", text: lines.join("\n") }],
         }
       } catch (err) {
         return toolError(err)
@@ -268,38 +280,43 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         content: z.string().optional().describe("New content (replaces existing)"),
         tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
         projectName: z.string().optional().describe("Move to a different project"),
+        projectNames: z.array(z.string()).optional().describe("Set multiple project associations"),
         topicName: z.string().optional().describe("Move to a different topic"),
       },
     },
-    async ({ memoryId, title, content, tags, projectName, topicName }) => {
+    async ({ memoryId, title, content, tags, projectName, projectNames, topicName }) => {
       try {
-        let projectId: string | undefined
+        let projectIds: string[] | undefined
         let topicId: string | undefined
+        const warnings: string[] = []
 
-        if (projectName) {
-          const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
+        if (projectNames?.length || projectName) {
+          const resolved = await resolveProjectIds(services, projectName, projectNames)
+          projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
+          warnings.push(...resolved.warnings)
         }
-        if (topicName && projectId) {
-          const topic = await services.topics.getOrCreate(topicName, projectId)
+        if (topicName && projectIds?.length === 1) {
+          const topic = await services.topics.getOrCreate(topicName, projectIds[0])
           topicId = topic.id
+        } else if (topicName && (projectIds?.length ?? 0) > 1) {
+          warnings.push(`Topic "${topicName}" skipped (not supported for multi-project memories)`)
         }
 
         const updated = await services.memories.update(memoryId, {
           title,
           content,
           tags,
-          projectId,
+          projectIds,
           topicId,
         })
 
+        const lines = [`Updated memory: "${updated.title}" (${updated.id})`]
+        if (warnings.length > 0) {
+          lines.push(`Warnings: ${warnings.join("; ")}`)
+        }
+
         return {
-          content: [
-            {
-              type: "text",
-              text: `Updated memory: "${updated.title}" (${updated.id})`,
-            },
-          ],
+          content: [{ type: "text", text: lines.join("\n") }],
         }
       } catch (err) {
         return toolError(err)

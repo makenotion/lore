@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
+import { resolveProjectIds } from "../resolve.js"
 
 const PREDICATE_VALUES = [
   "is_a",
@@ -32,7 +33,8 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         subject: z.string().describe("The entity this fact is about"),
         predicate: z.enum(PREDICATE_VALUES).describe("The relationship type"),
         object: z.string().describe("The related entity or value"),
-        projectName: z.string().optional().describe("Scope to a project"),
+        projectName: z.string().optional().describe("Scope to a project. Defaults to auto-detected project from cwd."),
+        projectNames: z.array(z.string()).optional().describe("Multiple project names for cross-project facts."),
         confidence: z
           .enum(["certain", "likely", "speculative"])
           .optional()
@@ -43,33 +45,28 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           .describe("ID of the memory that supports this fact"),
       },
     },
-    async ({ subject, predicate, object, projectName, confidence, sourceMemoryId }) => {
+    async ({ subject, predicate, object, projectName, projectNames, confidence, sourceMemoryId }) => {
       try {
-        let projectId: string | undefined
-
-        if (projectName) {
-          const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
-        } else if (services.context.project) {
-          projectId = services.context.project.id
-        }
+        const resolved = await resolveProjectIds(services, projectName, projectNames)
 
         const fact = await services.facts.create({
           subject,
           predicate,
           object,
-          projectId,
+          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
           confidence,
           sourceMemoryId,
         })
 
+        const lines = [
+          `Learned: "${fact.subject}" ${fact.predicate.replace(/_/g, " ")} "${fact.object}" (${fact.confidence})`,
+        ]
+        if (resolved.warnings.length > 0) {
+          lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
+        }
+
         return {
-          content: [
-            {
-              type: "text",
-              text: `Learned: "${fact.subject}" ${fact.predicate.replace(/_/g, " ")} "${fact.object}" (${fact.confidence})`,
-            },
-          ],
+          content: [{ type: "text", text: lines.join("\n") }],
         }
       } catch (err) {
         return toolError(err)

@@ -178,9 +178,9 @@ async function autosave(): Promise<void> {
     return
   }
 
-  let event: HookEvent = {}
+  let event: HookEvent
   try {
-    event = JSON.parse(raw)
+    event = JSON.parse(raw) as HookEvent
   } catch {
     event = { last_assistant_message: raw }
   }
@@ -279,7 +279,7 @@ async function handlePassiveSave(event: HookEvent): Promise<void> {
     await services.memories.create({
       title: `${label} — ${dateStr} ${timeStr}`,
       content,
-      projectId: services.context.project?.id,
+      projectIds: services.context.project ? [services.context.project.id] : undefined,
       source: "agent_diary",
       agent,
       session: event.session_id,
