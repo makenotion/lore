@@ -188,7 +188,8 @@ export interface LoreConfig {
   hooks?: {
     autoSave?: boolean
     wakeUp?: boolean
-    saveInterval?: "on_compress" | "periodic"
+    /** Real user messages between structured AI-driven saves. Default: 5. */
+    saveInterval?: number
   }
 }
 

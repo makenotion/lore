@@ -3,28 +3,15 @@ set -euo pipefail
 
 # Lore auto-save hook for Claude Code
 #
-# Add to Claude Code settings.json:
-# "hooks": {
-#   "PostToolUse": [
-#     {
-#       "matcher": "Stop",
-#       "hooks": [{
-#         "type": "command",
-#         "command": "/path/to/lore/hooks/autosave.sh"
-#       }]
-#     }
-#   ]
-# }
+# Fires on: Stop, PreCompact, SessionEnd events.
+# Registration lives in .claude/settings.json (via `lore install`).
+#
+# Stop/SessionEnd: sync, stdout passthrough for blocking decisions.
+# PreCompact: sync so the save completes before compaction.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-# Only run if LORE_NOTION_TOKEN is set
-if [ -z "${LORE_NOTION_TOKEN:-}" ]; then
-  exit 0
-fi
-
-# The hook receives context via stdin from Claude Code.
-# Extract the conversation summary and save it.
+# Claude Code delivers event context as JSON on stdin
 CONTENT=$(cat)
 
 if [ -z "$CONTENT" ]; then
@@ -34,5 +21,13 @@ fi
 export LORE_AUTOSAVE_CONTENT="$CONTENT"
 export LORE_AGENT_NAME="Claude Code"
 
-# Run the helper in the background to not block Claude Code
-node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave &
+if echo "$CONTENT" | grep -qE '"Stop"|"SessionEnd"'; then
+  # Stop/SessionEnd: sync, stdout passthrough for blocking decisions
+  node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave
+elif echo "$CONTENT" | grep -qE '"PreCompact"'; then
+  # PreCompact: sync so the save completes before compaction
+  node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave 2>/dev/null || true
+else
+  # Unknown events: background
+  node "$SCRIPT_DIR/../dist/hooks/helpers.js" autosave 2>/dev/null &
+fi

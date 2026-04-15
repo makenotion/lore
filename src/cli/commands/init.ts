@@ -33,7 +33,7 @@ export const initCommand = new Command("init")
         hooks: {
           autoSave: true,
           wakeUp: true,
-          saveInterval: "on_compress",
+          saveInterval: 5,
         },
       }
 

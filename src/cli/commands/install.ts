@@ -67,7 +67,12 @@ type HookStatus = "current" | "stale" | "missing"
 
 interface HookEntry {
   matcher: string
-  hooks: Array<{ type: string; command: string }>
+  hooks: Array<{
+    type: string
+    command: string
+    timeout?: number
+    runOnce?: boolean
+  }>
 }
 
 function detectHook(
@@ -91,7 +96,7 @@ function mergeHookEntries(
   existing: HookEntry[] | undefined,
   scriptName: string,
   newPath: string,
-  matcher: string
+  config: { matcher: string; timeout?: number; runOnce?: boolean }
 ): HookEntry[] {
   // Remove any existing entry pointing to this script (handles stale paths)
   const filtered = (existing ?? []).filter(
@@ -101,10 +106,33 @@ function mergeHookEntries(
       )
   )
   filtered.push({
-    matcher,
-    hooks: [{ type: "command", command: newPath }],
+    matcher: config.matcher,
+    hooks: [{
+      type: "command",
+      command: newPath,
+      ...(config.timeout != null ? { timeout: config.timeout } : {}),
+      ...(config.runOnce != null ? { runOnce: config.runOnce } : {}),
+    }],
   })
   return filtered
+}
+
+/**
+ * Remove entries referencing a script from a hook event array.
+ * Used to clean up legacy registrations under wrong event names.
+ */
+function removeScriptEntries(
+  entries: HookEntry[] | undefined,
+  scriptName: string
+): HookEntry[] | undefined {
+  if (!entries) return undefined
+  const filtered = entries.filter(
+    (entry) =>
+      !entry.hooks?.some(
+        (h) => typeof h.command === "string" && h.command.endsWith(`/${scriptName}`)
+      )
+  )
+  return filtered.length > 0 ? filtered : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -187,8 +215,14 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>
   const mcpServers = (settings.mcpServers ?? {}) as Record<string, unknown>
 
-  const autosaveStatus = detectHook(hooks["PostToolUse"], "autosave.sh", autosavePath)
-  const wakeupStatus = detectHook(hooks["PreToolUse"], "wakeup.sh", wakeupPath)
+  // Autosave registers under Stop, PreCompact, SessionEnd.
+  // Check Stop as the primary indicator.
+  const autosaveStatus = detectHook(hooks["Stop"], "autosave.sh", autosavePath)
+  const wakeupStatus = detectHook(hooks["UserPromptSubmit"], "wakeup.sh", wakeupPath)
+
+  // Detect legacy (broken) registrations that need cleanup
+  const hasLegacyAutosave = detectHook(hooks["PostToolUse"], "autosave.sh", "") !== "missing"
+  const hasLegacyWakeup = detectHook(hooks["PreToolUse"], "wakeup.sh", "") !== "missing"
 
   const existingMcp = mcpServers["lore"] as { args?: string[] } | undefined
   const mcpStatus: HookStatus = !existingMcp
@@ -205,7 +239,17 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   console.log(`  Autosave hook: ${statusLabel(autosaveStatus)}`)
   console.log(`  Wakeup hook:   ${statusLabel(wakeupStatus)}`)
 
-  if (autosaveStatus === "current" && wakeupStatus === "current" && mcpStatus === "current") {
+  if (hasLegacyAutosave) console.log("  Legacy hook:   PostToolUse/Stop → will migrate")
+  if (hasLegacyWakeup) console.log("  Legacy hook:   PreToolUse/Task → will migrate")
+
+  const allCurrent =
+    autosaveStatus === "current" &&
+    wakeupStatus === "current" &&
+    mcpStatus === "current" &&
+    !hasLegacyAutosave &&
+    !hasLegacyWakeup
+
+  if (allCurrent) {
     console.log()
     console.log("Everything is already installed.")
     return
@@ -230,22 +274,39 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     const mergedHooks: Record<string, unknown> = {
       ...((settings.hooks as Record<string, unknown>) ?? {}),
     }
+
     if (autosaveStatus !== "current") {
-      mergedHooks["PostToolUse"] = mergeHookEntries(
-        hooks["PostToolUse"],
-        "autosave.sh",
-        autosavePath,
-        "Stop"
-      )
+      // Autosave registers under three events: Stop, PreCompact, SessionEnd
+      const autosaveConfig = { matcher: "", timeout: 10000 }
+      for (const event of ["Stop", "PreCompact", "SessionEnd"]) {
+        mergedHooks[event] = mergeHookEntries(
+          hooks[event],
+          "autosave.sh",
+          autosavePath,
+          autosaveConfig
+        )
+      }
     }
+
     if (wakeupStatus !== "current") {
-      mergedHooks["PreToolUse"] = mergeHookEntries(
-        hooks["PreToolUse"],
+      mergedHooks["UserPromptSubmit"] = mergeHookEntries(
+        hooks["UserPromptSubmit"],
         "wakeup.sh",
         wakeupPath,
-        "Task"
+        { matcher: "", timeout: 10000, runOnce: true }
       )
     }
+
+    // Clean up legacy registrations from old broken config
+    if (hasLegacyAutosave) {
+      mergedHooks["PostToolUse"] = removeScriptEntries(hooks["PostToolUse"], "autosave.sh")
+      if (!mergedHooks["PostToolUse"]) delete mergedHooks["PostToolUse"]
+    }
+    if (hasLegacyWakeup) {
+      mergedHooks["PreToolUse"] = removeScriptEntries(hooks["PreToolUse"], "wakeup.sh")
+      if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
+    }
+
     merged.hooks = mergedHooks
 
     // Merge MCP server
@@ -258,6 +319,7 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
         lore: {
           command: "node",
           args: [mcpJsPath],
+          cwd: pkgRoot,
           ...(Object.keys(mcpEnv).length > 0 ? { env: mcpEnv } : {}),
         },
       }

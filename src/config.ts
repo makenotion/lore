@@ -34,7 +34,7 @@ const configSchema = z.object({
     .object({
       autoSave: z.boolean().optional(),
       wakeUp: z.boolean().optional(),
-      saveInterval: z.enum(["on_compress", "periodic"]).optional(),
+      saveInterval: z.number().int().min(1).optional(),
     })
     .optional(),
 })
