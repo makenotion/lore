@@ -55,6 +55,13 @@ export async function createVaultDatabases(
   client: Client,
   pageId: string
 ): Promise<Vault> {
+  // Extract the data source ID from a database creation response.
+  // Relations reference data sources, not database block IDs.
+  const dsId = (db: Record<string, unknown>): string => {
+    const ds = db["data_sources"] as Array<{ id: string }> | undefined
+    return ds?.[0]?.id ?? (db["id"] as string)
+  }
+
   // 1. Projects (no deps)
   const projectsDb = await client.databases.create(
     createDbArgs(pageId, PROJECTS_DB_TITLE, PROJECTS_DB_ICON, projectsProperties)
@@ -62,7 +69,7 @@ export async function createVaultDatabases(
 
   // 2. Topics (depends on Projects)
   const topicsDb = await client.databases.create(
-    createDbArgs(pageId, TOPICS_DB_TITLE, TOPICS_DB_ICON, topicsProperties(projectsDb.id))
+    createDbArgs(pageId, TOPICS_DB_TITLE, TOPICS_DB_ICON, topicsProperties(dsId(projectsDb as unknown as Record<string, unknown>)))
   )
 
   // 3. Memories (depends on Projects + Topics)
@@ -71,7 +78,7 @@ export async function createVaultDatabases(
       pageId,
       MEMORIES_DB_TITLE,
       MEMORIES_DB_ICON,
-      memoriesProperties(projectsDb.id, topicsDb.id)
+      memoriesProperties(dsId(projectsDb as unknown as Record<string, unknown>), dsId(topicsDb as unknown as Record<string, unknown>))
     )
   )
 
@@ -81,7 +88,7 @@ export async function createVaultDatabases(
       pageId,
       FACTS_DB_TITLE,
       FACTS_DB_ICON,
-      factsProperties(projectsDb.id, memoriesDb.id)
+      factsProperties(dsId(projectsDb as unknown as Record<string, unknown>), dsId(memoriesDb as unknown as Record<string, unknown>))
     )
   )
 
