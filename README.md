@@ -11,14 +11,7 @@ for humans, and shell hooks for automated context loading and session saving.
 ### 1. Install
 
 ```bash
-npm install @notionhq/lore
-```
-
-Or clone and build:
-
-```bash
-git clone git@github.com:makenotion/lore.git
-cd lore && npm install && npm run build
+npm install makenotion/lore
 ```
 
 ### 2. Create a Notion Integration
@@ -43,19 +36,12 @@ config file.
 
 ### 4. Configure Your AI Assistant
 
-Add the MCP server to your assistant config:
-
-```json
-{
-  "mcpServers": {
-    "lore": {
-      "command": "node",
-      "args": ["/path/to/lore/dist/mcp.js"],
-      "env": { "LORE_NOTION_TOKEN": "ntn_..." }
-    }
-  }
-}
+```bash
+lore install
 ```
+
+This registers the MCP server and shell hooks with Claude Code for the
+current project.
 
 ## Data Model
 
@@ -121,6 +107,7 @@ A vault is a Notion page containing four linked databases:
 | Command                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
 | `lore init <page-id>`          | Create vault databases in a Notion page and write `.lore.yaml`   |
+| `lore install`                 | Install MCP server and shell hooks for the current project       |
 | `lore auth`                    | Check authentication status                                      |
 | `lore auth --login`            | Authenticate via OAuth (opens browser)                           |
 | `lore search <query>`          | Semantic search across memories (`-p`, `-t`, `-n` flags)         |
