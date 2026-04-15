@@ -319,6 +319,8 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     if (mcpStatus !== "current") {
       const mcpEnv: Record<string, string> = {}
       if (token) mcpEnv["LORE_NOTION_TOKEN"] = token
+      const baseUrl = process.env["LORE_NOTION_BASE_URL"]
+      if (baseUrl) mcpEnv["LORE_NOTION_BASE_URL"] = baseUrl
 
       merged.mcpServers = {
         ...((settings.mcpServers as Record<string, unknown>) ?? {}),
