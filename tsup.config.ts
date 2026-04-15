@@ -12,10 +12,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   target: "node20",
-  banner({ entryPoint }) {
-    if (entryPoint === "src/cli/index.ts") {
-      return { js: "#!/usr/bin/env node" }
-    }
-    return {}
-  },
+  banner: { js: "#!/usr/bin/env node" },
 })
