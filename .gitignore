@@ -20,3 +20,4 @@ Thumbs.db
 
 # Claude Code project settings (contains absolute paths)
 .claude/settings.json
+.mcp.json

@@ -218,9 +218,10 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const encodedPath = encodeProjectPath(projectDir)
   const settingsPath = join(homedir(), ".claude", "projects", encodedPath, "settings.json")
   const settings = await readJsonSafe(settingsPath)
+  const mcpJsonPath = join(projectDir, ".mcp.json")
+  const mcpJson = await readJsonSafe(mcpJsonPath)
 
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>
-  const mcpServers = (settings.mcpServers ?? {}) as Record<string, unknown>
 
   // Autosave registers under Stop only.
   const autosaveStatus = detectHook(hooks["Stop"], "autosave.sh", autosavePath)
@@ -233,6 +234,13 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const hasLegacySessionEnd = detectHook(hooks["SessionEnd"], "autosave.sh", "") !== "missing"
   const hasLegacyPreCompact = detectHook(hooks["PreCompact"], "autosave.sh", "") !== "missing"
 
+  // Detect stale MCP config in settings.json (legacy location — never worked)
+  const hasLegacyMcp = Boolean(
+    (settings.mcpServers as Record<string, unknown> | undefined)?.["lore"]
+  )
+
+  // MCP server is configured in .mcp.json (project scope), not settings.json
+  const mcpServers = (mcpJson.mcpServers ?? {}) as Record<string, unknown>
   const existingMcp = mcpServers["lore"] as { args?: string[]; cwd?: string } | undefined
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
@@ -253,6 +261,7 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   if (hasLegacyWakeup) console.log("  Legacy hook:   PreToolUse/Task → will migrate")
   if (hasLegacySessionEnd) console.log("  Legacy hook:   SessionEnd → will remove")
   if (hasLegacyPreCompact) console.log("  Legacy hook:   PreCompact → will remove")
+  if (hasLegacyMcp) console.log("  Legacy MCP:    settings.json → will migrate to .mcp.json")
 
   const allCurrent =
     autosaveStatus === "current" &&
@@ -262,7 +271,8 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     !hasLegacyAutosave &&
     !hasLegacyWakeup &&
     !hasLegacySessionEnd &&
-    !hasLegacyPreCompact
+    !hasLegacyPreCompact &&
+    !hasLegacyMcp
 
   if (allCurrent) {
     console.log()
@@ -338,21 +348,14 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
 
     merged.hooks = mergedHooks
 
-    // Merge MCP server
-    if (mcpStatus !== "current") {
-      const mcpEnv: Record<string, string> = {}
-      if (token) mcpEnv["LORE_NOTION_TOKEN"] = token
-      const baseUrl = process.env["LORE_NOTION_BASE_URL"]
-      if (baseUrl) mcpEnv["LORE_NOTION_BASE_URL"] = baseUrl
-
-      merged.mcpServers = {
-        ...((settings.mcpServers as Record<string, unknown>) ?? {}),
-        lore: {
-          command: "node",
-          args: [mcpJsPath],
-          cwd: pkgRoot,
-          ...(Object.keys(mcpEnv).length > 0 ? { env: mcpEnv } : {}),
-        },
+    // Remove stale MCP config from settings.json (legacy location)
+    if (hasLegacyMcp) {
+      const stale = { ...((settings.mcpServers as Record<string, unknown>) ?? {}) }
+      delete stale["lore"]
+      if (Object.keys(stale).length > 0) {
+        merged.mcpServers = stale
+      } else {
+        delete merged.mcpServers
       }
     }
 
@@ -361,11 +364,34 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     console.log(`Writing: ${displayPath}`)
     await writeJsonFile(settingsPath, merged)
 
+    // Write MCP server to .mcp.json (project scope — where Claude Code reads it)
+    if (mcpStatus !== "current") {
+      const mcpEnv: Record<string, string> = { LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}" }
+      if (process.env["LORE_NOTION_BASE_URL"]) {
+        mcpEnv["LORE_NOTION_BASE_URL"] = "${LORE_NOTION_BASE_URL}"
+      }
+
+      const mergedMcpJson: Record<string, unknown> = { ...mcpJson }
+      mergedMcpJson.mcpServers = {
+        ...((mcpJson.mcpServers as Record<string, unknown>) ?? {}),
+        lore: {
+          command: "node",
+          args: [mcpJsPath],
+          cwd: pkgRoot,
+          env: mcpEnv,
+        },
+      }
+
+      console.log(`Writing: ${mcpJsonPath}`)
+      await writeJsonFile(mcpJsonPath, mergedMcpJson)
+    }
+
     console.log()
-    if (mcpStatus !== "current") console.log("  MCP server:        installed")
+    if (mcpStatus !== "current") console.log("  MCP server:        installed (.mcp.json)")
     if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
     if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
     if (sessionEndStatus !== "current") console.log("  Session-end hook:  installed")
+    if (hasLegacyMcp) console.log("  Legacy MCP:        removed from settings.json")
 
     console.log()
     console.log("Restart Claude Code for changes to take effect.")
