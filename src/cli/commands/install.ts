@@ -1,5 +1,5 @@
 import { Command } from "commander"
-import { readFile, writeFile, mkdir, access, chmod } from "node:fs/promises"
+import { readFile, writeFile, mkdir, access, chmod, rename, unlink } from "node:fs/promises"
 import { join, dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -19,6 +19,95 @@ function encodeProjectPath(absPath: string): string {
   return absPath.replace(/\//g, "-")
 }
 
+/**
+ * Env variables the MCP server honors at runtime and that the installer
+ * forwards into `.mcp.json`. Values are the `${VAR}` token form — Claude
+ * Code expands them from the caller's environment at server launch time,
+ * so emitting a key the installing user has not exported is harmless (the
+ * expansion yields an empty string, same as it would for any unset var).
+ *
+ * Emission is unconditional on purpose: `.mcp.json` is committed to the
+ * consumer repo, so the set of keys must not depend on which developer
+ * happened to run `lore install` first. A developer whose shell defines
+ * `LORE_NOTION_BASE_URL` needs it forwarded even if the original installer
+ * did not have that var set.
+ */
+const MCP_FORWARDED_ENV_VARS = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"] as const
+
+interface McpEntry {
+  command: string
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+}
+
+function buildMcpEntry(mcpJsPath: string, cwd: string): McpEntry {
+  const env: Record<string, string> = {}
+  for (const key of MCP_FORWARDED_ENV_VARS) {
+    env[key] = `\${${key}}`
+  }
+  return {
+    command: "node",
+    args: [mcpJsPath],
+    cwd,
+    env,
+  }
+}
+
+/**
+ * Structural equality for plain JSON-ish values. Used to decide whether an
+ * on-disk `.mcp.json` entry already matches the entry we would write right
+ * now, so the installer doesn't churn the file on every run.
+ */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || b === null) return false
+  if (typeof a !== typeof b) return false
+  if (typeof a !== "object") return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false
+    }
+    return true
+  }
+  const aObj = a as Record<string, unknown>
+  const bObj = b as Record<string, unknown>
+  const aKeys = Object.keys(aObj)
+  const bKeys = Object.keys(bObj)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false
+    if (!deepEqual(aObj[key], bObj[key])) return false
+  }
+  return true
+}
+
+/**
+ * Rewrite an absolute path under the user's home directory into a
+ * `${HOME}`-prefixed form. `.mcp.json` is committed to consumer repos and
+ * shared across developers, so any absolute path inside `$HOME` would break
+ * on every other machine. Claude Code expands `${VAR}` inside `command`,
+ * `args`, `cwd`, and `env` values when it reads `.mcp.json`.
+ *
+ * Paths outside `$HOME` (e.g. a global npm install under `/opt` or
+ * `/usr/local`) are returned unchanged — there is no portable substitution.
+ */
+function toPortablePath(absPath: string): string {
+  const home = homedir()
+  // A home of "/" (extremely unusual, e.g. root with no home set) would make
+  // the prefix check below match every absolute path and turn `/opt/x` into
+  // `${HOME}/opt/x` — the very breakage this helper is meant to prevent.
+  if (home === "/" || home === "") return absPath
+  if (absPath === home) return "${HOME}"
+  const prefix = home.endsWith("/") ? home : home + "/"
+  if (absPath.startsWith(prefix)) {
+    return "${HOME}/" + absPath.slice(prefix.length)
+  }
+  return absPath
+}
+
 async function readJsonSafe(filePath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await readFile(filePath, "utf-8")
@@ -34,7 +123,18 @@ async function writeJsonFile(
   data: Record<string, unknown>
 ): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
-  await writeFile(filePath, JSON.stringify(data, null, 2) + "\n", "utf-8")
+  // Write to a sibling temp file then rename — POSIX `rename` on the same
+  // filesystem is atomic, so a crash or I/O error mid-write cannot leave
+  // a half-written file on disk. Matters especially for `.mcp.json`, which
+  // is committed to consumer repos.
+  const tmpPath = `${filePath}.${process.pid}.tmp`
+  try {
+    await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8")
+    await rename(tmpPath, filePath)
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {})
+    throw err
+  }
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -237,12 +337,19 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     (settings.mcpServers as Record<string, unknown> | undefined)?.["lore"]
   )
 
-  // MCP server is configured in .mcp.json (project scope), not settings.json
+  // MCP server is configured in .mcp.json (project scope), not settings.json.
+  // Build the entry we would write *now* and treat "current" as a full deep
+  // match against what's already on disk. A partial match (e.g. matching
+  // paths but a drifted `env` block, or an absolute path that happens to
+  // resolve to the same file) registers as "stale" so migrations propagate.
   const mcpServers = (mcpJson.mcpServers ?? {}) as Record<string, unknown>
-  const existingMcp = mcpServers["lore"] as { args?: string[]; cwd?: string } | undefined
+  const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
+  const portableMcpJsPath = toPortablePath(mcpJsPath)
+  const portablePkgRoot = toPortablePath(pkgRoot)
+  const expectedMcpEntry = buildMcpEntry(portableMcpJsPath, portablePkgRoot)
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
-    : existingMcp.args?.[0] === mcpJsPath && existingMcp.cwd === pkgRoot
+    : deepEqual(existingMcp, expectedMcpEntry)
       ? "current"
       : "stale"
 
@@ -362,26 +469,29 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     console.log(`Writing: ${displayPath}`)
     await writeJsonFile(settingsPath, merged)
 
-    // Write MCP server to .mcp.json (project scope — where Claude Code reads it)
+    // Write MCP server to .mcp.json (project scope — where Claude Code reads it).
+    // .mcp.json is typically committed to the consumer repo and shared across
+    // machines, so prefer `${HOME}/…` over absolute paths whenever the package
+    // lives under the current user's home directory.
     if (mcpStatus !== "current") {
-      const mcpEnv: Record<string, string> = { LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}" }
-      if (process.env["LORE_NOTION_BASE_URL"]) {
-        mcpEnv["LORE_NOTION_BASE_URL"] = "${LORE_NOTION_BASE_URL}"
-      }
-
       const mergedMcpJson: Record<string, unknown> = { ...mcpJson }
       mergedMcpJson.mcpServers = {
         ...((mcpJson.mcpServers as Record<string, unknown>) ?? {}),
-        lore: {
-          command: "node",
-          args: [mcpJsPath],
-          cwd: pkgRoot,
-          env: mcpEnv,
-        },
+        lore: expectedMcpEntry,
       }
 
-      console.log(`Writing: ${mcpJsonPath}`)
+      const mcpJsonDisplay = mcpJsonPath.replace(homedir(), "~")
+      console.log(`Writing: ${mcpJsonDisplay}`)
       await writeJsonFile(mcpJsonPath, mergedMcpJson)
+
+      if (!portableMcpJsPath.startsWith("${HOME}")) {
+        console.warn()
+        console.warn("  Warning: lore is installed outside your home directory")
+        console.warn(`    (${pkgRoot}).`)
+        console.warn("  The generated .mcp.json uses an absolute path and is not")
+        console.warn("  portable across machines — avoid committing it, or reinstall")
+        console.warn("  lore under ~/.lore so the path can use ${HOME}.")
+      }
     }
 
     console.log()
