@@ -138,11 +138,13 @@ export function registerContextTools(server: McpServer, services: LoreServices):
         }
 
         if (openLoops.length > 0) {
+          const today = new Date().toISOString().split("T")[0]
           sections.push("## Open Loops\n")
           for (const fact of openLoops) {
             const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+            const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
             sections.push(
-              `- **${fact.subject}** \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 **${fact.object}** [${fact.confidence}]${since}`
+              `- **${fact.subject}** \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 **${fact.object}** [${fact.confidence}]${since}${overdue}`
             )
           }
           sections.push("")

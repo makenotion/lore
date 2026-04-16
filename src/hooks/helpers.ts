@@ -360,12 +360,29 @@ async function wakeup(): Promise<void> {
   }
 
   if (openLoops.length > 0) {
-    sections.push("\n## Open Loops")
-    for (const fact of openLoops) {
-      const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
-      sections.push(
-        `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since})`,
-      )
+    const today = new Date().toISOString().split("T")[0]
+    const overdue = openLoops.filter((f) => f.reviewBy && f.reviewBy <= today)
+    const active = openLoops.filter((f) => !f.reviewBy || f.reviewBy > today)
+
+    if (overdue.length > 0) {
+      sections.push("\n## Overdue")
+      for (const fact of overdue) {
+        const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
+        sections.push(
+          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}, review by ${fact.reviewBy})`,
+        )
+      }
+    }
+
+    if (active.length > 0) {
+      sections.push("\n## Open Loops")
+      for (const fact of active) {
+        const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
+        const review = fact.reviewBy ? `, review by ${fact.reviewBy}` : ""
+        sections.push(
+          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}${review})`,
+        )
+      }
     }
   }
 

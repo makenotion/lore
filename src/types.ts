@@ -161,6 +161,7 @@ export interface Fact {
   projectIds: string[]
   validFrom: string | null
   validUntil: string | null
+  reviewBy: string | null
   sourceMemoryId: string | null
   confidence: FactConfidence
 }
@@ -171,6 +172,7 @@ export interface CreateFactInput {
   object: string
   projectIds?: string[]
   validFrom?: string
+  reviewBy?: string
   sourceMemoryId?: string
   confidence?: FactConfidence
 }

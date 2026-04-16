@@ -136,11 +136,13 @@ export function registerDigestTools(server: McpServer, services: LoreServices): 
 
         // Open loops
         if (openLoops.length > 0) {
+          const today = new Date().toISOString().split("T")[0]
           sections.push(`## Open Loops (${openLoops.length})`)
           for (const fact of openLoops) {
             const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+            const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
             sections.push(
-              `- **${fact.subject}** → ${fact.predicate.replace(/_/g, " ")} → **${fact.object}** [${fact.confidence}]${since}`
+              `- **${fact.subject}** → ${fact.predicate.replace(/_/g, " ")} → **${fact.object}** [${fact.confidence}]${since}${overdue}`
             )
           }
           sections.push("")

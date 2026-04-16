@@ -8,6 +8,7 @@
 import type { Client } from "@notionhq/client"
 import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
 import type { Fact, CreateFactInput, FactPredicate, FactConfidence, DatabaseRef } from "../types.js"
+import { TRACKING_PREDICATES } from "../types.js"
 
 type QueryBySubjectOpts = {
   projectId?: string
@@ -32,6 +33,13 @@ export class FactService {
   ) {}
 
   async create(input: CreateFactInput): Promise<Fact> {
+    let reviewBy = input.reviewBy
+    if (!reviewBy && TRACKING_PREDICATES.includes(input.predicate)) {
+      const d = new Date()
+      d.setDate(d.getDate() + 7)
+      reviewBy = d.toISOString().split("T")[0]
+    }
+
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildFactProps({
@@ -40,6 +48,7 @@ export class FactService {
         object: input.object,
         projectIds: input.projectIds,
         validFrom: input.validFrom ?? new Date().toISOString().split("T")[0],
+        reviewBy,
         sourceMemoryId: input.sourceMemoryId,
         confidence: input.confidence ?? "certain",
       }),
@@ -128,6 +137,37 @@ export class FactService {
     return [...asSubject, ...asObject.filter((f) => !seen.has(f.id))]
   }
 
+  async queryOverdue(opts?: { projectId?: string }): Promise<Fact[]> {
+    const today = new Date().toISOString().split("T")[0]
+    const filters: Array<Record<string, unknown>> = [
+      { property: "Review By", date: { on_or_before: today } },
+      { property: "Valid Until", date: { is_empty: true } },
+    ]
+
+    if (opts?.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    const response = await this.client.dataSources.query({
+      data_source_id: this.db.dataSourceId,
+      filter: { and: filters } as QueryDataSourceParameters["filter"],
+      sorts: [{ property: "Review By", direction: "ascending" }],
+    })
+
+    return (response.results.filter(isFullPage) as PageObjectResponse[]).map((p) =>
+      this.pageToFact(p)
+    )
+  }
+
+  async extendReview(id: string, reviewBy: string): Promise<void> {
+    await this.client.pages.update({
+      page_id: id,
+      properties: {
+        "Review By": { date: { start: reviewBy } },
+      },
+    })
+  }
+
   async invalidate(id: string): Promise<void> {
     await this.client.pages.update({
       page_id: id,
@@ -151,6 +191,7 @@ export class FactService {
       projectIds: extractRelationIds(props["Project"]),
       validFrom: extractDate(props["Valid From"]),
       validUntil: extractDate(props["Valid Until"]),
+      reviewBy: extractDate(props["Review By"]),
       sourceMemoryId: sourceIds[0] ?? null,
       confidence: extractSelect(props["Confidence"], "certain") as FactConfidence,
     }

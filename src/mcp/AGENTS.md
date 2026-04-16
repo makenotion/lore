@@ -6,7 +6,7 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes 15 tools across five registration files.
+exposes 19 tools across six registration files.
 
 ## Files
 
@@ -17,7 +17,8 @@ exposes 15 tools across five registration files.
 | `tools/context.ts` | `lore-status`, `lore-wake-up` |
 | `tools/memory.ts` | `lore-remember`, `lore-search`, `lore-recall`, `lore-forget`, `lore-update` |
 | `tools/project.ts` | `lore-list-projects`, `lore-get-project` |
-| `tools/knowledge.ts` | `lore-learn`, `lore-ask`, `lore-correct` |
+| `tools/knowledge.ts` | `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` |
+| `tools/digest.ts` | `lore-digest` |
 | `tools/journal.ts` | `lore-journal`, `lore-read-journal` |
 
 ## Tool Registration Pattern
@@ -115,6 +116,15 @@ export function registerFooTools(
 | `lore-learn` | Add a subject-predicate-object fact triple | No |
 | `lore-ask` | Query facts about an entity (as subject or object) | Yes |
 | `lore-correct` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) |
+| `lore-open-loops` | List active open loops (tracking predicate facts) | Yes |
+| `lore-audit` | List all facts past their review-by date | Yes |
+| `lore-extend` | Push back a fact's review-by date | No |
+
+### Digest Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-digest` | Generate a project digest for a time window | Yes |
 
 ### Journal Tools
 

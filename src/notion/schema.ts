@@ -153,6 +153,7 @@ export function factsProperties(
     },
     "Valid From": { date: {} },
     "Valid Until": { date: {} },
+    "Review By": { date: {} },
     Source: {
       relation: {
         single_property: {},
@@ -261,6 +262,7 @@ export function buildFactProps(input: {
   object: string
   projectIds?: string[]
   validFrom?: string
+  reviewBy?: string
   sourceMemoryId?: string
   confidence?: string
 }): PageProperties {
@@ -274,6 +276,9 @@ export function buildFactProps(input: {
   }
   if (input.validFrom) {
     props["Valid From"] = { date: { start: input.validFrom } }
+  }
+  if (input.reviewBy) {
+    props["Review By"] = { date: { start: input.reviewBy } }
   }
   if (input.sourceMemoryId) {
     props["Source"] = { relation: [{ id: input.sourceMemoryId }] }

@@ -188,10 +188,8 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
 
   console.log("Checking prerequisites...")
 
-  let token: string | null = null
   const envToken = process.env["LORE_NOTION_TOKEN"]
   if (envToken) {
-    token = envToken
     console.log("  Auth: LORE_NOTION_TOKEN (environment variable)")
   } else {
     const creds = await loadCredentials()
