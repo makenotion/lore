@@ -18,6 +18,8 @@ debugging, manual search).
 | `commands/search.ts` | `lore search <query>` -- semantic search across memories |
 | `commands/mine.ts` | `lore mine [path]` -- index project files as memories |
 | `commands/status.ts` | `lore status` -- vault status + subcommands (projects, topics) |
+| `commands/install.ts` | `lore install` -- install hooks and MCP config into a project |
+| `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
 
 ## Commander Patterns
 
@@ -99,6 +101,7 @@ try {
 | `lore status` | none | none | Show vault status, database counts, active projects |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
+| `lore migrate` | none | `--dry-run` | Add missing schema properties to vault data sources (add-only, idempotent) |
 
 ## Adding a New Command
 

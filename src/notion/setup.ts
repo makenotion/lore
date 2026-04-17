@@ -113,6 +113,63 @@ export async function createVaultDatabases(
 }
 
 /**
+ * Per-database summary of a migration run: which property names exist
+ * in the expected schema but are missing from the live data source.
+ */
+export interface MigrationDiff {
+  database: keyof VaultDatabases
+  missing: string[]
+}
+
+/**
+ * Compare the expected property schema against each live data source and
+ * add any properties that are missing. Never renames or removes anything
+ * — additions only, to keep vaults stable across Lore versions.
+ *
+ * Idempotent: re-running against an up-to-date vault issues no writes.
+ */
+export async function migrateVaultSchema(
+  client: Client,
+  vault: Vault,
+  options: { dryRun?: boolean } = {}
+): Promise<MigrationDiff[]> {
+  const db = vault.databases
+  const expectedByDb: Record<keyof VaultDatabases, AnyProperties> = {
+    projects: projectsProperties,
+    topics: topicsProperties(db.projects.dataSourceId),
+    memories: memoriesProperties(db.projects.dataSourceId, db.topics.dataSourceId),
+    facts: factsProperties(db.projects.dataSourceId, db.memories.dataSourceId),
+  }
+
+  const diffs: MigrationDiff[] = []
+
+  for (const key of Object.keys(expectedByDb) as Array<keyof VaultDatabases>) {
+    const expected = expectedByDb[key]
+    const dsId = db[key].dataSourceId
+
+    const live = await client.dataSources.retrieve({ data_source_id: dsId })
+    const liveProps = (live as { properties: Record<string, unknown> }).properties
+    const missing = Object.keys(expected).filter((name) => !(name in liveProps))
+
+    diffs.push({ database: key, missing })
+
+    if (missing.length === 0 || options.dryRun) continue
+
+    const additions: AnyProperties = {}
+    for (const name of missing) additions[name] = expected[name]
+
+    await client.dataSources.update({
+      data_source_id: dsId,
+      properties: additions as Parameters<
+        Client["dataSources"]["update"]
+      >[0]["properties"],
+    })
+  }
+
+  return diffs
+}
+
+/**
  * Verify that a vault page has the expected databases.
  */
 export async function verifyVaultDatabases(

@@ -6,7 +6,12 @@
 
 import type { Client } from "@notionhq/client"
 import type { Vault, VaultDatabases } from "../types.js"
-import { createVaultDatabases, verifyVaultDatabases } from "../notion/setup.js"
+import {
+  createVaultDatabases,
+  migrateVaultSchema,
+  verifyVaultDatabases,
+  type MigrationDiff,
+} from "../notion/setup.js"
 
 export class VaultManager {
   private vault: Vault | null = null
@@ -48,6 +53,15 @@ export class VaultManager {
 
   get databases(): VaultDatabases {
     return this.get().databases
+  }
+
+  /**
+   * Add any expected properties that are missing from the live data sources.
+   * Add-only; never renames or removes. Pass `dryRun: true` to compute the
+   * diff without writing.
+   */
+  async migrate(options: { dryRun?: boolean } = {}): Promise<MigrationDiff[]> {
+    return migrateVaultSchema(this.client, this.get(), options)
   }
 
   async stats(): Promise<{

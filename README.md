@@ -115,6 +115,7 @@ A vault is a Notion page containing four linked databases:
 | `lore status`                  | Show vault status, database counts, and active projects          |
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
+| `lore migrate`                 | Add missing schema properties to vault data sources (`--dry-run`) |
 
 ## Hooks
 
