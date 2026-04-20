@@ -7,10 +7,16 @@
 
 import type { Client } from "@notionhq/client"
 import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
-import type { Fact, CreateFactInput, FactPredicate, FactConfidence, DatabaseRef } from "../types.js"
+import type {
+  Fact,
+  CreateFactInput,
+  FactPredicate,
+  FactConfidence,
+  DatabaseRef,
+} from "../types.js"
 import { TRACKING_PREDICATES } from "../types.js"
 
-type QueryBySubjectOpts = {
+type QueryFactsOpts = {
   projectId?: string
   includeInvalidated?: boolean
   predicates?: FactPredicate[]
@@ -64,7 +70,7 @@ export class FactService {
 
   async queryBySubject(
     subject: string,
-    opts?: QueryBySubjectOpts,
+    opts?: QueryFactsOpts,
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = []
 
@@ -129,25 +135,138 @@ export class FactService {
     return results.map((p) => this.pageToFact(p))
   }
 
+  async queryByObject(
+    object: string,
+    opts?: QueryFactsOpts,
+  ): Promise<Fact[]> {
+    const filters: Array<Record<string, unknown>> = []
+
+    if (object) {
+      filters.push({ property: "Object", rich_text: { contains: object } })
+    }
+
+    if (opts?.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    if (!opts?.includeInvalidated) {
+      filters.push({
+        property: "Valid Until",
+        date: { is_empty: true },
+      })
+    }
+
+    if (opts?.predicates?.length) {
+      if (opts.predicates.length === 1) {
+        filters.push({
+          property: "Predicate",
+          select: { equals: opts.predicates[0] },
+        })
+      } else {
+        filters.push({
+          or: opts.predicates.map((p) => ({
+            property: "Predicate",
+            select: { equals: p },
+          })),
+        })
+      }
+    }
+
+    const filter =
+      filters.length > 1
+        ? { and: filters }
+        : filters.length === 1
+          ? filters[0]
+          : undefined
+
+    const results: PageObjectResponse[] = []
+    let cursor: string | undefined = undefined
+    const limit = opts?.limit
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        results.push(page)
+        if (limit !== undefined && results.length >= limit) break
+      }
+      if (limit !== undefined && results.length >= limit) break
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return results.map((p) => this.pageToFact(p))
+  }
+
+  async queryBySourceMemory(
+    sourceMemoryId: string,
+    opts?: QueryFactsOpts,
+  ): Promise<Fact[]> {
+    const filters: Array<Record<string, unknown>> = [
+      {
+        property: "Source",
+        relation: { contains: sourceMemoryId },
+      },
+    ]
+
+    if (opts?.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    if (!opts?.includeInvalidated) {
+      filters.push({
+        property: "Valid Until",
+        date: { is_empty: true },
+      })
+    }
+
+    if (opts?.predicates?.length) {
+      if (opts.predicates.length === 1) {
+        filters.push({
+          property: "Predicate",
+          select: { equals: opts.predicates[0] },
+        })
+      } else {
+        filters.push({
+          or: opts.predicates.map((p) => ({
+            property: "Predicate",
+            select: { equals: p },
+          })),
+        })
+      }
+    }
+
+    const filter = filters.length > 1 ? { and: filters } : filters[0]
+
+    const results: PageObjectResponse[] = []
+    let cursor: string | undefined = undefined
+    const limit = opts?.limit
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        results.push(page)
+        if (limit !== undefined && results.length >= limit) break
+      }
+      if (limit !== undefined && results.length >= limit) break
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return results.map((p) => this.pageToFact(p))
+  }
+
   async queryByEntity(entity: string, opts?: { projectId?: string }): Promise<Fact[]> {
     const asSubject = await this.queryBySubject(entity, opts)
 
-    const objectFilters: Array<Record<string, unknown>> = [
-      { property: "Object", rich_text: { contains: entity } },
-      { property: "Valid Until", date: { is_empty: true } },
-    ]
-    if (opts?.projectId) {
-      objectFilters.push(projectOrUnscopedFilter(opts.projectId))
-    }
-
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: { and: objectFilters } as QueryDataSourceParameters["filter"],
-    })
-
-    const asObject = (response.results.filter(isFullPage) as PageObjectResponse[]).map(
-      (p) => this.pageToFact(p)
-    )
+    const asObject = await this.queryByObject(entity, opts)
 
     const seen = new Set(asSubject.map((f) => f.id))
     return [...asSubject, ...asObject.filter((f) => !seen.has(f.id))]
