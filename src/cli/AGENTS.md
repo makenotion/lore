@@ -102,7 +102,26 @@ try {
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
-| `lore migrate` | none | `--dry-run` | Add missing schema properties to vault data sources (add-only, idempotent) |
+| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags` | Add missing schema properties and select options to vault data sources (add-only, idempotent) |
+
+## The migrate Command
+
+`migrate` handles two additive operations:
+
+1. **Schema additions (default)**: Detects missing properties on each live data
+   source and patches them via `dataSources.update`. Also detects missing
+   select options on existing select/multi_select properties (preserving live
+   option IDs so Notion doesn't duplicate). Idempotent — re-runs on an
+   up-to-date vault issue zero writes.
+
+2. **Legacy tag upgrade (`--upgrade-decision-tags`)**: Finds memories tagged
+   `decision` (the pre-`Kind`-column convention) and upgrades them to
+   `Kind: decision`, stripping the tag. Auto-runs schema migration first —
+   users never have to remember the ordering.
+
+Combining `--dry-run --upgrade-decision-tags` shows schema drift but does not
+apply the tag upgrade (tag upgrade has no dry-run mode — it's opt-in by
+design).
 
 ## Adding a New Command
 

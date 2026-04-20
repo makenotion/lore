@@ -131,15 +131,17 @@ Rule #1: If you want an exception to ANY rule below, STOP and get explicit permi
 
 **What to save in Lore:**
 
-- **Memories** (`lore-remember`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights.
+- **Decisions** (`lore-decide`): Architectural choices with their rationale, alternatives, consequences, and review date. Prefer this over `lore-remember` for decisions — records participate in `lore-audit`, `lore-wake-up`, and supersession workflows. Pass `affects: [...]` with affected entity names to auto-create `decided_by` facts so the decision surfaces via `lore-ask`.
+- **Memories** (`lore-remember`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights — anything that *isn't* a decision with formal rationale.
 - **Facts** (`lore-learn`): Relationships between system components (`uses`, `depends_on`, `is_a`). Use tracking predicates for open work: `needs_action`, `waiting_on`, `blocked_by`. Invalidate facts with `lore-correct` when they become stale.
 
 **When to save:**
 
-- After resolving a non-obvious bug or build issue
-- When you discover an undocumented convention or constraint
-- When an architectural decision is made (capture the *why*, not just the *what*)
-- When you identify work that needs to happen but is out of scope (`needs_action`)
+- After resolving a non-obvious bug or build issue → `lore-remember`
+- When you discover an undocumented convention or constraint → `lore-remember`
+- When an architectural decision is made → `lore-decide` (capture the *why*, not just the *what*)
+- When a new decision supersedes an older one → `lore-decide` with `supersedesIds` or `lore-supersede`
+- When you identify work that needs to happen but is out of scope → `lore-learn` with `needs_action`
 
 ### Maintaining AGENTS.md
 
@@ -207,7 +209,10 @@ Always find the root cause. Never fix symptoms or add workarounds.
 
 When working in this project, you have access to `lore-*` MCP tools. Use them:
 
-- **At session start**: call `lore-wake-up` to load recent project context
-- **When making decisions**: call `lore-remember` to save architectural decisions, conventions, or bug context
+- **At session start**: call `lore-wake-up` to load recent project context (includes proposed + overdue decisions)
+- **When making a decision**: call `lore-decide` — captures rationale, alternatives, consequences, review date, and auto-creates `decided_by` facts. This is the preferred path for architectural choices.
+- **When superseding an old decision**: pass `supersedesIds` to `lore-decide`, or call `lore-supersede` after.
+- **When an entity is about to be edited**: call `lore-decision-context` with the entity name to surface governing decisions first.
+- **When saving general knowledge** (not a formal decision): call `lore-remember` for gotchas, workarounds, debugging insights.
 - **When learning facts**: call `lore-learn` to record entity relationships (e.g., "MemoryService uses dataSources.query")
 - **At session end**: call `lore-journal` to summarize what was accomplished

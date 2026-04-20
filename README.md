@@ -67,11 +67,17 @@ A vault is a Notion page containing four linked databases:
 | **Facts**    | Subject        | Predicate, Object, Valid From, Valid Until, Confidence | Project, Source (Memory) |
 
 **Predicate values**: `is_a`, `has_a`, `uses`, `depends_on`, `related_to`,
-`created_by`, `owned_by`, `replaces`, `extends`, `conflicts_with`
+`created_by`, `owned_by`, `replaces`, `extends`, `conflicts_with`,
+`needs_action`, `waiting_on`, `blocked_by` (plus `decided_by`,
+`supersedes_decision`, `informs` — created internally by `lore-decide`)
 
 **Confidence levels**: `certain`, `likely`, `speculative`
 
 **Memory sources**: `conversation`, `file`, `manual`, `agent_diary`, `digest`
+
+**Memory kinds**: `note`, `decision`, `incident`, `runbook`, `postmortem`, `policy`
+
+**Memory statuses**: `informational`, `proposed`, `accepted`, `superseded`, `deprecated`, `rejected`
 
 Save digests regularly (`lore-digest` → synthesize → `lore-remember` with
 `source: "digest"`). When a digest from the last 7 days exists, `lore-wake-up`
@@ -85,7 +91,7 @@ lower-token starting point than a long stream of individual memories.
 | Tool           | Description                                            |
 | -------------- | ------------------------------------------------------ |
 | `lore-status`  | Show vault status, database counts, and active project |
-| `lore-wake-up` | Load latest digest (if recent), recent memories, and facts for priming |
+| `lore-wake-up` | Load latest digest, recent memories, open loops, and decisions needing attention |
 
 ### Memory
 
@@ -106,11 +112,25 @@ lower-token starting point than a long stream of individual memories.
 
 ### Knowledge
 
-| Tool           | Description                                                  |
-| -------------- | ------------------------------------------------------------ |
-| `lore-learn`   | Add a subject-predicate-object fact triple                   |
-| `lore-ask`     | Query facts about an entity (as subject or object)           |
-| `lore-correct` | Invalidate a fact (sets Valid Until date, preserves history) |
+| Tool             | Description                                                  |
+| ---------------- | ------------------------------------------------------------ |
+| `lore-learn`     | Add a subject-predicate-object fact triple                   |
+| `lore-ask`       | Query facts about an entity (as subject or object)           |
+| `lore-correct`   | Invalidate a fact (sets Valid Until date, preserves history) |
+| `lore-open-loops` | List active open loops (tracking-predicate facts)           |
+| `lore-audit`     | List overdue facts and decisions past their review date      |
+| `lore-extend`    | Push a fact's review-by date forward                         |
+
+### Decisions
+
+| Tool                    | Description                                                          |
+| ----------------------- | -------------------------------------------------------------------- |
+| `lore-decide`           | Record a decision with rationale, alternatives, consequences; auto-creates `decided_by` facts |
+| `lore-list-decisions`   | Index-tier listing of decisions (no body fetch)                      |
+| `lore-get-decision`     | Load full rationale + metadata for a specific decision               |
+| `lore-decision-context` | Find every decision governing an entity via the facts graph          |
+| `lore-supersede`        | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact |
+| `lore-review-decision`  | Mark a decision as reviewed, push `Review By` forward                |
 
 ### Journal
 
@@ -132,7 +152,7 @@ lower-token starting point than a long stream of individual memories.
 | `lore status`                  | Show vault status, database counts, and active projects          |
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
-| `lore migrate`                 | Add missing schema properties to vault data sources (`--dry-run`) |
+| `lore migrate`                 | Add missing schema properties to vault data sources (`--dry-run`, `--upgrade-decision-tags`) |
 
 ## Hooks
 

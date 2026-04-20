@@ -6,7 +6,7 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes 19 tools across six registration files.
+exposes 24 tools across seven registration files.
 
 ## Files
 
@@ -20,6 +20,7 @@ exposes 19 tools across six registration files.
 | `tools/knowledge.ts` | `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` |
 | `tools/digest.ts` | `lore-digest` |
 | `tools/journal.ts` | `lore-journal`, `lore-read-journal` |
+| `tools/decisions.ts` | `lore-decide`, `lore-list-decisions`, `lore-get-decision`, `lore-decision-context`, `lore-supersede`, `lore-review-decision` |
 
 ## Tool Registration Pattern
 
@@ -132,6 +133,23 @@ export function registerFooTools(
 |------|---------|-----------|
 | `lore-journal` | Write an agent diary entry | No |
 | `lore-read-journal` | Read recent journal entries | Yes |
+
+### Decision Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-decide` | Save a decision; auto-creates `decided_by` facts per affects entry and `supersedes_decision` facts if superseding | No |
+| `lore-list-decisions` | Index-tier listing of decisions (properties only, no body fetch) | Yes |
+| `lore-get-decision` | Load full rationale + metadata for one decision | Yes |
+| `lore-decision-context` | Graph walk: return all active decisions governing an entity (via `decided_by` facts) | Yes |
+| `lore-supersede` | Mark old decision as superseded by new; atomic + creates `supersedes_decision` fact | No |
+| `lore-review-decision` | Mark a decision as reviewed, push `Review By` forward (default +90 days) | No |
+
+**Decision predicates are internal-only.** `decided_by`, `supersedes_decision`,
+and `informs` are in the `FactPredicate` union and the Notion `Predicate`
+select options, but they are NOT in `PREDICATE_VALUES` in `tools/knowledge.ts`.
+This prevents users from creating inconsistent decision edges via `lore-learn`
+— only `DecisionService` and the decision tools create these facts.
 
 ## Adding a New Tool
 

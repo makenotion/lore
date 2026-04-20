@@ -86,16 +86,26 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           }
         }
 
-        const { digest, memories, openLoops, knowledgeFacts } = await loadWakeUpData(
-          services,
-          {
+        // Fetch in parallel: the shared wake-up bundle (digest + memories +
+        // partitioned facts) plus decision-specific queries for the "Needs
+        // Attention" section. Decision queries use the index-tier path
+        // (includeContent: false under the hood) to avoid N+1 retrieveMarkdown.
+        const [wakeUp, proposed, overdue] = await Promise.all([
+          loadWakeUpData(services, {
             projectId: projectId ?? undefined,
             memoryLimit: limit,
             // Honor the caller's explicit limit even when a digest is present:
             // the trim is a default, not a cap the user can't override.
             memoryLimitWithDigest: limit,
-          },
-        )
+          }),
+          services.decisions.list({
+            projectId: projectId ?? undefined,
+            status: "proposed",
+            limit: 20,
+          }),
+          services.decisions.queryOverdue({ projectId: projectId ?? undefined }),
+        ])
+        const { digest, memories, openLoops, knowledgeFacts } = wakeUp
 
         const sections: string[] = []
 
@@ -144,6 +154,38 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           }
         } else if (!digest) {
           sections.push("No memories found for this context.\n")
+        }
+
+        // Decisions that need attention — proposed awaiting decision, or
+        // overdue for review. Surfaces the subset of decisions an agent
+        // should consider before acting.
+        if (proposed.length > 0 || overdue.length > 0) {
+          const today = new Date().toISOString().split("T")[0]
+          sections.push("## Decisions Requiring Attention\n")
+          if (proposed.length > 0) {
+            sections.push(`### Proposed (${proposed.length})\n`)
+            for (const d of proposed) {
+              sections.push(
+                `- **${d.title}** — proposed${d.decidedAt ? ` ${d.decidedAt}` : ""} | ID: ${d.id}`
+              )
+            }
+            sections.push("")
+          }
+          if (overdue.length > 0) {
+            sections.push(`### Overdue for Review (${overdue.length})\n`)
+            for (const d of overdue) {
+              const days = d.reviewBy
+                ? Math.floor(
+                    (new Date(today).getTime() - new Date(d.reviewBy).getTime()) /
+                      86_400_000
+                  )
+                : 0
+              sections.push(
+                `- **${d.title}** [${d.status}] — review by ${d.reviewBy ?? "?"} (${days} day${days === 1 ? "" : "s"} overdue) | ID: ${d.id}`
+              )
+            }
+            sections.push("")
+          }
         }
 
         if (openLoops.length > 0) {

@@ -181,6 +181,7 @@ export class MemoryService {
     kind?: MemoryKind
     status?: MemoryStatus
     reviewBefore?: string
+    tags?: string[]
     limit?: number
     since?: string
     until?: string
@@ -241,6 +242,18 @@ export class MemoryService {
         property: "Review By",
         date: { on_or_before: opts.reviewBefore },
       })
+    }
+    if (opts?.tags?.length) {
+      if (opts.tags.length === 1) {
+        filters.push({ property: "Tags", multi_select: { contains: opts.tags[0] } })
+      } else {
+        filters.push({
+          or: opts.tags.map((t) => ({
+            property: "Tags",
+            multi_select: { contains: t },
+          })),
+        })
+      }
     }
     if (opts?.since) {
       filters.push({

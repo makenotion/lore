@@ -300,39 +300,76 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           projectId = services.context.project.id
         }
 
-        const overdue = await services.facts.queryOverdue({ projectId })
+        const [overdueFacts, overdueDecisions] = await Promise.all([
+          services.facts.queryOverdue({ projectId }),
+          services.decisions.queryOverdue({ projectId }),
+        ])
 
-        if (overdue.length === 0) {
+        if (overdueFacts.length === 0 && overdueDecisions.length === 0) {
           return {
-            content: [{ type: "text", text: "No overdue facts found." }],
+            content: [{ type: "text", text: "No overdue facts or decisions found." }],
           }
         }
 
         const today = new Date().toISOString().split("T")[0]
-        const text = overdue
-          .map((f) => {
-            const days = Math.floor(
-              (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000
-            )
-            const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-            return (
-              `- **${f.subject}** ${f.predicate.replace(/_/g, " ")} **${f.object}** [${f.confidence}]${since}\n` +
-              `  Review by: ${f.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
-              `  ID: ${f.id}`
-            )
-          })
-          .join("\n")
+        const sections: string[] = []
+
+        if (overdueFacts.length > 0) {
+          const factLines = overdueFacts
+            .map((f) => {
+              const days = Math.floor(
+                (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000
+              )
+              const since = f.validFrom ? ` (since ${f.validFrom})` : ""
+              return (
+                `- **${f.subject}** ${f.predicate.replace(/_/g, " ")} **${f.object}** [${f.confidence}]${since}\n` +
+                `  Review by: ${f.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
+                `  ID: ${f.id}`
+              )
+            })
+            .join("\n")
+          sections.push(
+            `## Overdue Facts (${overdueFacts.length})\n\n${factLines}`
+          )
+        }
+
+        if (overdueDecisions.length > 0) {
+          const decisionLines = overdueDecisions
+            .map((d) => {
+              const days = d.reviewBy
+                ? Math.floor(
+                    (new Date(today).getTime() - new Date(d.reviewBy).getTime()) /
+                      86_400_000
+                  )
+                : 0
+              const decided = d.decidedAt ? ` | decided ${d.decidedAt}` : ""
+              return (
+                `- **${d.title}** [${d.status}]${decided}\n` +
+                `  Review by: ${d.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
+                `  ID: ${d.id}`
+              )
+            })
+            .join("\n")
+          sections.push(
+            `## Overdue Decisions (${overdueDecisions.length})\n\n${decisionLines}`
+          )
+        }
+
+        const actions = [
+          "",
+          "Actions:",
+          "- **Fact — invalidate**: `lore-correct` with the fact ID if no longer true",
+          "- **Fact — extend**: `lore-extend` with the fact ID and a new review date",
+          "- **Decision — mark reviewed**: `lore-review-decision` with the decision ID",
+          "- **Decision — supersede**: `lore-supersede` with a replacement decision",
+          "- **No change**: leave as-is if still under review",
+        ]
 
         return {
           content: [
             {
               type: "text",
-              text:
-                `${overdue.length} overdue fact${overdue.length === 1 ? "" : "s"}:\n\n${text}\n\n` +
-                "Actions:\n" +
-                "- **Invalidate**: `lore-correct` with the fact ID if no longer true\n" +
-                "- **Extend**: `lore-extend` with the fact ID and a new review date\n" +
-                "- **No change**: leave as-is if still under review",
+              text: sections.join("\n\n") + "\n" + actions.join("\n"),
             },
           ],
         }
