@@ -13,6 +13,7 @@ import { ProjectService } from "./core/project.js"
 import { TopicService } from "./core/topic.js"
 import { MemoryService } from "./core/memory.js"
 import { FactService } from "./core/fact.js"
+import { DecisionService } from "./core/decision.js"
 import { resolveProject } from "./core/context.js"
 import type { LoreConfig, ResolvedContext } from "./types.js"
 
@@ -22,6 +23,7 @@ export interface LoreServices {
   topics: TopicService
   memories: MemoryService
   facts: FactService
+  decisions: DecisionService
   context: ResolvedContext
   config: LoreConfig
   configRoot: string
@@ -43,6 +45,10 @@ export async function initServicesFromConfig(
   const topics = new TopicService(client, db.topics)
   const memories = new MemoryService(client, db.memories)
   const facts = new FactService(client, db.facts)
+  // Decisions are backed by the Memories DB — same DatabaseRef, different
+  // business logic (Kind = decision discriminator, supersession chains,
+  // index-tier listings without body fetch).
+  const decisions = new DecisionService(client, db.memories)
 
   const project = await resolveProject(cwd, configRoot, config, projects)
 
@@ -52,6 +58,7 @@ export async function initServicesFromConfig(
     topics,
     memories,
     facts,
+    decisions,
     context: {
       vault: vault.get(),
       project,
