@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
+import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 
 import { TRACKING_PREDICATES } from "../../types.js"
 
@@ -129,23 +130,63 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         }
 
         const today = new Date().toISOString().split("T")[0]
-        const text = facts
-          .map((f) => {
-            const validity = f.validFrom ? ` (since ${f.validFrom})` : ""
-            const review = f.reviewBy
-              ? f.reviewBy <= today
-                ? ` **(OVERDUE — review by ${f.reviewBy})**`
-                : ` (review by ${f.reviewBy})`
-              : ""
-            return `- **${f.subject}** ${f.predicate.replace(/_/g, " ")} **${f.object}** [${f.confidence}]${validity}${review}\n  ID: ${f.id}`
-          })
-          .join("\n")
+        const decisionFacts = facts.filter((fact) => fact.predicate === "decided_by")
+        const otherFacts = facts.filter((fact) => fact.predicate !== "decided_by")
+        const lines: string[] = []
+        const decisionLinks = await resolveCanonicalDecisionLinks(services, decisionFacts, {
+          projectId,
+        })
+
+        for (const { fact, decision } of decisionLinks) {
+          const review = decision.reviewBy
+            ? decision.reviewBy <= today
+              ? ` **(DECISION REVIEW OVERDUE — ${decision.reviewBy})**`
+              : ` (decision review by ${decision.reviewBy})`
+            : ""
+          const decided = decision.decidedAt ? ` (decided ${decision.decidedAt})` : ""
+          lines.push(
+            `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
+          )
+        }
+
+        for (const fact of otherFacts) {
+          const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+          const review = fact.reviewBy
+            ? fact.reviewBy <= today
+              ? ` **(OVERDUE — review by ${fact.reviewBy})**`
+              : ` (review by ${fact.reviewBy})`
+            : ""
+
+          if (fact.predicate === "supersedes_decision") {
+            const [newDecision, oldDecision] = await Promise.all([
+              services.decisions
+                .getById(fact.sourceMemoryId ?? fact.subject)
+                .catch(() => null),
+              services.decisions.getById(fact.object).catch(() => null),
+            ])
+
+            lines.push(
+              `- **${newDecision?.title ?? fact.subject}** supersedes decision **${oldDecision?.title ?? fact.object}** [${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
+            )
+            continue
+          }
+
+          lines.push(
+            `- **${fact.subject}** ${fact.predicate.replace(/_/g, " ")} **${fact.object}** [${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
+          )
+        }
+
+        if (lines.length === 0) {
+          return {
+            content: [{ type: "text", text: `No current facts found about "${entity}".` }],
+          }
+        }
 
         return {
           content: [
             {
               type: "text",
-              text: `${facts.length} facts about "${entity}":\n\n${text}`,
+              text: `${lines.length} facts about "${entity}":\n\n${lines.join("\n")}`,
             },
           ],
         }

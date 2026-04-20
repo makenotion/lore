@@ -3,7 +3,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
-import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
+import {
+  resolveCanonicalDecisionLinks,
+  syncDecisionReachability,
+} from "../decision-graph.js"
+import type { DecisionSummary, DecisionStatus } from "../../types.js"
 
 const DECISION_STATUSES = [
   "proposed",
@@ -162,34 +166,42 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           session,
         })
 
-        // Process supersessions: atomic memory-level supersede + auto-fact.
-        const supersededEntries: Array<{ id: string; title: string }> = []
-        for (const oldId of supersedesIds ?? []) {
-          const oldDecision = await services.decisions.getById(oldId)
-          await services.decisions.supersede(created.id, oldId)
-          supersededEntries.push({ id: oldId, title: oldDecision.title })
-          await services.facts.create({
-            subject: created.title,
-            predicate: "supersedes_decision",
-            object: oldDecision.title,
-            projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
-            sourceMemoryId: created.id,
-            confidence: created.confidence,
-          })
-        }
-
-        // Process affects: auto-create decided_by facts per entity.
+        // Process affects first so any explicit context links already exist
+        // before supersession reconciliation deduplicates inherited ones.
         const affectsCreated: string[] = []
         for (const entity of affects ?? []) {
           await services.facts.create({
             subject: entity,
             predicate: "decided_by",
-            object: created.title,
+            object: created.id,
             projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
             sourceMemoryId: created.id,
             confidence: created.confidence,
           })
           affectsCreated.push(entity)
+        }
+
+        // Process supersessions: atomic memory-level supersede + auto-fact.
+        const supersededEntries: Array<{ id: string; title: string }> = []
+        const reachabilityUpdates: string[] = []
+        for (const oldId of supersedesIds ?? []) {
+          const oldDecision = await services.decisions.getById(oldId)
+          await services.decisions.supersede(created.id, oldId)
+          await services.facts.create({
+            subject: created.id,
+            predicate: "supersedes_decision",
+            object: oldId,
+            projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
+            sourceMemoryId: created.id,
+            confidence: created.confidence,
+          })
+          const reachability = await syncDecisionReachability(services, oldId, created)
+          supersededEntries.push({ id: oldId, title: oldDecision.title })
+          if (reachability.invalidated > 0) {
+            reachabilityUpdates.push(
+              `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`
+            )
+          }
         }
 
         const projectLabel = projectNames?.length
@@ -214,6 +226,10 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           for (const { id, title } of supersededEntries) {
             lines.push(`  - ${id} → "${title}" (marked superseded)`)
           }
+        }
+        if (reachabilityUpdates.length > 0) {
+          lines.push("", "Graph updates:")
+          for (const update of reachabilityUpdates) lines.push(`  - ${update}`)
         }
         if (resolved.warnings.length > 0) {
           lines.push("", `Warnings: ${resolved.warnings.join("; ")}`)
@@ -355,8 +371,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       title: "Find decisions governing an entity",
       description:
         "Find every decision that governs a specific entity (e.g., \"AuthService\"). " +
-        "Walks the facts graph: queries `decided_by` facts for the entity, resolves each to its source decision, and returns the active (non-superseded) decisions sorted by decided date (newest first). " +
-        "Superseded decisions are counted but not shown in detail.\n\n" +
+        "Walks the facts graph: queries `decided_by` facts for the entity, resolves each to the current canonical decision through any supersession chain, and returns the active decisions sorted by decided date (newest first).\n\n" +
         "Use this before editing a subsystem — it answers \"what decisions already apply here?\"",
       inputSchema: {
         entity: z
@@ -388,15 +403,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           predicates: ["decided_by"],
         })
 
-        const decisionIds = Array.from(
-          new Set(
-            facts
-              .map((f) => f.sourceMemoryId)
-              .filter((id): id is string => id !== null)
-          )
-        )
-
-        if (decisionIds.length === 0) {
+        if (facts.length === 0) {
           return {
             content: [
               { type: "text", text: `No decisions found governing "${entity}".` },
@@ -404,26 +411,34 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           }
         }
 
-        // Fetch each decision; tolerate individual failures (a fact may
-        // reference a deleted memory).
-        const resolved = await Promise.all(
-          decisionIds.map((id) =>
-            services.decisions.getById(id).catch(() => null)
-          )
+        const links = await resolveCanonicalDecisionLinks(services, facts, { projectId })
+        const decisions = Array.from(
+          new Map(links.map(({ decision }) => [decision.id, decision])).values()
         )
-        const decisions = resolved.filter((d): d is Decision => d !== null)
 
-        const active = decisions.filter((d) => d.status !== "superseded")
-        const superseded = decisions.filter((d) => d.status === "superseded")
+        if (decisions.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No active decisions found governing "${entity}".`,
+              },
+            ],
+          }
+        }
 
-        active.sort((a, b) => (b.decidedAt ?? "").localeCompare(a.decidedAt ?? ""))
+        decisions.sort((a, b) =>
+          (b.decidedAt ?? b.updatedAt).localeCompare(a.decidedAt ?? a.updatedAt)
+        )
 
         const cap = limit ?? 10
-        const shown = active.slice(0, cap)
+        const shown = decisions.slice(0, cap)
 
         const lines: string[] = [
           `${shown.length} active decision${shown.length === 1 ? "" : "s"} governing "${entity}"` +
-            (active.length > shown.length ? ` (showing ${shown.length} of ${active.length})` : "") +
+            (decisions.length > shown.length
+              ? ` (showing ${shown.length} of ${decisions.length})`
+              : "") +
             ":\n",
         ]
 
@@ -437,9 +452,14 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           lines.push("")
         }
 
-        if (superseded.length > 0) {
+        const historicalRoots = new Set(
+          facts
+            .map((fact) => fact.sourceMemoryId ?? fact.object)
+            .filter((value): value is string => value !== null && value.length > 0)
+        )
+        if (historicalRoots.size > decisions.length) {
           lines.push(
-            `_${superseded.length} superseded decision${superseded.length === 1 ? "" : "s"} hidden. Use \`lore-list-decisions\` with status filter to see them._`
+            `_${historicalRoots.size - decisions.length} superseded decision link${historicalRoots.size - decisions.length === 1 ? "" : "s"} resolved forward to current replacements._`
           )
         }
 
@@ -459,7 +479,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       title: "Supersede a decision",
       description:
         "Mark an old decision as superseded by a new one. Atomic: adds the old decision's ID to the new decision's `Supersedes` relation, then sets the old decision's `Status` to `superseded`. " +
-        "Auto-creates a `supersedes_decision` fact linking the two by title.",
+        "Auto-creates a `supersedes_decision` fact using stable decision IDs and updates any inherited `decided_by` graph links.",
       inputSchema: {
         newDecisionId: z
           .string()
@@ -479,21 +499,27 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         await services.decisions.supersede(newDecisionId, oldDecisionId)
 
         await services.facts.create({
-          subject: newDecision.title,
+          subject: newDecision.id,
           predicate: "supersedes_decision",
-          object: oldDecision.title,
+          object: oldDecision.id,
           projectIds: newDecision.projectIds.length > 0 ? newDecision.projectIds : undefined,
           sourceMemoryId: newDecision.id,
           confidence: newDecision.confidence,
         })
+        const reachability = await syncDecisionReachability(
+          services,
+          oldDecisionId,
+          newDecision
+        )
 
         return {
           content: [
             {
               type: "text",
               text:
-                `Superseded ${oldDecisionId} by ${newDecisionId}.\n` +
-                `Auto-created fact: "${newDecision.title}" → supersedes_decision → "${oldDecision.title}"`,
+                `Superseded "${oldDecision.title}" (${oldDecisionId}) with "${newDecision.title}" (${newDecisionId}).\n` +
+                `Auto-created fact: ${newDecisionId} → supersedes_decision → ${oldDecisionId}\n` +
+                `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"}.`,
             },
           ],
         }
