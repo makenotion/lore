@@ -51,6 +51,7 @@ type ListCall = {
   source?: MemorySource
   limit?: number
   includeContent?: boolean
+  includeUnscoped?: boolean
   sortBy?: "created_time" | "last_edited_time"
 }
 
@@ -178,6 +179,7 @@ describe("loadWakeUpData", () => {
     await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
     const digestCall = services.memoriesCalls.find((c) => c.source === "digest")
+    expect(digestCall?.includeUnscoped).toBe(false)
     expect(digestCall?.sortBy).toBe("created_time")
   })
 
@@ -223,13 +225,15 @@ describe("loadWakeUpData", () => {
     expect(data.openLoops).toHaveLength(0)
   })
 
-  it("skips fact lookup when no project is resolved", async () => {
+  it("skips digest and fact lookup when no project is resolved", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
     const data = await loadWakeUpData(services, { now: NOW })
 
+    expect(data.digest).toBeNull()
     expect(data.openLoops).toEqual([])
     expect(data.knowledgeFacts).toEqual([])
+    expect(services.memoriesCalls.some((c) => c.source === "digest")).toBe(false)
     expect(services.facts.queryBySubject).not.toHaveBeenCalled()
   })
 

@@ -139,6 +139,11 @@ export class MemoryService {
      */
     includeContent?: boolean
     /**
+     * When false, scope project queries to memories explicitly linked to the
+     * given project, excluding repo-wide/unscoped entries.
+     */
+    includeUnscoped?: boolean
+    /**
      * Notion timestamp field to sort by. Defaults to `last_edited_time`
      * (general-purpose "most recently touched"). Pass `created_time` for
      * "most recently created" ordering — e.g. latest-digest lookup.
@@ -148,7 +153,11 @@ export class MemoryService {
     const filters: Array<Record<string, unknown>> = []
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(
+        opts.includeUnscoped === false
+          ? { property: "Project", relation: { contains: opts.projectId } }
+          : projectOrUnscopedFilter(opts.projectId)
+      )
     }
     if (opts?.topicId) {
       filters.push({

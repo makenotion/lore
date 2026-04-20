@@ -34,6 +34,7 @@ export interface WakeUpServices {
       source?: MemorySource
       limit?: number
       includeContent?: boolean
+      includeUnscoped?: boolean
       sortBy?: "created_time" | "last_edited_time"
     }): Promise<Memory[]>
   }
@@ -97,14 +98,17 @@ export async function loadWakeUpData(
       limit: memoryLimit + 1,
       includeContent,
     }),
-    // Sort by creation so freshness (`createdAt`) aligns with "latest":
-    // an edit to an older digest must not mask a newer one.
-    services.memories.list({
-      projectId,
-      source: "digest",
-      limit: 1,
-      sortBy: "created_time",
-    }),
+    projectId
+      ? // Sort by creation so freshness (`createdAt`) aligns with "latest":
+        // an edit to an older digest must not mask a newer one.
+        services.memories.list({
+          projectId,
+          source: "digest",
+          limit: 1,
+          includeUnscoped: false,
+          sortBy: "created_time",
+        })
+      : Promise.resolve([]),
     projectId
       ? services.facts.queryBySubject("", { projectId })
       : Promise.resolve([]),
