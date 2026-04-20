@@ -102,7 +102,7 @@ describe("loadWakeUpData", () => {
       buildMemory({
         id: `m${i}`,
         title: `memory ${i}`,
-        createdAt: `2026-04-${String(15 + (i % 5)).padStart(2, "0")}T00:00:00Z`,
+        createdAt: `2026-04-19T${String(i + 1).padStart(2, "0")}:00:00Z`,
       }),
     )
 
@@ -138,7 +138,7 @@ describe("loadWakeUpData", () => {
     expect(data.memories).toHaveLength(DEFAULT_WAKEUP_MEMORY_LIMIT)
   })
 
-  it("filters digest entries out of the recent-memories list even when surfaced", async () => {
+  it("filters digest entries and older memories out of the recent-memories list", async () => {
     const fresh = buildMemory({
       id: "d1",
       title: "Fresh digest",
@@ -146,11 +146,13 @@ describe("loadWakeUpData", () => {
       createdAt: "2026-04-19T00:00:00Z",
     })
     // `memories.list()` without source filter will return the digest too
-    // (it's just another memory). The helper must drop it to avoid duplication.
+    // (it's just another memory). The helper must drop it to avoid duplication,
+    // and it must not surface memories already covered by the digest.
     const mixed = [
+      buildMemory({ id: "m0", title: "work after digest", createdAt: "2026-04-20T00:00:00Z" }),
       fresh,
-      buildMemory({ id: "m1", title: "work a", createdAt: "2026-04-18T00:00:00Z" }),
-      buildMemory({ id: "m2", title: "work b", createdAt: "2026-04-17T00:00:00Z" }),
+      buildMemory({ id: "m1", title: "work before digest", createdAt: "2026-04-18T00:00:00Z" }),
+      buildMemory({ id: "m2", title: "older work", createdAt: "2026-04-17T00:00:00Z" }),
     ]
 
     const services = stubServices({ rawMemories: mixed, digestMemories: [fresh] })
@@ -158,7 +160,7 @@ describe("loadWakeUpData", () => {
     const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
     expect(data.digest?.id).toBe("d1")
-    expect(data.memories.map((m) => m.id)).toEqual(["m1", "m2"])
+    expect(data.memories.map((m) => m.id)).toEqual(["m0"])
   })
 
   it("over-fetches by one so filtering a leading digest does not cut the list short", async () => {

@@ -113,7 +113,12 @@ export async function loadWakeUpData(
   const latestDigest = latestDigestList[0] ?? null
   const digest = isFreshDigest(latestDigest, freshnessDays, now) ? latestDigest : null
 
-  const nonDigestMemories = rawMemories.filter((m) => m.source !== "digest")
+  const digestCreatedAt = digest ? new Date(digest.createdAt).getTime() : null
+  const nonDigestMemories = rawMemories.filter((m) => {
+    if (m.source === "digest") return false
+    if (digestCreatedAt === null) return true
+    return new Date(m.createdAt).getTime() > digestCreatedAt
+  })
   const effectiveLimit = digest ? memoryLimitWithDigest : memoryLimit
   const memories = nonDigestMemories.slice(0, effectiveLimit)
 
