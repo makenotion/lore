@@ -139,7 +139,9 @@ Shell hooks for automated integration with AI coding assistants:
 
 - **Wake-up** (`hooks/wakeup.sh`): Loads recent memories and active facts for
   the current project. Claude Code injects it on `UserPromptSubmit`; Codex
-  injects it on `SessionStart`.
+  injects it on `SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to
+  skip this injection for both assistants. If `.lore.yaml` fails to parse, the
+  hook falls back to the default (on) and writes a `[lore]` warning to stderr.
 
 - **Session-end** (`hooks/session-end.sh`): Claude Code only. Runs a
   background fallback save when the stop hook did not already capture the
@@ -182,6 +184,9 @@ projects:
 # Hook behavior
 hooks:
   autoSave: true
+  # Inject recent memories and open facts at session start.
+  # Set to false to skip the context injection (reduces prompt overhead
+  # and the Notion round-trip at session start).
   wakeUp: true
   saveInterval: 5 # save after every 5 user messages
 ```

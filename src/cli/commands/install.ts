@@ -4,7 +4,7 @@ import { join, dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { createInterface } from "node:readline/promises"
-import { findConfigFile } from "../../config.js"
+import { findConfigFile, loadConfig } from "../../config.js"
 import { loadCredentials } from "../../auth/oauth.js"
 
 type InstallClient = "claude" | "codex" | "both"
@@ -497,6 +497,41 @@ interface InstallContext {
   sessionEndPath: string
   mcpJsPath: string
   skipPrompts: boolean
+  /**
+   * `true`/`false` when `.lore.yaml` sets `hooks.wakeUp` explicitly; `null`
+   * when no config exists yet or the flag is unset (hook default applies).
+   */
+  wakeUpConfig: boolean | null
+}
+
+/**
+ * Read `hooks.wakeUp` from the project's `.lore.yaml`. Returns:
+ *   - `true`/`false` when the flag is set explicitly
+ *   - `null` when no config exists, the flag is unset, or the file fails to
+ *     parse/validate — callers should treat `null` as "fall back to runtime
+ *     default" and must not distinguish the three cases
+ *
+ * Parse/validation failures emit a stderr warning so a broken `.lore.yaml`
+ * does not silently defeat the installer's `(disabled by config)` hint.
+ */
+async function readWakeUpConfig(projectDir: string): Promise<boolean | null> {
+  const found = await findConfigFile(projectDir)
+  if (!found) return null
+  try {
+    const config = await loadConfig(found.path)
+    return config.hooks?.wakeUp ?? null
+  } catch (err) {
+    const displayPath = found.path.replace(homedir(), "~")
+    process.stderr.write(
+      `[lore] Could not read hooks.wakeUp from ${displayPath}: ${err instanceof Error ? err.message : err}\n` +
+        `[lore] Installer status may not reflect hooks.wakeUp — fix the config and re-run 'lore install'.\n`,
+    )
+    return null
+  }
+}
+
+function wakeupStatusSuffix(wakeUpConfig: boolean | null): string {
+  return wakeUpConfig === false ? " (disabled by config)" : ""
 }
 
 async function prepareInstallContext(
@@ -537,6 +572,8 @@ async function prepareInstallContext(
     chmod(sessionEndPath, 0o755),
   ])
 
+  const wakeUpConfig = await readWakeUpConfig(projectDir)
+
   return {
     projectDir,
     pkgRoot,
@@ -545,6 +582,7 @@ async function prepareInstallContext(
     sessionEndPath,
     mcpJsPath,
     skipPrompts,
+    wakeUpConfig,
   }
 }
 
@@ -630,7 +668,9 @@ async function runClaudeInstall(
   console.log("Claude Code:")
   console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
   console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
-  console.log(`  Wakeup hook:       ${statusLabel(wakeupStatus)}`)
+  console.log(
+    `  Wakeup hook:       ${statusLabel(wakeupStatus)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+  )
   console.log(`  Session-end hook:  ${statusLabel(sessionEndStatus)}`)
   if (hasLegacyAutosave) console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
   if (hasLegacyWakeup) console.log("  Legacy hook:       PreToolUse/Task -> will migrate")
@@ -792,7 +832,9 @@ async function runCodexInstall(
   console.log("Codex:")
   console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
   console.log(`  Hooks feature:     ${statusLabel(hooksFeatureStatus)}`)
-  console.log(`  Wakeup hook:       ${statusLabel(wakeupStatus)}`)
+  console.log(
+    `  Wakeup hook:       ${statusLabel(wakeupStatus)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+  )
   console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
 
   const allCurrent =

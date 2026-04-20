@@ -23,6 +23,7 @@ import {
 } from "./transcript.js"
 import { initServices } from "../services.js"
 import { TRACKING_PREDICATES } from "../types.js"
+import { mergeHookDefaults, type HookConfig } from "./config.js"
 
 const action = process.argv[2]
 
@@ -35,8 +36,6 @@ interface HookEvent {
   last_assistant_message?: string
   stop_hook_active?: boolean
 }
-
-const DEFAULT_SAVE_INTERVAL = 5
 
 function buildSavePrompt(projectName: string | null): string {
   const scope = projectName ? `the "${projectName}" project` : "this project"
@@ -96,12 +95,6 @@ async function writeSaveCount(
 // Config
 // ---------------------------------------------------------------------------
 
-interface HookConfig {
-  saveInterval: number
-  autoSave: boolean
-  projectName: string | null
-}
-
 /**
  * Lightweight project name resolution from .lore.yaml — no Notion API calls.
  * Mirrors resolveProject's longest-prefix logic from core/context.ts.
@@ -137,25 +130,19 @@ function resolveProjectName(
 }
 
 async function loadHookConfig(): Promise<HookConfig> {
-  const defaults: HookConfig = {
-    saveInterval: DEFAULT_SAVE_INTERVAL,
-    autoSave: true,
-    projectName: null,
-  }
   const found = await findConfigFile(process.cwd())
-  if (!found) return defaults
+  if (!found) return mergeHookDefaults(undefined)
   try {
     const config = await loadConfig(found.path)
-    return {
-      saveInterval: config.hooks?.saveInterval ?? defaults.saveInterval,
-      autoSave: config.hooks?.autoSave ?? defaults.autoSave,
-      projectName: resolveProjectName(process.cwd(), found.root, config.projects),
-    }
+    return mergeHookDefaults(
+      config.hooks,
+      resolveProjectName(process.cwd(), found.root, config.projects),
+    )
   } catch (err) {
     process.stderr.write(
       `[lore] Failed to load ${found.path}: ${err instanceof Error ? err.message : err}. Using hook defaults.\n`,
     )
-    return defaults
+    return mergeHookDefaults(undefined)
   }
 }
 
@@ -291,6 +278,11 @@ function dateBucket(isoDate: string): "Today" | "Yesterday" | "Earlier" {
 }
 
 async function wakeup(): Promise<void> {
+  // Config opt-out: hooks.wakeUp: false suppresses context injection.
+  // Check before initServices() so we avoid the Notion round-trip when disabled.
+  const hookConfig = await loadHookConfig()
+  if (!hookConfig.wakeUp) return
+
   let services: Awaited<ReturnType<typeof initServices>>
   try {
     services = await initServices()
