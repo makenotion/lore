@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   countTranscriptUserMessages,
   extractTranscriptSessionContent,
+  inspectTranscript,
   listTranscriptMessages,
 } from "./transcript.js"
 
@@ -86,5 +87,49 @@ describe("transcript helpers", () => {
     expect(extractTranscriptSessionContent(transcript)).toBe(
       "User: Fix Lore for Codex.\n\nAssistant: I'm checking Codex docs first.",
     )
+  })
+
+  it("tracks malformed and ignored transcript lines without dropping valid messages", () => {
+    const transcript = [
+      '{"type":"user","message":{"content":[{"type":"text","text":"Keep this"}]}}',
+      "{not-json",
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "<system-reminder>ignore</system-reminder>" }],
+        },
+      }),
+    ].join("\n")
+
+    expect(inspectTranscript(transcript)).toEqual({
+      messages: [{ role: "user", text: "Keep this" }],
+      malformedLineCount: 1,
+      ignoredLineCount: 2,
+      totalNonEmptyLineCount: 4,
+    })
+  })
+
+  it("returns no messages for unsupported entries with missing content", () => {
+    const transcript = [
+      JSON.stringify({
+        type: "user",
+        message: {},
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+        },
+      }),
+    ].join("\n")
+
+    expect(listTranscriptMessages(transcript)).toEqual([])
+    expect(countTranscriptUserMessages(transcript)).toBe(0)
   })
 })

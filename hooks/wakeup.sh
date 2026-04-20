@@ -12,4 +12,4 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 # Output context to stdout for the host assistant to capture
-node "$SCRIPT_DIR/../dist/hooks/helpers.js" wakeup 2>/dev/null || true
+node "$SCRIPT_DIR/../dist/hooks/helpers.js" wakeup || true

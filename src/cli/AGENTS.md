@@ -18,7 +18,7 @@ debugging, manual search).
 | `commands/search.ts` | `lore search <query>` -- semantic search across memories |
 | `commands/mine.ts` | `lore mine [path]` -- index project files as memories |
 | `commands/status.ts` | `lore status` -- vault status + subcommands (projects, topics) |
-| `commands/install.ts` | `lore install` -- install Claude Code or Codex hooks and MCP config into a project |
+| `commands/install.ts` | `lore install` -- install Lore assistant hooks and MCP config into a project (both assistants by default) |
 | `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
 
 ## Commander Patterns
@@ -101,7 +101,7 @@ try {
 | `lore status` | none | none | Show vault status, database counts, active projects |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
-| `lore install` | none | `--client`, `--project`, `-y` | Install Claude Code and Codex integration for the current project |
+| `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
 | `lore migrate` | none | `--dry-run` | Add missing schema properties to vault data sources (add-only, idempotent) |
 
 ## Adding a New Command

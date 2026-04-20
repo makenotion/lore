@@ -18,7 +18,7 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
       inputSchema: {
         title: z.string().describe("Journal entry title"),
         content: z.string().describe("Journal entry content (markdown supported)"),
-        agent: z.string().optional().describe("Agent name (e.g., 'Claude Code')"),
+        agent: z.string().optional().describe("Agent name (e.g., 'Claude Code', 'Codex')"),
         session: z
           .string()
           .optional()

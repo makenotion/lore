@@ -3,6 +3,13 @@ export interface TranscriptMessage {
   text: string
 }
 
+export interface TranscriptInspection {
+  messages: TranscriptMessage[]
+  malformedLineCount: number
+  ignoredLineCount: number
+  totalNonEmptyLineCount: number
+}
+
 function stripSystemReminders(text: string): string {
   return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim()
 }
@@ -73,34 +80,50 @@ function parseCodexEvent(entry: Record<string, unknown>): TranscriptMessage | nu
   }
 }
 
-export function listTranscriptMessages(transcriptRaw: string): TranscriptMessage[] {
+export function inspectTranscript(transcriptRaw: string): TranscriptInspection {
   const messages: TranscriptMessage[] = []
+  let malformedLineCount = 0
+  let ignoredLineCount = 0
+  let totalNonEmptyLineCount = 0
 
   for (const line of transcriptRaw.split("\n")) {
     if (!line.trim()) continue
+    totalNonEmptyLineCount++
 
     try {
       const entry = JSON.parse(line) as Record<string, unknown>
       const parsed = parseClaudeMessage(entry) ?? parseCodexEvent(entry)
-      if (!parsed || parsed.text.length === 0) continue
+      if (!parsed || parsed.text.length === 0) {
+        ignoredLineCount++
+        continue
+      }
       messages.push(parsed)
     } catch {
-      continue
+      malformedLineCount++
     }
   }
 
-  return messages
+  return {
+    messages,
+    malformedLineCount,
+    ignoredLineCount,
+    totalNonEmptyLineCount,
+  }
+}
+
+export function listTranscriptMessages(transcriptRaw: string): TranscriptMessage[] {
+  return inspectTranscript(transcriptRaw).messages
 }
 
 export function countTranscriptUserMessages(transcriptRaw: string): number {
   return listTranscriptMessages(transcriptRaw).filter((message) => message.role === "user").length
 }
 
-export function extractTranscriptSessionContent(
-  transcriptRaw: string,
+export function formatTranscriptSessionContent(
+  messages: TranscriptMessage[],
   maxLength = 100_000,
 ): string {
-  const parts = listTranscriptMessages(transcriptRaw).map((message) => {
+  const parts = messages.map((message) => {
     const role = message.role === "user" ? "User" : "Assistant"
     return `${role}: ${message.text}`
   })
@@ -110,4 +133,11 @@ export function extractTranscriptSessionContent(
     result = "...(truncated)\n\n" + result.slice(-maxLength)
   }
   return result
+}
+
+export function extractTranscriptSessionContent(
+  transcriptRaw: string,
+  maxLength = 100_000,
+): string {
+  return formatTranscriptSessionContent(listTranscriptMessages(transcriptRaw), maxLength)
 }

@@ -26,7 +26,7 @@ four databases and exposes three interfaces: an MCP server, a CLI, and shell hoo
                     |               |               |
                  mcp/server.ts   cli/index.ts   hooks/helpers.ts
                     |               |               |
-                 15 tools      5 commands      autosave / wakeup
+                 MCP tools     CLI commands    autosave / wakeup
                     |               |               |
                     +-------+-------+-------+-------+
                             |               |
@@ -112,6 +112,7 @@ from v4 and earlier. Do not use v4 patterns.
 | `No .lore.yaml found` | Config search failed | Ensure `.lore.yaml` exists in cwd or any parent directory |
 | `filter` type errors in queries | Complex filter needs cast | Cast to `QueryDataSourceParameters["filter"]` |
 | `Vault already initialized` | Running `lore init` twice | Use `lore status` to verify, or `VaultManager.load()` |
+| Codex does not load Lore tools | Project not trusted or hooks feature disabled | Trust the project, start a new Codex session, and ensure `.codex/config.toml` sets `features.codex_hooks = true` |
 
 ## Operating Contract
 

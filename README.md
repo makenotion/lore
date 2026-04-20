@@ -119,7 +119,7 @@ A vault is a Notion page containing four linked databases:
 | Command                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
 | `lore init <page-id>`          | Create vault databases in a Notion page and write `.lore.yaml`   |
-| `lore install`                 | Install Claude Code and Codex integration for the current project |
+| `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex) |
 | `lore auth`                    | Check authentication status                                      |
 | `lore auth --login`            | Authenticate via OAuth (opens browser)                           |
 | `lore search <query>`          | Semantic search across memories (`-p`, `-t`, `-n` flags)         |
@@ -147,6 +147,9 @@ Shell hooks for automated integration with AI coding assistants:
 
 These hooks require `LORE_NOTION_TOKEN` to be set. They silently exit if the
 variable is absent.
+
+Codex also requires the project to be trusted before it will load
+project-scoped `.codex/*` files.
 
 ## Configuration
 

@@ -8,8 +8,13 @@ import { findConfigFile } from "../../config.js"
 import { loadCredentials } from "../../auth/oauth.js"
 
 type InstallClient = "claude" | "codex" | "both"
-type HookStatus = "current" | "stale" | "missing"
+export type HookStatus = "current" | "stale" | "missing"
 
+/**
+ * Env variables the MCP server honors at runtime and that the installer
+ * forwards into Claude and Codex project config. Emission is unconditional:
+ * shared config must not depend on which developer ran `lore install` first.
+ */
 const LORE_MCP_ENV_VARS = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"] as const
 
 function resolvePkgRoot(): string {
@@ -56,11 +61,19 @@ function buildCodexMcpSection(mcpJsPath: string): string {
   ].join("\n")
 }
 
-function buildCodexHookCommand(scriptPath: string): string {
+/**
+ * Codex stores hook commands as shell strings rather than argv arrays, so the
+ * path must be quoted before it is serialized into `.codex/hooks.json`.
+ */
+export function buildCodexHookCommand(scriptPath: string): string {
   return JSON.stringify(toPortablePath(scriptPath))
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
+/**
+ * Structural equality for plain JSON-ish values. Used to decide whether an
+ * on-disk config entry already matches the entry Lore would write now.
+ */
+export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (a === null || b === null) return false
   if (typeof a !== typeof b) return false
@@ -85,8 +98,13 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true
 }
 
-function toPortablePath(absPath: string): string {
+/**
+ * Rewrite an absolute path under the user's home directory into a portable
+ * `${HOME}`-prefixed form for project config that may be committed and shared.
+ */
+export function toPortablePath(absPath: string): string {
   const home = homedir()
+  // A home of "/" would turn every absolute path into a `${HOME}` path.
   if (home === "/" || home === "") return absPath
   if (absPath === home) return "${HOME}"
   const prefix = home.endsWith("/") ? home : home + "/"
@@ -99,7 +117,14 @@ function toPortablePath(absPath: string): string {
 async function readJsonSafe(filePath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await readFile(filePath, "utf-8")
-    return JSON.parse(raw) as Record<string, unknown>
+    try {
+      return JSON.parse(raw) as Record<string, unknown>
+    } catch (err) {
+      throw new Error(
+        `Failed to parse ${filePath}: ${err instanceof Error ? err.message : err}`,
+        { cause: err },
+      )
+    }
   } catch (err: unknown) {
     if ((err as { code?: string }).code === "ENOENT") return {}
     throw err
@@ -120,6 +145,8 @@ async function writeJsonFile(
   data: Record<string, unknown>,
 ): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
+  // Write to a sibling temp file and rename so a failed write never leaves a
+  // half-written config on disk.
   const tmpPath = `${filePath}.${process.pid}.tmp`
   try {
     await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8")
@@ -173,7 +200,7 @@ function statusLabel(status: HookStatus): string {
       : "not installed"
 }
 
-interface ClaudeHookEntry {
+export interface ClaudeHookEntry {
   matcher: string
   hooks: Array<{
     type: string
@@ -183,7 +210,7 @@ interface ClaudeHookEntry {
   }>
 }
 
-function detectClaudeHook(
+export function detectClaudeHook(
   entries: ClaudeHookEntry[] | undefined,
   scriptName: string,
   expectedPath: string,
@@ -245,12 +272,28 @@ interface CodexHookCommand {
   statusMessage?: string
 }
 
-interface CodexHookEntry {
+export interface CodexHookEntry {
   matcher?: string
   hooks: CodexHookCommand[]
 }
 
-function detectCodexHook(
+function stripShellQuotes(value: string): string {
+  const trimmed = value.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function commandTargetsScript(command: string, scriptName: string): boolean {
+  const normalized = stripShellQuotes(command)
+  return normalized === scriptName || normalized.endsWith(`/${scriptName}`)
+}
+
+export function detectCodexHook(
   entries: CodexHookEntry[] | undefined,
   scriptName: string,
   expectedCommand: string,
@@ -259,7 +302,7 @@ function detectCodexHook(
 
   for (const entry of entries) {
     for (const hook of entry.hooks ?? []) {
-      if (typeof hook.command === "string" && hook.command.includes(scriptName)) {
+      if (typeof hook.command === "string" && commandTargetsScript(hook.command, scriptName)) {
         return hook.command === expectedCommand ? "current" : "stale"
       }
     }
@@ -276,7 +319,7 @@ function mergeCodexHookEntries(
   const filtered = (existing ?? []).filter(
     (entry) =>
       !entry.hooks?.some(
-        (hook) => typeof hook.command === "string" && hook.command.includes(scriptName),
+        (hook) => typeof hook.command === "string" && commandTargetsScript(hook.command, scriptName),
       ),
   )
   filtered.push({
@@ -299,7 +342,7 @@ function removeCodexScriptEntries(
   const filtered = entries.filter(
     (entry) =>
       !entry.hooks?.some(
-        (hook) => typeof hook.command === "string" && hook.command.includes(scriptName),
+        (hook) => typeof hook.command === "string" && commandTargetsScript(hook.command, scriptName),
       ),
   )
   return filtered.length > 0 ? filtered : undefined
@@ -356,6 +399,19 @@ function parseTomlSections(text: string): TomlSection[] {
   }
 
   return sections
+}
+
+export function containsTomlArrayOfTables(text: string): boolean {
+  return splitTomlLines(text).some((line) => /^\s*\[\[/.test(line))
+}
+
+function assertTomlSupportsLoreRewrite(text: string, filePath: string): void {
+  if (!containsTomlArrayOfTables(text)) return
+  const displayPath = filePath.replace(homedir(), "~")
+  throw new Error(
+    `${displayPath} contains TOML array-of-tables ([[...]]). ` +
+      "lore install cannot safely rewrite that file yet; update the Lore sections manually instead.",
+  )
 }
 
 function appendTomlBlock(text: string, block: string): string {
@@ -517,6 +573,14 @@ async function printPrerequisites(projectDir: string): Promise<void> {
   }
 }
 
+async function preflightCodexInstall(context: InstallContext): Promise<void> {
+  const codexConfigPath = join(context.projectDir, ".codex", "config.toml")
+  const codexHooksPath = join(context.projectDir, ".codex", "hooks.json")
+  const codexConfig = await readTextSafe(codexConfigPath)
+  assertTomlSupportsLoreRewrite(codexConfig, codexConfigPath)
+  await readJsonSafe(codexHooksPath)
+}
+
 async function runClaudeInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
@@ -607,6 +671,7 @@ async function runClaudeInstall(
       hooks["Stop"],
       "autosave.sh",
       context.autosavePath,
+      // Claude settings use hook timeouts in milliseconds.
       { matcher: "", timeout: 10000 },
     )
   }
@@ -616,6 +681,7 @@ async function runClaudeInstall(
       hooks["UserPromptSubmit"],
       "wakeup.sh",
       context.wakeupPath,
+      // Claude settings use hook timeouts in milliseconds.
       { matcher: "", timeout: 10000, runOnce: true },
     )
   }
@@ -699,6 +765,7 @@ async function runCodexInstall(
   const codexConfigPath = join(context.projectDir, ".codex", "config.toml")
   const codexHooksPath = join(context.projectDir, ".codex", "hooks.json")
   const codexConfig = await readTextSafe(codexConfigPath)
+  assertTomlSupportsLoreRewrite(codexConfig, codexConfigPath)
   const codexHooksJson = await readJsonSafe(codexHooksPath)
   const codexHooks = (codexHooksJson.hooks ?? {}) as Record<string, CodexHookEntry[]>
 
@@ -767,6 +834,7 @@ async function runCodexInstall(
     "autosave.sh",
     autosaveCommand,
     {
+      // Codex hook timeouts are expressed in seconds.
       timeout: 30,
       statusMessage: "Saving Lore context",
     },
@@ -832,6 +900,10 @@ async function runInstall(opts: {
   await printPrerequisites(context.projectDir)
   console.log()
 
+  if (opts.client === "codex" || opts.client === "both") {
+    await preflightCodexInstall(context)
+  }
+
   const rl = context.skipPrompts
     ? null
     : createInterface({ input: process.stdin, output: process.stdout })
@@ -858,10 +930,10 @@ export function parseInstallClient(value: string | undefined): InstallClient | n
 }
 
 export const installCommand = new Command("install")
-  .description("Install Claude Code and Codex integration for the current project")
+  .description("Install Lore assistant integrations for the current project")
   .option(
     "--client <assistant>",
-    "assistant to configure: claude or codex (default: both)",
+    "assistant to configure: claude or codex; omit --client to install both",
   )
   .option("--project <path>", "project directory (default: cwd)")
   .option("-y, --yes", "skip confirmation prompts")
