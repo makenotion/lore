@@ -18,6 +18,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `memory.ts`  | `MemoryService`    | CRUD + list + semantic search for memories     |
 | `fact.ts`    | `FactService`      | Knowledge graph triples with temporal validity |
 | `context.ts` | `resolveProject()` | Match cwd to a project via longest prefix      |
+| `wakeup.ts`  | `loadWakeUpData()` | Aggregate digest + memories + facts for wake-up surfaces (MCP tool + shell hook) |
 
 ## Service Class Pattern
 
@@ -36,8 +37,15 @@ Services are instantiated in `src/services.ts` via `initServices()`, which loads
 the vault, reads database IDs, and creates all service instances.
 
 **Rule**: Services should not instantiate other services. Cross-service calls
-happen at the interface layer (MCP tools, CLI commands). The one exception is
-`resolveProject()`, which takes a `ProjectService` parameter.
+happen at the interface layer (MCP tools, CLI commands). Two exceptions compose
+multiple services via dependency injection:
+
+- `resolveProject()` takes a `ProjectService` parameter.
+- `loadWakeUpData()` accepts a structural `WakeUpServices` (`{ memories, facts }`)
+  so both the real `LoreServices` and lightweight test stubs satisfy it.
+
+Prefer this "free-function orchestrator over injected services" shape when the
+logic is coordination-only (no stored state, no Notion client ownership).
 
 ## Context Resolution
 

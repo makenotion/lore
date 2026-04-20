@@ -14,6 +14,11 @@ type QueryBySubjectOpts = {
   projectId?: string
   includeInvalidated?: boolean
   predicates?: FactPredicate[]
+  /**
+   * Cap total results. Pagination stops as soon as this is reached.
+   * Without a limit, all matching facts are fetched across pages.
+   */
+  limit?: number
 }
 import { buildFactProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
@@ -102,15 +107,26 @@ export class FactService {
           ? filters[0]
           : undefined
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-      sorts: [{ timestamp: "created_time", direction: "descending" }],
-    })
+    const results: PageObjectResponse[] = []
+    let cursor: string | undefined = undefined
+    const limit = opts?.limit
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        results.push(page)
+        if (limit !== undefined && results.length >= limit) break
+      }
+      if (limit !== undefined && results.length >= limit) break
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
 
-    return (response.results.filter(isFullPage) as PageObjectResponse[]).map((p) =>
-      this.pageToFact(p)
-    )
+    return results.map((p) => this.pageToFact(p))
   }
 
   async queryByEntity(entity: string, opts?: { projectId?: string }): Promise<Fact[]> {

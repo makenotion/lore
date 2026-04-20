@@ -22,8 +22,9 @@ import {
   inspectTranscript,
 } from "./transcript.js"
 import { initServicesFromConfig } from "../services.js"
-import { TRACKING_PREDICATES, type LoreConfig } from "../types.js"
+import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
+import { dateBucket, loadWakeUpData } from "../core/wakeup.js"
 
 const action = process.argv[2]
 
@@ -301,15 +302,6 @@ async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
 // Wakeup — load context at session start
 // ---------------------------------------------------------------------------
 
-function dateBucket(isoDate: string): "Today" | "Yesterday" | "Earlier" {
-  const d = isoDate.split("T")[0]
-  const today = new Date().toISOString().split("T")[0]
-  const yesterday = new Date(Date.now() - 86_400_000).toISOString().split("T")[0]
-  if (d === today) return "Today"
-  if (d === yesterday) return "Yesterday"
-  return "Earlier"
-}
-
 async function wakeup(): Promise<void> {
   // Config opt-out: hooks.wakeUp: false suppresses context injection.
   // Check before service initialization so we avoid the Notion round-trip when disabled.
@@ -321,27 +313,29 @@ async function wakeup(): Promise<void> {
   let services: Awaited<ReturnType<typeof initServicesFromConfig>>
   try {
     services = await initServicesFromConfig(process.cwd(), hookState.configRoot, hookState.config)
-  } catch {
-    // Missing config or auth is normal (not every project has Lore).
-    // Exit silently rather than producing a hook error.
+  } catch (err) {
+    process.stderr.write(
+      `[lore] wakeup: init failed — ${err instanceof Error ? err.message : err}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`,
+    )
     return
   }
   const project = services.context.project
 
-  const [memories, facts] = await Promise.all([
-    services.memories.list({
+  let digest, memories, openLoops, knowledgeFacts
+  try {
+    ;({ digest, memories, openLoops, knowledgeFacts } = await loadWakeUpData(services, {
       projectId: project?.id,
-      limit: 10,
-    }),
-    project
-      ? services.facts.queryBySubject("", { projectId: project.id })
-      : Promise.resolve([]),
-  ])
-
-  // Partition facts into open loops vs knowledge
-  const trackingSet = new Set<string>(TRACKING_PREDICATES)
-  const openLoops = facts.filter((f) => trackingSet.has(f.predicate))
-  const knowledgeFacts = facts.filter((f) => !trackingSet.has(f.predicate))
+      // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
+      includeMemoryContent: false,
+    }))
+  } catch (err) {
+    // Wake-up is decorative. A transient Notion failure must not block
+    // session startup — log and exit clean.
+    process.stderr.write(
+      `[lore] wakeup: load failed — ${err instanceof Error ? err.message : err}. Skipping context injection.\n`,
+    )
+    return
+  }
 
   const sections: string[] = []
 
@@ -349,8 +343,16 @@ async function wakeup(): Promise<void> {
     sections.push(`Project: ${project.name} (${project.path || "root"})`)
   }
 
+  if (digest) {
+    sections.push(`\n## Latest Digest — ${digest.createdAt.split("T")[0]}`)
+    sections.push(`**${digest.title}**`)
+    if (digest.content) {
+      sections.push("", digest.content.trim())
+    }
+  }
+
   if (memories.length > 0) {
-    sections.push("\n## Recent Memories")
+    sections.push(digest ? "\n## Recent Memories (since digest)" : "\n## Recent Memories")
     // Group by date bucket
     const buckets = new Map<string, typeof memories>()
     for (const mem of memories) {
@@ -589,7 +591,7 @@ async function handleSessionEnd(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(
-    `[lore] Hook error: ${err instanceof Error ? err.message : err}\n`,
+    `[lore] Hook error [${action}]: ${err instanceof Error ? err.message : err}\n`,
   )
   if (action === "autosave") {
     process.stdout.write("{}\n")

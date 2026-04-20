@@ -132,6 +132,18 @@ export class MemoryService {
     limit?: number
     since?: string
     until?: string
+    /**
+     * When false, skip the per-page markdown fetch and return memories with
+     * `content: ""`. Use for list views that render only title/date/tags —
+     * avoids N+1 `retrieveMarkdown` calls on every wake-up.
+     */
+    includeContent?: boolean
+    /**
+     * Notion timestamp field to sort by. Defaults to `last_edited_time`
+     * (general-purpose "most recently touched"). Pass `created_time` for
+     * "most recently created" ordering — e.g. latest-digest lookup.
+     */
+    sortBy?: "created_time" | "last_edited_time"
   }): Promise<Memory[]> {
     const filters: Array<Record<string, unknown>> = []
 
@@ -173,11 +185,16 @@ export class MemoryService {
     const response = await this.client.dataSources.query({
       data_source_id: this.db.dataSourceId,
       filter: filter as QueryDataSourceParameters["filter"],
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+      sorts: [{ timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" }],
       page_size: Math.min(opts?.limit ?? 20, 100),
     })
 
     const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+
+    if (opts?.includeContent === false) {
+      return pages.map((page) => this.pageToMemory(page, ""))
+    }
+
     return Promise.all(
       pages.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })

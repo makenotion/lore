@@ -71,7 +71,12 @@ A vault is a Notion page containing four linked databases:
 
 **Confidence levels**: `certain`, `likely`, `speculative`
 
-**Memory sources**: `conversation`, `file`, `manual`, `agent_diary`
+**Memory sources**: `conversation`, `file`, `manual`, `agent_diary`, `digest`
+
+Save digests regularly (`lore-digest` → synthesize → `lore-remember` with
+`source: "digest"`). When a digest from the last 7 days exists, `lore-wake-up`
+surfaces it at the top and trims the raw-memory list underneath — a denser,
+lower-token starting point than a long stream of individual memories.
 
 ## MCP Tools
 
@@ -80,7 +85,7 @@ A vault is a Notion page containing four linked databases:
 | Tool           | Description                                            |
 | -------------- | ------------------------------------------------------ |
 | `lore-status`  | Show vault status, database counts, and active project |
-| `lore-wake-up` | Load recent memories and facts for session priming     |
+| `lore-wake-up` | Load latest digest (if recent), recent memories, and facts for priming |
 
 ### Memory
 
@@ -137,11 +142,12 @@ Shell hooks for automated integration with AI coding assistants:
   continues the session with a Lore save prompt after enough user messages.
   Works in both Claude Code and Codex.
 
-- **Wake-up** (`hooks/wakeup.sh`): Loads recent memories and active facts for
-  the current project. Claude Code injects it on `UserPromptSubmit`; Codex
-  injects it on `SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to
-  skip this injection for both assistants. If `.lore.yaml` fails to parse, the
-  hook falls back to the default (on) and writes a `[lore]` warning to stderr.
+- **Wake-up** (`hooks/wakeup.sh`): Loads the latest project digest (if one was
+  saved in the last 7 days), plus recent memories and active facts for the
+  current project. Claude Code injects it on `UserPromptSubmit`; Codex injects
+  it on `SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to skip this
+  injection for both assistants. If `.lore.yaml` fails to parse, the hook falls
+  back to the default (on) and writes a `[lore]` warning to stderr.
 
 - **Session-end** (`hooks/session-end.sh`): Claude Code only. Runs a
   background fallback save when the stop hook did not already capture the

@@ -2,16 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
-import { TRACKING_PREDICATES } from "../../types.js"
-
-function dateBucket(isoDate: string): "Today" | "Yesterday" | "Earlier" {
-  const d = isoDate.split("T")[0]
-  const today = new Date().toISOString().split("T")[0]
-  const yesterday = new Date(Date.now() - 86_400_000).toISOString().split("T")[0]
-  if (d === today) return "Today"
-  if (d === yesterday) return "Yesterday"
-  return "Earlier"
-}
+import { dateBucket, loadWakeUpData } from "../../core/wakeup.js"
 
 export function registerContextTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -63,7 +54,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
     {
       title: "Load session context",
       description:
-        "Load relevant context for the current session. Returns recent memories and active facts for the current project plus any repo-wide (unscoped) entries. Call this at the start of a conversation to prime context.",
+        "Load relevant context for the current session. When a recent project digest exists it is surfaced first, followed by a trimmed list of recent memories, open loops, and active facts. Call this at the start of a conversation to prime context.",
       inputSchema: {
         projectName: z
           .string()
@@ -75,33 +66,36 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .min(1)
           .max(50)
           .optional()
-          .describe("Max memories to return (default 10)"),
+          .describe("Max memories to return (default 10; trimmed when a fresh digest is surfaced)"),
       },
       annotations: { readOnlyHint: true },
     },
     async ({ projectName, limit }) => {
       try {
         let projectId = services.context.project?.id
+        const warnings: string[] = []
 
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
+          if (found) {
+            projectId = found.id
+          } else {
+            warnings.push(
+              `Project "${projectName}" not found — falling back to auto-detected project.`,
+            )
+          }
         }
 
-        const [memories, facts] = await Promise.all([
-          services.memories.list({
+        const { digest, memories, openLoops, knowledgeFacts } = await loadWakeUpData(
+          services,
+          {
             projectId: projectId ?? undefined,
-            limit: limit ?? 10,
-          }),
-          projectId
-            ? services.facts.queryBySubject("", { projectId })
-            : Promise.resolve([]),
-        ])
-
-        // Partition facts into open loops vs knowledge
-        const trackingSet = new Set<string>(TRACKING_PREDICATES)
-        const openLoops = facts.filter((f) => trackingSet.has(f.predicate))
-        const knowledgeFacts = facts.filter((f) => !trackingSet.has(f.predicate))
+            memoryLimit: limit,
+            // Honor the caller's explicit limit even when a digest is present:
+            // the trim is a default, not a cap the user can't override.
+            memoryLimitWithDigest: limit,
+          },
+        )
 
         const sections: string[] = []
 
@@ -111,8 +105,23 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           )
         }
 
+        if (warnings.length > 0) {
+          sections.push(`> ${warnings.join("\n> ")}\n`)
+        }
+
+        if (digest) {
+          sections.push(`## Latest Digest — ${digest.createdAt.split("T")[0]}\n`)
+          sections.push(`**${digest.title}**\n`)
+          if (digest.content) {
+            sections.push(digest.content.trim(), "")
+          }
+        }
+
         if (memories.length > 0) {
-          sections.push("## Recent Memories\n")
+          const heading = digest
+            ? "## Recent Memories (since digest)\n"
+            : "## Recent Memories\n"
+          sections.push(heading)
           // Group by date bucket
           const buckets = new Map<string, typeof memories>()
           for (const mem of memories) {
@@ -133,7 +142,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
               )
             }
           }
-        } else {
+        } else if (!digest) {
           sections.push("No memories found for this context.\n")
         }
 
@@ -161,7 +170,8 @@ export function registerContextTools(server: McpServer, services: LoreServices):
 
         return { content: [{ type: "text", text: sections.join("\n") }] }
       } catch (err) {
-        return toolError(err)
+        const message = err instanceof Error ? err.message : String(err)
+        return toolError(new Error(`lore-wake-up failed to load context: ${message}`))
       }
     }
   )
