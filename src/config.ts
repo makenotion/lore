@@ -1,10 +1,18 @@
 import { access, readFile } from "node:fs/promises"
 import { resolve, dirname } from "node:path"
-import { parse as parseYaml } from "yaml"
+import { parse as parseYaml, parseDocument } from "yaml"
 import { z } from "zod"
 import type { LoreConfig } from "./types.js"
 
 const CONFIG_FILENAME = ".lore.yaml"
+
+const hookConfigSchema = z
+  .object({
+    autoSave: z.boolean().optional(),
+    wakeUp: z.boolean().optional(),
+    saveInterval: z.number().int().min(1).optional(),
+  })
+  .optional()
 
 const configSchema = z.object({
   vault: z.object({
@@ -31,14 +39,64 @@ const configSchema = z.object({
       exclude: z.array(z.string()).optional(),
     })
     .optional(),
-  hooks: z
-    .object({
-      autoSave: z.boolean().optional(),
-      wakeUp: z.boolean().optional(),
-      saveInterval: z.number().int().min(1).optional(),
-    })
-    .optional(),
+  hooks: hookConfigSchema,
 })
+
+function toPlainConfigValue(value: unknown): unknown {
+  if (value instanceof Map) {
+    const object: Record<string, unknown> = {}
+    for (const [key, child] of value.entries()) {
+      object[String(key)] = toPlainConfigValue(child)
+    }
+    return object
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((child) => toPlainConfigValue(child))
+  }
+
+  return value
+}
+
+function omitHooks(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const next = { ...(value as Record<string, unknown>) }
+  delete next["hooks"]
+  return next
+}
+
+export interface LoadedConfigResult {
+  config: LoreConfig
+  warnings: string[]
+}
+
+export function parseConfigAllowingInvalidHooks(raw: string): LoadedConfigResult {
+  const document = parseDocument(raw)
+  const warnings = document.errors.map((error) => error.message)
+  const parsed = toPlainConfigValue(document.toJS({ mapAsMap: true }))
+
+  if (warnings.length > 0) {
+    return {
+      config: configSchema.parse(omitHooks(parsed)),
+      warnings,
+    }
+  }
+
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const hooksResult = hookConfigSchema.safeParse((parsed as Record<string, unknown>)["hooks"])
+    if (!hooksResult.success) {
+      return {
+        config: configSchema.parse(omitHooks(parsed)),
+        warnings: ["Ignoring invalid hooks config and using hook defaults."],
+      }
+    }
+  }
+
+  return {
+    config: configSchema.parse(parsed),
+    warnings,
+  }
+}
 
 /**
  * Search upward from `startDir` for a `.lore.yaml` file.
@@ -71,6 +129,19 @@ export async function loadConfig(configPath: string): Promise<LoreConfig> {
   const raw = await readFile(configPath, "utf-8")
   const parsed = parseYaml(raw)
   return configSchema.parse(parsed)
+}
+
+/**
+ * Load a `.lore.yaml` while treating any broken `hooks` section as absent.
+ *
+ * Used by shell hooks so `hooks.wakeUp: false` can fail open: a malformed
+ * `hooks` section should not suppress session-start context injection.
+ */
+export async function loadConfigAllowingInvalidHooks(
+  configPath: string,
+): Promise<LoadedConfigResult> {
+  const raw = await readFile(configPath, "utf-8")
+  return parseConfigAllowingInvalidHooks(raw)
 }
 
 export interface ResolvedAuth {

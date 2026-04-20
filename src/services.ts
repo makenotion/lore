@@ -27,18 +27,11 @@ export interface LoreServices {
   configRoot: string
 }
 
-/**
- * Initialize all services from config. Shared by both MCP server and CLI.
- */
-export async function initServices(cwd?: string): Promise<LoreServices> {
-  const workDir = cwd ?? process.cwd()
-
-  const found = await findConfigFile(workDir)
-  if (!found) {
-    throw new Error("No .lore.yaml found. Run `lore init` to set up a vault.")
-  }
-
-  const config = await loadConfig(found.path)
+export async function initServicesFromConfig(
+  cwd: string,
+  configRoot: string,
+  config: LoreConfig,
+): Promise<LoreServices> {
   const auth = await resolveAuth(config)
   const client = createClient(auth.token, auth.baseUrl)
 
@@ -51,7 +44,7 @@ export async function initServices(cwd?: string): Promise<LoreServices> {
   const memories = new MemoryService(client, db.memories)
   const facts = new FactService(client, db.facts)
 
-  const project = await resolveProject(workDir, found.root, config, projects)
+  const project = await resolveProject(cwd, configRoot, config, projects)
 
   return {
     vault,
@@ -62,9 +55,24 @@ export async function initServices(cwd?: string): Promise<LoreServices> {
     context: {
       vault: vault.get(),
       project,
-      cwd: workDir,
+      cwd,
     },
     config,
-    configRoot: found.root,
+    configRoot,
   }
+}
+
+/**
+ * Initialize all services from config. Shared by both MCP server and CLI.
+ */
+export async function initServices(cwd?: string): Promise<LoreServices> {
+  const workDir = cwd ?? process.cwd()
+
+  const found = await findConfigFile(workDir)
+  if (!found) {
+    throw new Error("No .lore.yaml found. Run `lore init` to set up a vault.")
+  }
+
+  const config = await loadConfig(found.path)
+  return initServicesFromConfig(workDir, found.root, config)
 }
