@@ -1,13 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Lore wake-up hook for Claude Code
+# Lore wake-up hook for Claude Code and Codex
 #
-# Fires on: UserPromptSubmit (runOnce: true).
-# Registration lives in .claude/settings.json (via `lore install`).
-# Output is captured by Claude Code and injected into the system prompt.
+# Fires on:
+#   - Claude Code: UserPromptSubmit (runOnce: true)
+#   - Codex: SessionStart (startup|resume)
+# Registration lives in the assistant-specific config written by `lore install`.
+# Output is captured and injected into the assistant context.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-# Output context to stdout — Claude Code captures this
+# Output context to stdout for the host assistant to capture
 node "$SCRIPT_DIR/../dist/hooks/helpers.js" wakeup 2>/dev/null || true

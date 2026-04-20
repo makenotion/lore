@@ -17,12 +17,16 @@ import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
 import { resolve, relative } from "node:path"
 import { findConfigFile, loadConfig } from "../config.js"
+import {
+  countTranscriptUserMessages,
+  extractTranscriptSessionContent,
+} from "./transcript.js"
 import { initServices } from "../services.js"
 import { TRACKING_PREDICATES } from "../types.js"
 
 const action = process.argv[2]
 
-/** JSON payload Claude Code delivers on stdin for hook events. */
+/** Hook payload fields shared by Claude Code and Codex. */
 interface HookEvent {
   session_id?: string
   transcript_path?: string
@@ -79,49 +83,6 @@ async function writeSaveCount(
   if (!sessionId) return
   await ensureStateDir()
   await writeFile(statePath(sessionId), count.toString())
-}
-
-// ---------------------------------------------------------------------------
-// Transcript parsing
-// ---------------------------------------------------------------------------
-
-/**
- * Count real user messages in a Claude Code JSONL transcript.
- *
- * Filters out empty entries and system-reminder-only entries so the count
- * reflects actual developer interaction, not inflated hook traffic.
- */
-function countUserMessages(transcriptRaw: string): number {
-  let count = 0
-  for (const line of transcriptRaw.split("\n")) {
-    if (!line.trim()) continue
-    try {
-      const entry = JSON.parse(line)
-      if (entry.type !== "user") continue
-
-      const content = entry.message?.content
-      if (!content) continue
-
-      let text: string
-      if (Array.isArray(content)) {
-        text = content
-          .filter((p: Record<string, unknown>) => p.type === "text")
-          .map((p: Record<string, unknown>) => (p.text as string) ?? "")
-          .join("")
-      } else if (typeof content === "string") {
-        text = content
-      } else {
-        continue
-      }
-
-      // Strip system reminders — what remains is real user input
-      text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim()
-      if (text.length > 0) count++
-    } catch {
-      continue
-    }
-  }
-  return count
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +214,7 @@ async function autosave(): Promise<void> {
  * structured content via Lore's MCP tools.
  *
  * No Notion API calls — just file I/O. Outputs JSON to stdout for
- * Claude Code to interpret.
+ * the active assistant to interpret.
  */
 async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
   // Loop guard: AI already processed a block reason, let it stop
@@ -269,7 +230,7 @@ async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
 
   try {
     const transcriptRaw = await readFile(event.transcript_path, "utf-8")
-    const currentCount = countUserMessages(transcriptRaw)
+    const currentCount = countTranscriptUserMessages(transcriptRaw)
     const lastSaveCount = await readSaveCount(event.session_id)
     const { saveInterval } = config
     // First save fires sooner to catch short sessions (min 2 messages).
@@ -403,55 +364,6 @@ async function wakeup(): Promise<void> {
 // ---------------------------------------------------------------------------
 // SessionEnd — background claude -p for structured saves
 // ---------------------------------------------------------------------------
-
-/**
- * Extract readable session content from a JSONL transcript.
- *
- * Keeps user and assistant text messages, strips system-reminder tags and
- * tool_use/tool_result blocks. Truncates from the front to keep the most
- * recent context within a reasonable size for the background save prompt.
- */
-function extractSessionContent(transcriptRaw: string): string {
-  const MAX_LENGTH = 100_000
-  const parts: string[] = []
-
-  for (const line of transcriptRaw.split("\n")) {
-    if (!line.trim()) continue
-    try {
-      const entry = JSON.parse(line)
-      if (entry.type !== "user" && entry.type !== "assistant") continue
-
-      const content = entry.message?.content
-      if (!content) continue
-
-      let text: string
-      if (Array.isArray(content)) {
-        text = content
-          .filter((p: Record<string, unknown>) => p.type === "text")
-          .map((p: Record<string, unknown>) => (p.text as string) ?? "")
-          .join("")
-      } else if (typeof content === "string") {
-        text = content
-      } else {
-        continue
-      }
-
-      text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim()
-      if (!text) continue
-
-      const role = entry.type === "user" ? "User" : "Assistant"
-      parts.push(`${role}: ${text}`)
-    } catch {
-      continue
-    }
-  }
-
-  let result = parts.join("\n\n")
-  if (result.length > MAX_LENGTH) {
-    result = "...(truncated)\n\n" + result.slice(-MAX_LENGTH)
-  }
-  return result
-}
 
 function buildSessionEndPrompt(
   projectName: string | null,
@@ -594,13 +506,13 @@ async function handleSessionEnd(): Promise<void> {
     return
   }
 
-  const currentCount = countUserMessages(transcriptRaw)
+  const currentCount = countTranscriptUserMessages(transcriptRaw)
   if (currentCount < 2) return
 
   const lastSaveCount = await readSaveCount(event.session_id)
   if (currentCount - lastSaveCount < 1) return
 
-  const sessionContent = extractSessionContent(transcriptRaw)
+  const sessionContent = extractTranscriptSessionContent(transcriptRaw)
   if (!sessionContent) return
 
   const prompt = buildSessionEndPrompt(hookConfig.projectName, sessionContent)

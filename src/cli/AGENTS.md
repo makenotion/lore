@@ -18,7 +18,7 @@ debugging, manual search).
 | `commands/search.ts` | `lore search <query>` -- semantic search across memories |
 | `commands/mine.ts` | `lore mine [path]` -- index project files as memories |
 | `commands/status.ts` | `lore status` -- vault status + subcommands (projects, topics) |
-| `commands/install.ts` | `lore install` -- install hooks and MCP config into a project |
+| `commands/install.ts` | `lore install` -- install Claude Code or Codex hooks and MCP config into a project |
 | `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
 
 ## Commander Patterns
@@ -101,6 +101,7 @@ try {
 | `lore status` | none | none | Show vault status, database counts, active projects |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
+| `lore install` | none | `--client`, `--project`, `-y` | Install Claude Code and Codex integration for the current project |
 | `lore migrate` | none | `--dry-run` | Add missing schema properties to vault data sources (add-only, idempotent) |
 
 ## Adding a New Command
@@ -114,6 +115,20 @@ try {
    ```
 4. Remember the `.js` extension in the import path.
 5. Add the command to the table in this file and in the root `README.md`.
+
+## The install Command
+
+`install` supports multiple assistant targets:
+
+- Default `lore install` updates both the Claude Code and Codex integration for
+  the current project, so rerunning it after an older Claude-only install will
+  add the missing Codex side.
+- `--client claude` updates only Claude Code's `settings.json` hooks and the
+  project's `.mcp.json`.
+- `--client codex` updates only the project's `.codex/config.toml` and
+  `.codex/hooks.json`.
+- Codex hooks require `features.codex_hooks = true` and only load in trusted
+  projects, so preserve that behavior if you change the installer.
 
 ## The mine Command
 

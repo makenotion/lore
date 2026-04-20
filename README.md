@@ -40,8 +40,20 @@ config file.
 lore install
 ```
 
-This registers the MCP server and shell hooks with Claude Code for the
-current project.
+By default, `lore install` installs both assistant integrations and fills in any
+missing side from an older install.
+
+Use `--client` to install only one assistant:
+
+```bash
+lore install --client claude
+lore install --client codex
+```
+
+- `claude`: writes Claude Code settings plus `.mcp.json`
+- `codex`: writes `.codex/config.toml` plus `.codex/hooks.json`
+
+Codex only loads project-scoped `.codex/*` files for trusted projects.
 
 ## Data Model
 
@@ -107,7 +119,7 @@ A vault is a Notion page containing four linked databases:
 | Command                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
 | `lore init <page-id>`          | Create vault databases in a Notion page and write `.lore.yaml`   |
-| `lore install`                 | Install MCP server and shell hooks for the current project       |
+| `lore install`                 | Install Claude Code and Codex integration for the current project |
 | `lore auth`                    | Check authentication status                                      |
 | `lore auth --login`            | Authenticate via OAuth (opens browser)                           |
 | `lore search <query>`          | Semantic search across memories (`-p`, `-t`, `-n` flags)         |
@@ -121,15 +133,19 @@ A vault is a Notion page containing four linked databases:
 
 Shell hooks for automated integration with AI coding assistants:
 
-- **Auto-save** (`hooks/autosave.sh`): Saves a conversation summary as an
-  `agent_diary` memory when a session ends. Runs in the background to avoid
-  blocking the host process.
+- **Auto-save** (`hooks/autosave.sh`): Runs on the assistant `Stop` hook and
+  continues the session with a Lore save prompt after enough user messages.
+  Works in both Claude Code and Codex.
 
 - **Wake-up** (`hooks/wakeup.sh`): Loads recent memories and active facts for
-  the current project at session start. Output is captured and injected into
-  the system prompt.
+  the current project. Claude Code injects it on `UserPromptSubmit`; Codex
+  injects it on `SessionStart`.
 
-Both hooks require `LORE_NOTION_TOKEN` to be set. They silently exit if the
+- **Session-end** (`hooks/session-end.sh`): Claude Code only. Runs a
+  background fallback save when the stop hook did not already capture the
+  session.
+
+These hooks require `LORE_NOTION_TOKEN` to be set. They silently exit if the
 variable is absent.
 
 ## Configuration
@@ -164,7 +180,7 @@ projects:
 hooks:
   autoSave: true
   wakeUp: true
-  saveInterval: "on_compress" # or "periodic"
+  saveInterval: 5 # save after every 5 user messages
 ```
 
 Token resolution order: `auth.token` in `.lore.yaml`, then `LORE_NOTION_TOKEN`

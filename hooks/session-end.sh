@@ -19,7 +19,6 @@ if [ -z "$CONTENT" ]; then
 fi
 
 export LORE_SESSION_END_CONTENT="$CONTENT"
-export LORE_AGENT_NAME="Claude Code"
 
 # Non-blocking: fail-open, stderr preserved for diagnostics
 node "$SCRIPT_DIR/../dist/hooks/helpers.js" session-end || true

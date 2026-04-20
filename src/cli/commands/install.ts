@@ -7,9 +7,10 @@ import { createInterface } from "node:readline/promises"
 import { findConfigFile } from "../../config.js"
 import { loadCredentials } from "../../auth/oauth.js"
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+type InstallClient = "claude" | "codex" | "both"
+type HookStatus = "current" | "stale" | "missing"
+
+const LORE_MCP_ENV_VARS = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"] as const
 
 function resolvePkgRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -19,31 +20,16 @@ function encodeProjectPath(absPath: string): string {
   return absPath.replace(/\//g, "-")
 }
 
-/**
- * Env variables the MCP server honors at runtime and that the installer
- * forwards into `.mcp.json`. Values are the `${VAR}` token form — Claude
- * Code expands them from the caller's environment at server launch time,
- * so emitting a key the installing user has not exported is harmless (the
- * expansion yields an empty string, same as it would for any unset var).
- *
- * Emission is unconditional on purpose: `.mcp.json` is committed to the
- * consumer repo, so the set of keys must not depend on which developer
- * happened to run `lore install` first. A developer whose shell defines
- * `LORE_NOTION_BASE_URL` needs it forwarded even if the original installer
- * did not have that var set.
- */
-const MCP_FORWARDED_ENV_VARS = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"] as const
-
-interface McpEntry {
+interface ClaudeMcpEntry {
   command: string
   args: string[]
   cwd: string
   env: Record<string, string>
 }
 
-function buildMcpEntry(mcpJsPath: string, cwd: string): McpEntry {
+function buildClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
   const env: Record<string, string> = {}
-  for (const key of MCP_FORWARDED_ENV_VARS) {
+  for (const key of LORE_MCP_ENV_VARS) {
     env[key] = `\${${key}}`
   }
   return {
@@ -54,11 +40,26 @@ function buildMcpEntry(mcpJsPath: string, cwd: string): McpEntry {
   }
 }
 
-/**
- * Structural equality for plain JSON-ish values. Used to decide whether an
- * on-disk `.mcp.json` entry already matches the entry we would write right
- * now, so the installer doesn't churn the file on every run.
- */
+function formatTomlArray(values: readonly string[]): string {
+  return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`
+}
+
+function buildCodexMcpSection(mcpJsPath: string): string {
+  const portableMcpJsPath = toPortablePath(mcpJsPath)
+  const launchCommand = `node ${JSON.stringify(portableMcpJsPath)}`
+
+  return [
+    "[mcp_servers.lore]",
+    'command = "bash"',
+    `args = ["-lc", ${JSON.stringify(launchCommand)}]`,
+    `env_vars = ${formatTomlArray(LORE_MCP_ENV_VARS)}`,
+  ].join("\n")
+}
+
+function buildCodexHookCommand(scriptPath: string): string {
+  return JSON.stringify(toPortablePath(scriptPath))
+}
+
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (a === null || b === null) return false
@@ -84,21 +85,8 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true
 }
 
-/**
- * Rewrite an absolute path under the user's home directory into a
- * `${HOME}`-prefixed form. `.mcp.json` is committed to consumer repos and
- * shared across developers, so any absolute path inside `$HOME` would break
- * on every other machine. Claude Code expands `${VAR}` inside `command`,
- * `args`, `cwd`, and `env` values when it reads `.mcp.json`.
- *
- * Paths outside `$HOME` (e.g. a global npm install under `/opt` or
- * `/usr/local`) are returned unchanged — there is no portable substitution.
- */
 function toPortablePath(absPath: string): string {
   const home = homedir()
-  // A home of "/" (extremely unusual, e.g. root with no home set) would make
-  // the prefix check below match every absolute path and turn `/opt/x` into
-  // `${HOME}/opt/x` — the very breakage this helper is meant to prevent.
   if (home === "/" || home === "") return absPath
   if (absPath === home) return "${HOME}"
   const prefix = home.endsWith("/") ? home : home + "/"
@@ -118,18 +106,36 @@ async function readJsonSafe(filePath: string): Promise<Record<string, unknown>> 
   }
 }
 
+async function readTextSafe(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf-8")
+  } catch (err: unknown) {
+    if ((err as { code?: string }).code === "ENOENT") return ""
+    throw err
+  }
+}
+
 async function writeJsonFile(
   filePath: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
 ): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true })
-  // Write to a sibling temp file then rename — POSIX `rename` on the same
-  // filesystem is atomic, so a crash or I/O error mid-write cannot leave
-  // a half-written file on disk. Matters especially for `.mcp.json`, which
-  // is committed to consumer repos.
   const tmpPath = `${filePath}.${process.pid}.tmp`
   try {
     await writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8")
+    await rename(tmpPath, filePath)
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {})
+    throw err
+  }
+}
+
+async function writeTextFile(filePath: string, data: string): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true })
+  const tmpPath = `${filePath}.${process.pid}.tmp`
+  const normalized = data.endsWith("\n") ? data : data + "\n"
+  try {
+    await writeFile(tmpPath, normalized, "utf-8")
     await rename(tmpPath, filePath)
   } catch (err) {
     await unlink(tmpPath).catch(() => {})
@@ -149,7 +155,7 @@ async function fileExists(path: string): Promise<boolean> {
 async function confirm(
   rl: ReturnType<typeof createInterface> | null,
   message: string,
-  defaultYes = true
+  defaultYes = true,
 ): Promise<boolean> {
   if (!rl) return defaultYes
   const suffix = defaultYes ? "[Y/n]" : "[y/N]"
@@ -159,13 +165,15 @@ async function confirm(
   return normalized === "y" || normalized === "yes"
 }
 
-// ---------------------------------------------------------------------------
-// Hook detection
-// ---------------------------------------------------------------------------
+function statusLabel(status: HookStatus): string {
+  return status === "current"
+    ? "already installed"
+    : status === "stale"
+      ? "update available"
+      : "not installed"
+}
 
-type HookStatus = "current" | "stale" | "missing"
-
-interface HookEntry {
+interface ClaudeHookEntry {
   matcher: string
   hooks: Array<{
     type: string
@@ -175,10 +183,10 @@ interface HookEntry {
   }>
 }
 
-function detectHook(
-  entries: HookEntry[] | undefined,
+function detectClaudeHook(
+  entries: ClaudeHookEntry[] | undefined,
   scriptName: string,
-  expectedPath: string
+  expectedPath: string,
 ): HookStatus {
   if (!entries) return "missing"
 
@@ -192,18 +200,17 @@ function detectHook(
   return "missing"
 }
 
-function mergeHookEntries(
-  existing: HookEntry[] | undefined,
+function mergeClaudeHookEntries(
+  existing: ClaudeHookEntry[] | undefined,
   scriptName: string,
   newPath: string,
-  config: { matcher: string; timeout?: number; runOnce?: boolean }
-): HookEntry[] {
-  // Remove any existing entry pointing to this script (handles stale paths)
+  config: { matcher: string; timeout?: number; runOnce?: boolean },
+): ClaudeHookEntry[] {
   const filtered = (existing ?? []).filter(
     (entry) =>
       !entry.hooks?.some(
-        (h) => typeof h.command === "string" && h.command.endsWith(`/${scriptName}`)
-      )
+        (hook) => typeof hook.command === "string" && hook.command.endsWith(`/${scriptName}`),
+      ),
   )
   filtered.push({
     matcher: config.matcher,
@@ -217,29 +224,228 @@ function mergeHookEntries(
   return filtered
 }
 
-/**
- * Remove entries referencing a script from a hook event array.
- * Used to clean up legacy registrations under wrong event names.
- */
-function removeScriptEntries(
-  entries: HookEntry[] | undefined,
-  scriptName: string
-): HookEntry[] | undefined {
+function removeClaudeScriptEntries(
+  entries: ClaudeHookEntry[] | undefined,
+  scriptName: string,
+): ClaudeHookEntry[] | undefined {
   if (!entries) return undefined
   const filtered = entries.filter(
     (entry) =>
       !entry.hooks?.some(
-        (h) => typeof h.command === "string" && h.command.endsWith(`/${scriptName}`)
-      )
+        (hook) => typeof hook.command === "string" && hook.command.endsWith(`/${scriptName}`),
+      ),
   )
   return filtered.length > 0 ? filtered : undefined
 }
 
-// ---------------------------------------------------------------------------
-// Install logic
-// ---------------------------------------------------------------------------
+interface CodexHookCommand {
+  type: "command"
+  command: string
+  timeout?: number
+  statusMessage?: string
+}
 
-async function runInstall(opts: { yes?: boolean; project?: string }): Promise<void> {
+interface CodexHookEntry {
+  matcher?: string
+  hooks: CodexHookCommand[]
+}
+
+function detectCodexHook(
+  entries: CodexHookEntry[] | undefined,
+  scriptName: string,
+  expectedCommand: string,
+): HookStatus {
+  if (!entries) return "missing"
+
+  for (const entry of entries) {
+    for (const hook of entry.hooks ?? []) {
+      if (typeof hook.command === "string" && hook.command.includes(scriptName)) {
+        return hook.command === expectedCommand ? "current" : "stale"
+      }
+    }
+  }
+  return "missing"
+}
+
+function mergeCodexHookEntries(
+  existing: CodexHookEntry[] | undefined,
+  scriptName: string,
+  command: string,
+  config: { matcher?: string; timeout?: number; statusMessage?: string },
+): CodexHookEntry[] {
+  const filtered = (existing ?? []).filter(
+    (entry) =>
+      !entry.hooks?.some(
+        (hook) => typeof hook.command === "string" && hook.command.includes(scriptName),
+      ),
+  )
+  filtered.push({
+    ...(config.matcher ? { matcher: config.matcher } : {}),
+    hooks: [{
+      type: "command",
+      command,
+      ...(config.timeout != null ? { timeout: config.timeout } : {}),
+      ...(config.statusMessage ? { statusMessage: config.statusMessage } : {}),
+    }],
+  })
+  return filtered
+}
+
+function removeCodexScriptEntries(
+  entries: CodexHookEntry[] | undefined,
+  scriptName: string,
+): CodexHookEntry[] | undefined {
+  if (!entries) return undefined
+  const filtered = entries.filter(
+    (entry) =>
+      !entry.hooks?.some(
+        (hook) => typeof hook.command === "string" && hook.command.includes(scriptName),
+      ),
+  )
+  return filtered.length > 0 ? filtered : undefined
+}
+
+function stripCodexScriptFromAllEvents(
+  hooks: Record<string, CodexHookEntry[]>,
+  scriptName: string,
+): Record<string, CodexHookEntry[]> {
+  const next: Record<string, CodexHookEntry[]> = {}
+  for (const [eventName, entries] of Object.entries(hooks)) {
+    const filtered = removeCodexScriptEntries(entries, scriptName)
+    if (filtered) next[eventName] = filtered
+  }
+  return next
+}
+
+function splitTomlLines(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n")
+  if (normalized === "") return []
+  return normalized.endsWith("\n")
+    ? normalized.slice(0, -1).split("\n")
+    : normalized.split("\n")
+}
+
+function joinTomlLines(lines: string[]): string {
+  return lines.length > 0 ? lines.join("\n") + "\n" : ""
+}
+
+interface TomlSection {
+  name: string
+  start: number
+  end: number
+}
+
+function parseTomlSections(text: string): TomlSection[] {
+  const lines = splitTomlLines(text)
+  const sections: TomlSection[] = []
+  const headingPattern = /^\s*\[([^[\]]+)\]\s*(?:#.*)?$/
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = headingPattern.exec(lines[i])
+    if (!match) continue
+
+    if (sections.length > 0) {
+      sections[sections.length - 1].end = i
+    }
+
+    sections.push({
+      name: match[1].trim(),
+      start: i,
+      end: lines.length,
+    })
+  }
+
+  return sections
+}
+
+function appendTomlBlock(text: string, block: string): string {
+  const existing = text.trimEnd()
+  const nextBlock = block.trim()
+  if (existing === "") return nextBlock + "\n"
+  return `${existing}\n\n${nextBlock}\n`
+}
+
+function removeTomlTableGroup(text: string, tablePrefix: string): string {
+  const lines = splitTomlLines(text)
+  const sections = parseTomlSections(text)
+    .filter((section) => section.name === tablePrefix || section.name.startsWith(`${tablePrefix}.`))
+    .sort((a, b) => b.start - a.start)
+
+  for (const section of sections) {
+    lines.splice(section.start, section.end - section.start)
+  }
+
+  return joinTomlLines(lines).replace(/\n{3,}/g, "\n\n")
+}
+
+function extractTomlTableGroup(text: string, tablePrefix: string): string | null {
+  const lines = splitTomlLines(text)
+  const matches = parseTomlSections(text).filter(
+    (section) => section.name === tablePrefix || section.name.startsWith(`${tablePrefix}.`),
+  )
+  if (matches.length === 0) return null
+
+  const start = matches[0].start
+  const end = matches[matches.length - 1].end
+  return lines.slice(start, end).join("\n")
+}
+
+function extractTomlKeyValue(
+  text: string,
+  tableName: string,
+  key: string,
+): string | undefined {
+  const lines = splitTomlLines(text)
+  const section = parseTomlSections(text).find((candidate) => candidate.name === tableName)
+  if (!section) return undefined
+
+  const keyPattern = new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*(?:#.*)?$`)
+  for (let i = section.start + 1; i < section.end; i++) {
+    const match = keyPattern.exec(lines[i])
+    if (match) return match[1].trim()
+  }
+  return undefined
+}
+
+function upsertTomlTableKey(
+  text: string,
+  tableName: string,
+  key: string,
+  value: string,
+): string {
+  const lines = splitTomlLines(text)
+  const sections = parseTomlSections(text)
+  const section = sections.find((candidate) => candidate.name === tableName)
+  const keyPattern = new RegExp(`^\\s*${key}\\s*=`)
+
+  if (!section) {
+    return appendTomlBlock(text, `[${tableName}]\n${key} = ${value}`)
+  }
+
+  for (let i = section.start + 1; i < section.end; i++) {
+    if (keyPattern.test(lines[i])) {
+      lines[i] = `${key} = ${value}`
+      return joinTomlLines(lines)
+    }
+  }
+
+  lines.splice(section.end, 0, `${key} = ${value}`)
+  return joinTomlLines(lines)
+}
+
+interface InstallContext {
+  projectDir: string
+  pkgRoot: string
+  autosavePath: string
+  wakeupPath: string
+  sessionEndPath: string
+  mcpJsPath: string
+  skipPrompts: boolean
+}
+
+async function prepareInstallContext(
+  opts: { yes?: boolean; project?: string },
+): Promise<InstallContext> {
   const projectDir = resolve(opts.project ?? process.cwd())
   const pkgRoot = resolvePkgRoot()
   const skipPrompts = opts.yes || !process.stdin.isTTY
@@ -248,14 +454,6 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
   const wakeupPath = join(pkgRoot, "hooks", "wakeup.sh")
   const sessionEndPath = join(pkgRoot, "hooks", "session-end.sh")
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
-
-  console.log()
-  console.log("Lore — Claude Code Integration")
-  console.log("─".repeat(40))
-  console.log(`Project: ${projectDir}`)
-  console.log()
-
-  // --- Phase 1: Verify built artifacts exist ---
 
   const [hasAutosave, hasWakeup, hasSessionEnd, hasMcpJs] = await Promise.all([
     fileExists(autosavePath),
@@ -271,21 +469,30 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     if (!hasSessionEnd) missing.push("  hooks/session-end.sh")
     if (!hasMcpJs) missing.push("  dist/mcp.js")
     console.error("Required files not found:")
-    for (const m of missing) console.error(m)
+    for (const path of missing) console.error(path)
     console.error()
     console.error("Run 'npm run build' first.")
     process.exit(1)
   }
 
-  // Ensure hook scripts are executable
   await Promise.all([
     chmod(autosavePath, 0o755),
     chmod(wakeupPath, 0o755),
     chmod(sessionEndPath, 0o755),
   ])
 
-  // --- Phase 2: Check prerequisites ---
+  return {
+    projectDir,
+    pkgRoot,
+    autosavePath,
+    wakeupPath,
+    sessionEndPath,
+    mcpJsPath,
+    skipPrompts,
+  }
+}
 
+async function printPrerequisites(projectDir: string): Promise<void> {
   console.log("Checking prerequisites...")
 
   const envToken = process.env["LORE_NOTION_TOKEN"]
@@ -308,65 +515,64 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     console.log("  Vault: .lore.yaml not found")
     console.log("    Run 'lore init <page-id>' to create a vault")
   }
+}
 
-  console.log()
-
-  // --- Phase 3: Detect current state ---
-
-  const encodedPath = encodeProjectPath(projectDir)
+async function runClaudeInstall(
+  context: InstallContext,
+  rl: ReturnType<typeof createInterface> | null,
+): Promise<void> {
+  const encodedPath = encodeProjectPath(context.projectDir)
   const settingsPath = join(homedir(), ".claude", "projects", encodedPath, "settings.json")
   const settings = await readJsonSafe(settingsPath)
-  const mcpJsonPath = join(projectDir, ".mcp.json")
+  const mcpJsonPath = join(context.projectDir, ".mcp.json")
   const mcpJson = await readJsonSafe(mcpJsonPath)
 
-  const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>
-
-  // Autosave registers under Stop only.
-  const autosaveStatus = detectHook(hooks["Stop"], "autosave.sh", autosavePath)
-  const wakeupStatus = detectHook(hooks["UserPromptSubmit"], "wakeup.sh", wakeupPath)
-  const sessionEndStatus = detectHook(hooks["SessionEnd"], "session-end.sh", sessionEndPath)
-
-  // Detect legacy registrations that need cleanup
-  const hasLegacyAutosave = detectHook(hooks["PostToolUse"], "autosave.sh", "") !== "missing"
-  const hasLegacyWakeup = detectHook(hooks["PreToolUse"], "wakeup.sh", "") !== "missing"
-  const hasLegacySessionEnd = detectHook(hooks["SessionEnd"], "autosave.sh", "") !== "missing"
-  const hasLegacyPreCompact = detectHook(hooks["PreCompact"], "autosave.sh", "") !== "missing"
-
-  // Detect stale MCP config in settings.json (legacy location — never worked)
-  const hasLegacyMcp = Boolean(
-    (settings.mcpServers as Record<string, unknown> | undefined)?.["lore"]
+  const hooks = (settings.hooks ?? {}) as Record<string, ClaudeHookEntry[]>
+  const autosaveStatus = detectClaudeHook(hooks["Stop"], "autosave.sh", context.autosavePath)
+  const wakeupStatus = detectClaudeHook(
+    hooks["UserPromptSubmit"],
+    "wakeup.sh",
+    context.wakeupPath,
+  )
+  const sessionEndStatus = detectClaudeHook(
+    hooks["SessionEnd"],
+    "session-end.sh",
+    context.sessionEndPath,
   )
 
-  // MCP server is configured in .mcp.json (project scope), not settings.json.
-  // Build the entry we would write *now* and treat "current" as a full deep
-  // match against what's already on disk. A partial match (e.g. matching
-  // paths but a drifted `env` block, or an absolute path that happens to
-  // resolve to the same file) registers as "stale" so migrations propagate.
+  const hasLegacyAutosave =
+    detectClaudeHook(hooks["PostToolUse"], "autosave.sh", "") !== "missing"
+  const hasLegacyWakeup =
+    detectClaudeHook(hooks["PreToolUse"], "wakeup.sh", "") !== "missing"
+  const hasLegacySessionEnd =
+    detectClaudeHook(hooks["SessionEnd"], "autosave.sh", "") !== "missing"
+  const hasLegacyPreCompact =
+    detectClaudeHook(hooks["PreCompact"], "autosave.sh", "") !== "missing"
+  const hasLegacyMcp = Boolean(
+    (settings.mcpServers as Record<string, unknown> | undefined)?.["lore"],
+  )
+
   const mcpServers = (mcpJson.mcpServers ?? {}) as Record<string, unknown>
   const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
-  const portableMcpJsPath = toPortablePath(mcpJsPath)
-  const portablePkgRoot = toPortablePath(pkgRoot)
-  const expectedMcpEntry = buildMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const portableMcpJsPath = toPortablePath(context.mcpJsPath)
+  const portablePkgRoot = toPortablePath(context.pkgRoot)
+  const expectedMcpEntry = buildClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
     : deepEqual(existingMcp, expectedMcpEntry)
       ? "current"
       : "stale"
 
-  const statusLabel = (s: HookStatus): string =>
-    s === "current" ? "already installed" : s === "stale" ? "update available" : "not installed"
-
-  console.log("Components:")
-  console.log(`  MCP server:    ${statusLabel(mcpStatus)}`)
+  console.log("Claude Code:")
+  console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
   console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
   console.log(`  Wakeup hook:       ${statusLabel(wakeupStatus)}`)
   console.log(`  Session-end hook:  ${statusLabel(sessionEndStatus)}`)
-
-  if (hasLegacyAutosave) console.log("  Legacy hook:   PostToolUse/Stop → will migrate")
-  if (hasLegacyWakeup) console.log("  Legacy hook:   PreToolUse/Task → will migrate")
-  if (hasLegacySessionEnd) console.log("  Legacy hook:   SessionEnd → will remove")
-  if (hasLegacyPreCompact) console.log("  Legacy hook:   PreCompact → will remove")
-  if (hasLegacyMcp) console.log("  Legacy MCP:    settings.json → will migrate to .mcp.json")
+  if (hasLegacyAutosave) console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
+  if (hasLegacyWakeup) console.log("  Legacy hook:       PreToolUse/Task -> will migrate")
+  if (hasLegacySessionEnd) console.log("  Legacy hook:       SessionEnd -> will remove")
+  if (hasLegacyPreCompact) console.log("  Legacy hook:       PreCompact -> will remove")
+  if (hasLegacyMcp) console.log("  Legacy MCP:        settings.json -> will migrate to .mcp.json")
 
   const allCurrent =
     autosaveStatus === "current" &&
@@ -380,145 +586,298 @@ async function runInstall(opts: { yes?: boolean; project?: string }): Promise<vo
     !hasLegacyMcp
 
   if (allCurrent) {
-    console.log()
-    console.log("Everything is already installed.")
+    console.log("  Everything is already installed.")
     return
   }
 
   console.log()
+  const proceed = await confirm(rl, "Install Lore Claude Code integration for this project?")
+  if (!proceed) {
+    console.log("  Skipped.")
+    return
+  }
 
-  // --- Phase 4: Confirm and write ---
+  const merged: Record<string, unknown> = { ...settings }
+  const mergedHooks: Record<string, unknown> = {
+    ...((settings.hooks as Record<string, unknown>) ?? {}),
+  }
 
-  const rl = skipPrompts ? null : createInterface({ input: process.stdin, output: process.stdout })
+  if (autosaveStatus !== "current") {
+    mergedHooks["Stop"] = mergeClaudeHookEntries(
+      hooks["Stop"],
+      "autosave.sh",
+      context.autosavePath,
+      { matcher: "", timeout: 10000 },
+    )
+  }
+
+  if (wakeupStatus !== "current") {
+    mergedHooks["UserPromptSubmit"] = mergeClaudeHookEntries(
+      hooks["UserPromptSubmit"],
+      "wakeup.sh",
+      context.wakeupPath,
+      { matcher: "", timeout: 10000, runOnce: true },
+    )
+  }
+
+  if (hasLegacyAutosave) {
+    mergedHooks["PostToolUse"] = removeClaudeScriptEntries(hooks["PostToolUse"], "autosave.sh")
+    if (!mergedHooks["PostToolUse"]) delete mergedHooks["PostToolUse"]
+  }
+  if (hasLegacyWakeup) {
+    mergedHooks["PreToolUse"] = removeClaudeScriptEntries(hooks["PreToolUse"], "wakeup.sh")
+    if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
+  }
+  if (hasLegacySessionEnd) {
+    mergedHooks["SessionEnd"] = removeClaudeScriptEntries(hooks["SessionEnd"], "autosave.sh")
+    if (!mergedHooks["SessionEnd"]) delete mergedHooks["SessionEnd"]
+  }
+  if (sessionEndStatus !== "current") {
+    mergedHooks["SessionEnd"] = mergeClaudeHookEntries(
+      mergedHooks["SessionEnd"] as ClaudeHookEntry[] | undefined,
+      "session-end.sh",
+      context.sessionEndPath,
+      { matcher: "" },
+    )
+  }
+  if (hasLegacyPreCompact) {
+    mergedHooks["PreCompact"] = removeClaudeScriptEntries(hooks["PreCompact"], "autosave.sh")
+    if (!mergedHooks["PreCompact"]) delete mergedHooks["PreCompact"]
+  }
+
+  merged.hooks = mergedHooks
+
+  if (hasLegacyMcp) {
+    const stale = { ...((settings.mcpServers as Record<string, unknown>) ?? {}) }
+    delete stale["lore"]
+    if (Object.keys(stale).length > 0) {
+      merged.mcpServers = stale
+    } else {
+      delete merged.mcpServers
+    }
+  }
+
+  const settingsDisplay = settingsPath.replace(homedir(), "~")
+  console.log()
+  console.log(`  Writing: ${settingsDisplay}`)
+  await writeJsonFile(settingsPath, merged)
+
+  if (mcpStatus !== "current") {
+    const mergedMcpJson: Record<string, unknown> = { ...mcpJson }
+    mergedMcpJson.mcpServers = {
+      ...((mcpJson.mcpServers as Record<string, unknown>) ?? {}),
+      lore: expectedMcpEntry,
+    }
+
+    const mcpJsonDisplay = mcpJsonPath.replace(homedir(), "~")
+    console.log(`  Writing: ${mcpJsonDisplay}`)
+    await writeJsonFile(mcpJsonPath, mergedMcpJson)
+
+    if (!portableMcpJsPath.startsWith("${HOME}")) {
+      console.warn()
+      console.warn("  Warning: lore is installed outside your home directory")
+      console.warn(`    (${context.pkgRoot}).`)
+      console.warn("  The generated .mcp.json uses an absolute path and is not")
+      console.warn("  portable across machines - avoid committing it, or reinstall")
+      console.warn("  lore under ~/.lore so the path can use ${HOME}.")
+    }
+  }
+
+  console.log()
+  if (mcpStatus !== "current") console.log("  MCP server:        installed (.mcp.json)")
+  if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
+  if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
+  if (sessionEndStatus !== "current") console.log("  Session-end hook:  installed")
+  if (hasLegacyMcp) console.log("  Legacy MCP:        removed from settings.json")
+  console.log("  Restart Claude Code for changes to take effect.")
+}
+
+async function runCodexInstall(
+  context: InstallContext,
+  rl: ReturnType<typeof createInterface> | null,
+): Promise<void> {
+  const codexConfigPath = join(context.projectDir, ".codex", "config.toml")
+  const codexHooksPath = join(context.projectDir, ".codex", "hooks.json")
+  const codexConfig = await readTextSafe(codexConfigPath)
+  const codexHooksJson = await readJsonSafe(codexHooksPath)
+  const codexHooks = (codexHooksJson.hooks ?? {}) as Record<string, CodexHookEntry[]>
+
+  const expectedMcpSection = buildCodexMcpSection(context.mcpJsPath)
+  const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
+  const hooksFeatureValue = extractTomlKeyValue(codexConfig, "features", "codex_hooks")
+  const wakeupCommand = buildCodexHookCommand(context.wakeupPath)
+  const autosaveCommand = buildCodexHookCommand(context.autosavePath)
+
+  const mcpStatus: HookStatus = !existingMcpSection
+    ? "missing"
+    : existingMcpSection.trim() === expectedMcpSection.trim()
+      ? "current"
+      : "stale"
+  const hooksFeatureStatus: HookStatus =
+    hooksFeatureValue == null
+      ? "missing"
+      : hooksFeatureValue === "true"
+        ? "current"
+        : "stale"
+  const wakeupStatus = detectCodexHook(codexHooks["SessionStart"], "wakeup.sh", wakeupCommand)
+  const autosaveStatus = detectCodexHook(codexHooks["Stop"], "autosave.sh", autosaveCommand)
+
+  console.log("Codex:")
+  console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
+  console.log(`  Hooks feature:     ${statusLabel(hooksFeatureStatus)}`)
+  console.log(`  Wakeup hook:       ${statusLabel(wakeupStatus)}`)
+  console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
+
+  const allCurrent =
+    mcpStatus === "current" &&
+    hooksFeatureStatus === "current" &&
+    wakeupStatus === "current" &&
+    autosaveStatus === "current"
+
+  if (allCurrent) {
+    console.log("  Everything is already installed.")
+    return
+  }
+
+  console.log()
+  const proceed = await confirm(rl, "Install Lore Codex integration for this project?")
+  if (!proceed) {
+    console.log("  Skipped.")
+    return
+  }
+
+  let nextConfig = codexConfig
+  nextConfig = removeTomlTableGroup(nextConfig, "mcp_servers.lore")
+  nextConfig = upsertTomlTableKey(nextConfig, "features", "codex_hooks", "true")
+  nextConfig = appendTomlBlock(nextConfig, expectedMcpSection)
+
+  let nextHookEvents = stripCodexScriptFromAllEvents(codexHooks, "wakeup.sh")
+  nextHookEvents = stripCodexScriptFromAllEvents(nextHookEvents, "autosave.sh")
+  nextHookEvents["SessionStart"] = mergeCodexHookEntries(
+    nextHookEvents["SessionStart"],
+    "wakeup.sh",
+    wakeupCommand,
+    {
+      matcher: "startup|resume",
+      statusMessage: "Loading Lore context",
+    },
+  )
+  nextHookEvents["Stop"] = mergeCodexHookEntries(
+    nextHookEvents["Stop"],
+    "autosave.sh",
+    autosaveCommand,
+    {
+      timeout: 30,
+      statusMessage: "Saving Lore context",
+    },
+  )
+
+  const nextHooksJson: Record<string, unknown> = {
+    ...codexHooksJson,
+    hooks: nextHookEvents,
+  }
+
+  if (nextConfig !== codexConfig) {
+    const configDisplay = codexConfigPath.replace(homedir(), "~")
+    console.log()
+    console.log(`  Writing: ${configDisplay}`)
+    await writeTextFile(codexConfigPath, nextConfig)
+  }
+
+  if (!deepEqual(nextHooksJson, codexHooksJson)) {
+    const hooksDisplay = codexHooksPath.replace(homedir(), "~")
+    console.log(`  Writing: ${hooksDisplay}`)
+    await writeJsonFile(codexHooksPath, nextHooksJson)
+  }
+
+  const portableMcpJsPath = toPortablePath(context.mcpJsPath)
+  if (!portableMcpJsPath.startsWith("${HOME}")) {
+    console.warn()
+    console.warn("  Warning: lore is installed outside your home directory")
+    console.warn(`    (${context.pkgRoot}).`)
+    console.warn("  The generated .codex/config.toml uses an absolute path and is not")
+    console.warn("  portable across machines - avoid committing it, or reinstall")
+    console.warn("  lore under ~/.lore so the path can use ${HOME}.")
+  }
+
+  console.log()
+  if (mcpStatus !== "current") console.log("  MCP server:        installed (.codex/config.toml)")
+  if (hooksFeatureStatus !== "current") console.log("  Hooks feature:     enabled")
+  if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
+  if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
+  console.log("  Start a new Codex session after trusting this project.")
+  console.log("  Codex only loads project-scoped .codex/* files for trusted projects.")
+}
+
+async function runInstall(opts: {
+  client: InstallClient
+  yes?: boolean
+  project?: string
+}): Promise<void> {
+  const context = await prepareInstallContext(opts)
+
+  const title =
+    opts.client === "claude"
+      ? "Claude Code Integration"
+      : opts.client === "codex"
+        ? "Codex Integration"
+        : "AI Assistant Integration"
+
+  console.log()
+  console.log(`Lore — ${title}`)
+  console.log("─".repeat(40))
+  console.log(`Project: ${context.projectDir}`)
+  console.log()
+
+  await printPrerequisites(context.projectDir)
+  console.log()
+
+  const rl = context.skipPrompts
+    ? null
+    : createInterface({ input: process.stdin, output: process.stdout })
 
   try {
-    const proceed = await confirm(rl, "Install Lore integration for this project?")
-    if (!proceed) {
-      console.log("Cancelled.")
-      return
+    if (opts.client === "claude" || opts.client === "both") {
+      await runClaudeInstall(context, rl)
     }
-
-    const merged: Record<string, unknown> = { ...settings }
-
-    // Merge hooks
-    const mergedHooks: Record<string, unknown> = {
-      ...((settings.hooks as Record<string, unknown>) ?? {}),
+    if (opts.client === "both") console.log()
+    if (opts.client === "codex" || opts.client === "both") {
+      await runCodexInstall(context, rl)
     }
-
-    if (autosaveStatus !== "current") {
-      mergedHooks["Stop"] = mergeHookEntries(
-        hooks["Stop"],
-        "autosave.sh",
-        autosavePath,
-        { matcher: "", timeout: 10000 }
-      )
-    }
-
-    if (wakeupStatus !== "current") {
-      mergedHooks["UserPromptSubmit"] = mergeHookEntries(
-        hooks["UserPromptSubmit"],
-        "wakeup.sh",
-        wakeupPath,
-        { matcher: "", timeout: 10000, runOnce: true }
-      )
-    }
-
-    // Clean up legacy registrations from old broken config
-    if (hasLegacyAutosave) {
-      mergedHooks["PostToolUse"] = removeScriptEntries(hooks["PostToolUse"], "autosave.sh")
-      if (!mergedHooks["PostToolUse"]) delete mergedHooks["PostToolUse"]
-    }
-    if (hasLegacyWakeup) {
-      mergedHooks["PreToolUse"] = removeScriptEntries(hooks["PreToolUse"], "wakeup.sh")
-      if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
-    }
-    if (hasLegacySessionEnd) {
-      // Remove legacy autosave.sh from SessionEnd — distinct from session-end.sh
-      mergedHooks["SessionEnd"] = removeScriptEntries(hooks["SessionEnd"], "autosave.sh")
-      if (!mergedHooks["SessionEnd"]) delete mergedHooks["SessionEnd"]
-    }
-    // Register session-end.sh after legacy cleanup so the base array is clean
-    if (sessionEndStatus !== "current") {
-      mergedHooks["SessionEnd"] = mergeHookEntries(
-        mergedHooks["SessionEnd"] as HookEntry[] | undefined,
-        "session-end.sh",
-        sessionEndPath,
-        { matcher: "" }
-      )
-    }
-    if (hasLegacyPreCompact) {
-      mergedHooks["PreCompact"] = removeScriptEntries(hooks["PreCompact"], "autosave.sh")
-      if (!mergedHooks["PreCompact"]) delete mergedHooks["PreCompact"]
-    }
-
-    merged.hooks = mergedHooks
-
-    // Remove stale MCP config from settings.json (legacy location)
-    if (hasLegacyMcp) {
-      const stale = { ...((settings.mcpServers as Record<string, unknown>) ?? {}) }
-      delete stale["lore"]
-      if (Object.keys(stale).length > 0) {
-        merged.mcpServers = stale
-      } else {
-        delete merged.mcpServers
-      }
-    }
-
-    const displayPath = settingsPath.replace(homedir(), "~")
-    console.log()
-    console.log(`Writing: ${displayPath}`)
-    await writeJsonFile(settingsPath, merged)
-
-    // Write MCP server to .mcp.json (project scope — where Claude Code reads it).
-    // .mcp.json is typically committed to the consumer repo and shared across
-    // machines, so prefer `${HOME}/…` over absolute paths whenever the package
-    // lives under the current user's home directory.
-    if (mcpStatus !== "current") {
-      const mergedMcpJson: Record<string, unknown> = { ...mcpJson }
-      mergedMcpJson.mcpServers = {
-        ...((mcpJson.mcpServers as Record<string, unknown>) ?? {}),
-        lore: expectedMcpEntry,
-      }
-
-      const mcpJsonDisplay = mcpJsonPath.replace(homedir(), "~")
-      console.log(`Writing: ${mcpJsonDisplay}`)
-      await writeJsonFile(mcpJsonPath, mergedMcpJson)
-
-      if (!portableMcpJsPath.startsWith("${HOME}")) {
-        console.warn()
-        console.warn("  Warning: lore is installed outside your home directory")
-        console.warn(`    (${pkgRoot}).`)
-        console.warn("  The generated .mcp.json uses an absolute path and is not")
-        console.warn("  portable across machines — avoid committing it, or reinstall")
-        console.warn("  lore under ~/.lore so the path can use ${HOME}.")
-      }
-    }
-
-    console.log()
-    if (mcpStatus !== "current") console.log("  MCP server:        installed (.mcp.json)")
-    if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
-    if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
-    if (sessionEndStatus !== "current") console.log("  Session-end hook:  installed")
-    if (hasLegacyMcp) console.log("  Legacy MCP:        removed from settings.json")
-
-    console.log()
-    console.log("Restart Claude Code for changes to take effect.")
   } finally {
     rl?.close()
   }
 }
 
-// ---------------------------------------------------------------------------
-// Command
-// ---------------------------------------------------------------------------
+export function parseInstallClient(value: string | undefined): InstallClient | null {
+  if (!value) return "both"
+  if (value === "claude" || value === "codex") {
+    return value
+  }
+  return null
+}
 
 export const installCommand = new Command("install")
-  .description("Install Claude Code hooks and MCP server for the current project")
+  .description("Install Claude Code and Codex integration for the current project")
+  .option(
+    "--client <assistant>",
+    "assistant to configure: claude or codex (default: both)",
+  )
   .option("--project <path>", "project directory (default: cwd)")
   .option("-y, --yes", "skip confirmation prompts")
-  .action(async (opts: { project?: string; yes?: boolean }) => {
+  .action(async (opts: { client?: string; project?: string; yes?: boolean }) => {
     try {
-      await runInstall(opts)
+      const client = parseInstallClient(opts.client)
+      if (!client) {
+        console.error("Install failed: --client must be one of claude or codex.")
+        process.exit(1)
+      }
+
+      await runInstall({
+        client,
+        project: opts.project,
+        yes: opts.yes,
+      })
     } catch (err) {
       console.error("Install failed:", err instanceof Error ? err.message : err)
       process.exit(1)
