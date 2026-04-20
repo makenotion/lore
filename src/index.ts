@@ -13,6 +13,14 @@ export type {
   UpdateMemoryInput,
   SearchMemoriesInput,
   MemorySource,
+  MemoryKind,
+  MemoryStatus,
+  MemoryConfidence,
+  Decision,
+  DecisionSummary,
+  DecisionStatus,
+  CreateDecisionInput,
+  ListDecisionsOpts,
   Fact,
   CreateFactInput,
   FactPredicate,
@@ -42,6 +50,7 @@ export { initServices } from "./services.js"
 export { TopicService } from "./core/topic.js"
 export { MemoryService } from "./core/memory.js"
 export { FactService } from "./core/fact.js"
+export { DecisionService } from "./core/decision.js"
 export { resolveProject } from "./core/context.js"
 export type { OAuthCredentials, OAuthConfig } from "./auth/oauth.js"
 export { runOAuthFlow, loadCredentials, getAuthorizationUrl } from "./auth/oauth.js"
