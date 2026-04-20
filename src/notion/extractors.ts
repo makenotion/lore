@@ -23,43 +23,50 @@ export function isFullPage(
 
 type PropertyValue = PageObjectResponse["properties"][string]
 
-export function extractTitle(prop: PropertyValue): string {
-  if (prop.type === "title") {
+/**
+ * All extractors accept `undefined` so callers can safely pass
+ * `page.properties["SomeColumn"]` without guarding against the column being
+ * absent from the schema (e.g., on pre-migration pages). When the property
+ * is missing or the wrong type, the extractor returns its documented default.
+ */
+
+export function extractTitle(prop: PropertyValue | undefined): string {
+  if (prop && prop.type === "title") {
     return prop.title.map((t: { plain_text: string }) => t.plain_text).join("")
   }
   return ""
 }
 
-export function extractRichText(prop: PropertyValue): string {
-  if (prop.type === "rich_text") {
+export function extractRichText(prop: PropertyValue | undefined): string {
+  if (prop && prop.type === "rich_text") {
     return prop.rich_text.map((t: { plain_text: string }) => t.plain_text).join("")
   }
   return ""
 }
 
-export function extractSelect(prop: PropertyValue, fallback: string): string {
-  if (prop.type === "select" && prop.select) {
+export function extractSelect(prop: PropertyValue | undefined, fallback: string): string {
+  if (prop && prop.type === "select" && prop.select) {
     return prop.select.name
   }
   return fallback
 }
 
-export function extractMultiSelect(prop: PropertyValue): string[] {
-  if (prop.type === "multi_select") {
+export function extractMultiSelect(prop: PropertyValue | undefined): string[] {
+  if (prop && prop.type === "multi_select") {
     return prop.multi_select.map((s: { name: string }) => s.name)
   }
   return []
 }
 
-export function extractRelationIds(prop: PropertyValue): string[] {
-  if (prop.type === "relation") {
+export function extractRelationIds(prop: PropertyValue | undefined): string[] {
+  if (prop && prop.type === "relation") {
     return prop.relation.map((r: { id: string }) => r.id)
   }
   return []
 }
 
-export function extractDate(prop: PropertyValue): string | null {
-  if (prop.type === "date" && prop.date) {
+export function extractDate(prop: PropertyValue | undefined): string | null {
+  if (prop && prop.type === "date" && prop.date) {
     return prop.date.start
   }
   return null

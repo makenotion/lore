@@ -41,7 +41,38 @@ export class VaultManager {
 
   async load(): Promise<Vault> {
     this.vault = await verifyVaultDatabases(this.client, this.pageId)
+    // Best-effort drift detection — surfaces a stderr warning when the live
+    // schema is behind the code. Never blocks or throws: transient API errors
+    // during the check should not prevent the vault from loading.
+    this.detectDrift().catch(() => {})
     return this.vault
+  }
+
+  /**
+   * Compare live schema to expected schema read-only. When drift is found,
+   * emit a stderr warning nudging the user to run `lore migrate`. Does not
+   * throw and does not write anything.
+   */
+  private async detectDrift(): Promise<void> {
+    if (!this.vault) return
+    const diffs = await migrateVaultSchema(this.client, this.vault, { dryRun: true })
+    const missingProps = diffs.reduce((n, d) => n + d.missing.length, 0)
+    const missingOptions = diffs.reduce(
+      (n, d) => n + d.addedOptions.reduce((m, a) => m + a.options.length, 0),
+      0
+    )
+    if (missingProps === 0 && missingOptions === 0) return
+    const parts: string[] = []
+    if (missingProps > 0) {
+      parts.push(`${missingProps} propert${missingProps === 1 ? "y" : "ies"}`)
+    }
+    if (missingOptions > 0) {
+      parts.push(`${missingOptions} select option${missingOptions === 1 ? "" : "s"}`)
+    }
+    console.error(
+      `[lore] Schema drift detected: ${parts.join(" and ")} missing. ` +
+        "Run `lore migrate` to update your vault."
+    )
   }
 
   get(): Vault {

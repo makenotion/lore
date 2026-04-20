@@ -76,11 +76,20 @@ export function topicsProperties(projectsDbId: string): PropertyConfig {
 export const MEMORIES_DB_TITLE = "Memories"
 export const MEMORIES_DB_ICON = "🧠"
 
+/**
+ * Build Memories DB property config.
+ *
+ * `memoriesDsId` is optional: during initial database creation, self-relations
+ * cannot reference a data source that doesn't exist yet, so the Memories DB is
+ * first created without `Supersedes`/`Affects`, then patched post-creation with
+ * those properties. During schema migration the DS ID is always available.
+ */
 export function memoriesProperties(
   projectsDbId: string,
-  topicsDbId: string
+  topicsDbId: string,
+  memoriesDsId?: string
 ): PropertyConfig {
-  return {
+  const base: PropertyConfig = {
     Title: { title: {} },
     Project: {
       relation: {
@@ -105,10 +114,88 @@ export function memoriesProperties(
         ],
       },
     },
+    Kind: {
+      select: {
+        options: [
+          { name: "note", color: "default" },
+          { name: "decision", color: "blue" },
+          { name: "incident", color: "red" },
+          { name: "runbook", color: "green" },
+          { name: "postmortem", color: "orange" },
+          { name: "policy", color: "purple" },
+        ],
+      },
+    },
+    Status: {
+      select: {
+        options: [
+          { name: "informational", color: "default" },
+          { name: "proposed", color: "yellow" },
+          { name: "accepted", color: "green" },
+          { name: "superseded", color: "gray" },
+          { name: "deprecated", color: "brown" },
+          { name: "rejected", color: "red" },
+        ],
+      },
+    },
+    Confidence: {
+      select: {
+        options: [
+          { name: "certain", color: "green" },
+          { name: "likely", color: "yellow" },
+          { name: "speculative", color: "orange" },
+        ],
+      },
+    },
+    "Review By": { date: {} },
+    "Decided At": { date: {} },
+    Alternatives: { rich_text: {} },
+    Consequences: { rich_text: {} },
     Author: { rich_text: {} },
     Agent: { rich_text: {} },
     Tags: { multi_select: { options: [] } },
     Session: { rich_text: {} },
+  }
+
+  if (memoriesDsId) {
+    base["Supersedes"] = {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDsId,
+      },
+    }
+    base["Affects"] = {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDsId,
+      },
+    }
+  }
+
+  return base
+}
+
+/**
+ * Self-relation properties for the Memories DB. Used by `createVaultDatabases`
+ * to patch `Supersedes` and `Affects` in as a second step once the database
+ * (and its data source ID) exists.
+ */
+export function memoriesSelfRelationProperties(
+  memoriesDsId: string
+): PropertyConfig {
+  return {
+    Supersedes: {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDsId,
+      },
+    },
+    Affects: {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDsId,
+      },
+    },
   }
 }
 
@@ -141,6 +228,11 @@ export function factsProperties(
           { name: "needs_action", color: "red" },
           { name: "waiting_on", color: "orange" },
           { name: "blocked_by", color: "red" },
+          // Decision-graph predicates. Created exclusively by DecisionService
+          // / `lore-decide` — not exposed through `lore-learn`.
+          { name: "decided_by", color: "blue" },
+          { name: "supersedes_decision", color: "gray" },
+          { name: "informs", color: "pink" },
         ],
       },
     },
@@ -222,6 +314,15 @@ export function buildMemoryProps(input: {
   projectIds?: string[]
   topicId?: string
   source?: string
+  kind?: string
+  status?: string
+  confidence?: string
+  reviewBy?: string | null
+  decidedAt?: string | null
+  supersedesIds?: string[]
+  affectsIds?: string[]
+  alternatives?: string
+  consequences?: string
   author?: string
   agent?: string
   tags?: string[]
@@ -238,6 +339,34 @@ export function buildMemoryProps(input: {
   }
   if (input.source) {
     props["Source"] = { select: { name: input.source } }
+  }
+  if (input.kind) {
+    props["Kind"] = { select: { name: input.kind } }
+  }
+  if (input.status) {
+    props["Status"] = { select: { name: input.status } }
+  }
+  if (input.confidence) {
+    props["Confidence"] = { select: { name: input.confidence } }
+  }
+  // `null` explicitly clears a date; `undefined` leaves it untouched.
+  if (input.reviewBy !== undefined) {
+    props["Review By"] = input.reviewBy ? { date: { start: input.reviewBy } } : { date: null }
+  }
+  if (input.decidedAt !== undefined) {
+    props["Decided At"] = input.decidedAt ? { date: { start: input.decidedAt } } : { date: null }
+  }
+  if (input.supersedesIds) {
+    props["Supersedes"] = { relation: input.supersedesIds.map((id) => ({ id })) }
+  }
+  if (input.affectsIds) {
+    props["Affects"] = { relation: input.affectsIds.map((id) => ({ id })) }
+  }
+  if (input.alternatives !== undefined) {
+    props["Alternatives"] = { rich_text: [{ text: { content: input.alternatives } }] }
+  }
+  if (input.consequences !== undefined) {
+    props["Consequences"] = { rich_text: [{ text: { content: input.consequences } }] }
   }
   if (input.author) {
     props["Author"] = { rich_text: [{ text: { content: input.author } }] }

@@ -18,6 +18,7 @@ import {
   MEMORIES_DB_TITLE,
   MEMORIES_DB_ICON,
   memoriesProperties,
+  memoriesSelfRelationProperties,
   FACTS_DB_TITLE,
   FACTS_DB_ICON,
   factsProperties,
@@ -73,6 +74,8 @@ export async function createVaultDatabases(
   )
 
   // 3. Memories (depends on Projects + Topics)
+  // Self-relations (Supersedes, Affects) are added after creation — Notion
+  // cannot resolve `data_source_id = self` during `databases.create`.
   const memoriesDb = await client.databases.create(
     createDbArgs(
       pageId,
@@ -81,6 +84,15 @@ export async function createVaultDatabases(
       memoriesProperties(dsId(projectsDb as unknown as Record<string, unknown>), dsId(topicsDb as unknown as Record<string, unknown>))
     )
   )
+
+  // 3b. Patch Memories DB with self-relation properties.
+  const memoriesDsId = dsId(memoriesDb as unknown as Record<string, unknown>)
+  await client.dataSources.update({
+    data_source_id: memoriesDsId,
+    properties: memoriesSelfRelationProperties(memoriesDsId) as Parameters<
+      Client["dataSources"]["update"]
+    >[0]["properties"],
+  })
 
   // 4. Facts (depends on Projects + Memories)
   const factsDb = await client.databases.create(
@@ -113,18 +125,103 @@ export async function createVaultDatabases(
 }
 
 /**
- * Per-database summary of a migration run: which property names exist
- * in the expected schema but are missing from the live data source.
+ * Per-database summary of a migration run: which property names are missing
+ * from the live data source, and which select/multi_select properties are
+ * missing option values that the expected schema defines.
  */
 export interface MigrationDiff {
   database: keyof VaultDatabases
+  /** Property names present in the expected schema but absent from the live DB. */
   missing: string[]
+  /** Per-property new select option names that need to be appended. */
+  addedOptions: Array<{ property: string; options: string[] }>
+}
+
+/**
+ * An option on a live select/multi_select property, carrying its internal
+ * Notion-assigned ID so option updates can preserve it (rather than creating
+ * duplicate options with the same name).
+ */
+interface LiveSelectOption {
+  id?: string
+  name: string
+  color?: string
+}
+
+/**
+ * Compute how a single expected select/multi_select property differs from
+ * the live property. Returns `null` if the property isn't a select type, if
+ * the types mismatch, or if there are no new options to add.
+ *
+ * When there ARE new options, returns the merged property config to send
+ * via `dataSources.update` — live options keep their internal `id` (so Notion
+ * preserves them), new options are sent without IDs (Notion assigns new ones).
+ */
+export function computeSelectOptionDiff(
+  propertyName: string,
+  liveProperty: unknown,
+  expectedProperty: unknown
+): {
+  property: string
+  newOptions: string[]
+  mergedProperty: Record<string, unknown>
+} | null {
+  const selectType = detectSelectType(liveProperty)
+  if (!selectType) return null
+  if (detectSelectType(expectedProperty) !== selectType) return null
+
+  const live = liveProperty as Record<string, Record<string, unknown>>
+  const expected = expectedProperty as Record<string, Record<string, unknown>>
+
+  const liveOptions = extractOptions(live[selectType])
+  const expectedOptions = extractOptions(expected[selectType])
+
+  const liveNames = new Set(liveOptions.map((o) => o.name))
+  const newOptions = expectedOptions.filter((o) => !liveNames.has(o.name))
+  if (newOptions.length === 0) return null
+
+  // Preserve live IDs on existing options, append new options without IDs.
+  const merged: LiveSelectOption[] = [
+    ...liveOptions.map((o) => ({
+      ...(o.id ? { id: o.id } : {}),
+      name: o.name,
+      ...(o.color ? { color: o.color } : {}),
+    })),
+    ...newOptions.map((o) => ({
+      name: o.name,
+      ...(o.color ? { color: o.color } : {}),
+    })),
+  ]
+
+  return {
+    property: propertyName,
+    newOptions: newOptions.map((o) => o.name),
+    mergedProperty: { [selectType]: { options: merged } },
+  }
+}
+
+function detectSelectType(prop: unknown): "select" | "multi_select" | null {
+  if (!prop || typeof prop !== "object") return null
+  if ("select" in prop) return "select"
+  if ("multi_select" in prop) return "multi_select"
+  return null
+}
+
+function extractOptions(config: unknown): LiveSelectOption[] {
+  if (!config || typeof config !== "object") return []
+  const opts = (config as { options?: unknown }).options
+  if (!Array.isArray(opts)) return []
+  return opts.filter(
+    (o): o is LiveSelectOption =>
+      typeof o === "object" && o !== null && typeof (o as { name?: unknown }).name === "string"
+  )
 }
 
 /**
  * Compare the expected property schema against each live data source and
- * add any properties that are missing. Never renames or removes anything
- * — additions only, to keep vaults stable across Lore versions.
+ * add any properties or select options that are missing. Never renames or
+ * removes anything — additions only, to keep vaults stable across Lore
+ * versions.
  *
  * Idempotent: re-running against an up-to-date vault issues no writes.
  */
@@ -137,7 +234,11 @@ export async function migrateVaultSchema(
   const expectedByDb: Record<keyof VaultDatabases, AnyProperties> = {
     projects: projectsProperties,
     topics: topicsProperties(db.projects.dataSourceId),
-    memories: memoriesProperties(db.projects.dataSourceId, db.topics.dataSourceId),
+    memories: memoriesProperties(
+      db.projects.dataSourceId,
+      db.topics.dataSourceId,
+      db.memories.dataSourceId
+    ),
     facts: factsProperties(db.projects.dataSourceId, db.memories.dataSourceId),
   }
 
@@ -149,18 +250,32 @@ export async function migrateVaultSchema(
 
     const live = await client.dataSources.retrieve({ data_source_id: dsId })
     const liveProps = (live as { properties: Record<string, unknown> }).properties
+
+    // Phase 1: detect missing property names.
     const missing = Object.keys(expected).filter((name) => !(name in liveProps))
 
-    diffs.push({ database: key, missing })
+    // Phase 2: detect missing select options on properties that exist in both.
+    const addedOptions: Array<{ property: string; options: string[] }> = []
+    const optionUpdates: AnyProperties = {}
+    for (const name of Object.keys(expected)) {
+      if (!(name in liveProps)) continue
+      const diff = computeSelectOptionDiff(name, liveProps[name], expected[name])
+      if (!diff) continue
+      addedOptions.push({ property: diff.property, options: diff.newOptions })
+      optionUpdates[name] = diff.mergedProperty
+    }
 
-    if (missing.length === 0 || options.dryRun) continue
+    diffs.push({ database: key, missing, addedOptions })
 
-    const additions: AnyProperties = {}
-    for (const name of missing) additions[name] = expected[name]
+    if (missing.length === 0 && addedOptions.length === 0) continue
+    if (options.dryRun) continue
+
+    const updateProps: AnyProperties = { ...optionUpdates }
+    for (const name of missing) updateProps[name] = expected[name]
 
     await client.dataSources.update({
       data_source_id: dsId,
-      properties: additions as Parameters<
+      properties: updateProps as Parameters<
         Client["dataSources"]["update"]
       >[0]["properties"],
     })

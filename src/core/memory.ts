@@ -22,6 +22,9 @@ import type {
   UpdateMemoryInput,
   SearchMemoriesInput,
   MemorySource,
+  MemoryKind,
+  MemoryStatus,
+  MemoryConfidence,
   DatabaseRef,
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
@@ -33,6 +36,7 @@ import {
   extractSelect,
   extractMultiSelect,
   extractRelationIds,
+  extractDate,
 } from "../notion/extractors.js"
 
 export class MemoryService {
@@ -50,6 +54,15 @@ export class MemoryService {
         projectIds: input.projectIds,
         topicId: input.topicId,
         source: input.source ?? "manual",
+        kind: input.kind,
+        status: input.status,
+        confidence: input.confidence,
+        reviewBy: input.reviewBy,
+        decidedAt: input.decidedAt,
+        supersedesIds: input.supersedesIds,
+        affectsIds: input.affectsIds,
+        alternatives: input.alternatives,
+        consequences: input.consequences,
         author: input.author,
         agent: input.agent,
         tags: input.tags,
@@ -94,6 +107,42 @@ export class MemoryService {
         multi_select: input.tags.map((t) => ({ name: t })),
       }
     }
+    if (input.kind) {
+      props["Kind"] = { select: { name: input.kind } }
+    }
+    if (input.status) {
+      props["Status"] = { select: { name: input.status } }
+    }
+    if (input.confidence) {
+      props["Confidence"] = { select: { name: input.confidence } }
+    }
+    // `null` explicitly clears a date; `undefined` leaves it untouched.
+    if (input.reviewBy !== undefined) {
+      props["Review By"] = input.reviewBy
+        ? { date: { start: input.reviewBy } }
+        : { date: null }
+    }
+    if (input.decidedAt !== undefined) {
+      props["Decided At"] = input.decidedAt
+        ? { date: { start: input.decidedAt } }
+        : { date: null }
+    }
+    if (input.supersedesIds) {
+      props["Supersedes"] = { relation: input.supersedesIds.map((id) => ({ id })) }
+    }
+    if (input.affectsIds) {
+      props["Affects"] = { relation: input.affectsIds.map((id) => ({ id })) }
+    }
+    if (input.alternatives !== undefined) {
+      props["Alternatives"] = {
+        rich_text: [{ text: { content: input.alternatives } }],
+      }
+    }
+    if (input.consequences !== undefined) {
+      props["Consequences"] = {
+        rich_text: [{ text: { content: input.consequences } }],
+      }
+    }
 
     if (Object.keys(props).length > 0) {
       await this.client.pages.update({
@@ -129,13 +178,17 @@ export class MemoryService {
     projectId?: string
     topicId?: string
     source?: MemorySource
+    kind?: MemoryKind
+    status?: MemoryStatus
+    reviewBefore?: string
     limit?: number
     since?: string
     until?: string
     /**
      * When false, skip the per-page markdown fetch and return memories with
-     * `content: ""`. Use for list views that render only title/date/tags —
-     * avoids N+1 `retrieveMarkdown` calls on every wake-up.
+     * `content: ""`. Use for index-tier listings (decisions, wake-up
+     * summaries) and list views that render only title/date/tags — avoids
+     * N+1 `retrieveMarkdown` calls.
      */
     includeContent?: boolean
     /**
@@ -169,6 +222,24 @@ export class MemoryService {
       filters.push({
         property: "Source",
         select: { equals: opts.source },
+      })
+    }
+    if (opts?.kind) {
+      filters.push({
+        property: "Kind",
+        select: { equals: opts.kind },
+      })
+    }
+    if (opts?.status) {
+      filters.push({
+        property: "Status",
+        select: { equals: opts.status },
+      })
+    }
+    if (opts?.reviewBefore) {
+      filters.push({
+        property: "Review By",
+        date: { on_or_before: opts.reviewBefore },
       })
     }
     if (opts?.since) {
@@ -263,22 +334,43 @@ export class MemoryService {
   }
 
   private pageToMemory(page: PageObjectResponse, content?: string): Memory {
-    const props = page.properties
-    const topicIds = extractRelationIds(props["Topic"])
+    return pageToMemory(page, content)
+  }
+}
 
-    return {
-      id: page.id,
-      title: extractTitle(props["Title"]),
-      projectIds: extractRelationIds(props["Project"]),
-      topicId: topicIds[0] ?? null,
-      source: extractSelect(props["Source"], "manual") as MemorySource,
-      author: extractRichText(props["Author"]),
-      agent: extractRichText(props["Agent"]),
-      tags: extractMultiSelect(props["Tags"]),
-      session: extractRichText(props["Session"]),
-      content: content ?? "",
-      createdAt: page.created_time,
-      updatedAt: page.last_edited_time,
-    }
+/**
+ * Convert a Notion page object to a `Memory` domain type. Pure function —
+ * exported for unit testing. The hardened extractors guarantee graceful
+ * defaults for pages that pre-date any schema addition: a pre-migration
+ * page returns `kind: "note"`, `status: "informational"`, etc.
+ */
+export function pageToMemory(page: PageObjectResponse, content?: string): Memory {
+  const props = page.properties
+  const topicIds = extractRelationIds(props["Topic"])
+
+  return {
+    id: page.id,
+    title: extractTitle(props["Title"]),
+    projectIds: extractRelationIds(props["Project"]),
+    topicId: topicIds[0] ?? null,
+    source: extractSelect(props["Source"], "manual") as MemorySource,
+    // Decision-related columns. Pre-migration pages default gracefully
+    // via the hardened extractors — no backfill required.
+    kind: extractSelect(props["Kind"], "note") as MemoryKind,
+    status: extractSelect(props["Status"], "informational") as MemoryStatus,
+    confidence: extractSelect(props["Confidence"], "certain") as MemoryConfidence,
+    reviewBy: extractDate(props["Review By"]),
+    decidedAt: extractDate(props["Decided At"]),
+    supersedesIds: extractRelationIds(props["Supersedes"]),
+    affectsIds: extractRelationIds(props["Affects"]),
+    alternatives: extractRichText(props["Alternatives"]),
+    consequences: extractRichText(props["Consequences"]),
+    author: extractRichText(props["Author"]),
+    agent: extractRichText(props["Agent"]),
+    tags: extractMultiSelect(props["Tags"]),
+    session: extractRichText(props["Session"]),
+    content: content ?? "",
+    createdAt: page.created_time,
+    updatedAt: page.last_edited_time,
   }
 }

@@ -82,12 +82,50 @@ export interface CreateTopicInput {
 
 export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | "digest"
 
+/**
+ * What kind of memory this is. Used as a server-side discriminator so
+ * tools like `lore-list-decisions` can filter without post-processing.
+ */
+export type MemoryKind =
+  | "note"
+  | "decision"
+  | "incident"
+  | "runbook"
+  | "postmortem"
+  | "policy"
+
+/**
+ * Lifecycle state for memories that have one. Non-decision memories
+ * (e.g., plain notes) default to `informational`.
+ */
+export type MemoryStatus =
+  | "informational"
+  | "proposed"
+  | "accepted"
+  | "superseded"
+  | "deprecated"
+  | "rejected"
+
+/**
+ * Confidence calibration for memories. Parallels `FactConfidence`.
+ */
+export type MemoryConfidence = "certain" | "likely" | "speculative"
+
 export interface Memory {
   id: string
   title: string
   projectIds: string[]
   topicId: string | null
   source: MemorySource
+  kind: MemoryKind
+  status: MemoryStatus
+  confidence: MemoryConfidence
+  reviewBy: string | null
+  decidedAt: string | null
+  supersedesIds: string[]
+  affectsIds: string[]
+  alternatives: string
+  consequences: string
   author: string
   agent: string
   tags: string[]
@@ -103,6 +141,15 @@ export interface CreateMemoryInput {
   projectIds?: string[]
   topicId?: string
   source?: MemorySource
+  kind?: MemoryKind
+  status?: MemoryStatus
+  confidence?: MemoryConfidence
+  reviewBy?: string
+  decidedAt?: string
+  supersedesIds?: string[]
+  affectsIds?: string[]
+  alternatives?: string
+  consequences?: string
   author?: string
   agent?: string
   tags?: string[]
@@ -115,6 +162,15 @@ export interface UpdateMemoryInput {
   projectIds?: string[]
   topicId?: string
   tags?: string[]
+  kind?: MemoryKind
+  status?: MemoryStatus
+  confidence?: MemoryConfidence
+  reviewBy?: string | null
+  decidedAt?: string | null
+  supersedesIds?: string[]
+  affectsIds?: string[]
+  alternatives?: string
+  consequences?: string
 }
 
 export interface SearchMemoriesInput {
@@ -122,7 +178,65 @@ export interface SearchMemoriesInput {
   projectId?: string
   topicId?: string
   tags?: string[]
+  kind?: MemoryKind
+  status?: MemoryStatus
   limit?: number
+}
+
+// ---------------------------------------------------------------------------
+// Decision (a Memory with Kind = "decision")
+// ---------------------------------------------------------------------------
+
+/**
+ * Narrowed lifecycle for decisions — excludes `informational` since every
+ * decision has an explicit lifecycle state.
+ */
+export type DecisionStatus = Exclude<MemoryStatus, "informational">
+
+/**
+ * A decision is a Memory where `kind === "decision"`. Exposed as a distinct
+ * type so downstream code can narrow against the discriminator without
+ * runtime checks.
+ */
+export type Decision = Memory & { kind: "decision" }
+
+/**
+ * Lightweight decision summary — no markdown body. Returned by
+ * `DecisionService.list()` and tools that page through decisions without
+ * fetching content (avoids the N+1 `retrieveMarkdown` cost).
+ */
+export type DecisionSummary = Omit<Decision, "content">
+
+export interface CreateDecisionInput {
+  /** One-line decision statement. Becomes the page title. */
+  decision: string
+  /** Prose explaining why the decision was made. Becomes the page body. */
+  rationale: string
+  projectIds?: string[]
+  topicId?: string
+  status?: DecisionStatus
+  confidence?: MemoryConfidence
+  reviewBy?: string
+  decidedAt?: string
+  /** Memory IDs this decision supersedes. */
+  supersedesIds?: string[]
+  /** Memory IDs this decision affects (for auto-created `decided_by` facts). */
+  affectsIds?: string[]
+  alternatives?: string
+  consequences?: string
+  tags?: string[]
+  agent?: string
+  session?: string
+}
+
+export interface ListDecisionsOpts {
+  projectId?: string
+  status?: DecisionStatus
+  /** Return only decisions with `Review By` on or before this date. */
+  reviewBefore?: string
+  limit?: number
+  since?: string
+  until?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +257,11 @@ export type FactPredicate =
   | "needs_action"
   | "waiting_on"
   | "blocked_by"
+  // Decision-graph predicates — created exclusively by DecisionService.
+  // Not exposed through `lore-learn` to keep the decision graph consistent.
+  | "decided_by"
+  | "supersedes_decision"
+  | "informs"
 
 /** Predicates that represent open loops / tracked items. */
 export const TRACKING_PREDICATES: FactPredicate[] = [
