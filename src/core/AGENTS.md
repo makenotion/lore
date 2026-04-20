@@ -10,15 +10,16 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 
 ## Files
 
-| File         | Class/Function     | Responsibility                                 |
-| ------------ | ------------------ | ---------------------------------------------- |
-| `vault.ts`   | `VaultManager`     | Init/load vault, get database IDs, count stats |
-| `project.ts` | `ProjectService`   | CRUD for projects, findByPath, findByName      |
-| `topic.ts`   | `TopicService`     | CRUD for topics, getOrCreate, listByProject    |
-| `memory.ts`  | `MemoryService`    | CRUD + list + semantic search for memories     |
-| `fact.ts`    | `FactService`      | Knowledge graph triples with temporal validity |
-| `context.ts` | `resolveProject()` | Match cwd to a project via longest prefix      |
-| `wakeup.ts`  | `loadWakeUpData()` | Aggregate digest + memories + facts for wake-up surfaces (MCP tool + shell hook) |
+| File          | Class/Function     | Responsibility                                             |
+| ------------- | ------------------ | ---------------------------------------------------------- |
+| `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
+| `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
+| `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
+| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories                 |
+| `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
+| `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
+| `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
+| `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts for wake-up surfaces (MCP tool + shell hook) |
 
 ## Service Class Pattern
 
@@ -123,6 +124,47 @@ The `FactService` provides two query methods:
 
 Both methods exclude invalidated facts by default.
 
+## Decision Service
+
+`DecisionService` wraps the decision-specific read/write paths in the Memories
+DB — pages where `Kind = decision`. It uses the same `DatabaseRef` as
+`MemoryService` (they share the Memories DB) but exposes decision-flavored
+methods. Pattern:
+
+```typescript
+const decisions = new DecisionService(client, db.memories)
+```
+
+Key behaviors:
+
+- `create()` always sets `Kind = decision`, defaults `Status = accepted` and
+  `Decided At = today` unless the caller overrides.
+- `list()` and `queryOverdue()` skip markdown body fetches, returning
+  `DecisionSummary[]` — O(1) API calls regardless of result count.
+- `supersede(newId, oldId)` writes in a deliberate order: the new decision's
+  `Supersedes` relation first, then the old decision's `Status = superseded`.
+  If the second write fails, the system is in "new points at old; old still
+  accepted" — a visible, re-runnable inconsistency. Reverse ordering would
+  orphan the old decision as superseded with no successor. Do not change the
+  order.
+- `getDecisionChain()` uses a visited-set guard to terminate on cycles (a
+  bidirectional supersession would otherwise loop forever).
+
+**Rule**: `DecisionService` only writes to the Memories DB. It never creates
+facts. The `decided_by` and `supersedes_decision` graph edges are created at
+the MCP tool layer (`src/mcp/tools/decisions.ts`) where the tool handler
+orchestrates `decisions` + `facts` together — consistent with how
+`lore-remember` orchestrates `topics` + `memories`.
+
+## Schema Drift Detection
+
+`VaultManager.load()` fires a non-blocking `detectDrift()` check that runs the
+same diff logic as `lore migrate` but read-only. If drift is found, a stderr
+warning is emitted nudging the user to run `lore migrate`. Failures in the
+check are silently swallowed — the vault still loads. Reads on drifted vaults
+keep working via extractor fallbacks; writes that need missing properties
+fail at the Notion API with a 400.
+
 ## Extractors Dependency
 
 All services import property extractors from `src/notion/extractors.ts`. The
@@ -133,7 +175,9 @@ into a domain type using these extractors.
 | ---------------- | ----------------- | ----------- |
 | `ProjectService` | `pageToProject()` | `Project`   |
 | `TopicService`   | `pageToTopic()`   | `Topic`     |
-| `MemoryService`  | `pageToMemory()`  | `Memory`    |
+| `MemoryService`  | `pageToMemory()` (module-level exported) | `Memory`    |
+| `FactService`    | `pageToFact()`    | `Fact`      |
+| `DecisionService` | uses `pageToMemory()` + type-narrowing cast | `Decision` |
 | `FactService`    | `pageToFact()`    | `Fact`      |
 
 **Rule**: If you add a new database property, you must:

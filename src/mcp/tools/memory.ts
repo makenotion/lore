@@ -3,6 +3,29 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
+import type { MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
+
+const KINDS = [
+  "note",
+  "decision",
+  "incident",
+  "runbook",
+  "postmortem",
+  "policy",
+] as const
+
+const STATUSES = [
+  "informational",
+  "proposed",
+  "accepted",
+  "superseded",
+  "deprecated",
+  "rejected",
+] as const
+
+const CONFIDENCES = ["certain", "likely", "speculative"] as const
+
+const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -14,7 +37,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       title: "Save a memory",
       description:
         "Save a new memory to the vault. The memory content is stored verbatim as a Notion page. " +
-        "If no project is specified, uses the auto-detected project from the current working directory.",
+        "If no project is specified, uses the auto-detected project from the current working directory.\n\n" +
+        "For architectural decisions, prefer `lore-decide` — it captures structured rationale, supersession chains, and participates in `lore-audit` and `lore-wake-up`.",
       inputSchema: {
         title: z.string().describe("A short descriptive title for this memory"),
         content: z.string().describe("The full content to remember (markdown supported)"),
@@ -36,12 +60,49 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(["conversation", "file", "manual", "agent_diary", "digest"])
           .optional()
           .describe("How this memory was captured (default: conversation)"),
+        kind: z
+          .enum(KINDS)
+          .optional()
+          .describe("Memory kind (default: note). Use `lore-decide` for decisions instead."),
+        status: z
+          .enum(STATUSES)
+          .optional()
+          .describe("Lifecycle state (default: informational). Applies mostly to runbooks/incidents."),
+        confidence: z
+          .enum(CONFIDENCES)
+          .optional()
+          .describe("Confidence level (default: certain)"),
+        reviewBy: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("Date (YYYY-MM-DD) when this memory should be reviewed for staleness"),
+        decidedAt: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("Canonical date (YYYY-MM-DD) this content was decided/captured"),
         tags: z.array(z.string()).optional().describe("Tags for categorization"),
         agent: z.string().optional().describe("Name of the AI agent saving this memory"),
         session: z.string().optional().describe("Session ID to group related memories"),
       },
     },
-    async ({ title, content, projectName, projectNames, topicName, source, tags, agent, session }) => {
+    async ({
+      title,
+      content,
+      projectName,
+      projectNames,
+      topicName,
+      source,
+      kind,
+      status,
+      confidence,
+      reviewBy,
+      decidedAt,
+      tags,
+      agent,
+      session,
+    }) => {
       try {
         const resolved = await resolveProjectIds(services, projectName, projectNames)
 
@@ -61,6 +122,11 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
           topicId,
           source: source ?? "conversation",
+          kind: kind as MemoryKind | undefined,
+          status: status as MemoryStatus | undefined,
+          confidence: confidence as MemoryConfidence | undefined,
+          reviewBy,
+          decidedAt,
           tags,
           agent,
           session,
@@ -97,11 +163,21 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       title: "Search memories",
       description:
         "Semantic search across memories in the vault. Uses Notion's built-in " +
-        "search which includes vector similarity matching. Can be scoped to a specific project or topic.",
+        "search which includes vector similarity matching. Can be scoped to a specific project or topic.\n\n" +
+        "`kind` and `status` are applied as post-filters on the search results because `client.search()` " +
+        "does not support property filters — use `lore-recall` for server-side filtered listings.",
       inputSchema: {
         query: z.string().describe("Natural language search query"),
         projectName: z.string().optional().describe("Scope search to a specific project"),
         tags: z.array(z.string()).optional().describe("Filter by tags (matches any)"),
+        kind: z
+          .enum(KINDS)
+          .optional()
+          .describe("Post-filter by memory kind"),
+        status: z
+          .enum(STATUSES)
+          .optional()
+          .describe("Post-filter by lifecycle status"),
         limit: z
           .number()
           .int()
@@ -112,7 +188,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ query, projectName, tags, limit }) => {
+    async ({ query, projectName, tags, kind, status, limit }) => {
       try {
         let projectId: string | undefined
 
@@ -123,12 +199,21 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectId = services.context.project.id
         }
 
-        const results = await services.memories.search({
+        const searchResults = await services.memories.search({
           query,
           projectId,
           tags,
-          limit: limit ?? 10,
+          // Over-fetch slightly so post-filters don't starve the output.
+          limit: Math.min((limit ?? 10) * 2, 50),
         })
+
+        // Post-filter by kind/status since Notion's search API doesn't
+        // support property filters. These are native typed properties on
+        // each returned memory thanks to the extractor fallbacks.
+        let results = searchResults
+        if (kind) results = results.filter((m) => m.kind === kind)
+        if (status) results = results.filter((m) => m.status === status)
+        results = results.slice(0, limit ?? 10)
 
         if (results.length === 0) {
           return {
@@ -140,6 +225,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .map((m) => {
             const meta = [
               m.source,
+              m.kind !== "note" ? m.kind : null,
+              m.status !== "informational" ? m.status : null,
               m.tags.length > 0 ? m.tags.join(", ") : null,
               m.updatedAt.split("T")[0],
             ]
@@ -172,8 +259,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     {
       title: "Recall recent memories",
       description:
-        "Get the most recent memories, optionally filtered by project, topic, or source type. " +
-        "Useful for catching up on what happened recently in a project.",
+        "Get the most recent memories, optionally filtered by project, topic, source type, kind, or status. " +
+        "Useful for catching up on what happened recently in a project. Filters are applied server-side via " +
+        "`dataSources.query` — use `lore-search` for vector similarity matching.",
       inputSchema: {
         projectName: z.string().optional().describe("Filter by project name"),
         topicName: z.string().optional().describe("Filter by topic name"),
@@ -181,6 +269,19 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(["conversation", "file", "manual", "agent_diary", "digest"])
           .optional()
           .describe("Filter by source type"),
+        kind: z
+          .enum(KINDS)
+          .optional()
+          .describe("Filter by memory kind (e.g., `decision`, `incident`, `runbook`)"),
+        status: z
+          .enum(STATUSES)
+          .optional()
+          .describe("Filter by lifecycle status"),
+        reviewBefore: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("Only return memories with `Review By` on or before this date"),
         limit: z
           .number()
           .int()
@@ -188,10 +289,16 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .max(50)
           .optional()
           .describe("Max results (default 10)"),
+        includeContent: z
+          .boolean()
+          .optional()
+          .describe(
+            "Include each memory's markdown body (default true). Set false for fast index-tier listings."
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ projectName, topicName, source, limit }) => {
+    async ({ projectName, topicName, source, kind, status, reviewBefore, limit, includeContent }) => {
       try {
         let projectId: string | undefined
         let topicId: string | undefined
@@ -212,7 +319,11 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectId,
           topicId,
           source,
+          kind: kind as MemoryKind | undefined,
+          status: status as MemoryStatus | undefined,
+          reviewBefore,
           limit: limit ?? 10,
+          includeContent,
         })
 
         if (memories.length === 0) {
@@ -222,10 +333,18 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         }
 
         const text = memories
-          .map(
-            (m) =>
-              `### ${m.title}\n*${m.source} | ${m.updatedAt.split("T")[0]}*\n\n${m.content || "(content not loaded)"}`
-          )
+          .map((m) => {
+            const meta = [
+              m.source,
+              m.kind !== "note" ? m.kind : null,
+              m.status !== "informational" ? m.status : null,
+              m.updatedAt.split("T")[0],
+            ]
+              .filter(Boolean)
+              .join(" | ")
+            const body = includeContent === false ? "" : `\n\n${m.content || "(content not loaded)"}`
+            return `### ${m.title}\n*${meta}*${body}`
+          })
           .join("\n\n---\n\n")
 
         return {
@@ -273,7 +392,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     "lore-update",
     {
       title: "Update a memory",
-      description: "Update an existing memory's title, content, tags, or categorization.",
+      description:
+        "Update an existing memory's title, content, tags, kind, status, or other metadata. " +
+        "Any field not provided is left untouched.",
       inputSchema: {
         memoryId: z.string().describe("The memory ID to update"),
         title: z.string().optional().describe("New title"),
@@ -282,9 +403,55 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         projectName: z.string().optional().describe("Move to a different project"),
         projectNames: z.array(z.string()).optional().describe("Set multiple project associations"),
         topicName: z.string().optional().describe("Move to a different topic"),
+        kind: z.enum(KINDS).optional().describe("New memory kind"),
+        status: z.enum(STATUSES).optional().describe("New lifecycle status"),
+        confidence: z.enum(CONFIDENCES).optional().describe("New confidence level"),
+        reviewBy: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("New review-by date (YYYY-MM-DD)"),
+        decidedAt: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("New canonical decision date (YYYY-MM-DD)"),
+        supersedesIds: z
+          .array(z.string())
+          .optional()
+          .describe("Replace the Supersedes relation with these decision IDs"),
+        affectsIds: z
+          .array(z.string())
+          .optional()
+          .describe("Replace the Affects relation with these memory IDs"),
+        alternatives: z
+          .string()
+          .optional()
+          .describe("Alternatives text (replaces existing)"),
+        consequences: z
+          .string()
+          .optional()
+          .describe("Consequences text (replaces existing)"),
       },
     },
-    async ({ memoryId, title, content, tags, projectName, projectNames, topicName }) => {
+    async ({
+      memoryId,
+      title,
+      content,
+      tags,
+      projectName,
+      projectNames,
+      topicName,
+      kind,
+      status,
+      confidence,
+      reviewBy,
+      decidedAt,
+      supersedesIds,
+      affectsIds,
+      alternatives,
+      consequences,
+    }) => {
       try {
         let projectIds: string[] | undefined
         let topicId: string | undefined
@@ -308,6 +475,15 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           tags,
           projectIds,
           topicId,
+          kind: kind as MemoryKind | undefined,
+          status: status as MemoryStatus | undefined,
+          confidence: confidence as MemoryConfidence | undefined,
+          reviewBy,
+          decidedAt,
+          supersedesIds,
+          affectsIds,
+          alternatives,
+          consequences,
         })
 
         const lines = [`Updated memory: "${updated.title}" (${updated.id})`]
