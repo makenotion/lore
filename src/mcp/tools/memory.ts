@@ -453,6 +453,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       try {
         let projectIds: string[] | undefined
         let topicId: string | undefined
+        let topicLabel: string | undefined
         const warnings: string[] = []
 
         if (projectNames?.length || projectName) {
@@ -460,9 +461,31 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
           warnings.push(...resolved.warnings)
         }
-        if (topicName && projectIds && projectIds.length > 0) {
-          const topic = await services.topics.getOrCreate(topicName, projectIds)
+        if (topicName) {
+          // Topics are scoped to projects. Prefer an explicit project from
+          // this call; otherwise fall back to the memory's existing Project
+          // relation so `lore-update({ memoryId, topicName })` works without
+          // restating a project the memory is already in. Finally fall back
+          // to the auto-detected context project.
+          let topicScope = projectIds
+          if (!topicScope || topicScope.length === 0) {
+            const current = await services.memories.getById(memoryId)
+            if (current.projectIds.length > 0) {
+              topicScope = current.projectIds
+            } else if (services.context.project) {
+              topicScope = [services.context.project.id]
+            }
+          }
+          if (!topicScope || topicScope.length === 0) {
+            throw new Error(
+              `Cannot set topicName="${topicName}": no project scope available. ` +
+                `The memory has no Project relation and no project was passed or auto-detected. ` +
+                `Pass projectName or projectNames.`
+            )
+          }
+          const topic = await services.topics.getOrCreate(topicName, topicScope)
           topicId = topic.id
+          topicLabel = topic.name
         }
 
         const updated = await services.memories.update(memoryId, {
@@ -483,6 +506,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         })
 
         const lines = [`Updated memory: "${updated.title}" (${updated.id})`]
+        if (topicLabel) {
+          lines.push(`Topic: ${topicLabel}`)
+        }
         if (warnings.length > 0) {
           lines.push(`Warnings: ${warnings.join("; ")}`)
         }
