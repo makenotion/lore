@@ -300,6 +300,12 @@ export interface CreateFactInput {
 // Config (.lore.yaml)
 // ---------------------------------------------------------------------------
 
+export interface ProjectConfig {
+  name: string
+  path: string
+  tags?: string[]
+}
+
 export interface LoreConfig {
   vault: {
     pageId: string
@@ -308,11 +314,7 @@ export interface LoreConfig {
     token?: string
     baseUrl?: string
   }
-  projects?: Array<{
-    name: string
-    path: string
-    tags?: string[]
-  }>
+  projects?: ProjectConfig[]
   detect?: {
     patterns?: string[]
     exclude?: string[]
@@ -333,4 +335,10 @@ export interface ResolvedContext {
   vault: Vault
   project: Project | null
   cwd: string
+  /**
+   * True when `project` was resolved by falling back to a monorepo catch-all
+   * (a config entry with path `"."` or `""`). Save tools use this to surface
+   * a warning prompting the agent to scope memories to a sub-project.
+   */
+  isCatchAllFallback: boolean
 }

@@ -15,7 +15,17 @@ export interface HookConfig {
   saveInterval: number
   autoSave: boolean
   wakeUp: boolean
-  projectName: string | null
+  /**
+   * Name of the catch-all project (path `"."` or `""`) in this workspace, if
+   * configured. The save prompts name it explicitly and tell the AI to avoid
+   * defaulting to it for sub-project-specific work.
+   */
+  catchAllName: string | null
+  /**
+   * Non-catch-all project names from the config, in declaration order. Used
+   * by the save prompts to enumerate the buckets the AI should pick from.
+   */
+  subProjects: string[]
 }
 
 /**
@@ -27,12 +37,14 @@ export interface HookConfig {
  */
 export function mergeHookDefaults(
   hooks: LoreConfig["hooks"] | undefined,
-  projectName: string | null = null,
+  catchAllName: string | null = null,
+  subProjects: string[] = [],
 ): HookConfig {
   return {
     saveInterval: hooks?.saveInterval ?? DEFAULT_SAVE_INTERVAL,
     autoSave: hooks?.autoSave ?? true,
     wakeUp: hooks?.wakeUp ?? true,
-    projectName,
+    catchAllName,
+    subProjects,
   }
 }

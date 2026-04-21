@@ -70,16 +70,23 @@ export function registerFooTools(
 4. **annotations**: Set `readOnlyHint: true` for tools that only read data.
    Set `destructiveHint: true` for tools that delete or archive.
 
-5. **Project resolution**: Most tools accept an optional `projectName` parameter.
-   When absent, use `services.context.project` (auto-detected from cwd). The
-   pattern:
+5. **Project resolution**: Most tools accept an optional `projectName` /
+   `projectNames` parameter. For **write** tools (memory, knowledge,
+   decisions) prefer `resolveProjectIds(services, projectName, projectNames)`
+   from `resolve.ts`. For **read** tools, use `services.context.project`
+   directly. The write-path resolver handles the catch-all warning:
+
    ```typescript
-   let projectId = services.context.project?.id
-   if (projectName) {
-     const found = await services.projects.findByName(projectName)
-     if (found) projectId = found.id
-   }
+   const resolved = await resolveProjectIds(services, projectName, projectNames)
+   // resolved.ids → project IDs to persist
+   // resolved.warnings → surface in the tool response
    ```
+
+   When the auto-detected context is a monorepo catch-all (config entry with
+   path `"."`), and no explicit project was named, `resolveProjectIds` adds
+   a warning naming the candidate sub-projects. The warning surfaces via the
+   existing `Warnings: …` line in save tool responses — no display-layer
+   changes needed per tool.
 
 6. **Return format**: Always return `{ content: [{ type: "text", text: "..." }] }`.
    Format output as readable markdown when returning multiple items.

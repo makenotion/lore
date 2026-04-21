@@ -7,7 +7,8 @@ describe("mergeHookDefaults", () => {
     expect(config.wakeUp).toBe(true)
     expect(config.autoSave).toBe(true)
     expect(config.saveInterval).toBe(5)
-    expect(config.projectName).toBeNull()
+    expect(config.catchAllName).toBeNull()
+    expect(config.subProjects).toEqual([])
   })
 
   it("respects hooks.wakeUp: false from config", () => {
@@ -21,9 +22,10 @@ describe("mergeHookDefaults", () => {
     expect(config.autoSave).toBe(true)
   })
 
-  it("carries the supplied project name through unchanged", () => {
-    const config = mergeHookDefaults({ wakeUp: false }, "Server")
-    expect(config.projectName).toBe("Server")
+  it("carries the catch-all name and sub-project list through unchanged", () => {
+    const config = mergeHookDefaults({ wakeUp: false }, "Mail", ["Mail Backend", "Mail Web"])
+    expect(config.catchAllName).toBe("Mail")
+    expect(config.subProjects).toEqual(["Mail Backend", "Mail Web"])
     expect(config.wakeUp).toBe(false)
   })
 

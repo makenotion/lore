@@ -26,6 +26,7 @@ export type {
   FactPredicate,
   FactConfidence,
   LoreConfig,
+  ProjectConfig,
   ResolvedContext,
 } from "./types.js"
 
@@ -51,6 +52,12 @@ export { TopicService } from "./core/topic.js"
 export { MemoryService } from "./core/memory.js"
 export { FactService } from "./core/fact.js"
 export { DecisionService } from "./core/decision.js"
-export { resolveProject } from "./core/context.js"
+export {
+  resolveProject,
+  isCatchAllProject,
+  subProjectNames,
+  catchAllProjectName,
+} from "./core/context.js"
+export type { ProjectResolution } from "./core/context.js"
 export type { OAuthCredentials, OAuthConfig } from "./auth/oauth.js"
 export { runOAuthFlow, loadCredentials, getAuthorizationUrl } from "./auth/oauth.js"

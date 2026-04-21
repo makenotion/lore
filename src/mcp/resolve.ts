@@ -3,6 +3,7 @@
  */
 
 import type { LoreServices } from "../services.js"
+import { subProjectNames } from "../core/context.js"
 
 export interface ResolvedProjects {
   ids: string[]
@@ -15,6 +16,11 @@ export interface ResolvedProjects {
  *
  * Returns warnings for any names that couldn't be resolved so callers
  * can surface them to the user.
+ *
+ * When the auto-detected project was a monorepo catch-all, a warning is
+ * attached so the agent can re-scope the memory if the work actually
+ * belonged to a specific sub-project. Explicitly-named projects never
+ * trigger the catch-all warning — if the agent picked, we trust the pick.
  */
 export async function resolveProjectIds(
   services: LoreServices,
@@ -39,8 +45,22 @@ export async function resolveProjectIds(
   }
 
   // Fall back to auto-detected project
+  const { project, isCatchAllFallback } = services.context
+  const warnings: string[] = []
+
+  if (project && isCatchAllFallback) {
+    const candidates = subProjectNames(services.config)
+    if (candidates.length > 0) {
+      warnings.push(
+        `Scoped to catch-all "${project.name}" (monorepo-wide). ` +
+          `Sub-projects available: ${candidates.join(", ")}. ` +
+          `If this belongs to a specific sub-project, pass projectName or projectNames on future calls.`,
+      )
+    }
+  }
+
   return {
-    ids: services.context.project ? [services.context.project.id] : [],
-    warnings: [],
+    ids: project ? [project.id] : [],
+    warnings,
   }
 }

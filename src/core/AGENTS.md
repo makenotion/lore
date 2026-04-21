@@ -56,13 +56,32 @@ from the working directory. The algorithm:
 1. Compute the relative path from the config root (directory containing
    `.lore.yaml`) to the current working directory.
 2. If cwd is outside the config root (relative path starts with `..`), return
-   `null`.
+   `{ project: null, isCatchAllFallback: false }`.
 3. Iterate over projects defined in `.lore.yaml`. For each, check if the
-   project's `path` is a prefix of the relative path.
+   project's `path` is a prefix of the relative path. A project with path
+   `"."` or `""` is a **catch-all** — it matches every cwd inside the config
+   root with length 0, so any sub-project prefix wins over it.
 4. Select the project with the **longest matching prefix** (most specific match).
 5. Look up the matched project in Notion by path first, then by name.
 
 This supports monorepo layouts where projects map to subdirectories.
+
+**Return shape**: `resolveProject()` returns `ProjectResolution`, not a bare
+`Project | null`. Callers that care about scope accuracy read
+`isCatchAllFallback` to detect when the auto-resolved project is the monorepo
+catch-all, so they can surface a warning or prompt for explicit selection.
+`candidates` holds the non-catch-all project names from the config for use in
+those warnings. Two helpers expose these concepts independently:
+
+- `isCatchAllProject(project)` — structural check on a single config entry.
+- `subProjectNames(config)` / `catchAllProjectName(config)` — read directly
+  from config without walking cwd.
+
+The MCP save layer (`src/mcp/resolve.ts`) uses the cached
+`services.context.isCatchAllFallback` flag to add a warning to any save that
+falls back to the catch-all without an explicit `projectName`. Hook-local
+prompt construction (`src/hooks/helpers.ts`) re-derives sub-projects from the
+config without API calls for the same purpose.
 
 ## Memory Content Storage
 

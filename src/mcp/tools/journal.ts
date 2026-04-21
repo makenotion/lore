@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
+import { resolveProjectIds } from "../resolve.js"
 
 export function registerJournalTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -14,10 +15,20 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
       description:
         "Write a journal entry for the current agent session. Journal entries " +
         "are memories with source type 'agent_diary'. Use this to record session " +
-        "notes, observations, or decisions made during a conversation.",
+        "notes, observations, or decisions made during a conversation. " +
+        "If no project is specified, uses the auto-detected project from cwd — " +
+        "in a monorepo, pass projectName explicitly to land in the right sub-project.",
       inputSchema: {
         title: z.string().describe("Journal entry title"),
         content: z.string().describe("Journal entry content (markdown supported)"),
+        projectName: z
+          .string()
+          .optional()
+          .describe("Project name. Defaults to auto-detected project from cwd."),
+        projectNames: z
+          .array(z.string())
+          .optional()
+          .describe("Multiple project names when the journal entry spans projects."),
         agent: z.string().optional().describe("Agent name (e.g., 'Claude Code', 'Codex')"),
         session: z
           .string()
@@ -26,29 +37,27 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
         tags: z.array(z.string()).optional().describe("Tags for categorization"),
       },
     },
-    async ({ title, content, agent, session, tags }) => {
+    async ({ title, content, projectName, projectNames, agent, session, tags }) => {
       try {
-        const projectIds = services.context.project
-          ? [services.context.project.id]
-          : undefined
+        const resolved = await resolveProjectIds(services, projectName, projectNames)
 
         const memory = await services.memories.create({
           title,
           content,
-          projectIds,
+          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
           source: "agent_diary",
           agent: agent ?? "unknown",
           session,
           tags,
         })
 
+        const lines = [`Journal entry saved: "${memory.title}" (${memory.id})`]
+        if (resolved.warnings.length > 0) {
+          lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
+        }
+
         return {
-          content: [
-            {
-              type: "text",
-              text: `Journal entry saved: "${memory.title}" (${memory.id})`,
-            },
-          ],
+          content: [{ type: "text", text: lines.join("\n") }],
         }
       } catch (err) {
         return toolError(err)

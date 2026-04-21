@@ -50,7 +50,7 @@ export async function initServicesFromConfig(
   // index-tier listings without body fetch).
   const decisions = new DecisionService(client, db.memories)
 
-  const project = await resolveProject(cwd, configRoot, config, projects)
+  const resolution = await resolveProject(cwd, configRoot, config, projects)
 
   return {
     vault,
@@ -61,8 +61,9 @@ export async function initServicesFromConfig(
     decisions,
     context: {
       vault: vault.get(),
-      project,
+      project: resolution.project,
       cwd,
+      isCatchAllFallback: resolution.isCatchAllFallback,
     },
     config,
     configRoot,
