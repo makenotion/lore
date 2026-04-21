@@ -181,6 +181,13 @@ export interface SearchMemoriesInput {
   kind?: MemoryKind
   status?: MemoryStatus
   limit?: number
+  /**
+   * When false, skip the per-page `retrieveMarkdown` round-trip and return
+   * memories with `content: ""`. Used by callers that render only title /
+   * date / tags — e.g. the shell wake-up hook's related-memories section —
+   * so the hot path doesn't pay N+1 markdown fetches.
+   */
+  includeContent?: boolean
 }
 
 // ---------------------------------------------------------------------------

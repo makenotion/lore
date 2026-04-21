@@ -310,13 +310,19 @@ async function wakeup(): Promise<void> {
   }
   const project = services.context.project
 
-  let digest, memories, openLoops, knowledgeFacts
+  let digest, memories, openLoops, knowledgeFacts, relatedMemories
   try {
-    ;({ digest, memories, openLoops, knowledgeFacts } = await loadWakeUpData(services, {
-      projectId: project?.id,
-      // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
-      includeMemoryContent: false,
-    }))
+    ;({ digest, memories, openLoops, knowledgeFacts, relatedMemories } = await loadWakeUpData(
+      services,
+      {
+        projectId: project?.id,
+        // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
+        includeMemoryContent: false,
+        // Hook never renders decisions — skip the two Notion queries so
+        // session-start latency doesn't regress on the hot path.
+        includeDecisions: false,
+      },
+    ))
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
@@ -383,6 +389,13 @@ async function wakeup(): Promise<void> {
           `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}${review})`,
         )
       }
+    }
+  }
+
+  if (relatedMemories.length > 0) {
+    sections.push("\n## Related to Open Loops")
+    for (const mem of relatedMemories) {
+      sections.push(`- **${mem.title}** (${mem.source}, ${mem.updatedAt.split("T")[0]})`)
     }
   }
 

@@ -91,7 +91,7 @@ lower-token starting point than a long stream of individual memories.
 | Tool           | Description                                            |
 | -------------- | ------------------------------------------------------ |
 | `lore-status`  | Show vault status, database counts, and active project |
-| `lore-wake-up` | Load latest digest, recent memories, open loops, and decisions needing attention |
+| `lore-wake-up` | Load latest digest, recent memories, open loops, decisions needing attention, and memories related to the open loops already in scope |
 
 ### Memory
 
@@ -163,9 +163,12 @@ Shell hooks for automated integration with AI coding assistants:
   Works in both Claude Code and Codex.
 
 - **Wake-up** (`hooks/wakeup.sh`): Loads the latest project digest (if one was
-  saved in the last 7 days), plus recent memories and active facts for the
-  current project. Claude Code injects it on `UserPromptSubmit`; Codex injects
-  it on `SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to skip this
+  saved in the last 7 days), plus recent memories, active facts, and any
+  memories relevance-matched against the entities already surfaced as open
+  loops — one semantic query scored against memory titles and bodies, so the
+  context behind each outstanding loop comes in alongside the loop itself.
+  Claude Code injects it on `UserPromptSubmit`; Codex injects it on
+  `SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to skip this
   injection for both assistants. If `.lore.yaml` fails to parse, the hook falls
   back to the default (on) and writes a `[lore]` warning to stderr.
 

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest"
-import type { PageObjectResponse } from "@notionhq/client"
-import { pageToMemory } from "./memory.js"
+import { describe, expect, it, vi } from "vitest"
+import type { Client, PageObjectResponse } from "@notionhq/client"
+import { MemoryService, pageToMemory } from "./memory.js"
+import type { DatabaseRef } from "../types.js"
 
 /**
  * Build a synthetic `PageObjectResponse` with only the properties listed.
@@ -128,6 +129,150 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.tags).toEqual(["architecture", "core"])
     expect(memory.session).toBe("sess-42")
     expect(memory.content).toBe("Rationale prose.")
+  })
+})
+
+describe("MemoryService.search", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildSearchPage(
+    id: string,
+    title: string,
+    opts: {
+      parentDb?: string
+      parentDataSource?: string
+      parentType?: "database_id" | "data_source_id"
+      tags?: string[]
+    } = {},
+  ): PageObjectResponse {
+    const parentType = opts.parentType ?? "database_id"
+    const parent =
+      parentType === "data_source_id"
+        ? {
+            type: "data_source_id" as const,
+            data_source_id: opts.parentDataSource ?? db.dataSourceId,
+          }
+        : {
+            type: "database_id" as const,
+            database_id: opts.parentDb ?? db.databaseId,
+          }
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: {
+          type: "multi_select",
+          multi_select: (opts.tags ?? []).map((name) => ({ name })),
+        },
+      },
+      { id, parent } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("requests relevance-ranked results — no sort parameter — with a 100-page fetch window", async () => {
+    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "autolabel", limit: 5 })
+
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+    const args = searchSpy.mock.calls[0][0]
+    expect(args["query"]).toBe("autolabel")
+    expect(args["page_size"]).toBe(100)
+    // Critical: without `sort`, Notion ranks by relevance. With `sort`, it
+    // ranks by the given timestamp and demotes the query to a filter.
+    expect(args).not.toHaveProperty("sort")
+  })
+
+  it("filters to the Memories database and caps at the caller's limit before fetching markdown", async () => {
+    const client = {
+      search: vi.fn(async () => ({
+        results: [
+          // Three pages belong to the memories DB.
+          buildSearchPage("mem-1", "Mem one"),
+          buildSearchPage("mem-2", "Mem two"),
+          buildSearchPage("mem-3", "Mem three"),
+          // Two pages from a different DB should be filtered out.
+          buildSearchPage("other-1", "Other one", { parentDb: "some-other-db" }),
+          buildSearchPage("other-2", "Other two", { parentDb: "some-other-db" }),
+        ],
+      })),
+      pages: {
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 2 })
+
+    expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
+    // Markdown fetched only for the capped subset — not wasted on filtered-out
+    // or over-limit results.
+    expect(
+      (client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>).mock.calls.length,
+    ).toBe(2)
+  })
+
+  it("skips the per-page markdown fetch when includeContent: false", async () => {
+    // Callers that render only title / date / tags (e.g. the hook wake-up
+    // path's related-memories section) pass includeContent: false to avoid
+    // N+1 `retrieveMarkdown` round-trips on a hot path.
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "body" }))
+    const client = {
+      search: vi.fn(async () => ({
+        results: [
+          buildSearchPage("mem-1", "Mem one"),
+          buildSearchPage("mem-2", "Mem two"),
+        ],
+      })),
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", includeContent: false })
+
+    expect(results).toHaveLength(2)
+    expect(results.every((m) => m.content === "")).toBe(true)
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("accepts pages with a data_source_id parent (Notion SDK v5 shape)", async () => {
+    // Regression test: Notion's `client.search()` returns pages with
+    // `parent.type === "data_source_id"` in v5 workspaces — which is the
+    // shape observed in production. If the filter only accepted
+    // `database_id` parents it would silently return zero results for every
+    // real query. Match `parent.data_source_id` against `db.dataSourceId`.
+    const client = {
+      search: vi.fn(async () => ({
+        results: [
+          buildSearchPage("ds-hit", "data-source match", {
+            parentType: "data_source_id",
+          }),
+          buildSearchPage("db-hit", "database match", {
+            parentType: "database_id",
+          }),
+          buildSearchPage("ds-miss", "unrelated data source", {
+            parentType: "data_source_id",
+            parentDataSource: "other-ds",
+          }),
+        ],
+      })),
+      pages: {
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 10 })
+
+    expect(results.map((m) => m.id).sort()).toEqual(["db-hit", "ds-hit"])
   })
 })
 

@@ -301,20 +301,36 @@ export class MemoryService {
    *
    * Content stored in Notion is automatically embedded and indexed by
    * Notion's vector search pipeline. This search leverages that index.
+   *
+   * Notion's `search` endpoint returns results ranked by relevance when no
+   * `sort` parameter is passed. Passing `sort` switches to recency ordering
+   * and demotes the query to a lexical filter — which defeats the point.
+   * We pay for a larger `page_size` instead so the client-side filter to
+   * the Memories database has enough headroom when the workspace contains
+   * other pages that happen to match the query tokens.
    */
   async search(input: SearchMemoriesInput): Promise<Memory[]> {
     const response = await this.client.search({
       query: input.query,
       filter: { property: "object", value: "page" },
-      sort: { direction: "descending", timestamp: "last_edited_time" },
-      page_size: Math.min(input.limit ?? 10, 100),
+      page_size: 100,
     })
 
-    // Filter results to only pages in our Memories database
+    // Filter results to only pages in our Memories database. Notion SDK v5
+    // returns two parent-type shapes depending on how the page was created /
+    // what the workspace has since been upgraded to: classic `database_id`
+    // parents, and data-source-backed `data_source_id` parents. Match either
+    // against our `DatabaseRef`.
     const memoryPages = (response.results as PageObjectResponse[]).filter((page) => {
       if (!("parent" in page)) return false
-      if (page.parent.type !== "database_id") return false
-      return page.parent.database_id === this.db.databaseId
+      const parent = page.parent
+      if (parent.type === "database_id") {
+        return parent.database_id === this.db.databaseId
+      }
+      if (parent.type === "data_source_id") {
+        return parent.data_source_id === this.db.dataSourceId
+      }
+      return false
     })
 
     // Apply additional filters (project, topic, tags)
@@ -338,8 +354,17 @@ export class MemoryService {
       })
     }
 
+    // Cap at the caller's requested limit before paying the per-page markdown
+    // round-trip. `client.search()` ignores our limit and returns up to
+    // `page_size`, so we trim here.
+    const capped = filtered.slice(0, input.limit ?? 10)
+
+    if (input.includeContent === false) {
+      return capped.map((page) => this.pageToMemory(page, ""))
+    }
+
     return Promise.all(
-      filtered.map(async (page) => {
+      capped.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
         return this.pageToMemory(page, md.markdown)
       })

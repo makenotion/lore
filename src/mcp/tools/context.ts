@@ -66,7 +66,9 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .min(1)
           .max(50)
           .optional()
-          .describe("Max memories to return (default 10; trimmed when a fresh digest is surfaced)"),
+          .describe(
+            "Max memories per section (default 10 recent / 5 related; recent is trimmed when a fresh digest is surfaced). Acts as a per-section cap across both the recent-memories and related-to-open-loops sections so callers can bound total prompt size.",
+          ),
       },
       annotations: { readOnlyHint: true },
     },
@@ -86,26 +88,29 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           }
         }
 
-        // Fetch in parallel: the shared wake-up bundle (digest + memories +
-        // partitioned facts) plus decision-specific queries for the "Needs
-        // Attention" section. Decision queries use the index-tier path
-        // (includeContent: false under the hood) to avoid N+1 retrieveMarkdown.
-        const [wakeUp, proposed, overdue] = await Promise.all([
-          loadWakeUpData(services, {
-            projectId: projectId ?? undefined,
-            memoryLimit: limit,
-            // Honor the caller's explicit limit even when a digest is present:
-            // the trim is a default, not a cap the user can't override.
-            memoryLimitWithDigest: limit,
-          }),
-          services.decisions.list({
-            projectId: projectId ?? undefined,
-            status: "proposed",
-            limit: 20,
-          }),
-          services.decisions.queryOverdue({ projectId: projectId ?? undefined }),
-        ])
-        const { digest, memories, openLoops, knowledgeFacts } = wakeUp
+        // The shared wake-up bundle loads the digest, recent memories,
+        // partitioned facts, proposed + overdue decisions, and related
+        // memories seeded from open-loop entities. All in one helper so the
+        // hook and MCP surfaces stay aligned.
+        const {
+          digest,
+          memories,
+          openLoops,
+          knowledgeFacts,
+          proposedDecisions,
+          overdueDecisions,
+          relatedMemories,
+        } = await loadWakeUpData(services, {
+          projectId: projectId ?? undefined,
+          memoryLimit: limit,
+          // Honor the caller's explicit limit even when a digest is present:
+          // the trim is a default, not a cap the user can't override.
+          memoryLimitWithDigest: limit,
+          // Apply the same cap to related memories so `limit` genuinely
+          // bounds the per-section memory count — otherwise a caller asking
+          // for `limit: 1` could still receive up to 5 related entries.
+          relatedMemoryLimit: limit,
+        })
 
         const sections: string[] = []
 
@@ -156,24 +161,42 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           sections.push("No memories found for this context.\n")
         }
 
+        if (relatedMemories.length > 0) {
+          sections.push("## Related to Open Loops\n")
+          sections.push(
+            "*Memories surfaced by a relevance query seeded from your open-loop entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n",
+          )
+          for (const mem of relatedMemories) {
+            const meta = [
+              mem.source,
+              mem.kind !== "note" ? mem.kind : null,
+              mem.tags.length > 0 ? mem.tags.join(", ") : null,
+              mem.updatedAt.split("T")[0],
+            ]
+              .filter(Boolean)
+              .join(" | ")
+            sections.push(`### ${mem.title}`, `*${meta}*\n`, mem.content || "(no content loaded)", "")
+          }
+        }
+
         // Decisions that need attention — proposed awaiting decision, or
         // overdue for review. Surfaces the subset of decisions an agent
         // should consider before acting.
-        if (proposed.length > 0 || overdue.length > 0) {
+        if (proposedDecisions.length > 0 || overdueDecisions.length > 0) {
           const today = new Date().toISOString().split("T")[0]
           sections.push("## Decisions Requiring Attention\n")
-          if (proposed.length > 0) {
-            sections.push(`### Proposed (${proposed.length})\n`)
-            for (const d of proposed) {
+          if (proposedDecisions.length > 0) {
+            sections.push(`### Proposed (${proposedDecisions.length})\n`)
+            for (const d of proposedDecisions) {
               sections.push(
                 `- **${d.title}** — proposed${d.decidedAt ? ` ${d.decidedAt}` : ""} | ID: ${d.id}`
               )
             }
             sections.push("")
           }
-          if (overdue.length > 0) {
-            sections.push(`### Overdue for Review (${overdue.length})\n`)
-            for (const d of overdue) {
+          if (overdueDecisions.length > 0) {
+            sections.push(`### Overdue for Review (${overdueDecisions.length})\n`)
+            for (const d of overdueDecisions) {
               const days = d.reviewBy
                 ? Math.floor(
                     (new Date(today).getTime() - new Date(d.reviewBy).getTime()) /

@@ -19,7 +19,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
-| `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts for wake-up surfaces (MCP tool + shell hook) |
+| `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + open-loop-related memories for wake-up surfaces (MCP tool + shell hook) |
 
 ## Service Class Pattern
 
@@ -103,11 +103,30 @@ hold arbitrarily large content.
 which includes vector similarity matching on page content. Results are
 post-filtered to:
 
-- Only include pages from the Memories database (by checking `parent.database_id`)
-- Optionally filter by project, topic, or tags
+- Only include pages from the Memories database — matching either
+  `parent.type === "database_id"` against `db.databaseId` **or**
+  `parent.type === "data_source_id"` against `db.dataSourceId`. Notion SDK
+  v5 returns both shapes in the wild depending on when and how the page
+  was created; accepting only `database_id` silently filters out every
+  real result from a data-source-backed workspace.
+- Optionally filter by project, topic, or tags.
+
+**Do not pass a `sort` parameter to `client.search()`.** Notion's `search`
+endpoint returns results ranked by relevance when no `sort` is provided.
+Passing a `sort` switches to recency ordering and demotes the query to a
+lexical filter — which defeats the whole purpose of semantic search. We fetch
+`page_size: 100` instead so the client-side parent-DB filter has headroom when
+the workspace contains unrelated pages matching the query tokens.
+
+The `search()` input supports `includeContent: false` to skip the per-page
+`retrieveMarkdown` round-trip. Use it when the caller renders only title /
+date / tags (e.g. the shell wake-up hook's related-memories section).
 
 The `list()` method uses `dataSources.query()` with property filters and is
-suited for browsing recent memories by project/topic/source.
+suited for browsing recent memories by project/topic/source. It has no
+substring-title filter — use `search()` for anything that needs relevance
+ranking or body-text matching (e.g. `loadWakeUpData`'s related-memories pass,
+which seeds a single query from open-loop fact subjects and objects).
 
 ## Fact Invalidation
 

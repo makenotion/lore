@@ -3,11 +3,19 @@ import {
   DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST,
+  DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   dateBucket,
   loadWakeUpData,
   type WakeUpServices,
 } from "./wakeup.js"
-import type { Fact, FactPredicate, Memory, MemorySource } from "../types.js"
+import type {
+  DecisionSummary,
+  Fact,
+  FactPredicate,
+  ListDecisionsOpts,
+  Memory,
+  MemorySource,
+} from "../types.js"
 
 const NOW = new Date("2026-04-20T12:00:00Z").getTime()
 
@@ -64,20 +72,36 @@ type ListCall = {
   sortBy?: "created_time" | "last_edited_time"
 }
 
+type SearchCall = {
+  query: string
+  projectId?: string
+  limit?: number
+  includeContent?: boolean
+}
+
 type QueryCall = { subject: string; opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number } }
 
 interface StubServices extends WakeUpServices {
   memoriesCalls: ListCall[]
+  memoriesSearchCalls: SearchCall[]
   factsCalls: QueryCall[]
+  decisionsListCalls: ListDecisionsOpts[]
+  decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
 }
 
 function stubServices(opts: {
   rawMemories?: Memory[]
   digestMemories?: Memory[]
+  relatedMemories?: Memory[]
   facts?: Fact[]
+  proposedDecisions?: DecisionSummary[]
+  overdueDecisions?: DecisionSummary[]
 }): StubServices {
   const memoriesCalls: ListCall[] = []
+  const memoriesSearchCalls: SearchCall[] = []
   const factsCalls: QueryCall[] = []
+  const decisionsListCalls: ListDecisionsOpts[] = []
+  const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const factsResult = opts.facts ?? []
 
   return {
@@ -87,6 +111,10 @@ function stubServices(opts: {
         if (args.source === "digest") return opts.digestMemories ?? []
         return opts.rawMemories ?? []
       }),
+      search: vi.fn(async (args: SearchCall) => {
+        memoriesSearchCalls.push(args)
+        return opts.relatedMemories ?? []
+      }),
     },
     facts: {
       queryBySubject: vi.fn(async (subject: string, queryOpts) => {
@@ -94,8 +122,21 @@ function stubServices(opts: {
         return factsResult
       }),
     },
+    decisions: {
+      list: vi.fn(async (listOpts?: ListDecisionsOpts) => {
+        decisionsListCalls.push(listOpts ?? {})
+        return opts.proposedDecisions ?? []
+      }),
+      queryOverdue: vi.fn(async (overdueOpts) => {
+        decisionsOverdueCalls.push(overdueOpts)
+        return opts.overdueDecisions ?? []
+      }),
+    },
     memoriesCalls,
+    memoriesSearchCalls,
     factsCalls,
+    decisionsListCalls,
+    decisionsOverdueCalls,
   }
 }
 
@@ -234,7 +275,7 @@ describe("loadWakeUpData", () => {
     expect(data.openLoops).toHaveLength(0)
   })
 
-  it("skips digest and fact lookup when no project is resolved", async () => {
+  it("skips digest, fact, decision, and related-memory lookup when no project is resolved", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
     const data = await loadWakeUpData(services, { now: NOW })
@@ -242,8 +283,14 @@ describe("loadWakeUpData", () => {
     expect(data.digest).toBeNull()
     expect(data.openLoops).toEqual([])
     expect(data.knowledgeFacts).toEqual([])
+    expect(data.proposedDecisions).toEqual([])
+    expect(data.overdueDecisions).toEqual([])
+    expect(data.relatedMemories).toEqual([])
     expect(services.memoriesCalls.some((c) => c.source === "digest")).toBe(false)
+    expect(services.memoriesSearchCalls).toEqual([])
     expect(services.facts.queryBySubject).not.toHaveBeenCalled()
+    expect(services.decisions.list).not.toHaveBeenCalled()
+    expect(services.decisions.queryOverdue).not.toHaveBeenCalled()
   })
 
   it("treats future-dated digests as stale (clock-skew guard)", async () => {
@@ -258,6 +305,313 @@ describe("loadWakeUpData", () => {
     const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
     expect(data.digest).toBeNull()
+  })
+
+  it("loads proposed and overdue decisions when a project is scoped", async () => {
+    const proposed: DecisionSummary[] = [
+      {
+        id: "dec-p",
+        title: "Move auth to OIDC",
+        projectIds: ["p1"],
+        topicId: null,
+        source: "manual",
+        kind: "decision",
+        status: "proposed",
+        confidence: "likely",
+        reviewBy: null,
+        decidedAt: "2026-04-01",
+        supersedesIds: [],
+        affectsIds: [],
+        alternatives: "",
+        consequences: "",
+        author: "",
+        agent: "",
+        tags: [],
+        session: "",
+        createdAt: "2026-04-01T00:00:00Z",
+        updatedAt: "2026-04-01T00:00:00Z",
+      },
+    ]
+    const overdueDecisions: DecisionSummary[] = [
+      {
+        ...proposed[0],
+        id: "dec-o",
+        title: "Retire legacy API",
+        status: "accepted",
+        reviewBy: "2026-01-01",
+      },
+    ]
+
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedDecisions: proposed,
+      overdueDecisions,
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.proposedDecisions.map((d) => d.id)).toEqual(["dec-p"])
+    expect(data.overdueDecisions.map((d) => d.id)).toEqual(["dec-o"])
+    expect(services.decisionsListCalls[0]).toEqual({
+      projectId: "p1",
+      status: "proposed",
+      limit: 20,
+    })
+    expect(services.decisionsOverdueCalls[0]).toEqual({ projectId: "p1" })
+  })
+
+  it("skips decision queries when includeDecisions is false", async () => {
+    // Hook wake-up renders no decision sections, so it passes
+    // includeDecisions: false to avoid paying for queries it will never use.
+    const services = stubServices({ rawMemories: [], digestMemories: [] })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      includeDecisions: false,
+      now: NOW,
+    })
+
+    expect(data.proposedDecisions).toEqual([])
+    expect(data.overdueDecisions).toEqual([])
+    expect(services.decisions.list).not.toHaveBeenCalled()
+    expect(services.decisions.queryOverdue).not.toHaveBeenCalled()
+  })
+
+  it("surfaces related memories seeded by open-loop entities", async () => {
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "blocked_by",
+      subject: "Historic autolabel",
+      object: "OOM issue",
+    })
+    const related = buildMemory({
+      id: "rel-1",
+      title: "Historic autolabel pipeline notes",
+      createdAt: "2026-02-10T00:00:00Z",
+    })
+
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [openLoop],
+      relatedMemories: [related],
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-1"])
+    expect(services.memoriesSearchCalls).toHaveLength(1)
+    const relatedCall = services.memoriesSearchCalls[0]
+    expect(relatedCall.projectId).toBe("p1")
+    // Entities are joined into a single relevance query so Notion's vector
+    // index scores titles AND bodies against the union.
+    expect(relatedCall.query).toContain("Historic autolabel")
+    expect(relatedCall.query).toContain("OOM issue")
+  })
+
+  it("dedupes related memories against the digest and recent memories", async () => {
+    const fresh = buildMemory({
+      id: "d1",
+      title: "Fresh digest",
+      source: "digest",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const recent = buildMemory({
+      id: "m0",
+      title: "autolabel post-digest update",
+      createdAt: "2026-04-20T00:00:00Z",
+    })
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "blocked_by",
+      subject: "autolabel",
+      object: "OOM",
+    })
+    // Related set includes the digest id, the recent id, and a fresh third one.
+    // Only the third one should survive.
+    const related = [
+      buildMemory({ ...recent, id: "m0", title: "dupe-recent", createdAt: "2026-04-20T00:00:00Z" }),
+      buildMemory({ ...fresh, id: "d1", title: "dupe-digest", createdAt: "2026-04-19T00:00:00Z" }),
+      buildMemory({ id: "rel-new", title: "autolabel deep dive", createdAt: "2026-02-01T00:00:00Z" }),
+    ]
+
+    const services = stubServices({
+      rawMemories: [recent],
+      digestMemories: [fresh],
+      facts: [openLoop],
+      relatedMemories: related,
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-new"])
+  })
+
+  it("scales the related-memory fetch window with relatedLimit + already-surfaced size", async () => {
+    // A caller asking for `relatedMemoryLimit: 50` must be able to receive
+    // close to 50 memories — previously the fetch was hard-capped at 20, so
+    // the request was silently truncated before dedupe.
+    const fresh = buildMemory({
+      id: "d1",
+      source: "digest",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const recent = buildMemory({ id: "m0", createdAt: "2026-04-20T00:00:00Z" })
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "needs_action",
+      subject: "Router migration",
+      object: "OIDC",
+    })
+    const services = stubServices({
+      rawMemories: [recent],
+      digestMemories: [fresh],
+      facts: [openLoop],
+      relatedMemories: [],
+    })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      relatedMemoryLimit: 50,
+      now: NOW,
+    })
+
+    const relatedCall = services.memoriesSearchCalls[0]
+    // alreadySurfaced = digest(1) + recent(1) = 2. Fetch needs >= 50 + 2.
+    expect(relatedCall?.limit).toBeGreaterThanOrEqual(52)
+  })
+
+  it("does not starve related memories when candidates are mostly duplicates", async () => {
+    // Pathological case: nearly every candidate returned by `titleAny` is
+    // already surfaced as digest or recent. Scaling the fetch window by
+    // `alreadySurfaced.size` ensures we still fill `relatedLimit` survivors.
+    const fresh = buildMemory({
+      id: "d1",
+      source: "digest",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const recents = Array.from({ length: 3 }, (_, i) =>
+      buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" }),
+    )
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "needs_action",
+      subject: "Router",
+      object: "OIDC",
+    })
+    const candidates = [
+      buildMemory({ id: "d1", title: "dupe digest", createdAt: "2026-04-01T00:00:00Z" }),
+      buildMemory({ id: "m0", title: "dupe m0", createdAt: "2026-04-01T00:00:00Z" }),
+      buildMemory({ id: "m1", title: "dupe m1", createdAt: "2026-04-01T00:00:00Z" }),
+      buildMemory({ id: "m2", title: "dupe m2", createdAt: "2026-04-01T00:00:00Z" }),
+      buildMemory({ id: "r1", title: "fresh 1", createdAt: "2026-04-01T00:00:00Z" }),
+      buildMemory({ id: "r2", title: "fresh 2", createdAt: "2026-04-01T00:00:00Z" }),
+      buildMemory({ id: "r3", title: "fresh 3", createdAt: "2026-04-01T00:00:00Z" }),
+    ]
+    const services = stubServices({
+      rawMemories: recents,
+      digestMemories: [fresh],
+      facts: [openLoop],
+      relatedMemories: candidates,
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      relatedMemoryLimit: 3,
+      now: NOW,
+    })
+
+    expect(data.relatedMemories.map((m) => m.id)).toEqual(["r1", "r2", "r3"])
+  })
+
+  it("caps related memories at relatedMemoryLimit", async () => {
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "needs_action",
+      subject: "Router",
+      object: "migrate",
+    })
+    const related = Array.from({ length: DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT + 3 }, (_, i) =>
+      buildMemory({
+        id: `rel-${i}`,
+        title: `Router note ${i}`,
+        createdAt: "2026-02-10T00:00:00Z",
+      }),
+    )
+
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [openLoop],
+      relatedMemories: related,
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.relatedMemories).toHaveLength(DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT)
+  })
+
+  it("does not issue a related-memories query when there are no open loops", async () => {
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [buildFact({ id: "k1", predicate: "uses" })], // no tracking predicates
+      relatedMemories: [
+        buildMemory({ id: "should-not-surface", title: "noise", createdAt: "2026-02-10T00:00:00Z" }),
+      ],
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.relatedMemories).toEqual([])
+    expect(services.memoriesSearchCalls).toEqual([])
+  })
+
+  it("drops very short entity fragments from the related-memories seed", async () => {
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "needs_action",
+      subject: "ok",
+      object: "Router migration",
+    })
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [openLoop],
+      relatedMemories: [],
+    })
+
+    await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    const relatedCall = services.memoriesSearchCalls[0]
+    expect(relatedCall?.query).toBe("Router migration")
+  })
+
+  it("forwards includeMemoryContent to the related-memory search", async () => {
+    // The hook wake-up path passes `includeMemoryContent: false` to skip
+    // N+1 markdown fetches on every session start. Search must honor it.
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "needs_action",
+      subject: "Router migration",
+      object: "OIDC",
+    })
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [openLoop],
+      relatedMemories: [],
+    })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      includeMemoryContent: false,
+      now: NOW,
+    })
+
+    const relatedCall = services.memoriesSearchCalls[0]
+    expect(relatedCall?.includeContent).toBe(false)
   })
 })
 
