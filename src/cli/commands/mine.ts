@@ -132,8 +132,13 @@ export const mineCommand = new Command("mine")
         // Resolve topic
         let topicId: string | undefined
         if (opts.topic && projectId) {
-          const topic = await services.topics.getOrCreate(opts.topic, projectId)
+          const topic = await services.topics.getOrCreate(opts.topic, [projectId])
           topicId = topic.id
+        } else if (opts.topic && !projectId) {
+          console.warn(
+            `Warning: --topic "${opts.topic}" ignored: no project resolved ` +
+              "(pass --project <name> or run from a directory mapped in .lore.yaml)."
+          )
         }
 
         console.log(`Indexing ${textFiles.length} files...`)
@@ -141,34 +146,49 @@ export const mineCommand = new Command("mine")
         const MAX_FILE_SIZE = 100 * 1024 // 100KB
 
         let indexed = 0
+        let failed = 0
+        const failures: Array<{ file: string; error: string }> = []
         for (const file of textFiles) {
-          const fullPath = resolve(dir, file)
-          const fileStat = await stat(fullPath)
-          if (fileStat.size > MAX_FILE_SIZE) {
-            console.log(
-              `  Skipping ${file} (${(fileStat.size / 1024).toFixed(0)}KB > 100KB limit)`
-            )
-            continue
-          }
-          const content = await readFile(fullPath, "utf-8")
-          const relPath = relative(services.configRoot, fullPath)
+          try {
+            const fullPath = resolve(dir, file)
+            const fileStat = await stat(fullPath)
+            if (fileStat.size > MAX_FILE_SIZE) {
+              console.log(
+                `  Skipping ${file} (${(fileStat.size / 1024).toFixed(0)}KB > 100KB limit)`
+              )
+              continue
+            }
+            const content = await readFile(fullPath, "utf-8")
+            const relPath = relative(services.configRoot, fullPath)
 
-          await services.memories.create({
-            title: `${basename(file)} — ${relPath}`,
-            content: `# ${relPath}\n\n\`\`\`${extname(file).slice(1)}\n${content}\n\`\`\``,
-            projectIds: projectId ? [projectId] : undefined,
-            topicId,
-            source: "file",
-            tags: [extname(file).slice(1), "mined"],
-          })
+            await services.memories.create({
+              title: `${basename(file)} — ${relPath}`,
+              content: `# ${relPath}\n\n\`\`\`${extname(file).slice(1)}\n${content}\n\`\`\``,
+              projectIds: projectId ? [projectId] : undefined,
+              topicId,
+              source: "file",
+              tags: [extname(file).slice(1), "mined"],
+            })
 
-          indexed++
-          if (indexed % 10 === 0) {
-            console.log(`  ${indexed}/${textFiles.length} files indexed...`)
+            indexed++
+            if (indexed % 10 === 0) {
+              console.log(`  ${indexed}/${textFiles.length} files indexed...`)
+            }
+          } catch (err) {
+            failed++
+            const msg = err instanceof Error ? err.message : String(err)
+            failures.push({ file, error: msg })
+            console.error(`  Failed ${file}: ${msg}`)
           }
         }
 
-        console.log(`Done! Indexed ${indexed} files.`)
+        const summary = failed > 0
+          ? `Done. Indexed ${indexed}/${textFiles.length} files (${failed} failed).`
+          : `Done! Indexed ${indexed} files.`
+        console.log(summary)
+        if (failed > 0) {
+          process.exitCode = 1
+        }
       } catch (err) {
         console.error("Mine failed:", err instanceof Error ? err.message : err)
         process.exit(1)

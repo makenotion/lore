@@ -12,6 +12,21 @@ import {
   verifyVaultDatabases,
   type MigrationDiff,
 } from "../notion/setup.js"
+import {
+  findDuplicateTopicNames,
+  mergeDuplicateTopics,
+  type DuplicateTopicGroup,
+  type TopicMergeResult,
+} from "./topic-merge.js"
+
+export interface VaultMigrateResult {
+  /** Per-database schema drift (missing props, added options, relation upgrades). */
+  diffs: MigrationDiff[]
+  /** Duplicate-name topic groups found in the Topics DB. */
+  duplicateTopics: DuplicateTopicGroup[]
+  /** Populated only when the migration actually ran a merge (non-dryRun + flag). */
+  mergeResults: TopicMergeResult[]
+}
 
 export class VaultManager {
   private vault: Vault | null = null
@@ -42,9 +57,16 @@ export class VaultManager {
   async load(): Promise<Vault> {
     this.vault = await verifyVaultDatabases(this.client, this.pageId)
     // Best-effort drift detection — surfaces a stderr warning when the live
-    // schema is behind the code. Never blocks or throws: transient API errors
-    // during the check should not prevent the vault from loading.
-    this.detectDrift().catch(() => {})
+    // schema is behind the code. Never blocks: transient API errors during
+    // the check should not prevent the vault from loading. Unlike a bare
+    // `.catch(() => {})`, failures are logged so we don't silently lose the
+    // "run `lore migrate`" nudge when the drift check itself is broken.
+    this.detectDrift().catch((err) => {
+      console.error(
+        "[lore] Schema drift check failed:",
+        err instanceof Error ? err.message : err
+      )
+    })
     return this.vault
   }
 
@@ -56,12 +78,31 @@ export class VaultManager {
   private async detectDrift(): Promise<void> {
     if (!this.vault) return
     const diffs = await migrateVaultSchema(this.client, this.vault, { dryRun: true })
+    const duplicates = await findDuplicateTopicNames(
+      this.client,
+      this.vault.databases.topics
+    )
+
     const missingProps = diffs.reduce((n, d) => n + d.missing.length, 0)
     const missingOptions = diffs.reduce(
       (n, d) => n + d.addedOptions.reduce((m, a) => m + a.options.length, 0),
       0
     )
-    if (missingProps === 0 && missingOptions === 0) return
+    const relationUpgrades = diffs.reduce(
+      (n, d) => n + d.addedRelationConfig.length,
+      0
+    )
+    const duplicateRowCount = duplicates.reduce((n, d) => n + d.topicIds.length, 0)
+
+    if (
+      missingProps === 0 &&
+      missingOptions === 0 &&
+      relationUpgrades === 0 &&
+      duplicates.length === 0
+    ) {
+      return
+    }
+
     const parts: string[] = []
     if (missingProps > 0) {
       parts.push(`${missingProps} propert${missingProps === 1 ? "y" : "ies"}`)
@@ -69,10 +110,21 @@ export class VaultManager {
     if (missingOptions > 0) {
       parts.push(`${missingOptions} select option${missingOptions === 1 ? "" : "s"}`)
     }
-    console.error(
-      `[lore] Schema drift detected: ${parts.join(" and ")} missing. ` +
-        "Run `lore migrate` to update your vault."
-    )
+    if (relationUpgrades > 0) {
+      parts.push(
+        `${relationUpgrades} relation config${relationUpgrades === 1 ? "" : "s"}`
+      )
+    }
+    if (duplicates.length > 0) {
+      parts.push(
+        `${duplicates.length} duplicate topic group${duplicates.length === 1 ? "" : "s"} (${duplicateRowCount} rows)`
+      )
+    }
+    const hint =
+      duplicates.length > 0
+        ? "Run `lore migrate --merge-duplicate-topics` to update your vault."
+        : "Run `lore migrate` to update your vault."
+    console.error(`[lore] Schema drift detected: ${parts.join(" and ")} out of date. ${hint}`)
   }
 
   get(): Vault {
@@ -87,12 +139,55 @@ export class VaultManager {
   }
 
   /**
-   * Add any expected properties that are missing from the live data sources.
-   * Add-only; never renames or removes. Pass `dryRun: true` to compute the
-   * diff without writing.
+   * Apply schema drift fixes and (optionally) merge duplicate-name topics.
+   * Add-only for schema: never renames or removes properties. Pass
+   * `dryRun: true` to compute the diff without writing.
+   *
+   * When duplicate-name topics exist:
+   * - `dryRun: true` — reports them, no writes.
+   * - `mergeDuplicateTopics: true` (and not dryRun) — merges each group
+   *   into one canonical topic before applying schema drift.
+   * - neither — throws, so a legacy vault with duplicates can't silently
+   *   end up with a dual-property schema where `getOrCreate` would extend
+   *   an arbitrary duplicate and strand the siblings.
    */
-  async migrate(options: { dryRun?: boolean } = {}): Promise<MigrationDiff[]> {
-    return migrateVaultSchema(this.client, this.get(), options)
+  async migrate(
+    options: { dryRun?: boolean; mergeDuplicateTopics?: boolean } = {}
+  ): Promise<VaultMigrateResult> {
+    const vault = this.get()
+    const duplicateTopics = await findDuplicateTopicNames(
+      this.client,
+      vault.databases.topics
+    )
+
+    let mergeResults: TopicMergeResult[] = []
+    if (duplicateTopics.length > 0 && !options.dryRun) {
+      if (!options.mergeDuplicateTopics) {
+        const preview = duplicateTopics
+          .slice(0, 5)
+          .map((g) => `"${g.name}" (${g.topicIds.length} rows)`)
+          .join(", ")
+        const more =
+          duplicateTopics.length > 5
+            ? `, and ${duplicateTopics.length - 5} more`
+            : ""
+        throw new Error(
+          `${duplicateTopics.length} duplicate-name topic group${duplicateTopics.length === 1 ? "" : "s"} detected: ${preview}${more}. ` +
+            "Re-run with `--merge-duplicate-topics` to merge each group into a canonical topic before upgrading the schema."
+        )
+      }
+      mergeResults = await mergeDuplicateTopics(
+        this.client,
+        vault.databases.topics,
+        vault.databases.memories,
+        duplicateTopics
+      )
+    }
+
+    const diffs = await migrateVaultSchema(this.client, vault, {
+      dryRun: options.dryRun,
+    })
+    return { diffs, duplicateTopics, mergeResults }
   }
 
   async stats(): Promise<{

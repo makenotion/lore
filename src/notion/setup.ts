@@ -125,9 +125,10 @@ export async function createVaultDatabases(
 }
 
 /**
- * Per-database summary of a migration run: which property names are missing
- * from the live data source, and which select/multi_select properties are
- * missing option values that the expected schema defines.
+ * Per-database summary of a migration run: property names missing from the
+ * live data source, select/multi_select properties with new option values,
+ * and relation properties whose live config needs upgrading to match the
+ * expected schema (e.g. `single_property` → `dual_property`).
  */
 export interface MigrationDiff {
   database: keyof VaultDatabases
@@ -135,6 +136,16 @@ export interface MigrationDiff {
   missing: string[]
   /** Per-property new select option names that need to be appended. */
   addedOptions: Array<{ property: string; options: string[] }>
+  /**
+   * Per-property relation config upgrades (e.g. single_property →
+   * dual_property). Existing relation values are preserved by Notion across
+   * this transition.
+   */
+  addedRelationConfig: Array<{
+    property: string
+    from: "single_property" | "dual_property"
+    to: "single_property" | "dual_property"
+  }>
 }
 
 /**
@@ -218,6 +229,77 @@ function extractOptions(config: unknown): LiveSelectOption[] {
 }
 
 /**
+ * Detect which relation variant a property is configured as. Returns `null`
+ * for non-relation properties. Accepts both the Notion response shape
+ * (`{ type: "relation", relation: {...} }`) and the request/schema shape
+ * (`{ relation: {...} }`, no outer `type`) — we need to compare live and
+ * expected configs directly and the schema helpers emit the shorter form.
+ */
+function detectRelationType(
+  prop: unknown
+): "single_property" | "dual_property" | null {
+  if (!prop || typeof prop !== "object") return null
+  const p = prop as { type?: string; relation?: Record<string, unknown> }
+  if (p.type !== undefined && p.type !== "relation") return null
+  if (!p.relation || typeof p.relation !== "object") return null
+  if ("single_property" in p.relation) return "single_property"
+  if ("dual_property" in p.relation) return "dual_property"
+  return null
+}
+
+/**
+ * Compute how an expected relation property differs in shape from the live
+ * one. Returns `null` when either side isn't a relation, when the relation
+ * variant already matches, or when the live/expected `data_source_id`
+ * differs (a pointer change is a different kind of drift — phase 1 or
+ * human intervention handles it).
+ *
+ * When there IS a variant mismatch, returns the payload to send via
+ * `dataSources.update`. Notion preserves existing relation values across
+ * this transition and auto-assigns the synced back-reference name when the
+ * target variant is `dual_property` with an empty config.
+ */
+export function computeRelationConfigDiff(
+  propertyName: string,
+  liveProperty: unknown,
+  expectedProperty: unknown
+): {
+  property: string
+  liveType: "single_property" | "dual_property"
+  expectedType: "single_property" | "dual_property"
+  updatePayload: Record<string, unknown>
+} | null {
+  const liveType = detectRelationType(liveProperty)
+  const expectedType = detectRelationType(expectedProperty)
+  if (!liveType || !expectedType) return null
+  if (liveType === expectedType) return null
+
+  const liveDsId = (
+    (liveProperty as { relation?: { data_source_id?: string } }).relation ?? {}
+  ).data_source_id
+  const expectedDsId = (
+    (expectedProperty as { relation?: { data_source_id?: string } }).relation ?? {}
+  ).data_source_id
+  if (liveDsId && expectedDsId && liveDsId !== expectedDsId) return null
+
+  const dataSourceId = expectedDsId ?? liveDsId
+  if (!dataSourceId) return null
+
+  const relationConfig: Record<string, unknown> = {
+    data_source_id: dataSourceId,
+    type: expectedType,
+    [expectedType]: {},
+  }
+
+  return {
+    property: propertyName,
+    liveType,
+    expectedType,
+    updatePayload: { type: "relation", relation: relationConfig },
+  }
+}
+
+/**
  * Compare the expected property schema against each live data source and
  * add any properties or select options that are missing. Never renames or
  * removes anything — additions only, to keep vaults stable across Lore
@@ -265,20 +347,52 @@ export async function migrateVaultSchema(
       optionUpdates[name] = diff.mergedProperty
     }
 
-    diffs.push({ database: key, missing, addedOptions })
+    // Phase 3: detect relation config drift (e.g. single_property → dual_property).
+    const addedRelationConfig: MigrationDiff["addedRelationConfig"] = []
+    const relationUpdates: AnyProperties = {}
+    for (const name of Object.keys(expected)) {
+      if (!(name in liveProps)) continue
+      const diff = computeRelationConfigDiff(name, liveProps[name], expected[name])
+      if (!diff) continue
+      addedRelationConfig.push({
+        property: diff.property,
+        from: diff.liveType,
+        to: diff.expectedType,
+      })
+      relationUpdates[name] = diff.updatePayload
+    }
 
-    if (missing.length === 0 && addedOptions.length === 0) continue
+    diffs.push({ database: key, missing, addedOptions, addedRelationConfig })
+
+    if (
+      missing.length === 0 &&
+      addedOptions.length === 0 &&
+      addedRelationConfig.length === 0
+    )
+      continue
     if (options.dryRun) continue
 
-    const updateProps: AnyProperties = { ...optionUpdates }
+    const updateProps: AnyProperties = { ...optionUpdates, ...relationUpdates }
     for (const name of missing) updateProps[name] = expected[name]
 
-    await client.dataSources.update({
-      data_source_id: dsId,
-      properties: updateProps as Parameters<
-        Client["dataSources"]["update"]
-      >[0]["properties"],
-    })
+    try {
+      await client.dataSources.update({
+        data_source_id: dsId,
+        properties: updateProps as Parameters<
+          Client["dataSources"]["update"]
+        >[0]["properties"],
+      })
+    } catch (err) {
+      // Re-throw with phase attribution so a Notion "validation_error" on
+      // the merged update payload is diagnosable: the user learns which DB
+      // and which phase's contribution most likely caused the failure.
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(
+        `Schema migration failed on ${key} DB ` +
+          `(missing=${missing.length}, options=${addedOptions.length}, relation=${addedRelationConfig.length}): ${msg}`,
+        { cause: err }
+      )
+    }
   }
 
   return diffs

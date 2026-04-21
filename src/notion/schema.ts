@@ -61,7 +61,10 @@ export function topicsProperties(projectsDbId: string): PropertyConfig {
     Name: { title: {} },
     Project: {
       relation: {
-        single_property: {},
+        // Many-to-many: a topic can span multiple projects so cross-cutting
+        // concerns (e.g. "GraphQL federation" in a monorepo) accumulate one
+        // topic rather than fragmenting into per-project duplicates.
+        dual_property: {},
         data_source_id: projectsDbId,
       },
     },
@@ -294,12 +297,12 @@ export function buildProjectProps(input: {
 
 export function buildTopicProps(input: {
   name: string
-  projectId: string
+  projectIds: string[]
   description?: string
 }): PageProperties {
   const props: PageProperties = {
     Name: { title: [{ text: { content: input.name } }] },
-    Project: { relation: [{ id: input.projectId }] },
+    Project: { relation: input.projectIds.map((id) => ({ id })) },
   }
   if (input.description) {
     props["Description"] = {

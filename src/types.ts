@@ -66,13 +66,13 @@ export interface CreateProjectInput {
 export interface Topic {
   id: string
   name: string
-  projectId: string
+  projectIds: string[]
   description: string
 }
 
 export interface CreateTopicInput {
   name: string
-  projectId: string
+  projectIds: string[]
   description?: string
 }
 

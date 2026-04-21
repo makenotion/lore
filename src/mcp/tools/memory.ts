@@ -108,12 +108,10 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
 
         let topicId: string | undefined
         let topicLabel = "none"
-        if (topicName && resolved.ids.length === 1) {
-          const topic = await services.topics.getOrCreate(topicName, resolved.ids[0])
+        if (topicName && resolved.ids.length > 0) {
+          const topic = await services.topics.getOrCreate(topicName, resolved.ids)
           topicId = topic.id
           topicLabel = topicName
-        } else if (topicName && resolved.ids.length > 1) {
-          resolved.warnings.push(`Topic "${topicName}" skipped (not supported for multi-project memories)`)
         }
 
         const memory = await services.memories.create({
@@ -462,11 +460,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
           warnings.push(...resolved.warnings)
         }
-        if (topicName && projectIds?.length === 1) {
-          const topic = await services.topics.getOrCreate(topicName, projectIds[0])
+        if (topicName && projectIds && projectIds.length > 0) {
+          const topic = await services.topics.getOrCreate(topicName, projectIds)
           topicId = topic.id
-        } else if (topicName && (projectIds?.length ?? 0) > 1) {
-          warnings.push(`Topic "${topicName}" skipped (not supported for multi-project memories)`)
         }
 
         const updated = await services.memories.update(memoryId, {

@@ -136,13 +136,17 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
 
         let topicId: string | undefined
         let topicLabel = "none"
-        if (topicName && resolved.ids.length === 1) {
-          const topic = await services.topics.getOrCreate(topicName, resolved.ids[0])
+        if (topicName && resolved.ids.length > 0) {
+          const topic = await services.topics.getOrCreate(topicName, resolved.ids)
           topicId = topic.id
           topicLabel = topicName
-        } else if (topicName && resolved.ids.length !== 1) {
+        } else if (topicName) {
+          // Decisions without any project can't anchor a topic: the topic
+          // would be orphaned (not visible in `lore status topics <project>`
+          // or `lore-get-project`). Surface the skip because the caller
+          // explicitly asked to link one.
           resolved.warnings.push(
-            `Topic "${topicName}" skipped (not supported for multi-project or project-less decisions)`
+            `Topic "${topicName}" skipped (requires at least one project)`
           )
         }
 

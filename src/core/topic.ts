@@ -1,11 +1,17 @@
 /**
  * Topic CRUD.
  *
- * Topics organize memories within a project by subject area.
+ * Topics organize memories by subject area. A topic may belong to one or
+ * more projects: cross-cutting subjects (e.g. "GraphQL federation") can
+ * span every project that participates in them.
  */
 
 import type { Client } from "@notionhq/client"
-import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
+import type {
+  CreatePageParameters,
+  PageObjectResponse,
+  QueryDataSourceParameters,
+} from "@notionhq/client"
 import type { Topic, CreateTopicInput, DatabaseRef } from "../types.js"
 import { buildTopicProps } from "../notion/schema.js"
 import {
@@ -14,6 +20,11 @@ import {
   extractRichText,
   extractRelationIds,
 } from "../notion/extractors.js"
+
+/** Max retries for the optimistic `getOrCreate` extend loop when a concurrent
+ *  writer clobbers the relation mid-update. Two retries is enough to cover
+ *  single-writer jitter without turning a collision into an API hammer. */
+const GET_OR_CREATE_MAX_RETRIES = 2
 
 export class TopicService {
   constructor(
@@ -26,7 +37,7 @@ export class TopicService {
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildTopicProps({
         name: input.name,
-        projectId: input.projectId,
+        projectIds: input.projectIds,
         description: input.description,
       }),
     })
@@ -60,6 +71,46 @@ export class TopicService {
     return results.map((p) => this.pageToTopic(p))
   }
 
+  /**
+   * List every topic with the given name. Used by the duplicate-merge
+   * migration (`mergeDuplicatesByName`) and by `findByName` as a safety
+   * probe. Topic names should be globally unique after migration; the
+   * pagination loop handles the degenerate case of a legacy vault with
+   * many like-named rows.
+   */
+  async listByName(name: string): Promise<Topic[]> {
+    const results: PageObjectResponse[] = []
+    let cursor: string | undefined
+
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: {
+          property: "Name",
+          title: { equals: name },
+        },
+        start_cursor: cursor,
+      })
+      results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
+      cursor = response.next_cursor ?? undefined
+    } while (cursor)
+
+    return results.map((p) => this.pageToTopic(p))
+  }
+
+  /**
+   * Find a topic by name. Topic names are globally unique after migration;
+   * duplicates are resolved by `lore migrate --merge-duplicate-topics`.
+   *
+   * - Without `projectId`: global lookup by name.
+   * - With `projectId`: additionally require that id be present in the
+   *   topic's Project relation (scoped lookup).
+   *
+   * If the query returns more than one match in global mode, an
+   * explanatory error is thrown — `getOrCreate` would otherwise silently
+   * pick an arbitrary duplicate and extend it, stranding the siblings.
+   * Callers that know they need scoped behaviour can pass `projectId`.
+   */
   async findByName(name: string, projectId?: string): Promise<Topic | null> {
     const filters: Array<Record<string, unknown>> = [
       { property: "Name", title: { equals: name } },
@@ -75,23 +126,79 @@ export class TopicService {
       filter: filter as QueryDataSourceParameters["filter"],
     })
 
-    const page = response.results.filter(isFullPage)[0] as PageObjectResponse | undefined
-    return page ? this.pageToTopic(page) : null
+    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    if (pages.length === 0) return null
+
+    if (!projectId && pages.length > 1) {
+      const ids = pages.map((p) => p.id).join(", ")
+      throw new Error(
+        `Multiple topics named "${name}" found (${ids}). ` +
+          `Run \`lore migrate --merge-duplicate-topics\` to merge them.`
+      )
+    }
+
+    return this.pageToTopic(pages[0])
   }
 
-  async getOrCreate(name: string, projectId: string): Promise<Topic> {
-    const existing = await this.findByName(name, projectId)
-    if (existing) return existing
-    return this.create({ name, projectId })
+  /**
+   * Get a topic by name, creating or extending as needed so its Project
+   * relation includes every id in `projectIds`.
+   *
+   * - Not found → create with the given `projectIds`.
+   * - Found with all requested ids already linked → return existing.
+   * - Found but missing some ids → extend the relation via `pages.update`.
+   *   Re-reads after the write and verifies the requested ids landed; if a
+   *   concurrent writer clobbered us (replace semantics on relation
+   *   updates), retries up to `GET_OR_CREATE_MAX_RETRIES` times.
+   *
+   * Relies on `findByName`'s global-uniqueness invariant. That invariant is
+   * established by `lore migrate --merge-duplicate-topics`; this method
+   * will throw if a legacy vault still has duplicate-name topics.
+   */
+  async getOrCreate(name: string, projectIds: string[]): Promise<Topic> {
+    for (let attempt = 0; attempt <= GET_OR_CREATE_MAX_RETRIES; attempt++) {
+      const existing = await this.findByName(name)
+      if (!existing) return this.create({ name, projectIds })
+
+      const missing = projectIds.filter((id) => !existing.projectIds.includes(id))
+      if (missing.length === 0) return existing
+
+      const merged = [...existing.projectIds, ...missing]
+      await this.client.pages.update({
+        page_id: existing.id,
+        properties: {
+          Project: { relation: merged.map((id) => ({ id })) },
+        } as CreatePageParameters["properties"],
+      })
+
+      // Re-read to confirm our additions landed. Notion's pages.update
+      // replaces the relation array wholesale, so a concurrent writer that
+      // read the same pre-state could have just clobbered our extension.
+      const refetched = await this.getById(existing.id)
+      if (projectIds.every((id) => refetched.projectIds.includes(id))) {
+        return refetched
+      }
+      // Lost-update detected; try again.
+    }
+
+    // Fall through after retries — return whatever authoritative state
+    // currently exists. The caller's desired relation may still be
+    // incomplete; this is the documented failure mode under concurrency.
+    const final = await this.findByName(name)
+    if (!final) {
+      throw new Error(
+        `Topic "${name}" disappeared during concurrent getOrCreate retries`
+      )
+    }
+    return final
   }
 
   private pageToTopic(page: PageObjectResponse): Topic {
     const props = page.properties
-    const projectIds = extractRelationIds(props["Project"])
     return {
       id: page.id,
       name: extractTitle(props["Name"]),
-      projectId: projectIds[0] ?? "",
+      projectIds: extractRelationIds(props["Project"]),
       description: extractRichText(props["Description"]),
     }
   }
