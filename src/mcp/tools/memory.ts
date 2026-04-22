@@ -308,9 +308,18 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectId = services.context.project.id
         }
 
-        if (topicName && projectId) {
-          const found = await services.topics.findByName(topicName, projectId)
-          if (found) topicId = found.id
+        // Resolve topicName globally. Topics can span multiple projects
+        // (many-to-many Topic.Project), so scoping the lookup by projectId
+        // silently drops the filter when the topic exists but isn't linked
+        // to the current project — causing unfiltered fall-through.
+        if (topicName) {
+          const found = await services.topics.findByName(topicName)
+          if (!found) {
+            return {
+              content: [{ type: "text", text: `No topic named "${topicName}" found.` }],
+            }
+          }
+          topicId = found.id
         }
 
         const memories = await services.memories.list({
