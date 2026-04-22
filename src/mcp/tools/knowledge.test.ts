@@ -128,3 +128,63 @@ describe("lore-ask", () => {
     expect(text).not.toContain("Old decision")
   })
 })
+
+describe("lore-ask projectName resolution", () => {
+  it("warns and falls back when projectName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const queryByEntity = vi.fn().mockResolvedValue([])
+
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      facts: {
+        queryByEntity,
+        queryByObject: vi.fn(),
+      },
+      decisions: { getById: vi.fn() },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    }
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-ask")
+
+    const result = await handler({ entity: "AuthService", projectName: "Typo" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Warning emitted, not an error.
+    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain("Warnings:")
+    // Fallback applied: query scoped to the ambient project.
+    expect(queryByEntity).toHaveBeenCalledWith(
+      "AuthService",
+      expect.objectContaining({ projectId: "proj-ambient" }),
+    )
+  })
+})
+
+describe("lore-audit projectName resolution", () => {
+  it("returns an explicit error when projectName does not resolve", async () => {
+    // lore-audit surfaces destructive follow-up actions (mark reviewed,
+    // supersede) — silent fallback would let the caller act on the wrong
+    // project's overdue queue.
+    const mockServer = createMockServer()
+    const queryOverdueFacts = vi.fn()
+    const queryOverdueDecisions = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      facts: { queryOverdue: queryOverdueFacts },
+      decisions: { queryOverdue: queryOverdueDecisions },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    }
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-audit")
+
+    const result = await handler({ projectName: "Typo" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('Project "Typo" not found')
+    expect(queryOverdueFacts).not.toHaveBeenCalled()
+    expect(queryOverdueDecisions).not.toHaveBeenCalled()
+  })
+})

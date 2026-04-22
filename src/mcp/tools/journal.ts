@@ -91,11 +91,19 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
     async ({ agent, projectName, limit }) => {
       try {
         let projectId: string | undefined
+        const warnings: string[] = []
 
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
-        } else if (services.context.project) {
+          if (found) {
+            projectId = found.id
+          } else {
+            warnings.push(
+              `Project "${projectName}" not found — falling back to auto-detected project.`,
+            )
+          }
+        }
+        if (!projectId && services.context.project) {
           projectId = services.context.project.id
         }
 
@@ -113,9 +121,11 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           )
         }
 
+        const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
         if (filtered.length === 0) {
           return {
-            content: [{ type: "text", text: "No journal entries found." }],
+            content: [{ type: "text", text: `No journal entries found.${warn}` }],
           }
         }
 
@@ -137,7 +147,7 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           content: [
             {
               type: "text",
-              text: `${filtered.length} journal entries:\n\n${text}`,
+              text: `${filtered.length} journal entries:\n\n${text}${warn}`,
             },
           ],
         }

@@ -113,19 +113,29 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
     async ({ entity, projectName }) => {
       try {
         let projectId: string | undefined
+        const warnings: string[] = []
 
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
-        } else if (services.context.project) {
+          if (found) {
+            projectId = found.id
+          } else {
+            warnings.push(
+              `Project "${projectName}" not found — falling back to auto-detected project.`,
+            )
+          }
+        }
+        if (!projectId && services.context.project) {
           projectId = services.context.project.id
         }
 
         const facts = await services.facts.queryByEntity(entity, { projectId })
 
+        const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
         if (facts.length === 0) {
           return {
-            content: [{ type: "text", text: `No facts found about "${entity}".` }],
+            content: [{ type: "text", text: `No facts found about "${entity}".${warn}` }],
           }
         }
 
@@ -178,7 +188,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
 
         if (lines.length === 0) {
           return {
-            content: [{ type: "text", text: `No current facts found about "${entity}".` }],
+            content: [{ type: "text", text: `No current facts found about "${entity}".${warn}` }],
           }
         }
 
@@ -186,7 +196,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           content: [
             {
               type: "text",
-              text: `${lines.length} facts about "${entity}":\n\n${lines.join("\n")}`,
+              text: `${lines.length} facts about "${entity}":\n\n${lines.join("\n")}${warn}`,
             },
           ],
         }
@@ -333,11 +343,19 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       try {
         let projectId: string | undefined
 
+        // Strict resolution: lore-audit suggests destructive actions
+        // ("mark reviewed", "supersede") targeted at the surfaced items,
+        // so silently falling back to the ambient project would put the
+        // caller at risk of acting on the wrong project's overdue queue.
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
-        }
-        if (!projectId && services.context.project) {
+          if (!found) {
+            return {
+              content: [{ type: "text", text: `Project "${projectName}" not found.` }],
+            }
+          }
+          projectId = found.id
+        } else if (services.context.project) {
           projectId = services.context.project.id
         }
 

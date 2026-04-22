@@ -130,3 +130,49 @@ describe("registerDecisionTools", () => {
     )
   })
 })
+
+describe("lore-list-decisions projectName resolution", () => {
+  it("returns an explicit error when projectName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const decisionsList = vi.fn()
+    const services = {
+      decisions: { list: decisionsList },
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      facts: {},
+      topics: {},
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-list-decisions")
+
+    const result = await handler({ projectName: "Typo" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('Project "Typo" not found')
+    expect(decisionsList).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-decision-context projectName resolution", () => {
+  it("returns an explicit error when projectName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const queryBySubject = vi.fn()
+    const services = {
+      decisions: {},
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      facts: { queryBySubject },
+      topics: {},
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    const result = await handler({ entity: "AuthService", projectName: "Typo" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('Project "Typo" not found')
+    expect(queryBySubject).not.toHaveBeenCalled()
+  })
+})

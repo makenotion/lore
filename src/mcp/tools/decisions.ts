@@ -282,7 +282,12 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         let projectId: string | undefined
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
+          if (!found) {
+            return {
+              content: [{ type: "text", text: `Project "${projectName}" not found.` }],
+            }
+          }
+          projectId = found.id
         } else if (services.context.project) {
           projectId = services.context.project.id
         }
@@ -397,7 +402,12 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         let projectId: string | undefined
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
+          if (!found) {
+            return {
+              content: [{ type: "text", text: `Project "${projectName}" not found.` }],
+            }
+          }
+          projectId = found.id
         } else if (services.context.project) {
           projectId = services.context.project.id
         }

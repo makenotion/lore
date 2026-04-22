@@ -139,3 +139,89 @@ describe("lore-recall topicName resolution", () => {
     )
   })
 })
+
+describe("lore-recall projectName resolution", () => {
+  it("returns an explicit error when projectName does not resolve (no silent fall-through)", async () => {
+    const mockServer = createMockServer()
+    const projectsFindByName = vi.fn().mockResolvedValue(null)
+    const topicsFindByName = vi.fn()
+    const memoriesList = vi.fn()
+
+    const services = {
+      projects: { findByName: projectsFindByName },
+      topics: { findByName: topicsFindByName },
+      memories: { list: memoriesList },
+      // Ambient project is set — the old code would have left projectId undefined
+      // and then skipped the else-if, running an unscoped query.
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({ projectName: "Typo" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('Project "Typo" not found')
+    expect(memoriesList).not.toHaveBeenCalled()
+  })
+
+  it("project error wins when both projectName and topicName are passed and project is invalid", async () => {
+    const mockServer = createMockServer()
+    const projectsFindByName = vi.fn().mockResolvedValue(null)
+    const topicsFindByName = vi.fn()
+    const memoriesList = vi.fn()
+
+    const services = {
+      projects: { findByName: projectsFindByName },
+      topics: { findByName: topicsFindByName },
+      memories: { list: memoriesList },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({
+      projectName: "Typo",
+      topicName: "SomeTopic",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('Project "Typo" not found')
+    // Short-circuit on project miss — topic lookup must not run, nor the list query.
+    expect(topicsFindByName).not.toHaveBeenCalled()
+    expect(memoriesList).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-search projectName resolution", () => {
+  it("warns and falls back to auto-detected project when projectName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const projectsFindByName = vi.fn().mockResolvedValue(null)
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([makeMemory("mem-1", { title: "A result" })])
+
+    const services = {
+      projects: { findByName: projectsFindByName },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    const result = await search({ query: "anything", projectName: "Typo" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Warning emitted, not an error.
+    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain("Warnings:")
+    // Fallback applied: search scoped to the ambient project.
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "proj-ambient" }),
+    )
+  })
+})

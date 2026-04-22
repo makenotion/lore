@@ -189,11 +189,19 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     async ({ query, projectName, tags, kind, status, limit }) => {
       try {
         let projectId: string | undefined
+        const warnings: string[] = []
 
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
-        } else if (services.context.project) {
+          if (found) {
+            projectId = found.id
+          } else {
+            warnings.push(
+              `Project "${projectName}" not found — falling back to auto-detected project.`,
+            )
+          }
+        }
+        if (!projectId && services.context.project) {
           projectId = services.context.project.id
         }
 
@@ -213,9 +221,11 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         if (status) results = results.filter((m) => m.status === status)
         results = results.slice(0, limit ?? 10)
 
+        const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
         if (results.length === 0) {
           return {
-            content: [{ type: "text", text: `No memories found for: "${query}"` }],
+            content: [{ type: "text", text: `No memories found for: "${query}"${warn}` }],
           }
         }
 
@@ -239,7 +249,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           content: [
             {
               type: "text",
-              text: `Found ${results.length} memories for "${query}":\n\n${text}`,
+              text: `Found ${results.length} memories for "${query}":\n\n${text}${warn}`,
             },
           ],
         }
@@ -303,7 +313,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
 
         if (projectName) {
           const found = await services.projects.findByName(projectName)
-          if (found) projectId = found.id
+          if (!found) {
+            return {
+              content: [{ type: "text", text: `Project "${projectName}" not found.` }],
+            }
+          }
+          projectId = found.id
         } else if (services.context.project) {
           projectId = services.context.project.id
         }
