@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError } from "../helpers.js"
+import { toolError, paginationFooter } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 
 export function registerJournalTools(server: McpServer, services: LoreServices): void {
@@ -74,7 +74,11 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
       title: "Read journal entries",
       description:
         "Read recent journal entries (agent diary memories). " +
-        "Useful for reviewing what previous sessions documented.",
+        "Useful for reviewing what previous sessions documented.\n\n" +
+        "Returns up to `limit` entries per call. When more exist, the response ends with a fenced " +
+        "```json block `{\"nextCursor\":\"...\"}` — pass that value as `startCursor` on the next call " +
+        "to continue. The `agent` filter is applied client-side after paging, so a page can yield zero " +
+        "entries and still return a `nextCursor` — keep paging until the footer disappears.",
       inputSchema: {
         agent: z.string().optional().describe("Filter by agent name"),
         projectName: z.string().optional().describe("Filter by project name"),
@@ -82,13 +86,21 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           .number()
           .int()
           .min(1)
-          .max(50)
+          .max(100)
           .optional()
-          .describe("Max entries (default 10)"),
+          .describe("Max entries per page (default 10, max 100)"),
+        startCursor: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Opaque cursor from a previous response's `nextCursor`. Pass to continue " +
+              "enumerating from where the last page ended. Keep all other filters identical."
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ agent, projectName, limit }) => {
+    async ({ agent, projectName, limit, startCursor }) => {
       try {
         let projectId: string | undefined
         const warnings: string[] = []
@@ -107,13 +119,15 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           projectId = services.context.project.id
         }
 
-        const entries = await services.memories.list({
+        const { items: entries, nextCursor } = await services.memories.list({
           projectId,
           source: "agent_diary",
           limit: limit ?? 10,
+          startCursor,
         })
 
-        // Filter by agent name if specified
+        // Filter by agent name if specified. Applied client-side after paging,
+        // so an all-filtered-out page can still advance via `nextCursor`.
         let filtered = entries
         if (agent) {
           filtered = entries.filter((m) =>
@@ -122,10 +136,14 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
         }
 
         const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+        const footer = paginationFooter(nextCursor)
 
         if (filtered.length === 0) {
+          const header = nextCursor
+            ? "No matching journal entries on this page."
+            : "No journal entries found."
           return {
-            content: [{ type: "text", text: `No journal entries found.${warn}` }],
+            content: [{ type: "text", text: `${header}${warn}${footer}` }],
           }
         }
 
@@ -147,7 +165,7 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           content: [
             {
               type: "text",
-              text: `${filtered.length} journal entries:\n\n${text}${warn}`,
+              text: `${filtered.length} journal entries:\n\n${text}${warn}${footer}`,
             },
           ],
         }

@@ -69,7 +69,11 @@ export function registerDigestTools(server: McpServer, services: LoreServices): 
         }
 
         // Gather data in parallel
-        const [recentMemories, lastDigest, openLoops] = await Promise.all([
+        const [
+          { items: recentMemories },
+          { items: lastDigest },
+          openLoops,
+        ] = await Promise.all([
           services.memories.list({
             projectId: projectId ?? undefined,
             since: windowStart,

@@ -67,7 +67,7 @@ describe("lore-recall topicName resolution", () => {
     const memory = makeMemory("mem-1", { title: "OAuth flow notes", topicId: "topic-1" })
 
     const findByName = vi.fn().mockResolvedValue(topic)
-    const memoriesList = vi.fn().mockResolvedValue([memory])
+    const memoriesList = vi.fn().mockResolvedValue({ items: [memory] })
 
     const services = {
       topics: { findByName },
@@ -94,9 +94,9 @@ describe("lore-recall topicName resolution", () => {
   it("returns an explicit error when topicName does not resolve (no silent fall-through)", async () => {
     const mockServer = createMockServer()
     const findByName = vi.fn().mockResolvedValue(null)
-    const memoriesList = vi.fn().mockResolvedValue([
-      makeMemory("unrelated", { title: "Unrelated recent memory" }),
-    ])
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [makeMemory("unrelated", { title: "Unrelated recent memory" })],
+    })
 
     const services = {
       topics: { findByName },
@@ -119,7 +119,7 @@ describe("lore-recall topicName resolution", () => {
   it("omits the topicId filter when topicName is not provided", async () => {
     const mockServer = createMockServer()
     const findByName = vi.fn()
-    const memoriesList = vi.fn().mockResolvedValue([])
+    const memoriesList = vi.fn().mockResolvedValue({ items: [] })
 
     const services = {
       topics: { findByName },
@@ -192,6 +192,103 @@ describe("lore-recall projectName resolution", () => {
     // Short-circuit on project miss — topic lookup must not run, nor the list query.
     expect(topicsFindByName).not.toHaveBeenCalled()
     expect(memoriesList).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-recall cursor pagination", () => {
+  it("appends a fenced json `nextCursor` footer when the service reports more pages", async () => {
+    const mockServer = createMockServer()
+    const memory = makeMemory("mem-1", { title: "first page" })
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [memory],
+      nextCursor: "resume-here",
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Fenced json block — unambiguously parseable even when item bodies contain JSON-like syntax.
+    expect(text).toMatch(/```json\n\{"nextCursor":"resume-here"\}\n```/)
+  })
+
+  it("omits the footer entirely when the service returns no nextCursor", async () => {
+    const mockServer = createMockServer()
+    const memory = makeMemory("mem-1", { title: "only page" })
+    const memoriesList = vi.fn().mockResolvedValue({ items: [memory] })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("nextCursor")
+    expect(text).not.toContain("```json")
+  })
+
+  it("forwards startCursor through to the service list call", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({ items: [] })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    await recall({ startCursor: "resume-here" } as never)
+
+    expect(memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ startCursor: "resume-here" }),
+    )
+  })
+
+  it("surfaces nextCursor when a page is empty but more results remain", async () => {
+    // Server-side filters can yield an empty page mid-enumeration. The cursor
+    // MUST still surface — otherwise an agent following "page until footer
+    // disappears" terminates prematurely.
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [],
+      nextCursor: "keep-paging",
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("No matching memories on this page.")
+    expect(text).toMatch(/```json\n\{"nextCursor":"keep-paging"\}\n```/)
   })
 })
 

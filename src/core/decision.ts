@@ -101,7 +101,9 @@ export class DecisionService {
    * `lore-wake-up`'s decisions section, `lore-audit`'s overdue decisions)
    * rely on for agent-ingestion performance.
    */
-  async list(opts?: ListDecisionsOpts): Promise<DecisionSummary[]> {
+  async list(
+    opts?: ListDecisionsOpts
+  ): Promise<{ items: DecisionSummary[]; nextCursor?: string }> {
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "decision" } },
     ]
@@ -138,10 +140,17 @@ export class DecisionService {
       filter: filter as QueryDataSourceParameters["filter"],
       sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
       page_size: Math.min(opts?.limit ?? 20, 100),
+      start_cursor: opts?.startCursor,
     })
 
     const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-    return pages.map((page) => toDecisionSummary(pageToMemory(page, "") as Decision))
+    const nextCursor =
+      response.has_more && response.next_cursor ? response.next_cursor : undefined
+
+    return {
+      items: pages.map((page) => toDecisionSummary(pageToMemory(page, "") as Decision)),
+      nextCursor,
+    }
   }
 
   /**

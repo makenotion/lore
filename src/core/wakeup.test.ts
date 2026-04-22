@@ -108,8 +108,10 @@ function stubServices(opts: {
     memories: {
       list: vi.fn(async (args: ListCall) => {
         memoriesCalls.push(args)
-        if (args.source === "digest") return opts.digestMemories ?? []
-        return opts.rawMemories ?? []
+        const items = args.source === "digest"
+          ? opts.digestMemories ?? []
+          : opts.rawMemories ?? []
+        return { items }
       }),
       search: vi.fn(async (args: SearchCall) => {
         memoriesSearchCalls.push(args)
@@ -125,7 +127,7 @@ function stubServices(opts: {
     decisions: {
       list: vi.fn(async (listOpts?: ListDecisionsOpts) => {
         decisionsListCalls.push(listOpts ?? {})
-        return opts.proposedDecisions ?? []
+        return { items: opts.proposedDecisions ?? [] }
       }),
       queryOverdue: vi.fn(async (overdueOpts) => {
         decisionsOverdueCalls.push(overdueOpts)

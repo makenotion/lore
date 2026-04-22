@@ -62,6 +62,8 @@ interface MockClientOpts {
   queryResults?: PageObjectResponse[]
   createReturn?: PageObjectResponse
   markdown?: string
+  hasMore?: boolean
+  nextCursor?: string | null
 }
 
 function createMockClient(opts: MockClientOpts = {}) {
@@ -81,7 +83,8 @@ function createMockClient(opts: MockClientOpts = {}) {
     dataSources: {
       query: vi.fn().mockResolvedValue({
         results: opts.queryResults ?? [],
-        has_more: false,
+        has_more: opts.hasMore ?? false,
+        next_cursor: opts.nextCursor ?? null,
       }),
     },
   } as unknown as Client & { pages: { create: ReturnType<typeof vi.fn> } }
@@ -232,16 +235,53 @@ describe("DecisionService.list — index tier, no body fetch", () => {
     })
     const service = new DecisionService(client, DB)
 
-    const results = await service.list()
+    const { items } = await service.list()
 
-    expect(results).toHaveLength(3)
+    expect(items).toHaveLength(3)
     expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
     // DecisionSummary omits `content` at the type level; at runtime the object
     // has no content property.
-    for (const summary of results) {
+    for (const summary of items) {
       expect(summary).not.toHaveProperty("content")
       expect(summary.kind).toBe("decision")
     }
+  })
+
+  it("exposes nextCursor when the Notion response reports has_more", async () => {
+    const client = createMockClient({
+      queryResults: [decisionPage("dec-1")],
+      hasMore: true,
+      nextCursor: "notion-cursor-abc",
+    })
+    const service = new DecisionService(client, DB)
+
+    const { items, nextCursor } = await service.list()
+
+    expect(items).toHaveLength(1)
+    expect(nextCursor).toBe("notion-cursor-abc")
+  })
+
+  it("omits nextCursor when has_more is false", async () => {
+    const client = createMockClient({
+      queryResults: [decisionPage("dec-1")],
+      hasMore: false,
+      nextCursor: "should-be-ignored",
+    })
+    const service = new DecisionService(client, DB)
+
+    const { nextCursor } = await service.list()
+
+    expect(nextCursor).toBeUndefined()
+  })
+
+  it("forwards startCursor to dataSources.query as start_cursor", async () => {
+    const client = createMockClient({ queryResults: [] })
+    const service = new DecisionService(client, DB)
+
+    await service.list({ startCursor: "resume-from-here" })
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(queryArgs.start_cursor).toBe("resume-from-here")
   })
 })
 

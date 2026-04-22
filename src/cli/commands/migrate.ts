@@ -157,7 +157,7 @@ async function upgradeLegacyDecisionTags(services: LoreServices): Promise<number
   let upgraded = 0
 
   while (true) {
-    const batch = await services.memories.list({
+    const { items: batch } = await services.memories.list({
       tags: ["decision"],
       limit: BATCH_SIZE,
       includeContent: false,

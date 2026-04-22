@@ -81,7 +81,7 @@ export function registerProjectTools(server: McpServer, services: LoreServices):
           }
         }
 
-        const [topics, recentMemories] = await Promise.all([
+        const [topics, { items: recentMemories }] = await Promise.all([
           services.topics.listByProject(project.id),
           services.memories.list({ projectId: project.id, limit: 5 }),
         ])

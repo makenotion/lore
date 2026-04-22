@@ -244,6 +244,11 @@ export interface ListDecisionsOpts {
   limit?: number
   since?: string
   until?: string
+  /**
+   * Opaque cursor from a previous page's `nextCursor`. When provided,
+   * continues enumeration from where that page ended.
+   */
+  startCursor?: string
 }
 
 // ---------------------------------------------------------------------------

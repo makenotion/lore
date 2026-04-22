@@ -314,3 +314,79 @@ describe("pageToMemory — partial migration (mixed defaults + real values)", ()
     expect(memory.decidedAt).toBeNull()
   })
 })
+
+describe("MemoryService.list — pagination", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildListPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      { id } as Partial<PageObjectResponse>,
+    )
+  }
+
+  function createClient(response: {
+    results: PageObjectResponse[]
+    has_more?: boolean
+    next_cursor?: string | null
+  }) {
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      results: response.results,
+      has_more: response.has_more ?? false,
+      next_cursor: response.next_cursor ?? null,
+    }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "body" }))
+    return {
+      client: {
+        dataSources: { query: querySpy },
+        pages: { retrieveMarkdown: retrieveMarkdownSpy },
+      } as unknown as Client,
+      querySpy,
+      retrieveMarkdownSpy,
+    }
+  }
+
+  it("exposes nextCursor when the Notion response reports has_more", async () => {
+    const { client } = createClient({
+      results: [buildListPage("mem-1", "one")],
+      has_more: true,
+      next_cursor: "notion-cursor-abc",
+    })
+    const service = new MemoryService(client, db)
+
+    const { items, nextCursor } = await service.list({ includeContent: false })
+
+    expect(items).toHaveLength(1)
+    expect(nextCursor).toBe("notion-cursor-abc")
+  })
+
+  it("omits nextCursor when has_more is false (ignoring any stale next_cursor Notion returns)", async () => {
+    const { client } = createClient({
+      results: [buildListPage("mem-1", "one")],
+      has_more: false,
+      next_cursor: "should-be-ignored",
+    })
+    const service = new MemoryService(client, db)
+
+    const { nextCursor } = await service.list({ includeContent: false })
+
+    expect(nextCursor).toBeUndefined()
+  })
+
+  it("forwards startCursor to dataSources.query as start_cursor", async () => {
+    const { client, querySpy } = createClient({ results: [] })
+    const service = new MemoryService(client, db)
+
+    await service.list({ startCursor: "resume-from-here", includeContent: false })
+
+    expect(querySpy.mock.calls[0][0]).toMatchObject({
+      start_cursor: "resume-from-here",
+    })
+  })
+})

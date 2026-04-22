@@ -203,7 +203,14 @@ export class MemoryService {
      * "most recently created" ordering — e.g. latest-digest lookup.
      */
     sortBy?: "created_time" | "last_edited_time"
-  }): Promise<Memory[]> {
+    /**
+     * Opaque cursor from a previous page's `nextCursor`. When provided,
+     * continues enumeration from where that page ended. The filter/sort
+     * must match the originating query — Notion returns the cursor's
+     * contents under the assumption the query shape is unchanged.
+     */
+    startCursor?: string
+  }): Promise<{ items: Memory[]; nextCursor?: string }> {
     const filters: Array<Record<string, unknown>> = []
 
     if (opts?.projectId) {
@@ -280,20 +287,27 @@ export class MemoryService {
       filter: filter as QueryDataSourceParameters["filter"],
       sorts: [{ timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" }],
       page_size: Math.min(opts?.limit ?? 20, 100),
+      start_cursor: opts?.startCursor,
     })
 
     const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    const nextCursor =
+      response.has_more && response.next_cursor ? response.next_cursor : undefined
 
     if (opts?.includeContent === false) {
-      return pages.map((page) => this.pageToMemory(page, ""))
+      return {
+        items: pages.map((page) => this.pageToMemory(page, "")),
+        nextCursor,
+      }
     }
 
-    return Promise.all(
+    const items = await Promise.all(
       pages.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
         return this.pageToMemory(page, md.markdown)
       })
     )
+    return { items, nextCursor }
   }
 
   /**

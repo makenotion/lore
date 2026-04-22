@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError } from "../helpers.js"
+import { toolError, paginationFooter } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import {
   resolveCanonicalDecisionLinks,
@@ -255,7 +255,10 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       title: "List decisions",
       description:
         "List decisions matching the given filters. Returns summaries without markdown bodies — O(1) Notion API calls regardless of result count. " +
-        "Use this to discover what decisions have been made; use `lore-get-decision` to read the full rationale for a specific one.",
+        "Use this to discover what decisions have been made; use `lore-get-decision` to read the full rationale for a specific one.\n\n" +
+        "Returns up to `limit` decisions per call. When more exist, the response ends with a fenced " +
+        "```json block `{\"nextCursor\":\"...\"}` — pass that value as `startCursor` on the next call to " +
+        "continue enumerating. Absence of the footer means the final page.",
       inputSchema: {
         projectName: z.string().optional().describe("Scope to a project"),
         status: z
@@ -271,13 +274,21 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .number()
           .int()
           .min(1)
-          .max(50)
+          .max(100)
           .optional()
-          .describe("Max results (default 20)"),
+          .describe("Max results per page (default 20, max 100)"),
+        startCursor: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Opaque cursor from a previous response's `nextCursor`. Pass to continue " +
+              "enumerating from where the last page ended. Keep all other filters identical."
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ projectName, status, reviewBefore, limit }) => {
+    async ({ projectName, status, reviewBefore, limit, startCursor }) => {
       try {
         let projectId: string | undefined
         if (projectName) {
@@ -292,15 +303,26 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           projectId = services.context.project.id
         }
 
-        const decisions = await services.decisions.list({
+        const { items: decisions, nextCursor } = await services.decisions.list({
           projectId,
           status: status as DecisionStatus | undefined,
           reviewBefore,
           limit: limit ?? 20,
+          startCursor,
         })
 
         if (decisions.length === 0) {
-          return { content: [{ type: "text", text: "No decisions found." }] }
+          // Server-side filters can yield an empty page mid-enumeration; we
+          // must surface the cursor so callers don't stop early on a false
+          // "end of results" signal.
+          const header = nextCursor
+            ? "No matching decisions on this page."
+            : "No decisions found."
+          return {
+            content: [
+              { type: "text", text: `${header}${paginationFooter(nextCursor)}` },
+            ],
+          }
         }
 
         const lines = [`Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`]
@@ -312,7 +334,11 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           lines.push("")
         }
 
-        return { content: [{ type: "text", text: lines.join("\n") }] }
+        return {
+          content: [
+            { type: "text", text: `${lines.join("\n")}${paginationFooter(nextCursor)}` },
+          ],
+        }
       } catch (err) {
         return toolError(err)
       }

@@ -71,7 +71,7 @@ export interface WakeUpServices {
       includeContent?: boolean
       includeUnscoped?: boolean
       sortBy?: "created_time" | "last_edited_time"
-    }): Promise<Memory[]>
+    }): Promise<{ items: Memory[]; nextCursor?: string }>
     search(input: {
       query: string
       projectId?: string
@@ -86,7 +86,7 @@ export interface WakeUpServices {
     ): Promise<Fact[]>
   }
   decisions: {
-    list(opts?: ListDecisionsOpts): Promise<DecisionSummary[]>
+    list(opts?: ListDecisionsOpts): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
     queryOverdue(opts?: { projectId?: string }): Promise<DecisionSummary[]>
   }
 }
@@ -160,34 +160,39 @@ export async function loadWakeUpData(
 
   // Request one extra memory so we can drop a digest entry without running
   // short after filtering.
-  const [rawMemories, latestDigestList, facts, proposedDecisions, overdueDecisions] =
-    await Promise.all([
-      services.memories.list({
-        projectId,
-        limit: memoryLimit + 1,
-        includeContent,
-      }),
-      projectId
-        ? // Sort by creation so freshness (`createdAt`) aligns with "latest":
-          // an edit to an older digest must not mask a newer one.
-          services.memories.list({
-            projectId,
-            source: "digest",
-            limit: 1,
-            includeUnscoped: false,
-            sortBy: "created_time",
-          })
-        : Promise.resolve([]),
-      projectId
-        ? services.facts.queryBySubject("", { projectId })
-        : Promise.resolve([]),
-      projectId && includeDecisions
-        ? services.decisions.list({ projectId, status: "proposed", limit: 20 })
-        : Promise.resolve([]),
-      projectId && includeDecisions
-        ? services.decisions.queryOverdue({ projectId })
-        : Promise.resolve([]),
-    ])
+  const [
+    { items: rawMemories },
+    { items: latestDigestList },
+    facts,
+    { items: proposedDecisions },
+    overdueDecisions,
+  ] = await Promise.all([
+    services.memories.list({
+      projectId,
+      limit: memoryLimit + 1,
+      includeContent,
+    }),
+    projectId
+      ? // Sort by creation so freshness (`createdAt`) aligns with "latest":
+        // an edit to an older digest must not mask a newer one.
+        services.memories.list({
+          projectId,
+          source: "digest",
+          limit: 1,
+          includeUnscoped: false,
+          sortBy: "created_time",
+        })
+      : Promise.resolve({ items: [] as Memory[] }),
+    projectId
+      ? services.facts.queryBySubject("", { projectId })
+      : Promise.resolve([] as Fact[]),
+    projectId && includeDecisions
+      ? services.decisions.list({ projectId, status: "proposed", limit: 20 })
+      : Promise.resolve({ items: [] as DecisionSummary[] }),
+    projectId && includeDecisions
+      ? services.decisions.queryOverdue({ projectId })
+      : Promise.resolve([] as DecisionSummary[]),
+  ])
 
   const latestDigest = latestDigestList[0] ?? null
   const digest = isFreshDigest(latestDigest, freshnessDays, now) ? latestDigest : null

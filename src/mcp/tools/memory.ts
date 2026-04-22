@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError } from "../helpers.js"
+import { toolError, paginationFooter } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import type { MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
 
@@ -269,7 +269,10 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       description:
         "Get the most recent memories, optionally filtered by project, topic, source type, kind, or status. " +
         "Useful for catching up on what happened recently in a project. Filters are applied server-side via " +
-        "`dataSources.query` — use `lore-search` for vector similarity matching.",
+        "`dataSources.query` — use `lore-search` for vector similarity matching.\n\n" +
+        "Returns up to `limit` results per call. When more results exist, the response ends with a fenced " +
+        "```json block `{\"nextCursor\":\"...\"}` — pass that value as `startCursor` on the next call to " +
+        "continue enumerating. Absence of the footer means the final page.",
       inputSchema: {
         projectName: z.string().optional().describe("Filter by project name"),
         topicName: z.string().optional().describe("Filter by topic name"),
@@ -294,9 +297,17 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .number()
           .int()
           .min(1)
-          .max(50)
+          .max(100)
           .optional()
-          .describe("Max results (default 10)"),
+          .describe("Max results per page (default 10, max 100)"),
+        startCursor: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Opaque cursor from a previous response's `nextCursor`. Pass to continue " +
+              "enumerating from where the last page ended. Keep all other filters identical."
+          ),
         includeContent: z
           .boolean()
           .optional()
@@ -306,7 +317,17 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ projectName, topicName, source, kind, status, reviewBefore, limit, includeContent }) => {
+    async ({
+      projectName,
+      topicName,
+      source,
+      kind,
+      status,
+      reviewBefore,
+      limit,
+      startCursor,
+      includeContent,
+    }) => {
       try {
         let projectId: string | undefined
         let topicId: string | undefined
@@ -337,7 +358,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           topicId = found.id
         }
 
-        const memories = await services.memories.list({
+        const { items: memories, nextCursor } = await services.memories.list({
           projectId,
           topicId,
           source,
@@ -346,11 +367,20 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           reviewBefore,
           limit: limit ?? 10,
           includeContent,
+          startCursor,
         })
 
         if (memories.length === 0) {
+          // Server-side filters can yield an empty page mid-enumeration; we
+          // must surface the cursor so callers don't stop early on a false
+          // "end of results" signal.
+          const header = nextCursor
+            ? "No matching memories on this page."
+            : "No recent memories found."
           return {
-            content: [{ type: "text", text: "No recent memories found." }],
+            content: [
+              { type: "text", text: `${header}${paginationFooter(nextCursor)}` },
+            ],
           }
         }
 
@@ -371,7 +401,10 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
 
         return {
           content: [
-            { type: "text", text: `${memories.length} recent memories:\n\n${text}` },
+            {
+              type: "text",
+              text: `${memories.length} recent memories:\n\n${text}${paginationFooter(nextCursor)}`,
+            },
           ],
         }
       } catch (err) {
