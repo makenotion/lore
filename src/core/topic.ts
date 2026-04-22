@@ -65,7 +65,7 @@ export class TopicService {
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-      cursor = response.next_cursor ?? undefined
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToTopic(p))
@@ -92,7 +92,7 @@ export class TopicService {
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-      cursor = response.next_cursor ?? undefined
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToTopic(p))

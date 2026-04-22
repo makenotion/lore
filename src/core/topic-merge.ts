@@ -63,7 +63,7 @@ export async function findDuplicateTopicNames(
       const name = extractTitle(page.properties["Name"])
       if (name.length > 0) allTopics.push({ id: page.id, name })
     }
-    cursor = response.next_cursor ?? undefined
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
   } while (cursor)
 
   const byName = new Map<string, string[]>()
@@ -193,7 +193,7 @@ async function listTopicPagesByName(
       start_cursor: cursor,
     })
     results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-    cursor = response.next_cursor ?? undefined
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
   } while (cursor)
 
   return results
@@ -220,7 +220,7 @@ async function listMemoryIdsByTopic(
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
       ids.push(page.id)
     }
-    cursor = response.next_cursor ?? undefined
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
   } while (cursor)
 
   return ids

@@ -184,6 +184,26 @@ describe("findDuplicateTopicNames", () => {
     expect(duplicates).toHaveLength(1)
     expect(duplicates[0].topicIds).toEqual(["t1", "t2"])
   })
+
+  it("stops after one page when has_more is false even if next_cursor is non-null", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "auth" }),
+            topicPage("t2", { name: "auth" }),
+          ],
+          has_more: false,
+          next_cursor: "stale-cursor",
+        },
+      ],
+    })
+
+    const duplicates = await findDuplicateTopicNames(client, TOPICS_DB)
+
+    expect(duplicates).toHaveLength(1)
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe("mergeDuplicateTopics", () => {
@@ -348,5 +368,66 @@ describe("mergeDuplicateTopics", () => {
 
     expect(results).toEqual([])
     expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("listTopicPagesByName stops when has_more is false even if next_cursor is non-null", async () => {
+    const canonical = topicPage("t1", {
+      name: "auth",
+      projectIds: ["p1"],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+    const loser = topicPage("t2", {
+      name: "auth",
+      projectIds: ["p2"],
+      createdAt: "2026-06-01T00:00:00.000Z",
+    })
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [canonical, loser],
+          has_more: false,
+          next_cursor: "stale-cursor",
+        },
+        { results: [] }, // listMemoryIdsByTopic — no memories on loser
+      ],
+    })
+
+    await mergeDuplicateTopics(client, TOPICS_DB, MEMORIES_DB, [
+      { name: "auth", topicIds: ["t1", "t2"] },
+    ])
+
+    // 1 call for the name-scan + 1 call for the loser's memory list = 2 total.
+    // If the has_more gate is missing, the name-scan would issue a second
+    // query on "stale-cursor", bumping the count to 3.
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("listMemoryIdsByTopic stops when has_more is false even if next_cursor is non-null", async () => {
+    const canonical = topicPage("t1", {
+      name: "auth",
+      projectIds: ["p1"],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+    const loser = topicPage("t2", {
+      name: "auth",
+      projectIds: ["p2"],
+      createdAt: "2026-06-01T00:00:00.000Z",
+    })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical, loser] }, // name-scan, default termination
+        {
+          results: [memoryPage("m1", "t2")],
+          has_more: false,
+          next_cursor: "stale-cursor",
+        },
+      ],
+    })
+
+    await mergeDuplicateTopics(client, TOPICS_DB, MEMORIES_DB, [
+      { name: "auth", topicIds: ["t1", "t2"] },
+    ])
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
   })
 })

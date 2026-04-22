@@ -210,6 +210,64 @@ describe("TopicService.listByName", () => {
     const topics = await service.listByName("nonexistent")
     expect(topics).toEqual([])
   })
+
+  it("stops after one page when has_more is false even if next_cursor is non-null", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [t1],
+      has_more: false,
+      next_cursor: "stale-cursor",
+    })
+    const service = new TopicService(client, DB)
+
+    const topics = await service.listByName("auth")
+
+    expect(topics).toHaveLength(1)
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("continues past a page when has_more is true", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const t2 = topicPage("t2", { name: "auth", projectIds: ["p2"] })
+    const client = createMockClient()
+    client.dataSources.query
+      .mockResolvedValueOnce({
+        results: [t1],
+        has_more: true,
+        next_cursor: "page-2",
+      })
+      .mockResolvedValueOnce({
+        results: [t2],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TopicService(client, DB)
+
+    const topics = await service.listByName("auth")
+
+    expect(topics.map((t) => t.id)).toEqual(["t1", "t2"])
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+    expect(client.dataSources.query.mock.calls[1][0].start_cursor).toBe("page-2")
+  })
+})
+
+describe("TopicService.listByProject", () => {
+  it("stops after one page when has_more is false even if next_cursor is non-null", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [t1],
+      has_more: false,
+      next_cursor: "stale-cursor",
+    })
+    const service = new TopicService(client, DB)
+
+    const topics = await service.listByProject("p1")
+
+    expect(topics).toHaveLength(1)
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe("TopicService.getOrCreate — extend-on-find", () => {
