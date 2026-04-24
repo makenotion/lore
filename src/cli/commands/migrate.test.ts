@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from "vitest"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Fact, Memory } from "../../types.js"
+import type { TopicAliasMergeResult } from "../../core/topic-merge.js"
 import {
   backfillFactSources,
+  loadTopicAliasMerges,
+  printAliasMergeResults,
   proposeSourceMemory,
   runFactEncodingFix,
   runMemoryEncodingFix,
@@ -622,6 +628,233 @@ describe("runMemoryEncodingFix", () => {
     // one decimal). The oversize preview renders in KB so it's scannable
     // next to the 100 KB cap instead of a six-digit byte count.
     expect(logs.some((l) => l.includes("244.1 KB"))).toBe(true)
+  })
+})
+
+describe("loadTopicAliasMerges", () => {
+  let workDir: string
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), "lore-merge-test-"))
+  })
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true })
+  })
+
+  it("parses a well-formed YAML into plan objects", async () => {
+    const path = join(workDir, "merges.yaml")
+    await writeFile(
+      path,
+      `merges:
+  - canonical: "Build & Tooling"
+    aliases:
+      - "Build System"
+      - "Build tooling"
+  - canonical: "MCP"
+    aliases: ["MCP Tools"]
+`
+    )
+
+    const plans = await loadTopicAliasMerges(path)
+    expect(plans).toEqual([
+      { canonical: "Build & Tooling", aliases: ["Build System", "Build tooling"] },
+      { canonical: "MCP", aliases: ["MCP Tools"] },
+    ])
+  })
+
+  it("rejects a missing file with a clean error naming the absolute path", async () => {
+    const missing = join(workDir, "does-not-exist.yaml")
+    await expect(loadTopicAliasMerges(missing)).rejects.toThrow(
+      /Merge file not found:.*does-not-exist\.yaml/
+    )
+  })
+
+  it("rejects malformed YAML with a parse-error message", async () => {
+    const path = join(workDir, "broken.yaml")
+    // Nested-inside-compact triggers a yaml parse error deterministically.
+    await writeFile(path, "this: is\n  not: valid: yaml: {[}")
+    await expect(loadTopicAliasMerges(path)).rejects.toThrow(/Could not parse YAML in/)
+  })
+
+  it("rejects a schema-invalid YAML with a path-aware zod error", async () => {
+    const path = join(workDir, "bad-schema.yaml")
+    await writeFile(path, `merges:\n  - canonical: "A"\n    aliases: []\n`)
+    await expect(loadTopicAliasMerges(path)).rejects.toThrow(
+      /Invalid merge file.*merges\.0\.aliases.*at least one alias/
+    )
+  })
+
+  it("rejects a YAML missing the merges key entirely", async () => {
+    const path = join(workDir, "empty.yaml")
+    await writeFile(path, `other_key: true\n`)
+    await expect(loadTopicAliasMerges(path)).rejects.toThrow(/Invalid merge file/)
+  })
+
+  it("rejects an empty merges array (zod .min(1))", async () => {
+    const path = join(workDir, "no-plans.yaml")
+    await writeFile(path, `merges: []\n`)
+    await expect(loadTopicAliasMerges(path)).rejects.toThrow(
+      /at least one plan/
+    )
+  })
+})
+
+describe("printAliasMergeResults", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+  })
+
+  function makeResult(overrides: Partial<TopicAliasMergeResult>): TopicAliasMergeResult {
+    return {
+      canonical: "MCP",
+      canonicalId: "t1",
+      canonicalCreated: false,
+      canonicalProjectIds: ["p1"],
+      archivedAliases: [],
+      reassignedMemoryIds: [],
+      unmatchedAliases: [],
+      noop: false,
+      ...overrides,
+    }
+  }
+
+  it("uses past-tense verbs when writing is true", () => {
+    printAliasMergeResults(
+      [
+        makeResult({
+          archivedAliases: [{ name: "MCP Tools", id: "t2" }],
+          reassignedMemoryIds: ["m1", "m2"],
+          canonicalProjectIds: ["p1", "p2"],
+        }),
+      ],
+      { writing: true }
+    )
+    const joined = logs.join("\n")
+    expect(joined).toContain('Merged 1 topic alias group')
+    expect(joined).toContain('"MCP" (existing canonical)')
+    expect(joined).toContain('archived alias "MCP Tools" (t2)')
+    expect(joined).toContain('re-pointed 2 memories; 2 projects on canonical')
+  })
+
+  it("uses hypothetical verbs when writing is false", () => {
+    printAliasMergeResults(
+      [
+        makeResult({
+          archivedAliases: [{ name: "MCP Tools", id: "t2" }],
+          reassignedMemoryIds: ["m1"],
+        }),
+      ],
+      { writing: false }
+    )
+    const joined = logs.join("\n")
+    expect(joined).toContain('Would merge 1 topic alias group')
+    expect(joined).toContain('would re-point 1 memory')
+  })
+
+  it("labels the canonical as 'would be created' on dry-run creation", () => {
+    printAliasMergeResults(
+      [
+        makeResult({
+          canonicalId: null,
+          canonicalCreated: true,
+          archivedAliases: [{ name: "Old", id: "t2" }],
+          reassignedMemoryIds: ["m1"],
+        }),
+      ],
+      { writing: false }
+    )
+    expect(logs.join("\n")).toContain("canonical would be created")
+  })
+
+  it("labels the canonical as 'created' on apply-creation", () => {
+    printAliasMergeResults(
+      [
+        makeResult({
+          canonicalId: "t-new",
+          canonicalCreated: true,
+          archivedAliases: [{ name: "Old", id: "t2" }],
+        }),
+      ],
+      { writing: true }
+    )
+    expect(logs.join("\n")).toContain("canonical created")
+  })
+
+  it("collapses the memory clause when no memories are re-pointed (project-only extension)", () => {
+    // The awkward "re-pointed 0 memories; 4 projects on canonical" phrasing
+    // should not appear when the only effect is extending Project relations.
+    printAliasMergeResults(
+      [
+        makeResult({
+          archivedAliases: [{ name: "MCP Tools", id: "t2" }],
+          reassignedMemoryIds: [],
+          canonicalProjectIds: ["p1", "p2", "p3", "p4"],
+        }),
+      ],
+      { writing: false }
+    )
+    const joined = logs.join("\n")
+    expect(joined).not.toMatch(/0 memor/)
+    expect(joined).toContain("canonical Project relation covers 4 projects")
+  })
+
+  it("surfaces unmatched aliases alongside the archived ones", () => {
+    printAliasMergeResults(
+      [
+        makeResult({
+          archivedAliases: [{ name: "MCP Tools", id: "t2" }],
+          reassignedMemoryIds: ["m1"],
+          unmatchedAliases: ["MCP tool layout", "MCP Client Conventions"],
+        }),
+      ],
+      { writing: false }
+    )
+    expect(logs.join("\n")).toContain(
+      'no match for: "MCP tool layout", "MCP Client Conventions"'
+    )
+  })
+
+  it("prints the 'Nothing to merge' banner when every plan is a noop", () => {
+    printAliasMergeResults(
+      [
+        makeResult({ noop: true, archivedAliases: [], reassignedMemoryIds: [] }),
+      ],
+      { writing: false }
+    )
+    expect(logs.join("\n")).toContain("Nothing to merge")
+  })
+
+  it("separates noop plans into their own section with unmatched alias detail", () => {
+    printAliasMergeResults(
+      [
+        makeResult({
+          canonical: "Active",
+          archivedAliases: [{ name: "A", id: "t-a" }],
+          reassignedMemoryIds: ["m1"],
+        }),
+        makeResult({
+          canonical: "Already Done",
+          noop: true,
+          unmatchedAliases: ["StaleAlias"],
+        }),
+      ],
+      { writing: true }
+    )
+    const joined = logs.join("\n")
+    expect(joined).toContain("1 plan already merged")
+    expect(joined).toContain('"Already Done"')
+    expect(joined).toContain('no match for: "StaleAlias"')
   })
 })
 

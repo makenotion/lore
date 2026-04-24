@@ -1,0 +1,52 @@
+# Sample topic-alias merge plan for `lore migrate --merge-topics`.
+#
+# Each entry names one canonical topic and the alias topic names that
+# should be consolidated onto it. Alias topic rows get archived and
+# every memory that referenced them is re-pointed onto the canonical.
+#
+# Usage:
+#   lore migrate --merge-topics docs/topic-merges.example.yaml --dry-run
+#   lore migrate --merge-topics docs/topic-merges.example.yaml --apply
+#
+# Tips:
+# - Run `lore migrate --fix-topic-encoding --merge-duplicate-topics` first
+#   so encoding-only duplicates collapse automatically. The alias merge
+#   below is the semantic pass that handles truly different names.
+# - Merges are idempotent: a second run is a no-op once applied.
+# - Aliases must be unique across plans; listing "Outlook" under two
+#   different canonicals is a config error and will be rejected.
+# - A canonical that doesn't exist yet will be created on `--apply`.
+
+merges:
+  - canonical: "Build & Tooling"
+    aliases:
+      - "Build System"
+      - "Build tooling"
+
+  - canonical: "Deep Review"
+    aliases:
+      - "Deep Review Skill"
+      - "Deep-Review Workflow"
+
+  - canonical: "Gmail Sync"
+    aliases:
+      - "Gmail Import"
+      - "Gmail Integration"
+
+  # "Outlook OAuth" and "Outlook MS Graph" are deliberately left distinct
+  # — they are concrete subsystems, not aliases of the broad Outlook
+  # integration work.
+  - canonical: "Outlook Sync"
+    aliases:
+      - "Outlook"
+      - "Outlook Import"
+      - "Outlook Integration"
+      - "Outlook MCP Tools"
+      - "Outlook utilities"
+
+  - canonical: "MCP"
+    aliases:
+      - "MCP Tool Architecture"
+      - "MCP tool layout"
+      - "MCP Tools"
+      - "MCP Client Conventions"

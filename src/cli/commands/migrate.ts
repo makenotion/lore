@@ -1,8 +1,16 @@
+import { readFile } from "node:fs/promises"
+import { resolve } from "node:path"
 import { Command } from "commander"
+import { parse as parseYaml } from "yaml"
+import { z } from "zod"
 import { initServices, type LoreServices } from "../../services.js"
 import type { MemoryTagPlan } from "../../core/tag-migration.js"
 import { classifyTags, planMemoryMigration } from "../../core/tag-migration.js"
 import { BODY_SIZE_CAP_BYTES } from "../../core/memory-encoding.js"
+import type {
+  TopicAliasMergePlan,
+  TopicAliasMergeResult,
+} from "../../core/topic-merge.js"
 import type { Fact, Memory } from "../../types.js"
 
 export const migrateCommand = new Command("migrate")
@@ -29,6 +37,10 @@ export const migrateCommand = new Command("migrate")
     "Decode HTML entities in memory Title and body markdown for every non-archived memory. Body rewrite is skipped for pages larger than 100 KB — Title is always fixed, because Title is the value driver for downstream near-duplicate / embedding surfaces. Plan-only by default — re-run with `--yes` to apply. Combine with `--dry-run` for a plan preview."
   )
   .option(
+    "--merge-topics <file>",
+    "Apply operator-curated alias → canonical topic merges from a YAML file. Memories under each alias are re-pointed onto the canonical; alias topic rows are archived. Read-only by default — combine with --apply to write. Idempotent once applied."
+  )
+  .option(
     "--tags",
     "Reclassify out-of-vocabulary tags. Obvious free-form tokens (PR numbers, ticket IDs, file names, class names) move to Keywords; ambiguous tags are reported for manual triage. Combine with --dry-run for a preview."
   )
@@ -38,7 +50,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--apply",
-    "When combined with --backfill-fact-sources, write the proposed Source relations. Assumes a quiet window with no concurrent autosave: the write is not safely re-runnable if new memories land between runs — matches can shift."
+    "Commit gate for the two plan-only passes. With --backfill-fact-sources, writes the proposed Source relations (assumes a quiet window — matches can shift if autosave runs concurrently). With --merge-topics, archives the alias topic rows and re-points the memories listed in the plan."
   )
   .option(
     "--dedup-keys",
@@ -60,6 +72,7 @@ export const migrateCommand = new Command("migrate")
       fixTopicEncoding?: boolean
       fixFactEncoding?: boolean
       fixMemoryEncoding?: boolean
+      mergeTopics?: string
       tags?: boolean
       backfillFactSources?: boolean
       apply?: boolean
@@ -87,6 +100,13 @@ export const migrateCommand = new Command("migrate")
             "--yes only applies together with --merge, --fix-fact-encoding, or --fix-memory-encoding."
           )
           process.exit(1)
+        }
+
+        // Load & validate merge-topics YAML before initializing services so
+        // a malformed file fails fast, without a Notion round-trip.
+        let aliasMergePlans: TopicAliasMergePlan[] | null = null
+        if (opts.mergeTopics) {
+          aliasMergePlans = await loadTopicAliasMerges(opts.mergeTopics)
         }
 
         const services = await initServices()
@@ -207,7 +227,8 @@ export const migrateCommand = new Command("migrate")
           encodedTopics.length === 0 &&
           !opts.upgradeDecisionTags &&
           !opts.tags &&
-          !opts.dedupKeys
+          !opts.dedupKeys &&
+          !aliasMergePlans
         ) {
           console.log("Vault schema is up to date. Nothing to migrate.")
         }
@@ -319,6 +340,43 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (aliasMergePlans) {
+          // Dry-run is opt-in via the flag *or* implicit when --apply is
+          // omitted: operators who forget a flag get a preview, never a
+          // silent archive. --dry-run + --apply would be ambiguous, so we
+          // honor dry-run whenever it's set regardless of --apply.
+          //
+          // Posture: --apply (not --yes). P1-10's encoding migrations use
+          // --yes as the commit gate because the rewrite rewrites every
+          // fact body (bigger blast radius than one rename). P2-08's spec
+          // explicitly specifies --apply, matching --backfill-fact-sources.
+          // Kept as-is per spec; the irreversibility caveat below closes
+          // the gap that --yes would otherwise have signalled.
+          const writing = opts.apply === true && !opts.dryRun
+          const results = await services.vault.migrateAliasMerges(
+            aliasMergePlans,
+            { dryRun: !writing }
+          )
+          printAliasMergeResults(results, { writing })
+          if (!writing && results.some((r) => !r.noop)) {
+            // Only warn when there's something to commit. On an all-noop
+            // preview the plan is already satisfied and the warning is
+            // actively misleading.
+            console.log(
+              "\nIrreversible: archived topic rows can be un-archived in Notion, " +
+                "but the memory→topic reassignments overwrite the prior Topic " +
+                "relation and cannot be rolled back by unarchiving. If the " +
+                "canonical choice turns out to be wrong, re-point memories via " +
+                "a second merge plan."
+            )
+          }
+          if (!writing) {
+            console.log(
+              "\nRead-only pass — no changes written. Re-run with `--apply` to commit the plan above."
+            )
+          }
+        }
+
         if (opts.dryRun) {
           const flagHints: string[] = []
           if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
@@ -337,7 +395,14 @@ export const migrateCommand = new Command("migrate")
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
             )
-          } else if (!encodingFlagUsed) {
+          } else if (!encodingFlagUsed && !aliasMergePlans) {
+            // Skip the generic schema-side dry-run line when an encoding
+            // dispatcher (`--fix-fact-encoding` / `--fix-memory-encoding`)
+            // or `--merge-topics` already emitted its own context-aware
+            // "Plan only … re-run with `--yes`" / "Read-only pass …
+            // re-run with `--apply`" message a few lines up. Two dry-run
+            // signals stacked on the same run train operators to ignore
+            // them both.
             console.log("\nDry run — no changes written. Re-run without --dry-run to apply.")
           }
         } else if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
@@ -872,5 +937,129 @@ export async function runMemoryEncodingFix(
   // Plan-then-execute footer. See `runFactEncodingFix` for rationale.
   if (planOnly && fixableRows > 0) {
     console.log("\nPlan only — no rewrites written. Re-run with `--yes` to execute.")
+  }
+}
+
+const topicAliasMergesFileSchema = z.object({
+  merges: z
+    .array(
+      z.object({
+        canonical: z.string().min(1, "canonical must be non-empty"),
+        aliases: z
+          .array(z.string().min(1, "alias must be non-empty"))
+          .min(1, "each merge must list at least one alias"),
+      })
+    )
+    .min(1, "merges must contain at least one plan"),
+})
+
+/**
+ * Load a topic-alias merges YAML file, parse it, and surface friendly
+ * errors for the common mistakes (file missing, invalid YAML, wrong
+ * shape). Resolves relative paths against the operator's cwd.
+ */
+export async function loadTopicAliasMerges(
+  path: string
+): Promise<TopicAliasMergePlan[]> {
+  const absolute = resolve(process.cwd(), path)
+  let raw: string
+  try {
+    raw = await readFile(absolute, "utf-8")
+  } catch (err) {
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? (err as { code?: string }).code
+        : undefined
+    if (code === "ENOENT") {
+      throw new Error(`Merge file not found: ${absolute}`, { cause: err })
+    }
+    throw err
+  }
+
+  let parsed: unknown
+  try {
+    parsed = parseYaml(raw)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(`Could not parse YAML in ${absolute}: ${msg}`, { cause: err })
+  }
+
+  const result = topicAliasMergesFileSchema.safeParse(parsed)
+  if (!result.success) {
+    const issue = result.error.issues[0]
+    const where = issue.path.length > 0 ? ` at ${issue.path.join(".")}` : ""
+    throw new Error(`Invalid merge file ${absolute}${where}: ${issue.message}`)
+  }
+
+  return result.data.merges
+}
+
+/**
+ * Print one block per merge plan: header line names the canonical + its
+ * status (existing / would-be-created / no-op), followed by one indented
+ * line per archived alias row and one summary line when projects change.
+ * Kept compact so a YAML listing twenty plans doesn't scroll off-screen.
+ */
+export function printAliasMergeResults(
+  results: TopicAliasMergeResult[],
+  opts: { writing: boolean }
+): void {
+  const workingVerb = opts.writing ? "Merged" : "Would merge"
+  const workingResults = results.filter((r) => !r.noop)
+
+  if (workingResults.length === 0) {
+    console.log(
+      "\nNothing to merge — every alias in the plan already resolved to its canonical."
+    )
+  } else {
+    console.log(
+      `\n${workingVerb} ${workingResults.length} topic alias group${workingResults.length === 1 ? "" : "s"}:`
+    )
+    for (const result of workingResults) {
+      const canonicalLabel = result.canonicalCreated
+        ? opts.writing
+          ? "canonical created"
+          : "canonical would be created"
+        : "existing canonical"
+      console.log(`  "${result.canonical}" (${canonicalLabel})`)
+      for (const { name, id } of result.archivedAliases) {
+        console.log(`    archived alias "${name}" (${id})`)
+      }
+      // Collapse the memory clause when the only effect is a Project
+      // union extension. Otherwise "re-pointed 0 memories; 4 projects on
+      // canonical" reads like something was moved, when nothing was.
+      const memories = result.reassignedMemoryIds.length
+      const projects = result.canonicalProjectIds.length
+      const verb = opts.writing ? "re-pointed" : "would re-point"
+      if (memories > 0) {
+        console.log(
+          `    ${verb} ${memories} memor${memories === 1 ? "y" : "ies"}; ` +
+            `${projects} project${projects === 1 ? "" : "s"} on canonical`
+        )
+      } else {
+        console.log(
+          `    canonical Project relation covers ${projects} project${projects === 1 ? "" : "s"}`
+        )
+      }
+      if (result.unmatchedAliases.length > 0) {
+        console.log(
+          `    no match for: ${result.unmatchedAliases.map((a) => `"${a}"`).join(", ")}`
+        )
+      }
+    }
+  }
+
+  const noops = results.filter((r) => r.noop)
+  if (noops.length > 0) {
+    console.log(
+      `\n${noops.length} plan${noops.length === 1 ? "" : "s"} already merged (no aliases to collapse):`
+    )
+    for (const noop of noops) {
+      const extra =
+        noop.unmatchedAliases.length > 0
+          ? ` (no match for: ${noop.unmatchedAliases.map((a) => `"${a}"`).join(", ")})`
+          : ""
+      console.log(`  "${noop.canonical}"${extra}`)
+    }
   }
 }

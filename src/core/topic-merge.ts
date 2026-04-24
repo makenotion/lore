@@ -19,6 +19,7 @@ import {
   extractTitle,
   extractRelationIds,
 } from "../notion/extractors.js"
+import { buildTopicProps } from "../notion/schema.js"
 import { decodeTopicHtmlEntities } from "./topic.js"
 
 /** One duplicate-name group detected in the Topics DB. */
@@ -375,4 +376,300 @@ function unionAllProjectIds(pages: PageObjectResponse[]): string[] {
     }
   }
   return ordered
+}
+
+// ---------------------------------------------------------------------------
+// Alias-list semantic merges
+// ---------------------------------------------------------------------------
+
+/**
+ * One canonical ↔ aliases merge plan — the unit of operator-curated
+ * semantic consolidation. Unlike `DuplicateTopicGroup` (which only collapses
+ * rows with identical names), an alias plan consolidates *different* names
+ * onto one canonical, e.g. `{ canonical: "Build & Tooling", aliases:
+ * ["Build System", "Build tooling"] }`.
+ */
+export interface TopicAliasMergePlan {
+  canonical: string
+  aliases: string[]
+}
+
+/**
+ * Outcome of one alias merge plan. Same shape for dry-run preview and
+ * actual apply: on dry-run, the fields describe what would happen.
+ *
+ * Multi-row aliases: if an alias name resolves to more than one topic
+ * row (because a legacy vault double-created it), every row is archived
+ * and every memory under every row is re-pointed onto the canonical.
+ * No tiebreaker is needed because the alias is never the survivor —
+ * same-name duplicates between aliases collapse as a side effect of
+ * the canonical merge.
+ */
+export interface TopicAliasMergeResult {
+  canonical: string
+  /** The canonical topic id.
+   *  - apply: always populated (pre-existing row or row created here).
+   *  - dryRun: null when the plan would create a new canonical row. */
+  canonicalId: string | null
+  /** True when the canonical row would be (dryRun) / was (apply) created. */
+  canonicalCreated: boolean
+  /** Final Project relation on canonical — union of canonical + all
+   *  aliases. On dry-run, what the union would be. */
+  canonicalProjectIds: string[]
+  /** Alias topic rows archived (or that would be archived). Grouped by
+   *  alias name for output clarity. */
+  archivedAliases: Array<{ name: string; id: string }>
+  /** Memory ids whose Topic relation was / would be re-pointed to the
+   *  canonical. */
+  reassignedMemoryIds: string[]
+  /** Alias names in the plan that matched no topic row. Typically means
+   *  the migration already ran — but can also surface a stale alias in
+   *  the YAML that never existed. */
+  unmatchedAliases: string[]
+  /** True when the plan has no effect — every alias is already absent. */
+  noop: boolean
+}
+
+/**
+ * Reject overlapping or malformed merge plans before any Notion work
+ * runs. Throws with a message that names the specific conflict so the
+ * operator can fix their YAML without re-running the migration.
+ *
+ * Catches:
+ * - empty canonical or alias strings
+ * - a plan with no aliases
+ * - duplicate aliases within a plan
+ * - alias equal to its own canonical
+ * - the same canonical listed in two plans
+ * - the same alias listed in two plans with different canonicals
+ * - a canonical in one plan appearing as an alias in another
+ */
+export function validateTopicAliasMergePlans(
+  plans: TopicAliasMergePlan[]
+): void {
+  const canonicals = new Set<string>()
+  const aliasOwner = new Map<string, string>()
+
+  for (const plan of plans) {
+    const canonical = plan.canonical.trim()
+    if (canonical.length === 0) {
+      throw new Error("Merge plan has an empty canonical name.")
+    }
+    if (plan.aliases.length === 0) {
+      throw new Error(`Merge plan for "${canonical}" has no aliases.`)
+    }
+    if (canonicals.has(canonical)) {
+      throw new Error(
+        `Canonical "${canonical}" appears in more than one merge plan. ` +
+          "List every alias for a canonical under a single plan."
+      )
+    }
+    canonicals.add(canonical)
+
+    const seenInPlan = new Set<string>()
+    for (const rawAlias of plan.aliases) {
+      const alias = rawAlias.trim()
+      if (alias.length === 0) {
+        throw new Error(`Merge plan for "${canonical}" has an empty alias.`)
+      }
+      if (alias === canonical) {
+        throw new Error(
+          `Alias "${alias}" equals its canonical in the plan for "${canonical}".`
+        )
+      }
+      if (seenInPlan.has(alias)) {
+        throw new Error(
+          `Alias "${alias}" listed twice in the plan for "${canonical}".`
+        )
+      }
+      seenInPlan.add(alias)
+
+      const owner = aliasOwner.get(alias)
+      if (owner !== undefined && owner !== canonical) {
+        throw new Error(
+          `Alias "${alias}" appears in plans for both "${owner}" and ` +
+            `"${canonical}". An alias can belong to exactly one canonical.`
+        )
+      }
+      aliasOwner.set(alias, canonical)
+    }
+  }
+
+  for (const canonical of canonicals) {
+    const otherCanonical = aliasOwner.get(canonical)
+    if (otherCanonical !== undefined) {
+      throw new Error(
+        `Topic "${canonical}" is a canonical in its own plan but an alias ` +
+          `in the plan for "${otherCanonical}". Resolve the chain before merging.`
+      )
+    }
+  }
+}
+
+/**
+ * Apply a curated list of alias merges. For each plan, every topic row
+ * whose name matches an alias is re-pointed onto the canonical and then
+ * archived. Memories referencing an archived alias get their Topic
+ * relation replaced with the canonical id.
+ *
+ * Canonical resolution:
+ * - exactly one row with `canonical` name → use it
+ * - zero rows → create a new canonical row (with the project union as
+ *   its initial Project relation). Skipped on dry-run.
+ * - multiple rows → throws, with a directive to run
+ *   `--merge-duplicate-topics` first.
+ *
+ * Idempotency: after a successful run, re-running finds no alias rows
+ * and every plan returns `noop: true`. This is the property the task's
+ * acceptance criterion relies on.
+ *
+ * Names in `plans` are decoded via the shared HTML-entity helper on
+ * entry so a YAML listing `Build & Tooling` matches DB rows that still
+ * read `Build &amp; Tooling`. In practice the encoding migration (P1-10)
+ * should run first, but decoding on entry keeps the two migrations
+ * order-independent for well-formed YAML.
+ */
+export async function mergeTopicsByAliasPlans(
+  client: Client,
+  topicsDb: DatabaseRef,
+  memoriesDb: DatabaseRef,
+  plans: TopicAliasMergePlan[],
+  options: { dryRun?: boolean } = {}
+): Promise<TopicAliasMergeResult[]> {
+  const normalized = plans.map((p) => ({
+    canonical: decodeTopicHtmlEntities(p.canonical),
+    aliases: p.aliases.map((a) => decodeTopicHtmlEntities(a)),
+  }))
+  validateTopicAliasMergePlans(normalized)
+
+  const results: TopicAliasMergeResult[] = []
+  for (const plan of normalized) {
+    results.push(
+      await mergeOneAliasPlan(client, topicsDb, memoriesDb, plan, {
+        dryRun: options.dryRun === true,
+      })
+    )
+  }
+  return results
+}
+
+async function mergeOneAliasPlan(
+  client: Client,
+  topicsDb: DatabaseRef,
+  memoriesDb: DatabaseRef,
+  plan: TopicAliasMergePlan,
+  options: { dryRun: boolean }
+): Promise<TopicAliasMergeResult> {
+  const canonicalRows = await listTopicPagesByName(client, topicsDb, plan.canonical)
+  if (canonicalRows.length > 1) {
+    throw new Error(
+      `Canonical "${plan.canonical}" resolves to ${canonicalRows.length} topic rows. ` +
+        "Run `lore migrate --merge-duplicate-topics` to collapse same-name duplicates first."
+    )
+  }
+
+  const aliasMatches: Array<{ alias: string; rows: PageObjectResponse[] }> = []
+  const unmatchedAliases: string[] = []
+  for (const alias of plan.aliases) {
+    const rows = await listTopicPagesByName(client, topicsDb, alias)
+    if (rows.length === 0) {
+      unmatchedAliases.push(alias)
+    } else {
+      aliasMatches.push({ alias, rows })
+    }
+  }
+
+  const aliasRows = aliasMatches.flatMap((m) => m.rows)
+  const existingCanonical = canonicalRows[0] ?? null
+
+  // Noop short-circuit. Report canonical state (if any) so dry-run output
+  // can distinguish "nothing to do" from "canonical would be newly created".
+  if (aliasRows.length === 0) {
+    return {
+      canonical: plan.canonical,
+      canonicalId: existingCanonical?.id ?? null,
+      canonicalCreated: false,
+      canonicalProjectIds: existingCanonical
+        ? extractRelationIds(existingCanonical.properties["Project"])
+        : [],
+      archivedAliases: [],
+      reassignedMemoryIds: [],
+      unmatchedAliases,
+      noop: true,
+    }
+  }
+
+  const unionProjectIds = unionAllProjectIds([
+    ...(existingCanonical ? [existingCanonical] : []),
+    ...aliasRows,
+  ])
+
+  let canonicalId: string | null = existingCanonical?.id ?? null
+  let canonicalCreated = false
+  if (!existingCanonical) {
+    if (!options.dryRun) {
+      const created = (await client.pages.create({
+        parent: { type: "database_id", database_id: topicsDb.databaseId },
+        properties: buildTopicProps({
+          name: plan.canonical,
+          projectIds: unionProjectIds,
+        }),
+      })) as PageObjectResponse
+      canonicalId = created.id
+    }
+    canonicalCreated = true
+  } else {
+    const canonicalProjectIds = extractRelationIds(
+      existingCanonical.properties["Project"]
+    )
+    const missing = unionProjectIds.filter(
+      (id) => !canonicalProjectIds.includes(id)
+    )
+    if (missing.length > 0 && !options.dryRun) {
+      await client.pages.update({
+        page_id: existingCanonical.id,
+        properties: {
+          Project: { relation: unionProjectIds.map((id) => ({ id })) },
+        } as CreatePageParameters["properties"],
+      })
+    }
+  }
+
+  const archivedAliases: Array<{ name: string; id: string }> = []
+  const reassignedMemoryIds: string[] = []
+
+  for (const match of aliasMatches) {
+    for (const row of match.rows) {
+      const memoryIds = await listMemoryIdsByTopic(client, memoriesDb, row.id)
+      for (const memoryId of memoryIds) {
+        if (!options.dryRun && canonicalId !== null) {
+          await client.pages.update({
+            page_id: memoryId,
+            properties: {
+              Topic: { relation: [{ id: canonicalId }] },
+            } as CreatePageParameters["properties"],
+          })
+        }
+        reassignedMemoryIds.push(memoryId)
+      }
+      if (!options.dryRun) {
+        await client.pages.update({
+          page_id: row.id,
+          archived: true,
+        })
+      }
+      archivedAliases.push({ name: match.alias, id: row.id })
+    }
+  }
+
+  return {
+    canonical: plan.canonical,
+    canonicalId,
+    canonicalCreated,
+    canonicalProjectIds: unionProjectIds,
+    archivedAliases,
+    reassignedMemoryIds,
+    unmatchedAliases,
+    noop: false,
+  }
 }

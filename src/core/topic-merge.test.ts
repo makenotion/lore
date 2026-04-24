@@ -6,6 +6,8 @@ import {
   findPostDecodeTopicCollisions,
   fixTopicEncoding,
   mergeDuplicateTopics,
+  mergeTopicsByAliasPlans,
+  validateTopicAliasMergePlans,
 } from "./topic-merge.js"
 import type { DatabaseRef } from "../types.js"
 
@@ -81,15 +83,33 @@ function createMockClient(opts: {
   // Default: empty result for any remaining queries
   queryMock.mockResolvedValue({ results: [], has_more: false, next_cursor: null })
 
+  // Canonical-creation tests need a deterministic id for each created row.
+  // Mint one per call so a merge creating two canonicals can assert both.
+  let createSeq = 0
+  const createMock = vi.fn().mockImplementation(async () => ({
+    object: "page",
+    id: `created-${++createSeq}`,
+    created_time: "2026-04-01T00:00:00.000Z",
+    last_edited_time: "2026-04-01T00:00:00.000Z",
+    archived: false,
+    url: `https://notion.so/created-${createSeq}`,
+    parent: { type: "database_id", database_id: "topics-db" },
+    properties: {},
+  }))
+
   return {
     pages: {
       update: vi.fn().mockResolvedValue({}),
+      create: createMock,
     },
     dataSources: {
       query: queryMock,
     },
   } as unknown as Client & {
-    pages: { update: ReturnType<typeof vi.fn> }
+    pages: {
+      update: ReturnType<typeof vi.fn>
+      create: ReturnType<typeof vi.fn>
+    }
     dataSources: { query: ReturnType<typeof vi.fn> }
   }
 }
@@ -766,6 +786,401 @@ describe("findPostDecodeTopicCollisions", () => {
     const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
     expect(collisions).toHaveLength(1)
     expect(collisions[0].topicIds).toEqual(["t1", "t2"])
+  })
+})
+
+describe("validateTopicAliasMergePlans", () => {
+  it("accepts a well-formed single plan", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "Build & Tooling", aliases: ["Build System", "Build tooling"] },
+      ])
+    ).not.toThrow()
+  })
+
+  it("rejects empty canonical", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([{ canonical: "   ", aliases: ["x"] }])
+    ).toThrow(/empty canonical/i)
+  })
+
+  it("rejects empty alias", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "A", aliases: ["valid", ""] },
+      ])
+    ).toThrow(/empty alias/i)
+  })
+
+  it("rejects missing aliases", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([{ canonical: "A", aliases: [] }])
+    ).toThrow(/no aliases/i)
+  })
+
+  it("rejects alias equal to canonical", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "MCP", aliases: ["MCP"] },
+      ])
+    ).toThrow(/equals its canonical/i)
+  })
+
+  it("rejects duplicate alias in the same plan", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "A", aliases: ["dup", "dup"] },
+      ])
+    ).toThrow(/listed twice/i)
+  })
+
+  it("rejects the same canonical in two plans", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "A", aliases: ["x"] },
+        { canonical: "A", aliases: ["y"] },
+      ])
+    ).toThrow(/more than one merge plan/i)
+  })
+
+  it("rejects the same alias appearing in two plans with different canonicals", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "A", aliases: ["shared"] },
+        { canonical: "B", aliases: ["shared"] },
+      ])
+    ).toThrow(/appears in plans for both/i)
+  })
+
+  it("rejects a canonical that is also an alias in another plan", () => {
+    expect(() =>
+      validateTopicAliasMergePlans([
+        { canonical: "A", aliases: ["B"] },
+        { canonical: "B", aliases: ["c"] },
+      ])
+    ).toThrow(/canonical in its own plan but an alias/i)
+  })
+})
+
+describe("mergeTopicsByAliasPlans", () => {
+  it("is a no-op when no alias rows exist, whether or not canonical exists", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        // canonical lookup
+        { results: [topicPage("t1", { name: "MCP", projectIds: ["p1"] })] },
+        // alias "MCP Tools" lookup — empty
+        { results: [] },
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "MCP", aliases: ["MCP Tools"] },
+    ])
+
+    expect(results).toHaveLength(1)
+    expect(results[0].noop).toBe(true)
+    expect(results[0].canonicalId).toBe("t1")
+    expect(results[0].canonicalCreated).toBe(false)
+    expect(results[0].archivedAliases).toEqual([])
+    expect(results[0].reassignedMemoryIds).toEqual([])
+    expect(results[0].unmatchedAliases).toEqual(["MCP Tools"])
+    expect(client.pages.update).not.toHaveBeenCalled()
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("merges a pair: unions projects, re-points memories, archives alias row", async () => {
+    const canonical = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["p1"],
+    })
+    const alias = topicPage("t2", {
+      name: "Build System",
+      projectIds: ["p2"],
+    })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical] }, // canonical lookup
+        { results: [alias] }, // alias "Build System" lookup
+        { results: [memoryPage("m1", "t2"), memoryPage("m2", "t2")] }, // memories under alias
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "Build & Tooling", aliases: ["Build System"] },
+    ])
+
+    expect(results).toHaveLength(1)
+    const result = results[0]
+    expect(result.noop).toBe(false)
+    expect(result.canonicalId).toBe("t1")
+    expect(result.canonicalCreated).toBe(false)
+    expect(result.canonicalProjectIds).toEqual(["p1", "p2"])
+    expect(result.archivedAliases).toEqual([{ name: "Build System", id: "t2" }])
+    expect(result.reassignedMemoryIds).toEqual(["m1", "m2"])
+    expect(result.unmatchedAliases).toEqual([])
+
+    const updates = client.pages.update.mock.calls.map((c: unknown[]) => c[0])
+    expect(updates).toEqual([
+      // union Project onto canonical
+      {
+        page_id: "t1",
+        properties: { Project: { relation: [{ id: "p1" }, { id: "p2" }] } },
+      },
+      // re-point m1 and m2
+      { page_id: "m1", properties: { Topic: { relation: [{ id: "t1" }] } } },
+      { page_id: "m2", properties: { Topic: { relation: [{ id: "t1" }] } } },
+      // archive the alias row
+      { page_id: "t2", archived: true },
+    ])
+  })
+
+  it("skips the Project update when the canonical already has every alias project", async () => {
+    const canonical = topicPage("t1", {
+      name: "MCP",
+      projectIds: ["p1", "p2"],
+    })
+    const alias = topicPage("t2", {
+      name: "MCP Tools",
+      projectIds: ["p2"], // subset
+    })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical] },
+        { results: [alias] },
+        { results: [] }, // no memories under alias
+      ],
+    })
+
+    await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "MCP", aliases: ["MCP Tools"] },
+    ])
+
+    const updates = client.pages.update.mock.calls.map((c: unknown[]) => c[0])
+    // Just the archive call — no project union needed.
+    expect(updates).toEqual([{ page_id: "t2", archived: true }])
+  })
+
+  it("creates the canonical row when it doesn't exist, with the project union", async () => {
+    const alias = topicPage("t2", {
+      name: "Old Name",
+      projectIds: ["p1", "p2"],
+    })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [] }, // canonical "New Name" does not exist
+        { results: [alias] },
+        { results: [memoryPage("m1", "t2")] },
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "New Name", aliases: ["Old Name"] },
+    ])
+
+    expect(results[0].canonicalCreated).toBe(true)
+    expect(results[0].canonicalId).toBe("created-1")
+    expect(results[0].canonicalProjectIds).toEqual(["p1", "p2"])
+    expect(results[0].reassignedMemoryIds).toEqual(["m1"])
+    expect(results[0].archivedAliases).toEqual([{ name: "Old Name", id: "t2" }])
+
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    expect(client.pages.create).toHaveBeenCalledWith({
+      parent: { type: "database_id", database_id: "topics-db-id" },
+      properties: expect.objectContaining({
+        Name: { title: [{ text: { content: "New Name" } }] },
+        Project: { relation: [{ id: "p1" }, { id: "p2" }] },
+      }),
+    })
+
+    // Memory should point at the newly-minted canonical id, not the alias.
+    const memoryUpdate = client.pages.update.mock.calls
+      .map((c: unknown[]) => c[0] as { page_id: string })
+      .find((u) => u.page_id === "m1")
+    expect(memoryUpdate).toEqual({
+      page_id: "m1",
+      properties: { Topic: { relation: [{ id: "created-1" }] } },
+    })
+  })
+
+  it("collects unmatched aliases alongside matched ones", async () => {
+    const canonical = topicPage("t1", { name: "MCP", projectIds: ["p1"] })
+    const matched = topicPage("t2", { name: "MCP Tools", projectIds: ["p1"] })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical] },
+        { results: [matched] }, // "MCP Tools" matches
+        { results: [] }, // "MCP tool layout" does not
+        { results: [] }, // memories under matched
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "MCP", aliases: ["MCP Tools", "MCP tool layout"] },
+    ])
+
+    expect(results[0].noop).toBe(false)
+    expect(results[0].archivedAliases).toEqual([{ name: "MCP Tools", id: "t2" }])
+    expect(results[0].unmatchedAliases).toEqual(["MCP tool layout"])
+  })
+
+  it("merges multiple aliases with multiple rows each onto the same canonical", async () => {
+    const canonical = topicPage("t1", { name: "Outlook Sync", projectIds: ["p1"] })
+    const aliasAa = topicPage("t2", { name: "Outlook", projectIds: ["p2"] })
+    const aliasAb = topicPage("t3", { name: "Outlook", projectIds: ["p3"] }) // duplicate same-name
+    const aliasB = topicPage("t4", { name: "Outlook Import", projectIds: ["p4"] })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical] },
+        { results: [aliasAa, aliasAb] }, // two rows for "Outlook"
+        { results: [aliasB] },
+        { results: [memoryPage("m1", "t2")] },
+        { results: [memoryPage("m2", "t3")] },
+        { results: [memoryPage("m3", "t4")] },
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "Outlook Sync", aliases: ["Outlook", "Outlook Import"] },
+    ])
+
+    expect(results[0].canonicalProjectIds).toEqual(["p1", "p2", "p3", "p4"])
+    expect(results[0].archivedAliases).toEqual([
+      { name: "Outlook", id: "t2" },
+      { name: "Outlook", id: "t3" },
+      { name: "Outlook Import", id: "t4" },
+    ])
+    expect(results[0].reassignedMemoryIds).toEqual(["m1", "m2", "m3"])
+  })
+
+  it("throws when the canonical has more than one row", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "MCP" }),
+            topicPage("t2", { name: "MCP" }),
+          ],
+        },
+      ],
+    })
+
+    await expect(
+      mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+        { canonical: "MCP", aliases: ["MCP Tools"] },
+      ])
+    ).rejects.toThrow(/--merge-duplicate-topics/)
+  })
+
+  it("writes nothing in dry-run mode but still reports planned changes", async () => {
+    const canonical = topicPage("t1", { name: "A", projectIds: ["p1"] })
+    const alias = topicPage("t2", { name: "B", projectIds: ["p2"] })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical] },
+        { results: [alias] },
+        { results: [memoryPage("m1", "t2")] },
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(
+      client,
+      TOPICS_DB,
+      MEMORIES_DB,
+      [{ canonical: "A", aliases: ["B"] }],
+      { dryRun: true }
+    )
+
+    expect(results[0].noop).toBe(false)
+    expect(results[0].canonicalId).toBe("t1")
+    expect(results[0].reassignedMemoryIds).toEqual(["m1"])
+    expect(results[0].archivedAliases).toEqual([{ name: "B", id: "t2" }])
+    expect(client.pages.update).not.toHaveBeenCalled()
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("reports canonicalId=null in dry-run when canonical would be created", async () => {
+    const alias = topicPage("t2", { name: "B", projectIds: ["p2"] })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [] }, // canonical missing
+        { results: [alias] },
+        { results: [memoryPage("m1", "t2")] },
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(
+      client,
+      TOPICS_DB,
+      MEMORIES_DB,
+      [{ canonical: "Fresh Canonical", aliases: ["B"] }],
+      { dryRun: true }
+    )
+
+    expect(results[0].canonicalCreated).toBe(true)
+    expect(results[0].canonicalId).toBeNull()
+    expect(results[0].canonicalProjectIds).toEqual(["p2"])
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("is idempotent — a second run is a no-op", async () => {
+    // Simulate the post-run state: canonical exists, alias rows are gone.
+    const canonical = topicPage("t1", {
+      name: "A",
+      projectIds: ["p1", "p2"],
+    })
+    const client = createMockClient({
+      queryResponses: [
+        { results: [canonical] }, // canonical lookup
+        { results: [] }, // alias B — already archived on first run
+      ],
+    })
+
+    const results = await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "A", aliases: ["B"] },
+    ])
+
+    expect(results[0].noop).toBe(true)
+    expect(results[0].canonicalId).toBe("t1")
+    expect(client.pages.update).not.toHaveBeenCalled()
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("decodes HTML entities in plan names so YAML can use clean text", async () => {
+    // The canonical in the YAML is `Build & Tooling` (clean) but the DB
+    // row still holds `Build &amp; Tooling` (encoded, pre-P1-10). After
+    // decoding on entry, the canonical lookup uses the clean form — the
+    // DB lookup compares against whatever Notion stores, so this test
+    // focuses on the decode behaviour via the query argument.
+    const client = createMockClient({
+      queryResponses: [
+        { results: [] }, // canonical
+        { results: [] }, // alias
+      ],
+    })
+
+    await mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+      { canonical: "Build &amp; Tooling", aliases: ["Build &amp; System"] },
+    ])
+
+    const queries = client.dataSources.query.mock.calls.map(
+      (c: unknown[]) => c[0] as Record<string, unknown>
+    )
+    const filterNames = queries
+      .map((q) => q.filter as { title?: { equals?: string } } | undefined)
+      .filter((f) => f?.title?.equals)
+      .map((f) => f!.title!.equals!)
+    expect(filterNames).toContain("Build & Tooling")
+    expect(filterNames).toContain("Build & System")
+  })
+
+  it("surfaces validation errors before touching Notion", async () => {
+    const client = createMockClient()
+    await expect(
+      mergeTopicsByAliasPlans(client, TOPICS_DB, MEMORIES_DB, [
+        { canonical: "A", aliases: ["A"] },
+      ])
+    ).rejects.toThrow(/equals its canonical/i)
+    expect(client.dataSources.query).not.toHaveBeenCalled()
   })
 })
 

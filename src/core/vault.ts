@@ -18,8 +18,11 @@ import {
   findPostDecodeTopicCollisions,
   fixTopicEncoding,
   mergeDuplicateTopics,
+  mergeTopicsByAliasPlans,
   type DuplicateTopicGroup,
   type EncodedTopicRow,
+  type TopicAliasMergePlan,
+  type TopicAliasMergeResult,
   type TopicEncodingFixResult,
   type TopicMergeResult,
 } from "./topic-merge.js"
@@ -281,6 +284,35 @@ export class VaultManager {
       encodedTopics,
       encodingFixResults,
     }
+  }
+
+  /**
+   * Apply an operator-curated list of alias → canonical topic merges.
+   * Each plan in `plans` names a canonical topic and one or more aliases;
+   * every topic row with an alias name is re-pointed onto the canonical
+   * and then archived. Memories referencing an archived alias get their
+   * Topic relation replaced with the canonical id.
+   *
+   * Separate entry point from `migrate()` because the alias consolidation
+   * is conceptually distinct from schema drift and encoding repair: its
+   * input is a human-authored YAML, not a diff the code can compute. Pass
+   * `dryRun: true` to preview without writing.
+   *
+   * Idempotent: a second run finds no alias rows and reports every plan
+   * as `noop: true`.
+   */
+  async migrateAliasMerges(
+    plans: TopicAliasMergePlan[],
+    options: { dryRun?: boolean } = {}
+  ): Promise<TopicAliasMergeResult[]> {
+    const vault = this.get()
+    return mergeTopicsByAliasPlans(
+      this.client,
+      vault.databases.topics,
+      vault.databases.memories,
+      plans,
+      options
+    )
   }
 
   async stats(): Promise<{
