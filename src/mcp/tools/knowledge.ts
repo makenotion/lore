@@ -232,11 +232,16 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
 
         const facts = await services.facts.queryByEntity(entity, { projectId })
 
-        const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+        // Built just-in-time at each return site so warnings added later (e.g.
+        // decision-graph partial failures) aren't silently dropped.
+        const formatWarnings = () =>
+          warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
         if (facts.length === 0) {
           return {
-            content: [{ type: "text", text: `No facts found about "${entity}".${warn}` }],
+            content: [
+              { type: "text", text: `No facts found about "${entity}".${formatWarnings()}` },
+            ],
           }
         }
 
@@ -244,9 +249,17 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         const decisionFacts = facts.filter((fact) => fact.predicate === "decided_by")
         const otherFacts = facts.filter((fact) => fact.predicate !== "decided_by")
         const lines: string[] = []
-        const decisionLinks = await resolveCanonicalDecisionLinks(services, decisionFacts, {
-          projectId,
-        })
+        const { links: decisionLinks, failures: decisionFailures } =
+          await resolveCanonicalDecisionLinks(services, decisionFacts, {
+            projectId,
+          })
+
+        if (decisionFailures.length > 0) {
+          const rootIds = decisionFailures.map(({ rootId }) => rootId).join(", ")
+          warnings.push(
+            `Could not resolve ${decisionFailures.length} decision root${decisionFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
+          )
+        }
 
         for (const { fact, decision } of decisionLinks) {
           const review = decision.reviewBy
@@ -280,7 +293,12 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
 
         if (lines.length === 0) {
           return {
-            content: [{ type: "text", text: `No current facts found about "${entity}".${warn}` }],
+            content: [
+              {
+                type: "text",
+                text: `No current facts found about "${entity}".${formatWarnings()}`,
+              },
+            ],
           }
         }
 
@@ -288,7 +306,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           content: [
             {
               type: "text",
-              text: `${lines.length} facts about "${entity}":\n\n${lines.join("\n")}${warn}`,
+              text: `${lines.length} facts about "${entity}":\n\n${lines.join("\n")}${formatWarnings()}`,
             },
           ],
         }

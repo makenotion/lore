@@ -130,6 +130,61 @@ describe("lore-ask", () => {
   })
 })
 
+describe("lore-ask — partial decision resolution", () => {
+  it("surfaces a warning when one decision root's walk rejects, keeping the resolved decisions", async () => {
+    // End-to-end: the settleAll wrapper inside resolveCanonicalDecisionLinks
+    // produces `failures`; the tool handler pushes a warning describing the
+    // failing root IDs through the existing `Warnings:` footer. Without
+    // this test, a future regression that forgot to wire failures into
+    // warnings would pass the unit test but silently drop the user-visible
+    // error signal.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("new-id", { title: "New decision" })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([
+          makeFact("fact-ok", {
+            sourceMemoryId: "new-id",
+            object: "new-id",
+          }),
+          makeFact("fact-bad", {
+            sourceMemoryId: "bad-root",
+            object: "bad-root",
+          }),
+        ]),
+        queryByObject: vi.fn().mockImplementation(async (object: string) => {
+          if (object === "bad-root") throw new Error("notion 5xx")
+          return []
+        }),
+      },
+      decisions: {
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "new-id") return newDecision
+          throw new Error(`unknown decision ${id}`)
+        }),
+      },
+      context: { project: null },
+    }
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const result = await loreAsk({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // The resolved decision is still rendered.
+    expect(text).toContain("New decision")
+    // Partial-failure warning surfaces the failing root id INSIDE the
+    // Warnings: footer, not elsewhere. Regex pins co-location so an
+    // accidental leak into the decision render (where the id could
+    // match via `toContain` but in the wrong section) still fails.
+    expect(text).toMatch(/Warnings:[^\n]*bad-root/)
+    expect(text).toContain("retry before relying on this result")
+  })
+})
+
 describe("lore-ask projectName resolution", () => {
   it("warns and falls back when projectName does not resolve", async () => {
     const mockServer = createMockServer()

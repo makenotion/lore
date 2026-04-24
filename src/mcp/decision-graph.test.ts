@@ -150,7 +150,7 @@ describe("resolveCanonicalDecisionLinks", () => {
       },
     })
 
-    const links = await resolveCanonicalDecisionLinks(services, [
+    const { links, failures } = await resolveCanonicalDecisionLinks(services, [
       makeFact("fact-old", {
         subject: "AuthService",
         predicate: "decided_by",
@@ -165,6 +165,7 @@ describe("resolveCanonicalDecisionLinks", () => {
       }),
     ])
 
+    expect(failures).toEqual([])
     expect(links).toHaveLength(1)
     expect(links[0].fact.subject).toBe("AuthService")
     expect(links[0].decision.id).toBe("new-id")
@@ -275,7 +276,8 @@ describe("resolveCanonicalDecisionLinks", () => {
       pending.get(rootId)?.([])
     }
 
-    const links = await linksPromise
+    const { links, failures } = await linksPromise
+    expect(failures).toEqual([])
     expect(links.map((link) => link.decision.id).sort()).toEqual([...roots].sort())
   })
 
@@ -359,7 +361,8 @@ describe("resolveCanonicalDecisionLinks", () => {
     })
 
     releaseLeafFetch(leafDecision)
-    const links = await linksPromise
+    const { links, failures } = await linksPromise
+    expect(failures).toEqual([])
     expect(links.map((link) => link.decision.id)).toEqual(["leaf"])
   })
 
@@ -511,7 +514,6 @@ describe("resolveCanonicalDecisionLinks", () => {
           sourceMemoryId: "root-b",
         }),
       ],
-      { projectId: "proj-1" },
     )
 
     // Wait for both walks to reach the gated `queryByObject("leaf")` call
@@ -524,14 +526,70 @@ describe("resolveCanonicalDecisionLinks", () => {
       expect(leafCalls).toBe(1)
     })
 
-    // Resolve PF1-02 handles the rejection per root, so
-    // `resolveCanonicalDecisionLinks` returns without throwing.
+    // Under PF1-02 (this branch), `resolveCanonicalDecisionLinks`
+    // returns `{ links, failures }` rather than throwing. Both walks
+    // awaiting the shared rejected promise surface as failures in
+    // the bucket — the documented limitation of evict-on-reject.
     rejectLeafQuery(new Error("transient notion"))
-    await expect(links).rejects.toThrow("transient notion")
-    // Pre-PF1-02, this would reject; with #53 stacked on top, the error
-    // surfaces via `failures` rather than throwing. Either way the test
-    // here runs against raw `resolveCanonicalDecisionLinks` which still
-    // propagates a thrown rejection from an awaiter.
+    const { failures } = await links
+    // Exact pin: ONE transient `queryByObject` rejection cascades into
+    // TWO failures because both root walks subscribed to the same
+    // pending promise before it rejected. If a future refactor bounds
+    // this further (null-sentinel race), `failures.length === 1` and
+    // the test fails — the expectation should be flipped and the
+    // `getSuccessorIds` docstring's caveat should be dropped in the
+    // same change. `toBeGreaterThanOrEqual(1)` would have hidden the
+    // regression silently.
+    expect(failures.map((f) => f.rootId).sort()).toEqual(["root-a", "root-b"])
+    for (const failure of failures) {
+      expect((failure.error as Error).message).toBe("transient notion")
+    }
+  })
+
+  it("returns partial results plus failures when one root's walk rejects", async () => {
+    const services = createServices({
+      decisions: {
+        "ok-root": makeDecision("ok-root", { title: "ok" }),
+        // "bad-root" intentionally absent; getById will throw for it.
+      },
+    })
+
+    // Make queryByObject succeed for both, but leave the bad root without a
+    // decision so its walk's final `getDecision(leafId)` still resolves to
+    // null — which is not a rejection. We want an actual rejection: override
+    // getById for the bad root only.
+    const original = services.decisions.getById
+    services.decisions.getById = vi.fn(async (id: string) => {
+      if (id === "bad-root") throw new Error("notion down")
+      return original(id)
+    })
+    // Throwing during getDecision won't reject the walk because of the
+    // `.catch(() => null)` inside resolveCurrentDecisions. Instead reject the
+    // queryByObject for that root, which is un-caught inside the walk.
+    services.facts.queryByObject = vi.fn(async (object: string) => {
+      if (object === "bad-root") throw new Error("notion down")
+      return []
+    })
+
+    const { links, failures } = await resolveCanonicalDecisionLinks(services, [
+      makeFact("fact-ok", {
+        subject: "Entity",
+        predicate: "decided_by",
+        object: "ok-root",
+        sourceMemoryId: "ok-root",
+      }),
+      makeFact("fact-bad", {
+        subject: "Entity",
+        predicate: "decided_by",
+        object: "bad-root",
+        sourceMemoryId: "bad-root",
+      }),
+    ])
+
+    expect(links.map((link) => link.decision.id)).toEqual(["ok-root"])
+    expect(failures).toHaveLength(1)
+    expect(failures[0].rootId).toBe("bad-root")
+    expect((failures[0].error as Error).message).toBe("notion down")
   })
 })
 

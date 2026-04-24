@@ -467,6 +467,12 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
     async ({ entity, projectName, limit }) => {
       try {
         let projectId: string | undefined
+        const warnings: string[] = []
+        // Built just-in-time at each return site so warnings added later
+        // (decision-graph partial failures) aren't silently dropped.
+        const formatWarnings = () =>
+          warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
         if (projectName) {
           const found = await services.projects.findByName(projectName)
           if (!found) {
@@ -492,7 +498,17 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           }
         }
 
-        const links = await resolveCanonicalDecisionLinks(services, facts, { projectId })
+        const { links, failures: linkFailures } = await resolveCanonicalDecisionLinks(
+          services,
+          facts,
+          { projectId },
+        )
+        if (linkFailures.length > 0) {
+          const rootIds = linkFailures.map(({ rootId }) => rootId).join(", ")
+          warnings.push(
+            `Could not resolve ${linkFailures.length} decision root${linkFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
+          )
+        }
         const decisions = Array.from(
           new Map(links.map(({ decision }) => [decision.id, decision])).values()
         )
@@ -502,7 +518,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
             content: [
               {
                 type: "text",
-                text: `No active decisions found governing "${entity}".`,
+                text: `No active decisions found governing "${entity}".${formatWarnings()}`,
               },
             ],
           }
@@ -538,13 +554,20 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
             .map((fact) => fact.sourceMemoryId ?? fact.object)
             .filter((value): value is string => value !== null && value.length > 0)
         )
-        if (historicalRoots.size > decisions.length) {
+        // Subtract failures from the "resolved forward" count so a root
+        // whose walk rejected doesn't read as if it was successfully
+        // resolved onward to a live replacement.
+        const resolvedOnward =
+          historicalRoots.size - decisions.length - linkFailures.length
+        if (resolvedOnward > 0) {
           lines.push(
-            `_${historicalRoots.size - decisions.length} superseded decision link${historicalRoots.size - decisions.length === 1 ? "" : "s"} resolved forward to current replacements._`
+            `_${resolvedOnward} superseded decision link${resolvedOnward === 1 ? "" : "s"} resolved forward to current replacements._`
           )
         }
 
-        return { content: [{ type: "text", text: lines.join("\n") }] }
+        return {
+          content: [{ type: "text", text: lines.join("\n") + formatWarnings() }],
+        }
       } catch (err) {
         return toolError(err)
       }

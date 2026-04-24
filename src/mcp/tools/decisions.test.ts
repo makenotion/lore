@@ -225,3 +225,50 @@ describe("lore-decision-context projectName resolution", () => {
     expect(queryBySubject).not.toHaveBeenCalled()
   })
 })
+
+describe("lore-decision-context — partial decision resolution", () => {
+  it("surfaces a warning when one decision root's walk rejects", async () => {
+    // Tool-layer acceptance for PF1-02: the `settleAll` wrapper inside
+    // resolveCanonicalDecisionLinks produces `failures`, and the tool
+    // handler routes them through the same `formatWarnings` shape
+    // `lore-ask` uses. This pins end-to-end behaviour that decision-graph
+    // unit tests cannot.
+    const mockServer = createMockServer()
+    const goodDecision = makeDecision("good-id", { title: "Working decision" })
+    const services = {
+      decisions: {
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "good-id") return goodDecision
+          throw new Error(`unknown decision ${id}`)
+        }),
+      },
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([
+          { ...makeFact("fact-ok"), sourceMemoryId: "good-id", object: "good-id" },
+          { ...makeFact("fact-bad"), sourceMemoryId: "bad-root", object: "bad-root" },
+        ]),
+        queryByObject: vi.fn().mockImplementation(async (object: string) => {
+          if (object === "bad-root") throw new Error("notion 5xx")
+          return []
+        }),
+      },
+      topics: {},
+      context: { project: null },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    const result = await handler({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // The resolved decision still renders.
+    expect(text).toContain("Working decision")
+    // Warning matches lore-ask's format: single "Warnings:" footer
+    // with failing root IDs inside it. Regex co-location pin so a
+    // leak of `bad-root` into the decision render above still fails.
+    expect(text).toMatch(/Warnings:[^\n]*bad-root/)
+    expect(text).toContain("retry before relying on this result")
+  })
+})

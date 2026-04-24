@@ -1,3 +1,4 @@
+import { settleAll } from "../core/settle.js"
 import type { CreateFactInput, Decision, Fact, FactPredicate } from "../types.js"
 
 type QueryFactsOpts = {
@@ -69,6 +70,17 @@ export function createSupersessionCaches(): SupersessionCaches {
 export interface CanonicalDecisionLink {
   fact: Fact
   decision: Decision
+}
+
+/**
+ * Shape returned by `resolveCanonicalDecisionLinks`: the canonical links we
+ * were able to resolve, plus per-root failures for roots whose walks
+ * rejected. Callers surface `failures` as tool warnings so an agent sees a
+ * partial answer with a named gap instead of an opaque error.
+ */
+export interface CanonicalDecisionLinkResult {
+  links: CanonicalDecisionLink[]
+  failures: Array<{ rootId: string; error: unknown }>
 }
 
 export interface ReachabilitySyncResult {
@@ -217,26 +229,33 @@ export async function resolveCurrentDecisions(
  * when two roots converge on a common descendant (the common shape after a
  * single supersession rewrites a legacy decision tree), the descendant's
  * `getDecision` / `queryByObject` runs once total — not once per walk.
+ *
+ * Partial-results posture: a single root's walk may reject (transient
+ * Notion 5xx, a missing page). Instead of sinking the whole call via
+ * `Promise.all`, we `settleAll` over the fan-out and return the walks
+ * that succeeded plus a `failures` list naming the roots that didn't.
+ * Callers surface `failures` as tool warnings so an agent sees a partial
+ * answer with a named gap instead of an opaque error banner.
  */
 export async function resolveCanonicalDecisionLinks(
   services: DecisionGraphServices,
   facts: Fact[],
   opts: { projectId?: string } = {}
-): Promise<CanonicalDecisionLink[]> {
+): Promise<CanonicalDecisionLinkResult> {
   const rootsByFact = facts.map((fact) => fact.sourceMemoryId ?? fact.object)
   const uniqueRoots = Array.from(new Set(rootsByFact.filter((rootId) => Boolean(rootId))))
 
   const caches = createSupersessionCaches()
-  const entries = await Promise.all(
+  const { fulfilled, failures } = await settleAll(
     uniqueRoots.map(
-      async (rootId) =>
+      (rootId) =>
         [
           rootId,
-          await resolveCurrentDecisions(services, [rootId], { ...opts, caches }),
-        ] as const
-    )
+          resolveCurrentDecisions(services, [rootId], { ...opts, caches }),
+        ] as const,
+    ),
   )
-  const resolutions = new Map<string, ResolvedCurrentDecisions>(entries)
+  const resolutions = new Map<string, ResolvedCurrentDecisions>(fulfilled)
 
   const links: CanonicalDecisionLink[] = []
   const seen = new Set<string>()
@@ -256,7 +275,10 @@ export async function resolveCanonicalDecisionLinks(
     }
   }
 
-  return links
+  return {
+    links,
+    failures: failures.map(({ key, error }) => ({ rootId: key, error })),
+  }
 }
 
 /**
