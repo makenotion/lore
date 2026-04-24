@@ -62,11 +62,36 @@ function buildCodexMcpSection(mcpJsPath: string): string {
 }
 
 /**
- * Codex stores hook commands as shell strings rather than argv arrays, so the
- * path must be quoted before it is serialized into `.codex/hooks.json`.
+ * Env var the hook helpers read via `deriveAgentName` to stamp `Agent:` on
+ * saved memories. Codex has no runtime marker equivalent to Claude Code's
+ * `CLAUDECODE=1`, so the installer injects this prefix into the hook
+ * command itself. Other third-party agent integrations (Cline, Cursor,
+ * Aider) should follow the same convention.
+ */
+const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
+
+/**
+ * Build the shell-string form of a Codex hook invocation with the
+ * `LORE_AGENT_NAME` override baked in.
+ *
+ * Load-bearing assumption: Codex executes `hooks.json` `type: "command"`
+ * entries through a POSIX shell (`/bin/sh` or equivalent), so a leading
+ * `VAR=VALUE ` pair is parsed as a single-command env assignment. That is
+ * the same convention `buildCodexMcpSection` relies on when wrapping the
+ * MCP launcher in `bash -lc`. If a future Codex release executes hook
+ * commands via `execve` with no shell, this prefix would be parsed as
+ * argv[0] and every Codex install would silently stop firing hooks — a
+ * visible regression we'd catch in the next Codex upgrade test. Worth
+ * confirming against the Codex hook spec when it stabilizes.
+ *
+ * **Windows caveat**: `cmd.exe` does not parse `VAR=VALUE cmd` as an env
+ * assignment. If Codex supports Windows hook execution via `cmd.exe`, this
+ * prefix will be wrong there. Codex is currently POSIX-only (macOS /
+ * Linux) per the integration docs, so the hook installer targets that
+ * baseline; revisit if Windows support ships.
  */
 export function buildCodexHookCommand(scriptPath: string): string {
-  return JSON.stringify(toPortablePath(scriptPath))
+  return CODEX_AGENT_ENV_PREFIX + JSON.stringify(toPortablePath(scriptPath))
 }
 
 /**
@@ -288,8 +313,30 @@ function stripShellQuotes(value: string): string {
   return trimmed
 }
 
+/**
+ * Strip leading shell-style `KEY=VALUE` env assignments. Lets the Codex
+ * hook detector look through the `LORE_AGENT_NAME=Codex ` prefix (and any
+ * future additions) to find the script path at the tail of the command.
+ *
+ * Recognition pattern (load-bearing for third-party integrators):
+ * - Keys must match `[A-Z_][A-Z0-9_]*` — conventional POSIX env-var spelling.
+ *   Lower-case (`agent=codex`) will NOT be stripped; keep the convention.
+ * - Values are bare tokens — no whitespace, no quotes (`[^\s"']+`). A
+ *   quoted value like `LORE_AGENT_NAME="My Agent"` is rejected wholesale
+ *   so the detector classifies the hook as unrecognized and reinstall
+ *   replaces it, rather than partially stripping up to the first space
+ *   and leaving a malformed command. Integrators who need a multi-word
+ *   agent name should collapse it to a single token.
+ * - Multiple sequential env prefixes are supported (`FOO=1 BAR=2 cmd`).
+ *
+ * Exported for unit-test coverage; not part of the CLI's public surface.
+ */
+export function stripShellEnvPrefix(command: string): string {
+  return command.replace(/^(\s*[A-Z_][A-Z0-9_]*=[^\s"']+\s+)+/, "")
+}
+
 function commandTargetsScript(command: string, scriptName: string): boolean {
-  const normalized = stripShellQuotes(command)
+  const normalized = stripShellQuotes(stripShellEnvPrefix(command))
   return normalized === scriptName || normalized.endsWith(`/${scriptName}`)
 }
 
