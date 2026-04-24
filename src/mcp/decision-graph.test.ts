@@ -167,6 +167,56 @@ describe("resolveCanonicalDecisionLinks", () => {
     expect(links[0].fact.subject).toBe("AuthService")
     expect(links[0].decision.id).toBe("new-id")
   })
+
+  it("fans out per-root supersession walks concurrently", async () => {
+    const roots = ["root-1", "root-2", "root-3", "root-4"]
+    const services = createServices({
+      decisions: Object.fromEntries(
+        roots.map((id) => [id, makeDecision(id, { title: id })])
+      ),
+    })
+
+    const pending = new Map<string, (facts: Fact[]) => void>()
+    services.facts.queryByObject = vi.fn(
+      (object: string) =>
+        new Promise<Fact[]>((resolve) => {
+          pending.set(object, resolve)
+        })
+    )
+
+    const linksPromise = resolveCanonicalDecisionLinks(
+      services,
+      roots.map((rootId, index) =>
+        makeFact(`fact-${index}`, {
+          subject: "Entity",
+          predicate: "decided_by",
+          object: rootId,
+          sourceMemoryId: rootId,
+        })
+      )
+    )
+
+    // Poll until every per-root walk has reached its first queryByObject
+    // dispatch. In the pre-change serial loop, only one call would ever be
+    // pending here — waitFor would time out, which is the intended regression
+    // signal. Using waitFor instead of a fixed setImmediate count keeps the
+    // test durable if resolveCurrentDecisions grows another pre-dispatch await.
+    await vi.waitFor(() => {
+      expect(services.facts.queryByObject).toHaveBeenCalledTimes(roots.length)
+    })
+
+    const dispatchedObjects = services.facts.queryByObject.mock.calls
+      .map((call) => call[0] as string)
+      .sort()
+    expect(dispatchedObjects).toEqual([...roots].sort())
+
+    for (const rootId of roots) {
+      pending.get(rootId)?.([])
+    }
+
+    const links = await linksPromise
+    expect(links.map((link) => link.decision.id).sort()).toEqual([...roots].sort())
+  })
 })
 
 describe("syncDecisionReachability", () => {

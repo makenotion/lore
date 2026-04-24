@@ -121,27 +121,40 @@ export async function resolveCurrentDecisions(
 /**
  * Resolve `decided_by` facts to the current canonical decisions they imply.
  * Deduplicates repeated links that converge on the same subject/decision pair.
+ *
+ * Per-root supersession walks fan out concurrently: each unique root ID dispatches
+ * its `resolveCurrentDecisions` call before any has completed, so N distinct roots
+ * cost one chain-depth round-trip instead of N. The in-chain BFS inside each
+ * `resolveCurrentDecisions` call stays sequential — step N+1 needs step N's
+ * successor list — so the speedup is strictly in the outer fan-out.
  */
 export async function resolveCanonicalDecisionLinks(
   services: DecisionGraphServices,
   facts: Fact[],
   opts: { projectId?: string } = {}
 ): Promise<CanonicalDecisionLink[]> {
+  const rootsByFact = facts.map((fact) => fact.sourceMemoryId ?? fact.object)
+  const uniqueRoots = Array.from(new Set(rootsByFact.filter((rootId) => Boolean(rootId))))
+
+  const entries = await Promise.all(
+    uniqueRoots.map(
+      async (rootId) =>
+        [rootId, await resolveCurrentDecisions(services, [rootId], opts)] as const
+    )
+  )
+  const resolutions = new Map<string, ResolvedCurrentDecisions>(entries)
+
   const links: CanonicalDecisionLink[] = []
   const seen = new Set<string>()
-  const resolutionCache = new Map<string, Promise<ResolvedCurrentDecisions>>()
 
-  for (const fact of facts) {
-    const rootId = fact.sourceMemoryId ?? fact.object
+  for (let i = 0; i < facts.length; i++) {
+    const rootId = rootsByFact[i]
     if (!rootId) continue
+    const resolution = resolutions.get(rootId)
+    if (!resolution) continue
 
-    let resolution = resolutionCache.get(rootId)
-    if (!resolution) {
-      resolution = resolveCurrentDecisions(services, [rootId], opts)
-      resolutionCache.set(rootId, resolution)
-    }
-
-    for (const decision of (await resolution).current) {
+    const fact = facts[i]
+    for (const decision of resolution.current) {
       const key = `${fact.subject}\u0000${decision.id}`
       if (seen.has(key)) continue
       seen.add(key)
