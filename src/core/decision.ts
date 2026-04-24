@@ -103,23 +103,30 @@ export class DecisionService {
   }
 
   async getById(id: string): Promise<Decision> {
-    const cached = this.idCache.get(id)
-    if (cached) return cached
-
-    const [page, md] = await Promise.all([
-      this.client.pages.retrieve({ page_id: id }),
-      this.client.pages.retrieveMarkdown({ page_id: id }),
-    ])
-    const memory = pageToMemory(page as PageObjectResponse, md.markdown)
-    if (memory.kind !== "decision") {
-      throw new Error(
-        `Memory ${id} is not a decision (kind: ${memory.kind}). ` +
-          "Use MemoryService for non-decision memories."
-      )
-    }
-    const decision = memory as Decision
-    this.idCache.set(id, decision)
-    return decision
+    // `getOrLoad` collapses concurrent cold-start fan-out onto a single
+    // retrieve: `resolveCanonicalDecisionLinks` walks supersession DAGs
+    // in parallel, and converging root walks hitting the same ancestor
+    // previously each issued their own pair of `pages.retrieve` +
+    // `pages.retrieveMarkdown` calls. The loader either returns a
+    // Decision or throws on non-decision kinds; the non-null assertion
+    // below is safe because `null` is unreachable on this path. A throw
+    // propagates to every waiter and clears the pending slot so the
+    // next caller retries rather than caching an error.
+    const decision = await this.idCache.getOrLoad(id, async () => {
+      const [page, md] = await Promise.all([
+        this.client.pages.retrieve({ page_id: id }),
+        this.client.pages.retrieveMarkdown({ page_id: id }),
+      ])
+      const memory = pageToMemory(page as PageObjectResponse, md.markdown)
+      if (memory.kind !== "decision") {
+        throw new Error(
+          `Memory ${id} is not a decision (kind: ${memory.kind}). ` +
+            "Use MemoryService for non-decision memories."
+        )
+      }
+      return memory as Decision
+    })
+    return decision!
   }
 
   /**

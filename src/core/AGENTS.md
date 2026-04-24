@@ -281,7 +281,8 @@ orchestrates `decisions` + `facts` together — consistent with how
 The MCP server is a long-lived stdio process that frequently resolves the
 same `projectName` or `topicName` across multiple tool calls in a single
 conversation. `src/core/cache.ts` provides `LruCache<K, V>`, a minimal
-LRU + TTL cache; four resolvers use it:
+LRU + TTL cache; four resolvers use it — three migrated to `getOrLoad`
+and one that deliberately opted out (see notes below the table):
 
 | Resolver                        | Keyed on    | TTL  | Cap |
 | ------------------------------- | ----------- | ---- | --- |
@@ -291,7 +292,8 @@ LRU + TTL cache; four resolvers use it:
 | `DecisionService.getById`       | decision id | 30s  | 500 |
 
 ¹ Only unscoped (no `projectId`) lookups are cached. The scoped variant is
-a legacy-vault safety valve with different result shape.
+a legacy-vault safety valve with different result shape, and by design
+scoped concurrent callers each issue their own query.
 
 ² Covers `Kind = decision` pages too — both live in the Memories DB and
 `render.ts:resolveTitles` resolves labels for either via this one pool.
@@ -300,15 +302,36 @@ a legacy-vault safety valve with different result shape.
 cached, and throws are never cached — only successful resolutions. Writes
 invalidate:
 
-**Stampede-safe via `LruCache.getOrLoad`.** Callers that expect concurrent
-misses on the same cold key — resolvers feeding a `Promise.all`, batch
-title renderers, BFS fan-outs — should prefer `cache.getOrLoad(key, loader)`
-over the classic `cache.get(key) ?? fetch()` pattern. The `getOrLoad`
-method keeps a `Map<K, Promise<V | null>>` of in-flight loads keyed by
-cache key; the second concurrent miss finds the pending promise and awaits
-the same underlying Notion call instead of racing on its own loader.
-Rejected loaders clear the pending slot so the next caller retries rather
-than observing a poisoned miss.
+**Stampede-safe via `LruCache.getOrLoad`.** `ProjectService.findByName`,
+`TopicService.findByName`, and `DecisionService.getById` route their
+Notion fetch through `cache.getOrLoad(key, loader)` rather than the
+classic `cache.get(key) ?? fetch()` pattern, so concurrent cold-start
+callers converging on the same key — `Promise.all` fan-outs in
+`resolveCanonicalDecisionLinks`, parallel autosaves resolving the same
+`topicName`, BFS walks hitting a shared ancestor — collapse onto a
+single Notion call. `getOrLoad` keeps a `Map<K, Promise<V | null>>` of
+in-flight loads keyed by cache key; the second concurrent miss finds the
+pending promise and awaits the same underlying Notion call instead of
+racing on its own loader. Rejected loaders clear the pending slot so the
+next caller retries rather than observing a poisoned miss.
+
+`MemoryService.getTitleById` is the one resolver that does **not** use
+`getOrLoad`. Its title cache stores `null` tombstones for not-found /
+permission-denied pages so the caller can skip the retry without
+pessimising the hot path — and `getOrLoad`'s contract explicitly refuses
+to commit `null` to the store. If `LruCache` ever grows a
+`cacheNegatives: true` option, fold `titleCache` onto the shared
+primitive as part of that work.
+
+**Invalidation reaches the pending map.** `cache.delete(key)` and
+`cache.clear()` drop both the stored value AND any in-flight `getOrLoad`
+pending slot, and `getOrLoad`'s loader uses a promise-identity guard so
+a stale in-flight read cannot commit back to the cache after an
+intervening invalidation. This is what makes the
+`delete(key); await getById(key)` write-then-read pattern in
+`TopicService.getOrCreate` and `DecisionService.supersede` safe under
+concurrent readers — a parallel `findByName` or `getById` in flight at
+the moment of invalidation no longer poisons the writer's merge base.
 
 - `ProjectService.create` invalidates by name; `archive` clears the whole
   name cache (archive flips `status` on cached objects and we don't track

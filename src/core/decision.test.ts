@@ -603,3 +603,142 @@ describe("DecisionService.getById — cache", () => {
     expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("DecisionService.getById — stampede dedup", () => {
+  it("collapses N concurrent cold-start reads onto one retrieve + one retrieveMarkdown", async () => {
+    // This is the acceptance path for resolveCanonicalDecisionLinks:
+    // parallel supersession walks converging on a shared ancestor each
+    // invoke getById(ancestor) inside the same tick. Without
+    // `getOrLoad` every converger pays its own pair of Notion calls.
+    const client = createMockClient({
+      retrievedPages: { "dec-1": decisionPage("dec-1") },
+      markdown: "body",
+    })
+    // Delay both reads so concurrent callers stack on the pending slot.
+    const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieveMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve(decisionPage("dec-1")), 5)
+        )
+    )
+    const retrieveMarkdownMock = client.pages
+      .retrieveMarkdown as ReturnType<typeof vi.fn>
+    retrieveMarkdownMock.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ markdown: "body" }), 5))
+    )
+    const service = new DecisionService(client, DB)
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => service.getById("dec-1"))
+    )
+
+    expect(results.map((d) => d.id)).toEqual(Array(8).fill("dec-1"))
+    expect(retrieveMock).toHaveBeenCalledTimes(1)
+    expect(retrieveMarkdownMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("supersede's pre-read delete drops an in-flight getById loader so the merge base is fresh", async () => {
+    // Mirror of the topic-side concurrent-delete regression. A
+    // `decision-graph.ts` walker calls `getById(newId)` with a slow
+    // loader in flight. Between the loader's dispatch and its
+    // resolution, some external actor (another Lore session, manual
+    // Notion edit, migration script) adds `external-prior` to the
+    // decision's `Supersedes` relation. Then `supersede(newId, oldId)`
+    // fires — its pre-read `idCache.delete(newId)` must force its
+    // internal `getById` to dispatch a fresh retrieve rather than
+    // await the stale in-flight loader, or the subsequent
+    // `merged = [...existing, oldId]` base would drop
+    // `external-prior` and the `pages.update` would clobber it.
+    const stale = decisionPage("new-dec", { supersedesIds: ["prior"] })
+    const fresh = decisionPage("new-dec", {
+      supersedesIds: ["prior", "external-prior"],
+    })
+    const oldDecision = decisionPage("old-dec")
+    const client = createMockClient({
+      retrievedPages: { "old-dec": oldDecision },
+      markdown: "body",
+    })
+
+    const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieveMock
+      // A's in-flight getById — delayed, returns stale supersedesIds.
+      .mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(() => resolve(stale), 5))
+      )
+      // supersede's internal getById (after `delete(newId)`) —
+      // dispatched fresh under the primitive fix, returns the current
+      // view including `external-prior`.
+      .mockResolvedValueOnce(fresh)
+
+    const retrieveMarkdownMock = client.pages.retrieveMarkdown as ReturnType<
+      typeof vi.fn
+    >
+    retrieveMarkdownMock
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ markdown: "body" }), 5)
+          )
+      )
+      .mockResolvedValueOnce({ markdown: "body" })
+
+    const service = new DecisionService(client, DB)
+
+    // A's read is in flight when supersede runs. Under the fix,
+    // supersede's pre-read delete drops A's pending slot; A's loader
+    // still resolves for A's own caller but its value must not be
+    // reused as supersede's merge base.
+    const aRead = service.getById("new-dec")
+    await service.supersede("new-dec", "old-dec")
+    await aRead
+
+    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    // Post-fix: merge base is the fresh view — `external-prior`
+    // survives rather than being clobbered.
+    expect(updateArgs.page_id).toBe("new-dec")
+    expect(updateArgs.properties.Supersedes.relation).toEqual([
+      { id: "prior" },
+      { id: "external-prior" },
+      { id: "old-dec" },
+    ])
+    // Two distinct retrieves: A's (stale, in-flight at delete time)
+    // and supersede's (fresh, dispatched after delete). Pre-fix there
+    // would have been only one: supersede reusing A's pending.
+    expect(retrieveMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("propagates a loader throw to every concurrent waiter without caching it", async () => {
+    // Load-bearing: when a non-decision id races through a concurrent
+    // fan-out, every waiter should reject with the same error, and the
+    // next call must retry (no poisoned cache entry, no poisoned pending
+    // slot).
+    const notADecision = decisionPage("mem-1", { kind: "note" })
+    const client = createMockClient({ retrievedPages: { "mem-1": notADecision } })
+    const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieveMock
+      .mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(() => resolve(notADecision), 5))
+      )
+      .mockResolvedValueOnce(notADecision)
+    const service = new DecisionService(client, DB)
+
+    const settled = await Promise.allSettled([
+      service.getById("mem-1"),
+      service.getById("mem-1"),
+      service.getById("mem-1"),
+    ])
+    for (const r of settled) {
+      expect(r.status).toBe("rejected")
+      if (r.status === "rejected") expect(String(r.reason)).toMatch(/not a decision/)
+    }
+    // All three shared one retrieve because they collapsed on the pending slot.
+    expect(retrieveMock).toHaveBeenCalledTimes(1)
+
+    // A subsequent call runs the loader again — pending slot was cleared
+    // and the throw was not cached.
+    await expect(service.getById("mem-1")).rejects.toThrow(/not a decision/)
+    expect(retrieveMock).toHaveBeenCalledTimes(2)
+  })
+})

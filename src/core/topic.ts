@@ -157,39 +157,41 @@ export class TopicService {
     // scoped form exists for vaults still carrying pre-migration
     // duplicates and is infrequent enough to query live. Key on `decoded`
     // so encoded and decoded inputs share a cache slot.
-    if (!projectId) {
-      const cached = this.nameCache.get(decoded)
-      if (cached) return cached
+    //
+    // `getOrLoad` collapses concurrent cold-start callers resolving the
+    // same topic name — e.g. a fan-out of autosaves that each resolve
+    // `topicName` before writing memories — onto one Notion query.
+    const fetch = async (): Promise<Topic | null> => {
+      const filters: Array<Record<string, unknown>> = [
+        { property: "Name", title: { equals: decoded } },
+      ]
+      if (projectId) {
+        filters.push({ property: "Project", relation: { contains: projectId } })
+      }
+
+      const filter = filters.length > 1 ? { and: filters } : filters[0]
+
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+      })
+
+      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+      if (pages.length === 0) return null
+
+      if (!projectId && pages.length > 1) {
+        const ids = pages.map((p) => p.id).join(", ")
+        throw new Error(
+          `Multiple topics named "${decoded}" found (${ids}). ` +
+            `Run \`lore migrate --merge-duplicate-topics\` to merge them.`
+        )
+      }
+
+      return this.pageToTopic(pages[0])
     }
 
-    const filters: Array<Record<string, unknown>> = [
-      { property: "Name", title: { equals: decoded } },
-    ]
-    if (projectId) {
-      filters.push({ property: "Project", relation: { contains: projectId } })
-    }
-
-    const filter = filters.length > 1 ? { and: filters } : filters[0]
-
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-    })
-
-    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-    if (pages.length === 0) return null
-
-    if (!projectId && pages.length > 1) {
-      const ids = pages.map((p) => p.id).join(", ")
-      throw new Error(
-        `Multiple topics named "${decoded}" found (${ids}). ` +
-          `Run \`lore migrate --merge-duplicate-topics\` to merge them.`
-      )
-    }
-
-    const topic = this.pageToTopic(pages[0])
-    if (!projectId) this.nameCache.set(decoded, topic)
-    return topic
+    if (projectId) return fetch()
+    return this.nameCache.getOrLoad(decoded, fetch)
   }
 
   /**

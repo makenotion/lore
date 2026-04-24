@@ -267,3 +267,134 @@ describe("LruCache — TTL expiry", () => {
     expect(loader).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("LruCache — delete/clear drop pending", () => {
+  // Load-bearing: the write-side invalidation pattern used by
+  // `TopicService.getOrCreate` and `DecisionService.supersede` is
+  // `delete(key); await getOrLoad(key, …)`. If `delete` only evicted
+  // `store`, a concurrent reader's in-flight loader would still be
+  // installed in `pending`; the invalidator would await that stale
+  // loader and use its pre-write view as a merge base — a lost update.
+  // These tests pin the primitive-level contract that resolves it.
+
+  it("delete(key) cancels authority of an in-flight loader so the next getOrLoad runs fresh", async () => {
+    const cache = new LruCache<string, number>(10, 1000)
+    let stalePending: ((value: number | null) => void) | undefined
+    const staleLoader = vi.fn(
+      () =>
+        new Promise<number | null>((resolve) => {
+          stalePending = resolve
+        })
+    )
+    const freshLoader = vi.fn<() => Promise<number | null>>().mockResolvedValue(2)
+
+    // Install a slow in-flight loader for key "a".
+    const stalePromise = cache.getOrLoad("a", staleLoader)
+    expect(staleLoader).toHaveBeenCalledTimes(1)
+
+    // A writer invalidates. `delete` must drop both the (nonexistent)
+    // store entry and the pending loader slot.
+    cache.delete("a")
+
+    // Next reader should see an empty pending slot and dispatch a fresh
+    // loader — not re-use the stale in-flight one.
+    const fresh = await cache.getOrLoad("a", freshLoader)
+    expect(fresh).toBe(2)
+    expect(freshLoader).toHaveBeenCalledTimes(1)
+
+    // Release the stale loader with a stale value. It must NOT commit
+    // back to the cache — the identity guard in getOrLoad suppresses it.
+    stalePending?.(999)
+    await stalePromise
+    expect(cache.get("a")).toBe(2) // fresh value preserved, not overwritten
+  })
+
+  it("clear() cancels every in-flight loader the same way", async () => {
+    const cache = new LruCache<string, number>(10, 1000)
+    let releaseA: ((value: number | null) => void) | undefined
+    let releaseB: ((value: number | null) => void) | undefined
+    const loaderA = vi.fn(
+      () =>
+        new Promise<number | null>((resolve) => {
+          releaseA = resolve
+        })
+    )
+    const loaderB = vi.fn(
+      () =>
+        new Promise<number | null>((resolve) => {
+          releaseB = resolve
+        })
+    )
+
+    const pA = cache.getOrLoad("a", loaderA)
+    const pB = cache.getOrLoad("b", loaderB)
+
+    cache.clear()
+
+    const freshA = vi.fn<() => Promise<number | null>>().mockResolvedValue(10)
+    const freshB = vi.fn<() => Promise<number | null>>().mockResolvedValue(20)
+
+    // Both keys should dispatch fresh loaders post-clear — the stale
+    // loaders' pending slots are gone.
+    const [a, b] = await Promise.all([
+      cache.getOrLoad("a", freshA),
+      cache.getOrLoad("b", freshB),
+    ])
+    expect(a).toBe(10)
+    expect(b).toBe(20)
+    expect(freshA).toHaveBeenCalledTimes(1)
+    expect(freshB).toHaveBeenCalledTimes(1)
+
+    // Stale values arriving after clear must not poison the cache.
+    releaseA?.(111)
+    releaseB?.(222)
+    await Promise.all([pA, pB])
+    expect(cache.get("a")).toBe(10)
+    expect(cache.get("b")).toBe(20)
+  })
+
+  it("set() during an in-flight stale loader is not overwritten on stale resolution", async () => {
+    // Covers the `delete(); set()` shape used by TopicService.getOrCreate's
+    // post-extend write-through. A stale in-flight loader must not clobber
+    // the authoritative write.
+    const cache = new LruCache<string, number>(10, 1000)
+    let releaseStale: ((value: number | null) => void) | undefined
+    const staleLoader = vi.fn(
+      () =>
+        new Promise<number | null>((resolve) => {
+          releaseStale = resolve
+        })
+    )
+
+    const stalePromise = cache.getOrLoad("k", staleLoader)
+    cache.delete("k")
+    cache.set("k", 42) // authoritative post-invalidation write
+
+    releaseStale?.(7) // stale loader resolves to pre-invalidation value
+    await stalePromise
+
+    expect(cache.get("k")).toBe(42)
+  })
+
+  it("waiters on a stale in-flight loader still receive its resolved value", async () => {
+    // The identity guard suppresses commit-to-cache, not resolution to
+    // awaiting callers. A caller that installed the loader (or awaited
+    // it before invalidation) must still receive the loader's result —
+    // they asked for it, they get it. Only the cache stays clean.
+    const cache = new LruCache<string, number>(10, 1000)
+    let release: ((value: number | null) => void) | undefined
+    const loader = vi.fn(
+      () =>
+        new Promise<number | null>((resolve) => {
+          release = resolve
+        })
+    )
+
+    const staleRead = cache.getOrLoad("k", loader)
+    cache.delete("k")
+    release?.(9)
+
+    await expect(staleRead).resolves.toBe(9)
+    expect(cache.get("k")).toBeUndefined() // but not cached
+  })
+})

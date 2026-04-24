@@ -106,26 +106,27 @@ export class ProjectService {
    * `NAME_CACHE_TTL_MS` so a multi-tool MCP conversation referencing the
    * same project pays one Notion round-trip, not one per tool call.
    *
+   * Uses `getOrLoad` so N concurrent cold-start callers — an MCP batch
+   * that fans out `lore-remember` + `lore-learn` + `lore-ask` against the
+   * same project in a single tick — share a single `dataSources.query`.
+   *
    * Negative lookups are not cached — a `create` followed by a
    * `findByName` in the same session must see the new page.
    */
   async findByName(name: string): Promise<Project | null> {
-    const cached = this.nameCache.get(name)
-    if (cached) return cached
-
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: {
-        property: "Name",
-        title: { equals: name },
-      },
+    return this.nameCache.getOrLoad(name, async () => {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: {
+          property: "Name",
+          title: { equals: name },
+        },
+      })
+      const page = response.results.filter(isFullPage)[0] as
+        | PageObjectResponse
+        | undefined
+      return page ? this.pageToProject(page) : null
     })
-    const page = response.results.filter(isFullPage)[0] as PageObjectResponse | undefined
-    if (!page) return null
-
-    const project = this.pageToProject(page)
-    this.nameCache.set(name, project)
-    return project
   }
 
   async archive(id: string): Promise<void> {

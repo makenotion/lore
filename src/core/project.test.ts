@@ -193,3 +193,35 @@ describe("ProjectService.findByName — cache", () => {
     expect(client.dataSources.query).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("ProjectService.findByName — stampede dedup", () => {
+  it("collapses N concurrent cold-start lookups onto a single Notion query", async () => {
+    // Load-bearing: without `getOrLoad`, each concurrent caller sees a
+    // cache miss and issues its own `dataSources.query`. With it, the
+    // first caller installs a pending promise that every subsequent
+    // caller inside the same tick awaits.
+    const client = createMockClient()
+    client.dataSources.query.mockImplementationOnce(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                results: [projectPage("p1", "alpha")],
+                has_more: false,
+                next_cursor: null,
+              }),
+            5
+          )
+        )
+    )
+    const service = new ProjectService(client, DB)
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => service.findByName("alpha"))
+    )
+
+    expect(results.map((r) => r?.id)).toEqual(Array(8).fill("p1"))
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+})

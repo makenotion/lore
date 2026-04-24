@@ -794,3 +794,226 @@ describe("TopicService.findByName — cache", () => {
     expect(client.dataSources.query).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("TopicService.findByName — stampede dedup", () => {
+  it("collapses N concurrent unscoped lookups onto a single Notion query", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementationOnce(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () => resolve({ results: [t1], has_more: false, next_cursor: null }),
+            5
+          )
+        )
+    )
+    const service = new TopicService(client, DB)
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () => service.findByName("auth"))
+    )
+
+    expect(results.map((r) => r?.id)).toEqual(Array(6).fill("t1"))
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("keys dedup on the decoded name so encoded/decoded concurrent inputs share one query", async () => {
+    // `findByName` decodes before keying, so a caller racing an encoded
+    // input against a decoded one should hit the same pending slot.
+    // Without decoded keying they would each install a distinct pending
+    // promise and double-query.
+    const t1 = topicPage("t1", { name: "Build & Tooling", projectIds: ["p1"] })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementationOnce(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () => resolve({ results: [t1], has_more: false, next_cursor: null }),
+            5
+          )
+        )
+    )
+    const service = new TopicService(client, DB)
+
+    const [a, b, c] = await Promise.all([
+      service.findByName("Build &amp; Tooling"),
+      service.findByName("Build & Tooling"),
+      service.findByName("Build &amp;amp; Tooling"),
+    ])
+
+    expect([a?.id, b?.id, c?.id]).toEqual(["t1", "t1", "t1"])
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("getOrCreate's pre-read delete drops an in-flight findByName loader so the merge base is fresh", async () => {
+    // Load-bearing regression for the `delete() doesn't drop pending`
+    // footgun that round-2 review on PF1-09 caught. Pre-fix,
+    // `nameCache.delete(decoded)` in getOrCreate only cleared `store`;
+    // a concurrent findByName's in-flight pending promise was still
+    // installed, and getOrCreate's internal findByName awaited it
+    // instead of dispatching a fresh query. Result: getOrCreate's merge
+    // base was the pre-invalidation view, and pages.update clobbered
+    // any relation added between the two reads — a silent lost update.
+    //
+    // Scenario: a reader (call it A) started findByName("auth") with a
+    // slow loader. Between the loader dispatch and its resolution, some
+    // other actor adds `p3` to the topic on Notion. Then getOrCreate
+    // fires — its pre-read delete must force its internal findByName to
+    // issue a fresh query and see p3 as part of the merge base, rather
+    // than awaiting A's now-stale loader.
+    const staleView = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const freshView = topicPage("t1", {
+      name: "auth",
+      projectIds: ["p1", "p3"],
+    })
+    const refetched = topicPage("t1", {
+      name: "auth",
+      projectIds: ["p1", "p3", "p2"],
+    })
+    const client = createMockClient({ retrievedPages: { t1: refetched } })
+
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock
+      // A's direct findByName — slow; resolves with the pre-write view.
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  results: [staleView],
+                  has_more: false,
+                  next_cursor: null,
+                }),
+              5
+            )
+          )
+      )
+      // getOrCreate's internal findByName — after delete drops A's
+      // pending slot, B dispatches its own query and sees p3.
+      .mockResolvedValueOnce({
+        results: [freshView],
+        has_more: false,
+        next_cursor: null,
+      })
+
+    const service = new TopicService(client, DB)
+
+    // A's read is in-flight when getOrCreate runs. Under the fix,
+    // getOrCreate's pre-read delete drops A's pending slot; A's loader
+    // still resolves for A's own caller but its value must not be
+    // reused as getOrCreate's merge base.
+    const aRead = service.findByName("auth")
+    await service.getOrCreate("auth", ["p2"])
+    await aRead
+
+    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    // Post-fix: merge base is the fresh view (contains p3).
+    expect(updateArgs.properties.Project.relation).toEqual([
+      { id: "p1" },
+      { id: "p3" },
+      { id: "p2" },
+    ])
+    // Two distinct queries: A's (stale, in-flight at delete time) and
+    // getOrCreate's (fresh, dispatched after delete). Pre-fix there
+    // would have been only one: getOrCreate reusing A's pending.
+    expect(queryMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("two parallel getOrCreate against a delayed mock converge without losing either projectId", async () => {
+    // Explicit regression for the two-parallel-getOrCreate shape
+    // requested in round-1/round-2 review. Topic exists with an
+    // external `p3` relation; two concurrent getOrCreate calls add
+    // `p1` and `p2` respectively. Under the primitive fix the retry
+    // loop must drive both additions to Notion without silently
+    // clobbering either.
+    //
+    // The mock simulates Notion's wholesale-replace relation
+    // semantics: `pages.update` overwrites `notionProjectIds`, and
+    // subsequent `dataSources.query` / `pages.retrieve` reads reflect
+    // the evolved state. The delayed query is what makes the race
+    // reproducible — both callers dispatch their loaders in the same
+    // tick, and the retry loop must pick up the other writer's
+    // in-flight addition on its re-read.
+    let notionProjectIds: string[] = ["p3"]
+    const TOPIC_ID = "t1"
+
+    const client = createMockClient()
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                results: [
+                  topicPage(TOPIC_ID, {
+                    name: "auth",
+                    projectIds: [...notionProjectIds],
+                  }),
+                ],
+                has_more: false,
+                next_cursor: null,
+              }),
+            5
+          )
+        )
+    )
+    const updateMock = client.pages.update as ReturnType<typeof vi.fn>
+    updateMock.mockImplementation(async (args: { properties: Record<string, unknown> }) => {
+      const relation = (
+        args.properties.Project as { relation: Array<{ id: string }> }
+      ).relation
+      notionProjectIds = relation.map((r) => r.id)
+      return {}
+    })
+    const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieveMock.mockImplementation(async () =>
+      topicPage(TOPIC_ID, { name: "auth", projectIds: [...notionProjectIds] })
+    )
+
+    const service = new TopicService(client, DB)
+
+    await Promise.all([
+      service.getOrCreate("auth", ["p1"]),
+      service.getOrCreate("auth", ["p2"]),
+    ])
+
+    // Topic was extended, not re-created.
+    expect(client.pages.create).not.toHaveBeenCalled()
+    // All three ids must survive — p3 (pre-existing), p1 (A), p2 (B).
+    // Without the primitive fix, B would await A's pending loader,
+    // both would merge against the same pre-write view, and the second
+    // `pages.update` would clobber the first writer's addition.
+    expect([...notionProjectIds].sort()).toEqual(["p1", "p2", "p3"])
+  })
+
+  it("scoped lookups bypass the cache and stampede independently", async () => {
+    // The scoped variant is deliberately uncached (legacy safety valve),
+    // so concurrent scoped callers each issue their own query. Pin this
+    // behaviour so a future well-meaning refactor doesn't silently start
+    // caching scoped reads.
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () => resolve({ results: [t1], has_more: false, next_cursor: null }),
+            5
+          )
+        )
+    )
+    const service = new TopicService(client, DB)
+
+    await Promise.all([
+      service.findByName("auth", "p1"),
+      service.findByName("auth", "p1"),
+      service.findByName("auth", "p1"),
+    ])
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(3)
+  })
+})

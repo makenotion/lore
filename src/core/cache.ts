@@ -104,6 +104,16 @@ export class LruCache<K, V> {
    * slot, so the next call retries rather than caching the rejection. This
    * is the behaviour callers expect from the classic `get() ?? fetch()`
    * pattern; the stampede guard is the only thing different.
+   *
+   * **Invalidation-safe.** An identity guard compares the resolving
+   * loader's promise against the current `pending` slot before committing
+   * or evicting. If `delete(key)` or `clear()` ran while the loader was
+   * in flight — or if a second `getOrLoad` installed a replacement slot —
+   * the stale loader's commit is skipped and its `.finally` only drops
+   * its own slot, never a reinstalled one. This is what makes the
+   * `delete(key); getOrLoad(key, …)` write-then-read invalidation
+   * pattern used by `TopicService.getOrCreate` and `DecisionService.supersede`
+   * safe under concurrent readers.
    */
   getOrLoad(key: K, loader: () => Promise<V | null>): Promise<V | null> {
     const hit = this.get(key)
@@ -112,29 +122,56 @@ export class LruCache<K, V> {
     const inFlight = this.pending.get(key)
     if (inFlight) return inFlight
 
-    const promise = loader()
+    const promise: Promise<V | null> = loader()
       .then((value) => {
-        if (value !== null && value !== undefined) this.set(key, value)
+        // Identity guard: only commit if this loader is still the
+        // authoritative pending slot. An intervening `delete`/`clear`
+        // invalidates this loader's view of the key, and a concurrent
+        // `getOrLoad` may have installed a fresher loader; either way we
+        // must not overwrite the cache with our stale read.
+        if (this.pending.get(key) === promise) {
+          if (value !== null && value !== undefined) this.set(key, value)
+        }
         return value
       })
       .finally(() => {
-        // Clear even on success so we never hand out a resolved-once promise
-        // from a prior call; future reads go through `get()` at the top.
-        this.pending.delete(key)
+        // Only drop our own slot. If an invalidator replaced it with a
+        // newer pending promise between dispatch and resolution, leaving
+        // the new slot in place is exactly what the new caller expects.
+        if (this.pending.get(key) === promise) {
+          this.pending.delete(key)
+        }
       })
 
     this.pending.set(key, promise)
     return promise
   }
 
-  /** Remove a single entry. No-op if missing. */
+  /**
+   * Remove a single entry. No-op if missing.
+   *
+   * Drops both the stored value AND any in-flight `getOrLoad` pending slot
+   * for this key so a concurrent invalidator (`TopicService.getOrCreate`,
+   * `DecisionService.supersede`) cannot observe a stale pre-write view
+   * via an already-dispatched loader. Any loader still racing on the old
+   * slot has its commit suppressed by the identity guard in `getOrLoad`.
+   */
   delete(key: K): void {
     this.store.delete(key)
+    this.pending.delete(key)
   }
 
-  /** Drop every entry. Used by tests and by `clearServiceCaches()`. */
+  /**
+   * Drop every entry. Used by tests and by `clearServiceCaches()`.
+   *
+   * Clears `pending` as well as `store` for the same reason as `delete`:
+   * after `clear()`, no stale in-flight loader may commit back to the
+   * cache. Loaders still resolving after the clear are neutralised by
+   * the identity guard.
+   */
   clear(): void {
     this.store.clear()
+    this.pending.clear()
   }
 
   /** Current entry count — useful for tests that assert eviction. */
