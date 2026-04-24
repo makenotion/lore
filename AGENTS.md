@@ -11,6 +11,7 @@
 | Domain services | [`src/core/AGENTS.md`](src/core/AGENTS.md) | Service pattern, context resolution, fact invalidation |
 | Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics |
 | CLI | [`src/cli/AGENTS.md`](src/cli/AGENTS.md) | Commander patterns, command reference, output formatting |
+| Hook runner | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md) | Stop / SessionEnd autosave, background spawn, lockfiles |
 
 ## Repo-Wide Reference
 

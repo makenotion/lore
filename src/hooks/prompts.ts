@@ -13,7 +13,7 @@
  */
 export function buildProjectSelectionGuidance(
   subProjects: string[],
-  catchAllName: string | null,
+  catchAllName: string | null
 ): string {
   if (subProjects.length === 0 && !catchAllName) return ""
 
@@ -24,12 +24,12 @@ export function buildProjectSelectionGuidance(
   if (catchAllName) {
     lines.push(
       `A catch-all "${catchAllName}" also exists — use it ONLY when the work is genuinely repo-wide. ` +
-        `Never default to it for sub-project-specific memories.`,
+        `Never default to it for sub-project-specific memories.`
     )
   }
   lines.push(
     `Pass projectName (single sub-project) or projectNames (multiple) on every lore-remember / lore-learn / lore-decide call. ` +
-      `If work spans multiple sub-projects, prefer multi-project saves over the catch-all.`,
+      `If work spans multiple sub-projects, prefer multi-project saves over the catch-all.`
   )
   return lines.join("\n")
 }
@@ -51,7 +51,7 @@ function buildIdentityBlock(sessionId?: string, agentName?: string): string {
   if (sessionId) parts.push(`session: "${sessionId}"`)
   if (agentName) parts.push(`agent: "${agentName}"`)
   lines.push(
-    `Pass ${parts.join(" and ")} verbatim on every lore-* tool call so saves are grouped correctly.`,
+    `Pass ${parts.join(" and ")} verbatim on every lore-* tool call so saves are grouped correctly.`
   )
   return lines.join("\n")
 }
@@ -110,38 +110,6 @@ ${buildSourceLinkGuidance()}
 Fill every field you can confidently populate — empty fields hurt recall later. Leave a field empty only when you'd be guessing.`
 }
 
-/**
- * Build the autosave injection prompt.
- *
- * The prompt deliberately does NOT prescribe a single project scope — in a
- * monorepo, the launch-time cwd resolves to the catch-all project, which
- * historically caused every save to land in the wrong bucket. Instead, we
- * list the available sub-projects and the catch-all (if any), and instruct
- * the AI to pick per memory based on the files it actually touched.
- *
- * `sessionId` and `agentName` thread the hook event's identity through so
- * every save carries them — without these, session grouping is broken.
- */
-export function buildSavePrompt(
-  subProjects: string[],
-  catchAllName: string | null,
-  sessionId?: string,
-  agentName?: string,
-): string {
-  const identitySection = buildIdentityBlock(sessionId, agentName)
-  const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)
-  const filter = buildExtractionFilter()
-  const tools = buildToolGuidance()
-
-  return `[Lore auto-save] Review this session's work and extract durable knowledge via lore-* MCP tools.${identitySection}${projectSection}
-
-${filter}
-
-${tools}
-
-If this session produced nothing worth saving, respond with "No Lore context to save." and stop. Otherwise save, then stop.`
-}
-
 function indentUntrustedText(text: string): string {
   return text
     .split("\n")
@@ -150,10 +118,12 @@ function indentUntrustedText(text: string): string {
 }
 
 /**
- * Build the session-end background save prompt.
+ * Build the background save prompt used by both the mid-session Stop path
+ * and the SessionEnd path. Both paths spawn a detached `claude -p` sub-agent
+ * with no prior context, so the transcript must be embedded in the prompt.
  *
- * Spawned via `claude -p` with an allowlist of lore-* tools, so the prompt
- * must only reference tools that are actually in the allowlist (see
+ * The sub-agent runs with an allowlist of lore-* tools, so the prompt must
+ * only reference tools that are actually in the allowlist (see
  * `spawnBackgroundSave` in `helpers.ts`).
  */
 export function buildSessionEndPrompt(
@@ -161,7 +131,7 @@ export function buildSessionEndPrompt(
   catchAllName: string | null,
   sessionContent: string,
   sessionId?: string,
-  agentName?: string,
+  agentName?: string
 ): string {
   const identitySection = buildIdentityBlock(sessionId, agentName)
   const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)

@@ -5,29 +5,43 @@
  * The hooks call `node dist/hooks/helpers.js <action>` with
  * relevant context passed via environment variables.
  *
- * Autosave fires on the Stop hook event:
- *   - Count-based trigger → blocks AI → AI writes structured
- *     content via MCP tools (lore-journal, lore-remember, lore-learn)
+ * Autosave flow:
+ *   - Stop hook (mid-session): count-based trigger → spawns a detached
+ *     `claude -p` sub-agent in the background that writes structured content
+ *     via lore-* MCP tools. The main agent is never blocked.
+ *   - SessionEnd hook: same spawn machinery for one last save after the
+ *     session window closes.
+ *
+ * A per-session lock (see `lock.ts`) ensures at most one background save is
+ * in flight per session, and a global cap bounds total concurrent spawns.
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { existsSync, writeFileSync, openSync, closeSync, unlinkSync } from "node:fs"
 import { spawn, execFileSync } from "node:child_process"
 import { tmpdir, homedir } from "node:os"
-import { join } from "node:path"
-import { resolve, relative } from "node:path"
+import { join, resolve, relative } from "node:path"
+import { fileURLToPath } from "node:url"
 import { findConfigFile, loadConfigAllowingInvalidHooks } from "../config.js"
 import {
   formatTranscriptSessionContent,
   inspectTranscript,
+  type TranscriptInspection,
 } from "./transcript.js"
 import { initServicesFromConfig } from "../services.js"
 import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
-import { buildSavePrompt, buildSessionEndPrompt } from "./prompts.js"
+import { buildSessionEndPrompt } from "./prompts.js"
 import { dateBucket, loadWakeUpData } from "../core/wakeup.js"
-
-const action = process.argv[2]
+import {
+  activeSaveCount,
+  getStateDir,
+  hasActiveSessionLock,
+  logPath,
+  MAX_CONCURRENT_SAVES,
+  releaseSessionLock,
+  tryAcquireSessionLock,
+} from "./lock.js"
 
 /** Hook payload fields shared by Claude Code and Codex. */
 interface HookEvent {
@@ -54,25 +68,24 @@ function deriveAgentName(_event: HookEvent): string | undefined {
   const override = process.env["LORE_AGENT_NAME"]
   if (override && override.trim()) return override.trim()
 
-  const claudeCodeMarkers = Object.keys(process.env).some((k) => k.startsWith("CLAUDE_CODE_"))
+  const claudeCodeMarkers = Object.keys(process.env).some((k) =>
+    k.startsWith("CLAUDE_CODE_")
+  )
   if (claudeCodeMarkers || process.env["CLAUDECODE"] === "1") return "Claude Code"
 
   return undefined
 }
 
-
 // ---------------------------------------------------------------------------
 // State management — per-session save count in $TMPDIR
 // ---------------------------------------------------------------------------
 
-const STATE_DIR = join(tmpdir(), "lore-hook-state")
-
 async function ensureStateDir(): Promise<void> {
-  await mkdir(STATE_DIR, { recursive: true })
+  await mkdir(getStateDir(), { recursive: true })
 }
 
 function statePath(sessionId: string): string {
-  return join(STATE_DIR, `${sessionId}.count`)
+  return join(getStateDir(), `${sessionId}.count`)
 }
 
 async function readSaveCount(sessionId: string | undefined): Promise<number> {
@@ -87,7 +100,7 @@ async function readSaveCount(sessionId: string | undefined): Promise<number> {
 
 async function writeSaveCount(
   sessionId: string | undefined,
-  count: number,
+  count: number
 ): Promise<void> {
   if (!sessionId) return
   await ensureStateDir()
@@ -107,7 +120,7 @@ async function writeSaveCount(
 function resolveProjectContext(
   cwd: string,
   configRoot: string,
-  projects: Array<{ name: string; path: string }> | undefined,
+  projects: Array<{ name: string; path: string }> | undefined
 ): { subProjects: string[]; catchAllName: string | null } {
   if (!projects?.length) {
     return { subProjects: [], catchAllName: null }
@@ -168,7 +181,7 @@ async function loadHookState(): Promise<HookState> {
     const { subProjects, catchAllName } = resolveProjectContext(
       process.cwd(),
       found.root,
-      config.projects,
+      config.projects
     )
     return {
       hookConfig: mergeHookDefaults(config.hooks, catchAllName, subProjects),
@@ -177,7 +190,7 @@ async function loadHookState(): Promise<HookState> {
     }
   } catch (err) {
     process.stderr.write(
-      `[lore] Failed to load ${found.path}: ${err instanceof Error ? err.message : err}. Using hook defaults.\n`,
+      `[lore] Failed to load ${found.path}: ${err instanceof Error ? err.message : err}. Using hook defaults.\n`
     )
     return {
       hookConfig: mergeHookDefaults(undefined),
@@ -192,6 +205,7 @@ async function loadHookState(): Promise<HookState> {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  const action = process.argv[2]
   switch (action) {
     case "autosave":
       await autosave()
@@ -205,6 +219,22 @@ async function main(): Promise<void> {
     default:
       process.stderr.write(`Unknown hook action: ${action}\n`)
       process.exit(1)
+  }
+}
+
+/**
+ * True when this module is the Node entry point (invoked via `node
+ * dist/hooks/helpers.js`). False when imported from another module — tests
+ * import this file directly and must not trigger `main()`'s process.exit
+ * paths or argv routing.
+ */
+function isEntryPoint(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return fileURLToPath(import.meta.url) === entry
+  } catch {
+    return false
   }
 }
 
@@ -243,43 +273,67 @@ async function autosave(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Stop — count-based trigger, blocks AI for structured save
+// Stop — count-based trigger, spawns background save (non-blocking)
 // ---------------------------------------------------------------------------
 
+interface TranscriptForSave {
+  transcript: TranscriptInspection
+  userMessageCount: number
+}
+
 /**
- * Stop handler: counts real user messages and blocks the AI when the
- * threshold is reached, injecting a prompt that tells the AI to save
- * structured content via Lore's MCP tools.
- *
- * No Notion API calls — just file I/O. Outputs JSON to stdout for
- * the active assistant to interpret.
+ * Read and inspect the transcript for an autosave event. Used by both the
+ * mid-session Stop path and the SessionEnd path — they want the same parsing
+ * and the same malformed-line diagnostics. Returns null when the event has no
+ * transcript path or the file can't be read; callers should treat that as
+ * "skip this save".
  */
-async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
-  // Loop guard: AI already processed a block reason, let it stop
-  if (event.stop_hook_active) {
-    process.stdout.write("{}\n")
-    return
-  }
-
-  if (!event.transcript_path) {
-    process.stdout.write("{}\n")
-    return
-  }
-
+async function readTranscriptForSave(
+  event: HookEvent,
+  label: string
+): Promise<TranscriptForSave | null> {
+  if (!event.transcript_path) return null
+  let raw: string
   try {
-    const transcriptRaw = await readFile(event.transcript_path, "utf-8")
-    const transcript = inspectTranscript(transcriptRaw)
-    if (
-      transcript.totalNonEmptyLineCount > 0 &&
-      transcript.messages.length === 0 &&
-      (transcript.malformedLineCount > 0 || transcript.ignoredLineCount > 0)
-    ) {
-      process.stderr.write(
-        "[lore] Stop hook could not read any transcript messages " +
-          `(${transcript.malformedLineCount} malformed, ${transcript.ignoredLineCount} ignored).\n`,
-      )
+    raw = await readFile(event.transcript_path, "utf-8")
+  } catch (err) {
+    process.stderr.write(
+      `[lore] ${label}: failed to read transcript: ${err instanceof Error ? err.message : err}\n`
+    )
+    return null
+  }
+  const transcript = inspectTranscript(raw)
+  if (
+    transcript.totalNonEmptyLineCount > 0 &&
+    transcript.messages.length === 0 &&
+    (transcript.malformedLineCount > 0 || transcript.ignoredLineCount > 0)
+  ) {
+    process.stderr.write(
+      `[lore] ${label} could not read any transcript messages ` +
+        `(${transcript.malformedLineCount} malformed, ${transcript.ignoredLineCount} ignored).\n`
+    )
+  }
+  const userMessageCount = transcript.messages.filter((m) => m.role === "user").length
+  return { transcript, userMessageCount }
+}
+
+/**
+ * Stop handler: counts real user messages and, when the save interval is
+ * reached, spawns a detached `claude -p` sub-agent that writes structured
+ * content via Lore's MCP tools. The main agent is never blocked — the Stop
+ * hook always emits `{}` so the user's next turn starts immediately.
+ *
+ * Save work is gated by a per-session lock so two overlapping hook fires
+ * can't race on the same transcript.
+ */
+export async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
+  try {
+    const read = await readTranscriptForSave(event, "Stop hook")
+    if (!read) {
+      process.stdout.write("{}\n")
+      return
     }
-    const currentCount = transcript.messages.filter((message) => message.role === "user").length
+    const { transcript, userMessageCount: currentCount } = read
     const lastSaveCount = await readSaveCount(event.session_id)
     const { saveInterval } = config
     // First save fires sooner to catch short sessions (min 2 messages).
@@ -289,25 +343,34 @@ async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
     const sinceLast = currentCount - lastSaveCount
 
     if (sinceLast >= threshold) {
-      await writeSaveCount(event.session_id, currentCount)
-      process.stdout.write(
-        JSON.stringify({
-          decision: "block",
-          reason: buildSavePrompt(
-            config.subProjects,
-            config.catchAllName,
-            event.session_id,
-            deriveAgentName(event),
-          ),
-        }) + "\n",
-      )
-    } else {
-      process.stdout.write("{}\n")
+      const sessionContent = formatTranscriptSessionContent(transcript.messages)
+      if (sessionContent) {
+        const prompt = buildSessionEndPrompt(
+          config.subProjects,
+          config.catchAllName,
+          sessionContent,
+          event.session_id,
+          deriveAgentName(event)
+        )
+        // Only advance the save counter when a background process actually
+        // started. If spawn was rejected (lock held, cap hit, binary missing),
+        // leaving the counter where it is lets the next Stop — or the
+        // SessionEnd recovery path — retry.
+        const spawned = spawnBackgroundSave(
+          event.cwd ?? process.cwd(),
+          prompt,
+          event.session_id
+        )
+        if (spawned) {
+          await writeSaveCount(event.session_id, currentCount)
+        }
+      }
     }
+    process.stdout.write("{}\n")
   } catch (err) {
     // Fail open: let the AI stop
     process.stderr.write(
-      `[lore] Stop hook error: ${err instanceof Error ? err.message : err}\n`,
+      `[lore] Stop hook error: ${err instanceof Error ? err.message : err}\n`
     )
     process.stdout.write("{}\n")
   }
@@ -327,10 +390,14 @@ async function wakeup(): Promise<void> {
 
   let services: Awaited<ReturnType<typeof initServicesFromConfig>>
   try {
-    services = await initServicesFromConfig(process.cwd(), hookState.configRoot, hookState.config)
+    services = await initServicesFromConfig(
+      process.cwd(),
+      hookState.configRoot,
+      hookState.config
+    )
   } catch (err) {
     process.stderr.write(
-      `[lore] wakeup: init failed — ${err instanceof Error ? err.message : err}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`,
+      `[lore] wakeup: init failed — ${err instanceof Error ? err.message : err}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`
     )
     return
   }
@@ -338,22 +405,20 @@ async function wakeup(): Promise<void> {
 
   let digest, memories, openLoops, knowledgeFacts, relatedMemories
   try {
-    ;({ digest, memories, openLoops, knowledgeFacts, relatedMemories } = await loadWakeUpData(
-      services,
-      {
+    ;({ digest, memories, openLoops, knowledgeFacts, relatedMemories } =
+      await loadWakeUpData(services, {
         projectId: project?.id,
         // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
         includeMemoryContent: false,
         // Hook never renders decisions — skip the two Notion queries so
         // session-start latency doesn't regress on the hot path.
         includeDecisions: false,
-      },
-    ))
+      }))
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
     process.stderr.write(
-      `[lore] wakeup: load failed — ${err instanceof Error ? err.message : err}. Skipping context injection.\n`,
+      `[lore] wakeup: load failed — ${err instanceof Error ? err.message : err}. Skipping context injection.\n`
     )
     return
   }
@@ -386,7 +451,9 @@ async function wakeup(): Promise<void> {
       if (!mems) continue
       sections.push(`### ${label}`)
       for (const mem of mems) {
-        sections.push(`- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`)
+        sections.push(
+          `- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`
+        )
       }
     }
   }
@@ -401,7 +468,7 @@ async function wakeup(): Promise<void> {
       for (const fact of overdue) {
         const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
         sections.push(
-          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}, review by ${fact.reviewBy})`,
+          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}, review by ${fact.reviewBy})`
         )
       }
     }
@@ -412,7 +479,7 @@ async function wakeup(): Promise<void> {
         const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
         const review = fact.reviewBy ? `, review by ${fact.reviewBy}` : ""
         sections.push(
-          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}${review})`,
+          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}${review})`
         )
       }
     }
@@ -429,7 +496,7 @@ async function wakeup(): Promise<void> {
     sections.push("\n## Active Facts")
     for (const fact of knowledgeFacts) {
       sections.push(
-        `- ${fact.subject} ${fact.predicate.replace(/_/g, " ")} ${fact.object}`,
+        `- ${fact.subject} ${fact.predicate.replace(/_/g, " ")} ${fact.object}`
       )
     }
   }
@@ -461,16 +528,33 @@ function findClaudeBinary(): string | null {
   return null
 }
 
-function spawnBackgroundSave(cwd: string, prompt: string): void {
+/**
+ * Spawn a detached `claude -p` sub-agent to do a structured save. Returns
+ * true iff a child process was started and now owns the session lock;
+ * false on any rejection (missing binary, another save in flight, cap hit,
+ * race loss against a concurrent spawn, spawn error).
+ *
+ * Callers use the return value to decide whether to advance the save
+ * counter — advancing only on success keeps the SessionEnd recovery path
+ * reachable when a mid-session spawn is skipped.
+ */
+function spawnBackgroundSave(cwd: string, prompt: string, sessionId?: string): boolean {
   const claudeBin = findClaudeBinary()
   if (!claudeBin) {
-    process.stderr.write("[lore] session-end: claude binary not found, skipping\n")
-    return
+    process.stderr.write("[lore] background save: claude binary not found, skipping\n")
+    return false
   }
+
+  // Fast-path capacity check — avoids paying the spawn cost in the common
+  // case where another save is already in flight or the global cap is hit.
+  // A second, authoritative check happens after spawn (via O_EXCL acquire)
+  // so concurrent callers that both pass this probe are still serialized.
+  if (sessionId && hasActiveSessionLock(sessionId)) return false
+  if (activeSaveCount() >= MAX_CONCURRENT_SAVES) return false
 
   // Write prompt to a temp file and pipe via stdin fd to avoid exposing
   // session transcript content in process arguments (visible via `ps`).
-  const promptFile = join(tmpdir(), `lore-prompt-${Date.now()}.txt`)
+  const promptFile = join(tmpdir(), `lore-prompt-${Date.now()}-${process.pid}.txt`)
   let stdinFd: number
   try {
     writeFileSync(promptFile, prompt, { mode: 0o600 })
@@ -479,15 +563,15 @@ function spawnBackgroundSave(cwd: string, prompt: string): void {
     unlinkSync(promptFile)
   } catch (err) {
     process.stderr.write(
-      `[lore] session-end: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`,
+      `[lore] background save: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`
     )
-    return
+    return false
   }
 
   const args = [
     "-p",
     "--allowedTools",
-    "mcp__lore__lore-journal,mcp__lore__lore-remember,mcp__lore__lore-learn,mcp__lore__lore-decide",
+    "mcp__lore__lore-remember,mcp__lore__lore-learn,mcp__lore__lore-decide",
     "--dangerously-skip-permissions",
     "--no-session-persistence",
     "--model",
@@ -505,20 +589,65 @@ function spawnBackgroundSave(cwd: string, prompt: string): void {
   const notionBaseUrl = process.env["LORE_NOTION_BASE_URL"]
   if (notionBaseUrl) safeEnv["LORE_NOTION_BASE_URL"] = notionBaseUrl
 
+  // Redirect stderr to a per-session log so crashes are recoverable without
+  // someone actively watching stderr. Truncate per save: each spawn is
+  // independent and an unbounded append would grow the file forever across a
+  // long-lived session.
+  let stderrSink: "ignore" | number = "ignore"
+  if (sessionId) {
+    try {
+      stderrSink = openSync(logPath(sessionId), "w", 0o600)
+    } catch {
+      // Fall back to ignore — logging is best-effort, the save must still run.
+    }
+  }
+
+  let lockFile: string | null = null
   try {
     const child = spawn(claudeBin, args, {
       cwd,
       detached: true,
-      stdio: [stdinFd, "ignore", "ignore"],
+      stdio: [stdinFd, "ignore", stderrSink],
       env: safeEnv,
     })
+
+    // Atomic acquire using the child's own PID — no hand-off window. If a
+    // concurrent hook spawned first and already acquired, our acquire fails
+    // and we tear down our child to keep "at most one in flight per session".
+    if (sessionId) {
+      if (typeof child.pid !== "number") {
+        // Spawn returned no PID — treat as spawn failure.
+        try {
+          child.kill("SIGTERM")
+        } catch {
+          // Child already gone.
+        }
+        return false
+      }
+      lockFile = tryAcquireSessionLock(sessionId, child.pid)
+      if (!lockFile) {
+        try {
+          child.kill("SIGTERM")
+        } catch {
+          // Child already gone.
+        }
+        return false
+      }
+    }
+
     child.unref()
+    return true
   } catch (err) {
     process.stderr.write(
-      `[lore] session-end: spawn failed: ${err instanceof Error ? err.message : err}\n`,
+      `[lore] background save: spawn failed: ${err instanceof Error ? err.message : err}\n`
     )
+    if (lockFile) releaseSessionLock(lockFile)
+    return false
   } finally {
+    // Safe on Unix: `spawn` with `stdio: [stdinFd, ...]` dups the fd into the
+    // child, so closing the parent's copy here doesn't affect the child's read.
     closeSync(stdinFd)
+    if (typeof stderrSink === "number") closeSync(stderrSink)
   }
 }
 
@@ -531,7 +660,7 @@ function spawnBackgroundSave(cwd: string, prompt: string): void {
  *
  * Completely non-blocking — never prevents session exit.
  */
-async function handleSessionEnd(): Promise<void> {
+export async function handleSessionEnd(): Promise<void> {
   if (process.env["LORE_AUTOSAVE"] === "false") return
 
   const raw = process.env["LORE_SESSION_END_CONTENT"]
@@ -545,36 +674,14 @@ async function handleSessionEnd(): Promise<void> {
     event = JSON.parse(raw) as HookEvent
   } catch (err) {
     process.stderr.write(
-      `[lore] session-end: failed to parse event JSON: ${err instanceof Error ? err.message : err}\n`,
+      `[lore] session-end: failed to parse event JSON: ${err instanceof Error ? err.message : err}\n`
     )
     return
   }
 
-  if (!event.transcript_path) return
-
-  let transcriptRaw: string
-  try {
-    transcriptRaw = await readFile(event.transcript_path, "utf-8")
-  } catch (err) {
-    process.stderr.write(
-      `[lore] session-end: failed to read transcript: ${err instanceof Error ? err.message : err}\n`,
-    )
-    return
-  }
-
-  const transcript = inspectTranscript(transcriptRaw)
-  if (
-    transcript.totalNonEmptyLineCount > 0 &&
-    transcript.messages.length === 0 &&
-    (transcript.malformedLineCount > 0 || transcript.ignoredLineCount > 0)
-  ) {
-    process.stderr.write(
-      "[lore] session-end could not read any transcript messages " +
-        `(${transcript.malformedLineCount} malformed, ${transcript.ignoredLineCount} ignored).\n`,
-    )
-  }
-
-  const currentCount = transcript.messages.filter((message) => message.role === "user").length
+  const read = await readTranscriptForSave(event, "session-end")
+  if (!read) return
+  const { transcript, userMessageCount: currentCount } = read
   if (currentCount < 2) return
 
   const lastSaveCount = await readSaveCount(event.session_id)
@@ -588,22 +695,25 @@ async function handleSessionEnd(): Promise<void> {
     hookConfig.catchAllName,
     sessionContent,
     event.session_id,
-    deriveAgentName(event),
+    deriveAgentName(event)
   )
-  spawnBackgroundSave(event.cwd ?? process.cwd(), prompt)
+  spawnBackgroundSave(event.cwd ?? process.cwd(), prompt, event.session_id)
 }
 
 // ---------------------------------------------------------------------------
 // Entry — fail open for autosave so the AI can always stop
 // ---------------------------------------------------------------------------
 
-main().catch((err) => {
-  process.stderr.write(
-    `[lore] Hook error [${action}]: ${err instanceof Error ? err.message : err}\n`,
-  )
-  if (action === "autosave") {
-    process.stdout.write("{}\n")
-    process.exit(0)
-  }
-  process.exit(action === "session-end" ? 0 : 1)
-})
+if (isEntryPoint()) {
+  main().catch((err) => {
+    const action = process.argv[2]
+    process.stderr.write(
+      `[lore] Hook error [${action}]: ${err instanceof Error ? err.message : err}\n`
+    )
+    if (action === "autosave") {
+      process.stdout.write("{}\n")
+      process.exit(0)
+    }
+    process.exit(action === "session-end" ? 0 : 1)
+  })
+}
