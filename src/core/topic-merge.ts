@@ -19,12 +19,30 @@ import {
   extractTitle,
   extractRelationIds,
 } from "../notion/extractors.js"
+import { decodeTopicHtmlEntities } from "./topic.js"
 
 /** One duplicate-name group detected in the Topics DB. */
 export interface DuplicateTopicGroup {
   name: string
   topicIds: string[]
 }
+
+/** One topic row whose stored name contains HTML entities that would decode
+ *  to a different (cleaner) string. Also used as the return shape of an
+ *  in-place fix — once the row is decoded in Notion, the `rawName` field
+ *  captures what the write replaced. */
+export interface EncodedTopicRow {
+  id: string
+  /** The raw stored name, as Notion has it today. */
+  rawName: string
+  /** The decoded name — what the row should be updated to. */
+  decodedName: string
+}
+
+/** Result of decoding a single encoded topic row's Name in place. Identical
+ *  shape to `EncodedTopicRow` — kept as a semantic alias so call sites can
+ *  distinguish "found" from "rewrote". */
+export type TopicEncodingFixResult = EncodedTopicRow
 
 /** Result of merging a single duplicate-name group. */
 export interface TopicMergeResult {
@@ -77,6 +95,126 @@ export async function findDuplicateTopicNames(
     .filter(([, ids]) => ids.length >= 2)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, topicIds]) => ({ name, topicIds }))
+}
+
+/** All topic rows in the DB together with their decoded name, as a single
+ *  snapshot callers can branch on without re-querying Notion. */
+interface TopicNameSnapshot {
+  id: string
+  rawName: string
+  decodedName: string
+}
+
+async function scanTopicNames(
+  client: Client,
+  topicsDb: DatabaseRef
+): Promise<TopicNameSnapshot[]> {
+  const snapshot: TopicNameSnapshot[] = []
+  let cursor: string | undefined
+
+  do {
+    const response = await client.dataSources.query({
+      data_source_id: topicsDb.dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
+    })
+    for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+      const rawName = extractTitle(page.properties["Name"])
+      if (rawName.length === 0) continue
+      snapshot.push({
+        id: page.id,
+        rawName,
+        decodedName: decodeTopicHtmlEntities(rawName),
+      })
+    }
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+  } while (cursor)
+
+  return snapshot
+}
+
+/**
+ * Scan the Topics DB for rows whose Name contains HTML entity escape
+ * sequences. Each returned row exposes both the raw name and the decoded
+ * form it should be updated to.
+ *
+ * Paginates through the full database; result order is stable
+ * (alphabetical by raw name). A no-op on a clean vault.
+ */
+export async function findEncodedTopicNames(
+  client: Client,
+  topicsDb: DatabaseRef
+): Promise<EncodedTopicRow[]> {
+  const snapshot = await scanTopicNames(client, topicsDb)
+  return snapshot
+    .filter((s) => s.rawName !== s.decodedName)
+    .sort((a, b) => a.rawName.localeCompare(b.rawName))
+}
+
+/**
+ * Predict the duplicate-name groups that `findDuplicateTopicNames` would
+ * report *after* `fixTopicEncoding` runs, without mutating anything.
+ *
+ * Groups every topic row (including already-clean rows) by its decoded
+ * name and returns any bucket of size ≥2. This is what lets
+ * `VaultManager.migrate` validate all preconditions — encoding + post-decode
+ * dups — before writing a single decoded Name, so a half-migrated state
+ * isn't silently reachable by running `--fix-topic-encoding` alone on a
+ * vault with cross-encoding pairs.
+ *
+ * Group `name` is the decoded form (what the canonical topic will carry
+ * after the merge) so the returned values remain stable if the caller
+ * displays them to the user.
+ */
+export async function findPostDecodeTopicCollisions(
+  client: Client,
+  topicsDb: DatabaseRef
+): Promise<DuplicateTopicGroup[]> {
+  const snapshot = await scanTopicNames(client, topicsDb)
+  const byDecoded = new Map<string, string[]>()
+  for (const t of snapshot) {
+    const existing = byDecoded.get(t.decodedName) ?? []
+    existing.push(t.id)
+    byDecoded.set(t.decodedName, existing)
+  }
+  return [...byDecoded.entries()]
+    .filter(([, ids]) => ids.length >= 2)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, topicIds]) => ({ name, topicIds }))
+}
+
+/**
+ * Rewrite each encoded topic row's Name to the decoded form via
+ * `pages.update`. Returns one result per row actually updated.
+ *
+ * Intended to run *before* `mergeDuplicateTopics` in the migration flow:
+ * once every row carries its clean name, the standard name-equality
+ * duplicate scan will collapse cross-encoding pairs (e.g. a legacy
+ * `Build &amp;amp; Tooling` row and its cleanly-written `Build & Tooling`
+ * sibling) without requiring the merger itself to understand entities.
+ */
+export async function fixTopicEncoding(
+  client: Client,
+  topicsDb: DatabaseRef
+): Promise<TopicEncodingFixResult[]> {
+  const encoded = await findEncodedTopicNames(client, topicsDb)
+  const results: TopicEncodingFixResult[] = []
+
+  for (const row of encoded) {
+    await client.pages.update({
+      page_id: row.id,
+      properties: {
+        Name: { title: [{ text: { content: row.decodedName } }] },
+      } as CreatePageParameters["properties"],
+    })
+    results.push({
+      id: row.id,
+      rawName: row.rawName,
+      decodedName: row.decodedName,
+    })
+  }
+
+  return results
 }
 
 /**

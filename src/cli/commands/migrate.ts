@@ -12,11 +12,16 @@ export const migrateCommand = new Command("migrate")
     "--merge-duplicate-topics",
     "Merge duplicate-name topic rows into one canonical topic (union projects, re-point memories, archive losers). Required when the vault has legacy duplicate topics before the schema upgrade."
   )
+  .option(
+    "--fix-topic-encoding",
+    "Decode HTML entities (`&amp;`, `&lt;`, …) in topic names so rows like `Build &amp;amp; Tooling` become `Build & Tooling`. Runs before duplicate detection, so pair with `--merge-duplicate-topics` to collapse cross-encoding duplicates."
+  )
   .action(
     async (opts: {
       dryRun?: boolean
       upgradeDecisionTags?: boolean
       mergeDuplicateTopics?: boolean
+      fixTopicEncoding?: boolean
     }) => {
       try {
         const services = await initServices()
@@ -25,9 +30,16 @@ export const migrateCommand = new Command("migrate")
         // want to report schema drift but NOT apply anything. So dry-run always
         // suppresses writes; `--upgrade-decision-tags` without `--dry-run`
         // triggers the tag upgrade after the schema migration completes.
-        const { diffs, duplicateTopics, mergeResults } = await services.vault.migrate({
+        const {
+          diffs,
+          duplicateTopics,
+          mergeResults,
+          encodedTopics,
+          encodingFixResults,
+        } = await services.vault.migrate({
           dryRun: opts.dryRun,
           mergeDuplicateTopics: opts.mergeDuplicateTopics,
+          fixTopicEncoding: opts.fixTopicEncoding,
         })
 
         const totalMissing = diffs.reduce((n, d) => n + d.missing.length, 0)
@@ -43,6 +55,22 @@ export const migrateCommand = new Command("migrate")
         const verb = opts.dryRun ? "Would add" : "Added"
         const upgradeVerb = opts.dryRun ? "Would upgrade" : "Upgraded"
         const mergeVerb = opts.dryRun ? "Would merge" : "Merged"
+
+        if (encodedTopics.length > 0) {
+          // The write happened iff `migrate()` actually ran fixTopicEncoding;
+          // dry-run or flag-omitted both leave encodingFixResults empty, and
+          // both should preview the rows as "would decode" rather than claim
+          // a decode that never ran.
+          const didWrite = encodingFixResults.length > 0
+          const rows = didWrite ? encodingFixResults : encodedTopics
+          const decodeVerb = didWrite ? "Decoded" : "Would decode"
+          console.log(
+            `${decodeVerb} ${rows.length} HTML-encoded topic name${rows.length === 1 ? "" : "s"}:`
+          )
+          for (const row of rows) {
+            console.log(`  "${row.rawName}" → "${row.decodedName}"`)
+          }
+        }
 
         if (duplicateTopics.length > 0) {
           const rowCount = duplicateTopics.reduce((n, g) => n + g.topicIds.length, 0)
@@ -111,6 +139,7 @@ export const migrateCommand = new Command("migrate")
           totalAddedOptions === 0 &&
           totalRelationConfig === 0 &&
           duplicateTopics.length === 0 &&
+          encodedTopics.length === 0 &&
           !opts.upgradeDecisionTags
         ) {
           console.log("Vault schema is up to date. Nothing to migrate.")
@@ -128,13 +157,27 @@ export const migrateCommand = new Command("migrate")
         }
 
         if (opts.dryRun) {
+          const flagHints: string[] = []
+          if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
+            flagHints.push("`--fix-topic-encoding`")
+          }
           if (duplicateTopics.length > 0 && !opts.mergeDuplicateTopics) {
+            flagHints.push("`--merge-duplicate-topics`")
+          }
+          if (flagHints.length > 0) {
             console.log(
-              "\nDry run — no changes written. Re-run without --dry-run and with `--merge-duplicate-topics` to merge and apply."
+              `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
             )
           } else {
             console.log("\nDry run — no changes written. Re-run without --dry-run to apply.")
           }
+        } else if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
+          // Duplicate-name topics throw in `migrate()` when the flag is
+          // omitted, but encoded names proceed silently — surface a nudge so
+          // the user doesn't assume the listed rows were decoded.
+          console.log(
+            "\nRe-run with `--fix-topic-encoding` to decode the topic names listed above."
+          )
         }
       } catch (err) {
         console.error("Migrate failed:", err instanceof Error ? err.message : err)

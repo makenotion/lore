@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   findDuplicateTopicNames,
+  findEncodedTopicNames,
+  findPostDecodeTopicCollisions,
+  fixTopicEncoding,
   mergeDuplicateTopics,
 } from "./topic-merge.js"
 import type { DatabaseRef } from "../types.js"
@@ -431,3 +434,338 @@ describe("mergeDuplicateTopics", () => {
     expect(client.dataSources.query).toHaveBeenCalledTimes(2)
   })
 })
+
+describe("findEncodedTopicNames", () => {
+  it("returns an empty array for a clean vault", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "auth" }),
+            topicPage("t2", { name: "Build & Tooling" }),
+          ],
+        },
+      ],
+    })
+
+    const encoded = await findEncodedTopicNames(client, TOPICS_DB)
+    expect(encoded).toEqual([])
+  })
+
+  it("flags `&amp;` single-escape rows with their decoded form", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Build &amp; Tooling" }),
+            topicPage("t2", { name: "clean" }),
+          ],
+        },
+      ],
+    })
+
+    const encoded = await findEncodedTopicNames(client, TOPICS_DB)
+    expect(encoded).toHaveLength(1)
+    expect(encoded[0]).toEqual({
+      id: "t1",
+      rawName: "Build &amp; Tooling",
+      decodedName: "Build & Tooling",
+    })
+  })
+
+  it("flags `&amp;amp;` double-escape rows with the fully-decoded form", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [topicPage("t1", { name: "Build &amp;amp; Tooling" })],
+        },
+      ],
+    })
+
+    const encoded = await findEncodedTopicNames(client, TOPICS_DB)
+    expect(encoded).toHaveLength(1)
+    expect(encoded[0].decodedName).toBe("Build & Tooling")
+  })
+
+  it("sorts results alphabetically by raw name for deterministic output", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t3", { name: "Observability &amp; PII" }),
+            topicPage("t1", { name: "Async &amp; Concurrency" }),
+            topicPage("t2", { name: "Deploy &amp; Caching" }),
+          ],
+        },
+      ],
+    })
+
+    const encoded = await findEncodedTopicNames(client, TOPICS_DB)
+    expect(encoded.map((e) => e.rawName)).toEqual([
+      "Async &amp; Concurrency",
+      "Deploy &amp; Caching",
+      "Observability &amp; PII",
+    ])
+  })
+
+  it("paginates through multi-page results", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [topicPage("t1", { name: "Build &amp; Tooling" })],
+          has_more: true,
+          next_cursor: "cursor-1",
+        },
+        {
+          results: [topicPage("t2", { name: "GRDB &amp;amp; Persistence" })],
+        },
+      ],
+    })
+
+    const encoded = await findEncodedTopicNames(client, TOPICS_DB)
+    expect(encoded).toHaveLength(2)
+    expect(encoded.map((e) => e.id)).toEqual(["t1", "t2"])
+  })
+
+  it("stops when has_more is false even if next_cursor is non-null", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [topicPage("t1", { name: "Build &amp; Tooling" })],
+          has_more: false,
+          next_cursor: "stale-cursor",
+        },
+      ],
+    })
+
+    await findEncodedTopicNames(client, TOPICS_DB)
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("ignores empty-name rows (corrupt data, not an encoding issue)", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "" }),
+            topicPage("t2", { name: "Build &amp; Tooling" }),
+          ],
+        },
+      ],
+    })
+
+    const encoded = await findEncodedTopicNames(client, TOPICS_DB)
+    expect(encoded.map((e) => e.id)).toEqual(["t2"])
+  })
+})
+
+describe("fixTopicEncoding", () => {
+  it("is a no-op on a clean vault", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        { results: [topicPage("t1", { name: "auth" })] },
+      ],
+    })
+
+    const results = await fixTopicEncoding(client, TOPICS_DB)
+    expect(results).toEqual([])
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("rewrites each encoded row's Name to the decoded form", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Build &amp; Tooling" }),
+            topicPage("t2", { name: "GRDB &amp;amp; Persistence" }),
+            topicPage("t3", { name: "clean" }),
+          ],
+        },
+      ],
+    })
+
+    const results = await fixTopicEncoding(client, TOPICS_DB)
+    expect(results).toHaveLength(2)
+
+    const updates = client.pages.update.mock.calls.map((c: unknown[]) => c[0])
+    expect(updates).toHaveLength(2)
+    expect(updates[0]).toEqual({
+      page_id: "t1",
+      properties: {
+        Name: { title: [{ text: { content: "Build & Tooling" } }] },
+      },
+    })
+    expect(updates[1]).toEqual({
+      page_id: "t2",
+      properties: {
+        Name: { title: [{ text: { content: "GRDB & Persistence" } }] },
+      },
+    })
+  })
+
+  it("sets up a cross-encoding pair for the standard merger to collapse", async () => {
+    // Two rows — one cleanly stored, one with `&amp;amp;` — refer to the same
+    // topic. After fixTopicEncoding decodes the encoded row, the standard
+    // duplicate scan finds a two-row group and mergeDuplicateTopics can
+    // collapse them without needing to understand entities itself.
+    const cleanRow = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["p1"],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })
+    const encodedRow = topicPage("t2", {
+      name: "Build &amp;amp; Tooling",
+      projectIds: ["p2"],
+      createdAt: "2026-06-01T00:00:00.000Z",
+    })
+
+    const client = createMockClient({
+      queryResponses: [
+        // findEncodedTopicNames scan.
+        { results: [cleanRow, encodedRow] },
+        // Post-fix findDuplicateTopicNames scan — t2 now has the decoded name.
+        {
+          results: [
+            cleanRow,
+            topicPage("t2", {
+              name: "Build & Tooling",
+              projectIds: ["p2"],
+              createdAt: "2026-06-01T00:00:00.000Z",
+            }),
+          ],
+        },
+      ],
+    })
+
+    const encodingResults = await fixTopicEncoding(client, TOPICS_DB)
+    expect(encodingResults).toHaveLength(1)
+    expect(encodingResults[0].decodedName).toBe("Build & Tooling")
+
+    const duplicates = await findDuplicateTopicNames(client, TOPICS_DB)
+    expect(duplicates).toHaveLength(1)
+    expect(duplicates[0].name).toBe("Build & Tooling")
+    expect(duplicates[0].topicIds).toEqual(["t1", "t2"])
+  })
+})
+
+describe("findPostDecodeTopicCollisions", () => {
+  it("returns empty when no cross-encoding pairs exist", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "clean-a" }),
+            topicPage("t2", { name: "clean-b" }),
+            // Encoded but no decoded twin — not a collision.
+            topicPage("t3", { name: "Build &amp; Tooling" }),
+          ],
+        },
+      ],
+    })
+
+    const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
+    expect(collisions).toEqual([])
+  })
+
+  it("detects a cross-encoding pair that would collide after decoding", async () => {
+    // Same conceptual topic, two rows: one clean, one still encoded. After
+    // decode they'd both read "Build & Tooling" — the exact state the
+    // atomicity gate is designed to forbid writing into without also
+    // authorizing the merge.
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Build & Tooling", projectIds: ["p1"] }),
+            topicPage("t2", {
+              name: "Build &amp; Tooling",
+              projectIds: ["p2"],
+            }),
+          ],
+        },
+      ],
+    })
+
+    const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
+    expect(collisions).toHaveLength(1)
+    // Group is keyed by the DECODED name (what the canonical will hold
+    // after the merge), not the raw form of either row.
+    expect(collisions[0].name).toBe("Build & Tooling")
+    expect(collisions[0].topicIds).toEqual(["t1", "t2"])
+  })
+
+  it("detects groups among purely-raw duplicates that are already colliding", async () => {
+    // Two rows with identical raw encoded names — a pre-existing dup group
+    // that would survive decoding and still need the merge.
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Build &amp; Tooling" }),
+            topicPage("t2", { name: "Build &amp; Tooling" }),
+          ],
+        },
+      ],
+    })
+
+    const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
+    expect(collisions).toHaveLength(1)
+    expect(collisions[0].name).toBe("Build & Tooling")
+    expect(collisions[0].topicIds).toEqual(["t1", "t2"])
+  })
+
+  it("detects double-encoding collapsed to an existing clean row", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Build & Tooling" }),
+            topicPage("t2", { name: "Build &amp;amp; Tooling" }),
+          ],
+        },
+      ],
+    })
+
+    const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
+    expect(collisions[0].topicIds).toEqual(["t1", "t2"])
+  })
+
+  it("sorts collision groups alphabetically by decoded name", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Zebra" }),
+            topicPage("t2", { name: "Zebra" }),
+            topicPage("t3", { name: "Apple &amp; Pear" }),
+            topicPage("t4", { name: "Apple & Pear" }),
+          ],
+        },
+      ],
+    })
+
+    const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
+    expect(collisions.map((g) => g.name)).toEqual(["Apple & Pear", "Zebra"])
+  })
+
+  it("paginates through multi-page results", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [topicPage("t1", { name: "Build & Tooling" })],
+          has_more: true,
+          next_cursor: "cursor-1",
+        },
+        {
+          results: [topicPage("t2", { name: "Build &amp; Tooling" })],
+        },
+      ],
+    })
+
+    const collisions = await findPostDecodeTopicCollisions(client, TOPICS_DB)
+    expect(collisions).toHaveLength(1)
+    expect(collisions[0].topicIds).toEqual(["t1", "t2"])
+  })
+})
+

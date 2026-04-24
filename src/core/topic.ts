@@ -12,6 +12,7 @@ import type {
   PageObjectResponse,
   QueryDataSourceParameters,
 } from "@notionhq/client"
+import { decodeHTML } from "entities"
 import type { Topic, CreateTopicInput, DatabaseRef } from "../types.js"
 import { buildTopicProps } from "../notion/schema.js"
 import {
@@ -26,6 +27,39 @@ import {
  *  single-writer jitter without turning a collision into an API hammer. */
 const GET_OR_CREATE_MAX_RETRIES = 2
 
+/**
+ * Fully decode HTML entities in a topic name, looping until stable so
+ * double-encoded inputs like `&amp;amp;` collapse all the way to `&`.
+ *
+ * Topic names are plain text, not markup. An upstream producer somewhere in
+ * the autosave path (Claude Code rendering transcript context as markdown,
+ * or the agent itself when emitting names that quote file-system or markup
+ * content) has been observed to HTML-encode `&` before the name reaches the
+ * MCP boundary; on re-save the already-encoded value gets encoded again.
+ * Decoding here — both on write (`create`) and on lookup (`findByName`,
+ * `getOrCreate`) — makes the service idempotent regardless of how many
+ * rounds of encoding the caller has accumulated.
+ *
+ * Uses `entities.decodeHTML` rather than a hand-rolled table so the full
+ * HTML5 named + numeric entity set is covered; a future upstream producer
+ * emitting `&nbsp;`, `&rsquo;`, `&#8217;`, etc. doesn't reopen this bug.
+ *
+ * The fixed-point loop is the important bit: `decodeHTML("&amp;amp;")` only
+ * peels off one layer. Every decoding pass strictly shrinks the string when
+ * it changes (the shortest entity is 4 chars and decodes to ≤1), so
+ * `name.length` iterations is a principled upper bound. Real-world cases
+ * max out at two.
+ */
+export function decodeTopicHtmlEntities(name: string): string {
+  let current = name
+  for (let i = 0; i < name.length; i++) {
+    const next = decodeHTML(current)
+    if (next === current) return current
+    current = next
+  }
+  return current
+}
+
 export class TopicService {
   constructor(
     private client: Client,
@@ -33,10 +67,11 @@ export class TopicService {
   ) {}
 
   async create(input: CreateTopicInput): Promise<Topic> {
+    const name = decodeTopicHtmlEntities(input.name)
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildTopicProps({
-        name: input.name,
+        name,
         projectIds: input.projectIds,
         description: input.description,
       }),
@@ -112,8 +147,9 @@ export class TopicService {
    * Callers that know they need scoped behaviour can pass `projectId`.
    */
   async findByName(name: string, projectId?: string): Promise<Topic | null> {
+    const decoded = decodeTopicHtmlEntities(name)
     const filters: Array<Record<string, unknown>> = [
-      { property: "Name", title: { equals: name } },
+      { property: "Name", title: { equals: decoded } },
     ]
     if (projectId) {
       filters.push({ property: "Project", relation: { contains: projectId } })
@@ -132,7 +168,7 @@ export class TopicService {
     if (!projectId && pages.length > 1) {
       const ids = pages.map((p) => p.id).join(", ")
       throw new Error(
-        `Multiple topics named "${name}" found (${ids}). ` +
+        `Multiple topics named "${decoded}" found (${ids}). ` +
           `Run \`lore migrate --merge-duplicate-topics\` to merge them.`
       )
     }
@@ -156,9 +192,10 @@ export class TopicService {
    * will throw if a legacy vault still has duplicate-name topics.
    */
   async getOrCreate(name: string, projectIds: string[]): Promise<Topic> {
+    const decoded = decodeTopicHtmlEntities(name)
     for (let attempt = 0; attempt <= GET_OR_CREATE_MAX_RETRIES; attempt++) {
-      const existing = await this.findByName(name)
-      if (!existing) return this.create({ name, projectIds })
+      const existing = await this.findByName(decoded)
+      if (!existing) return this.create({ name: decoded, projectIds })
 
       const missing = projectIds.filter((id) => !existing.projectIds.includes(id))
       if (missing.length === 0) return existing
@@ -184,10 +221,10 @@ export class TopicService {
     // Fall through after retries — return whatever authoritative state
     // currently exists. The caller's desired relation may still be
     // incomplete; this is the documented failure mode under concurrency.
-    const final = await this.findByName(name)
+    const final = await this.findByName(decoded)
     if (!final) {
       throw new Error(
-        `Topic "${name}" disappeared during concurrent getOrCreate retries`
+        `Topic "${decoded}" disappeared during concurrent getOrCreate retries`
       )
     }
     return final

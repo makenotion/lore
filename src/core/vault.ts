@@ -14,8 +14,13 @@ import {
 } from "../notion/setup.js"
 import {
   findDuplicateTopicNames,
+  findEncodedTopicNames,
+  findPostDecodeTopicCollisions,
+  fixTopicEncoding,
   mergeDuplicateTopics,
   type DuplicateTopicGroup,
+  type EncodedTopicRow,
+  type TopicEncodingFixResult,
   type TopicMergeResult,
 } from "./topic-merge.js"
 
@@ -26,6 +31,11 @@ export interface VaultMigrateResult {
   duplicateTopics: DuplicateTopicGroup[]
   /** Populated only when the migration actually ran a merge (non-dryRun + flag). */
   mergeResults: TopicMergeResult[]
+  /** Topic rows whose Name contained HTML entity escape sequences. */
+  encodedTopics: EncodedTopicRow[]
+  /** Populated only when the migration actually rewrote encoded topic names
+   *  (non-dryRun + `--fix-topic-encoding`). */
+  encodingFixResults: TopicEncodingFixResult[]
 }
 
 export class VaultManager {
@@ -82,6 +92,10 @@ export class VaultManager {
       this.client,
       this.vault.databases.topics
     )
+    const encoded = await findEncodedTopicNames(
+      this.client,
+      this.vault.databases.topics
+    )
 
     const missingProps = diffs.reduce((n, d) => n + d.missing.length, 0)
     const missingOptions = diffs.reduce(
@@ -98,7 +112,8 @@ export class VaultManager {
       missingProps === 0 &&
       missingOptions === 0 &&
       relationUpgrades === 0 &&
-      duplicates.length === 0
+      duplicates.length === 0 &&
+      encoded.length === 0
     ) {
       return
     }
@@ -120,9 +135,19 @@ export class VaultManager {
         `${duplicates.length} duplicate topic group${duplicates.length === 1 ? "" : "s"} (${duplicateRowCount} rows)`
       )
     }
+    if (encoded.length > 0) {
+      parts.push(
+        `${encoded.length} HTML-encoded topic name${encoded.length === 1 ? "" : "s"}`
+      )
+    }
+    const hints: string[] = []
+    if (encoded.length > 0) hints.push("--fix-topic-encoding")
+    if (duplicates.length > 0) hints.push("--merge-duplicate-topics")
+    // The drift hint is a single `lore migrate` invocation; multiple flags
+    // chain with a space (shell-literal), not " and ".
     const hint =
-      duplicates.length > 0
-        ? "Run `lore migrate --merge-duplicate-topics` to update your vault."
+      hints.length > 0
+        ? `Run \`lore migrate ${hints.join(" ")}\` to update your vault.`
         : "Run `lore migrate` to update your vault."
     console.error(`[lore] Schema drift detected: ${parts.join(" and ")} out of date. ${hint}`)
   }
@@ -139,9 +164,19 @@ export class VaultManager {
   }
 
   /**
-   * Apply schema drift fixes and (optionally) merge duplicate-name topics.
+   * Apply schema drift fixes and (optionally) merge duplicate-name topics
+   * or decode HTML-escaped topic names.
+   *
    * Add-only for schema: never renames or removes properties. Pass
    * `dryRun: true` to compute the diff without writing.
+   *
+   * When HTML-encoded topic names exist:
+   * - `dryRun: true` — reports them, no writes.
+   * - `fixTopicEncoding: true` (and not dryRun) — rewrites each encoded
+   *   row's Name to the decoded form before duplicate detection runs, so
+   *   cross-encoding dup pairs (e.g. `Build & Tooling` alongside a legacy
+   *   `Build &amp;amp; Tooling`) collapse naturally when
+   *   `mergeDuplicateTopics` is also passed.
    *
    * When duplicate-name topics exist:
    * - `dryRun: true` — reports them, no writes.
@@ -152,9 +187,61 @@ export class VaultManager {
    *   an arbitrary duplicate and strand the siblings.
    */
   async migrate(
-    options: { dryRun?: boolean; mergeDuplicateTopics?: boolean } = {}
+    options: {
+      dryRun?: boolean
+      mergeDuplicateTopics?: boolean
+      fixTopicEncoding?: boolean
+    } = {}
   ): Promise<VaultMigrateResult> {
     const vault = this.get()
+    const encodedTopics = await findEncodedTopicNames(
+      this.client,
+      vault.databases.topics
+    )
+
+    // Validate all preconditions BEFORE writing anything. If the vault has
+    // cross-encoding pairs (e.g. `Build & Tooling` next to a legacy
+    // `Build &amp;amp; Tooling`), decoding the encoded row turns the two
+    // into a duplicate-name group. Running `fixTopicEncoding` alone would
+    // write the decoded name, *then* the subsequent dup check would throw
+    // — leaving the vault half-migrated and the error message's
+    // "re-run with --merge-duplicate-topics" advice incomplete.
+    //
+    // Checking collisions first closes that gap: if any post-decode
+    // duplicates would exist and the user didn't authorize the merge, we
+    // throw before any write lands. The decoder is idempotent so a clean
+    // re-run with both flags leaves the vault in the intended final state.
+    if (
+      options.fixTopicEncoding &&
+      !options.dryRun &&
+      encodedTopics.length > 0 &&
+      !options.mergeDuplicateTopics
+    ) {
+      const postDecodeDups = await findPostDecodeTopicCollisions(
+        this.client,
+        vault.databases.topics
+      )
+      if (postDecodeDups.length > 0) {
+        const preview = postDecodeDups
+          .slice(0, 5)
+          .map((g) => `"${g.name}" (${g.topicIds.length} rows)`)
+          .join(", ")
+        const more =
+          postDecodeDups.length > 5 ? `, and ${postDecodeDups.length - 5} more` : ""
+        throw new Error(
+          `Decoding would surface ${postDecodeDups.length} duplicate-name topic group${postDecodeDups.length === 1 ? "" : "s"}: ${preview}${more}. ` +
+            "Re-run with `--merge-duplicate-topics` alongside `--fix-topic-encoding` so the cross-encoding pairs are collapsed in the same pass; the decoder is idempotent, so nothing has been written yet."
+        )
+      }
+    }
+
+    // Decoding happens first so subsequent duplicate detection sees a
+    // clean view of the Topics DB.
+    let encodingFixResults: TopicEncodingFixResult[] = []
+    if (encodedTopics.length > 0 && !options.dryRun && options.fixTopicEncoding) {
+      encodingFixResults = await fixTopicEncoding(this.client, vault.databases.topics)
+    }
+
     const duplicateTopics = await findDuplicateTopicNames(
       this.client,
       vault.databases.topics
@@ -187,7 +274,13 @@ export class VaultManager {
     const diffs = await migrateVaultSchema(this.client, vault, {
       dryRun: options.dryRun,
     })
-    return { diffs, duplicateTopics, mergeResults }
+    return {
+      diffs,
+      duplicateTopics,
+      mergeResults,
+      encodedTopics,
+      encodingFixResults,
+    }
   }
 
   async stats(): Promise<{

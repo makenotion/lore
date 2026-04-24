@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { TopicService } from "./topic.js"
+import { TopicService, decodeTopicHtmlEntities } from "./topic.js"
 import type { DatabaseRef } from "../types.js"
 
 type MockablePage = Partial<PageObjectResponse> & { id: string }
@@ -82,6 +82,74 @@ const DB: DatabaseRef = {
   dataSourceId: "topics-ds-id",
 }
 
+describe("decodeTopicHtmlEntities", () => {
+  it("is a no-op on clean input", () => {
+    expect(decodeTopicHtmlEntities("Build & Tooling")).toBe("Build & Tooling")
+    expect(decodeTopicHtmlEntities("R&D roadmap")).toBe("R&D roadmap")
+    expect(decodeTopicHtmlEntities("")).toBe("")
+  })
+
+  it("decodes a single-escape entity", () => {
+    expect(decodeTopicHtmlEntities("Build &amp; Tooling")).toBe("Build & Tooling")
+    expect(decodeTopicHtmlEntities("a &lt; b")).toBe("a < b")
+    expect(decodeTopicHtmlEntities("a &gt; b")).toBe("a > b")
+    expect(decodeTopicHtmlEntities("&quot;quoted&quot;")).toBe('"quoted"')
+    expect(decodeTopicHtmlEntities("it&#39;s")).toBe("it's")
+  })
+
+  it("decodes double-escape `&amp;amp;` all the way to `&`", () => {
+    expect(decodeTopicHtmlEntities("Build &amp;amp; Tooling")).toBe(
+      "Build & Tooling"
+    )
+  })
+
+  it("decodes triple-escape without stopping early", () => {
+    expect(decodeTopicHtmlEntities("A &amp;amp;amp; B")).toBe("A & B")
+  })
+
+  it("is idempotent", () => {
+    const clean = decodeTopicHtmlEntities("Build &amp;amp; Tooling")
+    expect(decodeTopicHtmlEntities(clean)).toBe(clean)
+  })
+
+  it("handles deeply-nested encoding without leaving residue", () => {
+    // Eight rounds of `&amp;` — well beyond the two-round real-world case.
+    // Each pass strictly shrinks the string; the iteration bound is tied to
+    // `name.length` so deep nesting fully decodes rather than capping early.
+    let input = "&"
+    for (let i = 0; i < 8; i++) {
+      input = input.replace(/&/g, "&amp;")
+    }
+    input = `A ${input} B`
+    expect(decodeTopicHtmlEntities(input)).toBe("A & B")
+  })
+
+  it("decodes `&apos;` to a straight apostrophe", () => {
+    expect(decodeTopicHtmlEntities("it&apos;s")).toBe("it's")
+  })
+
+  it("collapses `&#38;amp;` via the fixed-point loop", () => {
+    expect(decodeTopicHtmlEntities("&#38;amp; tooling")).toBe("& tooling")
+  })
+
+  it("decodes entities beyond the hand-rolled five (`&nbsp;`, `&rsquo;`)", () => {
+    // Coverage for the long-tail of HTML5 named entities that a hand-rolled
+    // table would miss. Real-world upstream producers (markdown renderers,
+    // rich-text editors) emit these routinely.
+    expect(decodeTopicHtmlEntities("Build &nbsp; Tooling")).toBe(
+      "Build   Tooling"
+    )
+    expect(decodeTopicHtmlEntities("today&rsquo;s work")).toBe(
+      "today’s work"
+    )
+  })
+
+  it("decodes numeric character references in any radix", () => {
+    expect(decodeTopicHtmlEntities("it&#8217;s")).toBe("it’s")
+    expect(decodeTopicHtmlEntities("it&#x2019;s")).toBe("it’s")
+  })
+})
+
 describe("TopicService.create", () => {
   it("builds an empty relation when projectIds is empty", async () => {
     const client = createMockClient()
@@ -110,6 +178,42 @@ describe("TopicService.create", () => {
     expect(createArgs.properties.Project).toEqual({
       relation: [{ id: "proj-a" }, { id: "proj-b" }],
     })
+  })
+
+  it("stores a raw `&` unchanged", async () => {
+    const client = createMockClient()
+    const service = new TopicService(client, DB)
+
+    await service.create({ name: "Build & Tooling", projectIds: [] })
+
+    const createArgs = client.pages.create.mock.calls[0][0]
+    expect(createArgs.properties.Name.title[0].text.content).toBe(
+      "Build & Tooling"
+    )
+  })
+
+  it("decodes `&amp;` on write so re-saves are idempotent", async () => {
+    const client = createMockClient()
+    const service = new TopicService(client, DB)
+
+    await service.create({ name: "Build &amp; Tooling", projectIds: [] })
+
+    const createArgs = client.pages.create.mock.calls[0][0]
+    expect(createArgs.properties.Name.title[0].text.content).toBe(
+      "Build & Tooling"
+    )
+  })
+
+  it("decodes double-escape `&amp;amp;` all the way to `&` on write", async () => {
+    const client = createMockClient()
+    const service = new TopicService(client, DB)
+
+    await service.create({ name: "Build &amp;amp; Tooling", projectIds: [] })
+
+    const createArgs = client.pages.create.mock.calls[0][0]
+    expect(createArgs.properties.Name.title[0].text.content).toBe(
+      "Build & Tooling"
+    )
   })
 })
 
@@ -143,6 +247,19 @@ describe("TopicService.findByName", () => {
     expect(queryArgs.filter).toEqual({
       property: "Name",
       title: { equals: "GraphQL federation" },
+    })
+  })
+
+  it("decodes HTML entities in the name before querying", async () => {
+    const client = createMockClient()
+    const service = new TopicService(client, DB)
+
+    await service.findByName("Build &amp;amp; Tooling")
+
+    const queryArgs = client.dataSources.query.mock.calls[0][0]
+    expect(queryArgs.filter).toEqual({
+      property: "Name",
+      title: { equals: "Build & Tooling" },
     })
   })
 
@@ -372,6 +489,98 @@ describe("TopicService.getOrCreate — extend-on-find", () => {
       property: "Name",
       title: { equals: "GraphQL federation" },
     })
+  })
+
+  it("decodes encoded input so existing decoded rows are found and extended, not duplicated", async () => {
+    // A row already stored under the decoded name; the caller passes the
+    // encoded form (a common re-save pattern). getOrCreate must land on
+    // the existing row rather than creating a sibling.
+    const existing = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a"],
+    })
+    const after = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a", "proj-b"],
+    })
+    const client = createMockClient({
+      queryResults: [existing],
+      retrievedPages: { t1: after },
+    })
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate("Build &amp; Tooling", ["proj-b"])
+
+    expect(client.pages.create).not.toHaveBeenCalled()
+    const queryArgs = client.dataSources.query.mock.calls[0][0]
+    expect(queryArgs.filter).toEqual({
+      property: "Name",
+      title: { equals: "Build & Tooling" },
+    })
+    expect(topic.projectIds).toEqual(["proj-a", "proj-b"])
+  })
+
+  it("decodes on the create branch so a brand-new topic is stored cleanly", async () => {
+    const created = topicPage("new-topic", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a"],
+    })
+    const client = createMockClient({ queryResults: [], createReturn: created })
+    const service = new TopicService(client, DB)
+
+    await service.getOrCreate("Build &amp;amp; Tooling", ["proj-a"])
+
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    const createArgs = client.pages.create.mock.calls[0][0]
+    expect(createArgs.properties.Name.title[0].text.content).toBe(
+      "Build & Tooling"
+    )
+  })
+
+  it("carries the decoded name through retries when a concurrent writer clobbers the extension", async () => {
+    // Under the same concurrency pattern as the existing retry test, with an
+    // encoded input — the retry's re-lookup must also query for the decoded
+    // form, not the raw one, or we'd bounce between a null lookup and a new
+    // create on every retry.
+    const before = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a"],
+    })
+    const stale = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a", "proj-x"],
+    })
+    const correct = topicPage("t1", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a", "proj-x", "proj-b"],
+    })
+    const client = createMockClient({ queryResults: [before] })
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock
+      .mockResolvedValueOnce({
+        results: [before],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: [stale],
+        has_more: false,
+        next_cursor: null,
+      })
+    const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieveMock.mockResolvedValueOnce(stale).mockResolvedValueOnce(correct)
+
+    const service = new TopicService(client, DB)
+    const topic = await service.getOrCreate("Build &amp;amp; Tooling", ["proj-b"])
+
+    // Every dataSources.query should have used the decoded form.
+    for (const call of queryMock.mock.calls) {
+      expect(call[0].filter).toEqual({
+        property: "Name",
+        title: { equals: "Build & Tooling" },
+      })
+    }
+    expect(topic.projectIds).toEqual(["proj-a", "proj-x", "proj-b"])
   })
 
   it("retries when a concurrent writer clobbers the extension", async () => {
