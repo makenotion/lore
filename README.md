@@ -100,6 +100,7 @@ lower-token starting point than a long stream of individual memories.
 | `lore-remember` | Save a new memory (markdown content stored as page body)  |
 | `lore-search`   | Semantic search across memories using Notion's search API |
 | `lore-recall`   | List recent memories with optional filters                |
+| `lore-expand`   | Batch-fetch memory bodies by ID (up to 20, parallelized)  |
 | `lore-update`   | Update a memory's title, content, tags, or categorization |
 | `lore-forget`   | Archive a memory by ID                                    |
 

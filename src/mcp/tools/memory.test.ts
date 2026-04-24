@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
+import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
 import type { Memory, Topic } from "../../types.js"
 
@@ -43,9 +44,15 @@ function makeTopic(id: string, overrides: Partial<Topic> = {}): Topic {
 
 function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
+  const configs = new Map<string, { inputSchema?: Record<string, z.ZodTypeAny> }>()
   const server = {
     registerTool: vi.fn(
-      (name: string, _config: unknown, handler: (...args: never[]) => Promise<unknown>) => {
+      (
+        name: string,
+        config: { inputSchema?: Record<string, z.ZodTypeAny> },
+        handler: (...args: never[]) => Promise<unknown>,
+      ) => {
+        configs.set(name, config)
         handlers.set(name, handler)
       },
     ),
@@ -57,6 +64,11 @@ function createMockServer() {
       const handler = handlers.get(name)
       if (!handler) throw new Error(`missing handler ${name}`)
       return handler
+    },
+    getInputSchema(name: string): z.ZodObject<z.ZodRawShape> {
+      const config = configs.get(name)
+      if (!config?.inputSchema) throw new Error(`missing inputSchema for ${name}`)
+      return z.object(config.inputSchema)
     },
   }
 }
@@ -544,5 +556,200 @@ describe("lore-search content-off default", () => {
     )
     expect(text).toContain("Full body text.")
     expect(text).not.toContain("Bodies omitted")
+  })
+})
+
+describe("lore-expand", () => {
+  // UUIDs valid per z.string().uuid() — Notion returns dashed UUIDs from
+  // page.id, so these match the shape agents would actually pass in.
+  const ID_A = "11111111-1111-4111-8111-111111111111"
+  const ID_B = "22222222-2222-4222-8222-222222222222"
+  const ID_C = "33333333-3333-4333-8333-333333333333"
+
+  it("returns hydrated bodies for each requested ID", async () => {
+    const mockServer = createMockServer()
+    const getById = vi.fn(async (id: string) => {
+      const titles: Record<string, string> = {
+        [ID_A]: "Alpha memory",
+        [ID_B]: "Beta memory",
+        [ID_C]: "Gamma memory",
+      }
+      return makeMemory(id, {
+        title: titles[id] ?? "Unknown",
+        content: `Body for ${id}`,
+      })
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const expand = mockServer.getHandler("lore-expand")
+
+    const result = await expand({ ids: [ID_A, ID_B, ID_C] } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Alpha memory")
+    expect(text).toContain("### Beta memory")
+    expect(text).toContain("### Gamma memory")
+    expect(text).toContain(`Body for ${ID_A}`)
+    expect(text).toContain(`Body for ${ID_B}`)
+    expect(text).toContain(`Body for ${ID_C}`)
+    expect(text).toContain("Expanded 3 memories")
+    expect(getById).toHaveBeenCalledTimes(3)
+  })
+
+  it("enforces the 20-ID cap at the schema layer", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const schema = mockServer.getInputSchema("lore-expand")
+
+    // Build 21 distinct valid v4 UUIDs to push past the cap. Format follows
+    // Zod's UUID regex: 8-4-4-4-12 with version 4 and variant 8–b.
+    const tooMany = Array.from({ length: 21 }, (_, i) => {
+      const hex = i.toString(16).padStart(4, "0")
+      const tail3 = hex.slice(0, 3)
+      return `${hex}${hex}-${hex}-4${tail3}-8${tail3}-${hex}${hex}${hex}`
+    })
+
+    const oversized = schema.safeParse({ ids: tooMany })
+    expect(oversized.success).toBe(false)
+
+    // Empty input is also rejected — min(1) guards against no-op calls.
+    const empty = schema.safeParse({ ids: [] })
+    expect(empty.success).toBe(false)
+
+    // Boundary: exactly 20 IDs parses cleanly.
+    const justRight = schema.safeParse({ ids: tooMany.slice(0, 20) })
+    expect(justRight.success).toBe(true)
+
+    // Non-UUID strings fail the per-element z.string().uuid() guard.
+    const badShape = schema.safeParse({ ids: ["not-a-uuid"] })
+    expect(badShape.success).toBe(false)
+  })
+
+  it("parallel-dispatches getById — every fetch starts before any returns", async () => {
+    // Each mocked fetch blocks on an externally-controlled promise so we can
+    // prove all three in-flight concurrently. If the handler serialized
+    // (e.g. `for await`), the test would time out because fetch #2 would
+    // never start while fetch #1 is still pending.
+    const mockServer = createMockServer()
+    const inflight = new Map<string, () => void>()
+    const started: string[] = []
+
+    const getById = vi.fn((id: string) => {
+      started.push(id)
+      return new Promise<Memory>((resolve) => {
+        inflight.set(id, () =>
+          resolve(makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` })),
+        )
+      })
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const expand = mockServer.getHandler("lore-expand")
+
+    const pending = expand({ ids: [ID_A, ID_B, ID_C] } as never)
+    // Let the microtask queue flush so any already-kicked-off fetches land
+    // in `started`. If dispatch is serial, only ID_A is there.
+    await new Promise((r) => setImmediate(r))
+    expect(started).toEqual([ID_A, ID_B, ID_C])
+
+    // Resolve in reverse order — the handler must assemble output by input
+    // order regardless of completion order.
+    inflight.get(ID_C)?.()
+    inflight.get(ID_B)?.()
+    inflight.get(ID_A)?.()
+
+    const result = await pending
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    const idxA = text.indexOf(`Body ${ID_A}`)
+    const idxB = text.indexOf(`Body ${ID_B}`)
+    const idxC = text.indexOf(`Body ${ID_C}`)
+    expect(idxA).toBeGreaterThan(-1)
+    expect(idxB).toBeGreaterThan(idxA)
+    expect(idxC).toBeGreaterThan(idxB)
+  })
+
+  it("renders per-ID failures as (unresolved: <id>) without collapsing the whole call", async () => {
+    const mockServer = createMockServer()
+    const getById = vi.fn(async (id: string) => {
+      if (id === ID_B) throw new Error("boom — page gone")
+      return makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` })
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const expand = mockServer.getHandler("lore-expand")
+
+    const result = await expand({ ids: [ID_A, ID_B, ID_C] } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Successes still surface.
+    expect(text).toContain(`Body ${ID_A}`)
+    expect(text).toContain(`Body ${ID_C}`)
+    // Failure row uses the agreed shape and carries the error message.
+    expect(text).toContain(`### (unresolved: ${ID_B})`)
+    expect(text).toContain("boom — page gone")
+    // Response is not flagged as an error — partial success is not failure.
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    // Header reflects the mixed outcome so agents can react without parsing.
+    expect(text).toContain("Expanded 2/3 memories (1 unresolved)")
+  })
+
+  it("de-duplicates repeated IDs before dispatching getById", async () => {
+    const mockServer = createMockServer()
+    const getById = vi.fn(async (id: string) =>
+      makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` }),
+    )
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const expand = mockServer.getHandler("lore-expand")
+
+    const result = await expand({ ids: [ID_A, ID_A, ID_B] } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // ID_A is fetched once even though the caller passed it twice.
+    expect(getById).toHaveBeenCalledTimes(2)
+    expect(getById).toHaveBeenCalledWith(ID_A)
+    expect(getById).toHaveBeenCalledWith(ID_B)
+    // Header counts unique IDs, not the raw input length.
+    expect(text).toContain("Expanded 2 memories")
   })
 })

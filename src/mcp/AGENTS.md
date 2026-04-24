@@ -6,7 +6,7 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes 24 tools across seven registration files.
+exposes 25 tools across seven registration files.
 
 ## Files
 
@@ -15,7 +15,7 @@ exposes 24 tools across seven registration files.
 | `server.ts` | Server entry point: init services, register tools, start stdio transport |
 | `helpers.ts` | `toolError()` helper for formatting error responses |
 | `tools/context.ts` | `lore-status`, `lore-wake-up` |
-| `tools/memory.ts` | `lore-remember`, `lore-search`, `lore-recall`, `lore-forget`, `lore-update` |
+| `tools/memory.ts` | `lore-remember`, `lore-search`, `lore-recall`, `lore-expand`, `lore-forget`, `lore-update` |
 | `tools/project.ts` | `lore-list-projects`, `lore-get-project` |
 | `tools/knowledge.ts` | `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` |
 | `tools/digest.ts` | `lore-digest` |
@@ -114,6 +114,7 @@ export function registerFooTools(
 | `lore-remember` | Save a new memory to the vault | No |
 | `lore-search` | Semantic search across memories (uses Notion search) | Yes |
 | `lore-recall` | List recent memories with optional filters | Yes |
+| `lore-expand` | Batch-fetch memory bodies by ID (up to 20, parallelized) | Yes |
 | `lore-forget` | Archive a memory by ID | No (destructive) |
 | `lore-update` | Update a memory's title, content, tags, or categorization | No |
 
@@ -126,9 +127,10 @@ the markdown body for each page. Fetching bodies costs one extra
 a handful of bodies for the rows the agent actually cares about.
 
 - **Default path.** Agents scan the index tier, decide which rows are
-  relevant, then fetch bodies one at a time via a read tool (e.g.
-  `lore-get-decision` for decisions). The response footer reminds callers
-  that bodies were omitted.
+  relevant, then fetch bodies in one shot via `lore-expand({ids: [...]})`.
+  For decisions specifically, `lore-get-decision` also renders the
+  structured rationale (alternatives, consequences, supersession
+  chain). The response footer reminds callers that bodies were omitted.
 - **Opt in.** Pass `includeContent: true` when the caller genuinely needs
   every body — e.g. exporting a window of memories or piping into another
   indexing pipeline. The hot path stays fast by default, and the slow path
@@ -137,6 +139,32 @@ a handful of bodies for the rows the agent actually cares about.
 Changing this default is a breaking change for agents that relied on eager
 bodies; the server version is bumped to `0.2.0` in `server.ts` so MCP
 clients see the shift immediately.
+
+#### `recall` → `expand` pattern
+
+Canonical triage flow once bodies are content-off by default:
+
+1. `lore-recall` or `lore-search` returns title + metadata rows (one
+   Notion round-trip).
+2. Agent picks the handful of rows whose bodies it actually needs.
+3. `lore-expand({ids: [...]})` hydrates those bodies in one tool call,
+   parallelized server-side so wall-clock is roughly one
+   `pages.retrieveMarkdown` latency, not N.
+
+`lore-expand` caps at 20 IDs per call and dispatches via `settleAll`, so a
+single failing ID does not collapse the whole response — the failed row
+renders as `### (unresolved: <id>)` with the error inline. Partial
+failures also route through `debugLogPartialFailures` so operators
+running with `LORE_DEBUG=1` see them on stderr.
+
+The cap deliberately exists one layer below the user: it is enforced by
+the Zod schema on `ids`, not by runtime guards, so oversized calls fail
+at the MCP boundary with a parsing error rather than partial-completing.
+If an agent genuinely needs bodies for more than 20 memories, it re-
+batches — but the expected path is to triage on the title tier first and
+hydrate only the rows that matter. Blind-hydrating every title in chunks
+of 20 re-introduces the prompt tax that content-off defaults were
+designed to remove.
 
 ### Project Tools
 

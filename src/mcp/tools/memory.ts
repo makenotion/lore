@@ -1,9 +1,10 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError, paginationFooter } from "../helpers.js"
+import { toolError, paginationFooter, debugLogPartialFailures } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
-import type { MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
+import { settleAll } from "../../core/settle.js"
+import type { Memory, MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 
 const KINDS = [
@@ -453,6 +454,93 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
   )
 
   // -------------------------------------------------------------------------
+  // lore-expand
+  // -------------------------------------------------------------------------
+  // Companion to the title-only defaults on `lore-recall` / `lore-search`.
+  // After scanning the index tier, agents use `lore-expand` to hydrate the
+  // bodies for just the rows they actually care about — one tool call for
+  // up to 20 ids, parallelized server-side so wall-clock is roughly one
+  // `pages.retrieveMarkdown` latency.
+  const EXPAND_MAX_IDS = 20
+  server.registerTool(
+    "lore-expand",
+    {
+      title: "Fetch memory bodies by ID",
+      description:
+        "Given one or more memory IDs (typically pulled from `lore-recall` / `lore-search` / `lore-wake-up` " +
+        "title listings), fetch the full markdown body of each in a single call. Fetches are parallelized " +
+        `server-side, so wall-clock is roughly one Notion round-trip — not N. Up to ${EXPAND_MAX_IDS} IDs per call.\n\n` +
+        "Prefer this over re-calling `lore-recall` with `includeContent: true`, which loads every row's body " +
+        "regardless of interest, and over per-ID fetches, which cost N round-trips from the agent's side.\n\n" +
+        "Per-ID failures do not collapse the call — unresolved IDs render as " +
+        "`### (unresolved: <id>)` with the error inline, so partial results still come back.",
+      inputSchema: {
+        ids: z
+          .array(z.string().uuid())
+          .min(1)
+          .max(EXPAND_MAX_IDS)
+          .describe(
+            `Memory page IDs to hydrate (1–${EXPAND_MAX_IDS}). UUIDs as returned by recall/search/wake-up.`,
+          ),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ ids }) => {
+      try {
+        // De-dupe input so a caller passing the same id twice doesn't
+        // double the Notion fan-out. Iteration order is preserved — the
+        // rendered response mirrors the first-occurrence order of the
+        // input, which is least-surprising for an agent that already has
+        // a mental map of its id list.
+        const unique: string[] = []
+        const seen = new Set<string>()
+        for (const id of ids) {
+          if (!seen.has(id)) {
+            seen.add(id)
+            unique.push(id)
+          }
+        }
+
+        const { fulfilled, failures } = await settleAll(
+          unique.map((id) => [id, services.memories.getById(id)] as const),
+        )
+        if (failures.length > 0) {
+          debugLogPartialFailures(
+            "lore-expand",
+            failures.map(({ key, error }) => ({ rootId: key, error })),
+          )
+        }
+
+        const bodies = new Map<string, Memory>()
+        for (const [id, memory] of fulfilled) bodies.set(id, memory)
+        const errors = new Map<string, unknown>()
+        for (const { key, error } of failures) errors.set(key, error)
+
+        // Render rows in the caller's input order so the output maps
+        // back predictably to the id list the agent passed in.
+        const sections = unique.map((id) => {
+          const memory = bodies.get(id)
+          if (memory) return formatExpandedMemory(memory)
+          const error = errors.get(id)
+          const message = error instanceof Error ? error.message : String(error ?? "unknown error")
+          return `### (unresolved: ${id})\n*${message}*`
+        })
+
+        const header =
+          failures.length > 0
+            ? `Expanded ${fulfilled.length}/${unique.length} memories (${failures.length} unresolved):`
+            : `Expanded ${fulfilled.length} ${fulfilled.length === 1 ? "memory" : "memories"}:`
+
+        return {
+          content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n---\n\n")}` }],
+        }
+      } catch (err) {
+        return toolError(err)
+      }
+    },
+  )
+
+  // -------------------------------------------------------------------------
   // lore-forget
   // -------------------------------------------------------------------------
   server.registerTool(
@@ -621,4 +709,24 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       }
     }
   )
+}
+
+/**
+ * Render one hydrated memory for `lore-expand` output. Mirrors the meta-line
+ * shape used by `lore-recall` / `lore-search` so agents scanning across
+ * triage listings and expanded bodies see a uniform header line. Empty
+ * `content` still renders the header (the memory exists; the body is just
+ * blank) rather than collapsing the row.
+ */
+function formatExpandedMemory(m: Memory): string {
+  const meta = [
+    m.source,
+    m.kind !== "note" ? m.kind : null,
+    m.status !== "informational" ? m.status : null,
+    m.updatedAt.split("T")[0],
+  ]
+    .filter(Boolean)
+    .join(" | ")
+  const body = m.content ? `\n\n${m.content}` : ""
+  return `### ${m.title}\n*${meta}*${body}`
 }
