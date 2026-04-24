@@ -23,6 +23,8 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
 | `fact-encoding.ts`   | `fixFactEncoding()`   | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions |
 | `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |
+| `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
+| `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
 
 ## Service Class Pattern
 
@@ -406,6 +408,87 @@ not just a latency one.
 Tests call `clearServiceCaches(services)` in `src/services.ts` to
 force-fresh between fixtures. Production code never calls it — TTLs do
 the work.
+
+## Near-Duplicate Probe
+
+`findNearDuplicates()` in `near-duplicate.ts` is the write-path sibling of
+`FactService.createWithDedup`: advisory, not blocking. The tool layer
+(`src/mcp/tools/memory.ts`, `src/mcp/tools/decisions.ts`) runs it in
+parallel with the create so the probe does not add wall-clock latency,
+then surfaces any similar rows in the response footer. A failed probe
+returns `[]` rather than throwing — probe failures must never fail the
+surrounding save.
+
+Scoping rules:
+
+- **Memory path** (`lore-remember`): project + top-2 tags, trigram
+  threshold `0.7`, `excludeKinds: ["decision"]` so decisions surface
+  only through `lore-decide` and the response stays focused on
+  `lore-update` as the corrective action. Deliberately **does not**
+  narrow by `kind` — the P2-03 spec's motivating duplicate chain
+  spans `note` / `note` / `agent_diary`, which a server-side `kind`
+  filter would mask.
+- **Decision path** (`lore-decide`): project + (topic if resolved) +
+  `Kind = decision`, client-side status filter to `accepted` /
+  `proposed`, trigram threshold `0.6`. Superseded / deprecated /
+  rejected decisions are deliberately excluded — they are not valid
+  supersession targets.
+
+**`kind` and `excludeKinds` are mutually exclusive by design.** The
+memory path sets `excludeKinds: ["decision"]` (client-side filter),
+the decision path sets `kind: "decision"` (server-side narrowing).
+A probe that sets both would apply a server-side filter *and then*
+a client-side filter, which is either redundant (same kind) or
+self-contradicting (kind included then excluded). Call sites pick
+one axis.
+
+**Untopiced decisions fall back to project-only scope.** The spec rule
+is "same-project AND same-topic", but when the caller omits `topicName`
+the probe runs with `topicId: undefined` and scopes to project alone.
+Looser than spec, intentional: an untopiced decision still benefits
+from a near-dup warning against project-wide siblings, and tightening
+would gate the probe off on every toolless-topicName call.
+
+The probe post-filters the just-written row in the tool layer
+(`m.id !== created.id`) to close the eventual-consistency race between
+`pages.create` and the query index. Thresholds are the P2-03 spec's
+initial guesses; tune after rollout.
+
+**Effective-pool shrink under `excludeKinds`.** The filter runs
+client-side after `memories.list({ limit: 50 })`. In a decision-heavy
+project, the usable non-decision slice of the 50-row window is
+`50 − (decisions in the top-50 recent memories + tags)`. Notion's
+`select` filter has no `not-equals` primitive, so this is unavoidable
+without a second query. If probe recall dips, bump
+`NEAR_DUPLICATE_POOL_LIMIT` rather than chasing a two-query design.
+
+**Untagged saves broaden the candidate pool.** The list-query's `tags`
+filter is Notion-side `OR` across values. When the caller passes no
+tags, the probe drops the tag filter entirely and scans up to 50 rows
+in the project by recency — still bounded, but more likely to produce
+false positives than a tag-scoped probe. If this becomes noisy, the
+fix is to either lower the pool limit or require at least one tag
+before probing; don't narrow the tag filter to `AND` semantics, which
+would under-shoot the candidate pool on the other side.
+
+**HTML-entity decode inside the trigram pipeline is load-bearing.**
+`similarity.ts:normalizeTitle` runs `decodeTextEntities` before
+lowercasing / NFC / whitespace-collapse so pre-PF1-06 encoded rows
+(still present in un-migrated vaults) match post-PF1-06 decoded
+writes. Moving the decode out of the pipeline, or onto the call sites,
+reopens the silent-miss case where `"Café &amp;amp; Bar"` and
+`"Café & Bar"` fail to cluster.
+
+Probe failures flow through an `onError` callback which both tool
+handlers route to `debugLogPartialFailures` — probe failures become
+visible under `LORE_DEBUG=1` without adding noise to the default
+stderr stream.
+
+**Kill-switch.** `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` skips the
+probe entirely. Use for bulk-import, fixture setup, or autosave
+flows where the per-save round-trip isn't justified. The bypass
+lives inside `findNearDuplicates`, not per-tool, so both write tools
+honor it without duplicate plumbing.
 
 ## Schema Drift Detection
 

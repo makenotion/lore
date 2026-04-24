@@ -118,6 +118,28 @@ export function registerFooTools(
 | `lore-forget` | Archive a memory by ID | No (destructive) |
 | `lore-update` | Update a memory's title, content, tags, or categorization | No |
 
+#### Near-duplicate probe on `lore-remember` and `lore-decide`
+
+Both write tools run `findNearDuplicates()` (see `src/core/near-duplicate.ts`)
+in parallel with the create. When the probe finds rows whose title
+trigram similarity meets threshold (0.7 for memories, 0.6 for decisions),
+the response adds a trailing `Warning:` block listing the candidates.
+
+- `lore-remember` recommends `lore-update` or `lore-decide` with
+  `supersedesIds`.
+- `lore-decide` emits a ready-to-copy `lore-supersede({ ... })` line per
+  candidate, scoped to same-project + same-topic + active status.
+
+The probe is advisory only — it never blocks the save, and a probe
+failure returns silently (no trailing warning, save succeeds as normal).
+Rows the caller already superseded via `supersedesIds` are dropped from
+the warning list to avoid re-warning about known duplicates.
+
+Set `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` to skip the probe entirely
+in bulk-import, fixture, or autosave contexts where the per-save
+`dataSources.query` is unwanted overhead. See `src/core/AGENTS.md`
+for the full scoping rules and the implementation-side rationale.
+
 #### Content-off default for list/search tools
 
 `lore-recall` and `lore-search` both default to **`includeContent: false`**.

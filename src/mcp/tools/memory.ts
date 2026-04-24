@@ -6,6 +6,47 @@ import { resolveProjectIds } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
 import type { Memory, MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
+import {
+  findNearDuplicates,
+  type NearDuplicateMatch,
+} from "../../core/near-duplicate.js"
+
+/**
+ * Trigram threshold for the `lore-remember` near-duplicate probe. Matches
+ * the P2-03 spec's initial guess — tune after rollout if we see false
+ * positives flooding the response footer on legitimately-distinct
+ * memories sharing boilerplate title wording.
+ */
+const MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7
+
+/** Cap the probe candidate pool. See `findNearDuplicates` docstring. */
+const NEAR_DUPLICATE_POOL_LIMIT = 50
+
+/** Max candidates to surface in the response. */
+const NEAR_DUPLICATE_SURFACE_LIMIT = 3
+
+function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
+  const lines: string[] = []
+  const shown = matches.slice(0, NEAR_DUPLICATE_SURFACE_LIMIT)
+  lines.push(
+    `Warning: ${matches.length} existing ${matches.length === 1 ? "memory looks" : "memories look"} similar:`,
+  )
+  for (const m of shown) {
+    const sim = m.titleSimilarity.toFixed(2)
+    // Render tag overlap only when there's actual overlap. A 0.0 reading
+    // on an untagged candidate — or a tagged candidate that shares no
+    // tags with the new row — is noise, not signal.
+    const tagPart = m.tagOverlap > 0 ? `, tag overlap ${m.tagOverlap.toFixed(2)}` : ""
+    lines.push(`  - "${m.title}" (${m.id}) — trigram ${sim}${tagPart}`)
+  }
+  if (matches.length > shown.length) {
+    lines.push(`  - …and ${matches.length - shown.length} more`)
+  }
+  lines.push(
+    "Consider `lore-update` on the existing row, or `lore-decide` with `supersedesIds` if this is a formal replacement.",
+  )
+  return lines
+}
 
 const KINDS = [
   "note",
@@ -119,22 +160,60 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           topicLabel = topicName
         }
 
-        const memory = await services.memories.create({
-          title,
-          content,
-          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-          topicId,
-          source: source ?? "conversation",
-          kind: kind as MemoryKind | undefined,
-          status: status as MemoryStatus | undefined,
-          confidence: confidence as MemoryConfidence | undefined,
-          reviewBy,
-          decidedAt,
-          tags,
-          keywords,
-          agent,
-          session,
-        })
+        // Probe for near-duplicates in parallel with the create. The probe
+        // is advisory — it runs off the primary project and surfaces hits
+        // in the response footer. Running it in parallel means the
+        // wall-clock cost is max(create, probe) rather than create + probe.
+        // Probe failures surface via `debugLogPartialFailures` (opt-in
+        // under `LORE_DEBUG=1`) but never fail the save.
+        // The P2-03 spec scopes the memory probe to project + top-2 tags,
+        // deliberately WITHOUT narrowing by kind — the motivating duplicate
+        // chain in the spec spans `note` / `note` / `agent_diary`, and a
+        // `kind` filter would mask exactly that case. `excludeKinds` runs
+        // client-side instead: decisions surface only via `lore-decide`,
+        // so a note whose title collides with a governing decision nudges
+        // the agent toward `lore-decide`, not `lore-update` on a decision
+        // row.
+        const probeProjectId = resolved.ids[0]
+        const probePromise = probeProjectId
+          ? findNearDuplicates(services.memories, {
+              title,
+              tags: tags ?? [],
+              projectId: probeProjectId,
+              excludeKinds: ["decision"],
+              threshold: MEMORY_NEAR_DUPLICATE_THRESHOLD,
+              limit: NEAR_DUPLICATE_POOL_LIMIT,
+              onError: (err) =>
+                debugLogPartialFailures("lore-remember", [
+                  { rootId: "near-duplicate-probe", error: err },
+                ]),
+            })
+          : Promise.resolve([] as NearDuplicateMatch[])
+
+        const [memory, nearDuplicates] = await Promise.all([
+          services.memories.create({
+            title,
+            content,
+            projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+            topicId,
+            source: source ?? "conversation",
+            kind: kind as MemoryKind | undefined,
+            status: status as MemoryStatus | undefined,
+            confidence: confidence as MemoryConfidence | undefined,
+            reviewBy,
+            decidedAt,
+            tags,
+            keywords,
+            agent,
+            session,
+          }),
+          probePromise,
+        ])
+
+        // Drop the just-created row if Notion's query index surfaced it
+        // under the probe filter — cheap defensive filter for the parallel
+        // race between create and probe.
+        const matches = nearDuplicates.filter((m) => m.id !== memory.id)
 
         // Record for auto-linking on subsequent `lore-learn` calls in the
         // same (agent, session). Includes project scope so `lore-learn` can
@@ -155,6 +234,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         ]
         if (resolved.warnings.length > 0) {
           lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
+        }
+        if (matches.length > 0) {
+          lines.push("", ...formatNearDuplicateMatches(matches))
         }
 
         return {

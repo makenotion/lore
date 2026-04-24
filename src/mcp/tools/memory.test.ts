@@ -139,6 +139,291 @@ describe("lore-remember session recording", () => {
   })
 })
 
+describe("lore-remember near-duplicate probe", () => {
+  it("surfaces candidates whose title trigram similarity meets the 0.7 threshold", async () => {
+    // The probe scans the recent memories in the same project + top-2
+    // tags, flags any that look similar to the title being saved, and
+    // surfaces them in the response footer. Save still succeeds.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Wakeup hook swallows errors silently",
+      projectIds: ["proj-a"],
+      tags: ["architecture"],
+    })
+    const existing = makeMemory("mem-old", {
+      title: "Wakeup hook swallows errors silently",
+      projectIds: ["proj-a"],
+      tags: ["architecture"],
+    })
+
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({
+      title: "Wakeup hook swallows errors silently",
+      content: "body",
+      tags: ["architecture"],
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Save succeeded; probe surfaced the candidate.
+    expect(text).toContain('Saved memory: "Wakeup hook swallows errors silently"')
+    expect(text).toContain("Warning:")
+    expect(text).toContain("existing memory looks similar")
+    expect(text).toContain("mem-old")
+    expect(text).toContain("lore-update")
+    // Probe scoped to project + top-2 tags — crucially, NOT narrowed by
+    // kind. The spec's motivating duplicate chain spans note/note/agent_diary
+    // and a kind filter would mask it.
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        tags: ["architecture"],
+        includeContent: false,
+      }),
+    )
+    // `kind` may be present as `undefined` but must not be set to a value —
+    // a value would translate to a `Kind=equals` filter at the Notion layer.
+    expect(list.mock.calls[0][0].kind).toBeUndefined()
+  })
+
+  it("does not narrow the probe by kind even when the caller passes kind=runbook", async () => {
+    // Regression test against the earlier implementation that forwarded
+    // `kind` to `memories.list()`. Passing `kind: "runbook"` on
+    // `lore-remember` should still surface near-identical notes — the
+    // spec is "same project + top-2 tags", full stop.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Wakeup hook swallows errors silently",
+      projectIds: ["proj-a"],
+      kind: "runbook",
+    })
+    const list = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-note", {
+          title: "Wakeup hook swallows errors silently",
+          projectIds: ["proj-a"],
+          kind: "note",
+        }),
+      ],
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({
+      title: "Wakeup hook swallows errors silently",
+      content: "body",
+      kind: "runbook",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("mem-note")
+    // list was called without a kind filter — the note surfaced despite the
+    // caller writing a runbook.
+    // `kind` may be present as `undefined` but must not be set to a value —
+    // a value would translate to a `Kind=equals` filter at the Notion layer.
+    expect(list.mock.calls[0][0].kind).toBeUndefined()
+  })
+
+  it("drops Kind=decision rows from the memory probe (decisions are lore-decide's domain)", async () => {
+    // A note titled identically to a governing decision shouldn't light
+    // up that decision as a near-dup candidate — decisions surface via
+    // `lore-decide`, not `lore-update`.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Replace auth middleware",
+      projectIds: ["proj-a"],
+    })
+
+    const list = vi.fn().mockResolvedValue({
+      items: [
+        // A decision with the same title exists in the pool — must NOT surface.
+        makeMemory("dec-in-pool", {
+          title: "Replace auth middleware",
+          projectIds: ["proj-a"],
+          kind: "decision",
+          status: "accepted",
+        }),
+        makeMemory("note-in-pool", {
+          title: "Replace auth middleware",
+          projectIds: ["proj-a"],
+          kind: "note",
+        }),
+      ],
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({
+      title: "Replace auth middleware",
+      content: "body",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    // Note surfaces; decision does not.
+    expect(text).toContain("note-in-pool")
+    expect(text).not.toContain("dec-in-pool")
+  })
+
+  it("produces no warning footer when no existing memory clears the threshold", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Wakeup hook swallows errors silently",
+      projectIds: ["proj-a"],
+    })
+
+    const list = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-other", {
+          title: "Completely unrelated memory about migrations",
+          projectIds: ["proj-a"],
+        }),
+      ],
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({
+      title: "Wakeup hook swallows errors silently",
+      content: "body",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Saved memory:")
+    expect(text).not.toContain("Warning:")
+    expect(text).not.toContain("look similar")
+    expect(text).not.toContain("looks similar")
+  })
+
+  it("skips the probe query when no project context is available", async () => {
+    // The probe is bounded by a project filter — without one, we'd scan
+    // the entire Memories DB, busting the per-save cost budget. The
+    // probe short-circuits instead.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Vault-wide note",
+      projectIds: [],
+    })
+
+    const list = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    await remember({ title: "Vault-wide note", content: "body" } as never)
+
+    expect(list).not.toHaveBeenCalled()
+  })
+
+  it("filters out the just-created row if the probe surfaces it (parallel-race safety)", async () => {
+    // Notion's query index is eventually consistent, but under tight
+    // races the probe could observe the newly-written row. The tool
+    // drops matches whose id equals the created memory's id so the
+    // response doesn't warn the caller about their own fresh write.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Same title",
+      projectIds: ["proj-a"],
+    })
+
+    const list = vi.fn().mockResolvedValue({
+      items: [
+        // The probe returns the just-created row (race with create).
+        makeMemory("mem-new", { title: "Same title", projectIds: ["proj-a"] }),
+      ],
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({ title: "Same title", content: "body" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("Warning:")
+  })
+
+  it("save still succeeds when the probe query fails (probe is advisory)", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Some title",
+      projectIds: ["proj-a"],
+    })
+
+    const list = vi.fn().mockRejectedValue(new Error("notion 503"))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({ title: "Some title", content: "body" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Saved memory:")
+    expect(text).not.toContain("Warning:")
+  })
+})
+
 describe("lore-recall topicName resolution", () => {
   it("resolves topicName globally (not scoped to the ambient project) so multi-project topics work", async () => {
     const mockServer = createMockServer()

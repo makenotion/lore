@@ -135,6 +135,228 @@ describe("registerDecisionTools", () => {
     )
   })
 
+  it("surfaces near-duplicate decisions with a lore-supersede hint", async () => {
+    // P2-03 acceptance: a decision near-identical to an existing active
+    // decision (trigram ≥ 0.6, same project, same topic) lights up a
+    // structured supersession suggestion in the response.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new", {
+      title: "Replace auth middleware",
+      projectIds: ["proj-a"],
+      topicId: "topic-1",
+    })
+    const existing = makeDecision("dec-old", {
+      title: "Replace auth middleware",
+      projectIds: ["proj-a"],
+      topicId: "topic-1",
+      status: "accepted",
+      decidedAt: "2026-02-15",
+    })
+
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn(),
+        supersede: vi.fn(),
+      },
+      memories: { list },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getHandler("lore-decide")
+
+    const result = await loreDecide({
+      decision: "Replace auth middleware",
+      rationale: "Because reasons",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain('Saved decision: "Replace auth middleware"')
+    expect(text).toContain("Warning:")
+    expect(text).toContain("dec-old")
+    expect(text).toContain("lore-supersede")
+    expect(text).toContain('newDecisionId: "dec-new"')
+    expect(text).toContain('oldDecisionId: "dec-old"')
+
+    // The probe scoped to project + topic + Kind=decision.
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        topicId: undefined,
+        kind: "decision",
+        includeContent: false,
+      }),
+    )
+  })
+
+  it("filters out superseded / deprecated / rejected decisions (active statuses only)", async () => {
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new", {
+      title: "Replace auth middleware",
+      projectIds: ["proj-a"],
+    })
+    const list = vi.fn().mockResolvedValue({
+      items: [
+        makeDecision("dec-superseded", {
+          title: "Replace auth middleware",
+          status: "superseded",
+        }),
+        makeDecision("dec-rejected", {
+          title: "Replace auth middleware",
+          status: "rejected",
+        }),
+      ],
+    })
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn(),
+        supersede: vi.fn(),
+      },
+      memories: { list },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getHandler("lore-decide")
+
+    const result = await loreDecide({
+      decision: "Replace auth middleware",
+      rationale: "Because reasons",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).not.toContain("Warning:")
+    expect(text).not.toContain("dec-superseded")
+    expect(text).not.toContain("dec-rejected")
+  })
+
+  it("scopes the probe to the resolved topicId when topicName is provided", async () => {
+    // The P2-03 decision rule is "same-project AND same-topic". This test
+    // pins the topic actually makes it through the topics.getOrCreate
+    // round-trip and into the probe's list() call — a gap the earlier
+    // shape-only test missed.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new", {
+      title: "Replace auth middleware",
+      projectIds: ["proj-a"],
+      topicId: "topic-1",
+    })
+    const getOrCreate = vi.fn().mockResolvedValue({
+      id: "topic-1",
+      name: "Auth",
+      projectIds: ["proj-a"],
+      description: "",
+    })
+    const list = vi.fn().mockResolvedValue({ items: [] })
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn(),
+        supersede: vi.fn(),
+      },
+      memories: { list },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      topics: { getOrCreate },
+      projects: { findByName: vi.fn() },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getHandler("lore-decide")
+
+    await loreDecide({
+      decision: "Replace auth middleware",
+      rationale: "Because reasons",
+      topicName: "Auth",
+    } as never)
+
+    expect(getOrCreate).toHaveBeenCalledWith("Auth", ["proj-a"])
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        topicId: "topic-1",
+        kind: "decision",
+      }),
+    )
+  })
+
+  it("does not re-warn about decisions the caller already explicitly supersedes", async () => {
+    // If the caller passes `supersedesIds: [oldId]`, the old decision is
+    // expected to match. The probe drops it from the warning to keep the
+    // surface focused on "did you mean to supersede this *other* one too?"
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new", {
+      title: "Replace auth middleware",
+      projectIds: ["proj-a"],
+    })
+    const knownOld = makeDecision("dec-known-old", {
+      title: "Replace auth middleware",
+      status: "accepted",
+    })
+
+    const list = vi.fn().mockResolvedValue({ items: [knownOld] })
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn().mockResolvedValue(knownOld),
+        supersede: vi.fn(),
+      },
+      memories: { list },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getHandler("lore-decide")
+
+    const result = await loreDecide({
+      decision: "Replace auth middleware",
+      rationale: "Because reasons",
+      supersedesIds: ["dec-known-old"],
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    // Existing supersession flow still runs.
+    expect(text).toContain("Superseded:")
+    // But no redundant near-dup warning for the known row.
+    expect(text).not.toContain("Warning:")
+  })
+
   it("records the new decision with project scope into sessionMemories", async () => {
     // P1-09 integration point: a `lore-learn` call made later in the same
     // (agent, session) must be able to evaluate project-overlap safety

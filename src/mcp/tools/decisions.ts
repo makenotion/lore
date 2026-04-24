@@ -10,6 +10,59 @@ import {
 import { displayId, resolveTitles } from "../render.js"
 import type { DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
+import {
+  findNearDuplicates,
+  type NearDuplicateMatch,
+} from "../../core/near-duplicate.js"
+
+/**
+ * Trigram threshold for the `lore-decide` near-duplicate probe. Lower
+ * than the memory threshold because decisions carry more ceremony and
+ * redundant decisions are more costly than redundant notes — we'd rather
+ * surface a supersession suggestion that the caller ignores than miss a
+ * real replacement. Paired with same-project + same-topic scoping, which
+ * already pre-filters aggressively.
+ */
+const DECISION_NEAR_DUPLICATE_THRESHOLD = 0.6
+
+/** Cap the decision probe candidate pool. */
+const DECISION_POOL_LIMIT = 50
+
+/** Max candidates to surface in the response. */
+const DECISION_SURFACE_LIMIT = 3
+
+/**
+ * The P2-03 spec scopes the decision probe to `Status IN (accepted,
+ * proposed)` — superseded / deprecated / rejected decisions should not
+ * surface as supersession targets. Notion's `dataSources.query` accepts
+ * one `Status` clause; the probe post-filters these client-side.
+ */
+const ACTIVE_DECISION_STATUSES: DecisionStatus[] = ["accepted", "proposed"]
+
+function formatNearDuplicateDecisions(
+  matches: NearDuplicateMatch[],
+  newDecisionId: string,
+): string[] {
+  const lines: string[] = []
+  const shown = matches.slice(0, DECISION_SURFACE_LIMIT)
+  lines.push(
+    `Warning: ${matches.length} existing ${matches.length === 1 ? "decision looks" : "decisions look"} similar. If this supersedes any of them, use \`lore-supersede\`:`,
+  )
+  for (const m of shown) {
+    const sim = m.titleSimilarity.toFixed(2)
+    const when = m.decidedAt ? ` from ${m.decidedAt}` : ""
+    lines.push(
+      `  - "${m.title}" (${m.id})${when} — trigram ${sim}, status ${m.status}`,
+    )
+    lines.push(
+      `    lore-supersede({ newDecisionId: "${newDecisionId}", oldDecisionId: "${m.id}" })`,
+    )
+  }
+  if (matches.length > shown.length) {
+    lines.push(`  - …and ${matches.length - shown.length} more`)
+  }
+  return lines
+}
 
 const DECISION_STATUSES = [
   "proposed",
@@ -166,26 +219,60 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           )
         }
 
+        // Probe for near-duplicate decisions in parallel with the create.
+        // Same-project + same-topic is the P2-03 rule; the probe returns
+        // only active (accepted/proposed) decisions so superseded rows
+        // don't show up as supersession targets. Running in parallel
+        // keeps wall-clock latency at max(create, probe). The probe
+        // short-circuits (returns []) when no project scope is available.
+        // Probe failures route through `debugLogPartialFailures` (opt-in
+        // under `LORE_DEBUG=1`) but never fail the save.
+        const probeProjectId = resolved.ids[0]
+        const probePromise = probeProjectId
+          ? findNearDuplicates(services.memories, {
+              title: decision,
+              tags: tags ?? [],
+              projectId: probeProjectId,
+              topicId,
+              kind: "decision",
+              statuses: ACTIVE_DECISION_STATUSES,
+              threshold: DECISION_NEAR_DUPLICATE_THRESHOLD,
+              limit: DECISION_POOL_LIMIT,
+              onError: (err) =>
+                debugLogPartialFailures("lore-decide", [
+                  { rootId: "near-duplicate-probe", error: err },
+                ]),
+            })
+          : Promise.resolve([] as NearDuplicateMatch[])
+
         // Create the decision itself. supersedesIds are applied via
         // DecisionService.supersede() below (which also marks the old
         // decisions superseded), not as part of create — we want the
         // full atomic supersession semantic for each one.
-        const created = await services.decisions.create({
-          decision,
-          rationale,
-          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-          topicId,
-          status: (status ?? "accepted") as DecisionStatus,
-          confidence,
-          reviewBy,
-          decidedAt,
-          alternatives,
-          consequences,
-          tags,
-          keywords,
-          agent,
-          session,
-        })
+        const [created, nearDuplicates] = await Promise.all([
+          services.decisions.create({
+            decision,
+            rationale,
+            projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+            topicId,
+            status: (status ?? "accepted") as DecisionStatus,
+            confidence,
+            reviewBy,
+            decidedAt,
+            alternatives,
+            consequences,
+            tags,
+            keywords,
+            agent,
+            session,
+          }),
+          probePromise,
+        ])
+
+        // Drop self in case the eventual-consistency race lets Notion's
+        // query index surface the freshly-created row under the probe
+        // filter.
+        const duplicateMatches = nearDuplicates.filter((m) => m.id !== created.id)
 
         // Record for auto-linking on subsequent `lore-learn` calls in the
         // same (agent, session). Decisions already auto-source their own
@@ -262,6 +349,20 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         if (reachabilityUpdates.length > 0) {
           lines.push("", "Graph updates:")
           for (const update of reachabilityUpdates) lines.push(`  - ${update}`)
+        }
+        // Drop rows the caller already explicitly superseded — they are
+        // expected duplicates and warning again would be noise. What's
+        // left is "looks similar but the caller didn't call them out as
+        // replacements" — the interesting near-dup surface.
+        const supersededIdSet = new Set(supersedesIds ?? [])
+        const decisionMatches = duplicateMatches.filter(
+          (m) => !supersededIdSet.has(m.id),
+        )
+        if (decisionMatches.length > 0) {
+          lines.push(
+            "",
+            ...formatNearDuplicateDecisions(decisionMatches, created.id),
+          )
         }
         if (resolved.warnings.length > 0) {
           lines.push("", `Warnings: ${resolved.warnings.join("; ")}`)
