@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { DecisionService } from "./decision.js"
 import type { DatabaseRef, MemoryKind } from "../types.js"
@@ -464,5 +464,142 @@ describe("DecisionService.queryOverdue", () => {
     expect(results).toHaveLength(1)
     expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
     expect(results[0]).not.toHaveProperty("content")
+  })
+})
+
+describe("DecisionService.getById — cache", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("serves repeat lookups from the in-process cache", async () => {
+    const client = createMockClient({
+      retrievedPages: { "dec-1": decisionPage("dec-1") },
+      markdown: "body",
+    })
+    const service = new DecisionService(client, DB)
+
+    await service.getById("dec-1")
+    await service.getById("dec-1")
+    await service.getById("dec-1")
+
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(1)
+    expect(client.pages.retrieveMarkdown).toHaveBeenCalledTimes(1)
+  })
+
+  it("requeries after the TTL elapses", async () => {
+    const client = createMockClient({
+      retrievedPages: { "dec-1": decisionPage("dec-1") },
+      markdown: "body",
+    })
+    const service = new DecisionService(client, DB)
+
+    await service.getById("dec-1")
+    vi.advanceTimersByTime(30_001)
+    await service.getById("dec-1")
+
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not cache a throw (non-decision kind)", async () => {
+    const notADecision = decisionPage("mem-1", { kind: "note" })
+    const client = createMockClient({
+      retrievedPages: { "mem-1": notADecision },
+    })
+    const service = new DecisionService(client, DB)
+
+    await expect(service.getById("mem-1")).rejects.toThrow()
+    await expect(service.getById("mem-1")).rejects.toThrow()
+
+    // Both calls must round-trip — a cached throw would be a leak.
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
+  })
+
+  it("invalidates the cache entry on supersede (both ids)", async () => {
+    const newDecision = decisionPage("new-dec", { supersedesIds: [] })
+    const oldDecision = decisionPage("old-dec")
+    const client = createMockClient({
+      retrievedPages: {
+        "new-dec": newDecision,
+        "old-dec": oldDecision,
+      },
+    })
+    const service = new DecisionService(client, DB)
+
+    // Warm the cache for both decisions.
+    await service.getById("new-dec")
+    await service.getById("old-dec")
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
+
+    await service.supersede("new-dec", "old-dec")
+
+    await service.getById("new-dec")
+    await service.getById("old-dec")
+
+    // Initial warm reads newId + oldId (2). supersede evicts newId
+    // before reading so its merge base is fresh (1). supersede then
+    // invalidates both ids after writes, so the two post-supersede
+    // getById calls round-trip (2). Total: 2 + 1 + 2 = 5.
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(5)
+  })
+
+  it("evicts before reading in supersede so writeback merges against fresh supersedesIds", async () => {
+    // A stale cached supersedesIds would let supersede clobber
+    // supersessions recorded elsewhere inside the TTL window. Verify
+    // the pre-read eviction by observing the writeback uses fresh
+    // (not cached) supersedesIds.
+    const stale = decisionPage("new-dec", { supersedesIds: [] })
+    const fresh = decisionPage("new-dec", { supersedesIds: ["prior-from-elsewhere"] })
+    const client = createMockClient({
+      retrievedPages: { "new-dec": fresh, "old-dec": decisionPage("old-dec") },
+    })
+    const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieveMock
+      .mockResolvedValueOnce(stale) // initial warm
+      .mockResolvedValueOnce(fresh) // supersede's internal getById
+    const service = new DecisionService(client, DB)
+
+    await service.getById("new-dec") // warm cache with stale (empty supersedesIds)
+    await service.supersede("new-dec", "old-dec")
+
+    // The writeback must preserve `prior-from-elsewhere`, not merge
+    // against the stale (empty) cached value.
+    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(updateArgs.properties.Supersedes.relation).toEqual([
+      { id: "prior-from-elsewhere" },
+      { id: "old-dec" },
+    ])
+  })
+
+  it("invalidates the cache entry on reviewCompleted", async () => {
+    const decision = decisionPage("dec-1")
+    const client = createMockClient({
+      retrievedPages: { "dec-1": decision },
+    })
+    const service = new DecisionService(client, DB)
+
+    await service.getById("dec-1")
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(1)
+
+    await service.reviewCompleted("dec-1")
+    await service.getById("dec-1")
+
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
+  })
+
+  it("clearCache() forces the next lookup back to Notion", async () => {
+    const client = createMockClient({
+      retrievedPages: { "dec-1": decisionPage("dec-1") },
+    })
+    const service = new DecisionService(client, DB)
+
+    await service.getById("dec-1")
+    service.clearCache()
+    await service.getById("dec-1")
+
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
   })
 })

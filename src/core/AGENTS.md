@@ -20,6 +20,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
 | `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + open-loop-related memories for wake-up surfaces (MCP tool + shell hook) |
+| `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
 
 ## Service Class Pattern
 
@@ -219,6 +220,51 @@ facts. The `decided_by` and `supersedes_decision` graph edges are created at
 the MCP tool layer (`src/mcp/tools/decisions.ts`) where the tool handler
 orchestrates `decisions` + `facts` together — consistent with how
 `lore-remember` orchestrates `topics` + `memories`.
+
+## Resolver Caching
+
+The MCP server is a long-lived stdio process that frequently resolves the
+same `projectName` or `topicName` across multiple tool calls in a single
+conversation. `src/core/cache.ts` provides `LruCache<K, V>`, a minimal
+LRU + TTL cache; three resolvers use it:
+
+| Resolver                        | Keyed on    | TTL  | Cap |
+| ------------------------------- | ----------- | ---- | --- |
+| `ProjectService.findByName`     | name        | 60s  | 200 |
+| `TopicService.findByName`       | name¹       | 60s  | 500 |
+| `DecisionService.getById`       | decision id | 30s  | 500 |
+
+¹ Only unscoped (no `projectId`) lookups are cached. The scoped variant is
+a legacy-vault safety valve with different result shape.
+
+**Cached values are not cache hazards.** Negative lookups (null) are never
+cached, and throws are never cached — only successful resolutions. Writes
+invalidate:
+
+- `ProjectService.create` invalidates by name; `archive` clears the whole
+  name cache (archive flips `status` on cached objects and we don't track
+  the id → name reverse mapping).
+- `TopicService.create` invalidates by name; `getOrCreate` proactively
+  `set`s the post-extend refetched topic so subsequent lookups see the
+  authoritative relation.
+- `DecisionService.create` / `supersede` / `reviewCompleted` invalidate
+  the affected ids.
+
+**Create paths evict; `getOrCreate` writes through — deliberate asymmetry.**
+`create` returns a freshly-minted page that the caller doesn't look up
+by name next; evicting is enough. `getOrCreate` has just refetched the
+authoritative post-extend state as part of its retry loop, so writing
+that value through to the cache costs nothing and skips a Notion
+round-trip for the next `findByName`. Do not "normalize" the create
+paths to write-through — they don't have the refetched value in hand.
+
+**Do not cache `MemoryService.getById`.** Memory bodies can be updated via
+`lore-update` from any tool; a stale body is a real correctness hazard,
+not just a latency one.
+
+Tests call `clearServiceCaches(services)` in `src/services.ts` to
+force-fresh between fixtures. Production code never calls it — TTLs do
+the work.
 
 ## Schema Drift Detection
 

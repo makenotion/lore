@@ -84,3 +84,14 @@ export async function initServices(cwd?: string): Promise<LoreServices> {
   const config = await loadConfig(found.path)
   return initServicesFromConfig(workDir, found.root, config)
 }
+
+/**
+ * Drop every in-process resolver cache attached to `services`. Tests
+ * call this to force-fresh reads between fixtures; production code
+ * leaves the caches alone and lets TTLs do the work.
+ */
+export function clearServiceCaches(services: LoreServices): void {
+  services.projects.clearNameCache()
+  services.topics.clearNameCache()
+  services.decisions.clearCache()
+}

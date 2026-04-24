@@ -21,6 +21,7 @@ import {
   extractRichText,
   extractRelationIds,
 } from "../notion/extractors.js"
+import { LruCache } from "./cache.js"
 
 /** Max retries for the optimistic `getOrCreate` extend loop when a concurrent
  *  writer clobbers the relation mid-update. Two retries is enough to cover
@@ -60,7 +61,20 @@ export function decodeTopicHtmlEntities(name: string): string {
   return current
 }
 
+/** Topic name → Topic cache. Covers only global (unscoped) lookups — the
+ *  scoped variant is a rarely-used safety valve and is not cached. The
+ *  cap is generous because topics are numerous but not unbounded in a
+ *  typical vault. The cache is keyed on the decoded name so encoded and
+ *  decoded inputs hit the same entry. */
+const NAME_CACHE_TTL_MS = 60_000
+const NAME_CACHE_MAX = 500
+
 export class TopicService {
+  private readonly nameCache = new LruCache<string, Topic>(
+    NAME_CACHE_MAX,
+    NAME_CACHE_TTL_MS
+  )
+
   constructor(
     private client: Client,
     private db: DatabaseRef
@@ -77,6 +91,10 @@ export class TopicService {
       }),
     })
 
+    // Drop any stale entry for this name so a negative cached lookup
+    // can't mask the newly created topic inside the same TTL window.
+    // Key on the decoded name so we evict whatever `findByName` cached.
+    this.nameCache.delete(name)
     return this.pageToTopic(page as PageObjectResponse)
   }
 
@@ -148,6 +166,17 @@ export class TopicService {
    */
   async findByName(name: string, projectId?: string): Promise<Topic | null> {
     const decoded = decodeTopicHtmlEntities(name)
+
+    // Only the global (unscoped) lookup is cached: it's the hot path used
+    // by `getOrCreate` and every MCP tool that accepts `topicName`. The
+    // scoped form exists for vaults still carrying pre-migration
+    // duplicates and is infrequent enough to query live. Key on `decoded`
+    // so encoded and decoded inputs share a cache slot.
+    if (!projectId) {
+      const cached = this.nameCache.get(decoded)
+      if (cached) return cached
+    }
+
     const filters: Array<Record<string, unknown>> = [
       { property: "Name", title: { equals: decoded } },
     ]
@@ -173,7 +202,9 @@ export class TopicService {
       )
     }
 
-    return this.pageToTopic(pages[0])
+    const topic = this.pageToTopic(pages[0])
+    if (!projectId) this.nameCache.set(decoded, topic)
+    return topic
   }
 
   /**
@@ -193,6 +224,15 @@ export class TopicService {
    */
   async getOrCreate(name: string, projectIds: string[]): Promise<Topic> {
     const decoded = decodeTopicHtmlEntities(name)
+
+    // Writeback uses `existing.projectIds` as the merge base, so a stale
+    // cached value would let us clobber relations added by another
+    // writer inside the TTL window. Evict before reading so the
+    // internal `findByName` hits Notion fresh; the refetch and the
+    // successful-extend path below re-populate the cache with the
+    // authoritative post-write state. Key on the decoded name so the
+    // cache and the storage agree.
+    this.nameCache.delete(decoded)
     for (let attempt = 0; attempt <= GET_OR_CREATE_MAX_RETRIES; attempt++) {
       const existing = await this.findByName(decoded)
       if (!existing) return this.create({ name: decoded, projectIds })
@@ -213,9 +253,15 @@ export class TopicService {
       // read the same pre-state could have just clobbered our extension.
       const refetched = await this.getById(existing.id)
       if (projectIds.every((id) => refetched.projectIds.includes(id))) {
+        // Cache now holds the pre-extend projectIds from the
+        // `findByName` at the top of this loop. Replace with the
+        // authoritative post-extend state rather than leaving the
+        // cache to serve stale relations until TTL.
+        this.nameCache.set(name, refetched)
         return refetched
       }
       // Lost-update detected; try again.
+      this.nameCache.delete(name)
     }
 
     // Fall through after retries — return whatever authoritative state
@@ -228,6 +274,12 @@ export class TopicService {
       )
     }
     return final
+  }
+
+  /** Reset the in-process name cache. Used by tests and by the
+   *  cross-service `clearServiceCaches()` helper. */
+  clearNameCache(): void {
+    this.nameCache.clear()
   }
 
   private pageToTopic(page: PageObjectResponse): Topic {

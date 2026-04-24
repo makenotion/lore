@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { TopicService, decodeTopicHtmlEntities } from "./topic.js"
 import type { DatabaseRef } from "../types.js"
@@ -618,5 +618,179 @@ describe("TopicService.getOrCreate — extend-on-find", () => {
     expect(client.pages.update).toHaveBeenCalledTimes(2)
     expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
     expect(topic.projectIds).toEqual(["proj-a", "proj-x", "proj-b"])
+  })
+})
+
+describe("TopicService.findByName — cache", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("serves repeat global lookups from the in-process cache", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient({ queryResults: [t1] })
+    const service = new TopicService(client, DB)
+
+    await service.findByName("auth")
+    await service.findByName("auth")
+    await service.findByName("auth")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("requeries after the TTL elapses", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient({ queryResults: [t1] })
+    const service = new TopicService(client, DB)
+
+    await service.findByName("auth")
+    vi.advanceTimersByTime(60_001)
+    await service.findByName("auth")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not cache scoped lookups (projectId given)", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient({ queryResults: [t1] })
+    const service = new TopicService(client, DB)
+
+    await service.findByName("auth", "p1")
+    await service.findByName("auth", "p1")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not let a scoped lookup poison the global cache", async () => {
+    const scoped = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const global = topicPage("t2", { name: "auth", projectIds: ["p1", "p2"] })
+    const client = createMockClient()
+    client.dataSources.query
+      .mockResolvedValueOnce({
+        results: [scoped],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: [global],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TopicService(client, DB)
+
+    const scopedHit = await service.findByName("auth", "p1")
+    const globalHit = await service.findByName("auth")
+
+    expect(scopedHit?.id).toBe("t1")
+    expect(globalHit?.id).toBe("t2")
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not cache null results", async () => {
+    const client = createMockClient({ queryResults: [] })
+    const service = new TopicService(client, DB)
+
+    await service.findByName("missing")
+    await service.findByName("missing")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("invalidates the cache entry on create", async () => {
+    const existing = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const created = topicPage("t2", { name: "auth", projectIds: ["p2"] })
+    const client = createMockClient({
+      queryResults: [existing],
+      createReturn: created,
+    })
+    const service = new TopicService(client, DB)
+
+    await service.findByName("auth")
+    await service.create({ name: "auth", projectIds: ["p2"] })
+    await service.findByName("auth")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("updates the cache with the post-extend state after getOrCreate extends the relation", async () => {
+    const before = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const after = topicPage("t1", { name: "auth", projectIds: ["p1", "p2"] })
+    const client = createMockClient({
+      queryResults: [before],
+      retrievedPages: { t1: after },
+    })
+    const service = new TopicService(client, DB)
+
+    await service.getOrCreate("auth", ["p1", "p2"])
+    // The refetched (post-extend) state must be the one we serve next.
+    const cached = await service.findByName("auth")
+
+    expect(cached?.projectIds).toEqual(["p1", "p2"])
+    // getOrCreate issues one findByName (Notion); the trailing
+    // findByName is served from the post-extend cache.
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("evicts a stale cached entry before getOrCreate reads, so writeback uses fresh data", async () => {
+    // A stale cache would let getOrCreate use old projectIds as the
+    // merge base and clobber relations added elsewhere in the TTL
+    // window. Verify the pre-read eviction by observing that a warm
+    // cache is not served to getOrCreate.
+    const stale = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const fresh = topicPage("t1", {
+      name: "auth",
+      projectIds: ["p1", "p3"], // another writer added p3 while we were cached
+    })
+    const afterWrite = topicPage("t1", {
+      name: "auth",
+      projectIds: ["p1", "p3", "p2"], // our addition landed on top of fresh
+    })
+    const client = createMockClient({
+      retrievedPages: { t1: afterWrite },
+    })
+    client.dataSources.query
+      .mockResolvedValueOnce({
+        results: [stale],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        results: [fresh],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TopicService(client, DB)
+
+    // Warm the cache with the stale value.
+    await service.findByName("auth")
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+
+    // getOrCreate must re-query Notion rather than trust the cache.
+    await service.getOrCreate("auth", ["p2"])
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+
+    // And the writeback must merge against the fresh projectIds
+    // (including p3), not the stale cached ones.
+    const updateArgs = client.pages.update.mock.calls[0][0]
+    expect(updateArgs.properties.Project.relation).toEqual([
+      { id: "p1" },
+      { id: "p3" },
+      { id: "p2" },
+    ])
+  })
+
+  it("clearNameCache() forces the next lookup back to Notion", async () => {
+    const t1 = topicPage("t1", { name: "auth", projectIds: ["p1"] })
+    const client = createMockClient({ queryResults: [t1] })
+    const service = new TopicService(client, DB)
+
+    await service.findByName("auth")
+    service.clearNameCache()
+    await service.findByName("auth")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
   })
 })

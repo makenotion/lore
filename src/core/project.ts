@@ -21,8 +21,27 @@ import {
   extractRichText,
   extractSelect,
 } from "../notion/extractors.js"
+import { LruCache } from "./cache.js"
+
+/** Project name → Project cache. TTL is short enough that a rename in
+ *  Notion surfaces within a minute; cap is generous because projects are
+ *  few and long-lived. */
+const NAME_CACHE_TTL_MS = 60_000
+const NAME_CACHE_MAX = 200
 
 export class ProjectService {
+  /**
+   * Name → Project cache. **Invariant**: every mutation that changes a
+   * Project's `Name` property must invalidate this cache, or a 60s
+   * stale-name→id window opens for every caller that names the project.
+   * Today only `create` and `archive` touch the cache; a future rename
+   * or `update` method must extend this list.
+   */
+  private readonly nameCache = new LruCache<string, Project>(
+    NAME_CACHE_MAX,
+    NAME_CACHE_TTL_MS
+  )
+
   constructor(
     private client: Client,
     private db: DatabaseRef
@@ -39,6 +58,9 @@ export class ProjectService {
       }),
     })
 
+    // Drop any prior cache entry for this name so a negative-lookup
+    // replayed against a stale session sees the new page.
+    this.nameCache.delete(input.name)
     return this.pageToProject(page as PageObjectResponse)
   }
 
@@ -79,7 +101,18 @@ export class ProjectService {
     return page ? this.pageToProject(page) : null
   }
 
+  /**
+   * Look up a project by exact name match. Cached in-process for
+   * `NAME_CACHE_TTL_MS` so a multi-tool MCP conversation referencing the
+   * same project pays one Notion round-trip, not one per tool call.
+   *
+   * Negative lookups are not cached — a `create` followed by a
+   * `findByName` in the same session must see the new page.
+   */
   async findByName(name: string): Promise<Project | null> {
+    const cached = this.nameCache.get(name)
+    if (cached) return cached
+
     const response = await this.client.dataSources.query({
       data_source_id: this.db.dataSourceId,
       filter: {
@@ -88,7 +121,11 @@ export class ProjectService {
       },
     })
     const page = response.results.filter(isFullPage)[0] as PageObjectResponse | undefined
-    return page ? this.pageToProject(page) : null
+    if (!page) return null
+
+    const project = this.pageToProject(page)
+    this.nameCache.set(name, project)
+    return project
   }
 
   async archive(id: string): Promise<void> {
@@ -98,6 +135,16 @@ export class ProjectService {
         Status: { select: { name: "archived" } },
       },
     })
+    // Archiving flips a status field inside any cached copy. We don't
+    // track the name→id reverse mapping, so drop the whole cache rather
+    // than serve stale Status values. Archives are rare.
+    this.nameCache.clear()
+  }
+
+  /** Reset the in-process name cache. Used by tests and by the
+   *  cross-service `clearServiceCaches()` helper. */
+  clearNameCache(): void {
+    this.nameCache.clear()
   }
 
   private pageToProject(page: PageObjectResponse): Project {

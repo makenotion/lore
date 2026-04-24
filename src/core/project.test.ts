@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { ProjectService } from "./project.js"
 import type { DatabaseRef } from "../types.js"
@@ -24,10 +24,18 @@ function projectPage(id: string, name: string): PageObjectResponse {
 
 function createMockClient() {
   return {
+    pages: {
+      create: vi.fn(),
+      update: vi.fn().mockResolvedValue({}),
+    },
     dataSources: {
       query: vi.fn(),
     },
   } as unknown as Client & {
+    pages: {
+      create: ReturnType<typeof vi.fn>
+      update: ReturnType<typeof vi.fn>
+    }
     dataSources: { query: ReturnType<typeof vi.fn> }
   }
 }
@@ -73,5 +81,115 @@ describe("ProjectService.list — pagination", () => {
     expect(projects.map((p) => p.id)).toEqual(["p1", "p2"])
     expect(client.dataSources.query).toHaveBeenCalledTimes(2)
     expect(client.dataSources.query.mock.calls[1][0].start_cursor).toBe("page-2")
+  })
+})
+
+describe("ProjectService.findByName — cache", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("serves repeat lookups from the in-process cache without re-querying Notion", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [projectPage("p1", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    const first = await service.findByName("alpha")
+    const second = await service.findByName("alpha")
+    const third = await service.findByName("alpha")
+
+    expect(first?.id).toBe("p1")
+    expect(second?.id).toBe("p1")
+    expect(third?.id).toBe("p1")
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+  })
+
+  it("requeries Notion after the TTL elapses", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [projectPage("p1", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await service.findByName("alpha")
+    vi.advanceTimersByTime(60_001)
+    await service.findByName("alpha")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not cache negative lookups (null result)", async () => {
+    const client = createMockClient()
+    client.dataSources.query
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const service = new ProjectService(client, DB)
+
+    expect(await service.findByName("missing")).toBeNull()
+    expect(await service.findByName("missing")).toBeNull()
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("invalidates the cache entry on create so a subsequent findByName hits Notion", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [projectPage("p1", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValue(projectPage("p2", "alpha"))
+    const service = new ProjectService(client, DB)
+
+    await service.findByName("alpha")
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+
+    await service.create({ name: "alpha" })
+    await service.findByName("alpha")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("clears the cache on archive", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [projectPage("p1", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await service.findByName("alpha")
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+
+    await service.archive("p1")
+    await service.findByName("alpha")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+  })
+
+  it("clearNameCache() forces the next lookup back to Notion", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [projectPage("p1", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await service.findByName("alpha")
+    service.clearNameCache()
+    await service.findByName("alpha")
+
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
   })
 })

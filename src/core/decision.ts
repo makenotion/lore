@@ -29,11 +29,25 @@ import { buildMemoryProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { isFullPage } from "../notion/extractors.js"
 import { pageToMemory } from "./memory.js"
+import { LruCache } from "./cache.js"
 
 /** Days to push `Review By` forward when `reviewCompleted` is called with no explicit date. */
 const DEFAULT_REVIEW_EXTENSION_DAYS = 90
 
+/** Decision id → Decision cache. Shorter TTL than the project/topic
+ *  name caches because decisions mutate (supersession, review-completion)
+ *  more than project metadata. Cap is generous — decisions are numerous
+ *  but access patterns are bursty around `lore-wake-up` and
+ *  `lore-decision-context`. */
+const DECISION_CACHE_TTL_MS = 30_000
+const DECISION_CACHE_MAX = 500
+
 export class DecisionService {
+  private readonly idCache = new LruCache<string, Decision>(
+    DECISION_CACHE_MAX,
+    DECISION_CACHE_TTL_MS
+  )
+
   constructor(
     private client: Client,
     private db: DatabaseRef
@@ -76,10 +90,21 @@ export class DecisionService {
 
     // The page we just created is guaranteed to have `Kind = decision` because
     // we set it explicitly above — the cast is safe by construction.
-    return pageToMemory(page as PageObjectResponse, input.rationale ?? "") as Decision
+    const decision = pageToMemory(
+      page as PageObjectResponse,
+      input.rationale ?? ""
+    ) as Decision
+    // A fresh id is unlikely to collide with a cached entry, but a
+    // supersede-and-recreate flow in the same session could. Drop
+    // anything under this id so getById doesn't serve a ghost.
+    this.idCache.delete(decision.id)
+    return decision
   }
 
   async getById(id: string): Promise<Decision> {
+    const cached = this.idCache.get(id)
+    if (cached) return cached
+
     const [page, md] = await Promise.all([
       this.client.pages.retrieve({ page_id: id }),
       this.client.pages.retrieveMarkdown({ page_id: id }),
@@ -91,7 +116,9 @@ export class DecisionService {
           "Use MemoryService for non-decision memories."
       )
     }
-    return memory as Decision
+    const decision = memory as Decision
+    this.idCache.set(id, decision)
+    return decision
   }
 
   /**
@@ -164,7 +191,13 @@ export class DecisionService {
    */
   async supersede(newId: string, oldId: string): Promise<void> {
     // Step 1: add oldId to the new decision's Supersedes relation.
-    // Preserve any existing supersedesIds so we don't clobber prior entries.
+    // Preserve any existing supersedesIds so we don't clobber prior
+    // entries.
+    //
+    // Pre-read eviction: `merged` is the writeback base, and a stale
+    // cached `supersedesIds` would let us clobber supersessions added
+    // elsewhere inside the TTL window.
+    this.idCache.delete(newId)
     const newDecision = await this.getById(newId)
     const existing = newDecision.supersedesIds
     const merged = existing.includes(oldId) ? existing : [...existing, oldId]
@@ -175,6 +208,9 @@ export class DecisionService {
         Supersedes: { relation: merged.map((id) => ({ id })) },
       } as CreatePageParameters["properties"],
     })
+    // Post-write eviction: the Supersedes relation just changed on
+    // Notion's side, so any future getById must refetch.
+    this.idCache.delete(newId)
 
     // Step 2: mark the old decision as superseded.
     await this.client.pages.update({
@@ -183,6 +219,7 @@ export class DecisionService {
         Status: { select: { name: "superseded" } },
       } as CreatePageParameters["properties"],
     })
+    this.idCache.delete(oldId)
   }
 
   /**
@@ -220,6 +257,7 @@ export class DecisionService {
         "Review By": { date: { start: reviewDate } },
       } as CreatePageParameters["properties"],
     })
+    this.idCache.delete(id)
   }
 
   /**
@@ -251,6 +289,12 @@ export class DecisionService {
 
     const pages = response.results.filter(isFullPage) as PageObjectResponse[]
     return pages.map((page) => toDecisionSummary(pageToMemory(page, "") as Decision))
+  }
+
+  /** Reset the in-process decision cache. Used by tests and by the
+   *  cross-service `clearServiceCaches()` helper. */
+  clearCache(): void {
+    this.idCache.clear()
   }
 }
 
