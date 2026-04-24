@@ -281,16 +281,20 @@ orchestrates `decisions` + `facts` together — consistent with how
 The MCP server is a long-lived stdio process that frequently resolves the
 same `projectName` or `topicName` across multiple tool calls in a single
 conversation. `src/core/cache.ts` provides `LruCache<K, V>`, a minimal
-LRU + TTL cache; three resolvers use it:
+LRU + TTL cache; four resolvers use it:
 
 | Resolver                        | Keyed on    | TTL  | Cap |
 | ------------------------------- | ----------- | ---- | --- |
 | `ProjectService.findByName`     | name        | 60s  | 200 |
 | `TopicService.findByName`       | name¹       | 60s  | 500 |
+| `MemoryService.getTitleById`    | memory id²  | 60s  | 500 |
 | `DecisionService.getById`       | decision id | 30s  | 500 |
 
 ¹ Only unscoped (no `projectId`) lookups are cached. The scoped variant is
 a legacy-vault safety valve with different result shape.
+
+² Covers `Kind = decision` pages too — both live in the Memories DB and
+`render.ts:resolveTitles` resolves labels for either via this one pool.
 
 **Cached values are not cache hazards.** Negative lookups (null) are never
 cached, and throws are never cached — only successful resolutions. Writes
@@ -312,6 +316,10 @@ than observing a poisoned miss.
 - `TopicService.create` invalidates by name; `getOrCreate` proactively
   `set`s the post-extend refetched topic so subsequent lookups see the
   authoritative relation.
+- `MemoryService.update` evicts the id's title cache entry *before* the
+  write so a concurrent `getTitleById` can't re-cache the stale title.
+  `archive` also evicts so a follow-up read returns `null`, not the
+  last-known-good title.
 - `DecisionService.create` / `supersede` / `reviewCompleted` invalidate
   the affected ids.
 

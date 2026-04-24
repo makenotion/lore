@@ -435,3 +435,397 @@ describe("MemoryService.list — pagination", () => {
     })
   })
 })
+
+describe("MemoryService.getTitleById — title cache", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function titlePage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+      },
+      { id, parent: { type: "database_id", database_id: db.databaseId } },
+    )
+  }
+
+  it("skips the Notion call on repeat reads within the TTL window", async () => {
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
+      titlePage(page_id, "Cached title"),
+    )
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const first = await service.getTitleById("mem-1")
+    const second = await service.getTitleById("mem-1")
+
+    expect(first).toBe("Cached title")
+    expect(second).toBe("Cached title")
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("collapses concurrent cold-start misses onto a single retrieve", async () => {
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+      await new Promise((r) => setTimeout(r, 5))
+      return titlePage(page_id, "Once")
+    })
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const values = await Promise.all([
+      service.getTitleById("mem-1"),
+      service.getTitleById("mem-1"),
+      service.getTitleById("mem-1"),
+      service.getTitleById("mem-1"),
+    ])
+
+    expect(values).toEqual(["Once", "Once", "Once", "Once"])
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("evicts on update so a subsequent read sees the new title", async () => {
+    let currentTitle = "Old"
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
+      titlePage(page_id, currentTitle),
+    )
+    const updateSpy = vi.fn(async () => {
+      currentTitle = "New"
+      return titlePage("mem-1", "New")
+    })
+    const markdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        update: updateSpy,
+        retrieveMarkdown: markdownSpy,
+        updateMarkdown: vi.fn(async () => ({})),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-1")).toBe("Old")
+    await service.update("mem-1", { title: "New" })
+    // The cache was evicted before the update write, so this read goes
+    // back to Notion and picks up the post-update state.
+    expect(await service.getTitleById("mem-1")).toBe("New")
+  })
+
+  it("caches a null tombstone after archive so subsequent reads issue zero Notion calls", async () => {
+    // Reviewer concern: Notion returns archived pages as full
+    // PageObjectResponse with `archived: true` and every property
+    // populated (including Title). A lazy evict-only implementation would
+    // re-fetch after archive and `extractTitle` would happily read the
+    // archived title — a real-world bug the earlier test missed by
+    // faking the post-archive shape as a throw.
+    //
+    // The correct behaviour: `archive()` installs a null tombstone in
+    // the cache, so the next `getTitleById` short-circuits without a
+    // network call at all.
+    const retrieveSpy = vi.fn(
+      async ({ page_id }: { page_id: string }) => titlePage(page_id, "Before"),
+    )
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: { retrieve: retrieveSpy, update: updateSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-1")).toBe("Before")
+    const beforeArchiveCalls = retrieveSpy.mock.calls.length
+
+    await service.archive("mem-1")
+
+    expect(await service.getTitleById("mem-1")).toBeNull()
+    // Zero additional fetches after archive — the tombstone cached at
+    // archive time short-circuits the read path.
+    expect(retrieveSpy.mock.calls.length).toBe(beforeArchiveCalls)
+  })
+
+  it("caches a null tombstone when the underlying page is archived at fetch time", async () => {
+    // The faithful Notion semantic: archived pages return a full
+    // PageObjectResponse with `archived: true` and a populated title.
+    // `getTitleById` must treat that as absent and return null without
+    // reading the Title property — otherwise we'd serve titles for
+    // pages the user has explicitly archived.
+    const archivedPage = buildPage(
+      { Title: { type: "title", title: [{ plain_text: "Archived title" }] } },
+      { id: "mem-1", archived: true },
+    )
+    const retrieveSpy = vi.fn(async () => archivedPage)
+    const client = {
+      pages: { retrieve: retrieveSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-1")).toBeNull()
+    // Second call hits the tombstone — zero additional fetches.
+    expect(await service.getTitleById("mem-1")).toBeNull()
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not cache transient errors — next caller retries", async () => {
+    // Rate-limit blip and network error paths must NOT install a
+    // tombstone, or a 60-second TTL window would degrade every render
+    // of the affected ID to `(?)`. The next caller must retry.
+    const retrieveSpy = vi
+      .fn<(args: { page_id: string }) => Promise<PageObjectResponse>>()
+      .mockImplementationOnce(async () => {
+        throw new Error("transient 429")
+      })
+      .mockImplementationOnce(async ({ page_id }) => titlePage(page_id, "Recovered"))
+    const client = {
+      pages: { retrieve: retrieveSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-1")).toBeNull()
+    // Second call runs the loader again — no poisoned tombstone.
+    expect(await service.getTitleById("mem-1")).toBe("Recovered")
+    expect(retrieveSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("re-fetches after TTL expiry", async () => {
+    // Spec acceptance criterion: TTL expiry re-fetches. Pins that the
+    // cache isn't accidentally holding values forever.
+    vi.useFakeTimers()
+    try {
+      const retrieveSpy = vi.fn(
+        async ({ page_id }: { page_id: string }) => titlePage(page_id, "T"),
+      )
+      const client = {
+        pages: { retrieve: retrieveSpy },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      expect(await service.getTitleById("mem-1")).toBe("T")
+      expect(retrieveSpy).toHaveBeenCalledTimes(1)
+
+      // Advance past the 60s TTL.
+      vi.advanceTimersByTime(61_000)
+
+      expect(await service.getTitleById("mem-1")).toBe("T")
+      expect(retrieveSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("25-UUID repeat wake-up (24 present + 1 archived) issues zero pages.retrieve on the second run", async () => {
+    // Integration-level acceptance criterion for PF1-07: repeat
+    // `resolveTitles` calls (the render-layer batch used by
+    // `lore-wake-up`) over the same id set must hit the cache on the
+    // second run.
+    //
+    // The mixed id is *archived*, not a 404 — Notion returns a full
+    // response with `archived: true`, which is the "known-absent"
+    // tombstone-cacheable case. Genuinely-missing ids (whose
+    // `pages.retrieve` throws) take the transient path and are NOT
+    // cached by design — that shape is covered by a separate test
+    // below. Keeping the two scenarios distinct prevents the earlier
+    // ambiguity where "missing-id" was named like a 404 but mocked like
+    // an archive.
+    const ids = Array.from({ length: 24 }, (_, i) => `mem-${i.toString().padStart(2, "0")}`)
+    ids.push("archived-id")
+
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+      if (page_id === "archived-id") {
+        return buildPage(
+          { Title: { type: "title", title: [{ plain_text: "doesn't matter" }] } },
+          { id: page_id, archived: true },
+        )
+      }
+      return titlePage(page_id, `Title of ${page_id}`)
+    })
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const loader = (id: string) => service.getTitleById(id)
+
+    // First run — one retrieve per distinct id.
+    const { resolveTitles } = await import("../mcp/render.js")
+    const first = await resolveTitles(ids, loader)
+    // Present ids render their title; the archived id is dropped by resolveTitles.
+    expect(first.size).toBe(24)
+    const firstRunCalls = retrieveSpy.mock.calls.length
+    expect(firstRunCalls).toBe(25)
+
+    // Second run — every id hits the cache (values + archived tombstone). Zero fetches.
+    const second = await resolveTitles(ids, loader)
+    expect(second.size).toBe(24)
+    expect(retrieveSpy.mock.calls.length).toBe(firstRunCalls)
+  })
+
+  it("genuinely-missing ids (404/throw) do NOT tombstone — next wake-up retries", async () => {
+    // Complements the archived-id integration test above: a 404 / network
+    // error takes the transient path, so the second call re-fetches rather
+    // than serving a stale tombstone. This was the reviewer's concern —
+    // previously the "missing-id" test conflated archived (tombstone) with
+    // missing (transient), which are different paths with different
+    // caching semantics.
+    const ids = ["mem-01", "truly-gone"]
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+      if (page_id === "truly-gone") throw new Error("404 not found")
+      return titlePage(page_id, `Title of ${page_id}`)
+    })
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const loader = (id: string) => service.getTitleById(id)
+    const { resolveTitles } = await import("../mcp/render.js")
+
+    await resolveTitles(ids, loader)
+    await resolveTitles(ids, loader)
+
+    // mem-01 is cached after the first run (1 fetch total).
+    // truly-gone takes the transient path on both runs (2 fetches total).
+    const callsForPresent = retrieveSpy.mock.calls.filter(
+      (c) => c[0].page_id === "mem-01",
+    ).length
+    const callsForMissing = retrieveSpy.mock.calls.filter(
+      (c) => c[0].page_id === "truly-gone",
+    ).length
+    expect(callsForPresent).toBe(1)
+    expect(callsForMissing).toBe(2)
+  })
+
+  it("does not clobber the writer's post-update title when a reader was already in flight", async () => {
+    // The race the reviewer flagged: reader A's `pages.retrieve` resolves
+    // AFTER writer's `update()` has installed the authoritative new title
+    // via write-through. Without the epoch guard, reader A would overwrite
+    // the writer's value with the pre-update page. With the guard, reader
+    // A observes a bumped epoch at commit and refuses to write, leaving
+    // the writer's authoritative value in the cache.
+    let releaseRead!: () => void
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    const updateSpy = vi.fn(async () => ({}))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    // `getById` after update needs its own retrieve; return "New title".
+    let retrieveCount = 0
+    const retrieveAll = vi.fn(async ({ page_id }: { page_id: string }) => {
+      retrieveCount++
+      // First retrieve (reader A) is gated + returns "Old".
+      if (retrieveCount === 1) {
+        await readGate
+        return titlePage(page_id, "Old title")
+      }
+      // Subsequent retrieves (post-update getById) return "New".
+      return titlePage(page_id, "New title")
+    })
+    const client = {
+      pages: {
+        retrieve: retrieveAll,
+        update: updateSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    // Dispatch reader A; it awaits the gate.
+    const readerA = service.getTitleById("mem-1")
+
+    // Writer runs to completion: its `update()` call issues a
+    // `pages.update` + post-update `getById` (returns "New title") + a
+    // write-through `titleCache.set("mem-1", "New title")`.
+    await service.update("mem-1", { title: "New title" })
+
+    // Release reader A. The retrieve resolves with the pre-update page.
+    releaseRead()
+    const readerAResult = await readerA
+
+    // Reader A sees the pre-update page content — reads don't block on
+    // writes.
+    expect(readerAResult).toBe("Old title")
+
+    // But the cache retains the writer's authoritative "New title" —
+    // reader A's stale value was NOT committed because the write epoch
+    // advanced during its retrieve.
+    expect(await service.getTitleById("mem-1")).toBe("New title")
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not clobber when a reader dispatches DURING the writer's pages.update", async () => {
+    // Finding #5 from PR #54 round-2 review: the generation counter
+    // protects readers dispatched *before* the writer's pre-bump, but
+    // also needs to protect readers dispatched *during* the in-flight
+    // Notion write — after the pre-bump but before the post-bump.
+    // Without the post-write sandwich bump, such a reader's
+    // `writeEpoch === startEpoch` check would pass and it would commit
+    // a stale value, clobbering the writer's authoritative `set`.
+    //
+    // The scenario:
+    //   t0: getTitleById("mem-1") → cache miss, captures startEpoch=1
+    //       (pre-bump has already fired from a prior update)
+    //   t1: dispatches pages.retrieve (gated)
+    //   t2: writer runs update() to completion: pre-bump (ep=2), delete,
+    //       pages.update, getById (→ "Newest"), set(id, "Newest"),
+    //       post-bump (ep=3)
+    //   t3: reader's retrieve resolves with the pre-"Newest" page
+    //       ("Pre-race"). Epoch check: writeEpoch=3 ≠ startEpoch=1 →
+    //       commit skipped. Cache keeps "Newest".
+    //
+    // If the post-bump were missing, at t3 writeEpoch=2 === startEpoch=1
+    // would still catch it (because the pre-bump fired). But if the
+    // reader's start was AFTER the pre-bump (startEpoch=2), only the
+    // post-bump catches it.
+    const service = new MemoryService(
+      {
+        pages: {
+          retrieve: vi.fn(),
+          update: vi.fn(),
+          retrieveMarkdown: vi.fn(),
+        },
+      } as unknown as Client,
+      db,
+    )
+
+    // Simulate: reader dispatches at startEpoch=2, which is exactly
+    // the state between pre-bump and post-bump of a running writer.
+    // The simplest way to model that: manually bump once, then invoke
+    // the read path, then bump again, then simulate the retrieve
+    // resolving.
+    ;(service as unknown as { writeEpoch: number }).writeEpoch = 2
+    const startEpoch = (service as unknown as { writeEpoch: number }).writeEpoch
+    expect(startEpoch).toBe(2)
+
+    // Manually bump a second time — this is what `update()`'s post-write
+    // set+bump does. If the sandwich is correctly installed, a reader
+    // that captured startEpoch=2 must not commit when writeEpoch=3.
+    ;(service as unknown as { bumpWriteEpoch: () => void }).bumpWriteEpoch()
+    expect((service as unknown as { writeEpoch: number }).writeEpoch).toBe(3)
+
+    // Invoke the private commit-decision logic: manually set a value into
+    // the cache at epoch=3 (simulating the writer's write-through), then
+    // try to call fetchTitleAndCache with the stale startEpoch=2. The
+    // epoch check should skip the commit.
+    const titleCache = (service as unknown as {
+      titleCache: { get(id: string): unknown; set(id: string, v: string | null): void }
+    }).titleCache
+    titleCache.set("mem-1", "Newest")
+
+    // Manually run a "reader that captured startEpoch=2" path via the
+    // private fetchTitleAndCache.
+    const page = buildPage(
+      { Title: { type: "title", title: [{ plain_text: "Pre-race" }] } },
+      { id: "mem-1" },
+    )
+    const client = (service as unknown as { client: Client }).client as Client & {
+      pages: { retrieve: ReturnType<typeof vi.fn> }
+    }
+    client.pages.retrieve = vi.fn(async () => page)
+
+    const result = await (
+      service as unknown as {
+        fetchTitleAndCache(id: string, startEpoch: number): Promise<string | null>
+      }
+    ).fetchTitleAndCache("mem-1", 2)
+
+    // Reader returns the pre-race page's title — reads don't block on writes.
+    expect(result).toBe("Pre-race")
+    // But the cache still holds "Newest" — the stale commit was suppressed.
+    expect(titleCache.get("mem-1")).toBe("Newest")
+  })
+})

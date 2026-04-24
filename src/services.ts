@@ -107,5 +107,6 @@ export async function initServices(cwd?: string): Promise<LoreServices> {
 export function clearServiceCaches(services: LoreServices): void {
   services.projects.clearNameCache()
   services.topics.clearNameCache()
+  services.memories.clearTitleCache()
   services.decisions.clearCache()
 }
