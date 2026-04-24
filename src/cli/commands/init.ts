@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { stringify as yamlStringify } from "yaml"
 import { createClient } from "../../notion/client.js"
+import { createLimitedClient } from "../../notion/rate-limit.js"
 import { VaultManager } from "../../core/vault.js"
 import { resolveToken } from "../../config.js"
 import type { LoreConfig } from "../../types.js"
@@ -13,7 +14,12 @@ export const initCommand = new Command("init")
   .option("--token <token>", "Notion integration token (or set LORE_NOTION_TOKEN)")
   .action(async (pageId: string, opts: { token?: string }) => {
     const token = opts.token ?? (await resolveToken())
-    const client = createClient(token)
+    // Wrap the raw client so `lore init`'s database-creation fan-out
+    // (four pages.create + assorted reads) stays under Notion's rps
+    // ceiling just like the MCP/CLI hot paths. No config is loaded here
+    // yet so use the default concurrency; operators with a custom value
+    // in `.lore.yaml` pick it up on subsequent commands.
+    const client = createLimitedClient(createClient(token))
     const vault = new VaultManager(client, pageId)
 
     console.log("Creating Lore databases in Notion...")

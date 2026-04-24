@@ -412,6 +412,16 @@ export interface LoreConfig {
     token?: string
     baseUrl?: string
   }
+  notion?: {
+    rateLimit?: {
+      /**
+       * Max outbound Notion API calls in flight at once. Shared across every
+       * tool call and hook spawned by this process. Defaults to 3 to match
+       * Notion's public rate-limit guidance.
+       */
+      concurrency?: number
+    }
+  }
   projects?: ProjectConfig[]
   detect?: {
     patterns?: string[]

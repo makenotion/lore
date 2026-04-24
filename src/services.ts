@@ -8,6 +8,7 @@
 
 import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
 import { createClient } from "./notion/client.js"
+import { createLimitedClient, DEFAULT_NOTION_CONCURRENCY } from "./notion/rate-limit.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
 import { TopicService } from "./core/topic.js"
@@ -42,7 +43,12 @@ export async function initServicesFromConfig(
   config: LoreConfig,
 ): Promise<LoreServices> {
   const auth = await resolveAuth(config)
-  const client = createClient(auth.token, auth.baseUrl)
+  const rawClient = createClient(auth.token, auth.baseUrl)
+  // Every downstream service shares the same rate-limited Proxy so fan-out
+  // stays under Notion's public rps ceiling without per-call-site work.
+  const concurrency =
+    config.notion?.rateLimit?.concurrency ?? DEFAULT_NOTION_CONCURRENCY
+  const client = createLimitedClient(rawClient, concurrency)
 
   const vault = new VaultManager(client, config.vault.pageId)
   await vault.load()

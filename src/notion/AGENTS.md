@@ -14,6 +14,7 @@ No domain logic lives here -- that belongs in `src/core/`.
 | File            | Responsibility                                                            |
 | --------------- | ------------------------------------------------------------------------- |
 | `client.ts`     | Creates a configured `Client` instance with custom timeout and User-Agent |
+| `rate-limit.ts` | Proxy wrapper that caps outbound concurrency via `p-limit`                |
 | `schema.ts`     | Database property definitions + page property builder functions           |
 | `extractors.ts` | Type-safe property value extractors for `PageObjectResponse`              |
 | `setup.ts`      | Creates and verifies the four-database vault structure                    |
@@ -166,6 +167,43 @@ this pattern.
 
 `verifyVaultDatabases()` reads the vault page's child blocks and matches
 database titles to the expected names. This is used by `VaultManager.load()`.
+
+## Rate Limiting
+
+`rate-limit.ts` exports `createLimitedClient(client, concurrency)`. It returns
+a `Proxy` over the real client that routes every outbound method call through
+a shared `p-limit` gate, so fan-out (decision-graph walks, batch fact fetches,
+render-layer title lookups) stays under Notion's ~3 rps public guidance.
+
+The Proxy **recurses through sub-namespaces at arbitrary depth**, so
+three-level paths like `client.blocks.children.list`,
+`client.blocks.children.append`, and `client.pages.properties.retrieve`
+are governed alongside the two-level paths (`client.pages.retrieve`,
+`client.dataSources.query`) and top-level methods (`client.search`). A
+non-recursive wrapper would leak these three-level calls — an earlier
+revision of this module did, and `setup.ts`'s `blocks.children.list`
+verification sweep was ungoverned until the fix.
+
+`initServicesFromConfig` and `lore init` both wrap the raw client before
+handing it to services, using `config.notion.rateLimit.concurrency`
+(default `3`). `initServicesFromConfig` reads the config value;
+`lore init` runs before `.lore.yaml` exists, so it uses the default and
+picks up any custom concurrency on subsequent commands.
+
+Tests that inject their own mock client remain unaffected because the
+wrap happens inside `initServicesFromConfig` / `lore init`, not at
+construction of `ProjectService` / `TopicService` / etc. If a test wants
+to observe limiter behaviour with a mock, it should wrap the mock
+explicitly via `createLimitedClient`.
+
+**When adding a new SDK call site**, extend `rate-limit.test.ts` with a
+case that asserts the limiter governs the new path. The recursive wrap
+handles any depth automatically, but the invariant is easy to regress
+silently — for example, an SDK method that returns a function (deep
+promise chains, future higher-order factories) or a change to the
+SDK's property shape could bypass the wrap without any type-level
+signal. The scar tissue is: a one-line test per new top-level or
+nested method saves the next regression.
 
 ## Filter Type Casting
 

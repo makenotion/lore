@@ -24,6 +24,15 @@ const configSchema = z.object({
       baseUrl: z.string().url().optional(),
     })
     .optional(),
+  notion: z
+    .object({
+      rateLimit: z
+        .object({
+          concurrency: z.number().int().positive().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
   projects: z
     .array(
       z.object({
