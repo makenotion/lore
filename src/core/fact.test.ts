@@ -279,6 +279,197 @@ describe("FactService.listRecent", () => {
   })
 })
 
+describe("FactService.listTracking", () => {
+  it("filters by the tracking-predicate set and Valid Until is_empty", async () => {
+    // Every tracking predicate must land in the OR clause; skipping one
+    // would silently exclude `blocked_by` (or whichever) facts from
+    // `lore-open-loops` output.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.listTracking({ projectId: "p1" })
+
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    expect(filter).toHaveProperty("and")
+
+    // Multiple OR groups coexist inside the compound AND: the project-
+    // scope filter, the predicate filter, and (when set) the entity
+    // filter. Pick the one whose children are select-equals on Predicate.
+    const predicateGroup = filter.and.find((c) => {
+      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+      if (!Array.isArray(maybeOr)) return false
+      return maybeOr.every(
+        (clause) => (clause as { property?: string }).property === "Predicate",
+      )
+    }) as { or: Array<{ property: string; select: { equals: string } }> }
+    expect(predicateGroup).toBeDefined()
+    const predicates = predicateGroup.or.map((c) => c.select.equals).sort()
+    expect(predicates).toEqual([...TRACKING_PREDICATES].sort())
+
+    const validUntilClause = filter.and.find(
+      (c) => (c as { property?: string }).property === "Valid Until",
+    )
+    expect(validUntilClause).toMatchObject({
+      property: "Valid Until",
+      date: { is_empty: true },
+    })
+  })
+
+  it("adds an OR(Subject contains, Object contains) clause when entity is set", async () => {
+    // Entity filter must match both sides — PR slugs commonly appear as
+    // the Object of a `waiting_on` fact, while service names are
+    // Subjects. Losing either side silently halves recall.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.listTracking({ projectId: "p1", entity: "PR #25751" })
+
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    const entityGroup = filter.and.find((c) => {
+      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+      if (!Array.isArray(maybeOr)) return false
+      const props = maybeOr.map((clause) => (clause as { property?: string }).property)
+      return props.includes("Subject") && props.includes("Object")
+    }) as { or: Array<Record<string, unknown>> }
+    expect(entityGroup).toBeDefined()
+
+    const subject = entityGroup.or.find(
+      (c) => (c as { property?: string }).property === "Subject",
+    ) as { property: string; title: { contains: string } }
+    const object = entityGroup.or.find(
+      (c) => (c as { property?: string }).property === "Object",
+    ) as { property: string; rich_text: { contains: string } }
+    expect(subject).toMatchObject({
+      property: "Subject",
+      title: { contains: "PR #25751" },
+    })
+    expect(object).toMatchObject({
+      property: "Object",
+      rich_text: { contains: "PR #25751" },
+    })
+  })
+
+  it("sorts by Review By ascending, then created_time descending", async () => {
+    // Pinned: the service-side sort biases early pages toward high-signal
+    // rows (soonest review first) so capped callers see the important
+    // stuff even if they never paginate past page 1.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.listTracking({ projectId: "p1" })
+
+    expect(calls[0].sorts).toEqual([
+      { property: "Review By", direction: "ascending" },
+      { timestamp: "created_time", direction: "descending" },
+    ])
+  })
+
+  it("paginates across multiple Notion pages when limit is undefined", async () => {
+    // `all: true` in the tool layer translates to limit=undefined here.
+    // The worst-case Mail vault has ~271 open loops, which spans three
+    // 100-row pages. A single-page walk would undercount by ~63%.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f1-${i}` }),
+    )
+    const page2 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f2-${i}` }),
+    )
+    const page3 = Array.from({ length: 71 }, (_, i) =>
+      buildFactPage({ id: `f3-${i}` }),
+    )
+    const { client, querySpy } = createClient([
+      { results: page1, has_more: true, next_cursor: "c1" },
+      { results: page2, has_more: true, next_cursor: "c2" },
+      { results: page3, has_more: false, next_cursor: null },
+    ])
+    const service = new FactService(client, db)
+
+    const { items, hasMore } = await service.listTracking({ projectId: "p1" })
+
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    expect(items).toHaveLength(271)
+    expect(hasMore).toBe(false)
+    // Second call must thread the cursor from page 1.
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
+    expect(querySpy.mock.calls[2][0]).toMatchObject({ start_cursor: "c2" })
+  })
+
+  it("stops paginating once the limit is reached and reports hasMore=true", async () => {
+    // Limit-reached-mid-page is the interesting case: Notion may still
+    // have rows in the response after we hit the cap. `hasMore` must
+    // reflect that so the tool layer can surface a "+N more" hint.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f-${i}` }),
+    )
+    const { client, querySpy } = createClient([
+      { results: page1, has_more: true, next_cursor: "c1" },
+    ])
+    const service = new FactService(client, db)
+
+    const { items, hasMore } = await service.listTracking({ projectId: "p1", limit: 10 })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(items).toHaveLength(10)
+    expect(hasMore).toBe(true)
+  })
+
+  it("reports hasMore=false when the full result set fits under the limit", async () => {
+    // Corollary to the previous test: if a scoped vault has 3 open loops
+    // and the caller asks for 10, `hasMore` must be false so the tool
+    // doesn't emit a misleading "+N hidden" hint.
+    const { client } = createClient([
+      { results: [buildFactPage({ id: "f1" })], has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    const { items, hasMore } = await service.listTracking({ projectId: "p1", limit: 10 })
+
+    expect(items).toHaveLength(1)
+    expect(hasMore).toBe(false)
+  })
+
+  it("reports hasMore=false when limit exactly matches the last page size", async () => {
+    // Boundary case the other two tests miss: the caller asked for 100,
+    // the page returned exactly 100 rows, and Notion signalled no more
+    // pages. `items.length >= limit` IS true so we enter the limit-hit
+    // branch, but `appended === pages.length` and `nextCursor` is
+    // undefined — expect hasMore=false. Pinning this stops a future
+    // refactor that accidentally sets `hasMore = true` whenever the
+    // limit-branch fires.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f-${i}` }),
+    )
+    const { client } = createClient([
+      { results: page1, has_more: false, next_cursor: null },
+    ])
+    const service = new FactService(client, db)
+
+    const { items, hasMore } = await service.listTracking({
+      projectId: "p1",
+      limit: 100,
+    })
+
+    expect(items).toHaveLength(100)
+    expect(hasMore).toBe(false)
+  })
+
+  it("drops the Valid Until filter when includeInvalidated is true", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.listTracking({ projectId: "p1", includeInvalidated: true })
+
+    const filter = calls[0].filter as Record<string, unknown>
+    const clauses: Array<Record<string, unknown>> = Array.isArray(filter.and)
+      ? (filter.and as Array<Record<string, unknown>>)
+      : [filter]
+    const hasValidUntil = clauses.some(
+      (c) => (c as { property?: string }).property === "Valid Until",
+    )
+    expect(hasValidUntil).toBe(false)
+  })
+})
+
 describe("normalize", () => {
   it("collapses case, whitespace, and trailing punctuation", () => {
     expect(normalize("Foo")).toBe(normalize("foo"))

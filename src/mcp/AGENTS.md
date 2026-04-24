@@ -180,9 +180,53 @@ designed to remove.
 | `lore-learn` | Add a subject-predicate-object fact triple | No |
 | `lore-ask` | Query facts about an entity (as subject or object) | Yes |
 | `lore-correct` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) |
-| `lore-open-loops` | List active open loops (tracking predicate facts) | Yes |
+| `lore-open-loops` | List open loops, ranked and capped (tracking predicate facts) | Yes |
 | `lore-audit` | List all facts past their review-by date | Yes |
 | `lore-extend` | Push back a fact's review-by date | No |
+
+#### Open loops ranking contract
+
+`lore-open-loops` caps its output at **10 rows per section** (Overdue +
+Active) by default. The Mail vault has 271 open loops; an unbounded
+dump floods agent context and drowns the signal. Three knobs override
+the default:
+
+- **`{entity: "..."}`** — substring filter matched server-side against
+  `Subject` (title) and `Object` (rich_text) via an OR. Use this to
+  scope to a PR, service, or other entity. Cheap even on vaults with
+  hundreds of loops.
+- **`{limit: N}`** — override the per-section cap. `N` must be >= 1
+  (zero is rejected at the schema boundary; use `{all: true}` for full
+  output). Capped at 200.
+- **`{all: true}`** — bypass the cap entirely. Paginates through every
+  matching row via `FactService.listTracking`. Noisy on large vaults;
+  use for triage sweeps.
+
+**Ranking contract** (pinned by tests in `knowledge.test.ts`):
+
+- **Overdue**: most-overdue-first. Tiebreakers: `validFrom` desc, then
+  `id` lex. Urgency markers are rendered as `⚠⚠` at `>= 14` days
+  overdue (`OVERDUE_SEVERE_DAYS`) and `⚠` at `>= 1` day
+  (`OVERDUE_MILD_DAYS`); zero-day rows are overdue but unmarked.
+- **Active**: soonest-`reviewBy`-first. Null `reviewBy` sinks to the
+  bottom via an explicit-null comparator (not a sentinel string — see
+  `rankActive` in `tools/knowledge.ts`). Tiebreakers: `validFrom`
+  desc, then `id` lex.
+
+The sort comparators live in `tools/knowledge.ts` as `rankOverdue` /
+`rankActive` with full JSDoc. The two named constants
+`OVERDUE_SEVERE_DAYS` and `OVERDUE_MILD_DAYS` are the source of truth
+for the urgency thresholds. Changing any of this is observable to
+agents and requires a coordinated spec revision plus a server-version
+bump (the `0.2.0 → 0.3.0` bump landed with this contract).
+
+**Pagination caveat.** `FactService.listTracking` paginates to
+fulfil the request, unlike `listRecent` which is single-page. This
+honours the P1-02 `hasMore` caveat: Notion's `page_size` saturates at
+100, so `{all: true}` on a 228-`needs_action` vault cannot safely
+use a single-page helper. A 100-page safety valve (`LIST_TRACKING_MAX_PAGES`)
+clips runaway walks; the resulting `hasMore: true` surfaces to the
+agent as a "safety cap" warning.
 
 ### Digest Tools
 

@@ -6,7 +6,6 @@ import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
 
-import { TRACKING_PREDICATES } from "../../types.js"
 import type { Decision, Fact } from "../../types.js"
 
 /**
@@ -26,6 +25,75 @@ const DEFAULT_ASK_BUCKET_CAP = 5
  * dumping the whole graph.
  */
 const SUGGESTED_OVERFLOW_LIMIT = 20
+
+/**
+ * Default per-bucket cap for `lore-open-loops`. The Mail vault has 271 open
+ * loops; returning all of them on every ambient call floods the agent
+ * context. Ten per bucket matches how humans scan a triage list — enough
+ * to see the urgency spread, short enough to act on.
+ */
+const DEFAULT_OPEN_LOOPS_LIMIT = 10
+
+/** Days-overdue threshold for the `⚠⚠` marker. At or above this, the row is
+ * flagged as severely overdue. */
+const OVERDUE_SEVERE_DAYS = 14
+
+/** Days-overdue threshold for the `⚠` marker. At or above this (but below
+ * `OVERDUE_SEVERE_DAYS`), the row gets a single warning. Zero-day rows
+ * (reviewBy === today) are in the overdue bucket but unmarked. */
+const OVERDUE_MILD_DAYS = 1
+
+/**
+ * Ranking contract for `lore-open-loops`.
+ *
+ * **Overdue** (`rankOverdue`): sort by days-overdue **descending** — the
+ * most-overdue row floats to the top. Tiebreakers, in order:
+ * 1. `validFrom` **descending** — newer assertions of the same-age open
+ *    loop appear above dormant ones.
+ * 2. `id` ascending (lex) — ultimate deterministic tiebreaker so two rows
+ *    with identical age and `validFrom` (same-day assertions of identical
+ *    triples) still sort in a stable, test-pinnable order regardless of
+ *    Notion's result-page ordering.
+ *
+ * **Active** (`rankActive`): sort by `reviewBy` **ascending** — the row
+ * closest to its review date floats to the top. Null `reviewBy` sinks to
+ * the bottom via an explicit-null comparator (no sentinel string). Within
+ * equal `reviewBy`:
+ * 1. `validFrom` **descending** — see above.
+ * 2. `id` ascending (lex) — see above.
+ *
+ * Urgency markers (`rankOverdue` only): `⚠⚠` at >= `OVERDUE_SEVERE_DAYS`,
+ * `⚠` at >= `OVERDUE_MILD_DAYS`, empty below.
+ *
+ * This contract is pinned by tests in `knowledge.test.ts` under the
+ * `lore-open-loops` describe block. Changes here are observable to agents
+ * and require a coordinated spec revision.
+ */
+
+/** Ordering function for the Overdue bucket. See ranking contract above. */
+function rankOverdue(a: Fact, b: Fact, daysOverdue: (f: Fact) => number): number {
+  const byDays = daysOverdue(b) - daysOverdue(a)
+  if (byDays !== 0) return byDays
+  const byValidFrom = (b.validFrom ?? "").localeCompare(a.validFrom ?? "")
+  if (byValidFrom !== 0) return byValidFrom
+  return a.id.localeCompare(b.id)
+}
+
+/** Ordering function for the Active bucket. See ranking contract above. */
+function rankActive(a: Fact, b: Fact): number {
+  // Null reviewBy sinks to the bottom via explicit comparison — a sentinel
+  // string ("9999-12-31") would work today but would silently break if the
+  // type ever accepts ISO datetimes or a locale-aware format.
+  if (a.reviewBy === null && b.reviewBy !== null) return 1
+  if (a.reviewBy !== null && b.reviewBy === null) return -1
+  if (a.reviewBy !== null && b.reviewBy !== null) {
+    const byReview = a.reviewBy.localeCompare(b.reviewBy)
+    if (byReview !== 0) return byReview
+  }
+  const byValidFrom = (b.validFrom ?? "").localeCompare(a.validFrom ?? "")
+  if (byValidFrom !== 0) return byValidFrom
+  return a.id.localeCompare(b.id)
+}
 
 const PREDICATE_VALUES = [
   "is_a",
@@ -570,7 +638,10 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         "List active open loops — tracked items that need action, are waiting on something, " +
         "or are blocked. These are facts with tracking predicates (needs_action, waiting_on, " +
         "blocked_by) that haven't been resolved yet.\n\n" +
-        "Tracking facts auto-expire for review after 7 days. Overdue items are shown first.\n\n" +
+        "Tracking facts auto-expire for review after 7 days. Overdue items are shown first, " +
+        `ranked by days overdue; Active items are ranked by soonest review date. Returns up to ` +
+        `${DEFAULT_OPEN_LOOPS_LIMIT} per section by default — pass {all: true} for the full list ` +
+        "or {entity: \"...\"} to narrow to loops touching a specific subject or object substring.\n\n" +
         "To create an open loop, use lore-learn with a tracking predicate. " +
         "To resolve one, use lore-correct to invalidate the fact.",
       inputSchema: {
@@ -578,10 +649,35 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           .string()
           .optional()
           .describe("Override the auto-detected project."),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            "Substring filter matched against Subject OR Object. " +
+              "Use this to scope to a PR, service, or other entity."
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe(
+            `Max rows per section (Overdue / Active). Default ${DEFAULT_OPEN_LOOPS_LIMIT}. ` +
+              "Ignored when `all: true`. Zero is rejected — use `{all: true}` for " +
+              "full output or omit `limit` for the default cap."
+          ),
+        all: z
+          .boolean()
+          .optional()
+          .describe(
+            "Bypass the per-section cap and return every matching loop. " +
+              "Use for triage sweeps; noisy on large vaults."
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ projectName }) => {
+    async ({ projectName, entity, limit, all }) => {
       try {
         let projectId: string | undefined
         const warnings: string[] = []
@@ -598,44 +694,125 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           projectId = services.context.project.id
         }
 
-        const loops = await services.facts.queryBySubject("", {
-          projectId,
-          predicates: TRACKING_PREDICATES,
-        })
+        // `all: true` takes precedence over `limit`. The tool-layer cap is
+        // independent of the service-layer pagination safety valve, which
+        // still clips inside `FactService.listTracking` on runaway walks.
+        const perSectionCap = all
+          ? undefined
+          : limit !== undefined
+            ? limit
+            : DEFAULT_OPEN_LOOPS_LIMIT
+
+        // Fetch the full candidate set so we can bucket + rank independently.
+        // Capping at the service layer would bias toward one bucket on vaults
+        // dominated by overdue rows (or vice versa). The service paginates
+        // with its own safety cap.
+        const { items: loops, hasMore: serviceClipped } =
+          await services.facts.listTracking({ projectId, entity })
+
+        if (serviceClipped) {
+          warnings.push(
+            "Result set was clipped by the service-layer safety cap. Narrow the query with " +
+              "`entity` or `projectName` to see the remainder."
+          )
+        }
 
         if (loops.length === 0) {
+          const filterHint = entity ? ` matching "${entity}"` : ""
           const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
           return {
-            content: [{ type: "text", text: `No open loops found.${warn}` }],
+            content: [{ type: "text", text: `No open loops found${filterHint}.${warn}` }],
           }
         }
 
         const today = new Date().toISOString().split("T")[0]
-        const overdue = loops.filter((f) => f.reviewBy && f.reviewBy <= today)
-        const active = loops.filter((f) => !f.reviewBy || f.reviewBy > today)
+        const todayMs = new Date(today).getTime()
 
-        const formatLoop = (f: typeof loops[number]) => {
+        const daysOverdue = (f: Fact): number => {
+          if (!f.reviewBy || f.reviewBy > today) return 0
+          return Math.floor((todayMs - new Date(f.reviewBy).getTime()) / 86_400_000)
+        }
+
+        const overdueAll = loops
+          .filter((f) => f.reviewBy !== null && f.reviewBy <= today)
+          .sort((a, b) => rankOverdue(a, b, daysOverdue))
+
+        const activeAll = loops
+          .filter((f) => !f.reviewBy || f.reviewBy > today)
+          .sort(rankActive)
+
+        const overdue =
+          perSectionCap === undefined ? overdueAll : overdueAll.slice(0, perSectionCap)
+        const active =
+          perSectionCap === undefined ? activeAll : activeAll.slice(0, perSectionCap)
+
+        const urgencyMarker = (days: number): string => {
+          if (days >= OVERDUE_SEVERE_DAYS) return "⚠⚠ "
+          if (days >= OVERDUE_MILD_DAYS) return "⚠ "
+          return ""
+        }
+
+        const formatOverdue = (f: Fact): string => {
+          const days = daysOverdue(f)
+          const marker = urgencyMarker(days)
+          const daysLabel = days === 1 ? "1 day overdue" : `${days} days overdue`
           const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-          const review = f.reviewBy ? ` — review by ${f.reviewBy}` : ""
-          const tag = f.reviewBy && f.reviewBy <= today ? " **(OVERDUE)**" : ""
-          return `- **${f.subject}** \u2192 ${f.predicate.replace(/_/g, " ")} \u2192 **${f.object}** [${f.confidence}]${since}${review}${tag}  \n  ID: ${f.id}`
+          return (
+            `- ${marker}${daysLabel}: **${f.subject}** → ${f.predicate.replace(/_/g, " ")} ` +
+            `→ **${f.object}** [${f.confidence}]${since}\n  ID: ${f.id}`
+          )
+        }
+
+        const formatActive = (f: Fact): string => {
+          const since = f.validFrom ? ` (since ${f.validFrom})` : ""
+          const review = f.reviewBy ? ` — review by ${f.reviewBy}` : " — no review date"
+          return (
+            `- **${f.subject}** → ${f.predicate.replace(/_/g, " ")} → ` +
+            `**${f.object}** [${f.confidence}]${since}${review}\n  ID: ${f.id}`
+          )
+        }
+
+        const buildHeader = (label: string, shown: number, total: number): string => {
+          if (perSectionCap === undefined || shown >= total) return `### ${label} (${total})`
+          const hidden = total - shown
+          return `### ${label} (${shown} shown of ${total}, hiding ${hidden})`
         }
 
         const sections: string[] = []
-        if (overdue.length > 0) {
-          sections.push(`### Overdue (${overdue.length})\n\n${overdue.map(formatLoop).join("\n")}`)
+        if (overdueAll.length > 0) {
+          sections.push(
+            `${buildHeader("Overdue", overdue.length, overdueAll.length)}\n\n` +
+              overdue.map(formatOverdue).join("\n")
+          )
         }
-        if (active.length > 0) {
-          sections.push(`### Active (${active.length})\n\n${active.map(formatLoop).join("\n")}`)
+        if (activeAll.length > 0) {
+          sections.push(
+            `${buildHeader("Active", active.length, activeAll.length)}\n\n` +
+              active.map(formatActive).join("\n")
+          )
         }
 
+        // Escape-hatch hint — only surfaced when the default cap actually
+        // hid rows. Silent on narrow entity queries that fit inside the
+        // cap, and silent on `all: true` because nothing was hidden.
+        const anyTruncated =
+          overdue.length < overdueAll.length || active.length < activeAll.length
+        if (anyTruncated) {
+          sections.push(
+            "Pass `{all: true}` to see everything, `{limit: N}` for a different cap, " +
+              "or `{entity: \"...\"}` to narrow further."
+          )
+        }
+
+        const total = loops.length
+        const filterSuffix = entity ? ` touching "${entity}"` : ""
         const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
         return {
           content: [
             {
               type: "text",
-              text: `${loops.length} open loop${loops.length === 1 ? "" : "s"}:\n\n${sections.join("\n\n")}${warn}`,
+              text: `${total} open loop${total === 1 ? "" : "s"}${filterSuffix}:\n\n${sections.join("\n\n")}${warn}`,
             },
           ],
         }

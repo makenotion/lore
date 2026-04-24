@@ -70,8 +70,36 @@ type ListRecentOpts = {
   includeInvalidated?: boolean
 }
 
+type ListTrackingOpts = {
+  projectId?: string
+  /**
+   * Substring matched against both `Subject` (title) and `Object` (rich_text)
+   * via `or: [{contains}, {contains}]`. Scoping the filter server-side keeps
+   * entity-filtered `lore-open-loops` cheap on vaults where tracking facts
+   * outnumber the caller's interest (the Mail vault has 271 open loops; a
+   * PR-specific slice typically touches under 20).
+   */
+  entity?: string
+  /**
+   * Cap total rows fetched across pages. `undefined` means "fetch all" and
+   * paginates until the cursor is exhausted — unlike `listRecent`, which is
+   * single-page by design for the wake-up hot path. Callers wanting every
+   * tracking row (e.g. `lore-open-loops` with `all: true`) pass `undefined`.
+   */
+  limit?: number
+  includeInvalidated?: boolean
+}
+
 /** Notion's hard ceiling on `page_size`. */
 const NOTION_MAX_PAGE_SIZE = 100
+
+/**
+ * Safety cap on `listTracking` pagination: at 100 rows per page this caps at
+ * 10 000 rows, which is ~35× the Mail vault's worst-case open-loop count. A
+ * runaway cursor (bug or adversarial filter) cannot turn one tool call into
+ * an unbounded Notion scan.
+ */
+const LIST_TRACKING_MAX_PAGES = 100
 
 /**
  * A created-or-deduped fact. `deduped === true` means the write was absorbed
@@ -590,6 +618,133 @@ export class FactService {
       items: pages.map((p) => this.pageToFact(p)),
       hasMore: response.has_more ?? false,
     }
+  }
+
+  /**
+   * Paginate through every live tracking-predicate fact (needs_action,
+   * waiting_on, blocked_by) in scope, optionally filtered by an entity
+   * substring that must match either `Subject` or `Object`.
+   *
+   * Unlike `listRecent` — which is single-page for the wake-up hot path —
+   * this helper paginates. `lore-open-loops` needs to bucket results into
+   * Overdue vs Active and rank each bucket independently, so a single
+   * Notion page ordered by `Review By` asc would under-fill Active on
+   * vaults dominated by overdue rows. Fetching the full slice up-front
+   * lets the tool-layer ranker slice each bucket to its cap.
+   *
+   * `limit: undefined` fetches everything (bounded by
+   * `LIST_TRACKING_MAX_PAGES` as a runaway safety valve). A numeric limit
+   * stops pagination as soon as the requested count is reached and reports
+   * `hasMore: true` if the last Notion page still signalled additional
+   * rows. This is the contract P2-07 needs: the tool asks for "enough to
+   * rank," the service tells it whether more exist beyond that window.
+   *
+   * Sort order: `Review By` ascending, `created_time` descending. The
+   * tool layer always re-ranks inside each bucket, so on the happy path
+   * (full result set fits in one `lore-open-loops` call) this order is
+   * discarded. Its purpose is purely a safety-cap bias: if the 100-page
+   * safety valve ever clips a pathological walk, the truncation lands
+   * on rows with no review date rather than on the most-overdue ones
+   * agents care about. Changing this sort is safe as long as that
+   * invariant holds.
+   */
+  async listTracking(
+    opts: ListTrackingOpts = {},
+  ): Promise<{ items: Fact[]; hasMore: boolean }> {
+    const filters: Array<Record<string, unknown>> = []
+
+    if (opts.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    if (!opts.includeInvalidated) {
+      filters.push({
+        property: "Valid Until",
+        date: { is_empty: true },
+      })
+    }
+
+    // Tracking predicates are fixed at three today, which fits well under
+    // Notion's compound-filter ceiling. OR-of-equals is the cleanest way to
+    // say "predicate is one of these".
+    filters.push({
+      or: TRACKING_PREDICATES.map((p) => ({
+        property: "Predicate",
+        select: { equals: p },
+      })),
+    })
+
+    if (opts.entity) {
+      // Subject is a `title` column; Object is `rich_text`. Notion's typed
+      // filter param requires the right slot on each side — a `title` filter
+      // with `rich_text.contains` is a runtime 400.
+      filters.push({
+        or: [
+          { property: "Subject", title: { contains: opts.entity } },
+          { property: "Object", rich_text: { contains: opts.entity } },
+        ],
+      })
+    }
+
+    const filter =
+      filters.length > 1
+        ? { and: filters }
+        : filters.length === 1
+          ? filters[0]
+          : undefined
+
+    const limit = opts.limit
+    const items: Fact[] = []
+    let cursor: string | undefined = undefined
+    let pagesFetched = 0
+    let hasMore: boolean
+
+    while (true) {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [
+          { property: "Review By", direction: "ascending" },
+          { timestamp: "created_time", direction: "descending" },
+        ],
+        page_size: NOTION_MAX_PAGE_SIZE,
+        start_cursor: cursor,
+      })
+      pagesFetched += 1
+      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+      const nextCursor = response.has_more ? response.next_cursor ?? undefined : undefined
+
+      let appended = 0
+      for (const page of pages) {
+        items.push(this.pageToFact(page))
+        appended += 1
+        if (limit !== undefined && items.length >= limit) break
+      }
+
+      if (limit !== undefined && items.length >= limit) {
+        // Stopped because the cap was hit. More rows exist if we cut the
+        // current page short or if Notion signalled another page beyond it.
+        hasMore = appended < pages.length || Boolean(nextCursor)
+        break
+      }
+
+      if (!nextCursor) {
+        // Walked to exhaustion — `items` is the full set.
+        hasMore = false
+        break
+      }
+
+      if (pagesFetched >= LIST_TRACKING_MAX_PAGES) {
+        // Safety valve fired with rows still unread. Surface this so the
+        // caller can distinguish an exhaustive walk from a clipped one.
+        hasMore = true
+        break
+      }
+
+      cursor = nextCursor
+    }
+
+    return { items, hasMore }
   }
 
   async queryByEntity(entity: string, opts?: { projectId?: string }): Promise<Fact[]> {

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
+import type { z } from "zod"
 import { registerKnowledgeTools } from "./knowledge.js"
 import type { Decision, Fact } from "../../types.js"
 
@@ -830,6 +831,281 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(payload.isError).toBeFalsy()
     expect(payload.content[0].text).toContain("WARNING")
     expect(services.facts.createWithDedup).toHaveBeenCalled()
+  })
+})
+
+describe("lore-open-loops", () => {
+  // Compute dates relative to the test-runner's "today" so the tool's
+  // `Date.now()`-driven bucketing is stable across clocks. Hardcoding
+  // `2026-04-24` would rot the moment the system clock advanced.
+  const today = new Date()
+  const dateNDaysFromToday = (days: number): string => {
+    const d = new Date(today)
+    d.setUTCDate(d.getUTCDate() + days)
+    return d.toISOString().split("T")[0]
+  }
+
+  function makeLoop(id: string, overrides: Partial<Fact> = {}): Fact {
+    return {
+      id,
+      subject: `subject-${id}`,
+      predicate: "needs_action",
+      object: `object-${id}`,
+      projectIds: [],
+      validFrom: dateNDaysFromToday(-30),
+      validUntil: null,
+      reviewBy: null,
+      sourceMemoryId: null,
+      confidence: "certain",
+      ...overrides,
+    }
+  }
+
+  function servicesWith(loops: Fact[], hasMore = false) {
+    return {
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      facts: {
+        listTracking: vi
+          .fn()
+          .mockResolvedValue({ items: loops, hasMore }),
+      },
+      context: { project: { id: "proj", name: "proj" } },
+    }
+  }
+
+  it("defaults to a 10-row cap per section and emits the overflow hint when truncated", async () => {
+    // The cap is the core P2-07 UX win. 271 loops in the Mail vault
+    // flooded agent context; 10+10 gives the urgency spread without the
+    // noise, and the hint teaches agents how to escape it.
+    const mockServer = createMockServer()
+    const overdueRows = Array.from({ length: 15 }, (_, i) =>
+      makeLoop(`o-${i}`, { reviewBy: dateNDaysFromToday(-(i + 1)) }),
+    )
+    const activeRows = Array.from({ length: 15 }, (_, i) =>
+      makeLoop(`a-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
+    )
+    const services = servicesWith([...overdueRows, ...activeRows])
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Overdue (10 shown of 15, hiding 5)")
+    expect(text).toContain("### Active (10 shown of 15, hiding 5)")
+    expect(text).toContain("Pass `{all: true}` to see everything")
+  })
+
+  it("truncates both sections independently and shows the hint once when both overflow", async () => {
+    // Pinned: the hint fires from EITHER section being truncated. Previous
+    // tests only exercise one section being truncated at a time, so this
+    // catches a regression where `anyTruncated` accidentally became
+    // `overdue && active` (AND) instead of `overdue || active` (OR).
+    const mockServer = createMockServer()
+    const overdueRows = Array.from({ length: 12 }, (_, i) =>
+      makeLoop(`overdue-${i}`, { reviewBy: dateNDaysFromToday(-(i + 1)) }),
+    )
+    const activeRows = Array.from({ length: 12 }, (_, i) =>
+      makeLoop(`active-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
+    )
+    const services = servicesWith([...overdueRows, ...activeRows])
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({ limit: 5 } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Overdue (5 shown of 12, hiding 7)")
+    expect(text).toContain("### Active (5 shown of 12, hiding 7)")
+    // The hint appears exactly once, not once per truncated section.
+    const hintMatches = text.match(/Pass `\{all: true\}`/g) ?? []
+    expect(hintMatches).toHaveLength(1)
+  })
+
+  it("all: true bypasses the cap and omits the overflow hint", async () => {
+    const mockServer = createMockServer()
+    const loops = Array.from({ length: 15 }, (_, i) =>
+      makeLoop(`a-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
+    )
+    const services = servicesWith(loops)
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({ all: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Active (15)")
+    expect(text).not.toContain("shown of")
+    expect(text).not.toContain("Pass `{all: true}`")
+  })
+
+  it("explicit limit overrides the default", async () => {
+    const mockServer = createMockServer()
+    const loops = Array.from({ length: 10 }, (_, i) =>
+      makeLoop(`a-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
+    )
+    const services = servicesWith(loops)
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({ limit: 3 } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Active (3 shown of 10, hiding 7)")
+  })
+
+  it("passes the entity filter through to FactService.listTracking", async () => {
+    // Server-side filter is the scalability lever — capping client-side
+    // on 271 rows wastes a request's worth of payload every time.
+    const mockServer = createMockServer()
+    const services = servicesWith([])
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    await handler({ entity: "PR #25751" } as never)
+
+    expect(services.facts.listTracking).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: "PR #25751" }),
+    )
+  })
+
+  it("annotates the total line with the entity filter and handles the empty case", async () => {
+    const mockServer = createMockServer()
+    const services = servicesWith([])
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({ entity: "ghost-entity" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('No open loops found matching "ghost-entity"')
+  })
+
+  it("marks ⚠⚠ for >=14 days overdue, ⚠ for >=1 day, and ranks most-overdue first", async () => {
+    // Urgency thresholds are pinned because agents parse them — flipping
+    // `>=14` to `>14` silently downgrades a two-week-overdue blocker.
+    // IDs chosen so none is a prefix of another (avoids `indexOf` false
+    // matches when one row embeds a shorter row's id in its subject).
+    const mockServer = createMockServer()
+    const loops = [
+      makeLoop("mild3d", { reviewBy: dateNDaysFromToday(-3) }),
+      makeLoop("severe20d", { reviewBy: dateNDaysFromToday(-20) }),
+      makeLoop("edge14d", { reviewBy: dateNDaysFromToday(-14) }),
+      makeLoop("edge1d", { reviewBy: dateNDaysFromToday(-1) }),
+    ]
+    const services = servicesWith(loops)
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Order: 20-day > 14-day > 3-day > 1-day (most-overdue first).
+    const idx20 = text.indexOf("severe20d")
+    const idx14 = text.indexOf("edge14d")
+    const idx3 = text.indexOf("mild3d")
+    const idx1 = text.indexOf("edge1d")
+    expect(idx20).toBeGreaterThanOrEqual(0)
+    expect(idx20).toBeLessThan(idx14)
+    expect(idx14).toBeLessThan(idx3)
+    expect(idx3).toBeLessThan(idx1)
+
+    // Marker boundaries.
+    expect(text).toMatch(/⚠⚠ 20 days overdue:.*severe20d/)
+    expect(text).toMatch(/⚠⚠ 14 days overdue:.*edge14d/)
+    expect(text).toMatch(/⚠ 3 days overdue:.*mild3d/)
+    expect(text).toMatch(/⚠ 1 day overdue:.*edge1d/)
+  })
+
+  it("breaks ties via id lex when days-overdue and validFrom both match", async () => {
+    // Deterministic ultimate tiebreaker. Without it, two same-day
+    // assertions of identical triples rely on Notion's result-page order,
+    // which is implementation-defined and could silently flip under a
+    // future Notion API change. id-lex is cheap and test-pinnable.
+    const mockServer = createMockServer()
+    const sameReview = dateNDaysFromToday(-5)
+    const sameValidFrom = dateNDaysFromToday(-10)
+    const loops = [
+      makeLoop("loop-zeta", { reviewBy: sameReview, validFrom: sameValidFrom }),
+      makeLoop("loop-alpha", { reviewBy: sameReview, validFrom: sameValidFrom }),
+      makeLoop("loop-mu", { reviewBy: sameReview, validFrom: sameValidFrom }),
+    ]
+    const services = servicesWith(loops)
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const idxAlpha = text.indexOf("loop-alpha")
+    const idxMu = text.indexOf("loop-mu")
+    const idxZeta = text.indexOf("loop-zeta")
+    expect(idxAlpha).toBeLessThan(idxMu)
+    expect(idxMu).toBeLessThan(idxZeta)
+  })
+
+  it("rejects limit: 0 at the schema boundary", async () => {
+    // `.min(1)` on the Zod schema means `limit: 0` never reaches the
+    // handler. Zero-cap output is a nonsense state (every section
+    // rendered as `0 shown of N, hiding N`); callers wanting full
+    // output use `{all: true}`, callers wanting the default omit `limit`.
+    const mockServer = createMockServer()
+    const services = servicesWith([makeLoop("a-1", { reviewBy: dateNDaysFromToday(1) })])
+    registerKnowledgeTools(mockServer.server, services as never)
+    // Find the config passed to registerTool so we can validate the schema
+    // directly (the handler itself is post-validation).
+    const registerSpy = mockServer.server.registerTool as unknown as ReturnType<typeof vi.fn>
+    const call = registerSpy.mock.calls.find((c) => c[0] === "lore-open-loops")
+    expect(call).toBeDefined()
+    const config = call![1] as { inputSchema: Record<string, z.ZodTypeAny> }
+    const parsed = config.inputSchema.limit.safeParse(0)
+    expect(parsed.success).toBe(false)
+
+    // Sanity: `all: true` remains a valid escape hatch.
+    const handler = mockServer.getHandler("lore-open-loops")
+    const okResult = await handler({ all: true } as never)
+    expect((okResult as { content: Array<{ text: string }> }).content[0].text).toContain(
+      "### Active",
+    )
+  })
+
+  it("ranks Active by soonest review date, with no-review rows sinking to the bottom", async () => {
+    const mockServer = createMockServer()
+    const loops = [
+      makeLoop("a-far", { reviewBy: dateNDaysFromToday(30) }),
+      makeLoop("a-no-review", { reviewBy: null }),
+      makeLoop("a-soon", { reviewBy: dateNDaysFromToday(2) }),
+    ]
+    const services = servicesWith(loops)
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({ all: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const idxSoon = text.indexOf("a-soon")
+    const idxFar = text.indexOf("a-far")
+    const idxNone = text.indexOf("a-no-review")
+    expect(idxSoon).toBeLessThan(idxFar)
+    expect(idxFar).toBeLessThan(idxNone)
+    expect(text).toContain("— no review date")
+  })
+
+  it("surfaces the service-layer safety-cap clip as a warning", async () => {
+    // Defense in depth: if the service paginator ever hits its safety
+    // valve (bug, adversarial filter), the tool layer must tell the
+    // agent the result set is incomplete — not silently return a
+    // clipped list.
+    const mockServer = createMockServer()
+    const services = servicesWith([makeLoop("x")], true)
+    registerKnowledgeTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-open-loops")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Warnings:")
+    expect(text).toContain("safety cap")
   })
 })
 
