@@ -5,6 +5,11 @@ import { toolError, paginationFooter } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 
 export function registerJournalTools(server: McpServer, services: LoreServices): void {
+  // One-shot stderr notice so human operators (who never see the tool
+  // description) notice the deprecation. Guarded per process so long-lived
+  // MCP servers don't spam the log.
+  let journalDeprecationWarned = false
+
   // -------------------------------------------------------------------------
   // lore-journal
   // -------------------------------------------------------------------------
@@ -13,9 +18,13 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
     {
       title: "Write a journal entry",
       description:
+        "DEPRECATED: Prefer lore-remember with kind: 'note' for durable knowledge, " +
+        "or lore-decide for architectural decisions. Session narration (e.g., " +
+        "\"handled a user request\", \"ran tests\") should not be saved at all. " +
+        "This tool remains registered for backwards compatibility and will be removed " +
+        "in a future major version.\n\n" +
         "Write a journal entry for the current agent session. Journal entries " +
-        "are memories with source type 'agent_diary'. Use this to record session " +
-        "notes, observations, or decisions made during a conversation. " +
+        "are memories with source type 'agent_diary'. " +
         "If no project is specified, uses the auto-detected project from cwd — " +
         "in a monorepo, pass projectName explicitly to land in the right sub-project.",
       inputSchema: {
@@ -39,6 +48,15 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
     },
     async ({ title, content, projectName, projectNames, agent, session, tags }) => {
       try {
+        if (!journalDeprecationWarned) {
+          journalDeprecationWarned = true
+          process.stderr.write(
+            "[lore] lore-journal is deprecated — prefer lore-remember with kind: 'note' " +
+              "(or lore-decide for architectural decisions). Tool remains registered for " +
+              "backwards compatibility and will be removed in a future major version.\n",
+          )
+        }
+
         const resolved = await resolveProjectIds(services, projectName, projectNames)
 
         const memory = await services.memories.create({

@@ -39,6 +39,27 @@ interface HookEvent {
   stop_hook_active?: boolean
 }
 
+/**
+ * Derive a human-readable agent name from the hook environment.
+ *
+ * Claude Code sets CLAUDECODE=1 and CLAUDE_CODE_* env vars when it spawns
+ * hooks; no equivalent fingerprint exists for Codex or other agents. When
+ * neither Claude Code's markers nor an explicit LORE_AGENT_NAME override
+ * are present, return undefined — callers omit the Agent line rather than
+ * stamping a confident-but-wrong guess onto the memory. The Codex installer
+ * should inject `LORE_AGENT_NAME=Codex` into `.codex/hooks.json`'s env so
+ * Codex sessions resolve here; other integrations do the same.
+ */
+function deriveAgentName(_event: HookEvent): string | undefined {
+  const override = process.env["LORE_AGENT_NAME"]
+  if (override && override.trim()) return override.trim()
+
+  const claudeCodeMarkers = Object.keys(process.env).some((k) => k.startsWith("CLAUDE_CODE_"))
+  if (claudeCodeMarkers || process.env["CLAUDECODE"] === "1") return "Claude Code"
+
+  return undefined
+}
+
 
 // ---------------------------------------------------------------------------
 // State management — per-session save count in $TMPDIR
@@ -272,7 +293,12 @@ async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
       process.stdout.write(
         JSON.stringify({
           decision: "block",
-          reason: buildSavePrompt(config.subProjects, config.catchAllName),
+          reason: buildSavePrompt(
+            config.subProjects,
+            config.catchAllName,
+            event.session_id,
+            deriveAgentName(event),
+          ),
         }) + "\n",
       )
     } else {
@@ -557,7 +583,13 @@ async function handleSessionEnd(): Promise<void> {
   const sessionContent = formatTranscriptSessionContent(transcript.messages)
   if (!sessionContent) return
 
-  const prompt = buildSessionEndPrompt(hookConfig.subProjects, hookConfig.catchAllName, sessionContent)
+  const prompt = buildSessionEndPrompt(
+    hookConfig.subProjects,
+    hookConfig.catchAllName,
+    sessionContent,
+    event.session_id,
+    deriveAgentName(event),
+  )
   spawnBackgroundSave(event.cwd ?? process.cwd(), prompt)
 }
 
