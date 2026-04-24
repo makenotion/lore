@@ -4,9 +4,28 @@ import type { LoreServices } from "../server.js"
 import { toolError, debugLogPartialFailures } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
-import { renderFact, resolveReferencedTitles } from "../render.js"
+import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
 
 import { TRACKING_PREDICATES } from "../../types.js"
+import type { Decision, Fact } from "../../types.js"
+
+/**
+ * Default per-bucket cap for `lore-ask`'s grouped display (P2-06).
+ * A well-connected entity with 20+ facts compresses down to 15 visible
+ * rows at this cap (5 × 3 buckets). Callers can raise via the `limit`
+ * param when they really do need the full list.
+ */
+const DEFAULT_ASK_BUCKET_CAP = 5
+
+/**
+ * Advertised value in the overflow hint (`(pass limit to raise the cap;
+ * e.g. limit=20)`). Pinned rather than derived so a future bump to
+ * `DEFAULT_ASK_BUCKET_CAP` doesn't silently shift the suggestion into a
+ * number the user didn't expect. Roughly 4× the default cap — large
+ * enough that raising here shows the tail of most hot entities without
+ * dumping the whole graph.
+ */
+const SUGGESTED_OVERFLOW_LIMIT = 20
 
 const PREDICATE_VALUES = [
   "is_a",
@@ -40,6 +59,90 @@ function projectsCompatible(factProjectIds: string[], memoryProjectIds: string[]
   if (factProjectIds.length === 0 || memoryProjectIds.length === 0) return true
   const memoryScope = new Set(memoryProjectIds)
   return factProjectIds.some((id) => memoryScope.has(id))
+}
+
+/**
+ * Format a `decided_by` row with its canonical decision metadata. Kept as
+ * a named helper (not inlined) because the Governance bucket interleaves
+ * these rows with `supersedes_decision` rows and both need to feed the
+ * same `{ sortKey, line }` pipeline.
+ */
+function renderDecidedByLine(fact: Fact, decision: Decision, today: string): string {
+  const review = decision.reviewBy
+    ? decision.reviewBy <= today
+      ? ` **(DECISION REVIEW OVERDUE — ${decision.reviewBy})**`
+      : ` (decision review by ${decision.reviewBy})`
+    : ""
+  const decided = decision.decidedAt ? ` (decided ${decision.decidedAt})` : ""
+  return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
+}
+
+/**
+ * Trailing segment for a non-decision, non-tracking fact — the `[conf]
+ * (since …) (review by …)` tail followed by the ID footer. Separated
+ * from `renderTrackingTrailing` because tracking rows use the ⚠ prefix
+ * plus a days-overdue marker instead of the generic `(OVERDUE — …)` text,
+ * and collapsing both branches into one function obscures the intent.
+ */
+function renderGenericTrailing(fact: Fact, today: string): string {
+  const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+  const review = fact.reviewBy
+    ? fact.reviewBy <= today
+      ? ` **(OVERDUE — review by ${fact.reviewBy})**`
+      : ` (review by ${fact.reviewBy})`
+    : ""
+  return `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
+}
+
+/**
+ * Trailing segment for a tracking fact. Overdue rows get a
+ * `(N days overdue — review by YYYY-MM-DD)` marker; rows due *today*
+ * display "due today" rather than the misleading "0 days overdue" text.
+ * Non-overdue rows use the plain review-by hint. The ⚠ prefix is
+ * applied separately via `renderFact`'s `prefix` option.
+ *
+ * The overdue gate itself (`reviewBy <= today`) matches `core/fact.ts`
+ * and the `lore-audit` handler — only the display differs for the
+ * day-zero case.
+ */
+function renderTrackingTrailing(fact: Fact, overdueDays: number | null): string {
+  const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+  if (overdueDays !== null && fact.reviewBy) {
+    const marker =
+      overdueDays === 0
+        ? "due today"
+        : `${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue`
+    return `[${fact.confidence}]${validity} **(${marker} — review by ${fact.reviewBy})**\n  ID: ${fact.id}`
+  }
+  const review = fact.reviewBy ? ` (review by ${fact.reviewBy})` : ""
+  return `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
+}
+
+/**
+ * Integer days a fact is past its `reviewBy` vs `today` (both
+ * ISO-date strings). Returns `null` when the fact has no review date or
+ * is still within its window — callers use that as the branch for
+ * applying the ⚠ marker and overdue trailing.
+ */
+function daysOverdue(reviewBy: string | null, today: string): number | null {
+  if (!reviewBy || reviewBy > today) return null
+  const diff = new Date(today).getTime() - new Date(reviewBy).getTime()
+  return Math.floor(diff / 86_400_000)
+}
+
+/**
+ * Sort key comparator for `{ sortKey: string | null }` items, descending
+ * (most recent first). Nulls sink to the end so rows without a validFrom
+ * don't jump ahead of dated rows.
+ */
+function compareSortKeyDesc(
+  a: { sortKey: string | null },
+  b: { sortKey: string | null },
+): number {
+  if (a.sortKey === b.sortKey) return 0
+  if (!a.sortKey) return 1
+  if (!b.sortKey) return -1
+  return a.sortKey < b.sortKey ? 1 : -1
 }
 
 export function registerKnowledgeTools(server: McpServer, services: LoreServices): void {
@@ -205,16 +308,30 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       title: "Query facts",
       description:
         "Query the knowledge graph for facts about an entity. Returns all " +
-        "current facts where the entity appears as either subject or object.",
+        "current facts where the entity appears as either subject or object, " +
+        "grouped into three buckets (Governance / Structure / Tracking) and " +
+        `capped at ${DEFAULT_ASK_BUCKET_CAP} per bucket by default. Overdue ` +
+        "tracking facts surface at the top of their bucket with a ⚠ marker. " +
+        "Pass `limit` to raise the cap when the default hides relevant facts.",
       inputSchema: {
         entity: z
           .string()
           .describe("The entity to query (searched as both subject and object)"),
         projectName: z.string().optional().describe("Scope to a project"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "Per-bucket cap on the number of facts rendered. Default " +
+              `${DEFAULT_ASK_BUCKET_CAP}. Raise when the default hides facts ` +
+              "you need — the output surfaces an overflow hint when any bucket is trimmed.",
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ entity, projectName }) => {
+    async ({ entity, projectName, limit }) => {
       try {
         let projectId: string | undefined
         const warnings: string[] = []
@@ -249,11 +366,21 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         }
 
         const today = new Date().toISOString().split("T")[0]
-        const decisionFacts = facts.filter((fact) => fact.predicate === "decided_by")
-        const otherFacts = facts.filter((fact) => fact.predicate !== "decided_by")
-        const lines: string[] = []
+        const cap = limit ?? DEFAULT_ASK_BUCKET_CAP
+        const { governance, structure, tracking } = groupFactsByClass(facts)
+
+        // Split Governance into its two render paths. `decided_by` goes
+        // through canonical-decision resolution (may dedupe legacy chains
+        // down to one link per subject/decision); `supersedes_decision`
+        // renders through the generic path, which is fine because both
+        // sides are decision UUIDs the title resolver will fill in.
+        const decidedByFacts = governance.filter((fact) => fact.predicate === "decided_by")
+        const supersedesFacts = governance.filter(
+          (fact) => fact.predicate === "supersedes_decision",
+        )
+
         const { links: decisionLinks, failures: decisionFailures } =
-          await resolveCanonicalDecisionLinks(services, decisionFacts, {
+          await resolveCanonicalDecisionLinks(services, decidedByFacts, {
             projectId,
           })
 
@@ -265,37 +392,112 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           )
         }
 
-        for (const { fact, decision } of decisionLinks) {
-          const review = decision.reviewBy
-            ? decision.reviewBy <= today
-              ? ` **(DECISION REVIEW OVERDUE — ${decision.reviewBy})**`
-              : ` (decision review by ${decision.reviewBy})`
-            : ""
-          const decided = decision.decidedAt ? ` (decided ${decision.decidedAt})` : ""
-          lines.push(
-            `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
+        // One batched title resolution across every non-decided_by fact —
+        // `supersedes_decision` (both sides are decision UUIDs), structure,
+        // and tracking — so a hot entity still pays at most one fan-out
+        // regardless of bucket mix.
+        const titleMap = await resolveReferencedTitles(
+          [...supersedesFacts, ...structure, ...tracking],
+          services,
+        )
+
+        // Governance bucket: interleaved resolved `decided_by` links and
+        // generic `supersedes_decision` facts, sorted most-recent-first by
+        // the underlying fact's `validFrom` so the ordering matches the
+        // other buckets regardless of render path.
+        type Governed = { sortKey: string | null; line: string }
+        const governanceItems: Governed[] = [
+          ...decisionLinks.map(({ fact, decision }) => ({
+            sortKey: fact.validFrom,
+            line: renderDecidedByLine(fact, decision, today),
+          })),
+          ...supersedesFacts.map((fact) => ({
+            sortKey: fact.validFrom,
+            line: renderFact(fact, {
+              titleMap,
+              trailing: renderGenericTrailing(fact, today),
+            }),
+          })),
+        ]
+        governanceItems.sort(compareSortKeyDesc)
+
+        // Structure bucket: generic render, already sorted most-recent-first
+        // by `groupFactsByClass`.
+        const structureItems = structure.map((fact) =>
+          renderFact(fact, {
+            titleMap,
+            trailing: renderGenericTrailing(fact, today),
+          }),
+        )
+
+        // Tracking bucket: classify each row as overdue vs active, then
+        // split-sort — overdue first (most-overdue-first), then active
+        // (most-recent-first). The ⚠ prefix and "(N days overdue)" trailing
+        // are only applied to rows actually past their review date.
+        type Tracked = { overdueDays: number | null; sortKey: string | null; line: string }
+        const trackingItems: Tracked[] = tracking.map((fact) => {
+          const overdueDays = daysOverdue(fact.reviewBy, today)
+          return {
+            overdueDays,
+            sortKey: fact.validFrom,
+            line: renderFact(fact, {
+              titleMap,
+              prefix: overdueDays !== null ? "⚠ " : undefined,
+              trailing: renderTrackingTrailing(fact, overdueDays),
+            }),
+          }
+        })
+        const overdueItems = trackingItems
+          .filter((item) => item.overdueDays !== null)
+          // Most-overdue-first so the longest-ignored row lands at the top
+          // of the bucket.
+          .sort((a, b) => (b.overdueDays ?? 0) - (a.overdueDays ?? 0))
+        const activeItems = trackingItems
+          .filter((item) => item.overdueDays === null)
+          .sort((a, b) => compareSortKeyDesc(a, b))
+        const trackingOrdered = [...overdueItems, ...activeItems]
+
+        // Compose bucket sections. Empty buckets are skipped entirely so a
+        // sparsely-linked entity doesn't render three empty headings just to
+        // show three predicate classes exist.
+        const sections: string[] = []
+        let anyOverflow = false
+
+        if (governanceItems.length > 0) {
+          const visible = governanceItems.slice(0, cap)
+          const hidden = governanceItems.length - visible.length
+          if (hidden > 0) anyOverflow = true
+          const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
+          sections.push(
+            `### Governance (${governanceItems.length})${hiddenSuffix}\n${visible
+              .map((item) => item.line)
+              .join("\n")}`,
           )
         }
 
-        // Resolve every UUID referenced by a non-decided_by fact (both
-        // subject- and object-side) so generic predicates render titles
-        // instead of opaque page IDs — see P1-05. `decided_by` facts are
-        // handled above by the canonical-decision resolver.
-        const titleMap = await resolveReferencedTitles(otherFacts, services)
-
-        for (const fact of otherFacts) {
-          const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
-          const review = fact.reviewBy
-            ? fact.reviewBy <= today
-              ? ` **(OVERDUE — review by ${fact.reviewBy})**`
-              : ` (review by ${fact.reviewBy})`
-            : ""
-
-          const trailing = `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
-          lines.push(renderFact(fact, { titleMap, trailing }))
+        if (structureItems.length > 0) {
+          const visible = structureItems.slice(0, cap)
+          const hidden = structureItems.length - visible.length
+          if (hidden > 0) anyOverflow = true
+          const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
+          sections.push(
+            `### Structure (${structureItems.length})${hiddenSuffix}\n${visible.join("\n")}`,
+          )
         }
 
-        if (lines.length === 0) {
+        if (trackingOrdered.length > 0) {
+          const visible = trackingOrdered.slice(0, cap)
+          const hidden = trackingOrdered.length - visible.length
+          if (hidden > 0) anyOverflow = true
+          const hiddenSuffix = hidden > 0 ? `, ${hidden} hidden` : ""
+          sections.push(
+            `### Tracking (${overdueItems.length} overdue, ${activeItems.length} active${hiddenSuffix})\n${visible
+              .map((item) => item.line)
+              .join("\n")}`,
+          )
+        }
+
+        if (sections.length === 0) {
           return {
             content: [
               {
@@ -306,11 +508,21 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           }
         }
 
+        const totalFacts =
+          governanceItems.length + structureItems.length + trackingOrdered.length
+        // Surfaced only when the caller is on the default cap AND something
+        // was trimmed — an explicit `limit` means the caller already knows
+        // the knob exists, and a clean fit has nothing to expand.
+        const overflowHint =
+          anyOverflow && limit === undefined
+            ? `\n\n(pass limit to raise the cap; e.g. limit=${SUGGESTED_OVERFLOW_LIMIT})`
+            : ""
+
         return {
           content: [
             {
               type: "text",
-              text: `${lines.length} facts about "${entity}":\n\n${lines.join("\n")}${formatWarnings()}`,
+              text: `${totalFacts} facts about "${entity}":\n\n${sections.join("\n\n")}${overflowHint}${formatWarnings()}`,
             },
           ],
         }

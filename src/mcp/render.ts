@@ -13,7 +13,8 @@
  * to 25+ body fetches just to read a Title property.
  */
 
-import type { Fact } from "../types.js"
+import { TRACKING_PREDICATES } from "../types.js"
+import type { Fact, FactPredicate } from "../types.js"
 
 /**
  * Notion page IDs are canonical 8-4-4-4-12 hex UUIDs. The SDK emits
@@ -99,9 +100,15 @@ export async function resolveReferencedTitles(
  * `trailing` is appended space-prefixed after the core triple so callers
  * can attach confidence, validity window, review hints, or a multi-line
  * ID footer without re-implementing the subject/object substitution.
+ *
+ * `prefix` is inserted between the leading `- ` bullet and the subject.
+ * Used by `lore-ask`'s grouped display (P2-06) to surface a `⚠ ` marker
+ * on overdue tracking facts without reimplementing the triple rendering.
  */
 export interface RenderFactOptions {
   titleMap: Map<string, string>
+  /** Inserted between the `- ` bullet and `**Subject**`. */
+  prefix?: string
   /** Appended after the core "Subject predicate Object" segment, space-prefixed. */
   trailing?: string
 }
@@ -110,8 +117,9 @@ export function renderFact(fact: Fact, options: RenderFactOptions): string {
   const subject = displayValue(fact.subject, options.titleMap)
   const object = displayValue(fact.object, options.titleMap)
   const predicate = fact.predicate.replace(/_/g, " ")
+  const prefix = options.prefix ?? ""
   const suffix = options.trailing ? ` ${options.trailing}` : ""
-  return `- **${subject}** ${predicate} **${object}**${suffix}`
+  return `- ${prefix}**${subject}** ${predicate} **${object}**${suffix}`
 }
 
 /**
@@ -153,4 +161,76 @@ function unresolvedHint(id: string): string {
   const normalized = id.toLowerCase()
   if (!isUuid(normalized)) return `${id} (?)`
   return `…${normalized.slice(-8)} (?)`
+}
+
+/**
+ * Predicate classification for the grouped-display taxonomy used by
+ * `lore-ask` (P2-06):
+ *
+ * - `governance` — decision-graph edges (`decided_by`, `supersedes_decision`)
+ *   that answer "what decisions govern this?"
+ * - `tracking` — open loops (`needs_action`, `waiting_on`, `blocked_by`)
+ *   that answer "what is pending on this?"
+ * - `structure` — everything else (type, composition, causation, dependency,
+ *   ownership) — the default bucket.
+ *
+ * Unknown predicates fall through to `structure` so a predicate added
+ * server-side still renders in *some* bucket instead of disappearing.
+ * Kept in `render.ts` so other read tools (future wake-up top-k sections,
+ * P2-07 ranked open-loops) can reuse the same taxonomy without
+ * duplicating predicate lists.
+ */
+export type FactClass = "governance" | "structure" | "tracking"
+
+const GOVERNANCE_PREDICATES: ReadonlySet<FactPredicate> = new Set<FactPredicate>([
+  "decided_by",
+  "supersedes_decision",
+])
+
+// Derived from the canonical `TRACKING_PREDICATES` export so a new tracking
+// predicate added to the `FactPredicate` union flows through here without a
+// second-copy update. `TRACKING_PREDICATES` already has several consumers
+// (`core/fact.ts`, `core/wakeup.ts`, `mcp/tools/digest.ts`, etc.) — keep this
+// set in lockstep with the rest of the codebase rather than maintaining a
+// local literal.
+const TRACKING_PREDICATE_SET: ReadonlySet<FactPredicate> = new Set(TRACKING_PREDICATES)
+
+export function factClass(predicate: FactPredicate): FactClass {
+  if (GOVERNANCE_PREDICATES.has(predicate)) return "governance"
+  if (TRACKING_PREDICATE_SET.has(predicate)) return "tracking"
+  return "structure"
+}
+
+export interface GroupedFacts {
+  governance: Fact[]
+  structure: Fact[]
+  tracking: Fact[]
+}
+
+/**
+ * Group facts into the three `FactClass` buckets and sort each one
+ * most-recent-first by `validFrom`. Facts without a `validFrom` sink to
+ * the end so newer rows surface above legacy entries that predate the
+ * column.
+ *
+ * Sort is stable within a `validFrom` tie — the grouped output preserves
+ * the caller's input order for rows stamped on the same day, which keeps
+ * downstream renderers (e.g., the decision-first ordering after
+ * `resolveCanonicalDecisionLinks` dedupes) deterministic.
+ */
+export function groupFactsByClass(facts: readonly Fact[]): GroupedFacts {
+  const groups: GroupedFacts = { governance: [], structure: [], tracking: [] }
+  for (const fact of facts) {
+    groups[factClass(fact.predicate)].push(fact)
+  }
+  const compare = (a: Fact, b: Fact): number => {
+    if (a.validFrom === b.validFrom) return 0
+    if (!a.validFrom) return 1
+    if (!b.validFrom) return -1
+    return a.validFrom < b.validFrom ? 1 : -1
+  }
+  groups.governance.sort(compare)
+  groups.structure.sort(compare)
+  groups.tracking.sort(compare)
+  return groups
 }

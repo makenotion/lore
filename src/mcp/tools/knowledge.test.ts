@@ -302,6 +302,225 @@ describe("lore-ask — partial decision resolution", () => {
   })
 })
 
+describe("lore-ask grouped display (P2-06)", () => {
+  function services(facts: Fact[], overrides: Record<string, unknown> = {}) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      decisions: { getById: vi.fn() },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      context: { project: null },
+      ...overrides,
+    }
+  }
+
+  async function invokeAsk(
+    facts: Fact[],
+    args: Record<string, unknown> = {},
+    overrides: Record<string, unknown> = {},
+  ): Promise<string> {
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services(facts, overrides) as never)
+    const handler = mockServer.getHandler("lore-ask")
+    const result = await handler({ entity: "AuthService", ...args } as never)
+    return (result as { content: Array<{ text: string }> }).content[0].text
+  }
+
+  it("renders three bucket headings with counts when all classes are present", async () => {
+    const facts: Fact[] = [
+      makeFact("struct-1", { predicate: "uses", object: "JWT" }),
+      makeFact("track-1", {
+        predicate: "needs_action",
+        object: "Audit",
+        // Review not past today — active, not overdue.
+        reviewBy: "2099-01-01",
+      }),
+      makeFact("gov-1", {
+        predicate: "supersedes_decision",
+        subject: "AuthService",
+        object: "LegacyDecision",
+      }),
+    ]
+    const text = await invokeAsk(facts)
+    expect(text).toContain('3 facts about "AuthService"')
+    expect(text).toMatch(/### Governance \(1\)/)
+    expect(text).toMatch(/### Structure \(1\)/)
+    expect(text).toMatch(/### Tracking \(0 overdue, 1 active\)/)
+  })
+
+  it("omits bucket headings for empty classes", async () => {
+    const text = await invokeAsk([
+      makeFact("struct-1", { predicate: "uses", object: "JWT" }),
+    ])
+    expect(text).toContain("### Structure")
+    expect(text).not.toContain("### Governance")
+    expect(text).not.toContain("### Tracking")
+  })
+
+  it("caps each bucket at 5 by default and surfaces a per-bucket hidden count", async () => {
+    const facts: Fact[] = Array.from({ length: 8 }, (_, i) =>
+      makeFact(`s-${i}`, {
+        predicate: "uses",
+        object: `Obj${i}`,
+        // Unique validFrom per row so the sort is deterministic.
+        validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
+      }),
+    )
+    const text = await invokeAsk(facts)
+
+    expect(text).toContain("### Structure (8) (3 hidden)")
+    // Most-recent-first: s-7 is the newest and must render; s-0 is the
+    // oldest and must fall below the cap.
+    expect(text).toContain("Obj7")
+    expect(text).not.toContain("Obj0")
+    // Overflow hint is emitted when the default cap hid rows.
+    expect(text).toContain("pass limit")
+  })
+
+  it("raises the cap when the caller passes an explicit limit", async () => {
+    const facts: Fact[] = Array.from({ length: 8 }, (_, i) =>
+      makeFact(`s-${i}`, {
+        predicate: "uses",
+        object: `Obj${i}`,
+        validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
+      }),
+    )
+    const text = await invokeAsk(facts, { limit: 20 })
+
+    expect(text).toContain("### Structure (8)")
+    // All eight rows survive — no `(N hidden)` suffix, no overflow hint.
+    expect(text).not.toMatch(/\(\d+ hidden\)/)
+    expect(text).not.toContain("pass limit")
+    for (let i = 0; i < 8; i++) {
+      expect(text).toContain(`Obj${i}`)
+    }
+  })
+
+  it("surfaces overdue tracking facts first with ⚠ marker and days-overdue text", async () => {
+    // Today is fixed via the fact's review date math below; we just need
+    // today ≥ reviewBy for overdue, < reviewBy for active.
+    const today = new Date().toISOString().split("T")[0]
+    const twentyDaysAgo = new Date(Date.now() - 20 * 86_400_000)
+      .toISOString()
+      .split("T")[0]
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().split("T")[0]
+
+    const facts: Fact[] = [
+      makeFact("active", {
+        predicate: "waiting_on",
+        object: "Vendor response",
+        reviewBy: tomorrow,
+      }),
+      makeFact("overdue", {
+        predicate: "needs_action",
+        object: "Rotate keys",
+        reviewBy: twentyDaysAgo,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+
+    // Heading reflects the split.
+    expect(text).toMatch(/### Tracking \(1 overdue, 1 active\)/)
+    // Overdue row carries the ⚠ marker and a days-overdue annotation.
+    expect(text).toMatch(/⚠ \*\*AuthService\*\* needs action \*\*Rotate keys\*\*/)
+    expect(text).toMatch(/20 days overdue/)
+    // Overdue must appear before the active row in the rendered output.
+    expect(text.indexOf("Rotate keys")).toBeLessThan(text.indexOf("Vendor response"))
+    // Active row does NOT get the ⚠ marker.
+    expect(text).not.toMatch(/⚠ \*\*AuthService\*\* waiting on/)
+    // Today's date is the implicit anchor — sanity that we didn't flip
+    // overdue/active by looking at the wrong side.
+    expect(today >= twentyDaysAgo).toBe(true)
+  })
+
+  it("renders a due-today tracking row as 'due today' instead of '0 days overdue'", async () => {
+    // The overdue gate is `reviewBy <= today` (matches core/fact.ts and
+    // lore-audit), so a row whose `reviewBy` is today still fires the ⚠
+    // prefix. But the text "0 days overdue" would read as a bug — so the
+    // day-zero branch emits "due today" instead.
+    const today = new Date().toISOString().split("T")[0]
+    const facts: Fact[] = [
+      makeFact("due-today", {
+        predicate: "needs_action",
+        object: "Rotate keys",
+        reviewBy: today,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+
+    expect(text).toContain("⚠ **AuthService** needs action **Rotate keys**")
+    expect(text).toContain("due today")
+    expect(text).not.toMatch(/0 days? overdue/)
+    // Overdue count still includes this row — the gating did not change,
+    // only the display text for the day-zero branch.
+    expect(text).toMatch(/### Tracking \(1 overdue, 0 active\)/)
+  })
+
+  it("resolves UUID-shaped objects to titles via the memory loader", async () => {
+    // A `supersedes_decision` fact where both sides are UUIDs — the P1-05
+    // title resolver should substitute them without forcing the caller to
+    // look up IDs manually.
+    const DECISION_A = "349b35e6-e67f-8185-bec0-d3902135c5ba"
+    const DECISION_B = "449b35e6-e67f-8185-bec0-d3902135c5bb"
+    const titles: Record<string, string> = {
+      [DECISION_A]: "Adopt JWT v2",
+      [DECISION_B]: "Legacy session cookies",
+    }
+    const memories = {
+      getTitleById: vi
+        .fn()
+        .mockImplementation(async (id: string) => titles[id.toLowerCase()] ?? null),
+    }
+
+    const facts: Fact[] = [
+      makeFact("g1", {
+        predicate: "supersedes_decision",
+        subject: DECISION_A,
+        object: DECISION_B,
+      }),
+    ]
+    const text = await invokeAsk(facts, {}, { memories })
+
+    expect(text).toContain("Adopt JWT v2")
+    expect(text).toContain("Legacy session cookies")
+    // Raw UUIDs must not leak into the rendered triple.
+    expect(text).not.toContain(DECISION_A)
+    expect(text).not.toContain(DECISION_B)
+  })
+
+  it("annotates the Tracking heading with a hidden count when rows overflow", async () => {
+    const reviewPast = "2026-01-01"
+    const facts: Fact[] = Array.from({ length: 7 }, (_, i) =>
+      makeFact(`t-${i}`, {
+        predicate: "needs_action",
+        object: `Task${i}`,
+        reviewBy: reviewPast,
+      }),
+    )
+    const text = await invokeAsk(facts)
+    // All seven are overdue; cap to 5 so 2 are hidden and surface in the
+    // heading inside a single parenthesized suffix.
+    expect(text).toMatch(/### Tracking \(7 overdue, 0 active, 2 hidden\)/)
+  })
+
+  it("does not emit an overflow hint when the caller already passed a limit", async () => {
+    const facts: Fact[] = Array.from({ length: 8 }, (_, i) =>
+      makeFact(`s-${i}`, {
+        predicate: "uses",
+        object: `Obj${i}`,
+      }),
+    )
+    const text = await invokeAsk(facts, { limit: 3 })
+    // `limit=3` is below the count so we DO trim — but the caller is
+    // already on the knob, so we don't re-advertise it.
+    expect(text).toMatch(/\(5 hidden\)/)
+    expect(text).not.toContain("pass limit")
+  })
+})
+
 describe("lore-ask projectName resolution", () => {
   it("warns and falls back when projectName does not resolve", async () => {
     const mockServer = createMockServer()

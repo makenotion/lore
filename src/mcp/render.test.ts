@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 import {
   displayId,
   displayValue,
+  factClass,
+  groupFactsByClass,
   isUuid,
   renderFact,
   resolveReferencedTitles,
@@ -221,6 +223,105 @@ describe("renderFact", () => {
     )
 
     expect(line).toBe("- **AuthService** uses **JWT** (certain)")
+  })
+})
+
+describe("renderFact prefix option", () => {
+  it("inserts the prefix between the bullet and **Subject**", () => {
+    // P2-06 uses the prefix slot to surface a `⚠ ` marker on overdue
+    // tracking rows without forking the triple renderer. Pins the exact
+    // placement so a future refactor can't silently shift the marker.
+    const titleMap = new Map<string, string>()
+    const line = renderFact(
+      makeFact("f1", { subject: "AuthService", predicate: "needs_action", object: "JWT" }),
+      { titleMap, prefix: "⚠ ", trailing: "[certain]" },
+    )
+    expect(line).toBe("- ⚠ **AuthService** needs action **JWT** [certain]")
+  })
+
+  it("emits the same output as omitting prefix when prefix is empty", () => {
+    const titleMap = new Map<string, string>()
+    const withEmpty = renderFact(
+      makeFact("f1", { subject: "A", predicate: "uses", object: "B" }),
+      { titleMap, prefix: "" },
+    )
+    const withoutPrefix = renderFact(
+      makeFact("f1", { subject: "A", predicate: "uses", object: "B" }),
+      { titleMap },
+    )
+    expect(withEmpty).toBe(withoutPrefix)
+  })
+})
+
+describe("factClass", () => {
+  it("maps decision-graph predicates to governance", () => {
+    expect(factClass("decided_by")).toBe("governance")
+    expect(factClass("supersedes_decision")).toBe("governance")
+  })
+
+  it("maps tracking predicates to tracking", () => {
+    expect(factClass("needs_action")).toBe("tracking")
+    expect(factClass("waiting_on")).toBe("tracking")
+    expect(factClass("blocked_by")).toBe("tracking")
+  })
+
+  it("defaults unrecognized or structural predicates to structure", () => {
+    // All listed-in-spec structural predicates.
+    expect(factClass("is_a")).toBe("structure")
+    expect(factClass("has_a")).toBe("structure")
+    expect(factClass("uses")).toBe("structure")
+    expect(factClass("depends_on")).toBe("structure")
+    expect(factClass("replaces")).toBe("structure")
+    expect(factClass("extends")).toBe("structure")
+    expect(factClass("conflicts_with")).toBe("structure")
+    expect(factClass("created_by")).toBe("structure")
+    expect(factClass("owned_by")).toBe("structure")
+    expect(factClass("related_to")).toBe("structure")
+    // `informs` is a decision-graph predicate but isn't explicitly listed
+    // in the spec's Governance set; the default-to-structure rule keeps
+    // it visible rather than silently dropped from the output.
+    expect(factClass("informs")).toBe("structure")
+  })
+})
+
+describe("groupFactsByClass", () => {
+  it("splits facts into three buckets and keeps input order on validFrom ties", () => {
+    // Same validFrom across all three → sort is stable; bucket assignment
+    // is what's being pinned here.
+    const facts: Fact[] = [
+      makeFact("s1", { predicate: "uses", validFrom: "2026-04-20" }),
+      makeFact("t1", { predicate: "needs_action", validFrom: "2026-04-20" }),
+      makeFact("g1", { predicate: "decided_by", validFrom: "2026-04-20" }),
+      makeFact("s2", { predicate: "depends_on", validFrom: "2026-04-20" }),
+    ]
+    const groups = groupFactsByClass(facts)
+    expect(groups.governance.map((f) => f.id)).toEqual(["g1"])
+    expect(groups.structure.map((f) => f.id)).toEqual(["s1", "s2"])
+    expect(groups.tracking.map((f) => f.id)).toEqual(["t1"])
+  })
+
+  it("sorts each bucket most-recent-first by validFrom and sinks nulls to the end", () => {
+    const facts: Fact[] = [
+      makeFact("older", { predicate: "uses", validFrom: "2026-03-01" }),
+      makeFact("newer", { predicate: "uses", validFrom: "2026-04-20" }),
+      makeFact("missing", { predicate: "uses", validFrom: null }),
+      makeFact("middle", { predicate: "uses", validFrom: "2026-04-01" }),
+    ]
+    const groups = groupFactsByClass(facts)
+    expect(groups.structure.map((f) => f.id)).toEqual([
+      "newer",
+      "middle",
+      "older",
+      "missing",
+    ])
+  })
+
+  it("returns empty arrays for buckets with no matching predicate", () => {
+    const facts = [makeFact("s1", { predicate: "uses" })]
+    const groups = groupFactsByClass(facts)
+    expect(groups.governance).toEqual([])
+    expect(groups.tracking).toEqual([])
+    expect(groups.structure).toHaveLength(1)
   })
 })
 
