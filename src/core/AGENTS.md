@@ -21,6 +21,8 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
 | `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + open-loop-related memories for wake-up surfaces (MCP tool + shell hook) |
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
+| `fact-encoding.ts`   | `fixFactEncoding()`   | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions |
+| `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |
 
 ## Service Class Pattern
 
@@ -243,6 +245,49 @@ by default; `--yes` is required to execute.
 row" (e.g. `lore-learn`) should use `createWithDedup()` and inspect the
 `deduped` and `enriched` fields. `create()` is preserved for callers that
 don't care (decision-graph reachability sync, `decided_by` auto-links).
+
+## HTML-entity Decode Migrations
+
+The autosave path occasionally delivers plain-text fields with HTML
+entities already escaped (`Foo &amp;amp; Bar`). Every write-boundary now
+decodes via `decodeTextEntities` (`src/notion/html-entities.ts`), but rows
+written before that guard shipped still carry encoded payloads. Three
+`lore migrate` flags decode pre-existing rows in place — all idempotent,
+all support `--dry-run`:
+
+| Flag | Target | Module | Apply mode |
+| ---- | ------ | ------ | ---------- |
+| `--fix-topic-encoding` | Topics.Name | `topic-merge.ts:fixTopicEncoding` | Applies unless `--dry-run`. Pair with `--merge-duplicate-topics` when cross-encoding pairs would collide post-decode. |
+| `--fix-fact-encoding`  | Facts.Subject + .Object + .DedupKey | `fact-encoding.ts:fixFactEncoding` | **Plan-only by default; `--yes` applies.** Collision-gated against post-decode dedup-key conflicts — see below. |
+| `--fix-memory-encoding` | Memories.Title + body markdown | `memory-encoding.ts:fixMemoryEncoding` | **Plan-only by default; `--yes` applies.** Skips archived memories; skips body rewrite (Title still fixed) when body exceeds `BODY_SIZE_CAP_BYTES` (100 KB). |
+
+The plan-then-execute posture on the fact and memory flags matches
+`--dedup-keys --merge --yes`: both rewrite historical rows at larger blast
+radius than the topic-name rename, and the dedup-key recomputation in the
+fact path means a misapplied run can't be un-done by re-running. Bare
+`lore migrate --fix-fact-encoding` prints the plan and exits; the operator
+re-runs with `--yes` once they've reviewed the collision report.
+
+Fact encoding is the subtle one. Decoding `Subject`/`Object` changes the
+dedup key, so the rewrite path must recompute `DedupKey` in the same
+`pages.update` atom as the Subject/Object write. Otherwise a future
+`lore-learn` with the already-decoded input misses the probe and creates
+a fresh duplicate.
+
+**Collision gate**. Before any Fact rewrite lands,
+`findPostDecodeFactCollisions` groups every live row by its post-decode
+dedup key. If a group has ≥2 rows — the cross-encoding case, where a
+clean row and an encoded sibling would end up on the same key — `every`
+member of the group is gated: the migration refuses to rewrite them and
+directs the operator to resolve via `lore migrate --dedup-keys --merge
+--yes` first. This mirrors the posture `VaultManager.migrate` established
+for `--fix-topic-encoding` / `--merge-duplicate-topics`.
+
+Ordering vs. downstream work: land encoding migrations before P2-03
+(near-duplicate memory / decision detection), P3-03 (entity
+canonicalization), and P3-04 (DS-scoped memory search). Those features
+compare plain-text values, so an encoded Title inflates trigram distance
+and silently suppresses duplicate detection.
 
 ## Decision Service
 

@@ -2,6 +2,7 @@ import { Command } from "commander"
 import { initServices, type LoreServices } from "../../services.js"
 import type { MemoryTagPlan } from "../../core/tag-migration.js"
 import { classifyTags, planMemoryMigration } from "../../core/tag-migration.js"
+import { BODY_SIZE_CAP_BYTES } from "../../core/memory-encoding.js"
 import type { Fact, Memory } from "../../types.js"
 
 export const migrateCommand = new Command("migrate")
@@ -18,6 +19,14 @@ export const migrateCommand = new Command("migrate")
   .option(
     "--fix-topic-encoding",
     "Decode HTML entities (`&amp;`, `&lt;`, …) in topic names so rows like `Build &amp;amp; Tooling` become `Build & Tooling`. Runs before duplicate detection, so pair with `--merge-duplicate-topics` to collapse cross-encoding duplicates."
+  )
+  .option(
+    "--fix-fact-encoding",
+    "Decode HTML entities in fact Subject/Object columns and recompute DedupKey so pre-PF1-06 rows stop carrying `Foo &amp;amp; Bar` payloads. Refuses to rewrite any row whose post-decode dedup key would collide with another live fact; pair with `--dedup-keys --merge --yes` first to resolve those. Plan-only by default — re-run with `--yes` to apply. Combine with `--dry-run` for a plan preview."
+  )
+  .option(
+    "--fix-memory-encoding",
+    "Decode HTML entities in memory Title and body markdown for every non-archived memory. Body rewrite is skipped for pages larger than 100 KB — Title is always fixed, because Title is the value driver for downstream near-duplicate / embedding surfaces. Plan-only by default — re-run with `--yes` to apply. Combine with `--dry-run` for a plan preview."
   )
   .option(
     "--tags",
@@ -41,7 +50,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--yes",
-    "Execute the --merge plan (otherwise --merge is plan-only)."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, or `--fix-memory-encoding`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -49,6 +58,8 @@ export const migrateCommand = new Command("migrate")
       upgradeDecisionTags?: boolean
       mergeDuplicateTopics?: boolean
       fixTopicEncoding?: boolean
+      fixFactEncoding?: boolean
+      fixMemoryEncoding?: boolean
       tags?: boolean
       backfillFactSources?: boolean
       apply?: boolean
@@ -66,8 +77,15 @@ export const migrateCommand = new Command("migrate")
           )
           process.exit(1)
         }
-        if (opts.yes && !opts.merge) {
-          console.error("--yes only applies together with --merge.")
+        if (
+          opts.yes &&
+          !opts.merge &&
+          !opts.fixFactEncoding &&
+          !opts.fixMemoryEncoding
+        ) {
+          console.error(
+            "--yes only applies together with --merge, --fix-fact-encoding, or --fix-memory-encoding."
+          )
           process.exit(1)
         }
 
@@ -282,6 +300,25 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.fixFactEncoding) {
+          // Plan-then-execute: apply only when `--yes` is set. Bare
+          // invocation prints the plan and a "re-run with --yes" footer,
+          // matching the `--dedup-keys --merge --yes` pattern. `--dry-run`
+          // is also plan-only and takes precedence over `--yes` so
+          // `--dry-run --yes` still writes nothing.
+          await runFactEncodingFix(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: opts.dryRun,
+          })
+        }
+
+        if (opts.fixMemoryEncoding) {
+          await runMemoryEncodingFix(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: opts.dryRun,
+          })
+        }
+
         if (opts.dryRun) {
           const flagHints: string[] = []
           if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
@@ -290,11 +327,17 @@ export const migrateCommand = new Command("migrate")
           if (duplicateTopics.length > 0 && !opts.mergeDuplicateTopics) {
             flagHints.push("`--merge-duplicate-topics`")
           }
+          // Fact / memory encoding are plan-then-execute: `--yes` applies,
+          // not "re-run without --dry-run". Suppress the generic footer
+          // when the user explicitly asked for one of those flags — the
+          // dispatcher's own output already tells them how to apply.
+          const encodingFlagUsed =
+            opts.fixFactEncoding || opts.fixMemoryEncoding
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
             )
-          } else {
+          } else if (!encodingFlagUsed) {
             console.log("\nDry run — no changes written. Re-run without --dry-run to apply.")
           }
         } else if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
@@ -620,4 +663,214 @@ function titleMatches(title: string, query: string): boolean {
   const escaped = query.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const pattern = new RegExp(`(^|\\W)${escaped}($|\\W)`, "i")
   return pattern.test(title)
+}
+
+/** Max rows printed inline before the preview is truncated with a tally. */
+const ENCODING_FIX_PREVIEW_LIMIT = 10
+
+/**
+ * Render a byte count in a scannable unit. Sub-1 KB values stay in
+ * bytes (`512 B`), KB through sub-1 MB render as KB with one decimal
+ * (`152.3 KB`), larger values render as MB. The oversize-body preview
+ * compares these against `BODY_SIZE_CAP_BYTES` (100 KB), so operator
+ * scanning `152.3 KB > 100 KB` is clearer than `155955 bytes > 102400`.
+ */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  const mb = kb / 1024
+  return `${mb.toFixed(1)} MB`
+}
+
+/**
+ * Scan the Facts DB for rows carrying HTML-encoded Subject/Object payloads,
+ * print a plan-then-apply report, and — when not a dry run and no collisions
+ * block the row — rewrite Subject/Object/DedupKey in one atomic
+ * `pages.update`. The collision gate mirrors the posture P1-10 established
+ * for `--fix-topic-encoding` / `--merge-duplicate-topics`.
+ */
+export async function runFactEncodingFix(
+  services: LoreServices,
+  options: { apply: boolean; dryRun?: boolean }
+): Promise<void> {
+  // Plan-only means the underlying helper must not write. `apply` is the
+  // single-truth bit for the write path; `dryRun` is a caller-intent
+  // signal the helper still honors to keep the report shape consistent
+  // with every other `--dry-run` surface.
+  const planOnly = !options.apply
+  const report = await services.facts.fixEncoding({ dryRun: planOnly })
+
+  if (report.encoded.length === 0) {
+    console.log("\nNo HTML-encoded fact rows found — Subject and Object are already clean.")
+    return
+  }
+
+  const blocked = new Set(
+    report.collisions.flatMap((c) => c.factIds)
+  )
+  const rewritable = report.encoded.filter((r) => !blocked.has(r.id))
+
+  const verb = planOnly ? "Would decode" : "Decoded"
+  const applied = planOnly ? rewritable.length : report.fixes.length
+  console.log(
+    `\n${verb} ${applied} HTML-encoded fact row${applied === 1 ? "" : "s"} ` +
+      `(${report.encoded.length} total encoded; ${report.collisions.length} collision group${report.collisions.length === 1 ? "" : "s"} gated).`
+  )
+
+  const preview = planOnly ? rewritable : report.fixes
+  for (const row of preview.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+    console.log(
+      `  "${row.rawSubject}" ${row.predicate} "${row.rawObject}"`
+    )
+    console.log(
+      `    → "${row.decodedSubject}" ${row.predicate} "${row.decodedObject}"`
+    )
+  }
+  if (preview.length > ENCODING_FIX_PREVIEW_LIMIT) {
+    console.log(`  … and ${preview.length - ENCODING_FIX_PREVIEW_LIMIT} more rows.`)
+  }
+
+  if (report.collisions.length > 0) {
+    console.log(
+      `\nGated by post-decode dedup-key collisions ` +
+        `(${report.collisions.length} group${report.collisions.length === 1 ? "" : "s"} — ` +
+        `rewrite refused to avoid silently creating a duplicate):`
+    )
+    for (const c of report.collisions.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+      console.log(
+        `  "${c.triple.subject}" ${c.triple.predicate} "${c.triple.object}"`
+      )
+      console.log(`    factIds: ${c.factIds.join(", ")}`)
+    }
+    if (report.collisions.length > ENCODING_FIX_PREVIEW_LIMIT) {
+      console.log(
+        `  … and ${report.collisions.length - ENCODING_FIX_PREVIEW_LIMIT} more groups.`
+      )
+    }
+    console.log(
+      "\nRun `lore migrate --dedup-keys --merge --yes` to collapse the duplicates first, then re-run `lore migrate --fix-fact-encoding --yes`."
+    )
+  }
+
+  // Plan-then-execute footer. Always prints in plan-only mode —
+  // `--dry-run` and the bare default both want the `--yes` directive.
+  // The global migrate action suppresses its generic "Re-run without
+  // --dry-run" footer when an encoding flag is present, so there's no
+  // double-footer.
+  if (planOnly && rewritable.length > 0) {
+    console.log("\nPlan only — no rewrites written. Re-run with `--yes` to execute.")
+  }
+}
+
+/**
+ * Scan the Memories DB for non-archived rows whose Title or body markdown
+ * carry HTML entities, print a plan-then-apply report, and — when not a
+ * dry run — rewrite Title via `pages.update` and body (if ≤100 KB) via
+ * `pages.updateMarkdown`.
+ */
+export async function runMemoryEncodingFix(
+  services: LoreServices,
+  options: { apply: boolean; dryRun?: boolean }
+): Promise<void> {
+  const planOnly = !options.apply
+  const report = await services.memories.fixEncoding({ dryRun: planOnly })
+
+  if (report.encoded.length === 0) {
+    console.log(
+      "\nNo HTML-encoded memory rows found — Title and body markdown are already clean."
+    )
+    return
+  }
+
+  const verb = planOnly ? "Would decode" : "Decoded"
+  const fixableRows = planOnly
+    ? report.encoded.filter(
+        (r) => r.titleNeedsFix || (r.contentNeedsFix && !r.contentTooLargeToFix)
+      ).length
+    : report.fixes.length
+  const titlePlanned = planOnly
+    ? report.encoded.filter((r) => r.titleNeedsFix).length
+    : report.fixes.filter((f) => f.titleFixed).length
+  const bodyPlanned = planOnly
+    ? report.encoded.filter((r) => r.contentNeedsFix && !r.contentTooLargeToFix).length
+    : report.fixes.filter((f) => f.contentFixed).length
+
+  console.log(
+    `\n${verb} ${fixableRows} HTML-encoded memor${fixableRows === 1 ? "y" : "ies"} ` +
+      `(Title fixes: ${titlePlanned}; body fixes: ${bodyPlanned}).`
+  )
+
+  // Two distinct preview shapes: plan-only renders `EncodedMemoryRow`
+  // (pre-write intent with `*NeedsFix` / `*TooLargeToFix` flags), apply
+  // renders `MemoryEncodingFixResult` (post-write outcome with
+  // `*Fixed` flags). Keeping the loops separate is more durable than
+  // structural narrowing — a future field rename on either type stays
+  // type-checked without the `"titleFixed" in row` branch becoming
+  // silently wrong.
+  const previewLength = planOnly ? report.encoded.length : report.fixes.length
+  if (planOnly) {
+    for (const row of report.encoded.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+      const parts: string[] = []
+      if (row.titleNeedsFix) parts.push("title")
+      if (row.contentNeedsFix && !row.contentTooLargeToFix) parts.push("body")
+      else if (row.contentTooLargeToFix) {
+        parts.push(
+          `body skipped (${formatBytes(row.contentBytes)} > ${formatBytes(BODY_SIZE_CAP_BYTES)})`
+        )
+      }
+      console.log(
+        `  ${row.id} — "${row.rawTitle}" → "${row.decodedTitle}" (${parts.join(", ")})`
+      )
+    }
+  } else {
+    for (const fix of report.fixes.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+      const parts: string[] = []
+      if (fix.titleFixed) parts.push("title")
+      if (fix.contentFixed) parts.push("body")
+      console.log(
+        `  ${fix.id} — "${fix.rawTitle}" → "${fix.decodedTitle}" (${parts.join(", ")})`
+      )
+    }
+  }
+  if (previewLength > ENCODING_FIX_PREVIEW_LIMIT) {
+    console.log(
+      `  … and ${previewLength - ENCODING_FIX_PREVIEW_LIMIT} more rows.`
+    )
+  }
+
+  if (report.oversizedSkipped.length > 0) {
+    console.log(
+      `\nSkipped body rewrite on ${report.oversizedSkipped.length} memor${report.oversizedSkipped.length === 1 ? "y" : "ies"} ` +
+        `(body exceeded ${formatBytes(BODY_SIZE_CAP_BYTES)} — Title fixes still apply when present):`
+    )
+    for (const row of report.oversizedSkipped.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+      console.log(`  ${row.id} — "${row.decodedTitle}" (${formatBytes(row.contentBytes)})`)
+    }
+    if (report.oversizedSkipped.length > ENCODING_FIX_PREVIEW_LIMIT) {
+      console.log(
+        `  … and ${report.oversizedSkipped.length - ENCODING_FIX_PREVIEW_LIMIT} more rows.`
+      )
+    }
+  }
+
+  if (report.contentFetchFailures.length > 0) {
+    console.log(
+      `\nBody fetch failed on ${report.contentFetchFailures.length} memor${report.contentFetchFailures.length === 1 ? "y" : "ies"} ` +
+        "(transient Notion API error — Title fix still applied; re-run to retry the body):"
+    )
+    for (const row of report.contentFetchFailures.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+      console.log(`  ${row.id} — "${row.decodedTitle}"`)
+    }
+    if (report.contentFetchFailures.length > ENCODING_FIX_PREVIEW_LIMIT) {
+      console.log(
+        `  … and ${report.contentFetchFailures.length - ENCODING_FIX_PREVIEW_LIMIT} more rows.`
+      )
+    }
+  }
+
+  // Plan-then-execute footer. See `runFactEncodingFix` for rationale.
+  if (planOnly && fixableRows > 0) {
+    console.log("\nPlan only — no rewrites written. Re-run with `--yes` to execute.")
+  }
 }

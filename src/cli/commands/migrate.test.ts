@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Fact, Memory } from "../../types.js"
-import { backfillFactSources, proposeSourceMemory } from "./migrate.js"
+import {
+  backfillFactSources,
+  proposeSourceMemory,
+  runFactEncodingFix,
+  runMemoryEncodingFix,
+} from "./migrate.js"
 
 function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
   return {
@@ -257,6 +262,366 @@ describe("backfillFactSources", () => {
 
     expect(services.facts.setSource).toHaveBeenCalledTimes(1)
     expect(services.facts.setSource).toHaveBeenCalledWith("fact-match", "mem-ok")
+  })
+})
+
+describe("runFactEncodingFix", () => {
+  it("reports nothing-to-do on a clean vault", async () => {
+    const services = {
+      facts: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({ encoded: [], collisions: [], fixes: [] }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runFactEncodingFix(services as never, { apply: true })
+    log.mockRestore()
+
+    expect(services.facts.fixEncoding).toHaveBeenCalledWith({ dryRun: false })
+    expect(logs.some((l) => l.includes("No HTML-encoded fact rows"))).toBe(true)
+  })
+
+  it("default (no --yes) is plan-only and surfaces the re-run footer", async () => {
+    // Plan-then-execute: bare `--fix-fact-encoding` MUST NOT write. The
+    // underlying helper is called with `dryRun: true` and the output
+    // ends with the "Re-run with --yes" directive.
+    const encoded = [
+      {
+        id: "f1",
+        rawSubject: "Build &amp; Tooling",
+        rawObject: "Rollup",
+        decodedSubject: "Build & Tooling",
+        decodedObject: "Rollup",
+        rawDedupKey: "",
+        decodedDedupKey: "abc",
+        predicate: "uses",
+      },
+    ]
+    const services = {
+      facts: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({ encoded, collisions: [], fixes: [] }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runFactEncodingFix(services as never, { apply: false })
+    log.mockRestore()
+
+    expect(services.facts.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
+    expect(logs.some((l) => l.includes("Would decode 1 HTML-encoded fact"))).toBe(true)
+    expect(
+      logs.some((l) => l.includes("Re-run with `--yes`"))
+    ).toBe(true)
+  })
+
+  it("--dry-run prints the same plan output and still carries the --yes directive", async () => {
+    // `--dry-run` and the bare default both route to `dryRun: true`
+    // under the hood. Both paths emit the "Re-run with --yes" footer
+    // because the global migrate action suppresses its generic
+    // "Re-run without --dry-run" footer when an encoding flag is
+    // present, so operators always see exactly one apply instruction.
+    const encoded = [
+      {
+        id: "f1",
+        rawSubject: "A &amp; B",
+        rawObject: "x",
+        decodedSubject: "A & B",
+        decodedObject: "x",
+        rawDedupKey: "",
+        decodedDedupKey: "abc",
+        predicate: "uses",
+      },
+    ]
+    const services = {
+      facts: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({ encoded, collisions: [], fixes: [] }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runFactEncodingFix(services as never, { apply: false, dryRun: true })
+    log.mockRestore()
+
+    expect(services.facts.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
+    expect(logs.some((l) => l.includes("Would decode 1 HTML-encoded fact"))).toBe(true)
+    expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
+  })
+
+  it("--yes forwards dryRun=false and labels the output as applied", async () => {
+    const encoded = [
+      {
+        id: "f1",
+        rawSubject: "Build &amp; Tooling",
+        rawObject: "Rollup",
+        decodedSubject: "Build & Tooling",
+        decodedObject: "Rollup",
+        rawDedupKey: "",
+        decodedDedupKey: "abc",
+        predicate: "uses",
+      },
+    ]
+    const services = {
+      facts: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          collisions: [],
+          fixes: [encoded[0]],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runFactEncodingFix(services as never, { apply: true })
+    log.mockRestore()
+
+    expect(services.facts.fixEncoding).toHaveBeenCalledWith({ dryRun: false })
+    expect(logs.some((l) => l.includes("Decoded 1 HTML-encoded fact"))).toBe(true)
+  })
+
+  it("surfaces the dedup-key collision gate and points operators at --dedup-keys --merge --yes", async () => {
+    const encoded = [
+      {
+        id: "f-encoded",
+        rawSubject: "Build &amp; Tooling",
+        rawObject: "Rollup",
+        decodedSubject: "Build & Tooling",
+        decodedObject: "Rollup",
+        rawDedupKey: "",
+        decodedDedupKey: "abc",
+        predicate: "uses",
+      },
+    ]
+    const collisions = [
+      {
+        decodedDedupKey: "abc",
+        triple: { subject: "Build & Tooling", predicate: "uses", object: "Rollup" },
+        factIds: ["f-clean", "f-encoded"],
+      },
+    ]
+    const services = {
+      facts: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({ encoded, collisions, fixes: [] }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runFactEncodingFix(services as never, { apply: true })
+    log.mockRestore()
+
+    // Tally line reports 0 applied despite 1 encoded row, matching the gate.
+    expect(
+      logs.some((l) => l.includes("Decoded 0 HTML-encoded fact") && l.includes("1 collision group"))
+    ).toBe(true)
+    // Directive for the operator is present.
+    expect(
+      logs.some((l) => l.includes("--dedup-keys --merge --yes"))
+    ).toBe(true)
+  })
+})
+
+describe("runMemoryEncodingFix", () => {
+  it("default (no --yes) is plan-only and surfaces the re-run footer", async () => {
+    const encoded = [
+      {
+        id: "m1",
+        rawTitle: "Build &amp; Tooling",
+        decodedTitle: "Build & Tooling",
+        titleNeedsFix: true,
+        contentNeedsFix: false,
+        contentBytes: 0,
+        contentTooLargeToFix: false,
+        rawContent: null,
+        decodedContent: null,
+        contentFetchFailed: false,
+      },
+    ]
+    const services = {
+      memories: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          oversizedSkipped: [],
+          contentFetchFailures: [],
+          fixes: [],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: false })
+    log.mockRestore()
+
+    expect(services.memories.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
+    expect(logs.some((l) => l.includes("Would decode 1 HTML-encoded memory"))).toBe(true)
+    expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
+  })
+
+  it("reports nothing-to-do on a clean vault", async () => {
+    const services = {
+      memories: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({
+            encoded: [],
+            oversizedSkipped: [],
+            contentFetchFailures: [],
+            fixes: [],
+          }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: true })
+    log.mockRestore()
+
+    expect(services.memories.fixEncoding).toHaveBeenCalledWith({ dryRun: false })
+    expect(logs.some((l) => l.includes("No HTML-encoded memory rows"))).toBe(true)
+  })
+
+  it("prints Title and body tallies separately", async () => {
+    const encoded = [
+      {
+        id: "m1",
+        rawTitle: "Build &amp; Tooling",
+        decodedTitle: "Build & Tooling",
+        titleNeedsFix: true,
+        contentNeedsFix: true,
+        contentBytes: 20,
+        contentTooLargeToFix: false,
+        rawContent: "Rollup &amp; Vite",
+        decodedContent: "Rollup & Vite",
+      },
+      {
+        id: "m2",
+        rawTitle: "clean title",
+        decodedTitle: "clean title",
+        titleNeedsFix: false,
+        contentNeedsFix: true,
+        contentBytes: 15,
+        contentTooLargeToFix: false,
+        rawContent: "body &amp;amp; more",
+        decodedContent: "body & more",
+      },
+    ]
+    const fixes = [
+      {
+        id: "m1",
+        rawTitle: "Build &amp; Tooling",
+        decodedTitle: "Build & Tooling",
+        titleFixed: true,
+        contentFixed: true,
+      },
+      {
+        id: "m2",
+        rawTitle: "clean title",
+        decodedTitle: "clean title",
+        titleFixed: false,
+        contentFixed: true,
+      },
+    ]
+    const services = {
+      memories: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({
+            encoded,
+            oversizedSkipped: [],
+            contentFetchFailures: [],
+            fixes,
+          }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: true })
+    log.mockRestore()
+
+    expect(
+      logs.some((l) => l.includes("Title fixes: 1") && l.includes("body fixes: 2"))
+    ).toBe(true)
+  })
+
+  it("surfaces oversized-body rows in a dedicated bucket", async () => {
+    const encoded = [
+      {
+        id: "m-big",
+        rawTitle: "Big &amp; Chunky",
+        decodedTitle: "Big & Chunky",
+        titleNeedsFix: true,
+        contentNeedsFix: true,
+        contentBytes: 250_000,
+        contentTooLargeToFix: true,
+        rawContent: "…very large body…",
+        decodedContent: "…very large body…",
+      },
+    ]
+    const fixes = [
+      {
+        id: "m-big",
+        rawTitle: "Big &amp; Chunky",
+        decodedTitle: "Big & Chunky",
+        titleFixed: true,
+        contentFixed: false,
+      },
+    ]
+    const services = {
+      memories: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({
+            encoded,
+            oversizedSkipped: [encoded[0]],
+            contentFetchFailures: [],
+            fixes,
+          }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: true })
+    log.mockRestore()
+
+    expect(
+      logs.some((l) => l.includes("Skipped body rewrite on 1 memory"))
+    ).toBe(true)
+    // 250_000 bytes → "244.1 KB" under `formatBytes` (1024-base KB with
+    // one decimal). The oversize preview renders in KB so it's scannable
+    // next to the 100 KB cap instead of a six-digit byte count.
+    expect(logs.some((l) => l.includes("244.1 KB"))).toBe(true)
   })
 })
 

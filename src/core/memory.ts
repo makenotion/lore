@@ -30,6 +30,10 @@ import type {
 import { buildMemoryProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
+import {
+  fixMemoryEncoding,
+  type MemoryEncodingReport,
+} from "./memory-encoding.js"
 import { LruCache } from "./cache.js"
 import {
   isFullPage,
@@ -444,6 +448,18 @@ export class MemoryService {
       this.bumpWriteEpoch()
     }
     return updated
+  }
+
+  /**
+   * Run the HTML-entity decode pass against this service's Memories DB.
+   * Thin wrapper over the standalone migration function in
+   * `memory-encoding.ts` so the CLI doesn't need to reach past the
+   * service boundary for the client + DatabaseRef.
+   */
+  async fixEncoding(
+    options: { dryRun?: boolean } = {}
+  ): Promise<MemoryEncodingReport> {
+    return fixMemoryEncoding(this.client, this.db, options)
   }
 
   async archive(id: string): Promise<void> {

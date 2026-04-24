@@ -29,6 +29,10 @@ import {
   type FactDedupOptions,
 } from "./fact-dedup.js"
 import {
+  fixFactEncoding,
+  type FactEncodingReport,
+} from "./fact-encoding.js"
+import {
   isFullPage,
   extractTitle,
   extractRichText,
@@ -692,6 +696,18 @@ export class FactService {
     options: FactDedupOptions = {}
   ): Promise<FactDedupBackfillResult> {
     return runFactDedupBackfill(this.client, this.db, options)
+  }
+
+  /**
+   * Run the HTML-entity decode pass against this service's Facts DB.
+   * Same shape as `backfillDedupKeys` — thin wrapper over the standalone
+   * migration function in `fact-encoding.ts` so the CLI doesn't need to
+   * reach past the service boundary for the client + DatabaseRef.
+   */
+  async fixEncoding(
+    options: { dryRun?: boolean } = {}
+  ): Promise<FactEncodingReport> {
+    return fixFactEncoding(this.client, this.db, options)
   }
 
   async invalidate(id: string): Promise<void> {
