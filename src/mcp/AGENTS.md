@@ -107,6 +107,42 @@ export function registerFooTools(
 | `lore-status` | Vault status, database counts, active project | Yes |
 | `lore-wake-up` | Load recent memories + facts for session priming | Yes |
 
+#### Two-tier default for `lore-wake-up`
+
+`lore-wake-up` defaults to **title-tier rows** (title + metadata, no body)
+across Recent Memories and Related to Open Loops. This is the same
+content-off discipline as `lore-recall` / `lore-search` (below), extended
+to the session-priming tool where the pre-P2-01 default used to fan out
+one `pages.retrieveMarkdown` per memory on every call.
+
+- **Default path.** Agents get heading + `source | tags | date` per
+  memory. Bodies are omitted; the section size reduction is measured at
+  ~60% against the Mail production vault (10 recent + 10 open loops +
+  15 knowledge facts, no digest).
+- **Opt in.** Pass `expand: true` to restore the pre-P2-01 body-inclusive
+  output. The digest memory (`source: digest`) always renders with its
+  body regardless — the digest IS the content.
+- **Per-section caps.** `limit` (memories), `openLoopLimit`,
+  `knowledgeFactLimit` are independent knobs so callers can bound one
+  section without truncating others. `openLoopLimit: 0` short-circuits
+  the tracking-predicate Notion query AND the related-memory search
+  that seeds off it — zero open loops means zero seeds, so skipping
+  both saves two round-trips for one knob.
+- **`limit` counts clusters, not rows.** Topical collapse runs on the
+  display side: wake-up over-fetches the memory sections by
+  `COLLAPSE_OVERFETCH_MULTIPLIER` (`src/mcp/tools/context.ts`), groups
+  near-duplicate memories (title-token Jaccard ≥ 0.5 OR tag-set overlap
+  ≥ 0.5), then slices by cluster count so the agent sees a stable
+  number of distinct topics. Collapsed peers render on the representative
+  as `(related: <uuid>, <uuid>)` — **full Notion UUIDs**, so an agent
+  can call `lore-recall` / `lore-get-decision` with the trailer ID to
+  fetch the peer's body. Even when `expand: true`, only the
+  representative's body is rendered; collapsed peers stay suppressed.
+
+This joins `lore-recall` / `lore-search` under the `0.2.0` server
+version. MCP clients that relied on the previous eager-body default
+will observe the change on reconnect.
+
 ### Memory Tools
 
 | Tool | Purpose | Read-only |

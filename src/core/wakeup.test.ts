@@ -258,6 +258,26 @@ describe("loadWakeUpData", () => {
     expect(rawListCall?.limit).toBe(11)
   })
 
+  it("does not return more than memoryLimit even when no digest is present (0-digest fast path)", async () => {
+    // The Mail-vault fast path: zero digest memories exist, but we still
+    // request `memoryLimit + 1` so a leading-digest filter has headroom.
+    // Without a digest, the extra row must be trimmed — otherwise every
+    // wake-up would leak one row past the requested cap.
+    const eleven = Array.from({ length: 11 }, (_, i) =>
+      buildMemory({
+        id: `m${i}`,
+        title: `memory ${i}`,
+        createdAt: `2026-04-19T${String(i + 1).padStart(2, "0")}:00:00Z`,
+      }),
+    )
+    const services = stubServices({ rawMemories: eleven, digestMemories: [] })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", memoryLimit: 10, now: NOW })
+
+    expect(data.digest).toBeNull()
+    expect(data.memories).toHaveLength(10)
+  })
+
   it("sorts the digest query by created_time so freshness matches 'latest'", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
@@ -347,6 +367,42 @@ describe("loadWakeUpData", () => {
     })
 
     expect(services.factsListRecentCalls[0]?.limit).toBe(7)
+  })
+
+  it("forwards a caller-supplied openLoopLimit into the tracking-predicate query", async () => {
+    // P2-01 exposes per-section caps so callers can bound prompt size.
+    // openLoopLimit must reach the tracking-partition query or the cap
+    // becomes advisory — wake-up is a hot path and we can't afford to
+    // over-fetch just because the renderer truncates later.
+    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
+
+    await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 4, now: NOW })
+
+    expect(services.factsCalls[0]?.opts?.limit).toBe(4)
+  })
+
+  it("clamps openLoopLimit to Notion's per-page ceiling", async () => {
+    // Schema validation caps inputs at 50, but defense-in-depth: if a
+    // caller (or a future schema loosening) feeds us 500, we still must
+    // not paginate. The service layer caps at 100 too — asserting here
+    // pins the wake-up-side contract.
+    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
+
+    await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 500, now: NOW })
+
+    expect(services.factsCalls[0]?.opts?.limit).toBeLessThanOrEqual(100)
+  })
+
+  it("skips the tracking-predicate query when openLoopLimit is 0", async () => {
+    // Setting openLoopLimit: 0 is the explicit "skip this section" knob.
+    // It must short-circuit the Notion round-trip — pre-P2-01 wake-up
+    // always paid for tracking-partition I/O.
+    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 0, now: NOW })
+
+    expect(data.openLoops).toEqual([])
+    expect(services.facts.queryBySubject).not.toHaveBeenCalled()
   })
 
   it("skips digest, fact, decision, and related-memory lookup when no project is resolved", async () => {

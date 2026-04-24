@@ -52,6 +52,13 @@ export const DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT = 5
  * formula self-documenting.
  */
 const NOTION_PAGE_SIZE = 100
+/**
+ * Default open-loops cap. Matches `NOTION_PAGE_SIZE` so a single bounded
+ * Notion page covers the tracking-predicate partition without paginating.
+ * Surface callers can dial this lower via `openLoopLimit` to bound prompt
+ * size per section independently of the recent-memory cap.
+ */
+export const DEFAULT_WAKEUP_OPEN_LOOP_LIMIT = NOTION_PAGE_SIZE
 /** Upper bound on entity-name seeds passed into the `titleAny` filter. */
 const MAX_ENTITY_CANDIDATES = 10
 /** Skip entity strings shorter than this — too noisy to match on. */
@@ -106,6 +113,13 @@ export interface WakeUpOptions {
   digestFreshnessDays?: number
   /** Max rendered knowledge facts (non-tracking predicates). */
   knowledgeFactLimit?: number
+  /**
+   * Max open-loop facts fetched from the tracking-predicate partition.
+   * Defaults to Notion's per-page ceiling so one bounded page covers the
+   * section. Surfaces the per-section knob that P2-01 exposes to callers
+   * alongside `knowledgeFactLimit`.
+   */
+  openLoopLimit?: number
   /** Max related memories. */
   relatedMemoryLimit?: number
   /**
@@ -158,6 +172,16 @@ export async function loadWakeUpData(
     opts.memoryLimitWithDigest ?? DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST
   const freshnessDays = opts.digestFreshnessDays ?? DEFAULT_DIGEST_FRESHNESS_DAYS
   const knowledgeLimit = opts.knowledgeFactLimit ?? DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT
+  // Defense-in-depth clamp. The MCP tool schema rejects
+  // `openLoopLimit > 50`, so this branch never fires from the MCP
+  // surface today — but `loadWakeUpData` is also consumed by the
+  // shell wake-up hook and any future library caller, which bypass
+  // Zod validation. Clamping here means no caller can accidentally
+  // paginate the tracking-partition query on the hot path.
+  const openLoopLimit = Math.min(
+    opts.openLoopLimit ?? DEFAULT_WAKEUP_OPEN_LOOP_LIMIT,
+    NOTION_PAGE_SIZE,
+  )
   const relatedLimit = opts.relatedMemoryLimit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
   const includeDecisions = opts.includeDecisions ?? true
@@ -195,11 +219,11 @@ export async function loadWakeUpData(
           sortBy: "created_time",
         })
       : Promise.resolve({ items: [] as Memory[] }),
-    projectId
+    projectId && openLoopLimit > 0
       ? services.facts.queryBySubject("", {
           projectId,
           predicates: TRACKING_PREDICATES,
-          limit: NOTION_PAGE_SIZE,
+          limit: openLoopLimit,
         })
       : Promise.resolve([] as Fact[]),
     projectId

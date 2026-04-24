@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  collapseOverlappingMemories,
   displayId,
   displayValue,
   factClass,
@@ -9,7 +10,39 @@ import {
   resolveReferencedTitles,
   resolveTitles,
 } from "./render.js"
-import type { Fact, FactConfidence, FactPredicate } from "../types.js"
+import type {
+  Fact,
+  FactConfidence,
+  FactPredicate,
+  Memory,
+  MemorySource,
+} from "../types.js"
+
+function buildMemory(overrides: Partial<Memory> & { id: string; title: string }): Memory {
+  return {
+    projectIds: [],
+    topicId: null,
+    source: "manual" satisfies MemorySource,
+    kind: "note",
+    status: "informational",
+    confidence: "certain",
+    reviewBy: null,
+    decidedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    session: "",
+    content: "",
+    createdAt: "2026-04-20T00:00:00Z",
+    updatedAt: "2026-04-20T00:00:00Z",
+    ...overrides,
+  }
+}
 
 const DECISION_A = "349b35e6-e67f-8185-bec0-d3902135c5ba"
 const DECISION_B = "449b35e6-e67f-8185-bec0-d3902135c5bb"
@@ -343,5 +376,115 @@ describe("displayValue / displayId", () => {
     // UUIDs (e.g., legacy data) — the hint should degrade gracefully,
     // not lie about having truncated a UUID.
     expect(displayId("not-a-uuid", titleMap)).toBe("not-a-uuid (?)")
+  })
+})
+
+describe("collapseOverlappingMemories", () => {
+  it("collapses near-duplicate titles onto the first-seen memory", () => {
+    // The Mail-vault example from P2-01: three wake-up debugging sessions
+    // that share a title prefix collapse into one representative. Tag
+    // overlap drives collapse here — the sessions share `hooks, wakeup,
+    // debugging`, which is a 3-of-3 overlap against each other's tag set.
+    const tags = ["hooks", "wakeup", "debugging"]
+    const memories = [
+      buildMemory({
+        id: "3a85",
+        title: "Wakeup silent-failure root cause — missing LORE_NOTION_TOKEN",
+        tags,
+      }),
+      buildMemory({
+        id: "2c1f",
+        title: "Wakeup silent-failure debugging notes",
+        tags,
+      }),
+      buildMemory({
+        id: "1a77",
+        title: "Wakeup silent failure — followup on token resolution",
+        tags,
+      }),
+    ]
+
+    const groups = collapseOverlappingMemories(memories)
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].keep.id).toBe("3a85")
+    expect(groups[0].collapsedIds).toEqual(["2c1f", "1a77"])
+  })
+
+  it("keeps unrelated memories as their own groups (no over-collapse)", () => {
+    const memories = [
+      buildMemory({ id: "a", title: "OAuth callback returns 400 on Safari" }),
+      buildMemory({ id: "b", title: "Notion rate-limiter backoff strategy" }),
+      buildMemory({ id: "c", title: "Weekly project digest — 2026-04-17" }),
+    ]
+
+    const groups = collapseOverlappingMemories(memories)
+
+    expect(groups).toHaveLength(3)
+    expect(groups.every((g) => g.collapsedIds.length === 0)).toBe(true)
+  })
+
+  it("collapses by tag-set overlap even when titles diverge", () => {
+    // Agents often retitle sessions ("part 1" / "followup") but keep the
+    // tag set stable. Szymkiewicz-Simpson overlap catches this because the
+    // smaller set is entirely covered by the larger.
+    const memories = [
+      buildMemory({
+        id: "a",
+        title: "Completely unrelated phrasing here",
+        tags: ["hooks", "wakeup"],
+      }),
+      buildMemory({
+        id: "b",
+        title: "Entirely different wording entirely",
+        tags: ["hooks", "wakeup", "debugging"],
+      }),
+    ]
+
+    const groups = collapseOverlappingMemories(memories)
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].keep.id).toBe("a")
+    expect(groups[0].collapsedIds).toEqual(["b"])
+  })
+
+  it("preserves input order when nothing collapses", () => {
+    const memories = [
+      buildMemory({ id: "newest", title: "Alpha feature rollout" }),
+      buildMemory({ id: "mid", title: "Bravo ingest pipeline hardening" }),
+      buildMemory({ id: "oldest", title: "Charlie telemetry dashboards" }),
+    ]
+
+    const groups = collapseOverlappingMemories(memories)
+
+    expect(groups.map((g) => g.keep.id)).toEqual(["newest", "mid", "oldest"])
+  })
+
+  it("short title tokens and empty tag sets do not force spurious matches", () => {
+    // Tokens below the 3-character floor are dropped as too noisy — so
+    // two titles that only overlap on "a", "an", "of" should normalize
+    // to empty token sets and not match. With no tags on either side,
+    // the memories must stay as independent groups.
+    const memories = [
+      buildMemory({ id: "a", title: "a an of", tags: [] }),
+      buildMemory({ id: "b", title: "a an of", tags: [] }),
+    ]
+
+    const groups = collapseOverlappingMemories(memories)
+
+    expect(groups).toHaveLength(2)
+  })
+
+  it("ignores tag overlap when one side has zero tags", () => {
+    // A memory with no tags should not pseudo-match anything through tag
+    // overlap — overlap coefficient over an empty set is undefined, and the
+    // caller expects "err toward showing" when tag signal is absent.
+    const memories = [
+      buildMemory({ id: "a", title: "quarterly strategy memo", tags: [] }),
+      buildMemory({ id: "b", title: "incident postmortem", tags: ["infra"] }),
+    ]
+
+    const groups = collapseOverlappingMemories(memories)
+    expect(groups).toHaveLength(2)
   })
 })

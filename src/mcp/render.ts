@@ -14,7 +14,7 @@
  */
 
 import { TRACKING_PREDICATES } from "../types.js"
-import type { Fact, FactPredicate } from "../types.js"
+import type { Fact, FactPredicate, Memory } from "../types.js"
 
 /**
  * Notion page IDs are canonical 8-4-4-4-12 hex UUIDs. The SDK emits
@@ -233,4 +233,150 @@ export function groupFactsByClass(facts: readonly Fact[]): GroupedFacts {
   groups.structure.sort(compare)
   groups.tracking.sort(compare)
   return groups
+}
+
+/**
+ * Default title-token Jaccard threshold for topical dedup. ≥ 0.5 means
+ * more than half the distinct tokens in the shorter title appear in the
+ * other — enough to flag "same topic, different phrasing" without
+ * collapsing unrelated memories that share a couple of generic tokens.
+ * Kept file-local until a second call-site emerges: callers with a
+ * different tuning should pass `titleJaccardThreshold` through
+ * `CollapseOverlappingOptions`, not take a hard dependency on the
+ * constant.
+ */
+const DEFAULT_TITLE_JACCARD_THRESHOLD = 0.5
+/**
+ * Default tag-set overlap threshold (Szymkiewicz-Simpson). A memory whose
+ * smaller tag set is at least half-covered by another's is almost always
+ * the same topic — this heuristic complements title-token Jaccard for
+ * cases where agents retitle but tag consistently.
+ */
+const DEFAULT_TAG_OVERLAP_THRESHOLD = 0.5
+/** Tokens shorter than this are dropped as too noisy to disambiguate. */
+const MIN_TITLE_TOKEN_LENGTH = 3
+
+/**
+ * Rendering descriptor for one deduped memory group. `keep` is the
+ * newest memory in the cluster (preserved in-place in the caller's
+ * sort order); `collapsedIds` are the remaining memories in newest-
+ * first order so the renderer can stitch an "(related: …)" trailer.
+ */
+export interface CollapsedMemoryGroup {
+  keep: Memory
+  collapsedIds: string[]
+}
+
+/**
+ * Collapse topically overlapping memories into one representative per
+ * cluster. The first memory in caller-supplied order wins its cluster;
+ * subsequent memories that pass the similarity threshold are attached
+ * as `collapsedIds`. Memories that match nothing preserved above form
+ * their own single-member cluster. Callers that want "newest wins"
+ * sort descending by createdAt before calling.
+ *
+ * Similarity is the OR of two fast heuristics:
+ *   - Title-token Jaccard ≥ `titleJaccardThreshold` — same topic, any
+ *     phrasing. Uses lowercased alphanumeric tokens with short fragments
+ *     dropped so stopwords don't inflate overlap.
+ *   - Tag-set overlap (Szymkiewicz-Simpson) ≥ `tagOverlapThreshold` —
+ *     agents often retitle across sessions but keep tags stable, so tag
+ *     overlap catches clusters the title heuristic would miss.
+ *
+ * The spec errs toward showing — thresholds are high enough that
+ * distinct memories rarely collapse, and a hidden nuance can still be
+ * fetched via `lore-expand` / `lore-recall`.
+ *
+ * **Input-size budget: N ≤ 50.** The cluster-comparison loop is
+ * O(N · K) with K = cluster count, and in the degenerate case where
+ * every memory opens a new cluster the pass is O(N²). Wake-up's
+ * over-fetched memory sections sit well inside that budget (recent
+ * cap × 3 ≈ 30, related cap × 3 ≈ 15). A caller planning to pass
+ * hundreds of rows should batch or move the dedup closer to storage.
+ */
+export interface CollapseOverlappingOptions {
+  titleJaccardThreshold?: number
+  tagOverlapThreshold?: number
+}
+
+export function collapseOverlappingMemories(
+  memories: readonly Memory[],
+  options: CollapseOverlappingOptions = {},
+): CollapsedMemoryGroup[] {
+  const titleThreshold = options.titleJaccardThreshold ?? DEFAULT_TITLE_JACCARD_THRESHOLD
+  const tagThreshold = options.tagOverlapThreshold ?? DEFAULT_TAG_OVERLAP_THRESHOLD
+  // Each cluster caches its representative's signature inline so the
+  // comparison loop stays O(N·M) in set ops. Recomputing tokens per
+  // comparison — or rescanning the signatures array to locate a group's
+  // signature — would degrade to O(N·M·|title|) or O(N·M·N).
+  const clusters: Array<{ group: CollapsedMemoryGroup; signature: MemorySignature }> = []
+
+  for (const memory of memories) {
+    const signature: MemorySignature = {
+      memory,
+      titleTokens: titleTokens(memory.title),
+      tagSet: new Set(memory.tags.map((tag) => tag.toLowerCase())),
+    }
+
+    let attached = false
+    for (const cluster of clusters) {
+      if (areTopicallySimilar(signature, cluster.signature, titleThreshold, tagThreshold)) {
+        cluster.group.collapsedIds.push(memory.id)
+        attached = true
+        break
+      }
+    }
+    if (!attached) {
+      clusters.push({
+        group: { keep: memory, collapsedIds: [] },
+        signature,
+      })
+    }
+  }
+
+  return clusters.map((c) => c.group)
+}
+
+interface MemorySignature {
+  memory: Memory
+  titleTokens: Set<string>
+  tagSet: Set<string>
+}
+
+function areTopicallySimilar(
+  a: MemorySignature,
+  b: MemorySignature,
+  titleThreshold: number,
+  tagThreshold: number,
+): boolean {
+  if (jaccard(a.titleTokens, b.titleTokens) >= titleThreshold) return true
+  // Szymkiewicz-Simpson: biases toward "one set is a subset of the
+  // other", which matches how agents tag the same topic with slightly
+  // different breadth across sessions. Jaccard would penalize the
+  // larger set for carrying extra tags, and Dice would split the
+  // difference — neither reflects the actual pattern we're catching.
+  return overlapCoefficient(a.tagSet, b.tagSet) >= tagThreshold
+}
+
+function titleTokens(title: string): Set<string> {
+  const tokens = new Set<string>()
+  for (const raw of title.toLowerCase().split(/[^a-z0-9]+/u)) {
+    if (raw.length >= MIN_TITLE_TOKEN_LENGTH) tokens.add(raw)
+  }
+  return tokens
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let shared = 0
+  for (const value of a) if (b.has(value)) shared += 1
+  const union = a.size + b.size - shared
+  return union === 0 ? 0 : shared / union
+}
+
+function overlapCoefficient(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let shared = 0
+  for (const value of a) if (b.has(value)) shared += 1
+  return shared / Math.min(a.size, b.size)
 }
