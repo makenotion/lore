@@ -162,6 +162,276 @@ describe("lore-ask projectName resolution", () => {
   })
 })
 
+describe("lore-learn sourceMemoryId discipline", () => {
+  function makeServices(overrides: Record<string, unknown> = {}) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        create: vi.fn().mockImplementation(async (input) =>
+          makeFact("fact-created", {
+            subject: input.subject,
+            predicate: input.predicate,
+            object: input.object,
+            sourceMemoryId: input.sourceMemoryId ?? null,
+          })
+        ),
+        queryByEntity: vi.fn(),
+        queryByObject: vi.fn(),
+      },
+      decisions: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: {
+        // Defaults — tests override per-case.
+        record: vi.fn(),
+        get: vi.fn().mockReturnValue(undefined),
+      },
+      ...overrides,
+    }
+  }
+
+  it("soft-phases missing sourceMemoryId: creates the fact with a prominent warning", async () => {
+    // The spec's soft-phase requirement: we do NOT hard-error when no source
+    // is available, because that would break every deployed caller on day
+    // one. Instead the fact is created and the response carries a loud
+    // warning. Flip to hard error in a future minor.
+    const mockServer = createMockServer()
+    const services = makeServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toContain("WARNING")
+    expect(payload.content[0].text).toContain("sourceMemoryId")
+    // Fact IS created; we're warning, not refusing.
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: undefined })
+    )
+  })
+
+  it("creates the fact when sourceMemoryId is passed explicitly", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "mem-explicit",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toContain("Source: mem-explicit")
+    expect(payload.content[0].text).not.toContain("WARNING")
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: "mem-explicit" })
+    )
+  })
+
+  it("auto-links sourceMemoryId from the session tracker when the caller omits it", async () => {
+    // Core P1-09 auto-link path: a `lore-learn` call that omits
+    // sourceMemoryId picks up the memory saved earlier in the same
+    // (agent, session). Tracker value includes project scope so the
+    // downstream compatibility check gets real data.
+    const mockServer = createMockServer()
+    const services = makeServices({
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn().mockImplementation((key: { agent?: string; session?: string }) => {
+          if (key.agent === "claude" && key.session === "session-abc") {
+            return { memoryId: "mem-from-session", projectIds: [] }
+          }
+          return undefined
+        }),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      session: "session-abc",
+      agent: "claude",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toContain("auto-linked from session")
+    expect(payload.content[0].text).toContain("mem-from-session")
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: "mem-from-session" })
+    )
+  })
+
+  it("prefers the explicitly-passed sourceMemoryId over the session candidate", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi
+          .fn()
+          .mockReturnValue({ memoryId: "mem-from-session", projectIds: [] }),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      session: "session-abc",
+      agent: "claude",
+      sourceMemoryId: "mem-explicit",
+    } as never)
+
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: "mem-explicit" })
+    )
+  })
+
+  it("declines auto-link when session memory's project is disjoint from the fact's project", async () => {
+    // Reviewer blocker #2: an iOS-scoped memory must not silently become the
+    // source for a server-scoped fact. The memory and the fact are both
+    // scoped; their project sets do not intersect; decline and warn.
+    const mockServer = createMockServer()
+    const projectsFindByName = vi.fn().mockImplementation(async (name: string) => {
+      if (name === "server") return { id: "proj-server", name: "server" }
+      return null
+    })
+    const services = makeServices({
+      projects: { findByName: projectsFindByName },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi
+          .fn()
+          .mockReturnValue({ memoryId: "mem-ios", projectIds: ["proj-ios"] }),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "EventQueue",
+      predicate: "uses",
+      object: "RMQ",
+      projectName: "server",
+      session: "s1",
+      agent: "claude",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    // Auto-link refused — fact is created without a Source and with both
+    // the soft-phase warning AND the decline reason in the warnings line.
+    expect(payload.content[0].text).toContain("Declined auto-link")
+    expect(payload.content[0].text).toContain("different project")
+    expect(payload.content[0].text).toContain("WARNING")
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: undefined })
+    )
+  })
+
+  it("accepts auto-link when fact has no project scope (vault-wide fact)", async () => {
+    // A vault-wide fact can legitimately accept any scoped memory as source.
+    // This is the symmetric case to the previous test.
+    const mockServer = createMockServer()
+    const services = makeServices({
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi
+          .fn()
+          .mockReturnValue({ memoryId: "mem-ios", projectIds: ["proj-ios"] }),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "Framework",
+      predicate: "is_a",
+      object: "JS lib",
+      session: "s1",
+      agent: "claude",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.content[0].text).toContain("auto-linked from session")
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: "mem-ios" })
+    )
+  })
+
+  it("accepts auto-link when session memory has no project scope (vault-wide memory)", async () => {
+    // A vault-wide memory can support a scoped fact — symmetric case.
+    const mockServer = createMockServer()
+    const services = makeServices({
+      projects: {
+        findByName: vi.fn().mockResolvedValue({ id: "proj-server", name: "server" }),
+      },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi
+          .fn()
+          .mockReturnValue({ memoryId: "mem-global", projectIds: [] }),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "EventQueue",
+      predicate: "uses",
+      object: "RMQ",
+      projectName: "server",
+      session: "s1",
+      agent: "claude",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.content[0].text).toContain("auto-linked from session")
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: "mem-global" })
+    )
+  })
+
+  it("soft-phase warning (no hard error) when session is present but the tracker has no entry", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn().mockReturnValue(undefined),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      session: "session-without-memory",
+      agent: "claude",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toContain("WARNING")
+    expect(services.facts.create).toHaveBeenCalled()
+  })
+})
+
 describe("lore-audit projectName resolution", () => {
   it("returns an explicit error when projectName does not resolve", async () => {
     // lore-audit surfaces destructive follow-up actions (mark reviewed,

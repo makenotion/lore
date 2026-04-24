@@ -15,6 +15,7 @@ import { MemoryService } from "./core/memory.js"
 import { FactService } from "./core/fact.js"
 import { DecisionService } from "./core/decision.js"
 import { resolveProject } from "./core/context.js"
+import { SessionMemoryTracker } from "./session-memory-tracker.js"
 import type { LoreConfig, ResolvedContext } from "./types.js"
 
 export interface LoreServices {
@@ -27,6 +28,12 @@ export interface LoreServices {
   context: ResolvedContext
   config: LoreConfig
   configRoot: string
+  /**
+   * Per-process map of session_id → last-created memory id. MCP save tools
+   * record into it; `lore-learn` reads it to auto-link `sourceMemoryId` when
+   * the caller omits it. Empty (and unused) in one-shot CLI/hook contexts.
+   */
+  sessionMemories: SessionMemoryTracker
 }
 
 export async function initServicesFromConfig(
@@ -67,6 +74,7 @@ export async function initServicesFromConfig(
     },
     config,
     configRoot,
+    sessionMemories: new SessionMemoryTracker(),
   }
 }
 

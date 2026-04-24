@@ -24,6 +24,24 @@ const PREDICATE_VALUES = [
   "blocked_by",
 ] as const
 
+/**
+ * Return true when the auto-link candidate's project scope is compatible
+ * with the fact's. Rules:
+ *
+ * - Either side empty (vault-wide) → compatible. A vault-wide memory can
+ *   support a scoped fact, and a vault-wide fact can accept any scoped
+ *   memory as source.
+ * - Both sides scoped → require at least one shared project.
+ *
+ * Anything else is a durable cross-project mis-link risk and must be
+ * declined. Mirror of the conservative stance in the backfill heuristic.
+ */
+function projectsCompatible(factProjectIds: string[], memoryProjectIds: string[]): boolean {
+  if (factProjectIds.length === 0 || memoryProjectIds.length === 0) return true
+  const memoryScope = new Set(memoryProjectIds)
+  return factProjectIds.some((id) => memoryScope.has(id))
+}
+
 export function registerKnowledgeTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
   // lore-learn
@@ -35,7 +53,12 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       description:
         "Add a fact to the knowledge graph. Facts are entity-relationship " +
         "triples: Subject —predicate→ Object. Example: " +
-        '"AuthService" uses "JWT" with confidence "certain".',
+        '"AuthService" uses "JWT" with confidence "certain".\n\n' +
+        "Every fact SHOULD link back to a supporting memory via `sourceMemoryId` so `lore-ask` can " +
+        "retrace the reasoning. Pass the memory ID directly, or pass `agent`+`session` matching an " +
+        "earlier `lore-remember`/`lore-decide` call in the same process and `sourceMemoryId` " +
+        "auto-links. If neither is available the fact is still created, but with a warning — this " +
+        "will become a hard error in a future release.",
       inputSchema: {
         subject: z.string().describe("The entity this fact is about"),
         predicate: z.enum(PREDICATE_VALUES).describe("The relationship type"),
@@ -58,20 +81,66 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           .string()
           .optional()
           .describe("ID of the memory that supports this fact"),
+        session: z
+          .string()
+          .optional()
+          .describe(
+            "Session ID. Combined with `agent`, used to auto-link `sourceMemoryId` to a memory saved " +
+              "earlier in this process."
+          ),
+        agent: z
+          .string()
+          .optional()
+          .describe("Agent name. Part of the composite session key used for auto-link."),
       },
     },
-    async ({ subject, predicate, object, projectName, projectNames, reviewBy, confidence, sourceMemoryId }) => {
+    async ({
+      subject,
+      predicate,
+      object,
+      projectName,
+      projectNames,
+      reviewBy,
+      confidence,
+      sourceMemoryId,
+      session,
+      agent,
+    }) => {
       try {
         const resolved = await resolveProjectIds(services, projectName, projectNames)
+        const factProjectIds = resolved.ids
+
+        let effectiveSource: string | undefined = sourceMemoryId
+        let autoLinkedFromSession = false
+        const toolWarnings: string[] = [...resolved.warnings]
+
+        if (!effectiveSource) {
+          const candidate = services.sessionMemories.get({ agent, session })
+          if (candidate) {
+            if (projectsCompatible(factProjectIds, candidate.projectIds)) {
+              effectiveSource = candidate.memoryId
+              autoLinkedFromSession = true
+            } else {
+              // Scoped fact + scoped memory with disjoint projects: declining
+              // the auto-link prevents a durable cross-project mis-link.
+              // The caller can still pass `sourceMemoryId` explicitly if this
+              // memory really is the right source.
+              toolWarnings.push(
+                `Declined auto-link: session memory ${candidate.memoryId} is scoped to a different project ` +
+                  `than this fact. Pass sourceMemoryId explicitly to override.`
+              )
+            }
+          }
+        }
 
         const fact = await services.facts.create({
           subject,
           predicate,
           object,
-          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+          projectIds: factProjectIds.length > 0 ? factProjectIds : undefined,
           reviewBy,
           confidence,
-          sourceMemoryId,
+          sourceMemoryId: effectiveSource,
         })
 
         const lines = [
@@ -80,8 +149,27 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         if (fact.reviewBy) {
           lines.push(`Review by: ${fact.reviewBy}`)
         }
-        if (resolved.warnings.length > 0) {
-          lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
+        if (effectiveSource && autoLinkedFromSession) {
+          // Surface the auto-pick: heuristics can be wrong, and the caller
+          // needs visibility to retract if the supporting memory is not the
+          // one they intended.
+          lines.push(`Source (auto-linked from session): ${effectiveSource}`)
+        } else if (effectiveSource) {
+          lines.push(`Source: ${effectiveSource}`)
+        } else {
+          // Soft-phase. We create the fact but flag it loudly so deployed
+          // agents have a window to adopt `sourceMemoryId` before the hard
+          // error lands in a future minor. Existing callers are not broken
+          // by this; new orphan facts are observable in the response.
+          lines.push(
+            "WARNING: No Source memory linked. Facts without a Source can't be retraced by `lore-ask`. " +
+              "Pass `sourceMemoryId` with an existing supporting memory, or pass `agent`+`session` " +
+              "matching an earlier `lore-remember`/`lore-decide` call for auto-link. This becomes a " +
+              "hard error in a future release."
+          )
+        }
+        if (toolWarnings.length > 0) {
+          lines.push(`Warnings: ${toolWarnings.join("; ")}`)
         }
 
         return {

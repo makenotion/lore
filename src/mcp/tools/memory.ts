@@ -135,6 +135,14 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           session,
         })
 
+        // Record for auto-linking on subsequent `lore-learn` calls in the
+        // same (agent, session). Includes project scope so `lore-learn` can
+        // reject cross-project auto-links. See src/mcp/tools/knowledge.ts.
+        services.sessionMemories.record(
+          { agent, session },
+          { memoryId: memory.id, projectIds: memory.projectIds }
+        )
+
         const projectLabel = projectNames?.length
           ? projectNames.join(", ")
           : projectName ?? services.context.project?.name ?? "none (repo-wide)"

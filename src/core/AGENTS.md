@@ -166,12 +166,21 @@ signal). All methods exclude invalidated facts by default.
 | `queryByObject(object, opts)`   | Same shape as `queryBySubject` but matches the `Object` rich-text property     |
 | `queryBySourceMemory(id, opts)` | Finds facts whose `Source` relation points at a given memory page              |
 | `queryByEntity(entity, opts)`   | Finds facts where the entity appears as either Subject or Object, deduplicates |
+| `queryOrphans(opts)`            | Returns current facts whose `Source` relation is empty. Used by `lore migrate --backfill-fact-sources` |
 
 ### Hot-path listing (single page)
 
 | Method                          | Behavior                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------ |
 | `listRecent(opts)`              | Single-page, server-filtered `created_time desc`. Returns `{ items, hasMore }` so callers can detect truncation without a second round-trip. Accepts `excludePredicates` for partitioning reads (see below). |
+
+### Writes on existing facts
+
+| Method                           | Behavior                                           |
+| -------------------------------- | -------------------------------------------------- |
+| `extendReview(id, reviewBy)`     | Push forward the `Review By` date                  |
+| `invalidate(id)`                 | Mark no-longer-true (sets `Valid Until` = today)   |
+| `setSource(id, sourceMemoryId)`  | Overwrite the `Source` relation with one memory    |
 
 ### Two-path pattern for partitioned reads
 

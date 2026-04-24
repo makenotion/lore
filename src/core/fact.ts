@@ -356,6 +356,41 @@ export class FactService {
     return [...asSubject, ...asObject.filter((f) => !seen.has(f.id))]
   }
 
+  /**
+   * Return facts whose `Source` relation is empty (no supporting memory) and
+   * which are still valid. Used by `lore migrate --backfill-fact-sources` to
+   * surface orphan facts for remediation. Excludes internal decision-graph
+   * predicates that are auto-sourced elsewhere and should never be orphans.
+   */
+  async queryOrphans(opts?: { projectId?: string }): Promise<Fact[]> {
+    const filters: Array<Record<string, unknown>> = [
+      { property: "Source", relation: { is_empty: true } },
+      { property: "Valid Until", date: { is_empty: true } },
+    ]
+
+    if (opts?.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    const results: PageObjectResponse[] = []
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: { and: filters } as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        results.push(page)
+      }
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return results.map((p) => this.pageToFact(p))
+  }
+
   async queryOverdue(opts?: { projectId?: string }): Promise<Fact[]> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
@@ -383,6 +418,26 @@ export class FactService {
       page_id: id,
       properties: {
         "Review By": { date: { start: reviewBy } },
+      },
+    })
+  }
+
+  /**
+   * Set the `Source` relation on an existing fact to point at a supporting
+   * memory. Used by the `lore migrate --backfill-fact-sources` path to
+   * retroactively link orphan facts found in the Mail vault audit.
+   *
+   * Overwrites any existing Source relation — facts in the current model have
+   * a single source memory, so re-running the backfill replaces rather than
+   * appending. The backfill caller is expected to run during a quiet window
+   * (no concurrent autosave creating or re-pointing facts); we don't
+   * re-read before the write.
+   */
+  async setSource(id: string, sourceMemoryId: string): Promise<void> {
+    await this.client.pages.update({
+      page_id: id,
+      properties: {
+        Source: { relation: [{ id: sourceMemoryId }] },
       },
     })
   }

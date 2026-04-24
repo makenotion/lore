@@ -61,6 +61,72 @@ function createMockServer() {
   }
 }
 
+describe("lore-remember session recording", () => {
+  it("records the created memory with project scope into sessionMemories", async () => {
+    // Integration point for P1-09 auto-link: lore-learn reads back the
+    // {memoryId, projectIds} entry. Project scope is what drives the
+    // cross-project safety check on auto-link.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-just-saved", {
+      title: "Saved",
+      projectIds: ["proj-a"],
+    })
+    const record = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    await remember({
+      title: "Saved",
+      content: "body",
+      session: "session-xyz",
+      agent: "claude-code",
+    } as never)
+
+    expect(record).toHaveBeenCalledWith(
+      { agent: "claude-code", session: "session-xyz" },
+      { memoryId: "mem-just-saved", projectIds: ["proj-a"] }
+    )
+  })
+
+  it("still calls record when session is omitted — tracker handles the empty-session guard", async () => {
+    // The tracker drops empty sessions itself; the tool should always call
+    // `record` so the contract is uniform and the tracker's guards are the
+    // single source of truth.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-no-session")
+    const record = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    await remember({ title: "No session", content: "body" } as never)
+
+    expect(record).toHaveBeenCalledWith(
+      { agent: undefined, session: undefined },
+      { memoryId: "mem-no-session", projectIds: [] }
+    )
+  })
+})
+
 describe("lore-recall topicName resolution", () => {
   it("resolves topicName globally (not scoped to the ambient project) so multi-project topics work", async () => {
     const mockServer = createMockServer()

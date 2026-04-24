@@ -186,6 +186,38 @@ select options, but they are NOT in `PREDICATE_VALUES` in `tools/knowledge.ts`.
 This prevents users from creating inconsistent decision edges via `lore-learn`
 — only `DecisionService` and the decision tools create these facts.
 
+**`lore-learn` expects `sourceMemoryId` (soft-phase).** Every fact
+should link back to a supporting memory so `lore-ask` can retrace the
+reasoning. The tool resolves the source in this order:
+
+1. Explicit `sourceMemoryId` argument — always wins.
+2. Session auto-link: if the caller passes `agent`+`session` and a
+   `lore-remember`/`lore-decide` call earlier in this process recorded
+   a memory under the same composite key, that memory becomes the
+   source **only if** its project scope intersects the fact's (or
+   either side is vault-wide). The response shows
+   "auto-linked from session" so the caller can retract on mis-match.
+3. Neither available → fact is created **with a prominent warning** in
+   the response. This soft-phase window lets deployed callers adopt
+   `sourceMemoryId` before we flip to a hard error in a future minor.
+
+The Zod schema marks `sourceMemoryId` as optional. Runtime logic is
+stricter — it surfaces a warning when neither an explicit ID nor an
+auto-link candidate is available. The mismatch is intentional: schema-
+level strictness would break every deployed agent caller on day one,
+which is exactly what the soft-phase avoids. Agents that inspect the
+tool description see the contract; runtime surfaces the enforcement.
+When we flip to hard error, also tighten the Zod schema to a
+`superRefine` requiring either `sourceMemoryId` or `session`.
+
+The session mapping lives on `services.sessionMemories` (a per-process
+`SessionMemoryTracker`). `lore-remember` and `lore-decide` write into
+it with the memory's `projectIds` so the auto-link project check has
+real data. The tracker is keyed on a composite of `agent`+`session`
+so two agents connected to the same MCP process cannot collide on a
+shared session string. Capped at 256 entries with LRU eviction — no
+cross-process persistence.
+
 ## Adding a New Tool
 
 1. Decide which tool file it belongs in, or create a new file if it represents a

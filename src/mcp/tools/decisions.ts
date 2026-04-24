@@ -187,6 +187,17 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           session,
         })
 
+        // Record for auto-linking on subsequent `lore-learn` calls in the
+        // same (agent, session). Decisions already auto-source their own
+        // `decided_by` and `supersedes_decision` facts below, but a plain
+        // `lore-learn` call made after `lore-decide` in the same turn should
+        // pick up the decision as the supporting memory — subject to the
+        // project-overlap check in knowledge.ts.
+        services.sessionMemories.record(
+          { agent, session },
+          { memoryId: created.id, projectIds: created.projectIds }
+        )
+
         // Process affects first so any explicit context links already exist
         // before supersession reconciliation deduplicates inherited ones.
         const affectsCreated: string[] = []

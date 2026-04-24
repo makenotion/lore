@@ -87,7 +87,7 @@ If the session produced none of these, respond exactly "No Lore context to save.
  * multiple inline bullet sentences (which are also asserted on by tests).
  */
 function buildSourceLinkGuidance(): string {
-  return `sourceMemoryId links a save (memory or fact) to the memory that triggered or supports it — pass it whenever applicable so provenance survives recall.`
+  return `Every lore-learn call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory can't be retraced by lore-ask. Alternatively, pass the same session value on both the lore-remember and lore-learn calls and sourceMemoryId will auto-link to the memory you just saved.`
 }
 
 /**

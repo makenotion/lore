@@ -97,6 +97,10 @@ describe("registerDecisionTools", () => {
       context: {
         project: null,
       },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn(),
+      },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -128,6 +132,50 @@ describe("registerDecisionTools", () => {
         object: "old-id",
         sourceMemoryId: "new-id",
       })
+    )
+  })
+
+  it("records the new decision with project scope into sessionMemories", async () => {
+    // P1-09 integration point: a `lore-learn` call made later in the same
+    // (agent, session) must be able to evaluate project-overlap safety
+    // against the decision's scope.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new", {
+      title: "New",
+      projectIds: ["proj-a", "proj-b"],
+    })
+    const record = vi.fn()
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn(),
+        supersede: vi.fn(),
+      },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record, get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getHandler("lore-decide")
+
+    await loreDecide({
+      decision: "New decision",
+      rationale: "Because reasons",
+      session: "session-xyz",
+      agent: "claude-code",
+    } as never)
+
+    expect(record).toHaveBeenCalledWith(
+      { agent: "claude-code", session: "session-xyz" },
+      { memoryId: "dec-new", projectIds: ["proj-a", "proj-b"] }
     )
   })
 })
