@@ -16,6 +16,14 @@ export interface HookConfig {
   autoSave: boolean
   wakeUp: boolean
   /**
+   * Whether the session-end hook may schedule a background digest
+   * synthesizer. Orthogonal to `autoSave` so an operator can keep per-session
+   * saves while pausing auto-digest (e.g. to audit synthesizer output
+   * quality). The CLI `lore digest` path ignores this flag — manual runs are
+   * always honored.
+   */
+  autoDigest: boolean
+  /**
    * Name of the catch-all project (path `"."` or `""`) in this workspace, if
    * configured. The save prompts name it explicitly and tell the AI to avoid
    * defaulting to it for sub-project-specific work.
@@ -31,9 +39,9 @@ export interface HookConfig {
 /**
  * Merge a `.lore.yaml` hooks section with built-in defaults.
  *
- * `autoSave` and `wakeUp` default to true: hooks are opt-out, not opt-in, once
- * the integration is installed. Users who want to suppress either set the flag
- * to `false` explicitly.
+ * `autoSave`, `wakeUp`, and `autoDigest` default to true: hooks are opt-out,
+ * not opt-in, once the integration is installed. Users who want to suppress
+ * any of them set the flag to `false` explicitly.
  */
 export function mergeHookDefaults(
   hooks: LoreConfig["hooks"] | undefined,
@@ -44,6 +52,7 @@ export function mergeHookDefaults(
     saveInterval: hooks?.saveInterval ?? DEFAULT_SAVE_INTERVAL,
     autoSave: hooks?.autoSave ?? true,
     wakeUp: hooks?.wakeUp ?? true,
+    autoDigest: hooks?.autoDigest ?? true,
     catchAllName,
     subProjects,
   }

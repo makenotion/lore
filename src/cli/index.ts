@@ -6,6 +6,7 @@ import { mineCommand } from "./commands/mine.js"
 import { statusCommand } from "./commands/status.js"
 import { installCommand } from "./commands/install.js"
 import { migrateCommand } from "./commands/migrate.js"
+import { digestCommand } from "./commands/digest.js"
 
 const program = new Command()
 
@@ -18,5 +19,6 @@ program.addCommand(mineCommand)
 program.addCommand(statusCommand)
 program.addCommand(installCommand)
 program.addCommand(migrateCommand)
+program.addCommand(digestCommand)
 
 program.parse()

@@ -3,6 +3,7 @@ import {
   catchAllProjectName,
   isCatchAllProject,
   resolveProject,
+  resolveProjectPathFromCwd,
   subProjectNames,
 } from "./context.js"
 import type { LoreConfig, Project } from "../types.js"
@@ -177,5 +178,56 @@ describe("resolveProject", () => {
 
     const result = await resolveProject(configRoot, configRoot, MONOREPO_CONFIG, projects)
     expect(result.project).toEqual(mail)
+  })
+})
+
+describe("resolveProjectPathFromCwd", () => {
+  const configRoot = "/home/user/monorepo"
+
+  it("resolves to a sub-project when cwd sits under its path", () => {
+    const result = resolveProjectPathFromCwd(
+      `${configRoot}/services/mail/graphql`,
+      configRoot,
+      MONOREPO_CONFIG,
+    )
+    expect(result).toEqual({ name: "Mail Backend", path: "services/mail" })
+  })
+
+  it("prefers the longest-prefix sub-project over the catch-all", () => {
+    const result = resolveProjectPathFromCwd(
+      `${configRoot}/services/router/cmd`,
+      configRoot,
+      MONOREPO_CONFIG,
+    )
+    expect(result?.name).toBe("Router")
+  })
+
+  it("returns null when the best match is the catch-all — auto-digest needs a specific project", () => {
+    // cwd at configRoot matches the catch-all `Mail` entry (path ".") only.
+    const result = resolveProjectPathFromCwd(configRoot, configRoot, MONOREPO_CONFIG)
+    expect(result).toBeNull()
+  })
+
+  it("returns null when cwd is under the root but not under any sub-project path", () => {
+    const result = resolveProjectPathFromCwd(
+      `${configRoot}/scripts/release`,
+      configRoot,
+      MONOREPO_CONFIG,
+    )
+    expect(result).toBeNull()
+  })
+
+  it("returns null when cwd escapes the config root", () => {
+    const result = resolveProjectPathFromCwd("/tmp/elsewhere", configRoot, MONOREPO_CONFIG)
+    expect(result).toBeNull()
+  })
+
+  it("returns null when the config has no projects", () => {
+    const result = resolveProjectPathFromCwd(
+      configRoot,
+      configRoot,
+      { vault: { pageId: "v" } },
+    )
+    expect(result).toBeNull()
   })
 })

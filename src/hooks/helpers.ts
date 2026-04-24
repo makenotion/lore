@@ -17,9 +17,7 @@
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
-import { existsSync, writeFileSync, openSync, closeSync, unlinkSync } from "node:fs"
-import { spawn, execFileSync } from "node:child_process"
-import { tmpdir, homedir } from "node:os"
+import { homedir } from "node:os"
 import { join, resolve, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { findConfigFile, loadConfigAllowingInvalidHooks } from "../config.js"
@@ -33,15 +31,9 @@ import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildSessionEndPrompt } from "./prompts.js"
 import { dateBucket, loadWakeUpData } from "../core/wakeup.js"
-import {
-  activeSaveCount,
-  getStateDir,
-  hasActiveSessionLock,
-  logPath,
-  MAX_CONCURRENT_SAVES,
-  releaseSessionLock,
-  tryAcquireSessionLock,
-} from "./lock.js"
+import { spawnBackgroundSave } from "./background.js"
+import { fireDigestIfStale } from "./digest-scheduler.js"
+import { getStateDir } from "./lock.js"
 
 /** Hook payload fields shared by Claude Code and Codex. */
 interface HookEvent {
@@ -468,7 +460,7 @@ async function wakeup(): Promise<void> {
       for (const fact of overdue) {
         const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
         sections.push(
-          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}, review by ${fact.reviewBy})`
+          `- ${fact.subject} → ${fact.predicate.replace(/_/g, " ")} → ${fact.object} (${fact.confidence}${since}, review by ${fact.reviewBy})`
         )
       }
     }
@@ -479,7 +471,7 @@ async function wakeup(): Promise<void> {
         const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
         const review = fact.reviewBy ? `, review by ${fact.reviewBy}` : ""
         sections.push(
-          `- ${fact.subject} \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 ${fact.object} (${fact.confidence}${since}${review})`
+          `- ${fact.subject} → ${fact.predicate.replace(/_/g, " ")} → ${fact.object} (${fact.confidence}${since}${review})`
         )
       }
     }
@@ -511,144 +503,12 @@ async function wakeup(): Promise<void> {
 // SessionEnd — background claude -p for structured saves
 // ---------------------------------------------------------------------------
 
-function findClaudeBinary(): string | null {
-  try {
-    return execFileSync("which", ["claude"], { encoding: "utf-8" }).trim() || null
-  } catch {
-    // which failed — try common install locations
-  }
-  const candidates = [
-    join(homedir(), ".local", "bin", "claude"),
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
-  ]
-  for (const c of candidates) {
-    if (existsSync(c)) return c
-  }
-  return null
-}
-
 /**
- * Spawn a detached `claude -p` sub-agent to do a structured save. Returns
- * true iff a child process was started and now owns the session lock;
- * false on any rejection (missing binary, another save in flight, cap hit,
- * race loss against a concurrent spawn, spawn error).
- *
- * Callers use the return value to decide whether to advance the save
- * counter — advancing only on success keeps the SessionEnd recovery path
- * reachable when a mid-session spawn is skipped.
+ * True when `LORE_AUTO_DIGEST=false` is set. Env overrides `.lore.yaml` —
+ * consistent with how `LORE_AUTOSAVE=false` overrides `hooks.autoSave`.
  */
-function spawnBackgroundSave(cwd: string, prompt: string, sessionId?: string): boolean {
-  const claudeBin = findClaudeBinary()
-  if (!claudeBin) {
-    process.stderr.write("[lore] background save: claude binary not found, skipping\n")
-    return false
-  }
-
-  // Fast-path capacity check — avoids paying the spawn cost in the common
-  // case where another save is already in flight or the global cap is hit.
-  // A second, authoritative check happens after spawn (via O_EXCL acquire)
-  // so concurrent callers that both pass this probe are still serialized.
-  if (sessionId && hasActiveSessionLock(sessionId)) return false
-  if (activeSaveCount() >= MAX_CONCURRENT_SAVES) return false
-
-  // Write prompt to a temp file and pipe via stdin fd to avoid exposing
-  // session transcript content in process arguments (visible via `ps`).
-  const promptFile = join(tmpdir(), `lore-prompt-${Date.now()}-${process.pid}.txt`)
-  let stdinFd: number
-  try {
-    writeFileSync(promptFile, prompt, { mode: 0o600 })
-    stdinFd = openSync(promptFile, "r")
-    // Unlink immediately — child still reads via its inherited fd copy (Unix)
-    unlinkSync(promptFile)
-  } catch (err) {
-    process.stderr.write(
-      `[lore] background save: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`
-    )
-    return false
-  }
-
-  const args = [
-    "-p",
-    "--allowedTools",
-    "mcp__lore__lore-remember,mcp__lore__lore-learn,mcp__lore__lore-decide",
-    "--dangerously-skip-permissions",
-    "--no-session-persistence",
-    "--model",
-    "sonnet",
-  ]
-
-  // Minimal env — only what the background process needs
-  const safeEnv: Record<string, string> = {
-    PATH: process.env["PATH"] ?? "",
-    HOME: process.env["HOME"] ?? "",
-    LORE_AUTOSAVE: "false",
-  }
-  const notionToken = process.env["LORE_NOTION_TOKEN"]
-  if (notionToken) safeEnv["LORE_NOTION_TOKEN"] = notionToken
-  const notionBaseUrl = process.env["LORE_NOTION_BASE_URL"]
-  if (notionBaseUrl) safeEnv["LORE_NOTION_BASE_URL"] = notionBaseUrl
-
-  // Redirect stderr to a per-session log so crashes are recoverable without
-  // someone actively watching stderr. Truncate per save: each spawn is
-  // independent and an unbounded append would grow the file forever across a
-  // long-lived session.
-  let stderrSink: "ignore" | number = "ignore"
-  if (sessionId) {
-    try {
-      stderrSink = openSync(logPath(sessionId), "w", 0o600)
-    } catch {
-      // Fall back to ignore — logging is best-effort, the save must still run.
-    }
-  }
-
-  let lockFile: string | null = null
-  try {
-    const child = spawn(claudeBin, args, {
-      cwd,
-      detached: true,
-      stdio: [stdinFd, "ignore", stderrSink],
-      env: safeEnv,
-    })
-
-    // Atomic acquire using the child's own PID — no hand-off window. If a
-    // concurrent hook spawned first and already acquired, our acquire fails
-    // and we tear down our child to keep "at most one in flight per session".
-    if (sessionId) {
-      if (typeof child.pid !== "number") {
-        // Spawn returned no PID — treat as spawn failure.
-        try {
-          child.kill("SIGTERM")
-        } catch {
-          // Child already gone.
-        }
-        return false
-      }
-      lockFile = tryAcquireSessionLock(sessionId, child.pid)
-      if (!lockFile) {
-        try {
-          child.kill("SIGTERM")
-        } catch {
-          // Child already gone.
-        }
-        return false
-      }
-    }
-
-    child.unref()
-    return true
-  } catch (err) {
-    process.stderr.write(
-      `[lore] background save: spawn failed: ${err instanceof Error ? err.message : err}\n`
-    )
-    if (lockFile) releaseSessionLock(lockFile)
-    return false
-  } finally {
-    // Safe on Unix: `spawn` with `stdio: [stdinFd, ...]` dups the fd into the
-    // child, so closing the parent's copy here doesn't affect the child's read.
-    closeSync(stdinFd)
-    if (typeof stderrSink === "number") closeSync(stderrSink)
-  }
+function autoDigestEnvDisabled(): boolean {
+  return process.env["LORE_AUTO_DIGEST"] === "false"
 }
 
 /**
@@ -666,8 +526,8 @@ export async function handleSessionEnd(): Promise<void> {
   const raw = process.env["LORE_SESSION_END_CONTENT"]
   if (!raw) return
 
-  const { hookConfig } = await loadHookState()
-  if (!hookConfig.autoSave) return
+  const state = await loadHookState()
+  if (!state.hookConfig.autoSave) return
 
   let event: HookEvent
   try {
@@ -680,24 +540,42 @@ export async function handleSessionEnd(): Promise<void> {
   }
 
   const read = await readTranscriptForSave(event, "session-end")
-  if (!read) return
-  const { transcript, userMessageCount: currentCount } = read
-  if (currentCount < 2) return
+  if (read && read.userMessageCount >= 2) {
+    const lastSaveCount = await readSaveCount(event.session_id)
+    if (read.userMessageCount - lastSaveCount >= 1) {
+      const sessionContent = formatTranscriptSessionContent(read.transcript.messages)
+      if (sessionContent) {
+        const prompt = buildSessionEndPrompt(
+          state.hookConfig.subProjects,
+          state.hookConfig.catchAllName,
+          sessionContent,
+          event.session_id,
+          deriveAgentName(event)
+        )
+        spawnBackgroundSave(event.cwd ?? process.cwd(), prompt, event.session_id)
+      }
+    }
+  }
 
-  const lastSaveCount = await readSaveCount(event.session_id)
-  if (currentCount - lastSaveCount < 1) return
-
-  const sessionContent = formatTranscriptSessionContent(transcript.messages)
-  if (!sessionContent) return
-
-  const prompt = buildSessionEndPrompt(
-    hookConfig.subProjects,
-    hookConfig.catchAllName,
-    sessionContent,
-    event.session_id,
-    deriveAgentName(event)
-  )
-  spawnBackgroundSave(event.cwd ?? process.cwd(), prompt, event.session_id)
+  // Digest scheduling is independent of the save spawn — a quiet session
+  // with no new user messages shouldn't block a stale project's digest.
+  // Any failure here is swallowed: the scheduler's internal branches log +
+  // return one of the `SchedulerOutcome` values, and this outer guard
+  // catches unexpected throws (e.g. tmp-dir write failures) so session
+  // exit stays clean.
+  if (state.config && state.configRoot) {
+    try {
+      await fireDigestIfStale(event.cwd ?? process.cwd(), {
+        config: state.config,
+        configRoot: state.configRoot,
+        autoDigest: state.hookConfig.autoDigest && !autoDigestEnvDisabled(),
+      })
+    } catch (err) {
+      process.stderr.write(
+        `[lore] digest scheduler: unexpected failure — ${err instanceof Error ? err.message : err}\n`
+      )
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

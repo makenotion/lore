@@ -10,6 +10,7 @@ const hookConfigSchema = z
   .object({
     autoSave: z.boolean().optional(),
     wakeUp: z.boolean().optional(),
+    autoDigest: z.boolean().optional(),
     saveInterval: z.number().int().min(1).optional(),
   })
   .optional()

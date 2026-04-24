@@ -217,3 +217,11 @@ When working in this project, you have access to `lore-*` MCP tools. Use them:
 - **When saving general knowledge** (not a formal decision): call `lore-remember` for gotchas, workarounds, debugging insights.
 - **When learning facts**: call `lore-learn` to record entity relationships (e.g., "MemoryService uses dataSources.query")
 - **At session end**: call `lore-journal` to summarize what was accomplished
+
+### Scheduled digest synthesis
+
+The session-end hook fires a background `claude -p` digest synthesizer at most once per project per 7 days (filesystem-marker debounced) when the cwd resolves to a single sub-project. The digest writes a `source: "digest"` memory that `lore-wake-up`'s fast path surfaces at session start and uses to trim the recent-memories section to 3.
+
+- **Manual invocation**: `lore digest --project <name>` (`--dry-run` previews the raw data without spawning; `--period day|week` controls the window).
+- **Disable**: set `hooks.autoDigest: false` in `.lore.yaml`, or export `LORE_AUTO_DIGEST=false`. The CLI path still works — only the session-end scheduler is suppressed.
+- **Debounce reset**: `rm $TMPDIR/lore-hook-state/digest.*.last` (per-config-root hashed filename).

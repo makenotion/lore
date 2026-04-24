@@ -77,6 +77,7 @@ function defaultConfig(overrides: Partial<HookConfig> = {}): HookConfig {
     saveInterval: 2,
     autoSave: true,
     wakeUp: true,
+    autoDigest: true,
     catchAllName: null,
     subProjects: [],
     ...overrides,
@@ -428,6 +429,7 @@ describe("handleSessionEnd", () => {
         saveInterval: 2,
         autoSave: true,
         wakeUp: true,
+        autoDigest: true,
         catchAllName: null,
         subProjects: [],
       }

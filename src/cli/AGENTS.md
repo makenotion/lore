@@ -20,6 +20,7 @@ debugging, manual search).
 | `commands/status.ts` | `lore status` -- vault status + subcommands (projects, topics) |
 | `commands/install.ts` | `lore install` -- install Lore assistant hooks and MCP config into a project (both assistants by default) |
 | `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
+| `commands/digest.ts` | `lore digest` -- gather digest data + spawn background synthesizer |
 
 ## Commander Patterns
 
@@ -103,6 +104,7 @@ try {
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags` | Add missing schema properties and select options to vault data sources (add-only, idempotent) |
+| `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 
 ## The migrate Command
 
@@ -122,6 +124,37 @@ try {
 Combining `--dry-run --upgrade-decision-tags` shows schema drift but does not
 apply the tag upgrade (tag upgrade has no dry-run mode — it's opt-in by
 design).
+
+## The digest Command
+
+`digest` gathers recent project activity and spawns a background `claude -p`
+synthesizer that saves a distilled `source: digest` memory back to the vault.
+The digest is what `lore-wake-up`'s fast path surfaces at session start, so
+the goal is signal density (non-obvious findings, decisions landed, top-5
+open loops, emerging themes) — not a chronological session log.
+
+Mechanics:
+
+- Data gathering is shared with the `lore-digest` MCP tool via
+  `src/core/digest.ts` (`gatherDigestData`).
+- The synthesizer prompt lives in `src/hooks/prompts.ts`
+  (`buildDigestPrompt`) and uses the same untrusted-content framing as
+  `buildSessionEndPrompt`.
+- Background spawn reuses `spawnBackgroundSave` from
+  `src/hooks/background.ts` with `logLabel: "digest"` so stderr
+  attributions stay distinct.
+- `--dry-run` prints the gathered markdown and skips the spawn. Use this to
+  preview what the synthesizer will see before burning an API call.
+- When no memories fall in the window, the command exits early without
+  spawning (nothing to digest).
+
+Operators invoke `lore digest --project Mail` (or any configured
+sub-project). It's the explicit path; the session-end hook fires it
+implicitly once per project per 7 days when the cwd resolves to a single
+sub-project. Both paths touch a per-project marker file under the hook
+state directory (`$TMPDIR/lore-hook-state/digest.<project>.last`) so the
+session-end path respects the debounce. The CLI also touches the marker
+so a manual run won't be immediately overridden by the next session-end.
 
 ## Adding a New Command
 

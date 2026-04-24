@@ -430,6 +430,13 @@ export interface LoreConfig {
   hooks?: {
     autoSave?: boolean
     wakeUp?: boolean
+    /**
+     * Background digest synthesizer scheduled by the session-end hook. Fires
+     * at most once per project per 7 days via a filesystem marker. Default:
+     * true. Honors `LORE_AUTO_DIGEST=false` env override as well — either
+     * disables the auto-spawn without affecting the manual `lore digest` CLI.
+     */
+    autoDigest?: boolean
     /** Real user messages between structured AI-driven saves. Default: 5. */
     saveInterval?: number
   }

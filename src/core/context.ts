@@ -39,6 +39,48 @@ export function catchAllProjectName(config: LoreConfig): string | null {
   return catchAll?.name ?? null
 }
 
+/**
+ * Pure-filesystem variant of `resolveProject` that returns the configured
+ * project *entry* (name + path) a cwd would resolve to, without the Notion
+ * round-trip. Used by hot-path hooks that want to scope a cheap per-project
+ * side effect (e.g., the session-end digest debounce marker) before paying
+ * for full service initialization.
+ *
+ * Returns `null` when the cwd sits outside the config root, no projects are
+ * configured, or only a catch-all would match — the caller then skips rather
+ * than firing an ambiguously-scoped action.
+ */
+export function resolveProjectPathFromCwd(
+  cwd: string,
+  configRoot: string,
+  config: LoreConfig,
+): { name: string; path: string } | null {
+  if (!config.projects?.length) return null
+
+  const relPath = relative(resolve(configRoot), resolve(cwd))
+  if (relPath.startsWith("..")) return null
+
+  let bestMatch: ProjectConfig | null = null
+  let bestLength = -1
+
+  for (const project of config.projects) {
+    const projectPath = project.path === "." ? "" : project.path.replace(/^\//, "")
+    if (
+      relPath === projectPath ||
+      relPath.startsWith(projectPath + "/") ||
+      projectPath === ""
+    ) {
+      if (projectPath.length > bestLength) {
+        bestMatch = project
+        bestLength = projectPath.length
+      }
+    }
+  }
+
+  if (!bestMatch || isCatchAllProject(bestMatch)) return null
+  return { name: bestMatch.name, path: bestMatch.path }
+}
+
 export interface ProjectResolution {
   /** The resolved project, or null if no config projects matched. */
   project: Project | null

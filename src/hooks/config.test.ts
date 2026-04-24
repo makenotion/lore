@@ -2,13 +2,20 @@ import { describe, expect, it } from "vitest"
 import { mergeHookDefaults } from "./config.js"
 
 describe("mergeHookDefaults", () => {
-  it("defaults wakeUp and autoSave to true when no hooks section is provided", () => {
+  it("defaults wakeUp, autoSave, and autoDigest to true when no hooks section is provided", () => {
     const config = mergeHookDefaults(undefined)
     expect(config.wakeUp).toBe(true)
     expect(config.autoSave).toBe(true)
+    expect(config.autoDigest).toBe(true)
     expect(config.saveInterval).toBe(5)
     expect(config.catchAllName).toBeNull()
     expect(config.subProjects).toEqual([])
+  })
+
+  it("respects hooks.autoDigest: false without affecting autoSave", () => {
+    const config = mergeHookDefaults({ autoDigest: false })
+    expect(config.autoDigest).toBe(false)
+    expect(config.autoSave).toBe(true)
   })
 
   it("respects hooks.wakeUp: false from config", () => {
