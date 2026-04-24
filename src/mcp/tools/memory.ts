@@ -163,7 +163,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         "Semantic search across memories in the vault. Uses Notion's built-in " +
         "search which includes vector similarity matching. Can be scoped to a specific project or topic.\n\n" +
         "`kind` and `status` are applied as post-filters on the search results because `client.search()` " +
-        "does not support property filters — use `lore-recall` for server-side filtered listings.",
+        "does not support property filters — use `lore-recall` for server-side filtered listings.\n\n" +
+        "Returns index-tier rows (title + metadata, no body) by default. Pass `includeContent: true` to " +
+        "eagerly fetch bodies at the cost of one extra Notion round-trip per row.",
       inputSchema: {
         query: z.string().describe("Natural language search query"),
         projectName: z.string().optional().describe("Scope search to a specific project"),
@@ -183,10 +185,17 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .max(50)
           .optional()
           .describe("Max results (default 10)"),
+        includeContent: z
+          .boolean()
+          .optional()
+          .describe(
+            "Include each memory's markdown body (default false). Each body costs one extra Notion " +
+              "round-trip, so leave this off for index-tier triage and flip it on only when you need bodies."
+          ),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ query, projectName, tags, kind, status, limit }) => {
+    async ({ query, projectName, tags, kind, status, limit, includeContent }) => {
       try {
         let projectId: string | undefined
         const warnings: string[] = []
@@ -205,12 +214,15 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           projectId = services.context.project.id
         }
 
+        const withContent = includeContent === true
+
         const searchResults = await services.memories.search({
           query,
           projectId,
           tags,
           // Over-fetch slightly so post-filters don't starve the output.
           limit: Math.min((limit ?? 10) * 2, 50),
+          includeContent: withContent,
         })
 
         // Post-filter by kind/status since Notion's search API doesn't
@@ -241,15 +253,20 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
               .filter(Boolean)
               .join(" | ")
 
-            return `### ${m.title}\n*${meta}*\n\n${m.content || "(content not loaded)"}`
+            const body = withContent && m.content ? `\n\n${m.content}` : ""
+            return `### ${m.title}\n*${meta}*${body}`
           })
           .join("\n\n---\n\n")
+
+        const footer = withContent
+          ? ""
+          : `\n\n_Bodies omitted — re-call with \`includeContent: true\` to fetch them._`
 
         return {
           content: [
             {
               type: "text",
-              text: `Found ${results.length} memories for "${query}":\n\n${text}${warn}`,
+              text: `Found ${results.length} memories for "${query}":\n\n${text}${footer}${warn}`,
             },
           ],
         }
@@ -270,6 +287,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         "Get the most recent memories, optionally filtered by project, topic, source type, kind, or status. " +
         "Useful for catching up on what happened recently in a project. Filters are applied server-side via " +
         "`dataSources.query` — use `lore-search` for vector similarity matching.\n\n" +
+        "Returns index-tier rows (title + metadata, no body) by default — one Notion round-trip per page. " +
+        "Pass `includeContent: true` to eagerly fetch bodies at the cost of one extra round-trip per row.\n\n" +
         "Returns up to `limit` results per call. When more results exist, the response ends with a fenced " +
         "```json block `{\"nextCursor\":\"...\"}` — pass that value as `startCursor` on the next call to " +
         "continue enumerating. Absence of the footer means the final page.",
@@ -312,7 +331,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .boolean()
           .optional()
           .describe(
-            "Include each memory's markdown body (default true). Set false for fast index-tier listings."
+            "Include each memory's markdown body (default false). Each body costs one extra Notion " +
+              "round-trip, so leave this off for index-tier triage and flip it on only when you need bodies."
           ),
       },
       annotations: { readOnlyHint: true },
@@ -358,6 +378,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           topicId = found.id
         }
 
+        const withContent = includeContent === true
+
         const { items: memories, nextCursor } = await services.memories.list({
           projectId,
           topicId,
@@ -366,7 +388,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           status: status as MemoryStatus | undefined,
           reviewBefore,
           limit: limit ?? 10,
-          includeContent,
+          includeContent: withContent,
           startCursor,
         })
 
@@ -394,16 +416,20 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
             ]
               .filter(Boolean)
               .join(" | ")
-            const body = includeContent === false ? "" : `\n\n${m.content || "(content not loaded)"}`
+            const body = withContent && m.content ? `\n\n${m.content}` : ""
             return `### ${m.title}\n*${meta}*${body}`
           })
           .join("\n\n---\n\n")
+
+        const bodiesFooter = withContent
+          ? ""
+          : `\n\n_Bodies omitted — re-call with \`includeContent: true\` to fetch them._`
 
         return {
           content: [
             {
               type: "text",
-              text: `${memories.length} recent memories:\n\n${text}${paginationFooter(nextCursor)}`,
+              text: `${memories.length} recent memories:\n\n${text}${bodiesFooter}${paginationFooter(nextCursor)}`,
             },
           ],
         }

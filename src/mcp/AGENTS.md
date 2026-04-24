@@ -110,6 +110,27 @@ export function registerFooTools(
 | `lore-forget` | Archive a memory by ID | No (destructive) |
 | `lore-update` | Update a memory's title, content, tags, or categorization | No |
 
+#### Content-off default for list/search tools
+
+`lore-recall` and `lore-search` both default to **`includeContent: false`**.
+Each returns index-tier rows — title, metadata, timestamps — without fetching
+the markdown body for each page. Fetching bodies costs one extra
+`pages.retrieveMarkdown` round-trip per row, and most triage paths only need
+a handful of bodies for the rows the agent actually cares about.
+
+- **Default path.** Agents scan the index tier, decide which rows are
+  relevant, then fetch bodies one at a time via a read tool (e.g.
+  `lore-get-decision` for decisions). The response footer reminds callers
+  that bodies were omitted.
+- **Opt in.** Pass `includeContent: true` when the caller genuinely needs
+  every body — e.g. exporting a window of memories or piping into another
+  indexing pipeline. The hot path stays fast by default, and the slow path
+  is explicit.
+
+Changing this default is a breaking change for agents that relied on eager
+bodies; the server version is bumped to `0.2.0` in `server.ts` so MCP
+clients see the shift immediately.
+
 ### Project Tools
 
 | Tool | Purpose | Read-only |

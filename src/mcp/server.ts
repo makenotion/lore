@@ -24,7 +24,7 @@ export { initServices } from "../services.js"
 
 async function main(): Promise<void> {
   const server = new McpServer(
-    { name: "lore", version: "0.1.0" },
+    { name: "lore", version: "0.2.0" },
     {
       capabilities: {
         tools: {},

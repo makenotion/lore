@@ -322,3 +322,160 @@ describe("lore-search projectName resolution", () => {
     )
   })
 })
+
+describe("lore-recall content-off default", () => {
+  // The default `includeContent: false` keeps the hot path at one Notion
+  // round-trip per page. Eager bodies are opt-in because agents almost
+  // always triage titles first and expand one or two rows.
+  it("passes includeContent: false to the service by default", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [makeMemory("mem-1", { title: "A row", content: "" })],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    await recall({ limit: 10 } as never)
+
+    expect(memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ includeContent: false, limit: 10 }),
+    )
+  })
+
+  it("omits bodies and the placeholder on the default path, and points callers at includeContent: true", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", { title: "Row A", content: "" }),
+        makeMemory("mem-2", { title: "Row B", content: "" }),
+      ],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("(content not loaded)")
+    expect(text).toContain("### Row A")
+    expect(text).toContain("### Row B")
+    expect(text).toContain("includeContent: true")
+  })
+
+  it("forwards includeContent: true through to the service when opted in", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [makeMemory("mem-1", { title: "With body", content: "Hello body." })],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({ includeContent: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ includeContent: true }),
+    )
+    expect(text).toContain("Hello body.")
+    expect(text).not.toContain("Bodies omitted")
+  })
+})
+
+describe("lore-search content-off default", () => {
+  it("passes includeContent: false to the service by default", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([makeMemory("mem-1", { title: "Hit", content: "" })])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    await search({ query: "anything" } as never)
+
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ includeContent: false }),
+    )
+  })
+
+  it("omits bodies and the placeholder, and surfaces a re-call hint, when includeContent is not set", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([makeMemory("mem-1", { title: "A hit", content: "" })])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    const result = await search({ query: "anything" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("(content not loaded)")
+    expect(text).toContain("### A hit")
+    expect(text).toContain("includeContent: true")
+  })
+
+  it("forwards includeContent: true and renders bodies when opted in", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([
+      makeMemory("mem-1", { title: "Eager hit", content: "Full body text." }),
+    ])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    const result = await search({ query: "anything", includeContent: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ includeContent: true }),
+    )
+    expect(text).toContain("Full body text.")
+    expect(text).not.toContain("Bodies omitted")
+  })
+})
