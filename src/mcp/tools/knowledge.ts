@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError } from "../helpers.js"
+import { toolError, debugLogPartialFailures } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import { renderFact, resolveReferencedTitles } from "../render.js"
@@ -196,8 +196,11 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
   // -------------------------------------------------------------------------
   // lore-ask
   // -------------------------------------------------------------------------
+  // Single binding for both the MCP registration string and the operator
+  // log's `tool=` field so a future rename can't desync the two surfaces.
+  const loreAskName = "lore-ask"
   server.registerTool(
-    "lore-ask",
+    loreAskName,
     {
       title: "Query facts",
       description:
@@ -255,6 +258,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           })
 
         if (decisionFailures.length > 0) {
+          debugLogPartialFailures(loreAskName, decisionFailures)
           const rootIds = decisionFailures.map(({ rootId }) => rootId).join(", ")
           warnings.push(
             `Could not resolve ${decisionFailures.length} decision root${decisionFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,

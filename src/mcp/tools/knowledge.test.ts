@@ -131,17 +131,9 @@ describe("lore-ask", () => {
 })
 
 describe("lore-ask — partial decision resolution", () => {
-  it("surfaces a warning when one decision root's walk rejects, keeping the resolved decisions", async () => {
-    // End-to-end: the settleAll wrapper inside resolveCanonicalDecisionLinks
-    // produces `failures`; the tool handler pushes a warning describing the
-    // failing root IDs through the existing `Warnings:` footer. Without
-    // this test, a future regression that forgot to wire failures into
-    // warnings would pass the unit test but silently drop the user-visible
-    // error signal.
-    const mockServer = createMockServer()
+  function servicesWithPartialFailure() {
     const newDecision = makeDecision("new-id", { title: "New decision" })
-
-    const services = {
+    return {
       projects: { findByName: vi.fn() },
       facts: {
         queryByEntity: vi.fn().mockResolvedValue([
@@ -167,6 +159,17 @@ describe("lore-ask — partial decision resolution", () => {
       },
       context: { project: null },
     }
+  }
+
+  it("surfaces a warning when one decision root's walk rejects, keeping the resolved decisions", async () => {
+    // End-to-end: the settleAll wrapper inside resolveCanonicalDecisionLinks
+    // produces `failures`; the tool handler pushes a warning describing the
+    // failing root IDs through the existing `Warnings:` footer. Without
+    // this test, a future regression that forgot to wire failures into
+    // warnings would pass the unit test but silently drop the user-visible
+    // error signal.
+    const mockServer = createMockServer()
+    const services = servicesWithPartialFailure()
 
     registerKnowledgeTools(mockServer.server, services as never)
     const loreAsk = mockServer.getHandler("lore-ask")
@@ -182,6 +185,120 @@ describe("lore-ask — partial decision resolution", () => {
     // match via `toContain` but in the wrong section) still fails.
     expect(text).toMatch(/Warnings:[^\n]*bad-root/)
     expect(text).toContain("retry before relying on this result")
+  })
+
+  it("emits one stderr line per failing root when LORE_DEBUG=1", async () => {
+    // Operator-observability gate: when the env var is set, each failure
+    // surfaces on stderr in the canonical format so ops can distinguish a
+    // routine 429 from a pathological corrupted-page loop. Without this
+    // signal, partial failures are silent to ops since the agent-facing
+    // warning never leaves the MCP response.
+    const mockServer = createMockServer()
+    const services = servicesWithPartialFailure()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.stubEnv("LORE_DEBUG", "1")
+
+    try {
+      await loreAsk({ entity: "AuthService" } as never)
+
+      // One line per failing root — single failure in this fixture.
+      expect(stderr).toHaveBeenCalledTimes(1)
+      const logged = String(stderr.mock.calls[0][0])
+      // Exact canonical format: operators grep on `[lore] partial-failure:`
+      // in log aggregators and pin on the field ordering below. A future
+      // reshuffle (say, moving `tool=` before `root=`) would silently
+      // break downstream filters; pin the full line here instead of a
+      // substring set so a reordering trips this test.
+      expect(logged).toBe(
+        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-ask\n",
+      )
+    } finally {
+      vi.unstubAllEnvs()
+      stderr.mockRestore()
+    }
+  })
+
+  it("collapses embedded newlines and control chars into spaces so one failure = one log line", async () => {
+    // Defensive invariant: `grep "[lore] partial-failure:"` downstream
+    // expects one event per line. A Notion SDK error that happens to
+    // include a multi-line body (or, in the wild, an `InvalidPathParameterError`
+    // message containing embedded structure) would otherwise fork a
+    // single failure into multiple aggregator events. Rare today — free
+    // to pin before future callers like PF1-01's bounded retries add
+    // surfaces we haven't eyeballed.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("new-id", { title: "New decision" })
+    const services = {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([
+          makeFact("fact-ok", { sourceMemoryId: "new-id", object: "new-id" }),
+          makeFact("fact-bad", { sourceMemoryId: "bad-root", object: "bad-root" }),
+        ]),
+        queryByObject: vi.fn().mockImplementation(async (object: string) => {
+          // Message contains a newline AND a tab AND a carriage-return —
+          // all three must collapse to a single space.
+          if (object === "bad-root") throw new Error("line one\nline two\ttabbed\rcr")
+          return []
+        }),
+      },
+      decisions: {
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "new-id") return newDecision
+          throw new Error(`unknown decision ${id}`)
+        }),
+      },
+      context: { project: null },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.stubEnv("LORE_DEBUG", "1")
+
+    try {
+      await loreAsk({ entity: "AuthService" } as never)
+
+      expect(stderr).toHaveBeenCalledTimes(1)
+      const logged = String(stderr.mock.calls[0][0])
+      // Exactly one trailing newline — the appended event terminator —
+      // and no embedded ones. A naive split by \n must yield exactly two
+      // parts: the event and an empty string after the terminator.
+      expect(logged.split("\n")).toHaveLength(2)
+      expect(logged).toBe(
+        "[lore] partial-failure: root=bad-root error=line one line two tabbed cr tool=lore-ask\n",
+      )
+    } finally {
+      vi.unstubAllEnvs()
+      stderr.mockRestore()
+    }
+  })
+
+  it("is silent on stderr when LORE_DEBUG is unset, even with partial failures", async () => {
+    // The helper is opt-in by design: silent partial failure is the common
+    // case and logging by default would make stderr unreadable. This test
+    // pins the default-off posture so a future change that flips the
+    // predicate cannot land without being noticed.
+    const mockServer = createMockServer()
+    const services = servicesWithPartialFailure()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    // Explicit unset — no lingering env from a parallel test.
+    vi.stubEnv("LORE_DEBUG", "")
+
+    try {
+      const result = await loreAsk({ entity: "AuthService" } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      // The agent-facing warning still surfaces — we only suppress stderr.
+      expect(text).toMatch(/Warnings:[^\n]*bad-root/)
+      expect(stderr).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+      stderr.mockRestore()
+    }
   })
 })
 

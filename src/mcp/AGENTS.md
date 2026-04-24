@@ -249,6 +249,42 @@ export function toolError(err: unknown): ToolResult {
 **Rule**: Never let exceptions propagate out of a tool callback. The MCP transport
 does not handle thrown errors gracefully. Always catch and return `toolError()`.
 
+### Partial-failure observability (`LORE_DEBUG`)
+
+Read-path fan-outs that use `settleAll` (see `core/settle.ts`) return partial
+results plus per-root failures rather than sinking the whole call. Failures
+surface to the agent via the existing `Warnings:` footer, but that signal
+stops at the MCP response — operators running the server see nothing.
+
+When `LORE_DEBUG=1`, tool handlers call `debugLogPartialFailures(toolName, failures)`
+after the resolver returns. The helper is a no-op when the env var is unset,
+and otherwise emits one stderr line per failure:
+
+```
+[lore] partial-failure: root=<rootId> error=<message> tool=<toolName>
+```
+
+The convention is opt-in precisely because routine transients would flood
+stderr. Operators who want to distinguish a one-off 429 from a pathological
+corrupted-page loop set `LORE_DEBUG=1` for a session. Every new partial-result
+surface (PF1-01 bounded retries, wake-up's parallel queries, etc.) should
+route its failures through the same helper so `grep "[lore] partial-failure:"`
+stays comprehensive.
+
+Only `error.message` is logged — not `.stack`, `.body`, `.headers`, or the
+full error object. This narrows the log surface and keeps the bulk of Notion
+SDK error metadata out of stderr. It is **not** a redaction boundary: some
+SDK errors (e.g. `InvalidPathParameterError`) interpolate request-scoped
+detail into `.message` itself, which will still appear. `LORE_DEBUG=1` is
+operator instrumentation, not a sensitive-data filter.
+
+Interpolated `rootId` and `message` fields have ASCII control characters
+(`0x00-0x1F`, `0x7F` — including `\n`, `\r`, `\t`) replaced with spaces
+before the line is written. One failure always produces exactly one log
+line, so `grep` and log-aggregator parsers can rely on newline-delimited
+events even if a future caller threads a stringly-typed multi-line error
+through the same helper.
+
 ## Server Startup
 
 `server.ts` runs as a standalone process (the `dist/mcp.js` entry point):

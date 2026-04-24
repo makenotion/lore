@@ -227,15 +227,9 @@ describe("lore-decision-context projectName resolution", () => {
 })
 
 describe("lore-decision-context — partial decision resolution", () => {
-  it("surfaces a warning when one decision root's walk rejects", async () => {
-    // Tool-layer acceptance for PF1-02: the `settleAll` wrapper inside
-    // resolveCanonicalDecisionLinks produces `failures`, and the tool
-    // handler routes them through the same `formatWarnings` shape
-    // `lore-ask` uses. This pins end-to-end behaviour that decision-graph
-    // unit tests cannot.
-    const mockServer = createMockServer()
+  function servicesWithPartialFailure() {
     const goodDecision = makeDecision("good-id", { title: "Working decision" })
-    const services = {
+    return {
       decisions: {
         getById: vi.fn().mockImplementation(async (id: string) => {
           if (id === "good-id") return goodDecision
@@ -256,6 +250,16 @@ describe("lore-decision-context — partial decision resolution", () => {
       topics: {},
       context: { project: null },
     }
+  }
+
+  it("surfaces a warning when one decision root's walk rejects", async () => {
+    // Tool-layer acceptance for PF1-02: the `settleAll` wrapper inside
+    // resolveCanonicalDecisionLinks produces `failures`, and the tool
+    // handler routes them through the same `formatWarnings` shape
+    // `lore-ask` uses. This pins end-to-end behaviour that decision-graph
+    // unit tests cannot.
+    const mockServer = createMockServer()
+    const services = servicesWithPartialFailure()
 
     registerDecisionTools(mockServer.server, services as never)
     const handler = mockServer.getHandler("lore-decision-context")
@@ -270,5 +274,54 @@ describe("lore-decision-context — partial decision resolution", () => {
     // leak of `bad-root` into the decision render above still fails.
     expect(text).toMatch(/Warnings:[^\n]*bad-root/)
     expect(text).toContain("retry before relying on this result")
+  })
+
+  it("emits one stderr line per failing root when LORE_DEBUG=1", async () => {
+    // Operator observability parity with lore-ask — same log shape so a
+    // single `grep "[lore] partial-failure:"` sweep catches both tools.
+    const mockServer = createMockServer()
+    const services = servicesWithPartialFailure()
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.stubEnv("LORE_DEBUG", "1")
+
+    try {
+      await handler({ entity: "AuthService" } as never)
+
+      expect(stderr).toHaveBeenCalledTimes(1)
+      const logged = String(stderr.mock.calls[0][0])
+      // Same exact-format pin as `lore-ask`: ensures both tools emit the
+      // identical canonical line so ops filters work uniformly. A field
+      // reorder in one call site without the other would break
+      // cross-tool correlation silently; pinning the full line here
+      // catches the drift.
+      expect(logged).toBe(
+        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-decision-context\n",
+      )
+    } finally {
+      vi.unstubAllEnvs()
+      stderr.mockRestore()
+    }
+  })
+
+  it("is silent on stderr when LORE_DEBUG is unset, even with partial failures", async () => {
+    const mockServer = createMockServer()
+    const services = servicesWithPartialFailure()
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    vi.stubEnv("LORE_DEBUG", "")
+
+    try {
+      const result = await handler({ entity: "AuthService" } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      expect(text).toMatch(/Warnings:[^\n]*bad-root/)
+      expect(stderr).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+      stderr.mockRestore()
+    }
   })
 })
