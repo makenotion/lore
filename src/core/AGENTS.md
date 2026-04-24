@@ -153,14 +153,40 @@ removes the page from all queries. Invalidation preserves historical record.
 
 ## Fact Queries
 
-The `FactService` provides two query methods:
+The `FactService` exposes two families of reads: targeted retrieval
+(paginates as needed) and hot-path listing (single page, returns saturation
+signal). All methods exclude invalidated facts by default.
+
+### Retrieval (paginating)
 
 | Method                          | Behavior                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------ |
-| `queryBySubject(subject, opts)` | Finds facts where `Subject` title contains the string                          |
+| `queryBySubject(subject, opts)` | Finds facts where `Subject` title contains the string; paginates until exhausted or `limit` is reached |
+| `queryByObject(object, opts)`   | Same shape as `queryBySubject` but matches the `Object` rich-text property     |
+| `queryBySourceMemory(id, opts)` | Finds facts whose `Source` relation points at a given memory page              |
 | `queryByEntity(entity, opts)`   | Finds facts where the entity appears as either Subject or Object, deduplicates |
 
-Both methods exclude invalidated facts by default.
+### Hot-path listing (single page)
+
+| Method                          | Behavior                                                                       |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `listRecent(opts)`              | Single-page, server-filtered `created_time desc`. Returns `{ items, hasMore }` so callers can detect truncation without a second round-trip. Accepts `excludePredicates` for partitioning reads (see below). |
+
+### Two-path pattern for partitioned reads
+
+When a caller needs to split facts into disjoint buckets (e.g. wake-up
+separating `TRACKING_PREDICATES` from knowledge facts), fire **two targeted
+queries in parallel** rather than one full-scan followed by a client-side
+partition:
+
+- Tracking side: `queryBySubject("", { projectId, predicates: TRACKING_PREDICATES, limit: 100 })`
+- Knowledge side: `listRecent({ projectId, excludePredicates: TRACKING_PREDICATES, limit: N })`
+
+Both queries run server-side against Notion's `select` filter (the knowledge
+side uses `AND (Predicate does_not_equal ...)` per tracking predicate). This
+replaced the earlier `queryBySubject("")` full-scan in `loadWakeUpData`,
+which paginated the entire project fact table on every hook fire just to
+populate two bounded sections.
 
 ## Decision Service
 

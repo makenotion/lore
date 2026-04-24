@@ -15,6 +15,16 @@ import type {
   DatabaseRef,
 } from "../types.js"
 import { TRACKING_PREDICATES } from "../types.js"
+import { buildFactProps } from "../notion/schema.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
+import {
+  isFullPage,
+  extractTitle,
+  extractRichText,
+  extractSelect,
+  extractRelationIds,
+  extractDate,
+} from "../notion/extractors.js"
 
 type QueryFactsOpts = {
   projectId?: string
@@ -26,16 +36,27 @@ type QueryFactsOpts = {
    */
   limit?: number
 }
-import { buildFactProps } from "../notion/schema.js"
-import { projectOrUnscopedFilter } from "../notion/filters.js"
-import {
-  isFullPage,
-  extractTitle,
-  extractRichText,
-  extractSelect,
-  extractRelationIds,
-  extractDate,
-} from "../notion/extractors.js"
+
+type ListRecentOpts = {
+  projectId?: string
+  /**
+   * Predicates to exclude server-side via `AND (Predicate does_not_equal ...)`.
+   * Callers partitioning the knowledge graph (e.g. wake-up splitting open
+   * loops from recent knowledge facts) pass `TRACKING_PREDICATES` here so the
+   * filter runs in Notion, not after the page is loaded.
+   */
+  excludePredicates?: FactPredicate[]
+  /**
+   * Maximum rows returned. The query is single-page by design — callers on
+   * the hot path (`loadWakeUpData`) cannot afford pagination loops. Clamped
+   * to Notion's 100-row ceiling.
+   */
+  limit?: number
+  includeInvalidated?: boolean
+}
+
+/** Notion's hard ceiling on `page_size`. */
+const NOTION_MAX_PAGE_SIZE = 100
 
 export class FactService {
   constructor(
@@ -261,6 +282,69 @@ export class FactService {
     } while (cursor)
 
     return results.map((p) => this.pageToFact(p))
+  }
+
+  /**
+   * List the most recently created facts in a project, with server-side
+   * predicate exclusion. Single page by design — the caller (wake-up) runs
+   * on every hook fire and cannot absorb pagination latency. Use
+   * `queryBySubject` when the full result set is required.
+   *
+   * Returns `{ items, hasMore }`. `hasMore` is true when Notion reports
+   * additional rows past the requested window, letting saturation-aware
+   * callers (e.g. a ranked-open-loops renderer that wants to show a "+N
+   * more" affordance) detect truncation without issuing a second query.
+   */
+  async listRecent(
+    opts: ListRecentOpts = {},
+  ): Promise<{ items: Fact[]; hasMore: boolean }> {
+    const filters: Array<Record<string, unknown>> = []
+
+    if (opts.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    if (!opts.includeInvalidated) {
+      filters.push({
+        property: "Valid Until",
+        date: { is_empty: true },
+      })
+    }
+
+    if (opts.excludePredicates?.length) {
+      // AND-of-does_not_equal is simpler than OR-of-equals over the complement
+      // set and sidesteps Notion's compound-filter ceiling when the knowledge
+      // vocabulary grows.
+      for (const p of opts.excludePredicates) {
+        filters.push({
+          property: "Predicate",
+          select: { does_not_equal: p },
+        })
+      }
+    }
+
+    const filter =
+      filters.length > 1
+        ? { and: filters }
+        : filters.length === 1
+          ? filters[0]
+          : undefined
+
+    const limit = opts.limit ?? NOTION_MAX_PAGE_SIZE
+    const pageSize = Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
+
+    const response = await this.client.dataSources.query({
+      data_source_id: this.db.dataSourceId,
+      filter: filter as QueryDataSourceParameters["filter"],
+      sorts: [{ timestamp: "created_time", direction: "descending" }],
+      page_size: pageSize,
+    })
+
+    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    return {
+      items: pages.map((p) => this.pageToFact(p)),
+      hasMore: response.has_more ?? false,
+    }
   }
 
   async queryByEntity(entity: string, opts?: { projectId?: string }): Promise<Fact[]> {

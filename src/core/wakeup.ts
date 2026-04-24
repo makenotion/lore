@@ -84,6 +84,11 @@ export interface WakeUpServices {
       subject: string,
       opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number },
     ): Promise<Fact[]>
+    listRecent(opts: {
+      projectId?: string
+      excludePredicates?: FactPredicate[]
+      limit?: number
+    }): Promise<{ items: Fact[]; hasMore: boolean }>
   }
   decisions: {
     list(opts?: ListDecisionsOpts): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
@@ -160,10 +165,17 @@ export async function loadWakeUpData(
 
   // Request one extra memory so we can drop a digest entry without running
   // short after filtering.
+  //
+  // Facts load as two targeted queries, not one full-scan: the old
+  // `queryBySubject("")` paginated the whole project and partitioned
+  // client-side, which on every hook fire cost 3–6 Notion pages of I/O for
+  // a bounded output. Server-side predicate filters collapse that to one
+  // page per section.
   const [
     { items: rawMemories },
     { items: latestDigestList },
-    facts,
+    openLoops,
+    { items: knowledgeFacts },
     { items: proposedDecisions },
     overdueDecisions,
   ] = await Promise.all([
@@ -184,8 +196,19 @@ export async function loadWakeUpData(
         })
       : Promise.resolve({ items: [] as Memory[] }),
     projectId
-      ? services.facts.queryBySubject("", { projectId })
+      ? services.facts.queryBySubject("", {
+          projectId,
+          predicates: TRACKING_PREDICATES,
+          limit: NOTION_PAGE_SIZE,
+        })
       : Promise.resolve([] as Fact[]),
+    projectId
+      ? services.facts.listRecent({
+          projectId,
+          excludePredicates: TRACKING_PREDICATES,
+          limit: knowledgeLimit,
+        })
+      : Promise.resolve({ items: [] as Fact[], hasMore: false }),
     projectId && includeDecisions
       ? services.decisions.list({ projectId, status: "proposed", limit: 20 })
       : Promise.resolve({ items: [] as DecisionSummary[] }),
@@ -205,12 +228,6 @@ export async function loadWakeUpData(
   })
   const effectiveLimit = digest ? memoryLimitWithDigest : memoryLimit
   const memories = nonDigestMemories.slice(0, effectiveLimit)
-
-  const trackingSet = new Set<string>(TRACKING_PREDICATES)
-  const openLoops = facts.filter((f) => trackingSet.has(f.predicate))
-  const knowledgeFacts = facts
-    .filter((f) => !trackingSet.has(f.predicate))
-    .slice(0, knowledgeLimit)
 
   // Related memories: seed from open-loop entities, dedupe against the
   // memories + digest we already plan to render. Skip the round-trip when

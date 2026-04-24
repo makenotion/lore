@@ -16,6 +16,7 @@ import type {
   Memory,
   MemorySource,
 } from "../types.js"
+import { TRACKING_PREDICATES } from "../types.js"
 
 const NOW = new Date("2026-04-20T12:00:00Z").getTime()
 
@@ -80,11 +81,17 @@ type SearchCall = {
 }
 
 type QueryCall = { subject: string; opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number } }
+type ListRecentCall = {
+  projectId?: string
+  excludePredicates?: FactPredicate[]
+  limit?: number
+}
 
 interface StubServices extends WakeUpServices {
   memoriesCalls: ListCall[]
   memoriesSearchCalls: SearchCall[]
   factsCalls: QueryCall[]
+  factsListRecentCalls: ListRecentCall[]
   decisionsListCalls: ListDecisionsOpts[]
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
 }
@@ -100,6 +107,7 @@ function stubServices(opts: {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
   const factsCalls: QueryCall[] = []
+  const factsListRecentCalls: ListRecentCall[] = []
   const decisionsListCalls: ListDecisionsOpts[] = []
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const factsResult = opts.facts ?? []
@@ -119,9 +127,32 @@ function stubServices(opts: {
       }),
     },
     facts: {
+      // Simulates Notion's server-side predicate filter so a single fixture
+      // array produces the right shard for each query path.
       queryBySubject: vi.fn(async (subject: string, queryOpts) => {
         factsCalls.push({ subject, opts: queryOpts })
-        return factsResult
+        let filtered = factsResult
+        if (queryOpts?.predicates?.length) {
+          const allowed = new Set<FactPredicate>(queryOpts.predicates)
+          filtered = filtered.filter((f) => allowed.has(f.predicate))
+        }
+        if (queryOpts?.limit !== undefined) {
+          filtered = filtered.slice(0, queryOpts.limit)
+        }
+        return filtered
+      }),
+      listRecent: vi.fn(async (listOpts: ListRecentCall) => {
+        factsListRecentCalls.push(listOpts)
+        let filtered = factsResult
+        if (listOpts.excludePredicates?.length) {
+          const excluded = new Set<FactPredicate>(listOpts.excludePredicates)
+          filtered = filtered.filter((f) => !excluded.has(f.predicate))
+        }
+        const total = filtered.length
+        if (listOpts.limit !== undefined) {
+          filtered = filtered.slice(0, listOpts.limit)
+        }
+        return { items: filtered, hasMore: filtered.length < total }
       }),
     },
     decisions: {
@@ -137,6 +168,7 @@ function stubServices(opts: {
     memoriesCalls,
     memoriesSearchCalls,
     factsCalls,
+    factsListRecentCalls,
     decisionsListCalls,
     decisionsOverdueCalls,
   }
@@ -277,6 +309,45 @@ describe("loadWakeUpData", () => {
     expect(data.openLoops).toHaveLength(0)
   })
 
+  it("issues targeted fact queries with server-side predicate filters and bounded page size", async () => {
+    // Wake-up runs on every hook fire — the old full-scan paginated the
+    // entire project fact table. The new shape must push partitioning to
+    // Notion: one bounded page for open loops (tracking predicates) and
+    // one bounded page for knowledge facts (everything else).
+    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
+
+    await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(services.factsCalls).toHaveLength(1)
+    const openLoopCall = services.factsCalls[0]
+    expect(openLoopCall.subject).toBe("")
+    expect(openLoopCall.opts?.projectId).toBe("p1")
+    expect(openLoopCall.opts?.predicates).toEqual(TRACKING_PREDICATES)
+    // Bounded by Notion's per-page ceiling so wake-up never paginates.
+    expect(openLoopCall.opts?.limit).toBeDefined()
+    expect(openLoopCall.opts?.limit).toBeLessThanOrEqual(100)
+
+    expect(services.factsListRecentCalls).toHaveLength(1)
+    const knowledgeCall = services.factsListRecentCalls[0]
+    expect(knowledgeCall.projectId).toBe("p1")
+    expect(knowledgeCall.excludePredicates).toEqual(TRACKING_PREDICATES)
+    expect(knowledgeCall.limit).toBe(DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
+  })
+
+  it("forwards a caller-supplied knowledgeFactLimit into the server-side query", async () => {
+    // Truncation moves from the client to the server; the option must reach
+    // the facts layer or the cap becomes advisory noise.
+    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      knowledgeFactLimit: 7,
+      now: NOW,
+    })
+
+    expect(services.factsListRecentCalls[0]?.limit).toBe(7)
+  })
+
   it("skips digest, fact, decision, and related-memory lookup when no project is resolved", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
@@ -291,6 +362,7 @@ describe("loadWakeUpData", () => {
     expect(services.memoriesCalls.some((c) => c.source === "digest")).toBe(false)
     expect(services.memoriesSearchCalls).toEqual([])
     expect(services.facts.queryBySubject).not.toHaveBeenCalled()
+    expect(services.facts.listRecent).not.toHaveBeenCalled()
     expect(services.decisions.list).not.toHaveBeenCalled()
     expect(services.decisions.queryOverdue).not.toHaveBeenCalled()
   })
