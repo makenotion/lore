@@ -846,6 +846,75 @@ describe("FactService.createWithDedup", () => {
   })
 })
 
+describe("FactService.createWithDedup — HTML entity decode at write", () => {
+  let client: ReturnType<typeof createMockClient>
+  let service: FactService
+
+  beforeEach(() => {
+    client = createMockClient()
+    service = new FactService(client, DB)
+  })
+
+  it("decodes doubly-encoded subject and object before writing and dedup-keying", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      factPage({ id: "new-fact", subject: "Foo & Bar", object: "R & D" })
+    )
+
+    await service.createWithDedup({
+      subject: "Foo &amp;amp; Bar",
+      predicate: "uses",
+      object: "R &amp; D",
+    })
+
+    const createCall = client.pages.create.mock.calls[0][0]
+    const subjectProp = createCall.properties.Subject
+    const objectProp = createCall.properties.Object
+    expect(subjectProp.title[0].text.content).toBe("Foo & Bar")
+    expect(objectProp.rich_text[0].text.content).toBe("R & D")
+
+    const queryCall = client.dataSources.query.mock.calls[0][0]
+    expect(queryCall.filter).toEqual({
+      and: [
+        {
+          property: "DedupKey",
+          rich_text: {
+            equals: computeFactDedupKey({
+              subject: "Foo & Bar",
+              predicate: "uses",
+              object: "R & D",
+            }),
+          },
+        },
+        { property: "Valid Until", date: { is_empty: true } },
+      ],
+    })
+  })
+
+  it("is idempotent — an already-clean input is unchanged", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(factPage({ id: "new" }))
+
+    await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    })
+
+    const createCall = client.pages.create.mock.calls[0][0]
+    expect(createCall.properties.Subject.title[0].text.content).toBe("AuthService")
+    expect(createCall.properties.Object.rich_text[0].text.content).toBe("JWT")
+  })
+})
+
 describe("FactService.create (default path)", () => {
   it("returns only the Fact so callers relying on the old signature still work", async () => {
     const client = createMockClient()

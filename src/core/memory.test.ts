@@ -436,6 +436,178 @@ describe("MemoryService.list — pagination", () => {
   })
 })
 
+describe("MemoryService.create — HTML entity decode at write", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  type CreateArgs = {
+    properties: {
+      Title: { title: Array<{ text: { content: string } }> }
+    }
+  }
+  type UpdateMarkdownArgs = { insert_content: { content: string } }
+
+  it("decodes doubly-encoded title and content before writing to Notion", async () => {
+    const createSpy = vi.fn(async (_args: CreateArgs) =>
+      buildPage(
+        { Title: { type: "title", title: [{ plain_text: "PR #25650's diff" }] } },
+        { id: "mem-1" },
+      ),
+    )
+    const updateMarkdownSpy = vi.fn(async (_args: UpdateMarkdownArgs) => ({}))
+    const client = {
+      pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
+    } as unknown as Client
+
+    const service = new MemoryService(client, db)
+    await service.create({
+      title: "PR #25650&amp;#8217;s diff",
+      content: "Fix the &amp;amp; in build logs",
+    })
+
+    const createArgs = createSpy.mock.calls[0][0]
+    // `&amp;#8217;` collapses to `&#8217;` and then to the curly right single
+    // quote ’ — the fixed-point loop keeps decoding until stable.
+    expect(createArgs.properties.Title.title[0].text.content).toBe("PR #25650’s diff")
+
+    const mdArgs = updateMarkdownSpy.mock.calls[0][0]
+    expect(mdArgs.insert_content.content).toBe("Fix the & in build logs")
+  })
+
+  it("is idempotent — clean input passes through unchanged", async () => {
+    const createSpy = vi.fn(async (_args: CreateArgs) =>
+      buildPage(
+        { Title: { type: "title", title: [{ plain_text: "Clean title" }] } },
+        { id: "mem-2" },
+      ),
+    )
+    const updateMarkdownSpy = vi.fn(async (_args: UpdateMarkdownArgs) => ({}))
+    const client = {
+      pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
+    } as unknown as Client
+
+    const service = new MemoryService(client, db)
+    await service.create({
+      title: "Clean title",
+      content: "Body with a literal & character",
+    })
+
+    const createArgs = createSpy.mock.calls[0][0]
+    expect(createArgs.properties.Title.title[0].text.content).toBe("Clean title")
+    const mdArgs = updateMarkdownSpy.mock.calls[0][0]
+    expect(mdArgs.insert_content.content).toBe("Body with a literal & character")
+  })
+
+  it("decodes every rich_text field — alternatives, consequences, author, agent, keywords, session", async () => {
+    // P3-03 (entity canonicalization) will read `author`/`agent` for
+    // normalization; P2-03 (near-duplicate detection) will trigram over
+    // `alternatives`/`consequences`/`keywords`. All of them flow through
+    // the same autosave encoder as `title`, so decode them at the write
+    // boundary too. `session` is included for consistency — unlikely to
+    // carry encoded content in practice, but cheap to decode and keeps
+    // the rich_text coverage exhaustive.
+    type FullCreateArgs = {
+      properties: {
+        Title: { title: Array<{ text: { content: string } }> }
+        Alternatives: { rich_text: Array<{ text: { content: string } }> }
+        Consequences: { rich_text: Array<{ text: { content: string } }> }
+        Author: { rich_text: Array<{ text: { content: string } }> }
+        Agent: { rich_text: Array<{ text: { content: string } }> }
+        Keywords: { rich_text: Array<{ text: { content: string } }> }
+        Session: { rich_text: Array<{ text: { content: string } }> }
+      }
+    }
+    const createSpy = vi.fn(async (_args: FullCreateArgs) =>
+      buildPage({ Title: { type: "title", title: [{ plain_text: "T" }] } }, { id: "mem-3" }),
+    )
+    const updateMarkdownSpy = vi.fn(async (_args: UpdateMarkdownArgs) => ({}))
+    const client = {
+      pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
+    } as unknown as Client
+
+    const service = new MemoryService(client, db)
+    await service.create({
+      title: "Encoded &amp; title",
+      content: "body",
+      alternatives: "Alt A &amp; Alt B",
+      consequences: "Cost: &amp;amp; risk",
+      author: "name &amp; co",
+      agent: "tool &amp; script",
+      keywords: "PR &amp; branch",
+      session: "sess-&amp;-123",
+    })
+
+    const p = createSpy.mock.calls[0][0].properties
+    expect(p.Title.title[0].text.content).toBe("Encoded & title")
+    expect(p.Alternatives.rich_text[0].text.content).toBe("Alt A & Alt B")
+    expect(p.Consequences.rich_text[0].text.content).toBe("Cost: & risk")
+    expect(p.Author.rich_text[0].text.content).toBe("name & co")
+    expect(p.Agent.rich_text[0].text.content).toBe("tool & script")
+    expect(p.Keywords.rich_text[0].text.content).toBe("PR & branch")
+    expect(p.Session.rich_text[0].text.content).toBe("sess-&-123")
+  })
+})
+
+describe("MemoryService.update — HTML entity decode at write", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("decodes title, content, and rich_text fields on update — parallels create", async () => {
+    // Reviewer concern: without this, `update` would write encoded text
+    // around the freshly-decoded rows `create` produces. Same autosave
+    // path can re-encode values on subsequent saves, so the `update`
+    // write boundary must also decode.
+    type FullUpdateArgs = {
+      properties: {
+        Title?: { title: Array<{ text: { content: string } }> }
+        Alternatives?: { rich_text: Array<{ text: { content: string } }> }
+        Consequences?: { rich_text: Array<{ text: { content: string } }> }
+        Keywords?: { rich_text: Array<{ text: { content: string } }> }
+      }
+    }
+    const updateSpy = vi.fn(async (_args: FullUpdateArgs) => ({}))
+    const updateMarkdownSpy = vi.fn(
+      async (_args: { replace_content_range: { content: string } }) => ({}),
+    )
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Updated" }] },
+          Project: { type: "relation", relation: [] },
+          Topic: { type: "relation", relation: [] },
+          Source: { type: "select", select: { name: "manual" } },
+        },
+        { id: "mem-1" },
+      ),
+    )
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+
+    const service = new MemoryService(client, db)
+    await service.update("mem-1", {
+      title: "Updated &amp; saved",
+      content: "Body &amp; body",
+      alternatives: "Alt &amp; Alt",
+      consequences: "Cons &amp; cons",
+      keywords: "PR &amp; branch",
+    })
+
+    const props = updateSpy.mock.calls[0][0].properties
+    expect(props.Title?.title[0].text.content).toBe("Updated & saved")
+    expect(props.Alternatives?.rich_text[0].text.content).toBe("Alt & Alt")
+    expect(props.Consequences?.rich_text[0].text.content).toBe("Cons & cons")
+    expect(props.Keywords?.rich_text[0].text.content).toBe("PR & branch")
+
+    const mdArgs = updateMarkdownSpy.mock.calls[0][0]
+    expect(mdArgs.replace_content_range.content).toBe("Body & body")
+  })
+})
+
 describe("MemoryService.getTitleById — title cache", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 

@@ -22,6 +22,7 @@ import { TRACKING_PREDICATES } from "../types.js"
 import { buildFactProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey } from "../notion/normalize.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   runFactDedupBackfill,
   type FactDedupBackfillResult,
@@ -152,17 +153,28 @@ export class FactService {
    * path for any duplicates that slip through.
    */
   async createWithDedup(input: CreateFactInput): Promise<CreateFactResult> {
-    let reviewBy = input.reviewBy
-    if (!reviewBy && TRACKING_PREDICATES.includes(input.predicate)) {
+    // Decode at the write boundary so a doubly-encoded `Foo &amp;amp; Bar`
+    // input flowing in from the autosave/markdown path lands in Notion as
+    // `Foo & Bar`. Idempotent — a clean value passes through unchanged.
+    // Done before dedup-key computation so two inputs that differ only by
+    // encoding level collapse onto the same live row.
+    const decodedInput: CreateFactInput = {
+      ...input,
+      subject: decodeTextEntities(input.subject),
+      object: decodeTextEntities(input.object),
+    }
+
+    let reviewBy = decodedInput.reviewBy
+    if (!reviewBy && TRACKING_PREDICATES.includes(decodedInput.predicate)) {
       const d = new Date()
       d.setDate(d.getDate() + 7)
       reviewBy = d.toISOString().split("T")[0]
     }
 
     const dedupKey = computeFactDedupKey({
-      subject: input.subject,
-      predicate: input.predicate,
-      object: input.object,
+      subject: decodedInput.subject,
+      predicate: decodedInput.predicate,
+      object: decodedInput.object,
     })
 
     const existing = await this.findLiveByDedupKey(dedupKey).catch((err) => {
@@ -176,21 +188,21 @@ export class FactService {
     })
 
     if (existing) {
-      const enriched = await this.mergeOntoExisting(existing, input, reviewBy)
+      const enriched = await this.mergeOntoExisting(existing, decodedInput, reviewBy)
       return { fact: existing, deduped: true, enriched }
     }
 
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildFactProps({
-        subject: input.subject,
-        predicate: input.predicate,
-        object: input.object,
-        projectIds: input.projectIds,
-        validFrom: input.validFrom ?? new Date().toISOString().split("T")[0],
+        subject: decodedInput.subject,
+        predicate: decodedInput.predicate,
+        object: decodedInput.object,
+        projectIds: decodedInput.projectIds,
+        validFrom: decodedInput.validFrom ?? new Date().toISOString().split("T")[0],
         reviewBy,
-        sourceMemoryId: input.sourceMemoryId,
-        confidence: input.confidence ?? "certain",
+        sourceMemoryId: decodedInput.sourceMemoryId,
+        confidence: decodedInput.confidence ?? "certain",
         dedupKey,
       }),
     })
@@ -223,10 +235,16 @@ export class FactService {
    * pin it at `fact.test.ts:737`, so a future refactor that flips the
    * order must update the fixture. Worth noting so a future reader
    * doesn't read it as an accidental invariant.
+   *
+   * The `decodedInput` parameter name is load-bearing: `createWithDedup`
+   * decodes HTML entities on subject/object BEFORE calling this method, and
+   * the dedup-key collision semantics depend on the decoded values. A
+   * future caller that passes raw `CreateFactInput` would re-open the
+   * PF1-06 bug class — the name forces that mistake to be visible.
    */
   private async mergeOntoExisting(
     existing: Fact,
-    input: CreateFactInput,
+    decodedInput: CreateFactInput,
     reviewBy: string | undefined
   ): Promise<string[]> {
     const properties: Record<string, unknown> = {}
@@ -235,7 +253,7 @@ export class FactService {
     // Parallel boolean flags for the three mutations. Hoisted so the
     // post-write mirror block doesn't re-evaluate the same conditions.
     const extendingReview = Boolean(reviewBy) && reviewBy !== existing.reviewBy
-    const missingProjectIds = (input.projectIds ?? []).filter(
+    const missingProjectIds = (decodedInput.projectIds ?? []).filter(
       (id) => !existing.projectIds.includes(id)
     )
     const mergedProjectIds =
@@ -245,7 +263,7 @@ export class FactService {
     // First-writer-wins on Source: if the existing row already has a
     // source memory we don't clobber it (PR #44's "no orphans" contract
     // only cares about filling the gap, not re-pointing a linked row).
-    const fillingSource = Boolean(!existing.sourceMemoryId && input.sourceMemoryId)
+    const fillingSource = Boolean(!existing.sourceMemoryId && decodedInput.sourceMemoryId)
 
     if (extendingReview) {
       properties["Review By"] = { date: { start: reviewBy } }
@@ -261,7 +279,7 @@ export class FactService {
     }
     if (fillingSource) {
       properties["Source"] = {
-        relation: [{ id: input.sourceMemoryId }],
+        relation: [{ id: decodedInput.sourceMemoryId }],
       }
       enriched.push("linked source memory")
     }
@@ -281,9 +299,9 @@ export class FactService {
     if (extendingReview) existing.reviewBy = reviewBy ?? null
     if (mergedProjectIds) existing.projectIds = mergedProjectIds
     // `?? null` is dead at runtime — `fillingSource` truthy implies
-    // `input.sourceMemoryId` is a non-empty string — but required for TS to
-    // narrow `string | undefined` to `Fact.sourceMemoryId: string | null`.
-    if (fillingSource) existing.sourceMemoryId = input.sourceMemoryId ?? null
+    // `decodedInput.sourceMemoryId` is a non-empty string — but required for
+    // TS to narrow `string | undefined` to `Fact.sourceMemoryId: string | null`.
+    if (fillingSource) existing.sourceMemoryId = decodedInput.sourceMemoryId ?? null
 
     return enriched
   }

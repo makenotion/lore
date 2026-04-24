@@ -12,9 +12,9 @@ import type {
   PageObjectResponse,
   QueryDataSourceParameters,
 } from "@notionhq/client"
-import { decodeHTML } from "entities"
 import type { Topic, CreateTopicInput, DatabaseRef } from "../types.js"
 import { buildTopicProps } from "../notion/schema.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   isFullPage,
   extractTitle,
@@ -29,37 +29,22 @@ import { LruCache } from "./cache.js"
 const GET_OR_CREATE_MAX_RETRIES = 2
 
 /**
- * Fully decode HTML entities in a topic name, looping until stable so
- * double-encoded inputs like `&amp;amp;` collapse all the way to `&`.
+ * Backwards-compatible alias for the shared `decodeTextEntities` helper.
+ * The decoder originally lived here as `decodeTopicHtmlEntities`, but the
+ * same pathology affects memory titles, fact subject/object text, and any
+ * other plain-text field that flows through the autosave path. The
+ * implementation now lives in `src/notion/html-entities.ts` so every write
+ * site can import it without pulling in the whole topic service.
  *
- * Topic names are plain text, not markup. An upstream producer somewhere in
- * the autosave path (Claude Code rendering transcript context as markdown,
- * or the agent itself when emitting names that quote file-system or markup
- * content) has been observed to HTML-encode `&` before the name reaches the
- * MCP boundary; on re-save the already-encoded value gets encoded again.
- * Decoding here — both on write (`create`) and on lookup (`findByName`,
- * `getOrCreate`) — makes the service idempotent regardless of how many
- * rounds of encoding the caller has accumulated.
+ * Re-exported under the old name so the topic-merge migration and existing
+ * tests don't have to rename in the same PR as the decoder hoist.
  *
- * Uses `entities.decodeHTML` rather than a hand-rolled table so the full
- * HTML5 named + numeric entity set is covered; a future upstream producer
- * emitting `&nbsp;`, `&rsquo;`, `&#8217;`, etc. doesn't reopen this bug.
- *
- * The fixed-point loop is the important bit: `decodeHTML("&amp;amp;")` only
- * peels off one layer. Every decoding pass strictly shrinks the string when
- * it changes (the shortest entity is 4 chars and decodes to ≤1), so
- * `name.length` iterations is a principled upper bound. Real-world cases
- * max out at two.
+ * @deprecated Import `decodeTextEntities` from `src/notion/html-entities.ts`
+ * instead. This alias will be removed the next time `topic.ts` or
+ * `topic-merge.ts` is touched — there is no feature it enables, only a
+ * naming bridge from the pre-hoist world.
  */
-export function decodeTopicHtmlEntities(name: string): string {
-  let current = name
-  for (let i = 0; i < name.length; i++) {
-    const next = decodeHTML(current)
-    if (next === current) return current
-    current = next
-  }
-  return current
-}
+export const decodeTopicHtmlEntities = decodeTextEntities
 
 /** Topic name → Topic cache. Covers only global (unscoped) lookups — the
  *  scoped variant is a rarely-used safety valve and is not cached. The

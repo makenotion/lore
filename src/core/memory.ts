@@ -29,6 +29,7 @@ import type {
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import { LruCache } from "./cache.js"
 import {
   isFullPage,
@@ -47,6 +48,73 @@ import {
  *  governance. Titles and `Kind=decision` pages share this pool. */
 const TITLE_CACHE_MAX = 500
 const TITLE_CACHE_TTL_MS = 60_000
+
+/**
+ * Every plain-text field that flows through the agent boundary and lands
+ * in a Memory page. Run them through `decodeTextEntities` before writing
+ * so doubly-encoded autosave input (`&amp;amp;`) resolves to plain text
+ * and future similarity / embedding surfaces see consistent values.
+ *
+ * Coverage is deliberately explicit rather than derived from
+ * `CreateMemoryInput` so a future plain-text field addition fails the
+ * type-check here and forces a decision about whether to decode. If the
+ * coverage ever diverges from `CreateMemoryInput`'s rich_text shape, the
+ * drift stays visible in the compiler rather than in a downstream
+ * similarity regression.
+ */
+function decodeMemoryTextFields(input: CreateMemoryInput): {
+  title: string
+  content: string
+  alternatives: string | undefined
+  consequences: string | undefined
+  author: string | undefined
+  agent: string | undefined
+  keywords: string | undefined
+  session: string | undefined
+} {
+  return {
+    title: decodeTextEntities(input.title),
+    content: input.content ? decodeTextEntities(input.content) : "",
+    alternatives:
+      input.alternatives !== undefined ? decodeTextEntities(input.alternatives) : undefined,
+    consequences:
+      input.consequences !== undefined ? decodeTextEntities(input.consequences) : undefined,
+    author: input.author !== undefined ? decodeTextEntities(input.author) : undefined,
+    agent: input.agent !== undefined ? decodeTextEntities(input.agent) : undefined,
+    keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+    session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
+  }
+}
+
+/**
+ * Partial-update variant. Every field that might be passed gets the
+ * decoder; `undefined` propagates so the update path can distinguish
+ * "leave untouched" from "explicitly set to empty string".
+ *
+ * `UpdateMemoryInput` currently omits `author`, `agent`, and `session`
+ * because those fields aren't exposed on the update path. If a future
+ * change adds them, also extend this helper's return shape and the
+ * corresponding `if (decoded.X !== undefined)` branches in `update()`.
+ * The structural-literal typing keeps that coupling visible to the
+ * type-checker rather than silent.
+ */
+function decodeUpdateTextFields(input: UpdateMemoryInput): {
+  title: string | undefined
+  content: string | undefined
+  alternatives: string | undefined
+  consequences: string | undefined
+  keywords: string | undefined
+} {
+  return {
+    title: input.title !== undefined ? decodeTextEntities(input.title) : undefined,
+    content: input.content !== undefined ? decodeTextEntities(input.content) : undefined,
+    alternatives:
+      input.alternatives !== undefined ? decodeTextEntities(input.alternatives) : undefined,
+    consequences:
+      input.consequences !== undefined ? decodeTextEntities(input.consequences) : undefined,
+    keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+  }
+}
 
 export class MemoryService {
   /**
@@ -126,11 +194,19 @@ export class MemoryService {
   }
 
   async create(input: CreateMemoryInput): Promise<Memory> {
+    // Decode at the write boundary so doubly-encoded values from the
+    // autosave/markdown path land in Notion as plain text. Idempotent: a
+    // clean value passes through unchanged. Covers every plain-text
+    // field that flows through the agent boundary — title, content body,
+    // and the rich_text fields that downstream similarity/embedding
+    // surfaces (P2-03, P3-03, P3-04) will read.
+    const decoded = decodeMemoryTextFields(input)
+
     // Create the page with properties only
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildMemoryProps({
-        title: input.title,
+        title: decoded.title,
         projectIds: input.projectIds,
         topicId: input.topicId,
         source: input.source ?? "manual",
@@ -141,26 +217,26 @@ export class MemoryService {
         decidedAt: input.decidedAt,
         supersedesIds: input.supersedesIds,
         affectsIds: input.affectsIds,
-        alternatives: input.alternatives,
-        consequences: input.consequences,
-        author: input.author,
-        agent: input.agent,
+        alternatives: decoded.alternatives,
+        consequences: decoded.consequences,
+        author: decoded.author,
+        agent: decoded.agent,
         tags: input.tags,
-        keywords: input.keywords,
-        session: input.session,
+        keywords: decoded.keywords,
+        session: decoded.session,
       }),
     })
 
     // Write content via markdown API
-    if (input.content) {
+    if (decoded.content) {
       await this.client.pages.updateMarkdown({
         page_id: page.id,
         type: "insert_content",
-        insert_content: { content: input.content },
+        insert_content: { content: decoded.content },
       })
     }
 
-    return this.pageToMemory(page as PageObjectResponse, input.content ?? "")
+    return this.pageToMemory(page as PageObjectResponse, decoded.content ?? "")
   }
 
   async getById(id: string): Promise<Memory> {
@@ -260,9 +336,15 @@ export class MemoryService {
   }
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
+    // Same decode-at-write discipline as `create`: encoded titles /
+    // content / alternatives / consequences flowing in from re-saves of
+    // autosave-rendered transcripts must land in Notion clean. Without
+    // this, `update` would write encoded text around the freshly-decoded
+    // rows `create` produces, re-opening the bug class PF1-06 closes.
+    const decoded = decodeUpdateTextFields(input)
     const props: Record<string, unknown> = {}
 
-    if (input.title) {
+    if (decoded.title !== undefined) {
       // Pre-write epoch bump: any `fetchTitleAndCache` already in flight
       // for ANY id will see an advanced epoch at commit time and skip
       // its set. The paired post-write bump below closes the
@@ -270,7 +352,7 @@ export class MemoryService {
       // entry; the post-write `set` installs the authoritative value.
       this.bumpWriteEpoch()
       this.titleCache.delete(id)
-      props["Title"] = { title: [{ text: { content: input.title } }] }
+      props["Title"] = { title: [{ text: { content: decoded.title } }] }
     }
     if (input.projectIds) {
       props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
@@ -283,9 +365,9 @@ export class MemoryService {
         multi_select: input.tags.map((t) => ({ name: t })),
       }
     }
-    if (input.keywords !== undefined) {
+    if (decoded.keywords !== undefined) {
       props["Keywords"] = {
-        rich_text: [{ text: { content: input.keywords } }],
+        rich_text: [{ text: { content: decoded.keywords } }],
       }
     }
     if (input.kind) {
@@ -314,14 +396,14 @@ export class MemoryService {
     if (input.affectsIds) {
       props["Affects"] = { relation: input.affectsIds.map((id) => ({ id })) }
     }
-    if (input.alternatives !== undefined) {
+    if (decoded.alternatives !== undefined) {
       props["Alternatives"] = {
-        rich_text: [{ text: { content: input.alternatives } }],
+        rich_text: [{ text: { content: decoded.alternatives } }],
       }
     }
-    if (input.consequences !== undefined) {
+    if (decoded.consequences !== undefined) {
       props["Consequences"] = {
-        rich_text: [{ text: { content: input.consequences } }],
+        rich_text: [{ text: { content: decoded.consequences } }],
       }
     }
 
@@ -333,12 +415,12 @@ export class MemoryService {
       })
     }
 
-    if (input.content) {
+    if (decoded.content) {
       await this.client.pages.updateMarkdown({
         page_id: id,
         type: "replace_content_range",
         replace_content_range: {
-          content: input.content,
+          content: decoded.content,
           content_range: "full_page",
           allow_deleting_content: true,
         },
@@ -357,7 +439,7 @@ export class MemoryService {
     // in-flight `pages.update` — after the pre-bump but before the final
     // set — also have their stale commits suppressed. Without this,
     // only readers dispatched *before* the pre-bump would be guarded.
-    if (input.title) {
+    if (decoded.title !== undefined) {
       this.titleCache.set(id, updated.title || null)
       this.bumpWriteEpoch()
     }
