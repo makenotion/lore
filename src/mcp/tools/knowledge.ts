@@ -4,6 +4,7 @@ import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
+import { renderFact, resolveReferencedTitles } from "../render.js"
 
 import { TRACKING_PREDICATES } from "../../types.js"
 
@@ -159,6 +160,12 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           )
         }
 
+        // Resolve every UUID referenced by a non-decided_by fact (both
+        // subject- and object-side) so generic predicates render titles
+        // instead of opaque page IDs — see P1-05. `decided_by` facts are
+        // handled above by the canonical-decision resolver.
+        const titleMap = await resolveReferencedTitles(otherFacts, services)
+
         for (const fact of otherFacts) {
           const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
           const review = fact.reviewBy
@@ -167,23 +174,8 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
               : ` (review by ${fact.reviewBy})`
             : ""
 
-          if (fact.predicate === "supersedes_decision") {
-            const [newDecision, oldDecision] = await Promise.all([
-              services.decisions
-                .getById(fact.sourceMemoryId ?? fact.subject)
-                .catch(() => null),
-              services.decisions.getById(fact.object).catch(() => null),
-            ])
-
-            lines.push(
-              `- **${newDecision?.title ?? fact.subject}** supersedes decision **${oldDecision?.title ?? fact.object}** [${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
-            )
-            continue
-          }
-
-          lines.push(
-            `- **${fact.subject}** ${fact.predicate.replace(/_/g, " ")} **${fact.object}** [${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
-          )
+          const trailing = `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
+          lines.push(renderFact(fact, { titleMap, trailing }))
         }
 
         if (lines.length === 0) {

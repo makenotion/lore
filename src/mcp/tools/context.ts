@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError } from "../helpers.js"
 import { dateBucket, loadWakeUpData } from "../../core/wakeup.js"
+import { displayValue, renderFact, resolveReferencedTitles } from "../render.js"
 
 export function registerContextTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -211,14 +212,26 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           }
         }
 
+        // Resolve every UUID referenced by an open-loop or active fact
+        // in one batched fan-out so the two sections share a single
+        // network round-trip per unique page ID. `displayValue` (Open
+        // Loops' arrow format) and `renderFact` (Active Facts' flat
+        // format) both read from the same map.
+        const factTitleMap = await resolveReferencedTitles(
+          [...openLoops, ...knowledgeFacts],
+          services,
+        )
+
         if (openLoops.length > 0) {
           const today = new Date().toISOString().split("T")[0]
           sections.push("## Open Loops\n")
           for (const fact of openLoops) {
             const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
             const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
+            const subject = displayValue(fact.subject, factTitleMap)
+            const object = displayValue(fact.object, factTitleMap)
             sections.push(
-              `- **${fact.subject}** \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 **${fact.object}** [${fact.confidence}]${since}${overdue}`
+              `- **${subject}** \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 **${object}** [${fact.confidence}]${since}${overdue}`
             )
           }
           sections.push("")
@@ -228,7 +241,10 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           sections.push("## Active Facts\n")
           for (const fact of knowledgeFacts) {
             sections.push(
-              `- **${fact.subject}** ${fact.predicate.replace(/_/g, " ")} **${fact.object}** (${fact.confidence})`
+              renderFact(fact, {
+                titleMap: factTitleMap,
+                trailing: `(${fact.confidence})`,
+              }),
             )
           }
         }

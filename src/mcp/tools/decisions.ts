@@ -7,6 +7,7 @@ import {
   resolveCanonicalDecisionLinks,
   syncDecisionReachability,
 } from "../decision-graph.js"
+import { displayId, resolveTitles } from "../render.js"
 import type { DecisionSummary, DecisionStatus } from "../../types.js"
 
 const DECISION_STATUSES = [
@@ -29,6 +30,17 @@ function addDaysISO(base: Date, days: number): string {
   const next = new Date(base)
   next.setDate(next.getDate() + days)
   return next.toISOString().split("T")[0]
+}
+
+/**
+ * Render a relation-list row: `Title (id)` when resolved, short hint
+ * otherwise. Keeps the ID visible on a hit so readers can cross-reference
+ * back to `lore-get-decision <id>`; on a miss, `displayId` already
+ * produces a truncated-hint form so we don't double-print 36 hex chars.
+ */
+function formatIdLine(id: string, titleMap: Map<string, string>): string {
+  const title = titleMap.get(id.toLowerCase())
+  return title ? `${title} (${id})` : displayId(id, titleMap)
 }
 
 function formatSummary(d: DecisionSummary): string {
@@ -378,13 +390,26 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         if (decision.consequences) {
           lines.push("", "## Consequences", decision.consequences)
         }
+        // Resolve relation IDs to titles so readers can scan the chain
+        // without cross-referencing opaque UUIDs. Both Supersedes and
+        // Affects rows live in the Memories DB, so one title-only
+        // fetcher handles the whole set; we batch the two ID lists
+        // together to minimize the network fan-out on a single render.
+        const relationTitles = await resolveTitles(
+          [...decision.supersedesIds, ...decision.affectsIds],
+          (id) => services.memories.getTitleById(id),
+        )
         if (decision.supersedesIds.length > 0) {
           lines.push("", "## Supersedes")
-          for (const id of decision.supersedesIds) lines.push(`- ${id}`)
+          for (const id of decision.supersedesIds) {
+            lines.push(`- ${formatIdLine(id, relationTitles)}`)
+          }
         }
         if (decision.affectsIds.length > 0) {
           lines.push("", "## Affects (cross-linked memories)")
-          for (const id of decision.affectsIds) lines.push(`- ${id}`)
+          for (const id of decision.affectsIds) {
+            lines.push(`- ${formatIdLine(id, relationTitles)}`)
+          }
         }
         if (decision.content) {
           lines.push("", "---", "", "## Rationale", "", decision.content)

@@ -90,6 +90,27 @@ export class MemoryService {
     return this.pageToMemory(page as PageObjectResponse, md.markdown)
   }
 
+  /**
+   * Read a memory's `Title` property without fetching its markdown body.
+   * Single `pages.retrieve` round-trip; used by render-layer resolvers
+   * that only need a human-readable label for a page ID. Returns `null`
+   * on not-found / permission errors so callers can fall through to the
+   * raw ID with a `(?)` hint. Works across `Kind = decision` and every
+   * other memory kind — both live in the Memories DB.
+   */
+  async getTitleById(id: string): Promise<string | null> {
+    try {
+      const page = await this.client.pages.retrieve({ page_id: id })
+      if (!isFullPage(page)) return null
+      const title = extractTitle(
+        (page as PageObjectResponse).properties["Title"],
+      )
+      return title || null
+    } catch {
+      return null
+    }
+  }
+
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
     const props: Record<string, unknown> = {}
 
