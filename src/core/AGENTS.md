@@ -291,6 +291,16 @@ a legacy-vault safety valve with different result shape.
 cached, and throws are never cached — only successful resolutions. Writes
 invalidate:
 
+**Stampede-safe via `LruCache.getOrLoad`.** Callers that expect concurrent
+misses on the same cold key — resolvers feeding a `Promise.all`, batch
+title renderers, BFS fan-outs — should prefer `cache.getOrLoad(key, loader)`
+over the classic `cache.get(key) ?? fetch()` pattern. The `getOrLoad`
+method keeps a `Map<K, Promise<V | null>>` of in-flight loads keyed by
+cache key; the second concurrent miss finds the pending promise and awaits
+the same underlying Notion call instead of racing on its own loader.
+Rejected loaders clear the pending slot so the next caller retries rather
+than observing a poisoned miss.
+
 - `ProjectService.create` invalidates by name; `archive` clears the whole
   name cache (archive flips `status` on cached objects and we don't track
   the id → name reverse mapping).
