@@ -425,6 +425,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
               m.source,
               m.kind !== "note" ? m.kind : null,
               m.status !== "informational" ? m.status : null,
+              m.tags.length > 0 ? m.tags.join(", ") : null,
               m.updatedAt.split("T")[0],
             ]
               .filter(Boolean)

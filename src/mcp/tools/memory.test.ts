@@ -472,6 +472,113 @@ describe("lore-recall content-off default", () => {
   })
 })
 
+describe("lore-recall tag rendering", () => {
+  // Post-P1-01, each row is title + meta only — tags are load-bearing for
+  // triage and must surface in the meta line. Mirrors lore-search's shape so
+  // agents parse one pattern across both tools.
+  it("renders tags in the meta line for a tagged memory", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "OAuth flow notes",
+          tags: ["oauth", "auth"],
+        }),
+      ],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("oauth, auth")
+    // Tags sit between status and date in the meta pipe chain.
+    expect(text).toMatch(/\*manual \| oauth, auth \| 2026-04-20\*/)
+  })
+
+  it("omits the tag slot entirely for an untagged memory (no empty slot, no trailing pipe)", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [makeMemory("mem-1", { title: "Untagged note", tags: [] })],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const recall = mockServer.getHandler("lore-recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // No empty slot between source and date, and no trailing pipe before the date.
+    expect(text).toMatch(/\*manual \| 2026-04-20\*/)
+    expect(text).not.toMatch(/\|\s*\|/)
+    expect(text).not.toMatch(/\|\s*\*/)
+  })
+
+  it("emits identical meta ordering to lore-search for the same memory", async () => {
+    // Symmetry guard: if someone re-orders one renderer and not the other,
+    // this test fails. The meta contract is shared across the two tools.
+    const tagged = makeMemory("mem-1", {
+      title: "Shared shape",
+      source: "manual",
+      kind: "decision",
+      status: "accepted",
+      tags: ["oauth", "auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+
+    const recallServer = createMockServer()
+    registerMemoryTools(recallServer.server, {
+      topics: { findByName: vi.fn() },
+      memories: { list: vi.fn().mockResolvedValue({ items: [tagged] }) },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    } as never)
+    const recall = recallServer.getHandler("lore-recall")
+
+    const searchServer = createMockServer()
+    registerMemoryTools(searchServer.server, {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn().mockResolvedValue([tagged]),
+        list: vi.fn(),
+      },
+      context: { project: null },
+    } as never)
+    const search = searchServer.getHandler("lore-search")
+
+    const recallResult = await recall({} as never)
+    const searchResult = await search({ query: "anything" } as never)
+
+    const recallText = (recallResult as { content: Array<{ text: string }> }).content[0].text
+    const searchText = (searchResult as { content: Array<{ text: string }> }).content[0].text
+
+    // Extract the italicized meta line from each. Both renderers wrap meta in *…*.
+    const metaPattern = /\*([^*]+)\*/
+    const recallMeta = recallText.match(metaPattern)?.[1]
+    const searchMeta = searchText.match(metaPattern)?.[1]
+
+    expect(recallMeta).toBe("manual | decision | accepted | oauth, auth | 2026-04-20")
+    expect(searchMeta).toBe(recallMeta)
+  })
+})
+
 describe("lore-search content-off default", () => {
   it("passes includeContent: false to the service by default", async () => {
     const mockServer = createMockServer()
