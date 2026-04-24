@@ -198,6 +198,47 @@ replaced the earlier `queryBySubject("")` full-scan in `loadWakeUpData`,
 which paginated the entire project fact table on every hook fire just to
 populate two bounded sections.
 
+## Fact Write-Side Dedup
+
+`FactService.create()` and `createWithDedup()` both probe the `DedupKey`
+column before writing. The key is a SHA-256 hash over
+`normalize(subject) ␟ predicate ␟ normalize(object)` — see
+`src/notion/normalize.ts`. Normalization folds case, whitespace, trailing
+sentence-terminator punctuation, and Unicode NFC so cosmetic variants
+resolve to one row. Hashing keeps the stored key at 64 chars regardless
+of triple length, sidestepping Notion's 2000-char `rich_text` truncation.
+
+- **Live match** → merge incoming metadata onto the existing row:
+  - Extend `Review By` when the new request has a later date.
+  - Union `projectIds` into `Project` (cross-project facts accumulate).
+  - Link `sourceMemoryId` into `Source` only when the existing row is
+    orphaned (first-writer-wins — does not clobber an earlier provenance
+    link).
+  Returns `{ deduped: true, enriched: [...] }` where `enriched` names the
+  fields that were mutated. An empty `enriched` array means the probe
+  matched but nothing new was added — callers should render "matched,
+  no-op" instead of implying a write.
+- **Invalidated match** (`Valid Until` set) → deliberately ignored; the
+  caller writes a fresh live row so history stays intact when a triple is
+  re-asserted after correction.
+- **Probe failure** → fall through to blind create with a once-per-process
+  stderr warning (pre-migration vaults or transient Notion errors don't
+  spam stderr on every autosave). The next
+  `lore migrate --dedup-keys --merge` collapses the duplicate.
+
+**Concurrency**: Notion has no unique index or conditional-write primitive.
+Two callers racing on the same triple (cross-process, or intra-process
+back-to-back autosaves — Notion's query index is eventually consistent by
+a few hundred ms) can both see an empty probe. The
+`lore migrate --dedup-keys --merge` pass is the authoritative collapse for
+any duplicates that slip through. The pass prints the survivor/loser plan
+by default; `--yes` is required to execute.
+
+**Rule**: Callers that need to tell the user "this was a dedup, not a new
+row" (e.g. `lore-learn`) should use `createWithDedup()` and inspect the
+`deduped` and `enriched` fields. `create()` is preserved for callers that
+don't care (decision-graph reachability sync, `decided_by` auto-links).
+
 ## Decision Service
 
 `DecisionService` wraps the decision-specific read/write paths in the Memories

@@ -175,6 +175,16 @@ describe("lore-learn sourceMemoryId discipline", () => {
             sourceMemoryId: input.sourceMemoryId ?? null,
           })
         ),
+        createWithDedup: vi.fn().mockImplementation(async (input) => ({
+          fact: makeFact("fact-created", {
+            subject: input.subject,
+            predicate: input.predicate,
+            object: input.object,
+            sourceMemoryId: input.sourceMemoryId ?? null,
+          }),
+          deduped: false,
+          enriched: [],
+        })),
         queryByEntity: vi.fn(),
         queryByObject: vi.fn(),
       },
@@ -210,7 +220,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(payload.content[0].text).toContain("WARNING")
     expect(payload.content[0].text).toContain("sourceMemoryId")
     // Fact IS created; we're warning, not refusing.
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: undefined })
     )
   })
@@ -232,7 +242,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(payload.isError).toBeFalsy()
     expect(payload.content[0].text).toContain("Source: mem-explicit")
     expect(payload.content[0].text).not.toContain("WARNING")
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-explicit" })
     )
   })
@@ -269,7 +279,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(payload.isError).toBeFalsy()
     expect(payload.content[0].text).toContain("auto-linked from session")
     expect(payload.content[0].text).toContain("mem-from-session")
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-from-session" })
     )
   })
@@ -296,7 +306,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       sourceMemoryId: "mem-explicit",
     } as never)
 
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-explicit" })
     )
   })
@@ -338,7 +348,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(payload.content[0].text).toContain("Declined auto-link")
     expect(payload.content[0].text).toContain("different project")
     expect(payload.content[0].text).toContain("WARNING")
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: undefined })
     )
   })
@@ -368,7 +378,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
     expect(payload.content[0].text).toContain("auto-linked from session")
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-ios" })
     )
   })
@@ -401,7 +411,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
     expect(payload.content[0].text).toContain("auto-linked from session")
-    expect(services.facts.create).toHaveBeenCalledWith(
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-global" })
     )
   })
@@ -428,7 +438,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
     expect(payload.isError).toBeFalsy()
     expect(payload.content[0].text).toContain("WARNING")
-    expect(services.facts.create).toHaveBeenCalled()
+    expect(services.facts.createWithDedup).toHaveBeenCalled()
   })
 })
 

@@ -31,6 +31,18 @@ export const migrateCommand = new Command("migrate")
     "--apply",
     "When combined with --backfill-fact-sources, write the proposed Source relations. Assumes a quiet window with no concurrent autosave: the write is not safely re-runnable if new memories land between runs — matches can shift."
   )
+  .option(
+    "--dedup-keys",
+    "Backfill the DedupKey column on every fact. Auto-runs schema migration first."
+  )
+  .option(
+    "--merge",
+    "With --dedup-keys, show the survivor/loser plan for collapsing live duplicate triples. Re-run with --yes to execute."
+  )
+  .option(
+    "--yes",
+    "Execute the --merge plan (otherwise --merge is plan-only)."
+  )
   .action(
     async (opts: {
       dryRun?: boolean
@@ -40,8 +52,25 @@ export const migrateCommand = new Command("migrate")
       tags?: boolean
       backfillFactSources?: boolean
       apply?: boolean
+      dedupKeys?: boolean
+      merge?: boolean
+      yes?: boolean
     }) => {
       try {
+        // Validate flag combinations BEFORE running the schema migration so
+        // a misuse (e.g. `--merge` without `--dedup-keys`) does not leave
+        // the vault half-migrated.
+        if (opts.merge && !opts.dedupKeys) {
+          console.error(
+            "--merge requires --dedup-keys. Re-run with `--dedup-keys --merge` to collapse duplicate triples."
+          )
+          process.exit(1)
+        }
+        if (opts.yes && !opts.merge) {
+          console.error("--yes only applies together with --merge.")
+          process.exit(1)
+        }
+
         const services = await initServices()
 
         // When `--upgrade-decision-tags` is combined with `--dry-run`, we still
@@ -159,7 +188,8 @@ export const migrateCommand = new Command("migrate")
           duplicateTopics.length === 0 &&
           encodedTopics.length === 0 &&
           !opts.upgradeDecisionTags &&
-          !opts.tags
+          !opts.tags &&
+          !opts.dedupKeys
         ) {
           console.log("Vault schema is up to date. Nothing to migrate.")
         }
@@ -195,6 +225,54 @@ export const migrateCommand = new Command("migrate")
             )
           } else {
             await migrateOutOfVocabTags(services, { dryRun: opts.dryRun })
+          }
+        }
+
+        if (opts.dedupKeys) {
+          const result = await services.facts.backfillDedupKeys({
+            merge: opts.merge,
+            dryRun: opts.dryRun,
+            yes: opts.yes,
+          })
+          const dedupVerb = opts.dryRun ? "Would backfill" : "Backfilled"
+          console.log(
+            `\n${dedupVerb} DedupKey on ${result.backfilled} fact${result.backfilled === 1 ? "" : "s"} (${result.skipped} already up to date).`
+          )
+          if (opts.merge) {
+            const plannedLosers = result.plans.reduce(
+              (n, p) => n + p.loserIds.length,
+              0
+            )
+            const headerVerb = opts.dryRun
+              ? "Would merge"
+              : result.mergePreviewOnly
+                ? "Proposed merge"
+                : "Merged"
+            console.log(
+              `${headerVerb} ${result.mergedGroups} duplicate group${result.mergedGroups === 1 ? "" : "s"}; ${result.mergePreviewOnly || opts.dryRun ? "would invalidate" : "invalidated"} ${result.mergePreviewOnly ? plannedLosers : result.invalidated} loser${(result.mergePreviewOnly ? plannedLosers : result.invalidated) === 1 ? "" : "s"}.`
+            )
+            // Preview table — capped at 10 rows so a vault with hundreds of
+            // duplicates doesn't flood the terminal. The full plan is the
+            // return value for anyone scripting against this.
+            const PREVIEW_LIMIT = 10
+            for (const plan of result.plans.slice(0, PREVIEW_LIMIT)) {
+              console.log(
+                `  "${plan.triple.subject}" ${plan.triple.predicate} "${plan.triple.object}"`
+              )
+              console.log(
+                `    survivor: ${plan.survivorId} | invalidate: ${plan.loserIds.join(", ")}`
+              )
+            }
+            if (result.plans.length > PREVIEW_LIMIT) {
+              console.log(
+                `  … and ${result.plans.length - PREVIEW_LIMIT} more groups.`
+              )
+            }
+            if (result.mergePreviewOnly && result.mergedGroups > 0) {
+              console.log(
+                "\nPlan only — no invalidations written. Re-run with `--yes` to execute."
+              )
+            }
           }
         }
 

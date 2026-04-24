@@ -268,6 +268,11 @@ export function factsProperties(
         ],
       },
     },
+    // Normalized `subject␟predicate␟object` key used by `FactService.create`
+    // to coalesce cosmetic duplicates (case, whitespace, trailing punctuation)
+    // into a single row. Pre-migration pages have this blank; the migrate
+    // command backfills it.
+    DedupKey: { rich_text: {} },
   }
 }
 
@@ -405,6 +410,7 @@ export function buildFactProps(input: {
   reviewBy?: string
   sourceMemoryId?: string
   confidence?: string
+  dedupKey?: string
 }): PageProperties {
   const props: PageProperties = {
     Subject: { title: [{ text: { content: input.subject } }] },
@@ -425,6 +431,9 @@ export function buildFactProps(input: {
   }
   if (input.confidence) {
     props["Confidence"] = { select: { name: input.confidence } }
+  }
+  if (input.dedupKey) {
+    props["DedupKey"] = { rich_text: [{ text: { content: input.dedupKey } }] }
   }
   return props
 }

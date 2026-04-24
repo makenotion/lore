@@ -17,6 +17,12 @@ import type {
 import { TRACKING_PREDICATES } from "../types.js"
 import { buildFactProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
+import { computeFactDedupKey } from "../notion/normalize.js"
+import {
+  runFactDedupBackfill,
+  type FactDedupBackfillResult,
+  type FactDedupOptions,
+} from "./fact-dedup.js"
 import {
   isFullPage,
   extractTitle,
@@ -58,6 +64,46 @@ type ListRecentOpts = {
 /** Notion's hard ceiling on `page_size`. */
 const NOTION_MAX_PAGE_SIZE = 100
 
+/**
+ * A created-or-deduped fact. `deduped === true` means the write was absorbed
+ * into an existing live row (same normalized triple) and the caller should
+ * surface that to the user instead of silently returning a stale-looking ID.
+ *
+ * `enriched` lists the metadata fields that were merged onto the existing row
+ * on dedup hit — projects union'd, source memory linked, review extended.
+ * Empty when the probe missed (fresh row) or hit with nothing new to add.
+ * Exposed so `lore-learn` can tell the agent "this wasn't a no-op, we
+ * attached your session to the pre-existing fact."
+ */
+export interface CreateFactResult {
+  fact: Fact
+  deduped: boolean
+  enriched: string[]
+}
+
+/**
+ * On a pre-migration vault every `lore-learn` probe fails with the same
+ * "DedupKey column missing" error. Autosave fires every 5 messages, so
+ * logging per-probe turns the MCP server's stderr into a firehose. The
+ * fix is guaranteed by `lore migrate`, so we warn once per process and
+ * then stay quiet.
+ */
+let probeFailureLogged = false
+function logProbeFailureOnce(err: unknown): void {
+  if (probeFailureLogged) return
+  probeFailureLogged = true
+  console.error(
+    "[lore] Fact dedup probe failed, falling back to blind create. " +
+      "Run `lore migrate` to add the DedupKey column. Underlying error:",
+    err instanceof Error ? err.message : err
+  )
+}
+
+/** Reset between tests. Not exported on the public API surface. */
+export function __resetProbeFailureLogForTests(): void {
+  probeFailureLogged = false
+}
+
 export class FactService {
   constructor(
     private client: Client,
@@ -65,11 +111,69 @@ export class FactService {
   ) {}
 
   async create(input: CreateFactInput): Promise<Fact> {
+    const { fact } = await this.createWithDedup(input)
+    return fact
+  }
+
+  /**
+   * Create a fact with write-side deduplication.
+   *
+   * Probes for a live (Valid Until IS NULL) row with the same normalized
+   * triple via the `DedupKey` column before writing. On hit, merges the
+   * new call's metadata onto the existing row and returns it with
+   * `deduped: true`:
+   *
+   * - `reviewBy` replaces the existing value when newer (extend runway).
+   * - `projectIds` are unioned into `Project` (a fact learned from project Y
+   *   that already exists on X becomes scoped to both).
+   * - `sourceMemoryId` fills `Source` only when the existing row is
+   *   orphaned (first-writer-wins — preserves the "no orphan facts"
+   *   contract without clobbering an earlier provenance link).
+   *
+   * The set of mutations is returned in `enriched` so `lore-learn` can
+   * surface them; "deduped" without enrichment means "matched, nothing new
+   * to merge."
+   *
+   * On miss — or on probe failure — falls through to a plain create with
+   * the dedup key attached. Cost: one extra `dataSources.query` per write
+   * on cold miss, which is cheaper than the eventual `lore-ask` /
+   * wake-up tax from duplicates.
+   *
+   * Concurrency: Notion has no unique-index or conditional-write primitive,
+   * so two concurrent writers with the same triple can both see an empty
+   * probe and both create rows. This applies to both cross-process callers
+   * and intra-process back-to-back autosaves (Notion's query index is
+   * eventually consistent by a few hundred ms). The
+   * `lore migrate --dedup-keys --merge` pass is the authoritative collapse
+   * path for any duplicates that slip through.
+   */
+  async createWithDedup(input: CreateFactInput): Promise<CreateFactResult> {
     let reviewBy = input.reviewBy
     if (!reviewBy && TRACKING_PREDICATES.includes(input.predicate)) {
       const d = new Date()
       d.setDate(d.getDate() + 7)
       reviewBy = d.toISOString().split("T")[0]
+    }
+
+    const dedupKey = computeFactDedupKey({
+      subject: input.subject,
+      predicate: input.predicate,
+      object: input.object,
+    })
+
+    const existing = await this.findLiveByDedupKey(dedupKey).catch((err) => {
+      // Probe failure (e.g. transient network blip, or a pre-migration vault
+      // that still lacks the DedupKey column) must not block the write. Log
+      // once per process and fall through to the blind-create path —
+      // worst case we create a duplicate the next migrate pass will
+      // collapse.
+      logProbeFailureOnce(err)
+      return null
+    })
+
+    if (existing) {
+      const enriched = await this.mergeOntoExisting(existing, input, reviewBy)
+      return { fact: existing, deduped: true, enriched }
     }
 
     const page = await this.client.pages.create({
@@ -83,10 +187,92 @@ export class FactService {
         reviewBy,
         sourceMemoryId: input.sourceMemoryId,
         confidence: input.confidence ?? "certain",
+        dedupKey,
       }),
     })
 
-    return this.pageToFact(page as PageObjectResponse)
+    return {
+      fact: this.pageToFact(page as PageObjectResponse),
+      deduped: false,
+      enriched: [],
+    }
+  }
+
+  /**
+   * Merge an incoming `CreateFactInput` onto a deduped existing row.
+   * Writes are issued lazily — a no-op call (same review, projects already
+   * linked, source already set) issues zero API calls and returns `[]`.
+   * Mutates `existing` in place so the returned fact reflects the new state.
+   */
+  private async mergeOntoExisting(
+    existing: Fact,
+    input: CreateFactInput,
+    reviewBy: string | undefined
+  ): Promise<string[]> {
+    const enriched: string[] = []
+
+    if (reviewBy && reviewBy !== existing.reviewBy) {
+      await this.extendReview(existing.id, reviewBy)
+      existing.reviewBy = reviewBy
+      enriched.push(`extended review to ${reviewBy}`)
+    }
+
+    const missingProjectIds = (input.projectIds ?? []).filter(
+      (id) => !existing.projectIds.includes(id)
+    )
+    if (missingProjectIds.length > 0) {
+      const merged = [...existing.projectIds, ...missingProjectIds]
+      await this.client.pages.update({
+        page_id: existing.id,
+        properties: {
+          Project: { relation: merged.map((id) => ({ id })) },
+        },
+      })
+      existing.projectIds = merged
+      enriched.push(
+        `added ${missingProjectIds.length} project${missingProjectIds.length === 1 ? "" : "s"}`
+      )
+    }
+
+    // First-writer-wins on Source: if the existing row already has a
+    // source memory we don't clobber it (PR #44's "no orphans" contract
+    // only cares about filling the gap, not re-pointing a linked row).
+    if (!existing.sourceMemoryId && input.sourceMemoryId) {
+      await this.client.pages.update({
+        page_id: existing.id,
+        properties: {
+          Source: { relation: [{ id: input.sourceMemoryId }] },
+        },
+      })
+      existing.sourceMemoryId = input.sourceMemoryId
+      enriched.push("linked source memory")
+    }
+
+    return enriched
+  }
+
+  /**
+   * Look up a live fact (Valid Until IS NULL) by normalized dedup key.
+   * Returns `null` when no live match exists. Invalidated rows with the
+   * same key are deliberately ignored so history stays intact and the
+   * caller writes a fresh live row when a triple is re-asserted after
+   * correction.
+   */
+  private async findLiveByDedupKey(dedupKey: string): Promise<Fact | null> {
+    const response = await this.client.dataSources.query({
+      data_source_id: this.db.dataSourceId,
+      filter: {
+        and: [
+          { property: "DedupKey", rich_text: { equals: dedupKey } },
+          { property: "Valid Until", date: { is_empty: true } },
+        ],
+      } as QueryDataSourceParameters["filter"],
+      page_size: 1,
+    })
+
+    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    if (pages.length === 0) return null
+    return this.pageToFact(pages[0])
   }
 
   async queryBySubject(
@@ -440,6 +626,17 @@ export class FactService {
         Source: { relation: [{ id: sourceMemoryId }] },
       },
     })
+  }
+
+  /**
+   * Run the DedupKey backfill / merge pass against this service's Facts DB.
+   * Thin wrapper over the standalone migration function so callers don't
+   * need to reach through the service to grab the raw client + DatabaseRef.
+   */
+  async backfillDedupKeys(
+    options: FactDedupOptions = {}
+  ): Promise<FactDedupBackfillResult> {
+    return runFactDedupBackfill(this.client, this.db, options)
   }
 
   async invalidate(id: string): Promise<void> {

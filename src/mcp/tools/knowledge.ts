@@ -133,7 +133,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           }
         }
 
-        const fact = await services.facts.create({
+        const { fact, deduped, enriched } = await services.facts.createWithDedup({
           subject,
           predicate,
           object,
@@ -143,8 +143,17 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           sourceMemoryId: effectiveSource,
         })
 
+        // "Learned" — new row. "Enriched" — dedup hit with metadata merged
+        // (projects unioned, source linked, review extended). "Matched" —
+        // dedup hit that was a genuine no-op, so the agent knows nothing
+        // changed even though the ID survived.
+        const verb = !deduped
+          ? "Learned"
+          : enriched.length > 0
+            ? "Enriched existing fact"
+            : "Matched existing fact"
         const lines = [
-          `Learned: "${fact.subject}" ${fact.predicate.replace(/_/g, " ")} "${fact.object}" (${fact.confidence}) — ID: ${fact.id}`,
+          `${verb}: "${fact.subject}" ${fact.predicate.replace(/_/g, " ")} "${fact.object}" (${fact.confidence}) — ID: ${fact.id}`,
         ]
         if (fact.reviewBy) {
           lines.push(`Review by: ${fact.reviewBy}`)
@@ -167,6 +176,9 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
               "matching an earlier `lore-remember`/`lore-decide` call for auto-link. This becomes a " +
               "hard error in a future release."
           )
+        }
+        if (enriched.length > 0) {
+          lines.push(`Merged: ${enriched.join("; ")}`)
         }
         if (toolWarnings.length > 0) {
           lines.push(`Warnings: ${toolWarnings.join("; ")}`)

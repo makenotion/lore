@@ -1,11 +1,116 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi, beforeEach } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { FactService } from "./fact.js"
-import { TRACKING_PREDICATES, type DatabaseRef } from "../types.js"
+import { FactService, __resetProbeFailureLogForTests } from "./fact.js"
+import { normalize, computeFactDedupKey } from "../notion/normalize.js"
+import {
+  TRACKING_PREDICATES,
+  type DatabaseRef,
+  type FactPredicate,
+} from "../types.js"
 
-const db: DatabaseRef = {
+const DB: DatabaseRef = {
   databaseId: "facts-db",
   dataSourceId: "facts-ds",
+}
+
+// Alias: HEAD's listRecent tests reference `db`; keep both names pointing at
+// the same value so neither test block needs rewriting during the merge.
+const db = DB
+
+/**
+ * Build a synthetic fact page with just the properties the service reads.
+ * Missing columns default via the extractors, which mirrors a pre-migration
+ * fact row that never had a `DedupKey`.
+ */
+function factPage(overrides: {
+  id?: string
+  subject?: string
+  predicate?: FactPredicate
+  object?: string
+  dedupKey?: string
+  reviewBy?: string | null
+  validUntil?: string | null
+  projectIds?: string[]
+  sourceMemoryId?: string | null
+}): PageObjectResponse {
+  return {
+    object: "page",
+    id: overrides.id ?? "fact-id",
+    created_time: "2026-01-01T00:00:00.000Z",
+    last_edited_time: "2026-02-01T00:00:00.000Z",
+    archived: false,
+    url: `https://notion.so/${overrides.id ?? "fact-id"}`,
+    parent: { type: "database_id", database_id: "facts-db" },
+    properties: {
+      Subject: {
+        type: "title",
+        title: [{ plain_text: overrides.subject ?? "Sub" }],
+      } as unknown,
+      Predicate: {
+        type: "select",
+        select: { name: overrides.predicate ?? "uses" },
+      } as unknown,
+      Object: {
+        type: "rich_text",
+        rich_text: [{ plain_text: overrides.object ?? "Obj" }],
+      } as unknown,
+      Project: {
+        type: "relation",
+        relation: (overrides.projectIds ?? []).map((id) => ({ id })),
+      } as unknown,
+      "Valid From": {
+        type: "date",
+        date: { start: "2026-01-01" },
+      } as unknown,
+      "Valid Until":
+        overrides.validUntil !== undefined
+          ? ({
+              type: "date",
+              date: overrides.validUntil
+                ? { start: overrides.validUntil }
+                : null,
+            } as unknown)
+          : ({ type: "date", date: null } as unknown),
+      "Review By":
+        overrides.reviewBy !== undefined
+          ? ({
+              type: "date",
+              date: overrides.reviewBy
+                ? { start: overrides.reviewBy }
+                : null,
+            } as unknown)
+          : ({ type: "date", date: null } as unknown),
+      Source: {
+        type: "relation",
+        relation: overrides.sourceMemoryId
+          ? [{ id: overrides.sourceMemoryId }]
+          : [],
+      } as unknown,
+      Confidence: {
+        type: "select",
+        select: { name: "certain" },
+      } as unknown,
+      DedupKey: {
+        type: "rich_text",
+        rich_text: overrides.dedupKey
+          ? [{ plain_text: overrides.dedupKey }]
+          : [],
+      } as unknown,
+    } as PageObjectResponse["properties"],
+  } as PageObjectResponse
+}
+
+function createMockClient() {
+  return {
+    dataSources: { query: vi.fn() },
+    pages: { create: vi.fn(), update: vi.fn() },
+  } as unknown as Client & {
+    dataSources: { query: ReturnType<typeof vi.fn> }
+    pages: {
+      create: ReturnType<typeof vi.fn>
+      update: ReturnType<typeof vi.fn>
+    }
+  }
 }
 
 function buildFactPage(overrides: Partial<PageObjectResponse> = {}): PageObjectResponse {
@@ -171,5 +276,461 @@ describe("FactService.listRecent", () => {
       (c) => (c as { property?: string }).property === "Valid Until",
     )
     expect(hasValidUntil).toBe(false)
+  })
+})
+
+describe("normalize", () => {
+  it("collapses case, whitespace, and trailing punctuation", () => {
+    expect(normalize("Foo")).toBe(normalize("foo"))
+    expect(normalize(" Foo ")).toBe(normalize("foo"))
+    expect(normalize("Foo  bar")).toBe(normalize("foo bar"))
+    expect(normalize("Foo.")).toBe(normalize("Foo"))
+    expect(normalize("Foo!!")).toBe(normalize("foo"))
+  })
+
+  it("preserves embedded punctuation", () => {
+    expect(normalize("file.ts")).toBe("file.ts")
+    expect(normalize("a-b_c")).toBe("a-b_c")
+  })
+
+  it("folds Unicode NFC vs NFD to the same form", () => {
+    const nfc = "café" // precomposed é
+    const nfd = "café" // e + combining acute
+    expect(nfc).not.toBe(nfd)
+    expect(normalize(nfc)).toBe(normalize(nfd))
+  })
+
+  it("preserves trailing closing brackets", () => {
+    // Strip is limited to sentence terminators + whitespace so balanced
+    // punctuation survives intact. Pinned so a future regex widening
+    // (e.g. back to `\p{P}`) can't silently change dedup grouping.
+    expect(normalize("foo (bar)")).toBe("foo (bar)")
+    expect(normalize("module.ts")).toBe("module.ts")
+    expect(normalize("Foo.bar.")).toBe("foo.bar")
+  })
+})
+
+describe("computeFactDedupKey", () => {
+  it("produces identical keys for cosmetically different triples", () => {
+    const a = computeFactDedupKey({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    })
+    const b = computeFactDedupKey({
+      subject: " authservice ",
+      predicate: "uses",
+      object: "jwt.",
+    })
+    expect(a).toBe(b)
+  })
+
+  it("distinguishes triples that move content across fields", () => {
+    const a = computeFactDedupKey({
+      subject: "a b",
+      predicate: "uses",
+      object: "c",
+    })
+    const b = computeFactDedupKey({
+      subject: "a",
+      predicate: "uses",
+      object: "b c",
+    })
+    expect(a).not.toBe(b)
+  })
+
+  it("returns a fixed-length 64-char hex digest regardless of input size", () => {
+    const short = computeFactDedupKey({
+      subject: "a",
+      predicate: "uses",
+      object: "b",
+    })
+    const long = computeFactDedupKey({
+      subject: "x".repeat(3000),
+      predicate: "uses",
+      object: "y".repeat(3000),
+    })
+    expect(short).toMatch(/^[0-9a-f]{64}$/)
+    expect(long).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe("FactService.createWithDedup", () => {
+  let client: ReturnType<typeof createMockClient>
+  let service: FactService
+
+  beforeEach(() => {
+    client = createMockClient()
+    service = new FactService(client, DB)
+  })
+
+  it("writes a new fact with DedupKey when no match exists", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      factPage({
+        id: "new-fact",
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+      })
+    )
+
+    const result = await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    })
+
+    expect(result.deduped).toBe(false)
+    expect(result.fact.id).toBe("new-fact")
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    const createCall = client.pages.create.mock.calls[0][0]
+    const dedupProp = createCall.properties.DedupKey
+    expect(dedupProp.rich_text[0].text.content).toBe(
+      computeFactDedupKey({
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+      })
+    )
+  })
+
+  it("unions missing projectIds into the existing row and flags enrichment", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          projectIds: ["proj-x"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x", "proj-y"],
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toContain("added 1 project")
+    expect(result.fact.projectIds).toEqual(["proj-x", "proj-y"])
+    const projectUpdate = client.pages.update.mock.calls.find(
+      (c: Array<{ properties?: { Project?: unknown } }>) =>
+        c[0].properties && c[0].properties.Project
+    )
+    if (!projectUpdate) throw new Error("expected a Project update call")
+    expect(projectUpdate[0].properties.Project.relation).toEqual([
+      { id: "proj-x" },
+      { id: "proj-y" },
+    ])
+  })
+
+  it("does not re-write Project when all requested projectIds already link", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          projectIds: ["proj-x", "proj-y"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x"],
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    const projectUpdate = client.pages.update.mock.calls.find(
+      (c: Array<{ properties?: { Project?: unknown } }>) =>
+        c[0].properties && c[0].properties.Project
+    )
+    expect(projectUpdate).toBeUndefined()
+  })
+
+  it("links sourceMemoryId on an orphaned existing row (first-writer-wins)", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "orphan",
+          sourceMemoryId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      sourceMemoryId: "mem-new",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toContain("linked source memory")
+    expect(result.fact.sourceMemoryId).toBe("mem-new")
+    const sourceUpdate = client.pages.update.mock.calls.find(
+      (c: Array<{ properties?: { Source?: unknown } }>) =>
+        c[0].properties && c[0].properties.Source
+    )
+    if (!sourceUpdate) throw new Error("expected a Source update call")
+    expect(sourceUpdate[0].properties.Source.relation).toEqual([
+      { id: "mem-new" },
+    ])
+  })
+
+  it("preserves an existing sourceMemoryId (first-writer-wins, no clobber)", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "sourced",
+          sourceMemoryId: "mem-original",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      sourceMemoryId: "mem-new",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).not.toContain("linked source memory")
+    expect(result.fact.sourceMemoryId).toBe("mem-original")
+    const sourceUpdate = client.pages.update.mock.calls.find(
+      (c: Array<{ properties?: { Source?: unknown } }>) =>
+        c[0].properties && c[0].properties.Source
+    )
+    expect(sourceUpdate).toBeUndefined()
+  })
+
+  it("extends existing fact's Review By and returns deduped when live match exists", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          subject: "AuthService",
+          predicate: "uses",
+          object: "JWT",
+          reviewBy: "2026-04-01",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: " authservice ",
+      predicate: "uses",
+      object: "jwt.",
+      reviewBy: "2026-05-01",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toContain("extended review to 2026-05-01")
+    expect(result.fact.id).toBe("live-fact")
+    expect(result.fact.reviewBy).toBe("2026-05-01")
+    expect(client.pages.create).not.toHaveBeenCalled()
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "live-fact",
+      properties: {
+        "Review By": { date: { start: "2026-05-01" } },
+      },
+    })
+  })
+
+  it("skips the extend write when the incoming review date matches existing", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          subject: "AuthService",
+          predicate: "uses",
+          object: "JWT",
+          reviewBy: "2026-04-01",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      reviewBy: "2026-04-01",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("writes a new fact when only invalidated matches exist", async () => {
+    // Probe filters on Valid Until is_empty, so invalidated rows are not
+    // returned — the service sees an empty result and creates a fresh row.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      factPage({ id: "new-fact" })
+    )
+
+    const result = await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    })
+
+    expect(result.deduped).toBe(false)
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+  })
+
+  it("falls back to blind create when the dedup probe throws", async () => {
+    __resetProbeFailureLogForTests()
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    client.dataSources.query.mockRejectedValueOnce(
+      new Error("transient API error")
+    )
+    client.pages.create.mockResolvedValueOnce(
+      factPage({ id: "fallback-fact" })
+    )
+
+    const result = await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    })
+
+    expect(result.deduped).toBe(false)
+    expect(result.fact.id).toBe("fallback-fact")
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    expect(errSpy).toHaveBeenCalledTimes(1)
+    errSpy.mockRestore()
+  })
+
+  it("logs probe failures at most once per process", async () => {
+    __resetProbeFailureLogForTests()
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    client.dataSources.query.mockRejectedValue(
+      new Error("Could not find property 'DedupKey'")
+    )
+    client.pages.create.mockResolvedValue(factPage({ id: "f" }))
+
+    await service.createWithDedup({
+      subject: "a",
+      predicate: "uses",
+      object: "b",
+    })
+    await service.createWithDedup({
+      subject: "a",
+      predicate: "uses",
+      object: "b",
+    })
+    await service.createWithDedup({
+      subject: "c",
+      predicate: "uses",
+      object: "d",
+    })
+
+    // Once across three probe failures — pre-migration vaults don't spam
+    // stderr on every autosave.
+    expect(errSpy).toHaveBeenCalledTimes(1)
+    errSpy.mockRestore()
+  })
+
+  it("applies default 7-day review window for tracking predicates on miss", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      factPage({ id: "new-fact", predicate: "needs_action" })
+    )
+
+    await service.createWithDedup({
+      subject: "Foo",
+      predicate: "needs_action",
+      object: "Handle edge case",
+    })
+
+    const createCall = client.pages.create.mock.calls[0][0]
+    const reviewByProp = createCall.properties["Review By"]
+    expect(reviewByProp.date.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it("queries with an equals filter on DedupKey and is_empty on Valid Until", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(factPage({ id: "new" }))
+
+    await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+    })
+
+    const queryCall = client.dataSources.query.mock.calls[0][0]
+    expect(queryCall.data_source_id).toBe("facts-ds")
+    expect(queryCall.page_size).toBe(1)
+    expect(queryCall.filter).toEqual({
+      and: [
+        {
+          property: "DedupKey",
+          rich_text: {
+            equals: computeFactDedupKey({
+              subject: "AuthService",
+              predicate: "uses",
+              object: "JWT",
+            }),
+          },
+        },
+        { property: "Valid Until", date: { is_empty: true } },
+      ],
+    })
+  })
+})
+
+describe("FactService.create (default path)", () => {
+  it("returns only the Fact so callers relying on the old signature still work", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(factPage({ id: "f1" }))
+    const service = new FactService(client, DB)
+
+    const fact = await service.create({
+      subject: "a",
+      predicate: "uses",
+      object: "b",
+    })
+
+    expect(fact.id).toBe("f1")
   })
 })
