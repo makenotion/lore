@@ -6,7 +6,11 @@
  */
 
 import type { Client } from "@notionhq/client"
-import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
+import type {
+  PageObjectResponse,
+  QueryDataSourceParameters,
+  UpdatePageParameters,
+} from "@notionhq/client"
 import type {
   Fact,
   CreateFactInput,
@@ -199,54 +203,87 @@ export class FactService {
   }
 
   /**
-   * Merge an incoming `CreateFactInput` onto a deduped existing row.
-   * Writes are issued lazily — a no-op call (same review, projects already
+   * Merge an incoming `CreateFactInput` onto a deduped existing row via a
+   * single atomic `pages.update` that touches only the properties which
+   * actually need mutation. A no-op call (same review, projects already
    * linked, source already set) issues zero API calls and returns `[]`.
    * Mutates `existing` in place so the returned fact reflects the new state.
+   *
+   * One request instead of three serial writes halves round-trip cost on
+   * full-enrichment hits and eliminates the intermediate "2 of 3 written"
+   * state the old sequential path could leave behind on failure —
+   * `pages.update` is per-request atomic at the Notion API, so either the
+   * whole properties payload lands or none of it does.
+   *
+   * `enriched[]` order is deterministic: `Review By`, then `Project`, then
+   * `Source`. Previously each string was pushed after its own successful
+   * update so the array reflected Notion confirmation order; after the
+   * collapse, ordering is mechanical. No user-visible change — no
+   * downstream renderer relies on the order — but the test suite does
+   * pin it at `fact.test.ts:737`, so a future refactor that flips the
+   * order must update the fixture. Worth noting so a future reader
+   * doesn't read it as an accidental invariant.
    */
   private async mergeOntoExisting(
     existing: Fact,
     input: CreateFactInput,
     reviewBy: string | undefined
   ): Promise<string[]> {
+    const properties: Record<string, unknown> = {}
     const enriched: string[] = []
 
-    if (reviewBy && reviewBy !== existing.reviewBy) {
-      await this.extendReview(existing.id, reviewBy)
-      existing.reviewBy = reviewBy
-      enriched.push(`extended review to ${reviewBy}`)
-    }
-
+    // Parallel boolean flags for the three mutations. Hoisted so the
+    // post-write mirror block doesn't re-evaluate the same conditions.
+    const extendingReview = Boolean(reviewBy) && reviewBy !== existing.reviewBy
     const missingProjectIds = (input.projectIds ?? []).filter(
       (id) => !existing.projectIds.includes(id)
     )
-    if (missingProjectIds.length > 0) {
-      const merged = [...existing.projectIds, ...missingProjectIds]
-      await this.client.pages.update({
-        page_id: existing.id,
-        properties: {
-          Project: { relation: merged.map((id) => ({ id })) },
-        },
-      })
-      existing.projectIds = merged
+    const mergedProjectIds =
+      missingProjectIds.length > 0
+        ? [...existing.projectIds, ...missingProjectIds]
+        : null
+    // First-writer-wins on Source: if the existing row already has a
+    // source memory we don't clobber it (PR #44's "no orphans" contract
+    // only cares about filling the gap, not re-pointing a linked row).
+    const fillingSource = Boolean(!existing.sourceMemoryId && input.sourceMemoryId)
+
+    if (extendingReview) {
+      properties["Review By"] = { date: { start: reviewBy } }
+      enriched.push(`extended review to ${reviewBy}`)
+    }
+    if (mergedProjectIds) {
+      properties["Project"] = {
+        relation: mergedProjectIds.map((id) => ({ id })),
+      }
       enriched.push(
         `added ${missingProjectIds.length} project${missingProjectIds.length === 1 ? "" : "s"}`
       )
     }
-
-    // First-writer-wins on Source: if the existing row already has a
-    // source memory we don't clobber it (PR #44's "no orphans" contract
-    // only cares about filling the gap, not re-pointing a linked row).
-    if (!existing.sourceMemoryId && input.sourceMemoryId) {
-      await this.client.pages.update({
-        page_id: existing.id,
-        properties: {
-          Source: { relation: [{ id: input.sourceMemoryId }] },
-        },
-      })
-      existing.sourceMemoryId = input.sourceMemoryId
+    if (fillingSource) {
+      properties["Source"] = {
+        relation: [{ id: input.sourceMemoryId }],
+      }
       enriched.push("linked source memory")
     }
+
+    if (Object.keys(properties).length === 0) return []
+
+    // Single atomic write — Notion accepts every mutated property in one
+    // request. On failure the throw propagates; the caller sees no
+    // `enriched` result, matching the old sequential path's error shape.
+    await this.client.pages.update({
+      page_id: existing.id,
+      properties: properties as UpdatePageParameters["properties"],
+    })
+
+    // Mirror the write into the in-memory fact only after the round-trip
+    // succeeds so a throw leaves `existing` untouched.
+    if (extendingReview) existing.reviewBy = reviewBy ?? null
+    if (mergedProjectIds) existing.projectIds = mergedProjectIds
+    // `?? null` is dead at runtime — `fillingSource` truthy implies
+    // `input.sourceMemoryId` is a non-empty string — but required for TS to
+    // narrow `string | undefined` to `Fact.sourceMemoryId: string | null`.
+    if (fillingSource) existing.sourceMemoryId = input.sourceMemoryId ?? null
 
     return enriched
   }

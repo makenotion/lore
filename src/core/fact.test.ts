@@ -421,6 +421,9 @@ describe("FactService.createWithDedup", () => {
     expect(result.deduped).toBe(true)
     expect(result.enriched).toContain("added 1 project")
     expect(result.fact.projectIds).toEqual(["proj-x", "proj-y"])
+    // Atomic merge invariant: partial-enrichment hits ship exactly one
+    // update touching only the affected property.
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
     const projectUpdate = client.pages.update.mock.calls.find(
       (c: Array<{ properties?: { Project?: unknown } }>) =>
         c[0].properties && c[0].properties.Project
@@ -482,6 +485,7 @@ describe("FactService.createWithDedup", () => {
     expect(result.deduped).toBe(true)
     expect(result.enriched).toContain("linked source memory")
     expect(result.fact.sourceMemoryId).toBe("mem-new")
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
     const sourceUpdate = client.pages.update.mock.calls.find(
       (c: Array<{ properties?: { Source?: unknown } }>) =>
         c[0].properties && c[0].properties.Source
@@ -548,6 +552,7 @@ describe("FactService.createWithDedup", () => {
     expect(result.fact.id).toBe("live-fact")
     expect(result.fact.reviewBy).toBe("2026-05-01")
     expect(client.pages.create).not.toHaveBeenCalled()
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
     expect(client.pages.update).toHaveBeenCalledWith({
       page_id: "live-fact",
       properties: {
@@ -711,6 +716,133 @@ describe("FactService.createWithDedup", () => {
         { property: "Valid Until", date: { is_empty: true } },
       ],
     })
+  })
+
+  it("issues exactly one pages.update bundling review, project, and source merges", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          projectIds: ["proj-x"],
+          reviewBy: "2026-04-01",
+          sourceMemoryId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x", "proj-y"],
+      reviewBy: "2026-05-01",
+      sourceMemoryId: "mem-new",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([
+      "extended review to 2026-05-01",
+      "added 1 project",
+      "linked source memory",
+    ])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const [updateCall] = client.pages.update.mock.calls
+    expect(updateCall[0].page_id).toBe("live-fact")
+    expect(updateCall[0].properties).toEqual({
+      "Review By": { date: { start: "2026-05-01" } },
+      Project: { relation: [{ id: "proj-x" }, { id: "proj-y" }] },
+      Source: { relation: [{ id: "mem-new" }] },
+    })
+  })
+
+  it("leaves enriched empty and issues no update when everything is already present", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          projectIds: ["proj-x"],
+          reviewBy: "2026-05-01",
+          sourceMemoryId: "mem-existing",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x"],
+      reviewBy: "2026-05-01",
+      sourceMemoryId: "mem-existing",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("leaves existing in-memory state untouched when the atomic update throws", async () => {
+    // Pin the in-memory rollback invariant: if someone later moves the
+    // `existing.projectIds = ...` / `existing.sourceMemoryId = ...`
+    // mirror assignments back above the `await pages.update`, the
+    // retry below would see mergedProjectIds === null and fillingSource
+    // === false and issue zero updates — which is the failure mode this
+    // test catches. With the assignments correctly placed after the
+    // await, the retry recomputes both and issues a second update with
+    // the same payload as the first attempt.
+    const livePage = factPage({
+      id: "live-fact",
+      projectIds: ["proj-x"],
+      sourceMemoryId: null,
+    })
+    client.dataSources.query.mockResolvedValue({
+      results: [livePage],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.update.mockRejectedValueOnce(new Error("Notion 500"))
+
+    await expect(
+      service.createWithDedup({
+        subject: "Sub",
+        predicate: "uses",
+        object: "Obj",
+        projectIds: ["proj-x", "proj-y"],
+        sourceMemoryId: "mem-new",
+      })
+    ).rejects.toThrow("Notion 500")
+
+    // The caller never sees a half-enriched success — the throw propagates
+    // and `enriched` never enters the caller's view. One update attempt,
+    // no partial state.
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+
+    // Retry: second call's probe returns the same livePage. If the first
+    // attempt had mutated `existing` before the throw, merging the same
+    // projectIds would find them already present and skip the Project
+    // update — so we'd see `enriched` missing the projects entry. The
+    // correct post-throw behaviour is that the second call sees the
+    // pristine pre-write state and produces the full enrichment again.
+    client.pages.update.mockResolvedValueOnce({})
+    const retryResult = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x", "proj-y"],
+      sourceMemoryId: "mem-new",
+    })
+    expect(retryResult.deduped).toBe(true)
+    expect(retryResult.enriched).toEqual([
+      "added 1 project",
+      "linked source memory",
+    ])
+    // One update on the retry — a single atomic payload covering both
+    // properties, identical to the shape the first attempt built.
+    expect(client.pages.update).toHaveBeenCalledTimes(2)
   })
 })
 

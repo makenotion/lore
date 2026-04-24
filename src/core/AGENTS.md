@@ -214,6 +214,11 @@ of triple length, sidestepping Notion's 2000-char `rich_text` truncation.
   - Link `sourceMemoryId` into `Source` only when the existing row is
     orphaned (first-writer-wins — does not clobber an earlier provenance
     link).
+  All applicable mutations ship as a single atomic `pages.update` —
+  Notion's API is per-request atomic, so either every mutated property
+  lands or none does. A zero-mutation match (everything already present)
+  issues no update at all.
+
   Returns `{ deduped: true, enriched: [...] }` where `enriched` names the
   fields that were mutated. An empty `enriched` array means the probe
   matched but nothing new was added — callers should render "matched,
