@@ -159,6 +159,6 @@ text files by extension, and creates one memory per file. Key details:
 - Only indexes files with recognized text extensions (see `TEXT_EXTENSIONS` set)
 - Max file size: 100KB per file
 - Default limit: 50 files per run
-- Each memory is created with source `"file"` and tags `[extension, "mined"]`
+- Each memory is created with source `"file"` and keywords `"<extension> mined <relPath>"` — `tags` is left empty because file extensions are free-form tokens, not part of the closed tag vocabulary
 - Content is wrapped in a markdown code block with the file extension as language
 - Supports `--dry-run` to preview files without creating memories

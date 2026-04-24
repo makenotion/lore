@@ -6,6 +6,71 @@
  */
 
 // ---------------------------------------------------------------------------
+// Tag vocabulary
+// ---------------------------------------------------------------------------
+
+/**
+ * Closed vocabulary of memory tags.
+ *
+ * `Tags` is a taxonomy — a small, stable set of category labels that make
+ * tag-based queries meaningful. Free-form labels (PR numbers, session IDs,
+ * file paths, class names, ticket IDs) belong in `Keywords`, which is
+ * indexed by Notion's text search.
+ *
+ * Curated from a frequency census against the Mail production vault: the
+ * high-signal labels cluster into engineering discipline (`architecture`,
+ * `testing`, `performance`), platform (`ios`, `backend`, `web`), document
+ * kind (`gotcha`, `runbook`, `postmortem`), and workflow (`code-review`,
+ * `migration`, `deployment`). Technology-specific names (`tuist`, `tca`,
+ * `prisma`) intentionally live in `Keywords` — they don't survive across
+ * vaults and would bloat the enum.
+ */
+export const TAG_VOCABULARY = [
+  "android",
+  "api",
+  "architecture",
+  "audit",
+  "backend",
+  "bug",
+  "build",
+  "ci",
+  "code-review",
+  "concurrency",
+  "config",
+  "convention",
+  "data-model",
+  "db",
+  "decision-context",
+  "dependency",
+  "deployment",
+  "docs",
+  "error-handling",
+  "frontend",
+  "gotcha",
+  "incident",
+  "infrastructure",
+  "investigation",
+  "ios",
+  "migration",
+  "observability",
+  "onboarding",
+  "performance",
+  "policy",
+  "postmortem",
+  "refactor",
+  "runbook",
+  "security",
+  "testing",
+  "tooling",
+  "ui",
+  "ux",
+  "web",
+  "workflow",
+] as const
+
+export type Tag = (typeof TAG_VOCABULARY)[number]
+
+// ---------------------------------------------------------------------------
 // Vault
 // ---------------------------------------------------------------------------
 
@@ -129,6 +194,13 @@ export interface Memory {
   author: string
   agent: string
   tags: string[]
+  /**
+   * Free-form space-separated tokens for things that don't belong in the
+   * closed `Tags` vocabulary — PR numbers, ticket IDs, file paths, class or
+   * function names, session identifiers. Indexed by Notion's text search so
+   * `lore-search` finds them, but kept out of the tag index.
+   */
+  keywords: string
   session: string
   content: string
   createdAt: string
@@ -152,7 +224,14 @@ export interface CreateMemoryInput {
   consequences?: string
   author?: string
   agent?: string
+  /**
+   * Writes from MCP tools are constrained to the closed `Tag` vocabulary by
+   * Zod; the service layer accepts `string[]` so legacy data and internal
+   * migrations (which re-save existing tags) can flow through without a
+   * second validation pass.
+   */
   tags?: string[]
+  keywords?: string
   session?: string
 }
 
@@ -162,6 +241,7 @@ export interface UpdateMemoryInput {
   projectIds?: string[]
   topicId?: string
   tags?: string[]
+  keywords?: string
   kind?: MemoryKind
   status?: MemoryStatus
   confidence?: MemoryConfidence
@@ -177,6 +257,11 @@ export interface SearchMemoriesInput {
   query: string
   projectId?: string
   topicId?: string
+  /**
+   * Search/read filters accept any tag string, not just the closed
+   * `Tag` vocabulary — legacy memories predate the vocabulary and must
+   * remain filterable.
+   */
   tags?: string[]
   kind?: MemoryKind
   status?: MemoryStatus
@@ -232,6 +317,7 @@ export interface CreateDecisionInput {
   alternatives?: string
   consequences?: string
   tags?: string[]
+  keywords?: string
   agent?: string
   session?: string
 }

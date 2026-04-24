@@ -4,6 +4,7 @@ import type { LoreServices } from "../server.js"
 import { toolError, paginationFooter } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import type { MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
+import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 
 const KINDS = [
   "note",
@@ -38,6 +39,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       description:
         "Save a new memory to the vault. The memory content is stored verbatim as a Notion page. " +
         "If no project is specified, uses the auto-detected project from the current working directory.\n\n" +
+        "`tags` is a closed vocabulary (taxonomy). For free-form labels (PR numbers, ticket IDs, file paths, class or function names), use `keywords`.\n\n" +
         "For architectural decisions, prefer `lore-decide` — it captures structured rationale, supersession chains, and participates in `lore-audit` and `lore-wake-up`.",
       inputSchema: {
         title: z.string().describe("A short descriptive title for this memory"),
@@ -82,7 +84,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
           .optional()
           .describe("Canonical date (YYYY-MM-DD) this content was decided/captured"),
-        tags: z.array(z.string()).optional().describe("Tags for categorization"),
+        tags: tagsSchema.optional(),
+        keywords: keywordsSchema.optional(),
         agent: z.string().optional().describe("Name of the AI agent saving this memory"),
         session: z.string().optional().describe("Session ID to group related memories"),
       },
@@ -100,6 +103,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       reviewBy,
       decidedAt,
       tags,
+      keywords,
       agent,
       session,
     }) => {
@@ -126,6 +130,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           reviewBy,
           decidedAt,
           tags,
+          keywords,
           agent,
           session,
         })
@@ -475,12 +480,14 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       title: "Update a memory",
       description:
         "Update an existing memory's title, content, tags, kind, status, or other metadata. " +
-        "Any field not provided is left untouched.",
+        "Any field not provided is left untouched.\n\n" +
+        "`tags` is a closed vocabulary — for free-form labels (PR numbers, ticket IDs, file paths, class names), use `keywords`.",
       inputSchema: {
         memoryId: z.string().describe("The memory ID to update"),
         title: z.string().optional().describe("New title"),
         content: z.string().optional().describe("New content (replaces existing)"),
-        tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
+        tags: tagsSchema.optional(),
+        keywords: keywordsSchema.optional(),
         projectName: z.string().optional().describe("Move to a different project"),
         projectNames: z.array(z.string()).optional().describe("Set multiple project associations"),
         topicName: z.string().optional().describe("Move to a different topic"),
@@ -520,6 +527,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       title,
       content,
       tags,
+      keywords,
       projectName,
       projectNames,
       topicName,
@@ -575,6 +583,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           title,
           content,
           tags,
+          keywords,
           projectIds,
           topicId,
           kind: kind as MemoryKind | undefined,

@@ -157,6 +157,10 @@ export function memoriesProperties(
     Author: { rich_text: {} },
     Agent: { rich_text: {} },
     Tags: { multi_select: { options: [] } },
+    // Free-form companion to Tags: PR numbers, ticket IDs, file paths, class
+    // or function names — anything too point-in-time to belong in the closed
+    // tag vocabulary. Indexed by Notion's text search.
+    Keywords: { rich_text: {} },
     Session: { rich_text: {} },
   }
 
@@ -329,6 +333,7 @@ export function buildMemoryProps(input: {
   author?: string
   agent?: string
   tags?: string[]
+  keywords?: string
   session?: string
 }): PageProperties {
   const props: PageProperties = {
@@ -381,6 +386,9 @@ export function buildMemoryProps(input: {
     props["Tags"] = {
       multi_select: input.tags.map((t) => ({ name: t })),
     }
+  }
+  if (input.keywords !== undefined) {
+    props["Keywords"] = { rich_text: [{ text: { content: input.keywords } }] }
   }
   if (input.session) {
     props["Session"] = { rich_text: [{ text: { content: input.session } }] }

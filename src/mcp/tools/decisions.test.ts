@@ -22,6 +22,7 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     author: "",
     agent: "",
     tags: [],
+    keywords: "",
     session: "",
     content: "",
     createdAt: "2026-04-20T00:00:00.000Z",

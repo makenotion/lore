@@ -161,13 +161,20 @@ export const mineCommand = new Command("mine")
             const content = await readFile(fullPath, "utf-8")
             const relPath = relative(services.configRoot, fullPath)
 
+            // File extension + `mined` marker are free-form tokens — the
+            // closed `tags` vocabulary is a taxonomy, not a scratch pad.
+            // Drop the extension entry if the file has no extension so we
+            // don't emit a leading space.
+            const ext = extname(file).slice(1)
+            const keywords = [ext, "mined", relPath].filter(Boolean).join(" ")
+
             await services.memories.create({
               title: `${basename(file)} — ${relPath}`,
-              content: `# ${relPath}\n\n\`\`\`${extname(file).slice(1)}\n${content}\n\`\`\``,
+              content: `# ${relPath}\n\n\`\`\`${ext}\n${content}\n\`\`\``,
               projectIds: projectId ? [projectId] : undefined,
               topicId,
               source: "file",
-              tags: [extname(file).slice(1), "mined"],
+              keywords,
             })
 
             indexed++

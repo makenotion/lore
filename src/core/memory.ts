@@ -66,6 +66,7 @@ export class MemoryService {
         author: input.author,
         agent: input.agent,
         tags: input.tags,
+        keywords: input.keywords,
         session: input.session,
       }),
     })
@@ -126,6 +127,11 @@ export class MemoryService {
     if (input.tags) {
       props["Tags"] = {
         multi_select: input.tags.map((t) => ({ name: t })),
+      }
+    }
+    if (input.keywords !== undefined) {
+      props["Keywords"] = {
+        rich_text: [{ text: { content: input.keywords } }],
       }
     }
     if (input.kind) {
@@ -441,6 +447,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     author: extractRichText(props["Author"]),
     agent: extractRichText(props["Agent"]),
     tags: extractMultiSelect(props["Tags"]),
+    keywords: extractRichText(props["Keywords"]),
     session: extractRichText(props["Session"]),
     content: content ?? "",
     createdAt: page.created_time,

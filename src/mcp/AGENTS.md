@@ -91,6 +91,13 @@ export function registerFooTools(
 6. **Return format**: Always return `{ content: [{ type: "text", text: "..." }] }`.
    Format output as readable markdown when returning multiple items.
 
+7. **Tags are a closed vocabulary.** Any tool that accepts `tags` must use
+   `tagsSchema` from `tools/tag-schema.ts` (backed by `TAG_VOCABULARY` in
+   `types.ts`). Pair it with `keywordsSchema` so callers have a home for
+   free-form tokens (PR numbers, ticket IDs, file paths, class names).
+   Out-of-vocab tags must fail validation — don't loosen this at the tool
+   boundary.
+
 ## Tool Reference
 
 ### Context Tools

@@ -22,6 +22,7 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     author: "",
     agent: "",
     tags: [],
+    keywords: "",
     session: "",
     content: "",
     createdAt: "2026-04-20T00:00:00.000Z",

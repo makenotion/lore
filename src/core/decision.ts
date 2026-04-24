@@ -76,6 +76,7 @@ export class DecisionService {
         consequences: input.consequences,
         agent: input.agent,
         tags: input.tags,
+        keywords: input.keywords,
         session: input.session,
       }),
     })

@@ -9,6 +9,7 @@ import {
 } from "../decision-graph.js"
 import { displayId, resolveTitles } from "../render.js"
 import type { DecisionSummary, DecisionStatus } from "../../types.js"
+import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 
 const DECISION_STATUSES = [
   "proposed",
@@ -66,6 +67,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       description:
         "Record an architectural decision as a first-class entity with rationale, alternatives, consequences, and review date. " +
         "Use this instead of `lore-remember` for decisions — it produces structured, queryable records that participate in `lore-audit` and `lore-wake-up`.\n\n" +
+        "`tags` is a closed vocabulary. For free-form labels (PR numbers, ticket IDs, file paths), use `keywords`.\n\n" +
         "Auto-creates `decided_by` facts for each entity name in `affects`, so the decision surfaces automatically via `lore-ask` or `lore-decision-context`. " +
         "If `supersedesIds` is set, marks the old decision(s) as superseded and auto-creates `supersedes_decision` facts.",
       inputSchema: {
@@ -120,7 +122,8 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .string()
           .optional()
           .describe("Consequences accepted, as a short free-text summary (2000 char limit)"),
-        tags: z.array(z.string()).optional().describe("Tags for categorization"),
+        tags: tagsSchema.optional(),
+        keywords: keywordsSchema.optional(),
         agent: z.string().optional().describe("Name of the AI agent recording this decision"),
         session: z.string().optional().describe("Session ID to group related records"),
       },
@@ -140,6 +143,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       alternatives,
       consequences,
       tags,
+      keywords,
       agent,
       session,
     }) => {
@@ -178,6 +182,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           alternatives,
           consequences,
           tags,
+          keywords,
           agent,
           session,
         })

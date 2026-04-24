@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { MemoryService, pageToMemory } from "./memory.js"
 import type { DatabaseRef } from "../types.js"
+import { buildMemoryProps } from "../notion/schema.js"
 
 /**
  * Build a synthetic `PageObjectResponse` with only the properties listed.
@@ -106,6 +107,10 @@ describe("pageToMemory — fully populated decision page", () => {
         type: "multi_select",
         multi_select: [{ name: "architecture" }, { name: "core" }],
       },
+      Keywords: {
+        type: "rich_text",
+        rich_text: [{ plain_text: "pr-25701 MailboxViewStore.swift" }],
+      },
       Session: { type: "rich_text", rich_text: [{ plain_text: "sess-42" }] },
     })
 
@@ -127,8 +132,48 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.author).toBe("hsalman")
     expect(memory.agent).toBe("claude")
     expect(memory.tags).toEqual(["architecture", "core"])
+    expect(memory.keywords).toBe("pr-25701 MailboxViewStore.swift")
     expect(memory.session).toBe("sess-42")
     expect(memory.content).toBe("Rationale prose.")
+  })
+})
+
+describe("Keywords property round-trip", () => {
+  // The schema builder emits a `rich_text` property with a single text
+  // segment. The live Notion response fills that in with `plain_text`; we
+  // reconstruct the same shape here so `pageToMemory` can consume it.
+  it("round-trips a Keywords string through buildMemoryProps + pageToMemory", () => {
+    const keywords = "pr-25701 MailboxViewStore.swift SENTRY-MAIL-123"
+    const built = buildMemoryProps({ title: "x", keywords }) as Record<
+      string,
+      { rich_text: Array<{ text: { content: string } }> }
+    >
+
+    const richTextProp = built["Keywords"]
+    expect(richTextProp).toBeDefined()
+    expect(richTextProp.rich_text[0].text.content).toBe(keywords)
+
+    const liveShape = {
+      type: "rich_text" as const,
+      rich_text: richTextProp.rich_text.map((segment) => ({
+        plain_text: segment.text.content,
+      })),
+    }
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      Keywords: liveShape,
+    })
+    expect(pageToMemory(page).keywords).toBe(keywords)
+  })
+
+  it("omits the Keywords property when the input is undefined (unchanged semantic)", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Keywords" in built).toBe(false)
+  })
+
+  it("emits a Keywords property when explicitly set to empty (clears the field)", () => {
+    const built = buildMemoryProps({ title: "x", keywords: "" }) as Record<string, unknown>
+    expect("Keywords" in built).toBe(true)
   })
 })
 

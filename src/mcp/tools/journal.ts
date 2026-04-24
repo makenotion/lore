@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { toolError, paginationFooter } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
+import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 
 export function registerJournalTools(server: McpServer, services: LoreServices): void {
   // One-shot stderr notice so human operators (who never see the tool
@@ -26,7 +27,8 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
         "Write a journal entry for the current agent session. Journal entries " +
         "are memories with source type 'agent_diary'. " +
         "If no project is specified, uses the auto-detected project from cwd — " +
-        "in a monorepo, pass projectName explicitly to land in the right sub-project.",
+        "in a monorepo, pass projectName explicitly to land in the right sub-project.\n\n" +
+        "`tags` is a closed vocabulary. For free-form labels (PR numbers, ticket IDs, file paths), use `keywords`.",
       inputSchema: {
         title: z.string().describe("Journal entry title"),
         content: z.string().describe("Journal entry content (markdown supported)"),
@@ -43,10 +45,11 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           .string()
           .optional()
           .describe("Session identifier for grouping entries"),
-        tags: z.array(z.string()).optional().describe("Tags for categorization"),
+        tags: tagsSchema.optional(),
+        keywords: keywordsSchema.optional(),
       },
     },
-    async ({ title, content, projectName, projectNames, agent, session, tags }) => {
+    async ({ title, content, projectName, projectNames, agent, session, tags, keywords }) => {
       try {
         if (!journalDeprecationWarned) {
           journalDeprecationWarned = true
@@ -67,6 +70,7 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           agent: agent ?? "unknown",
           session,
           tags,
+          keywords,
         })
 
         const lines = [`Journal entry saved: "${memory.title}" (${memory.id})`]
