@@ -15,6 +15,13 @@
  * handles the realistic case where facts read like phrases (e.g. "PR
  * #25650 label.applied classifier") that do not appear verbatim in memory
  * titles but are semantically adjacent to the explaining memory.
+ *
+ * When the caller has the user's first message (P3-05: hook fires on
+ * `UserPromptSubmit`, not `SessionStart`), passing it via `userQuery`
+ * fires an additional relevance search seeded by that message. The hits
+ * surface as `taskMemories`, deduped against digest + recent + related,
+ * so the most-relevant-to-the-current-task memories aren't buried under
+ * timestamp-ordered or open-loop-seeded sections.
  */
 
 import type {
@@ -52,6 +59,26 @@ export const DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT = 5
  * default — a triage list, not an inventory.
  */
 export const DEFAULT_WAKEUP_TASK_LIMIT = 10
+/**
+ * Cap on task-memory results — memories matched against the user's first
+ * message via semantic search. Distinct from `taskLimit` (which bounds
+ * structured `Kind = task` tasks): this caps the count of *memories*
+ * surfaced under the "For Your Current Task" relevance section.
+ * Tighter than `relatedMemoryLimit` because relevance ranking (Notion
+ * vector index against the user's actual question) carries more signal-
+ * per-row than open-loop-seeded matches. Three is the spec's recommended
+ * default.
+ */
+export const DEFAULT_WAKEUP_TASK_MEMORY_LIMIT = 3
+/**
+ * Hard cap on `userQuery` length before it's sent to the search API.
+ * A user pasting an entire log file or transcript would otherwise either
+ * blow Notion's query-string budget or drown the relevance signal in
+ * noise. 1000 chars is the spec's recommendation — long enough to capture
+ * a multi-sentence task description, short enough to keep the
+ * vector-index hit set focused.
+ */
+const MAX_USER_QUERY_LENGTH = 1000
 /**
  * Notion's hard ceiling on rows returned from a single `list` call. We scale
  * the related-memory fetch window up to this bound so large `relatedLimit`
@@ -143,6 +170,25 @@ export interface WakeUpOptions {
    */
   taskLimit?: number
   /**
+   * The user's first message text. When set, wake-up fires an additional
+   * relevance search seeded by this text and surfaces the hits as the
+   * `taskMemories` section. Empty / whitespace-only strings are treated
+   * as absent (no extra search, `taskMemories` returns `[]`). Truncated
+   * to 1000 chars before search to bound query size and keep the vector
+   * index focused.
+   *
+   * P3-05: when this is provided, the hook caller should also tighten
+   * the per-section caps (recent: 3, related: 2, openLoops: 5, knowledge:
+   * 10) — relevance-ranked top hits carry more weight than timestamp
+   * ordering, so a smaller bundle yields better wake-up signal density.
+   */
+  userQuery?: string
+  /**
+   * Max memories surfaced for the user's current task. Honored only when
+   * `userQuery` is non-empty. Defaults to 3 (`DEFAULT_WAKEUP_TASK_MEMORY_LIMIT`).
+   */
+  taskMemoryLimit?: number
+  /**
    * When false, fetch recent memories without their markdown body.
    * Used by hook wake-up which only renders title/date. The digest memory
    * is always fetched with content since it IS the content.
@@ -185,6 +231,14 @@ export interface WakeUpData {
    * due-date ascending so most-pressing rows are first.
    */
   tasks: TaskSummary[]
+  /**
+   * Memories relevance-matched against the user's first message
+   * (`userQuery`). Notion's vector index scores titles AND bodies against
+   * the (possibly truncated) query. Deduped against `digest`, `memories`,
+   * AND `relatedMemories` so the same page never renders across the three
+   * memory sections. Empty when `userQuery` was absent or whitespace-only.
+   */
+  taskMemories: Memory[]
 }
 
 export async function loadWakeUpData(
@@ -209,9 +263,11 @@ export async function loadWakeUpData(
   )
   const relatedLimit = opts.relatedMemoryLimit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
   const taskLimit = opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
+  const taskMemoryLimit = opts.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
   const includeDecisions = opts.includeDecisions ?? true
   const now = opts.now ?? Date.now()
+  const userQuery = sanitizeUserQuery(opts.userQuery)
 
   // Request one extra memory so we can drop a digest entry without running
   // short after filtering.
@@ -221,6 +277,29 @@ export async function loadWakeUpData(
   // client-side, which on every hook fire cost 3–6 Notion pages of I/O for
   // a bounded output. Server-side predicate filters collapse that to one
   // page per section.
+  //
+  // The task-memories search runs in the same `Promise.all` as the other
+  // queries so its latency overlaps with the existing wake-up fan-out
+  // instead of stacking on top. Only fire when scoped to a project AND
+  // the user query is present — without scope the relevance hits would
+  // come from arbitrary projects, and without a query there's nothing to
+  // seed. The fetch window over-fetches by a fixed slack of
+  // `digest(1) + memoryLimit + relatedLimit` — the maximum set we can
+  // possibly dedupe against — so `taskMemoryLimit` survivors are
+  // guaranteed even when every candidate collides with already-surfaced
+  // memories. Bounded by Notion's per-page ceiling so this hot-path
+  // query never paginates.
+  const taskFetchSlack = 1 + memoryLimit + relatedLimit
+  const taskFetchLimit =
+    userQuery && taskMemoryLimit > 0
+      ? Math.min(NOTION_PAGE_SIZE, taskMemoryLimit + taskFetchSlack)
+      : 0
+  // `taskCandidates: Memory[]` — annotated explicitly because this is the
+  // only entry in the fan-out whose two arms (a real `services.memories.search`
+  // call vs. `Promise.resolve([])`) produce identical shapes by coincidence
+  // rather than by a `{ items, ... }` envelope. The annotation makes the
+  // contract obvious for the next reader and pins the resolution shape if
+  // `MemoryService.search`'s return type ever changes.
   const [
     { items: rawMemories },
     { items: latestDigestList },
@@ -229,6 +308,16 @@ export async function loadWakeUpData(
     { items: proposedDecisions },
     overdueDecisions,
     { items: tasks },
+    taskCandidates,
+  ]: [
+    { items: Memory[] },
+    { items: Memory[] },
+    Fact[],
+    { items: Fact[]; hasMore: boolean },
+    { items: DecisionSummary[] },
+    DecisionSummary[],
+    { items: TaskSummary[] },
+    Memory[],
   ] = await Promise.all([
     services.memories.list({
       projectId,
@@ -273,6 +362,14 @@ export async function loadWakeUpData(
           limit: taskLimit,
         })
       : Promise.resolve({ items: [] as TaskSummary[] }),
+    projectId && userQuery && taskFetchLimit > 0
+      ? services.memories.search({
+          query: userQuery,
+          projectId,
+          limit: taskFetchLimit,
+          includeContent,
+        })
+      : Promise.resolve([] as Memory[]),
   ])
 
   const latestDigest = latestDigestList[0] ?? null
@@ -334,6 +431,39 @@ export async function loadWakeUpData(
     }
   }
 
+  // Task memories: rank against the user's first message. Dedupe against
+  // digest + recents AND against `relatedMemories` so the same page
+  // never renders across the three memory sections. The candidate set
+  // was already fetched in the parallel fan-out above; this is just the
+  // dedupe + slice. An empty `taskCandidates` (no project, no query, or
+  // a query that produced zero hits) yields `taskMemories: []`.
+  //
+  // The task search and the related-memories search both fire when both
+  // signals are present — `userQuery` AND open loops. When the user's
+  // query is itself about an active open loop (the common case for first
+  // prompts), the two queries seed adjacent vector neighborhoods and may
+  // overlap topically. We dedupe by id, not by topic, so adjacent-but-
+  // distinct memories survive both sections; the hook caps
+  // `relatedMemoryLimit: 2` on the ranked path to keep the overlap from
+  // dominating prompt budget. Suppressing the related-memory search
+  // when `userQuery` is present is intentionally NOT done here — the
+  // user query reflects the current message, but the open loops reflect
+  // the project's active work, and the two are not always the same
+  // (a user can ask about anything, and the related section keeps active-
+  // work context visible regardless). Future tuning may add a topical-
+  // overlap suppression heuristic; pin tests in `wakeup.test.ts` first
+  // before wiring it.
+  const taskMemories: Memory[] = []
+  if (taskCandidates.length > 0 && taskMemoryLimit > 0) {
+    const taskSurfaced = new Set(alreadySurfaced)
+    for (const mem of relatedMemories) taskSurfaced.add(mem.id)
+    for (const candidate of taskCandidates) {
+      if (taskSurfaced.has(candidate.id)) continue
+      taskMemories.push(candidate)
+      if (taskMemories.length >= taskMemoryLimit) break
+    }
+  }
+
   return {
     digest,
     memories,
@@ -343,7 +473,32 @@ export async function loadWakeUpData(
     overdueDecisions,
     relatedMemories,
     tasks,
+    taskMemories,
   }
+}
+
+/**
+ * Normalize a caller-supplied user query: trim, drop empty/whitespace-only
+ * inputs, truncate to 1000 chars. Returning `undefined` means "no query"
+ * — the caller shouldn't fire the extra search and `taskMemories` stays
+ * empty.
+ *
+ * Truncation is naive at the codepoint level (`slice(0, MAX_USER_QUERY_LENGTH)`),
+ * not word- or sentence-aware. Notion's relevance ranking is robust to
+ * mid-word cuts, and a smarter trim would risk dropping a critical late-
+ * clause keyword (`"... causing the OOM in classifier.ts:213"`) for
+ * cosmetic reasons. We do strip a trailing UTF-16 high surrogate post-
+ * slice: a user paste with non-BMP characters (emoji, certain CJK)
+ * landing on the 1000-char boundary would otherwise produce a lone
+ * surrogate, which is invalid UTF-16 and a malformed prefix of the
+ * user's actual input.
+ */
+function sanitizeUserQuery(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) return undefined
+  if (trimmed.length <= MAX_USER_QUERY_LENGTH) return trimmed
+  return trimmed.slice(0, MAX_USER_QUERY_LENGTH).replace(/[\uD800-\uDBFF]$/, "")
 }
 
 /**

@@ -239,6 +239,42 @@ This joins `lore-recall` / `lore-search` under the `0.2.0` server
 version. MCP clients that relied on the previous eager-body default
 will observe the change on reconnect.
 
+#### Ranked output via `userQuery` (P3-05)
+
+`lore-context action='wake-up'` (and the deprecated `lore-wake-up`
+alias) accepts an optional `userQuery` parameter. When set, it
+fires an additional relevance search seeded by that text and surfaces
+the hits as a **For Your Current Task** section directly under the
+digest, above Recent Memories. This mirrors the shell hook's P3-05
+ranked path so MCP-direct callers (an agent calling wake-up
+explicitly after `/clear`, or to refresh context after a session
+pivot) see the same query-aware output the hook ships on first prompt.
+
+- **No userQuery → unchanged output.** The section is omitted entirely
+  on the no-query path, so legacy callers see byte-identical pre-P3-05
+  output.
+- **`taskMemoryLimit`.** Independent knob (default 3) capping the
+  visible-cluster count for the task section. `taskMemoryLimit: 0`
+  short-circuits the Notion search AND the section render.
+- **Cross-section dedupe.** A memory rendered in the digest, Recent
+  Memories, or Related to Open Loops never re-renders under For Your
+  Current Task. Dedupe is by Notion ID; topical-overlap dedupe is not
+  done deliberately (a memory adjacent in the vector neighborhood but
+  with a different ID may still render in two sections — relevance
+  ranking surfaces it more than once because it is, in fact, relevant
+  more than once).
+- **Truncation.** `userQuery` is truncated to 1000 chars before search
+  with a UTF-16 surrogate-tail strip so a paste at exactly 1KB never
+  produces a malformed string.
+- **The data layer is shared with the hook.** Both `loadWakeUpData`
+  callers see the same `userQuery` / `taskMemoryLimit` options on
+  `WakeUpOptions`; the only divergence is rendering (the hook emits
+  flat list items, the MCP tool routes through `collapseOverlappingMemories`).
+- **Per-tool limits parity.** The MCP `taskMemoryLimit` schema accepts
+  `0..20`; the hook's `RANKED_WAKEUP_LIMITS` is hard-coded. The
+  follow-up to unify these knobs across both surfaces is tracked as
+  PF3-04 (mcp-ranked-wakeup-limits-parity).
+
 ### `lore-memory` — memory mutations + batch hydration
 
 | Action | Purpose | Read-only | Legacy alias |

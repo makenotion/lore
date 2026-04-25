@@ -4,6 +4,7 @@ import {
   DEFAULT_WAKEUP_MEMORY_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
+  DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
   dateBucket,
   loadWakeUpData,
   type WakeUpServices,
@@ -108,6 +109,14 @@ function stubServices(opts: {
   rawMemories?: Memory[]
   digestMemories?: Memory[]
   relatedMemories?: Memory[]
+  /**
+   * Memories returned when the search query equals `taskQuery`. Lets
+   * P3-05 tests distinguish the user-query-seeded task search from the
+   * open-loop-entity-seeded related search — both go through the same
+   * `MemoryService.search` method but feed different output sections.
+   */
+  taskQuery?: string
+  taskMemories?: Memory[]
   facts?: Fact[]
   proposedDecisions?: DecisionSummary[]
   overdueDecisions?: DecisionSummary[]
@@ -133,6 +142,13 @@ function stubServices(opts: {
       }),
       search: vi.fn(async (args: SearchCall) => {
         memoriesSearchCalls.push(args)
+        if (
+          opts.taskQuery !== undefined &&
+          opts.taskMemories !== undefined &&
+          args.query === opts.taskQuery
+        ) {
+          return opts.taskMemories
+        }
         return opts.relatedMemories ?? []
       }),
     },
@@ -788,6 +804,494 @@ describe("loadWakeUpData", () => {
 
     const relatedCall = services.memoriesSearchCalls[0]
     expect(relatedCall?.mode).toBe("semantic")
+  })
+
+  describe("userQuery / taskMemories", () => {
+    it("fires an extra search seeded by userQuery and surfaces the hits", async () => {
+      // P3-05: when wake-up has the user's first message, the most
+      // relevant section is "what does the vault have on the thing the
+      // user is asking about" — not generic recents or open-loop seeds.
+      const taskHit = buildMemory({
+        id: "task-hit",
+        title: "Auth bug post-mortem",
+        createdAt: "2026-03-15T00:00:00Z",
+      })
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "How do I fix the auth bug?",
+        taskMemories: [taskHit],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "How do I fix the auth bug?",
+        now: NOW,
+      })
+
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["task-hit"])
+      const taskCall = services.memoriesSearchCalls.find(
+        (c) => c.query === "How do I fix the auth bug?",
+      )
+      expect(taskCall).toBeDefined()
+      expect(taskCall?.projectId).toBe("p1")
+    })
+
+    it("returns empty taskMemories when userQuery is absent", async () => {
+      // The fallback path: hooks fired before the user has spoken (e.g.
+      // Codex SessionStart) pass no userQuery. Wake-up must skip the
+      // extra search entirely — both to save the round-trip and to
+      // keep `taskMemories` empty so renderers omit the section.
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "anything",
+        taskMemories: [
+          buildMemory({ id: "should-not-appear", createdAt: "2026-03-15T00:00:00Z" }),
+        ],
+      })
+
+      const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+      expect(data.taskMemories).toEqual([])
+      // No search call was issued for any task-shaped query — the only
+      // possible search is the related-memories one, which would only
+      // fire if there were open loops.
+      expect(services.memoriesSearchCalls).toEqual([])
+    })
+
+    it.each([
+      ["empty string", ""],
+      ["whitespace only", "   \n\t  "],
+    ])("treats %s userQuery as absent (no search fired)", async (_label, query) => {
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "shouldnotmatch",
+        taskMemories: [
+          buildMemory({ id: "should-not-appear", createdAt: "2026-03-15T00:00:00Z" }),
+        ],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: query,
+        now: NOW,
+      })
+
+      expect(data.taskMemories).toEqual([])
+      expect(services.memoriesSearchCalls).toEqual([])
+    })
+
+    it("trims surrounding whitespace before searching", async () => {
+      // A user prompt like "  fix auth\n  " should hit the same vector-
+      // index neighborhood as "fix auth" — Notion's relevance ranker
+      // doesn't penalize trailing whitespace, but emitting a surplus-
+      // whitespace query muddies test fixtures and other observers
+      // (e.g. log lines) for no benefit.
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "fix auth",
+        taskMemories: [
+          buildMemory({ id: "trim-hit", createdAt: "2026-03-15T00:00:00Z" }),
+        ],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "  fix auth\n  ",
+        now: NOW,
+      })
+
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["trim-hit"])
+      const taskCall = services.memoriesSearchCalls[0]
+      expect(taskCall?.query).toBe("fix auth")
+    })
+
+    it("truncates very long userQuery to 1000 chars before search", async () => {
+      // Spec: "If userQuery is very long (user pastes a log), truncate
+      // to first 1K chars before embedding/search." A 5000-char paste
+      // would otherwise blow Notion's query-string budget AND drown the
+      // relevance signal in noise.
+      const longQuery = "auth ".repeat(1000) // 5000 chars
+      const truncated = longQuery.slice(0, 1000)
+
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: truncated,
+        taskMemories: [
+          buildMemory({ id: "long-hit", createdAt: "2026-03-15T00:00:00Z" }),
+        ],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: longQuery,
+        now: NOW,
+      })
+
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["long-hit"])
+      const taskCall = services.memoriesSearchCalls[0]
+      expect(taskCall?.query.length).toBe(1000)
+      expect(taskCall?.query).toBe(truncated)
+    })
+
+    it("dedupes taskMemories against digest, recent, and related", async () => {
+      // The cross-section dedupe contract: a memory rendered in the
+      // digest, recents, or related-to-open-loops sections must NOT
+      // appear again as a task-memory hit, even if Notion's relevance
+      // ranker promotes it. Without this guard, an actively-edited memory
+      // (which is naturally both recent AND topically relevant) would
+      // render in multiple sections and triple-charge the prompt budget.
+      const fresh = buildMemory({
+        id: "d1",
+        title: "Fresh digest",
+        source: "digest",
+        createdAt: "2026-04-19T00:00:00Z",
+      })
+      const recent = buildMemory({
+        id: "m0",
+        title: "auth refactor in progress",
+        createdAt: "2026-04-20T00:00:00Z",
+      })
+      const openLoop = buildFact({
+        id: "f-loop",
+        predicate: "needs_action",
+        subject: "auth",
+        object: "OIDC migration",
+      })
+      const relatedHit = buildMemory({
+        id: "rel-hit",
+        title: "Related: auth pipeline",
+        createdAt: "2026-03-10T00:00:00Z",
+      })
+      // Task-search candidate set: digest dupe, recent dupe, related
+      // dupe, and one fresh hit. Only the fresh one should survive.
+      const taskCandidates = [
+        buildMemory({ id: "d1", title: "dupe-digest", createdAt: "2026-04-19T00:00:00Z" }),
+        buildMemory({ id: "m0", title: "dupe-recent", createdAt: "2026-04-20T00:00:00Z" }),
+        buildMemory({ id: "rel-hit", title: "dupe-related", createdAt: "2026-03-10T00:00:00Z" }),
+        buildMemory({
+          id: "task-fresh",
+          title: "Auth bug deep dive",
+          createdAt: "2026-02-15T00:00:00Z",
+        }),
+      ]
+
+      const services = stubServices({
+        rawMemories: [recent],
+        digestMemories: [fresh],
+        relatedMemories: [relatedHit],
+        taskQuery: "auth bug",
+        taskMemories: taskCandidates,
+        facts: [openLoop],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        now: NOW,
+      })
+
+      expect(data.digest?.id).toBe("d1")
+      expect(data.memories.map((m) => m.id)).toEqual(["m0"])
+      expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-hit"])
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["task-fresh"])
+    })
+
+    it("caps taskMemories at taskMemoryLimit (default 3)", async () => {
+      // The default keeps the section dense — even three top-relevance
+      // hits is more focused signal than ten timestamp-ordered recents.
+      const candidates = Array.from({ length: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT + 5 }, (_, i) =>
+        buildMemory({
+          id: `task-${i}`,
+          title: `Task hit ${i}`,
+          createdAt: "2026-03-10T00:00:00Z",
+        }),
+      )
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "auth bug",
+        taskMemories: candidates,
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        now: NOW,
+      })
+
+      expect(data.taskMemories).toHaveLength(DEFAULT_WAKEUP_TASK_MEMORY_LIMIT)
+    })
+
+    it("skips the task search when taskMemoryLimit: 0 even with a userQuery", async () => {
+      // Explicit "skip section" knob: passing 0 must short-circuit the
+      // Notion round-trip, not just filter the results to nothing. Pairs
+      // with the MCP tool's `taskMemoryLimit: 0` schema option.
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "auth bug",
+        taskMemories: [
+          buildMemory({ id: "should-not-appear", createdAt: "2026-03-15T00:00:00Z" }),
+        ],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        taskMemoryLimit: 0,
+        now: NOW,
+      })
+
+      expect(data.taskMemories).toEqual([])
+      expect(services.memoriesSearchCalls).toEqual([])
+    })
+
+    it("honors caller-supplied taskMemoryLimit", async () => {
+      const candidates = Array.from({ length: 10 }, (_, i) =>
+        buildMemory({
+          id: `task-${i}`,
+          title: `Task hit ${i}`,
+          createdAt: "2026-03-10T00:00:00Z",
+        }),
+      )
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "auth bug",
+        taskMemories: candidates,
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        taskMemoryLimit: 5,
+        now: NOW,
+      })
+
+      expect(data.taskMemories).toHaveLength(5)
+    })
+
+    it("does not starve taskMemories when candidates are mostly duplicates", async () => {
+      // Pathological case: the fetch slack must scale with digest +
+      // memoryLimit + relatedLimit so dedupe can't shrink taskMemories
+      // below taskLimit when candidates mostly collide with surfaced rows.
+      const fresh = buildMemory({
+        id: "d1",
+        source: "digest",
+        createdAt: "2026-04-19T00:00:00Z",
+      })
+      const recents = Array.from({ length: 3 }, (_, i) =>
+        buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" }),
+      )
+      // 3 dupes + 3 fresh hits = 6 candidates. fetchLimit must be >= 6.
+      const candidates = [
+        buildMemory({ id: "d1", title: "dupe-digest", createdAt: "2026-04-01T00:00:00Z" }),
+        buildMemory({ id: "m0", title: "dupe-m0", createdAt: "2026-04-01T00:00:00Z" }),
+        buildMemory({ id: "m1", title: "dupe-m1", createdAt: "2026-04-01T00:00:00Z" }),
+        buildMemory({ id: "t1", title: "task-1", createdAt: "2026-04-01T00:00:00Z" }),
+        buildMemory({ id: "t2", title: "task-2", createdAt: "2026-04-01T00:00:00Z" }),
+        buildMemory({ id: "t3", title: "task-3", createdAt: "2026-04-01T00:00:00Z" }),
+      ]
+      const services = stubServices({
+        rawMemories: recents,
+        digestMemories: [fresh],
+        taskQuery: "auth bug",
+        taskMemories: candidates,
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        taskMemoryLimit: 3,
+        now: NOW,
+      })
+
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["t1", "t2", "t3"])
+    })
+
+    it("forwards includeMemoryContent to the task-memory search", async () => {
+      // Hooks pass `includeMemoryContent: false`; the title-tier default
+      // must reach the task search too or each hit costs an extra
+      // `pages.retrieveMarkdown` round-trip.
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "auth bug",
+        taskMemories: [],
+      })
+
+      await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug",
+        includeMemoryContent: false,
+        now: NOW,
+      })
+
+      const taskCall = services.memoriesSearchCalls[0]
+      expect(taskCall?.includeContent).toBe(false)
+    })
+
+    it("skips task-search when no project is resolved", async () => {
+      // Without a project scope the hits would come from arbitrary
+      // workspace pages — wake-up's contract is project-scoped context.
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        taskQuery: "auth bug",
+        taskMemories: [
+          buildMemory({ id: "should-not-appear", createdAt: "2026-03-10T00:00:00Z" }),
+        ],
+      })
+
+      const data = await loadWakeUpData(services, {
+        userQuery: "auth bug",
+        now: NOW,
+      })
+
+      expect(data.taskMemories).toEqual([])
+      expect(services.memoriesSearchCalls).toEqual([])
+    })
+
+    it("runs both task and related searches in the same wake-up", async () => {
+      // The two searches feed different sections (For your current task
+      // vs Related to Open Loops) and must both fire when user query AND
+      // open loops are present. They use different seed strings, so
+      // dedupe across both is independent.
+      const openLoop = buildFact({
+        id: "f-loop",
+        predicate: "needs_action",
+        subject: "Outlook sync",
+        object: "calendar",
+      })
+      const relatedHit = buildMemory({
+        id: "rel-1",
+        title: "Outlook sync runbook",
+        createdAt: "2026-03-15T00:00:00Z",
+      })
+      const taskHit = buildMemory({
+        id: "task-1",
+        title: "Auth bug investigation",
+        createdAt: "2026-03-10T00:00:00Z",
+      })
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        relatedMemories: [relatedHit],
+        taskQuery: "fix the auth bug",
+        taskMemories: [taskHit],
+        facts: [openLoop],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "fix the auth bug",
+        now: NOW,
+      })
+
+      expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-1"])
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["task-1"])
+      // Two searches fired: one for the user-query, one for the open-
+      // loop-entity seed. Order isn't load-bearing — just both present.
+      const queries = services.memoriesSearchCalls.map((c) => c.query)
+      expect(queries).toContain("fix the auth bug")
+      expect(queries.some((q) => q.includes("Outlook sync"))).toBe(true)
+    })
+
+    it("still runs both searches when userQuery topically overlaps an open loop", async () => {
+      // Open loops describe active work; first prompts often ask about
+      // active work. The two seeds (user query and open-loop entities)
+      // will land in adjacent vector neighborhoods. We deliberately do
+      // NOT short-circuit the related-memories search when the user
+      // query overlaps — the user can ask about anything (a side
+      // question, an unrelated bug they noticed) and the related
+      // section keeps active-work context visible regardless.
+      //
+      // This pins the current behavior so a future "skip related when
+      // taskMemories is dense" optimization can't quietly degrade
+      // unrelated-question wake-ups.
+      const openLoop = buildFact({
+        id: "f-loop",
+        predicate: "needs_action",
+        subject: "auth bug fix",
+        object: "OIDC integration",
+      })
+      const relatedHit = buildMemory({
+        id: "rel-overlap",
+        title: "auth bug related work",
+        createdAt: "2026-03-15T00:00:00Z",
+      })
+      const taskHit = buildMemory({
+        id: "task-overlap",
+        title: "auth bug investigation",
+        createdAt: "2026-03-10T00:00:00Z",
+      })
+      const services = stubServices({
+        rawMemories: [],
+        digestMemories: [],
+        relatedMemories: [relatedHit],
+        taskQuery: "auth bug fix",
+        taskMemories: [taskHit],
+        facts: [openLoop],
+      })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        userQuery: "auth bug fix",
+        now: NOW,
+      })
+
+      // Both sections populate independently — distinct memory IDs
+      // survive even though the seed phrasings overlap.
+      expect(data.taskMemories.map((m) => m.id)).toEqual(["task-overlap"])
+      expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-overlap"])
+      // Both searches were issued — no early exit.
+      expect(services.memoriesSearchCalls).toHaveLength(2)
+    })
+
+    it.each([
+      ["surrogate pair on boundary", "🦄"],
+      ["surrogate pair before boundary", "🚀🚀"],
+    ])(
+      "%s — never produces a lone high surrogate after truncation",
+      async (_label, padding) => {
+        // A 1000-char paste with non-BMP characters at the boundary would
+        // otherwise yield an invalid UTF-16 string (lone surrogate).
+        // Notion's API tolerates it but the query is no longer a prefix
+        // of the user's input — confusing for log inspection and a
+        // potential silent bug in any downstream that round-trips through
+        // a strict UTF-8 layer.
+        // 1000 is the spec's truncation length — pinned at the boundary
+        // so the test fails loudly if the cap drifts.
+        const TRUNCATION_LENGTH = 1000
+        const paddingLen = padding.length
+        const filler = "x".repeat(TRUNCATION_LENGTH - paddingLen + 1)
+        const longQuery = filler + padding
+        const services = stubServices({
+          rawMemories: [],
+          digestMemories: [],
+          taskQuery: "ignored",
+          taskMemories: [],
+        })
+
+        await loadWakeUpData(services, {
+          projectId: "p1",
+          userQuery: longQuery,
+          now: NOW,
+        })
+
+        const taskCall = services.memoriesSearchCalls[0]
+        expect(taskCall).toBeDefined()
+        // The truncated query must not end on a high-surrogate code unit
+        // (UTF-16 0xD800-0xDBFF). A clean low-surrogate or BMP char is fine.
+        const last = taskCall!.query.charCodeAt(taskCall!.query.length - 1)
+        expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+      },
+    )
   })
 })
 

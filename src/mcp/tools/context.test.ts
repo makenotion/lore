@@ -72,6 +72,14 @@ interface WakeServicesOverrides {
   memories?: Memory[]
   digest?: Memory | null
   relatedMemories?: Memory[]
+  /**
+   * Memories returned when the search query equals `taskQuery`. Lets
+   * P3-05 tests distinguish the user-query-seeded task search from the
+   * open-loop-entity-seeded related search at the MCP layer (same shape
+   * as the data-layer stub in `wakeup.test.ts`).
+   */
+  taskQuery?: string
+  taskMemories?: Memory[]
   facts?: Fact[]
 }
 
@@ -82,7 +90,16 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     }
     return { items: overrides.memories ?? [] }
   })
-  const memoriesSearch = vi.fn(async () => overrides.relatedMemories ?? [])
+  const memoriesSearch = vi.fn(async (args: { query: string }) => {
+    if (
+      overrides.taskQuery !== undefined &&
+      overrides.taskMemories !== undefined &&
+      args.query === overrides.taskQuery
+    ) {
+      return overrides.taskMemories
+    }
+    return overrides.relatedMemories ?? []
+  })
   const getTitleById = vi.fn(async () => null)
   const factsQueryBySubject = vi.fn(
     async (_subject: string, opts?: { predicates?: string[]; limit?: number }) => {
@@ -388,5 +405,107 @@ describe("lore-wake-up — expand interacts with collapse", () => {
     expect(text).toMatch(/^#### Recent entry/m)
     // Related to Open Loops: `## Related to Open Loops` → `### Related entry`
     expect(text).toMatch(/^### Related entry/m)
+  })
+})
+
+describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
+  // The MCP tool is the second surface for ranked wake-up. Hooks ship
+  // ranked output via Claude Code's UserPromptSubmit; the MCP tool ships
+  // it via an explicit `userQuery` argument that an agent passes after a
+  // /clear or session-pivot. Both must produce the same shape so callers
+  // get consistent output regardless of which surface they use.
+
+  it("renders 'For Your Current Task' under the digest when userQuery is provided", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [makeMemory("m1", { title: "Recent unrelated memory" })],
+      taskQuery: "fix outlook auth bug",
+      taskMemories: [makeMemory("task-1", { title: "Outlook auth investigation" })],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    const result = await wake({ userQuery: "fix outlook auth bug" } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## For Your Current Task")
+    expect(text).toContain("Outlook auth investigation")
+    // The task section sits ABOVE Recent Memories — relevance hits beat
+    // timestamp ordering in priority order.
+    const taskIdx = text.indexOf("## For Your Current Task")
+    const recentIdx = text.indexOf("## Recent Memories")
+    expect(taskIdx).toBeGreaterThan(-1)
+    expect(recentIdx).toBeGreaterThan(taskIdx)
+  })
+
+  it("omits the task section when userQuery is absent (legacy callers see byte-identical output)", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [makeMemory("m1", { title: "Recent memory" })],
+      taskQuery: "ignored",
+      taskMemories: [makeMemory("should-not-appear", { title: "Hidden hit" })],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).not.toContain("For Your Current Task")
+    expect(text).not.toContain("Hidden hit")
+    // The task search must not even fire when no userQuery is provided —
+    // and search shouldn't fire at all here since there are no open loops
+    // to seed the related search either.
+    expect(services._calls.memoriesSearch).not.toHaveBeenCalled()
+  })
+
+  it("omits the task section when taskMemoryLimit: 0 even with a userQuery", async () => {
+    // Explicit 0 is the "skip this section" knob; mirrors how
+    // openLoopLimit: 0 short-circuits the open-loops section.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "fix auth",
+      taskMemories: [makeMemory("task-1", { title: "Auth investigation" })],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    const result = await wake({
+      userQuery: "fix auth",
+      taskMemoryLimit: 0,
+    } as never)
+
+    const text = extractText(result)
+    expect(text).not.toContain("For Your Current Task")
+    // The data layer skips the search when the effective limit is zero,
+    // so no extra Notion round-trip fires.
+    expect(services._calls.memoriesSearch).not.toHaveBeenCalled()
+  })
+
+  it("dedupes taskMemories against recents and related at the MCP layer", async () => {
+    // Same dedupe contract as the hook: a memory rendered in another
+    // section must NOT appear under For Your Current Task, even if Notion
+    // ranks it as the top relevance hit.
+    const mockServer = createMockServer()
+    const dupeId = "dupe-1"
+    const services = makeWakeServices({
+      memories: [makeMemory(dupeId, { title: "Both recent and relevant" })],
+      taskQuery: "fix auth",
+      taskMemories: [
+        makeMemory(dupeId, { title: "Both recent and relevant — dup" }),
+        makeMemory("task-fresh", { title: "Fresh task hit" }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    const result = await wake({ userQuery: "fix auth" } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Fresh task hit")
+    // The dupe title appears once in Recent Memories, NOT under For Your
+    // Current Task — count matches stay at 1.
+    const matches = text.match(/Both recent and relevant/g) ?? []
+    expect(matches.length).toBe(1)
   })
 })

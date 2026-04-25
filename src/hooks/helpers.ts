@@ -30,7 +30,11 @@ import { initServicesFromConfig } from "../services.js"
 import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildSessionEndPrompt } from "./prompts.js"
-import { dateBucket, loadWakeUpData } from "../core/wakeup.js"
+import {
+  DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+  dateBucket,
+  loadWakeUpData,
+} from "../core/wakeup.js"
 import { spawnBackgroundSave } from "./background.js"
 import { fireDigestIfStale } from "./digest-scheduler.js"
 import { getStateDir } from "./lock.js"
@@ -373,8 +377,93 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// Wakeup — load context at session start
+// Wakeup — load context at session start (Codex) or first user prompt
+// (Claude Code, P3-05)
 // ---------------------------------------------------------------------------
+//
+// Claude Code registration sets `runOnce: true` on the `UserPromptSubmit`
+// hook (see `mergeClaudeHookEntries` in `cli/commands/install.ts`). Without
+// that flag wake-up would fire on every user message — re-querying Notion
+// for the same digest, recents, and (now) task-memory ranking on every
+// turn. The current per-session-once contract is what keeps this hook
+// affordable on the hot path; if Claude Code's hook engine ever drops
+// `runOnce` semantics, wake-up needs a per-session debounce inside the
+// helper before that lands.
+
+/**
+ * Per-section caps applied to wake-up output when the user's first
+ * message is available (`userQuery` non-empty). Tighter than the data-
+ * layer defaults because relevance-ranked top hits carry more signal-per-
+ * row than timestamp-ordered recents — a smaller bundle yields better
+ * wake-up density. Values come straight from the P3-05 spec.
+ *
+ * Without a user query (Codex `SessionStart`, or Claude Code initial-
+ * session edge cases), the hook falls through to the data-layer defaults
+ * for backward compatibility with the pre-P3-05 wake-up output.
+ */
+const RANKED_WAKEUP_LIMITS = {
+  memoryLimit: 3,
+  relatedMemoryLimit: 2,
+  openLoopLimit: 5,
+  knowledgeFactLimit: 10,
+  taskMemoryLimit: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+} as const
+
+/**
+ * Parse the JSON payload Claude Code's `UserPromptSubmit` hook delivers
+ * on stdin (forwarded by `wakeup.sh` via `LORE_WAKEUP_EVENT`). Returns
+ * the user's prompt text when present, `undefined` otherwise. The
+ * `undefined` return is the fallback signal — wake-up degrades to the
+ * pre-P3-05 unranked output without needing a user query.
+ *
+ * Several callers produce `undefined` and they all drop into the same
+ * fallback path:
+ * - Env var unset (Codex `SessionStart`; resumed Claude Code sessions
+ *   that fire `SessionStart` rather than `UserPromptSubmit`; legacy
+ *   `wakeup.sh` that didn't forward stdin).
+ * - Env var set but not JSON (a misconfigured hook script).
+ * - Env var set with valid JSON but no `prompt` field, or a non-string
+ *   `prompt` (a future Claude Code event shape we haven't seen yet —
+ *   the field name has been stable since the hooks API shipped, but
+ *   pinning here means a rename degrades silently rather than crashes).
+ * - Prompt parses cleanly but is a slash command (`/clear`,
+ *   `/compact`, etc.). These would seed the relevance ranker with
+ *   meta-commands rather than task language — useless as search input,
+ *   so we treat them as "no user query" and let the fallback path run.
+ *
+ * They're not distinguished because callers can't act on the difference
+ * — the only useful signal is "did we get a usable prompt or not."
+ *
+ * The Claude Code hook payload schema (incl. the `prompt` field on
+ * `UserPromptSubmit`) is documented at
+ * https://docs.claude.com/en/docs/claude-code/hooks#userpromptsubmit;
+ * if the field name changes, this parser is the one place that needs
+ * updating.
+ *
+ * Exported for unit-test coverage; not part of the module's public
+ * surface for production callers.
+ */
+export function parseUserQueryFromEvent(raw: string | undefined): string | undefined {
+  if (!raw || raw.trim().length === 0) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined
+  const prompt = (parsed as { prompt?: unknown }).prompt
+  if (typeof prompt !== "string") return undefined
+  const trimmed = prompt.trim()
+  if (trimmed.length === 0) return undefined
+  // Slash commands are meta-instructions to the host assistant, not
+  // task language. Seeding the relevance ranker with `/clear` or
+  // `/compact` would produce noise hits (any memory mentioning the
+  // word "clear") and waste a Notion round-trip. Drop to the fallback
+  // path so wake-up uses unranked output instead.
+  if (trimmed.startsWith("/")) return undefined
+  return trimmed
+}
 
 async function wakeup(): Promise<void> {
   // Config opt-out: hooks.wakeUp: false suppresses context injection.
@@ -399,17 +488,42 @@ async function wakeup(): Promise<void> {
   }
   const project = services.context.project
 
-  let digest, memories, openLoops, knowledgeFacts, relatedMemories
+  // P3-05: when the host assistant is Claude Code on `UserPromptSubmit`,
+  // `wakeup.sh` forwards the event JSON via `LORE_WAKEUP_EVENT` so we can
+  // seed a relevance search from the user's actual question instead of
+  // dumping generic recents. Codex `SessionStart` and any other caller
+  // that has no prompt yet leaves the env var unset; we fall through to
+  // the data-layer defaults.
+  const userQuery = parseUserQueryFromEvent(process.env["LORE_WAKEUP_EVENT"])
+  if (!userQuery && process.env["LORE_DEBUG"] === "1") {
+    // Operator-facing log: a session that fired wake-up without a user
+    // query is degraded to unranked output. Useful when triaging "why
+    // did wake-up surface iOS notes when I asked about backend auth?"
+    process.stderr.write(
+      "[lore] wakeup: no user query available — falling back to unranked output.\n",
+    )
+  }
+  const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
+
+  let digest, memories, openLoops, knowledgeFacts, relatedMemories, taskMemories
   try {
-    ;({ digest, memories, openLoops, knowledgeFacts, relatedMemories } =
-      await loadWakeUpData(services, {
-        projectId: project?.id,
-        // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
-        includeMemoryContent: false,
-        // Hook never renders decisions — skip the two Notion queries so
-        // session-start latency doesn't regress on the hot path.
-        includeDecisions: false,
-      }))
+    ;({
+      digest,
+      memories,
+      openLoops,
+      knowledgeFacts,
+      relatedMemories,
+      taskMemories,
+    } = await loadWakeUpData(services, {
+      projectId: project?.id,
+      // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
+      includeMemoryContent: false,
+      // Hook never renders decisions — skip the two Notion queries so
+      // session-start latency doesn't regress on the hot path.
+      includeDecisions: false,
+      userQuery,
+      ...rankedLimits,
+    }))
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
@@ -430,6 +544,19 @@ async function wakeup(): Promise<void> {
     sections.push(`**${digest.title}**`)
     if (digest.content) {
       sections.push("", digest.content.trim())
+    }
+  }
+
+  // P3-05: relevance hits seeded by the user's first message. Surfaced
+  // directly under the digest because it's the densest single signal
+  // about what the user is actually asking about — denser than
+  // timestamp-ordered recents or open-loop seeds. Section is omitted
+  // entirely when no userQuery was available so the output stays
+  // identical to the pre-P3-05 shape on the fallback path.
+  if (taskMemories && taskMemories.length > 0) {
+    sections.push("\n## For Your Current Task")
+    for (const mem of taskMemories) {
+      sections.push(`- **${mem.title}** (${mem.source}, ${mem.createdAt.split("T")[0]})`)
     }
   }
 

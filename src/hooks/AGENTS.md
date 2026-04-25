@@ -44,6 +44,56 @@ milliseconds and the user's next turn starts immediately.
 Both paths share the same prompt because the spawned sub-agent has no prior
 context and must receive the transcript inline.
 
+## Wake-up flow
+
+Wake-up fires once per session and injects project context into the host
+assistant before the first reply. P3-05 changed it from a context-blind
+session-start dump into a relevance-ranked surface seeded by the user's
+actual question.
+
+| Hook                            | Trigger                  | User query? |
+| ------------------------------- | ------------------------ | ----------- |
+| Claude Code `UserPromptSubmit`  | First user message       | Yes (`event.prompt`) |
+| Codex `SessionStart`            | Session startup / resume | No (fallback path) |
+
+`wakeup.sh` reads the JSON event off stdin (Claude Code) and forwards it
+to the helper as `LORE_WAKEUP_EVENT`. Codex's `SessionStart` event has
+no user message yet — stdin is typically empty and the helper's parser
+returns `undefined`, dropping wake-up to the unranked output that
+matches the pre-P3-05 shape exactly.
+
+`parseUserQueryFromEvent` (in `helpers.ts`) is the single point that
+extracts the prompt; pin its tests when changing the parsing contract.
+A malformed event, missing `prompt` field, or non-string `prompt` all
+degrade to the same fallback path — wake-up never crashes for an
+input-shape regression.
+
+### Ranked output sections
+
+When a user query is present the hook tightens per-section caps via
+`RANKED_WAKEUP_LIMITS` (memory: 3, related: 2, openLoops: 5,
+knowledge: 10, taskMemories: 3) and adds a top-of-output **For Your
+Current Task** section seeded by `MemoryService.search(userQuery)`.
+The section is omitted entirely on the fallback path so unranked
+output stays identical to the pre-P3-05 shape.
+
+`taskMemories` is deduped against digest, recents, AND `relatedMemories`
+in the data layer (`loadWakeUpData` in `src/core/wakeup.ts`) so the
+same memory never renders across the three memory sections. The user
+query is truncated to 1000 chars before search so a pasted log doesn't
+blow Notion's query budget or drown relevance.
+
+### Operator log
+
+`LORE_DEBUG=1` emits `[lore] wakeup: no user query available — falling
+back to unranked output.` to stderr when the helper hits the fallback
+path. Useful for triaging "why didn't wake-up surface task-relevant
+memories?" — the most common cause is `wakeup.sh` not forwarding stdin
+(legacy hook, or a host assistant that fires wake-up off a non-prompt
+event). Gated behind `LORE_DEBUG=1` because Codex `SessionStart`
+*always* hits the fallback path, and an unconditional log would flood
+stderr on every Codex session.
+
 ## Concurrency guard
 
 Two hooks firing for the same session (e.g. a Stop hook fires while the

@@ -6,6 +6,7 @@ import {
   DEFAULT_WAKEUP_MEMORY_LIMIT,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   DEFAULT_WAKEUP_TASK_LIMIT,
+  DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
@@ -130,6 +131,8 @@ async function handleWakeUp(
     openLoopLimit?: number
     knowledgeFactLimit?: number
     taskLimit?: number
+    userQuery?: string
+    taskMemoryLimit?: number
   },
 ): Promise<ToolResult> {
   try {
@@ -152,6 +155,14 @@ async function handleWakeUp(
     const relatedCap = args.limit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
     const recentOverfetch = recentCap * COLLAPSE_OVERFETCH_MULTIPLIER
     const relatedOverfetch = relatedCap * COLLAPSE_OVERFETCH_MULTIPLIER
+    // Task-memory section: relevance hits seeded by `userQuery`. The
+    // default cap matches the hook's `RANKED_WAKEUP_LIMITS.taskMemoryLimit`
+    // so MCP-direct callers see the same density as Claude Code's
+    // first-prompt wake-up. Over-fetch by the collapse multiplier so the
+    // visible-cluster slice has headroom — same discipline as Recent and
+    // Related, since this section also runs through `collapseOverlappingMemories`.
+    const taskCap = args.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
+    const taskOverfetch = taskCap * COLLAPSE_OVERFETCH_MULTIPLIER
     const {
       digest,
       memories,
@@ -161,6 +172,7 @@ async function handleWakeUp(
       overdueDecisions,
       relatedMemories,
       tasks,
+      taskMemories,
     } = await loadWakeUpData(services, {
       projectId: projectId ?? undefined,
       memoryLimit: recentOverfetch,
@@ -169,6 +181,8 @@ async function handleWakeUp(
       openLoopLimit: args.openLoopLimit,
       knowledgeFactLimit: args.knowledgeFactLimit,
       taskLimit: args.taskLimit,
+      userQuery: args.userQuery,
+      taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
     })
 
@@ -189,6 +203,24 @@ async function handleWakeUp(
       sections.push(`**${digest.title}**\n`)
       if (digest.content) {
         sections.push(digest.content.trim(), "")
+      }
+    }
+
+    // P3-05: relevance hits seeded by the caller's `userQuery`. Surfaced
+    // directly under the digest (densest single signal about what the
+    // user is asking about) and above timestamp-ordered Recent Memories.
+    // Section is omitted when no `userQuery` was passed so legacy callers
+    // see byte-identical pre-P3-05 output. Runs through the same
+    // collapse + cluster-slice as Recent / Related so a near-duplicate
+    // task hit doesn't shrink the visible row count.
+    if (taskMemories.length > 0) {
+      sections.push("## For Your Current Task\n")
+      sections.push(
+        "*Memories ranked by relevance to your `userQuery`. Deduped against the digest, Recent Memories, and Related sections so the same page never renders twice.*\n",
+      )
+      const groups = collapseOverlappingMemories(taskMemories).slice(0, taskCap)
+      for (const group of groups) {
+        sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
       }
     }
 
@@ -390,6 +422,8 @@ const contextDispatchSchema = z.discriminatedUnion("action", [
     openLoopLimit: z.number().int().min(0).max(50).optional(),
     knowledgeFactLimit: z.number().int().min(0).max(50).optional(),
     taskLimit: z.number().int().min(0).max(50).optional(),
+    userQuery: z.string().optional(),
+    taskMemoryLimit: z.number().int().min(0).max(20).optional(),
   }),
   z.object({
     action: z.literal("digest"),
@@ -411,7 +445,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
         "- `action: 'status'` — vault page id, database counts, active project, configured projects.\n" +
-        "- `action: 'wake-up'` — load digest + recent memories + tasks + open loops (legacy tracking facts) + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies.\n" +
+        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + open loops (legacy tracking facts) + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {
         action: z
@@ -462,6 +496,21 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .optional()
           .describe(
             `(action='wake-up') Max tasks rendered in the Tasks section (default ${DEFAULT_WAKEUP_TASK_LIMIT}). 0 skips the section entirely.`,
+          ),
+        userQuery: z
+          .string()
+          .optional()
+          .describe(
+            "(action='wake-up') Optional short description of the user's current task. When set, fires an additional relevance search seeded by this text and surfaces the hits as a 'For Your Current Task' section above Recent Memories. Truncated to 1000 chars before search. Mirrors the shell hook's P3-05 ranked path, so MCP-direct callers (e.g. after `/clear` or a session pivot) get the same query-aware output.",
+          ),
+        taskMemoryLimit: z
+          .number()
+          .int()
+          .min(0)
+          .max(20)
+          .optional()
+          .describe(
+            `(action='wake-up') Max memories surfaced for the user's current task (default ${DEFAULT_WAKEUP_TASK_MEMORY_LIMIT}). Honored only when 'userQuery' is non-empty. Set 0 to skip the section entirely even when a query is provided.`,
           ),
         // digest
         period: z
@@ -562,6 +611,21 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .optional()
           .describe(
             `Max tasks rendered in the Tasks section (default ${DEFAULT_WAKEUP_TASK_LIMIT}). 0 skips the section.`,
+          ),
+        userQuery: z
+          .string()
+          .optional()
+          .describe(
+            "Optional short description of the user's current task. When set, fires an additional relevance search seeded by this text and surfaces the hits as a 'For Your Current Task' section above Recent Memories. Truncated to 1000 chars before search. Mirrors the shell hook's P3-05 ranked path, so MCP-direct callers (e.g. after `/clear` or a session pivot) get the same query-aware output.",
+          ),
+        taskMemoryLimit: z
+          .number()
+          .int()
+          .min(0)
+          .max(20)
+          .optional()
+          .describe(
+            "Max memories surfaced for the user's current task (default 3). Honored only when `userQuery` is non-empty. Set 0 to skip the section entirely even when a query is provided.",
           ),
       },
       annotations: { readOnlyHint: true },

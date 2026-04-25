@@ -64,7 +64,7 @@ import {
   releaseSessionLock,
   tryAcquireSessionLock,
 } from "./lock.js"
-import { handleStop, handleSessionEnd } from "./helpers.js"
+import { handleStop, handleSessionEnd, parseUserQueryFromEvent } from "./helpers.js"
 
 // Stand-in for a spawned `claude -p` process. Returning a live PID (this
 // process) means subsequent lock-aliveness checks see it as "still running",
@@ -681,5 +681,118 @@ hooks:
     } finally {
       rmSync(noConfigDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("parseUserQueryFromEvent", () => {
+  // P3-05: the wake-up hook reads the JSON event Claude Code's
+  // UserPromptSubmit emits on stdin (forwarded by wakeup.sh as
+  // LORE_WAKEUP_EVENT). The parser is the only place where event-shape
+  // assumptions live; pinning them here keeps a future Claude Code
+  // event-shape change from silently degrading wake-up to the unranked
+  // fallback path without us noticing.
+
+  it("extracts the prompt field from a well-formed UserPromptSubmit event", () => {
+    const raw = JSON.stringify({
+      session_id: "abc",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "How do I fix the auth bug?",
+      cwd: "/tmp",
+    })
+    expect(parseUserQueryFromEvent(raw)).toBe("How do I fix the auth bug?")
+  })
+
+  it("trims surrounding whitespace from the prompt", () => {
+    const raw = JSON.stringify({ prompt: "  fix auth bug  \n" })
+    expect(parseUserQueryFromEvent(raw)).toBe("fix auth bug")
+  })
+
+  it("returns undefined for a whitespace-only prompt", () => {
+    // Treated identically to an absent prompt — the data layer would
+    // skip the search anyway, but degrading at the parser keeps the
+    // log line accurate ("no user query" rather than "empty user query").
+    const raw = JSON.stringify({ prompt: "   \n\t  " })
+    expect(parseUserQueryFromEvent(raw)).toBeUndefined()
+  })
+
+  it.each([
+    ["undefined env var", undefined],
+    ["empty string", ""],
+    ["whitespace only", "  \n  "],
+  ])("returns undefined for %s (Codex SessionStart fallback)", (_label, raw) => {
+    expect(parseUserQueryFromEvent(raw)).toBeUndefined()
+  })
+
+  it("returns undefined for malformed JSON (degrades to fallback path)", () => {
+    // A misconfigured wakeup.sh forwarding non-JSON would otherwise
+    // crash the helper. Falling back to unranked output is strictly
+    // better than failing wake-up entirely.
+    expect(parseUserQueryFromEvent("not-json-at-all")).toBeUndefined()
+    expect(parseUserQueryFromEvent("{ unterminated")).toBeUndefined()
+  })
+
+  it("returns undefined for valid JSON that's not an object", () => {
+    expect(parseUserQueryFromEvent("null")).toBeUndefined()
+    expect(parseUserQueryFromEvent('"just a string"')).toBeUndefined()
+    expect(parseUserQueryFromEvent("42")).toBeUndefined()
+    expect(parseUserQueryFromEvent("[1, 2, 3]")).toBeUndefined()
+  })
+
+  it("returns undefined when the prompt field is missing", () => {
+    // Future-proofing: if Claude Code renames `prompt` to `query` in a
+    // later release, we want wake-up to fall back gracefully (and the
+    // log under LORE_DEBUG=1 to surface it) rather than ship task-
+    // memories seeded by `undefined`.
+    const raw = JSON.stringify({
+      session_id: "abc",
+      hook_event_name: "UserPromptSubmit",
+      cwd: "/tmp",
+    })
+    expect(parseUserQueryFromEvent(raw)).toBeUndefined()
+  })
+
+  it("returns undefined when the prompt field is not a string", () => {
+    expect(parseUserQueryFromEvent(JSON.stringify({ prompt: 42 }))).toBeUndefined()
+    expect(parseUserQueryFromEvent(JSON.stringify({ prompt: null }))).toBeUndefined()
+    expect(parseUserQueryFromEvent(JSON.stringify({ prompt: { nested: "x" } }))).toBeUndefined()
+  })
+
+  it.each([
+    ["plain slash command", "/clear"],
+    ["with whitespace", "  /compact  "],
+    ["with arguments", "/lore-wake-up --debug"],
+    ["another tool slash", "/help"],
+  ])("returns undefined for %s (slash commands are useless as search seeds)", (_label, prompt) => {
+    // Slash commands are meta-instructions to the host assistant, not
+    // task language. Seeding the relevance ranker with `/clear` would
+    // produce noise hits (any memory mentioning "clear") and waste a
+    // Notion round-trip. Drop to the fallback path instead.
+    const raw = JSON.stringify({ prompt })
+    expect(parseUserQueryFromEvent(raw)).toBeUndefined()
+  })
+
+  it("preserves prompts that incidentally contain a forward slash", () => {
+    // Only LEADING `/` is the slash-command marker. A real task prompt
+    // like "fix the path /etc/hosts handling" must still seed the search.
+    const raw = JSON.stringify({ prompt: "fix the path /etc/hosts handling" })
+    expect(parseUserQueryFromEvent(raw)).toBe("fix the path /etc/hosts handling")
+  })
+
+  it("falls back when a resumed Claude Code session fires SessionStart instead of UserPromptSubmit", () => {
+    // Resumed sessions in Claude Code fire SessionStart, not
+    // UserPromptSubmit — there's no user prompt yet. The wakeup.sh
+    // script either receives an empty stdin or a SessionStart event
+    // with no `prompt` field. Both shapes degrade to the unranked
+    // fallback path. This pins that contract so a future Anthropic
+    // event-shape change doesn't quietly degrade resumed sessions.
+    const sessionStartEvent = JSON.stringify({
+      session_id: "abc",
+      hook_event_name: "SessionStart",
+      cwd: "/tmp",
+    })
+    expect(parseUserQueryFromEvent(sessionStartEvent)).toBeUndefined()
+    // Empty stdin (the more common Codex shape) also falls back.
+    expect(parseUserQueryFromEvent("")).toBeUndefined()
+    expect(parseUserQueryFromEvent(undefined)).toBeUndefined()
   })
 })
