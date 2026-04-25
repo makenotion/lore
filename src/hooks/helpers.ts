@@ -345,15 +345,19 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
           deriveAgentName(event)
         )
         // Only advance the save counter when a background process actually
-        // started. If spawn was rejected (lock held, cap hit, binary missing),
-        // leaving the counter where it is lets the next Stop — or the
-        // SessionEnd recovery path — retry.
-        const spawned = spawnBackgroundSave(
+        // started. Every non-`spawned` result — benign races (lock-held,
+        // cap-hit, race-lost) and genuine failures (binary-missing,
+        // tempfile-failed, spawn-error) alike — must leave the counter
+        // where it is. For benign races, the peer's spawn will produce a
+        // memory and the next Stop catches up against the new count. For
+        // genuine failures, leaving the counter unchanged lets the next
+        // Stop or the SessionEnd recovery path retry. (See PR #66.)
+        const result = spawnBackgroundSave(
           event.cwd ?? process.cwd(),
           prompt,
           event.session_id
         )
-        if (spawned) {
+        if (result.kind === "spawned") {
           await writeSaveCount(event.session_id, currentCount)
         }
       }
@@ -552,7 +556,10 @@ export async function handleSessionEnd(): Promise<void> {
           event.session_id,
           deriveAgentName(event)
         )
-        spawnBackgroundSave(event.cwd ?? process.cwd(), prompt, event.session_id)
+        // SessionEnd has no save counter to advance and no marker to roll
+        // back, so the SpawnResult is intentionally discarded. The helper's
+        // own per-session stderr log is the only postmortem on this path.
+        void spawnBackgroundSave(event.cwd ?? process.cwd(), prompt, event.session_id)
       }
     }
   }

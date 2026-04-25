@@ -279,6 +279,43 @@ describe("handleStop", () => {
     expect(stdoutWrites.join("")).not.toContain('"decision"')
   })
 
+  it("does not advance the save counter when a peer holds the session lock", async () => {
+    // PF2-03 invariant: handleStop only advances the save counter on
+    // `result.kind === "spawned"`. When `spawnBackgroundSave` returns
+    // `lock-held` (because a peer is still in flight), the counter must
+    // stay where it is so the next Stop or the SessionEnd recovery path
+    // can retry. A regression here would re-introduce the bug PR #66 fixed.
+    writeTranscript(transcriptPath, 5)
+    const sessionId = "sess-counter-invariant"
+
+    // Pre-acquire the session lock with this process's PID so it's seen as
+    // "alive" — `spawnBackgroundSave` will short-circuit on its fast-path
+    // `hasActiveSessionLock` check and return `lock-held` without firing
+    // child_process.spawn at all.
+    const heldLock = tryAcquireSessionLock(sessionId, process.pid)
+    expect(heldLock).not.toBeNull()
+
+    await handleStop(
+      { session_id: sessionId, transcript_path: transcriptPath, cwd: tmpDir },
+      defaultConfig()
+    )
+
+    // No child spawn should have happened — the fast-path lock-held check
+    // returns before child_process.spawn is invoked.
+    expect(spawnMock).not.toHaveBeenCalled()
+
+    // Counter must remain at 0 — proving the SessionEnd recovery path will
+    // see currentCount > lastSaveCount and re-fire on session close.
+    const { readFileSync, existsSync } = await import("node:fs")
+    const counterPath = join(getStateDir(), `${sessionId}.count`)
+    if (existsSync(counterPath)) {
+      const contents = readFileSync(counterPath, "utf-8")
+      expect(contents).toBe("0")
+    }
+
+    releaseSessionLock(heldLock!)
+  })
+
   it("acquires the session lock with the child's PID", async () => {
     writeTranscript(transcriptPath, 3)
     const sessionId = "sess-pid-lock"
@@ -408,8 +445,9 @@ describe("handleSessionEnd", () => {
 
   // End-to-end pin of acceptance criterion (d) "no regression in session-end
   // save reliability". Three pieces of code conspire to make recovery work
-  // after a mid-session spawn rejection: spawnBackgroundSave returning false,
-  // handleStop conditionally bumping the counter, and handleSessionEnd's
+  // after a mid-session spawn rejection: spawnBackgroundSave returning a
+  // non-`spawned` SpawnResult, handleStop conditionally bumping the counter
+  // only when `result.kind === "spawned"`, and handleSessionEnd's
   // currentCount > lastSaveCount guard. A future refactor could quietly
   // break any one of them — this test fails loudly if it does.
   it("recovers a rejected mid-session spawn via the SessionEnd path", async () => {

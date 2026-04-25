@@ -31,7 +31,7 @@ import {
   type DigestData,
 } from "../core/digest.js"
 import { buildDigestPrompt } from "./prompts.js"
-import { DIGEST_ALLOWLIST, spawnBackgroundSave } from "./background.js"
+import { DIGEST_ALLOWLIST, isBenignRace, spawnBackgroundSave } from "./background.js"
 import {
   clearDigestMarker,
   digestMarkerAgeDays,
@@ -54,6 +54,14 @@ export type SchedulerOutcome =
   | "no-activity"
   | "fired"
   | "spawn-failed"
+  /**
+   * A peer process is already producing the digest (per-key lock held, global
+   * concurrency cap reached, or this caller lost the post-spawn O_EXCL race).
+   * The optimistically-touched marker stays in place — the peer will land
+   * a fresh digest, and rolling back here would cost an extra `claude -p`
+   * on the next session-end.
+   */
+  | "skipped-peer-active"
 
 export interface DigestSchedulerDeps {
   initServices?: (
@@ -163,14 +171,21 @@ export async function fireDigestIfStale(
   // for the global `MAX_CONCURRENT_SAVES` cap — five sessions ending at
   // once shouldn't fan out into five concurrent `claude -p` digests.
   const lockKey = `digest-${project.name.replace(/[^A-Za-z0-9_.-]/g, "_")}`
-  const spawned = spawn(cwd, prompt, lockKey, {
+  const result = spawn(cwd, prompt, lockKey, {
     logLabel: "digest",
     allowedTools: DIGEST_ALLOWLIST,
   })
-  if (!spawned) {
-    await clear(state.configRoot, project.name)
-    return "spawn-failed"
-  }
 
-  return "fired"
+  if (result.kind === "spawned") return "fired"
+
+  // Benign races: a peer already holds the per-key lock, the global cap is
+  // saturated, or we lost the post-spawn O_EXCL race. The peer's digest
+  // covers this window — leave the marker fresh so the next session-end
+  // doesn't re-fire and burn another `claude -p` on the same data.
+  if (isBenignRace(result)) return "skipped-peer-active"
+
+  // Genuine failure (binary missing, tempfile prep failed, spawn threw).
+  // Roll back the optimistic touch so the next session-end retries.
+  await clear(state.configRoot, project.name)
+  return "spawn-failed"
 }

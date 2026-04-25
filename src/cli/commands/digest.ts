@@ -4,7 +4,11 @@ import { existsSync } from "node:fs"
 import { initServices } from "../../services.js"
 import { gatherDigestData, isoDate } from "../../core/digest.js"
 import { buildDigestPrompt } from "../../hooks/prompts.js"
-import { DIGEST_ALLOWLIST, spawnBackgroundSave } from "../../hooks/background.js"
+import {
+  DIGEST_ALLOWLIST,
+  isBenignRace,
+  spawnBackgroundSave,
+} from "../../hooks/background.js"
 import { touchDigestMarker } from "../../hooks/digest-marker.js"
 
 /**
@@ -111,11 +115,21 @@ export const digestCommand = new Command("digest")
 
         const spawnCwd = resolveSpawnCwd(services.configRoot, projectConfigPath)
         const lockKey = `digest-${projectLabel.replace(/[^A-Za-z0-9_.-]/g, "_")}`
-        const spawned = spawnBackgroundSave(spawnCwd, prompt, lockKey, {
+        const result = spawnBackgroundSave(spawnCwd, prompt, lockKey, {
           logLabel: "digest",
           allowedTools: DIGEST_ALLOWLIST,
         })
-        if (!spawned) {
+        if (result.kind !== "spawned") {
+          // Benign races (lock-held, cap-hit, race-lost) mean a peer is
+          // already producing the digest; reporting failure would mislead
+          // the operator. Surface that distinctly, but still non-zero exit
+          // for genuine failures so scripts can branch on it.
+          if (isBenignRace(result)) {
+            console.log(
+              `Digest already in flight for "${projectLabel}" — skipping spawn.`,
+            )
+            return
+          }
           console.error("Failed to spawn digest synthesizer.")
           process.exit(1)
         }

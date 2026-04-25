@@ -63,7 +63,7 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
     age: vi.fn(async () => Infinity),
     touch: vi.fn(async () => {}),
     clear: vi.fn(async () => {}),
-    spawn: vi.fn(() => true),
+    spawn: vi.fn(() => ({ kind: "spawned" as const })),
     log: vi.fn(),
   }
   return {
@@ -129,15 +129,71 @@ describe("fireDigestIfStale", () => {
     expect(prompt).toContain("first one")
   })
 
-  it("rolls back the marker when spawn fails so the next session retries", async () => {
+  it("rolls back the marker when the binary is missing so the next session retries", async () => {
     const { deps, calls } = baseDeps({
-      spawn: vi.fn(() => false),
+      spawn: vi.fn(() => ({ kind: "binary-missing" as const })),
     })
     const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     expect(outcome).toBe("spawn-failed")
     expect(calls.touch).toHaveBeenCalledTimes(1)
     expect(calls.clear).toHaveBeenCalledTimes(1)
     expect(calls.clear).toHaveBeenCalledWith(CONFIG_ROOT, "Mail Backend")
+  })
+
+  it("rolls back the marker when spawn itself throws", async () => {
+    const { deps, calls } = baseDeps({
+      spawn: vi.fn(() => ({
+        kind: "spawn-error" as const,
+        error: new Error("ENOMEM"),
+      })),
+    })
+    const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
+    expect(outcome).toBe("spawn-failed")
+    expect(calls.clear).toHaveBeenCalledTimes(1)
+  })
+
+  it("rolls back the marker when temp-file preparation fails", async () => {
+    const { deps, calls } = baseDeps({
+      spawn: vi.fn(() => ({ kind: "tempfile-failed" as const })),
+    })
+    const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
+    expect(outcome).toBe("spawn-failed")
+    expect(calls.clear).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the marker fresh and reports skipped-peer-active when a peer holds the lock", async () => {
+    // The narrow PF2-03 race: between our optimistic touch and our spawn
+    // entering tryAcquireSessionLock, a sibling session-end touched, spawned,
+    // and acquired the digest lock first. Our spawn rejects with `lock-held`
+    // — but the peer is still producing the digest. Clearing the marker
+    // here would cost us an extra `claude -p` on the next session-end.
+    const { deps, calls } = baseDeps({
+      spawn: vi.fn(() => ({ kind: "lock-held" as const })),
+    })
+    const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
+    expect(outcome).toBe("skipped-peer-active")
+    expect(calls.touch).toHaveBeenCalledTimes(1)
+    // Critical invariant: the optimistic touch is NOT rolled back. The peer's
+    // digest will land and the marker should reflect that.
+    expect(calls.clear).not.toHaveBeenCalled()
+  })
+
+  it("keeps the marker fresh and reports skipped-peer-active when the global cap is hit", async () => {
+    const { deps, calls } = baseDeps({
+      spawn: vi.fn(() => ({ kind: "cap-hit" as const })),
+    })
+    const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
+    expect(outcome).toBe("skipped-peer-active")
+    expect(calls.clear).not.toHaveBeenCalled()
+  })
+
+  it("keeps the marker fresh and reports skipped-peer-active when we lose the post-spawn O_EXCL race", async () => {
+    const { deps, calls } = baseDeps({
+      spawn: vi.fn(() => ({ kind: "race-lost" as const })),
+    })
+    const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
+    expect(outcome).toBe("skipped-peer-active")
+    expect(calls.clear).not.toHaveBeenCalled()
   })
 
   it("touches the marker but does NOT spawn when the window has zero activity", async () => {

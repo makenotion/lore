@@ -85,43 +85,93 @@ export interface SpawnBackgroundSaveOptions {
 }
 
 /**
- * Spawn a detached `claude -p` sub-agent to do a structured save. Returns
- * true iff a child process was started and now owns the session lock; false
- * on any rejection (missing binary, another save in flight for the same
- * lock key, global cap hit, race loss against a concurrent spawn, or spawn
- * error).
+ * Outcome of a `spawnBackgroundSave` call.
+ *
+ * The three benign-race kinds (`lock-held`, `cap-hit`, `race-lost`) signal
+ * that a peer process is — or about to be — running the same work. Callers
+ * with side effects to persist (digest marker touch, save counter bump)
+ * MUST NOT advance their state on these kinds, since the peer's success
+ * already accounts for the side effect.
+ *
+ * The three failure kinds (`binary-missing`, `tempfile-failed`,
+ * `spawn-error`) signal genuine failure: no peer is doing the work, and
+ * callers should roll back any optimistically-claimed state so the next
+ * trigger retries.
+ */
+export type SpawnResult =
+  /** Child started and (when `lockKey` was passed) holds the session lock. */
+  | { kind: "spawned" }
+  /** Per-key lock was held by a live peer — that peer is doing the work. */
+  | { kind: "lock-held" }
+  /** Global `MAX_CONCURRENT_SAVES` cap reached — another peer is doing work. */
+  | { kind: "cap-hit" }
+  /** Lost the post-spawn O_EXCL race; child was SIGTERMed. Peer has the lock. */
+  | { kind: "race-lost" }
+  /** `claude` binary not on PATH or in known install locations — retry next trigger. */
+  | { kind: "binary-missing" }
+  /** Failed to create / write the temp prompt file — retry next trigger. */
+  | { kind: "tempfile-failed" }
+  /** `child_process.spawn` itself threw — retry next trigger. */
+  | { kind: "spawn-error"; error: unknown }
+
+/**
+ * True iff the result indicates a peer is producing the same work. Callers
+ * with optimistically-claimed state (digest marker, save counter) must NOT
+ * roll back on these kinds — the peer's success covers the window.
+ *
+ * Centralized so digest-scheduler.ts and the `lore digest` CLI agree on the
+ * benign-race set; adding a seventh `SpawnResult` variant in the future
+ * will require explicit triage at this single site rather than diverging
+ * silently across consumers.
+ */
+export function isBenignRace(result: SpawnResult): boolean {
+  return (
+    result.kind === "lock-held" ||
+    result.kind === "cap-hit" ||
+    result.kind === "race-lost"
+  )
+}
+
+/**
+ * Spawn a detached `claude -p` sub-agent to do a structured save. Returns a
+ * discriminated union describing the outcome:
+ *
+ * - `spawned` — a child process was started and now owns the session lock
+ *   (when `lockKey` was passed). Callers should advance their persistent
+ *   state (save counter, digest marker, etc.).
+ * - `lock-held` / `cap-hit` / `race-lost` — a peer is producing the same
+ *   work. Callers should NOT advance state, NOR roll back any optimistic
+ *   state they already claimed: the peer's success will cover it.
+ * - `binary-missing` / `tempfile-failed` / `spawn-error` — genuine failure.
+ *   Callers should roll back any optimistic state so the next trigger retries.
  *
  * `lockKey` (passed as `sessionId` for the autosave path; a synthetic key
  * like `"digest-Mail"` for the digest path) routes lock + log filenames so
  * each spawn family has its own per-key debounce while sharing the global
  * `MAX_CONCURRENT_SAVES` cap. Pass `undefined` to skip locking entirely —
  * only sensible for one-shot CLI invocations.
- *
- * Callers use the boolean return to decide whether to persist side effects
- * (advance a save counter, touch a digest marker): don't claim the spawn
- * fired when the spawn was rejected.
  */
 export function spawnBackgroundSave(
   cwd: string,
   prompt: string,
   lockKey?: string,
   options: SpawnBackgroundSaveOptions = {}
-): boolean {
+): SpawnResult {
   const allowedTools = options.allowedTools ?? DEFAULT_SAVE_ALLOWLIST
   const logLabel = options.logLabel ?? "background save"
 
   const claudeBin = findClaudeBinary()
   if (!claudeBin) {
     process.stderr.write(`[lore] ${logLabel}: claude binary not found, skipping\n`)
-    return false
+    return { kind: "binary-missing" }
   }
 
   // Fast-path capacity check — avoids paying the spawn cost in the common
   // case where another save is already in flight or the global cap is hit.
   // A second, authoritative check happens after spawn (via O_EXCL acquire)
   // so concurrent callers that both pass this probe are still serialized.
-  if (lockKey && hasActiveSessionLock(lockKey)) return false
-  if (activeSaveCount() >= MAX_CONCURRENT_SAVES) return false
+  if (lockKey && hasActiveSessionLock(lockKey)) return { kind: "lock-held" }
+  if (activeSaveCount() >= MAX_CONCURRENT_SAVES) return { kind: "cap-hit" }
 
   // Write prompt to a temp file and pipe via stdin fd to avoid exposing
   // session transcript content in process arguments (visible via `ps`).
@@ -142,7 +192,7 @@ export function spawnBackgroundSave(
     process.stderr.write(
       `[lore] ${logLabel}: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`
     )
-    return false
+    return { kind: "tempfile-failed" }
   }
 
   const args = [
@@ -197,7 +247,9 @@ export function spawnBackgroundSave(
         } catch {
           // Child already gone.
         }
-        return false
+        // Spawn returned no PID — the OS rejected the fork. Treat as a
+        // genuine spawn failure, not a benign race: there is no peer here.
+        return { kind: "spawn-error", error: new Error("spawn returned no pid") }
       }
       lockFile = tryAcquireSessionLock(lockKey, child.pid)
       if (!lockFile) {
@@ -206,18 +258,21 @@ export function spawnBackgroundSave(
         } catch {
           // Child already gone.
         }
-        return false
+        // Lost the O_EXCL race — a concurrent hook beat us to the lock.
+        // The winning peer is producing the work; callers must NOT roll
+        // back optimistic state.
+        return { kind: "race-lost" }
       }
     }
 
     child.unref()
-    return true
+    return { kind: "spawned" }
   } catch (err) {
     process.stderr.write(
       `[lore] ${logLabel}: spawn failed: ${err instanceof Error ? err.message : err}\n`
     )
     if (lockFile) releaseSessionLock(lockFile)
-    return false
+    return { kind: "spawn-error", error: err }
   } finally {
     // Safe on Unix: `spawn` with `stdio: [stdinFd, ...]` dups the fd into the
     // child, so closing the parent's copy here doesn't affect the child's read.
