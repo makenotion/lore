@@ -14,16 +14,28 @@ import { touchDigestMarker } from "../../hooks/digest-marker.js"
  * so the child's own cwd-based context resolution agrees with the prompt's
  * explicit `projectName`. Falls back to `process.cwd()` when we can't find
  * a safe path (e.g., catch-all projects at `"."` or a stale config entry).
+ *
+ * Exported only for testing the path-resolution contract.
  */
-function resolveSpawnCwd(
+export function resolveSpawnCwd(
   configRoot: string,
   projectPath: string | undefined,
+  warn: (msg: string) => void = (msg) => console.error(msg),
 ): string {
   if (!projectPath) return process.cwd()
   const normalized = projectPath === "." ? "" : projectPath.replace(/^\//, "")
   if (normalized === "") return configRoot
   const absolute = resolve(configRoot, normalized)
-  return existsSync(absolute) ? absolute : process.cwd()
+  if (existsSync(absolute)) return absolute
+  // Stale .lore.yaml entry — the configured project path doesn't exist on
+  // disk anymore. Surface the misconfig instead of silently falling back,
+  // because the synthesizer's own cwd-based project resolution will then
+  // diverge from the prompt's explicit projectName.
+  warn(
+    `Warning: project path "${projectPath}" does not exist relative to ${configRoot}. ` +
+      `Spawning from ${process.cwd()} instead — child context resolution may diverge.`,
+  )
+  return process.cwd()
 }
 
 export const digestCommand = new Command("digest")

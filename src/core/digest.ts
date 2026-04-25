@@ -80,8 +80,6 @@ export interface DigestData {
   lastDigestDate: string | null
   /** Number of memories in the window — useful for "nothing to digest" checks. */
   recentMemoryCount: number
-  /** Non-fatal warnings surfaced to the caller. */
-  warnings: string[]
 }
 
 function computeWindow(
@@ -209,6 +207,5 @@ export async function gatherDigestData(
     raw: sections.join("\n"),
     lastDigestDate,
     recentMemoryCount: recentMemories.length,
-    warnings: [],
   }
 }

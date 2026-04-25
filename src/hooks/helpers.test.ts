@@ -12,7 +12,7 @@
  * when invoked from a test runner, so we can exercise `handleStop` directly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -35,15 +35,26 @@ vi.hoisted(() => {
 // would return null, short-circuiting `spawnBackgroundSave` before the
 // spawn-path assertions fire. The mock always resolves to a fake path so
 // the rest of the hook runs as if `claude` were installed.
-const { spawnMock, execFileSyncMock } = vi.hoisted(() => ({
+//
+// `fireDigestIfStaleMock` stands in for the digest scheduler so the
+// session-end integration tests can assert wiring (was the call made? with
+// what shape?) without firing real Notion or `claude -p` work.
+const { spawnMock, execFileSyncMock, fireDigestIfStaleMock } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileSyncMock: vi.fn(() => "/mock/bin/claude\n"),
+  fireDigestIfStaleMock: vi.fn(async () => "no-project" as const),
 }))
 
 vi.mock("node:child_process", async () => {
   const actual =
     await vi.importActual<typeof import("node:child_process")>("node:child_process")
   return { ...actual, spawn: spawnMock, execFileSync: execFileSyncMock }
+})
+
+vi.mock("./digest-scheduler.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./digest-scheduler.js")>("./digest-scheduler.js")
+  return { ...actual, fireDigestIfStale: fireDigestIfStaleMock }
 })
 
 import type { HookConfig } from "./config.js"
@@ -455,5 +466,182 @@ describe("handleSessionEnd", () => {
     await handleSessionEnd()
 
     expect(spawnMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("handleSessionEnd → fireDigestIfStale wiring", () => {
+  let tmpDir: string
+  let transcriptPath: string
+  let stdoutSpy: { mockRestore: () => void }
+  let stderrSpy: { mockRestore: () => void }
+  const savedEnv = { ...process.env }
+  const originalCwd = process.cwd()
+
+  // Minimal `.lore.yaml` so `loadHookState` returns a populated `config` +
+  // `configRoot`. Without these fields the digest block in `handleSessionEnd`
+  // is gated off (`if (state.config && state.configRoot)`) — the wired path
+  // would never run and the test would be vacuously green.
+  const FIXTURE_YAML = `vault:
+  pageId: vault-fixture-id
+projects:
+  - name: Mail
+    path: .
+hooks:
+  autoDigest: true
+`
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "lore-session-end-digest-"))
+    writeFileSync(join(tmpDir, ".lore.yaml"), FIXTURE_YAML)
+    transcriptPath = join(tmpDir, "transcript.jsonl")
+    writeTranscript(transcriptPath, 3)
+
+    stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => fakeLiveChild())
+
+    fireDigestIfStaleMock.mockReset()
+    fireDigestIfStaleMock.mockResolvedValue("no-project")
+
+    // chdir so `findConfigFile(process.cwd())` finds the fixture. The hook
+    // event's `cwd` field is what `fireDigestIfStale` ultimately sees, but
+    // `loadHookState` reads `process.cwd()` to find the config.
+    process.chdir(tmpDir)
+
+    // Default: enable digest path. Individual tests override.
+    delete process.env["LORE_AUTO_DIGEST"]
+    delete process.env["LORE_AUTOSAVE"]
+  })
+
+  afterEach(() => {
+    process.chdir(originalCwd)
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    rmSync(tmpDir, { recursive: true, force: true })
+    try {
+      rmSync(getStateDir(), { recursive: true, force: true })
+    } catch {
+      // Nothing to clean.
+    }
+    process.env = { ...savedEnv }
+  })
+
+  it("calls fireDigestIfStale with the event cwd, loaded config, and autoDigest=true", async () => {
+    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
+      session_id: "sess-digest",
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    })
+
+    await handleSessionEnd()
+
+    expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
+    const [cwdArg, stateArg] = fireDigestIfStaleMock.mock.calls[0] as unknown as [
+      string,
+      { config: { vault: { pageId: string } }; configRoot: string; autoDigest: boolean },
+    ]
+    expect(cwdArg).toBe(tmpDir)
+    // findConfigFile canonicalizes via real-path resolution (`/var → /private/var`
+    // on macOS), so compare canonical to canonical instead of the raw mkdtemp.
+    expect(stateArg.configRoot).toBe(realpathSync(tmpDir))
+    expect(stateArg.autoDigest).toBe(true)
+    expect(stateArg.config.vault.pageId).toBe("vault-fixture-id")
+  })
+
+  it("threads autoDigest=false through to the scheduler when LORE_AUTO_DIGEST=false", async () => {
+    process.env["LORE_AUTO_DIGEST"] = "false"
+    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
+      session_id: "sess-env-disabled",
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    })
+
+    await handleSessionEnd()
+
+    // The scheduler IS still called — it owns the disabled-short-circuit so
+    // observability stays consistent. But it must see autoDigest=false.
+    expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
+    const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
+    expect(stateArg.autoDigest).toBe(false)
+  })
+
+  it("threads autoDigest=false when hooks.autoDigest is false in .lore.yaml", async () => {
+    writeFileSync(
+      join(tmpDir, ".lore.yaml"),
+      FIXTURE_YAML.replace("autoDigest: true", "autoDigest: false")
+    )
+    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
+      session_id: "sess-config-disabled",
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    })
+
+    await handleSessionEnd()
+
+    expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
+    const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
+    expect(stateArg.autoDigest).toBe(false)
+  })
+
+  it("env override wins even when hooks.autoDigest is true (LORE_AUTO_DIGEST=false trumps config)", async () => {
+    // FIXTURE_YAML has autoDigest: true; env override should still flip it.
+    process.env["LORE_AUTO_DIGEST"] = "false"
+    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
+      session_id: "sess-env-overrides-config",
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    })
+
+    await handleSessionEnd()
+
+    const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
+    expect(stateArg.autoDigest).toBe(false)
+  })
+
+  it("swallows scheduler throws so session exit stays clean (fail-open contract)", async () => {
+    fireDigestIfStaleMock.mockRejectedValueOnce(new Error("notion exploded"))
+    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
+      session_id: "sess-throws",
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    })
+
+    // Must not throw — the inline try/catch around fireDigestIfStale at
+    // helpers.ts:540-550 contains the error so session exit stays clean.
+    await expect(handleSessionEnd()).resolves.toBeUndefined()
+    expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not call fireDigestIfStale when no .lore.yaml is found in any ancestor of cwd", async () => {
+    // The principal review on PR #68 named "drop the
+    // `state.config && state.configRoot` guard" as a regression mode the
+    // wiring tests must catch. The other cases all run with a populated
+    // .lore.yaml so the guard is always satisfied; this case runs from a
+    // directory whose ancestor chain has no .lore.yaml so loadHookState
+    // returns { config: null, configRoot: null }. A regression that
+    // dropped the guard would crash inside the un-mocked scheduler with
+    // resolveProjectPathFromCwd(cwd, null, null).
+    //
+    // os.tmpdir() resolves to /var/folders/... on macOS and /tmp on Linux;
+    // walking upward from a fresh subdirectory there hits / without
+    // crossing any project's .lore.yaml on the runners we use.
+    const noConfigDir = mkdtempSync(join(tmpdir(), "lore-no-config-"))
+    try {
+      process.chdir(noConfigDir)
+      writeTranscript(join(noConfigDir, "transcript.jsonl"), 3)
+      process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
+        session_id: "sess-no-config",
+        transcript_path: join(noConfigDir, "transcript.jsonl"),
+        cwd: noConfigDir,
+      })
+
+      await handleSessionEnd()
+
+      expect(fireDigestIfStaleMock).not.toHaveBeenCalled()
+    } finally {
+      rmSync(noConfigDir, { recursive: true, force: true })
+    }
   })
 })
