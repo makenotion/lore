@@ -22,8 +22,10 @@ import type {
   Fact,
   FactPredicate,
   ListDecisionsOpts,
+  ListTasksOpts,
   Memory,
   MemorySource,
+  TaskSummary,
 } from "../types.js"
 import { TRACKING_PREDICATES } from "../types.js"
 
@@ -44,6 +46,12 @@ export const DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT = 25
  * digest.
  */
 export const DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT = 5
+/**
+ * Cap on tasks rendered in wake-up's Tasks section. Mirrors the spec's
+ * "Tasks section capped at 10" guidance and the `lore-tasks` per-section
+ * default — a triage list, not an inventory.
+ */
+export const DEFAULT_WAKEUP_TASK_LIMIT = 10
 /**
  * Notion's hard ceiling on rows returned from a single `list` call. We scale
  * the related-memory fetch window up to this bound so large `relatedLimit`
@@ -101,6 +109,9 @@ export interface WakeUpServices {
     list(opts?: ListDecisionsOpts): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
     queryOverdue(opts?: { projectId?: string }): Promise<DecisionSummary[]>
   }
+  tasks: {
+    list(opts?: ListTasksOpts): Promise<{ items: TaskSummary[]; nextCursor?: string }>
+  }
 }
 
 export interface WakeUpOptions {
@@ -122,6 +133,14 @@ export interface WakeUpOptions {
   openLoopLimit?: number
   /** Max related memories. */
   relatedMemoryLimit?: number
+  /**
+   * Max active tasks (Kind = task) surfaced in the Tasks section.
+   * Mirrors `openLoopLimit` — `0` skips the Notion query entirely.
+   * After P3-02 migration, this section is the canonical replacement
+   * for Open Loops; pre-migration vaults still see Open Loops alongside
+   * any natively-created tasks.
+   */
+  taskLimit?: number
   /**
    * When false, fetch recent memories without their markdown body.
    * Used by hook wake-up which only renders title/date. The digest memory
@@ -160,6 +179,11 @@ export interface WakeUpData {
    * no open loops to seed from.
    */
   relatedMemories: Memory[]
+  /**
+   * Active task memories (Kind = task) capped at `taskLimit`. Sorted by
+   * due-date ascending so most-pressing rows are first.
+   */
+  tasks: TaskSummary[]
 }
 
 export async function loadWakeUpData(
@@ -183,6 +207,7 @@ export async function loadWakeUpData(
     NOTION_PAGE_SIZE,
   )
   const relatedLimit = opts.relatedMemoryLimit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
+  const taskLimit = opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
   const includeDecisions = opts.includeDecisions ?? true
   const now = opts.now ?? Date.now()
@@ -202,6 +227,7 @@ export async function loadWakeUpData(
     { items: knowledgeFacts },
     { items: proposedDecisions },
     overdueDecisions,
+    { items: tasks },
   ] = await Promise.all([
     services.memories.list({
       projectId,
@@ -239,6 +265,13 @@ export async function loadWakeUpData(
     projectId && includeDecisions
       ? services.decisions.queryOverdue({ projectId })
       : Promise.resolve([] as DecisionSummary[]),
+    projectId && taskLimit > 0
+      ? services.tasks.list({
+          projectId,
+          // Default `states` (active set) lives inside `TaskService.list`.
+          limit: taskLimit,
+        })
+      : Promise.resolve({ items: [] as TaskSummary[] }),
   ])
 
   const latestDigest = latestDigestList[0] ?? null
@@ -301,6 +334,7 @@ export async function loadWakeUpData(
     proposedDecisions,
     overdueDecisions,
     relatedMemories,
+    tasks,
   }
 }
 

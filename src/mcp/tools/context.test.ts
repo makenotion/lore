@@ -25,6 +25,9 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     keywords: "",
     session: "",
     content: "",
+    taskState: null,
+    blockedBy: "",
+    entity: "",
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
     ...overrides,
@@ -110,6 +113,9 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     decisions: {
       list: vi.fn(async () => ({ items: [] })),
       queryOverdue: vi.fn(async () => []),
+    },
+    tasks: {
+      list: vi.fn(async () => ({ items: [] })),
     },
     context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
     config: { projects: [] },

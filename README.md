@@ -122,9 +122,26 @@ registered as deprecated aliases that delegate to the same handlers — see
 
 | Action       | Description |
 | ------------ | ----------- |
-| `create`     | Add a subject-predicate-object fact triple |
+| `create`     | Add a subject-predicate-object fact triple. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task-create` instead. |
 | `invalidate` | Invalidate a fact (sets Valid Until date, preserves history) |
 | `extend`     | Push a fact's review-by date forward |
+
+After P3-02, `lore-query action='ask'` also surfaces tasks touching the
+entity, and `lore-query action='open-loops'` is deprecated in favour of
+`lore-tasks` (un-migrated vaults still see legacy tracking facts).
+
+### Tasks
+
+`Kind = task` memories supersede the legacy tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`). The description lives in the page body (no rich_text length cap) and the subject is structurally indexed, so structural queries actually work.
+
+| Tool                | Description                                                            |
+| ------------------- | ---------------------------------------------------------------------- |
+| `lore-task-create`  | Create a task with subject, description, state, blocker, and due date  |
+| `lore-task-update`  | Update a task's state, blocker, due date, subject, or description      |
+| `lore-task-close`   | Mark a task done (or cancelled — distinguished for metrics)            |
+| `lore-tasks`        | List tasks with Overdue/Active sections; filters by entity, state, due |
+
+Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-tracking-to-tasks --yes`. Subsuming this family into a polymorphic `lore-task` dispatcher is tracked as PF3-06.
 
 ### `lore-decision` — decision lifecycle
 

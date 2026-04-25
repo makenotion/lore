@@ -11,6 +11,7 @@ import {
   proposeSourceMemory,
   runFactEncodingFix,
   runMemoryEncodingFix,
+  runTrackingToTasksMigration,
 } from "./migrate.js"
 
 function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
@@ -51,6 +52,9 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     keywords: "",
     session: "",
     content: "",
+    taskState: null,
+    blockedBy: "",
+    entity: "",
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,
@@ -858,3 +862,103 @@ describe("printAliasMergeResults", () => {
   })
 })
 
+describe("runTrackingToTasksMigration", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logs.push(args.map((a) => String(a)).join(" "))
+      })
+  })
+  afterEach(() => {
+    logSpy.mockRestore()
+  })
+
+  function fakeServices(opts: {
+    candidates: Fact[]
+    createImpl?: () => Promise<{ id: string }>
+  }) {
+    return {
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue(opts.candidates),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      tasks: {
+        create:
+          opts.createImpl
+            ? vi.fn().mockImplementation(opts.createImpl)
+            : vi.fn().mockResolvedValue({ id: "task-new" }),
+      },
+    } as never
+  }
+
+  it("plan-only mode emits a 'no changes written' footer and skips writes", async () => {
+    const candidates: Fact[] = [
+      {
+        id: "f1",
+        subject: "AuthService",
+        predicate: "needs_action",
+        object: "Audit secret rotation",
+        projectIds: [],
+        validFrom: "2026-04-01",
+        validUntil: null,
+        reviewBy: "2026-04-15",
+        sourceMemoryId: null,
+        confidence: "certain",
+      },
+    ]
+    const services = fakeServices({ candidates })
+
+    const result = await runTrackingToTasksMigration(services, {
+      apply: false,
+    })
+
+    const joined = logs.join("\n")
+    expect(joined).toContain("Would migrate 1 tracking fact")
+    expect(joined).toContain("Plan only")
+    expect(joined).toContain("--yes")
+    // No invalidate / create calls in plan mode.
+    expect(result.invalidated).toBe(0)
+    expect(
+      (services as { facts: { invalidate: { mock: { calls: unknown[] } } } }).facts
+        .invalidate.mock.calls
+    ).toHaveLength(0)
+  })
+
+  it("apply mode reports invalidation count", async () => {
+    const candidates: Fact[] = [
+      {
+        id: "f1",
+        subject: "AuthService",
+        predicate: "needs_action",
+        object: "Audit",
+        projectIds: [],
+        validFrom: "2026-04-01",
+        validUntil: null,
+        reviewBy: "2026-04-15",
+        sourceMemoryId: "mem-1",
+        confidence: "certain",
+      },
+    ]
+    const services = fakeServices({ candidates })
+
+    await runTrackingToTasksMigration(services, { apply: true })
+
+    const joined = logs.join("\n")
+    expect(joined).toContain("Migrated 1 tracking fact")
+    expect(joined).toContain("Invalidated 1 source fact")
+    expect(joined).not.toContain("Plan only")
+  })
+
+  it("emits 'nothing to migrate' when there are no candidates", async () => {
+    const services = fakeServices({ candidates: [] })
+
+    await runTrackingToTasksMigration(services, { apply: true })
+
+    expect(logs.join("\n")).toContain("No tracking-predicate facts found")
+  })
+})

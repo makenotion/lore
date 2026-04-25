@@ -150,6 +150,13 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
 /**
  * What kind of memory this is. Used as a server-side discriminator so
  * tools like `lore-list-decisions` can filter without post-processing.
+ *
+ * `task` memories carry tracking-style state (open / blocked / done) and
+ * supersede the legacy tracking-predicate facts (`needs_action` /
+ * `waiting_on` / `blocked_by`). The Memories DB hosts them so the title
+ * is a structured subject and the body holds the full description —
+ * compare to facts where the Object field is a 2000-char rich_text and
+ * structural queries fall apart on prose.
  */
 export type MemoryKind =
   | "note"
@@ -158,6 +165,35 @@ export type MemoryKind =
   | "runbook"
   | "postmortem"
   | "policy"
+  | "task"
+
+/**
+ * Lifecycle state for `Kind = task` memories. Mirrors the predicates the
+ * legacy tracking facts encoded:
+ *
+ * - `open` — needs action; no one yet picking it up. Default for fresh
+ *   tasks and for migrated `needs_action` / `waiting_on` facts.
+ * - `in-progress` — actively being worked.
+ * - `blocked` — waiting on an external dependency. Pair with `Blocked By`
+ *   to name the blocker (PR number, person, service). Migrated
+ *   `blocked_by` facts land here.
+ * - `done` — closed successfully. `lore-task-close` writes this.
+ * - `cancelled` — dropped without completion. Distinct from `done` so
+ *   metrics distinguish "shipped" from "abandoned".
+ *
+ * Non-task memories carry no Task State; the field is read off the
+ * `Task State` Notion column when present and elided otherwise.
+ */
+export type TaskState =
+  | "open"
+  | "in-progress"
+  | "blocked"
+  | "done"
+  | "cancelled"
+
+/** Task states that count as "still owing work" — surfaced by
+ *  `lore-tasks` and the wake-up Tasks section by default. */
+export const ACTIVE_TASK_STATES: TaskState[] = ["open", "in-progress", "blocked"]
 
 /**
  * Lifecycle state for memories that have one. Non-decision memories
@@ -205,6 +241,24 @@ export interface Memory {
   content: string
   createdAt: string
   updatedAt: string
+  /**
+   * Task-specific lifecycle. Populated only when `kind === "task"`; null
+   * on every other memory kind. Reading the field off a non-task page
+   * yields null even if the column exists in the schema.
+   */
+  taskState: TaskState | null
+  /**
+   * Free-form name of the blocker for `taskState === "blocked"` tasks
+   * (PR number, person, external service). Empty string when not set —
+   * matches the rich_text default elsewhere on the type.
+   */
+  blockedBy: string
+  /**
+   * Normalized subject the task is about. Matches the legacy fact
+   * Subject field for migrated tasks. Empty string when not set;
+   * `lore-ask` and `lore-tasks` filter against this column server-side.
+   */
+  entity: string
 }
 
 export interface CreateMemoryInput {
@@ -233,6 +287,12 @@ export interface CreateMemoryInput {
   tags?: string[]
   keywords?: string
   session?: string
+  /** Task-specific. Defaults to `"open"` when `kind === "task"`. */
+  taskState?: TaskState
+  /** Free-form blocker label. Only meaningful on `kind === "task"`. */
+  blockedBy?: string
+  /** Normalized subject. Only meaningful on `kind === "task"`. */
+  entity?: string
 }
 
 export interface UpdateMemoryInput {
@@ -251,6 +311,9 @@ export interface UpdateMemoryInput {
   affectsIds?: string[]
   alternatives?: string
   consequences?: string
+  taskState?: TaskState
+  blockedBy?: string
+  entity?: string
 }
 
 export interface SearchMemoriesInput {
@@ -334,6 +397,92 @@ export interface ListDecisionsOpts {
    * Opaque cursor from a previous page's `nextCursor`. When provided,
    * continues enumeration from where that page ended.
    */
+  startCursor?: string
+}
+
+// ---------------------------------------------------------------------------
+// Task (a Memory with Kind = "task")
+// ---------------------------------------------------------------------------
+
+/**
+ * A task is a Memory where `kind === "task"`. Same shape as Memory —
+ * `taskState`, `blockedBy`, `entity` are guaranteed non-null on this
+ * subtype because the create path always populates them. Exposed as a
+ * distinct type so downstream code can narrow against the discriminator
+ * without runtime checks.
+ */
+export type Task = Memory & {
+  kind: "task"
+  taskState: TaskState
+}
+
+/**
+ * Lightweight task summary — no markdown body. Returned by
+ * `TaskService.list()` for the index-tier triage paths (`lore-tasks`,
+ * wake-up Tasks section) so they don't pay an N+1 `retrieveMarkdown`
+ * cost.
+ */
+export type TaskSummary = Omit<Task, "content">
+
+export interface CreateTaskInput {
+  /** One-line task subject. Becomes the page title. */
+  subject: string
+  /** Description / context. Becomes the page body. */
+  description?: string
+  projectIds?: string[]
+  topicId?: string
+  /** Defaults to `"open"`. */
+  state?: TaskState
+  /** Free-form blocker label, used when `state === "blocked"`. */
+  blockedBy?: string
+  /**
+   * Normalized entity name the task is about. Defaults to `subject` when
+   * omitted so `lore-ask(entity)` always has something to match.
+   */
+  entity?: string
+  /** Due date / next review. Maps to the `Review By` column. */
+  dueDate?: string
+  confidence?: MemoryConfidence
+  /**
+   * Source memory IDs that motivated this task. Maps to `Affects` —
+   * mirroring how migrated tasks carry the original fact's
+   * `sourceMemoryId` forward.
+   */
+  affectsIds?: string[]
+  alternatives?: string
+  consequences?: string
+  tags?: string[]
+  keywords?: string
+  agent?: string
+  session?: string
+}
+
+export interface UpdateTaskInput {
+  state?: TaskState
+  blockedBy?: string
+  entity?: string
+  /** New due date (`Review By`). Pass empty string to clear. */
+  dueDate?: string | null
+  subject?: string
+  description?: string
+  tags?: string[]
+  keywords?: string
+  affectsIds?: string[]
+}
+
+export interface ListTasksOpts {
+  projectId?: string
+  /**
+   * Filter to a specific entity. Matches against the `Entity` column
+   * server-side via `rich_text.contains` — same scoping rule
+   * `lore-ask(entity)` uses.
+   */
+  entity?: string
+  /** Filter by state. Omit to use `ACTIVE_TASK_STATES`. */
+  states?: TaskState[]
+  /** Only tasks with `Review By` on or before this date. */
+  dueBefore?: string
+  limit?: number
   startCursor?: string
 }
 

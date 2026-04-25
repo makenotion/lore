@@ -15,6 +15,7 @@ import { TopicService } from "./core/topic.js"
 import { MemoryService } from "./core/memory.js"
 import { FactService } from "./core/fact.js"
 import { DecisionService } from "./core/decision.js"
+import { TaskService } from "./core/task.js"
 import { resolveProject } from "./core/context.js"
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
 import type { LoreConfig, ResolvedContext } from "./types.js"
@@ -26,6 +27,7 @@ export interface LoreServices {
   memories: MemoryService
   facts: FactService
   decisions: DecisionService
+  tasks: TaskService
   context: ResolvedContext
   config: LoreConfig
   configRoot: string
@@ -62,6 +64,9 @@ export async function initServicesFromConfig(
   // business logic (Kind = decision discriminator, supersession chains,
   // index-tier listings without body fetch).
   const decisions = new DecisionService(client, db.memories)
+  // Tasks (P3-02) are likewise Memories-DB backed via the `Kind = task`
+  // discriminator. They supersede tracking-predicate facts.
+  const tasks = new TaskService(client, db.memories)
 
   const resolution = await resolveProject(cwd, configRoot, config, projects)
 
@@ -72,6 +77,7 @@ export async function initServicesFromConfig(
     memories,
     facts,
     decisions,
+    tasks,
     context: {
       vault: vault.get(),
       project: resolution.project,

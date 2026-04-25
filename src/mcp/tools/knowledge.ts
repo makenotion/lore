@@ -6,7 +6,9 @@ import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
 
-import type { Decision, Fact } from "../../types.js"
+import type { Decision, Fact, FactPredicate, TaskSummary } from "../../types.js"
+import { TRACKING_PREDICATES } from "../../types.js"
+import { taskDaysOverdue } from "../../core/task.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -81,6 +83,17 @@ function rankActive(a: Fact, b: Fact): number {
   return a.id.localeCompare(b.id)
 }
 
+/**
+ * Predicates accepted on `lore-learn`. The tracking predicates
+ * (`needs_action`, `waiting_on`, `blocked_by`) are deliberately absent
+ * after P3-02 — those workflows live on `lore-task-create` now. Keeping
+ * them in the union but rejecting at the validation layer is what gives
+ * us the "type one" -> directive error UX.
+ *
+ * Decision-graph predicates (`decided_by`, `supersedes_decision`,
+ * `informs`) stay internal-only — created by `DecisionService` and
+ * never via `lore-learn` regardless of P3-02.
+ */
 const PREDICATE_VALUES = [
   "is_a",
   "has_a",
@@ -101,6 +114,47 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
+/**
+ * Build the redirect message agents see when they call `lore-learn` with
+ * a tracking predicate. The wording tells them the right tool to call,
+ * names the closest equivalent task state, and shows the field mapping
+ * — `Subject → subject`, `Object → description` — so the agent doesn't
+ * have to guess at how to translate.
+ */
+function trackingPredicateRedirect(predicate: FactPredicate): string {
+  const stateHint =
+    predicate === "blocked_by"
+      ? "blocked"
+      : "open"
+  const blockerLine =
+    predicate === "blocked_by" || predicate === "waiting_on"
+      ? "\n  • blockedBy: (the Object you'd have used)"
+      : ""
+  return (
+    `Tracking predicate \`${predicate}\` is no longer accepted by lore-learn. ` +
+    `Tracked work lives on tasks now (P3-02): the description goes in the page body, the subject is structurally indexed, ` +
+    `and lore-tasks queries by entity / state / due date.\n\n` +
+    `Use \`lore-task-create\` instead:\n` +
+    `  • subject: (the Subject you'd have used)\n` +
+    `  • description: (the Object — full prose, no 2000-char limit)${blockerLine}\n` +
+    `  • state: "${stateHint}"\n` +
+    `  • entity: (defaults to subject — set explicitly if other facts/tasks reference a different name)\n\n` +
+    `Existing tracking facts can be ported in bulk via \`lore migrate --migrate-tracking-to-tasks\`.`
+  )
+}
+
+/**
+ * Return true when the auto-link candidate's project scope is compatible
+ * with the fact's. Rules:
+ *
+ * - Either side empty (vault-wide) → compatible. A vault-wide memory can
+ *   support a scoped fact, and a vault-wide fact can accept any scoped
+ *   memory as source.
+ * - Both sides scoped → require at least one shared project.
+ *
+ * Anything else is a durable cross-project mis-link risk and must be
+ * declined. Mirror of the conservative stance in the backfill heuristic.
+ */
 function projectsCompatible(factProjectIds: string[], memoryProjectIds: string[]): boolean {
   if (factProjectIds.length === 0 || memoryProjectIds.length === 0) return true
   const memoryScope = new Set(memoryProjectIds)
@@ -181,6 +235,15 @@ export async function handleLearn(
   args: LearnArgs,
 ): Promise<ToolResult> {
   try {
+    // P3-02: tracking predicates are no longer first-class facts. Reject
+    // them with a directive error instead of writing the row; the
+    // migration command ports any pre-existing tracking facts over to
+    // the task model in bulk. The rejection lives in the shared handler
+    // so both `lore-fact action='create'` and the `lore-learn` alias
+    // refuse identically.
+    if ((TRACKING_PREDICATES as FactPredicate[]).includes(args.predicate)) {
+      return toolError(new Error(trackingPredicateRedirect(args.predicate)))
+    }
     const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
     const factProjectIds = resolved.ids
 
@@ -310,15 +373,32 @@ export async function handleAsk(
       projectId = services.context.project.id
     }
 
-    const facts = await services.facts.queryByEntity(args.entity, { projectId })
+    // Fetch facts and tasks in parallel — they're independent queries
+    // and `lore-ask` is on the agent hot path. Failures on the tasks side
+    // surface as a warning rather than collapsing the call so a transient
+    // 5xx on the tasks query does not nuke the facts response.
+    const [facts, taskListing] = await Promise.all([
+      services.facts.queryByEntity(args.entity, { projectId }),
+      services.tasks
+        .list({ projectId, entity: args.entity, limit: 50 })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          warnings.push(`Tasks lookup failed: ${message}`)
+          return { items: [] as TaskSummary[] }
+        }),
+    ])
+    const tasks = taskListing.items
 
     const formatWarnings = () =>
       warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
-    if (facts.length === 0) {
+    if (facts.length === 0 && tasks.length === 0) {
       return {
         content: [
-          { type: "text", text: `No facts found about "${args.entity}".${formatWarnings()}` },
+          {
+            type: "text",
+            text: `No facts or tasks found about "${args.entity}".${formatWarnings()}`,
+          },
         ],
       }
     }
@@ -429,29 +509,83 @@ export async function handleAsk(
       )
     }
 
+    // Tasks bucket — surfaces tracked work touching the entity. Sourced
+    // separately from facts so post-P3-02 vaults (where tracking
+    // predicates aren't first-class facts anymore) still get the open
+    // loops view at `lore-ask` time.
+    type Tasked = { sortKey: string | null; line: string }
+    const taskItems: Tasked[] = tasks.map((t) => {
+      const overdueDays = taskDaysOverdue(t, today)
+      const stateLabel = t.taskState ?? "open"
+      const blocker = t.blockedBy ? `, blocked by ${t.blockedBy}` : ""
+      const due =
+        overdueDays !== null && t.reviewBy
+          ? overdueDays === 0
+            ? " **(due today)**"
+            : ` **(${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue — review by ${t.reviewBy})**`
+          : t.reviewBy
+            ? ` (due ${t.reviewBy})`
+            : ""
+      const prefix = overdueDays !== null ? "⚠ " : ""
+      return {
+        // Tasks have no `validFrom` — the agent-relevant ordering is
+        // most-pressing-first. Sort by `Review By` ascending; fall back
+        // to `decidedAt` when no due date is set so newer-but-undated
+        // tasks order before truly stale ones; null sinks to the bottom.
+        sortKey: t.reviewBy ?? t.decidedAt ?? null,
+        line: `- ${prefix}**${t.title}** [${stateLabel}${blocker}]${due}\n  Task ID: ${t.id}`,
+      }
+    })
+    taskItems.sort((a, b) => {
+      if (a.sortKey === b.sortKey) return 0
+      if (!a.sortKey) return 1
+      if (!b.sortKey) return -1
+      return a.sortKey < b.sortKey ? -1 : 1
+    })
+
+    if (taskItems.length > 0) {
+      const visible = taskItems.slice(0, cap)
+      const hidden = taskItems.length - visible.length
+      if (hidden > 0) anyOverflow = true
+      const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
+      sections.push(
+        `### Tasks (${taskItems.length})${hiddenSuffix}\n${visible
+          .map((item) => item.line)
+          .join("\n")}`,
+      )
+    }
+
     if (sections.length === 0) {
       return {
         content: [
           {
             type: "text",
-            text: `No current facts found about "${args.entity}".${formatWarnings()}`,
+            text: `No current facts or tasks found about "${args.entity}".${formatWarnings()}`,
           },
         ],
       }
     }
 
     const totalFacts =
-      governanceItems.length + structureItems.length + trackingOrdered.length
+      governanceItems.length +
+      structureItems.length +
+      trackingOrdered.length +
+      taskItems.length
     const overflowHint =
       anyOverflow && args.limit === undefined
         ? `\n\n(pass limit to raise the cap; e.g. limit=${SUGGESTED_OVERFLOW_LIMIT})`
         : ""
 
+    // Header noun: tasks become first-class in the same response, so a
+    // vault with only tasks (post-migration, sparse facts) doesn't
+    // misreport "0 facts" when the section actually rendered.
+    const noun =
+      taskItems.length > 0 && facts.length === 0 ? "results" : "facts"
     return {
       content: [
         {
           type: "text",
-          text: `${totalFacts} facts about "${args.entity}":\n\n${sections.join("\n\n")}${overflowHint}${formatWarnings()}`,
+          text: `${totalFacts} ${noun} about "${args.entity}":\n\n${sections.join("\n\n")}${overflowHint}${formatWarnings()}`,
         },
       ],
     }
@@ -905,7 +1039,9 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
     "lore-open-loops",
     {
       title: "List open loops",
-      description: "Deprecated alias — prefer `lore-query` with `action: 'open-loops'`.",
+      description:
+        "Deprecated alias — prefer `lore-query` with `action: 'open-loops'`. " +
+        "Post-P3-02 tracked work lives on `lore-tasks`.",
       inputSchema: {
         projectName: z.string().optional().describe("Override the auto-detected project."),
         entity: z

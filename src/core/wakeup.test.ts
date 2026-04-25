@@ -13,8 +13,10 @@ import type {
   Fact,
   FactPredicate,
   ListDecisionsOpts,
+  ListTasksOpts,
   Memory,
   MemorySource,
+  TaskSummary,
 } from "../types.js"
 import { TRACKING_PREDICATES } from "../types.js"
 
@@ -42,6 +44,9 @@ function buildMemory(overrides: Partial<Memory> & { createdAt: string }): Memory
     keywords: "",
     session: "",
     content: "",
+    taskState: null,
+    blockedBy: "",
+    entity: "",
     updatedAt: overrides.createdAt,
     ...overrides,
   }
@@ -95,6 +100,7 @@ interface StubServices extends WakeUpServices {
   factsListRecentCalls: ListRecentCall[]
   decisionsListCalls: ListDecisionsOpts[]
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
+  tasksListCalls: ListTasksOpts[]
 }
 
 function stubServices(opts: {
@@ -104,6 +110,7 @@ function stubServices(opts: {
   facts?: Fact[]
   proposedDecisions?: DecisionSummary[]
   overdueDecisions?: DecisionSummary[]
+  tasks?: TaskSummary[]
 }): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
@@ -111,6 +118,7 @@ function stubServices(opts: {
   const factsListRecentCalls: ListRecentCall[] = []
   const decisionsListCalls: ListDecisionsOpts[] = []
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
+  const tasksListCalls: ListTasksOpts[] = []
   const factsResult = opts.facts ?? []
 
   return {
@@ -166,12 +174,19 @@ function stubServices(opts: {
         return opts.overdueDecisions ?? []
       }),
     },
+    tasks: {
+      list: vi.fn(async (listOpts?: ListTasksOpts) => {
+        tasksListCalls.push(listOpts ?? {})
+        return { items: opts.tasks ?? [] }
+      }),
+    },
     memoriesCalls,
     memoriesSearchCalls,
     factsCalls,
     factsListRecentCalls,
     decisionsListCalls,
     decisionsOverdueCalls,
+    tasksListCalls,
   }
 }
 
@@ -462,6 +477,9 @@ describe("loadWakeUpData", () => {
         session: "",
         createdAt: "2026-04-01T00:00:00Z",
         updatedAt: "2026-04-01T00:00:00Z",
+        taskState: null,
+        blockedBy: "",
+        entity: "",
       },
     ]
     const overdueDecisions: DecisionSummary[] = [

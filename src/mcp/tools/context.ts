@@ -5,10 +5,12 @@ import { formatDispatchError, toolError } from "../helpers.js"
 import {
   DEFAULT_WAKEUP_MEMORY_LIMIT,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
+  DEFAULT_WAKEUP_TASK_LIMIT,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
 import { gatherDigestData } from "../../core/digest.js"
+import { taskDaysOverdue } from "../../core/task.js"
 import type { Memory } from "../../types.js"
 import {
   type CollapsedMemoryGroup,
@@ -127,6 +129,7 @@ async function handleWakeUp(
     limit?: number
     openLoopLimit?: number
     knowledgeFactLimit?: number
+    taskLimit?: number
   },
 ): Promise<ToolResult> {
   try {
@@ -157,6 +160,7 @@ async function handleWakeUp(
       proposedDecisions,
       overdueDecisions,
       relatedMemories,
+      tasks,
     } = await loadWakeUpData(services, {
       projectId: projectId ?? undefined,
       memoryLimit: recentOverfetch,
@@ -164,6 +168,7 @@ async function handleWakeUp(
       relatedMemoryLimit: relatedOverfetch,
       openLoopLimit: args.openLoopLimit,
       knowledgeFactLimit: args.knowledgeFactLimit,
+      taskLimit: args.taskLimit,
       includeMemoryContent: includeContent,
     })
 
@@ -258,9 +263,40 @@ async function handleWakeUp(
       services,
     )
 
+    if (tasks.length > 0) {
+      const today = new Date().toISOString().split("T")[0]
+      sections.push("## Tasks\n")
+      for (const task of tasks) {
+        const overdueDays = taskDaysOverdue(task, today)
+        const stateLabel = task.taskState ?? "open"
+        const blocker = task.blockedBy ? ` — blocked by ${task.blockedBy}` : ""
+        const due =
+          overdueDays !== null && task.reviewBy
+            ? overdueDays === 0
+              ? " **(due today)**"
+              : ` **(${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue — review by ${task.reviewBy})**`
+            : task.reviewBy
+              ? ` (due ${task.reviewBy})`
+              : ""
+        const prefix = overdueDays !== null ? "⚠ " : ""
+        sections.push(
+          `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due} | ID: ${task.id}`,
+        )
+      }
+      sections.push("")
+    }
+
     if (openLoops.length > 0) {
       const today = new Date().toISOString().split("T")[0]
-      sections.push("## Open Loops\n")
+      // Tracking facts are deprecated in favour of tasks; a vault
+      // mid-migration may still surface them here. Header makes the
+      // transitional status clear so an agent reading two sections
+      // (Tasks + Open Loops) understands the relationship.
+      sections.push(
+        tasks.length > 0
+          ? "## Open Loops (legacy facts — migrate via `lore migrate --migrate-tracking-to-tasks --yes`)\n"
+          : "## Open Loops\n",
+      )
       for (const fact of openLoops) {
         const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
         const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
@@ -353,6 +389,7 @@ const contextDispatchSchema = z.discriminatedUnion("action", [
     limit: z.number().int().min(1).max(50).optional(),
     openLoopLimit: z.number().int().min(0).max(50).optional(),
     knowledgeFactLimit: z.number().int().min(0).max(50).optional(),
+    taskLimit: z.number().int().min(0).max(50).optional(),
   }),
   z.object({
     action: z.literal("digest"),
@@ -374,7 +411,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
         "- `action: 'status'` — vault page id, database counts, active project, configured projects.\n" +
-        "- `action: 'wake-up'` — load digest + recent memories + open loops + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies.\n" +
+        "- `action: 'wake-up'` — load digest + recent memories + tasks + open loops (legacy tracking facts) + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {
         action: z
@@ -417,6 +454,15 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .max(50)
           .optional()
           .describe("(action='wake-up') Max active-facts rendered (default 25). 0 skips."),
+        taskLimit: z
+          .number()
+          .int()
+          .min(0)
+          .max(50)
+          .optional()
+          .describe(
+            `(action='wake-up') Max tasks rendered in the Tasks section (default ${DEFAULT_WAKEUP_TASK_LIMIT}). 0 skips the section entirely.`,
+          ),
         // digest
         period: z
           .enum(["day", "week"])
@@ -508,6 +554,15 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .max(50)
           .optional()
           .describe("Max active-facts rendered (default 25)."),
+        taskLimit: z
+          .number()
+          .int()
+          .min(0)
+          .max(50)
+          .optional()
+          .describe(
+            `Max tasks rendered in the Tasks section (default ${DEFAULT_WAKEUP_TASK_LIMIT}). 0 skips the section.`,
+          ),
       },
       annotations: { readOnlyHint: true },
     },

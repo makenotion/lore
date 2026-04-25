@@ -126,9 +126,23 @@ export function memoriesProperties(
           { name: "runbook", color: "green" },
           { name: "postmortem", color: "orange" },
           { name: "policy", color: "purple" },
+          { name: "task", color: "yellow" },
         ],
       },
     },
+    "Task State": {
+      select: {
+        options: [
+          { name: "open", color: "yellow" },
+          { name: "in-progress", color: "blue" },
+          { name: "blocked", color: "red" },
+          { name: "done", color: "green" },
+          { name: "cancelled", color: "gray" },
+        ],
+      },
+    },
+    "Blocked By": { rich_text: {} },
+    Entity: { rich_text: {} },
     Status: {
       select: {
         options: [
@@ -347,6 +361,9 @@ export function buildMemoryProps(input: {
   tags?: string[]
   keywords?: string
   session?: string
+  taskState?: string
+  blockedBy?: string
+  entity?: string
 }): PageProperties {
   const props: PageProperties = {
     Title: { title: [{ text: { content: input.title } }] },
@@ -404,6 +421,15 @@ export function buildMemoryProps(input: {
   }
   if (input.session) {
     props["Session"] = { rich_text: [{ text: { content: input.session } }] }
+  }
+  if (input.taskState) {
+    props["Task State"] = { select: { name: input.taskState } }
+  }
+  if (input.blockedBy !== undefined) {
+    props["Blocked By"] = { rich_text: [{ text: { content: input.blockedBy } }] }
+  }
+  if (input.entity !== undefined) {
+    props["Entity"] = { rich_text: [{ text: { content: input.entity } }] }
   }
   return props
 }

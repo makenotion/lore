@@ -9,7 +9,9 @@ primary interface for AI assistants. The server runs as a stdio process and
 exposes seven polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
 `lore-fact`, `lore-decision`, `lore-journal`, `lore-project` — plus the prior
 24 single-purpose tool names registered as deprecated aliases for the
-one-release transition window mandated by the stability rule.
+one-release transition window mandated by the stability rule. The tasks
+layer (P3-02) lands as a separate `lore-tasks-*` family pending PF3-06's
+subsumption into a polymorphic `lore-task` dispatcher.
 
 ## Files
 
@@ -24,6 +26,7 @@ one-release transition window mandated by the stability rule.
 | `tools/knowledge.ts` | `lore-fact` polymorphic + legacy `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` aliases |
 | `tools/journal.ts` | `lore-journal` polymorphic (defaults action='write' for legacy call shape) + legacy `lore-read-journal` alias |
 | `tools/decisions.ts` | `lore-decision` polymorphic + legacy `lore-decide`, `lore-list-decisions`, `lore-get-decision`, `lore-decision-context`, `lore-supersede`, `lore-review-decision` aliases |
+| `tools/tasks.ts` | `lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks` (P3-02; pending PF3-06 polymorphic subsumption) |
 
 ## Polymorphic dispatch pattern (P3-01)
 
@@ -341,12 +344,37 @@ designed to remove.
 
 | Action | Purpose | Read-only | Legacy alias |
 |--------|---------|-----------|--------------|
-| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`) | No | `lore-learn` |
+| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are rejected post-P3-02 with a directive redirect to `lore-task-create`. | No | `lore-learn` |
 | `invalidate` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) | `lore-correct` |
 | `extend` | Push back a fact's review-by date | No | `lore-extend` |
 
 Read-side fact paths (`ask`, `open-loops`, `audit`) live on `lore-query` —
-see the table above.
+see the table above. After P3-02 the `ask` action also surfaces tasks
+touching the entity in a fourth bucket so post-migration vaults still
+get the open-loops view at `lore-ask` time. The `open-loops` action is
+deprecated in favour of `lore-tasks` — it remains available so
+un-migrated vaults can still surface their legacy tracking facts during
+the transition window.
+
+### Task Tools
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `lore-task-create` | Create a `Kind = task` memory with description in the page body | No |
+| `lore-task-update` | Change state, blocker, due date, subject, or description | No |
+| `lore-task-close` | Mark done (or cancelled — distinguished for metrics) | No (destructive) |
+| `lore-tasks` | List tasks with Overdue/Active sections; filters by state, entity, due | Yes |
+
+#### P3-02 task model
+
+Tasks supersede the legacy tracking-predicate facts. Three new properties on the Memories DB:
+- `Task State` — `open` / `in-progress` / `blocked` / `done` / `cancelled`
+- `Blocked By` — free-form blocker label (PR number, person, service)
+- `Entity` — normalized subject the task is about; defaults to title
+
+The body of a task page carries the full description (no rich_text length cap), unlike the old tracking facts whose 187-char-average Object field was a Jira-ticket-shaped paragraph in a graph slot meant for atomic relationship objects.
+
+`lore-learn` rejects tracking predicates with a redirect to `lore-task-create`. Existing tracking facts can be ported via `lore migrate --migrate-tracking-to-tasks --yes`. The migration carries the source memory forward as the task's `Affects` relation so `lore-ask(entity)` retracing still works.
 
 #### Open loops ranking contract
 

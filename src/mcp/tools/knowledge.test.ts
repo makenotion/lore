@@ -26,6 +26,9 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     keywords: "",
     session: "",
     content: "",
+    taskState: null,
+    blockedBy: "",
+    entity: "",
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,
@@ -114,6 +117,8 @@ describe("lore-ask", () => {
           throw new Error(`unknown decision ${id}`)
         }),
       },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
       context: {
         project: null,
       },
@@ -158,6 +163,8 @@ describe("lore-ask — partial decision resolution", () => {
           throw new Error(`unknown decision ${id}`)
         }),
       },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
       context: { project: null },
     }
   }
@@ -251,6 +258,8 @@ describe("lore-ask — partial decision resolution", () => {
           throw new Error(`unknown decision ${id}`)
         }),
       },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
       context: { project: null },
     }
     registerKnowledgeTools(mockServer.server, services as never)
@@ -313,6 +322,10 @@ describe("lore-ask grouped display (P2-06)", () => {
       },
       decisions: { getById: vi.fn() },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      // P3-02: lore-ask now also queries tasks.list. Stub returns empty
+      // by default so existing tests that only assert on facts keep
+      // passing; tests that exercise the Tasks bucket override this.
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       context: { project: null },
       ...overrides,
     }
@@ -534,6 +547,8 @@ describe("lore-ask projectName resolution", () => {
         queryByObject: vi.fn(),
       },
       decisions: { getById: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
       context: { project: { id: "proj-ambient", name: "Ambient" } },
     }
 
@@ -1134,5 +1149,164 @@ describe("lore-audit projectName resolution", () => {
     expect(text).toContain('Project "Typo" not found')
     expect(queryOverdueFacts).not.toHaveBeenCalled()
     expect(queryOverdueDecisions).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-learn — P3-02 tracking predicate rejection", () => {
+  function makeServices() {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: { create: vi.fn(), createWithDedup: vi.fn() },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn().mockReturnValue(undefined),
+      },
+      context: { project: null, isCatchAllFallback: false },
+    }
+  }
+
+  it.each(["needs_action", "waiting_on", "blocked_by"])(
+    "rejects %s with a redirect to lore-task-create",
+    async (predicate) => {
+      const mockServer = createMockServer()
+      const services = makeServices()
+      registerKnowledgeTools(mockServer.server, services as never)
+      const loreLearn = mockServer.getHandler("lore-learn")
+
+      const result = await loreLearn({
+        subject: "AuthService",
+        predicate,
+        object: "Audit secret rotation",
+      } as never)
+
+      const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+      expect(payload.isError).toBe(true)
+      // The error message names the right new tool and fields, not just
+      // "deprecated".
+      expect(payload.content[0].text).toContain("lore-task-create")
+      expect(payload.content[0].text).toContain("subject")
+      expect(payload.content[0].text).toContain("description")
+      // Crucially: no fact was written.
+      expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    }
+  )
+})
+
+describe("lore-ask — P3-02 Tasks bucket", () => {
+  function makeAskServices(overrides: Record<string, unknown> = {}) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      decisions: { getById: vi.fn() },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null },
+      ...overrides,
+    }
+  }
+
+  it("renders a Tasks section with state and overdue marker", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServices()
+    services.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: "t-1",
+          title: "Rotate JWT keys",
+          taskState: "blocked",
+          blockedBy: "PR #25750 review",
+          reviewBy: "2026-01-01",
+          decidedAt: null,
+          entity: "AuthService",
+        },
+      ],
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const result = await loreAsk({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Tasks")
+    expect(text).toContain("Rotate JWT keys")
+    expect(text).toContain("blocked by PR #25750 review")
+    // Overdue tasks lead with the urgency marker.
+    expect(text).toMatch(/⚠ \*\*Rotate JWT keys/)
+  })
+
+  it("filters tasks by entity server-side, not client-side", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    await loreAsk({ entity: "AuthService" } as never)
+
+    expect(services.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: "AuthService" })
+    )
+  })
+
+  it("does not pass a `states` override to TaskService.list — service-side ACTIVE_TASK_STATES default applies", async () => {
+    // Pinning the contract: lore-ask renders only active work in its
+    // Tasks bucket. If a future caller starts surfacing closed tasks
+    // here, it should be a deliberate spec change with a corresponding
+    // bucket rename, not a silent default flip.
+    const mockServer = createMockServer()
+    const services = makeAskServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    await loreAsk({ entity: "AuthService" } as never)
+
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    expect(callArgs).not.toHaveProperty("states")
+  })
+
+  it("renders 'No facts or tasks' when both queries return empty", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const result = await loreAsk({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("No facts or tasks found")
+  })
+
+  it("surfaces a Warnings line and continues when tasks.list rejects", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServices()
+    services.tasks.list = vi.fn().mockRejectedValue(new Error("transient 5xx"))
+    services.facts.queryByEntity = vi.fn().mockResolvedValue([
+      {
+        id: "fact-1",
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+        projectIds: [],
+        validFrom: "2026-04-01",
+        validUntil: null,
+        reviewBy: null,
+        sourceMemoryId: null,
+        confidence: "certain",
+      },
+    ])
+    services.facts.queryByObject = vi.fn().mockResolvedValue([])
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const result = await loreAsk({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Tasks lookup failed")
+    expect(text).toContain("transient 5xx")
+    // Facts still rendered — the warning didn't sink the call.
+    expect(text).toContain("JWT")
   })
 })

@@ -18,6 +18,8 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories                 |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
+| `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue. P3-02 successor to tracking-predicate facts. |
+| `task-migration.ts` | `migrateTrackingFactsToTasks()` | One-shot conversion from tracking facts → task memories. Plan-then-execute via `lore migrate --migrate-tracking-to-tasks --yes`. |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
 | `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + open-loop-related memories for wake-up surfaces (MCP tool + shell hook) |
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |

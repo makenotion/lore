@@ -25,6 +25,7 @@ import type {
   MemoryKind,
   MemoryStatus,
   MemoryConfidence,
+  TaskState,
   DatabaseRef,
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
@@ -75,6 +76,8 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
   agent: string | undefined
   keywords: string | undefined
   session: string | undefined
+  blockedBy: string | undefined
+  entity: string | undefined
 } {
   return {
     title: decodeTextEntities(input.title),
@@ -87,6 +90,9 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
     agent: input.agent !== undefined ? decodeTextEntities(input.agent) : undefined,
     keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
     session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
+    blockedBy:
+      input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
+    entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
   }
 }
 
@@ -108,6 +114,8 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
   alternatives: string | undefined
   consequences: string | undefined
   keywords: string | undefined
+  blockedBy: string | undefined
+  entity: string | undefined
 } {
   return {
     title: input.title !== undefined ? decodeTextEntities(input.title) : undefined,
@@ -117,6 +125,9 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
     consequences:
       input.consequences !== undefined ? decodeTextEntities(input.consequences) : undefined,
     keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+    blockedBy:
+      input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
+    entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
   }
 }
 
@@ -228,6 +239,9 @@ export class MemoryService {
         tags: input.tags,
         keywords: decoded.keywords,
         session: decoded.session,
+        taskState: input.taskState,
+        blockedBy: decoded.blockedBy,
+        entity: decoded.entity,
       }),
     })
 
@@ -408,6 +422,19 @@ export class MemoryService {
     if (decoded.consequences !== undefined) {
       props["Consequences"] = {
         rich_text: [{ text: { content: decoded.consequences } }],
+      }
+    }
+    if (input.taskState) {
+      props["Task State"] = { select: { name: input.taskState } }
+    }
+    if (decoded.blockedBy !== undefined) {
+      props["Blocked By"] = {
+        rich_text: [{ text: { content: decoded.blockedBy } }],
+      }
+    }
+    if (decoded.entity !== undefined) {
+      props["Entity"] = {
+        rich_text: [{ text: { content: decoded.entity } }],
       }
     }
 
@@ -706,6 +733,16 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
   const props = page.properties
   const topicIds = extractRelationIds(props["Topic"])
 
+  // Read `Task State` only when the column exists *and* a select is set.
+  // `extractSelect` falls back when the column is missing — fine for
+  // pre-migration pages — but we want a true `null` (not `"open"`) on
+  // every non-task memory so downstream code can branch on the field.
+  const taskStateProp = props["Task State"]
+  const taskState =
+    taskStateProp && taskStateProp.type === "select" && taskStateProp.select
+      ? (taskStateProp.select.name as TaskState)
+      : null
+
   return {
     id: page.id,
     title: extractTitle(props["Title"]),
@@ -731,5 +768,8 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     content: content ?? "",
     createdAt: page.created_time,
     updatedAt: page.last_edited_time,
+    taskState,
+    blockedBy: extractRichText(props["Blocked By"]),
+    entity: extractRichText(props["Entity"]),
   }
 }
