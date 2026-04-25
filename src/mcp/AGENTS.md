@@ -6,12 +6,14 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes seven polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
-`lore-fact`, `lore-decision`, `lore-journal`, `lore-project` — plus the prior
-24 single-purpose tool names registered as deprecated aliases for the
-one-release transition window mandated by the stability rule. The tasks
-layer (P3-02) lands as a separate `lore-tasks-*` family pending PF3-06's
-subsumption into a polymorphic `lore-task` dispatcher.
+exposes eight polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
+`lore-fact`, `lore-decision`, `lore-journal`, `lore-project`, `lore-task` —
+plus the prior single-purpose tool names registered as deprecated aliases
+through the `0.5.0` removal target (see "Deprecation timeline" below).
+PF3-06 brought the P3-02 tasks family (`lore-task-create`, `lore-task-update`,
+`lore-task-close`, `lore-tasks`) under the same polymorphic shape; those
+standalone names remain as deprecated aliases on the same `0.5.0` removal
+sweep.
 
 ## Files
 
@@ -26,11 +28,11 @@ subsumption into a polymorphic `lore-task` dispatcher.
 | `tools/knowledge.ts` | `lore-fact` polymorphic + legacy `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` aliases |
 | `tools/journal.ts` | `lore-journal` polymorphic (defaults action='write' for legacy call shape) + legacy `lore-read-journal` alias |
 | `tools/decisions.ts` | `lore-decision` polymorphic + legacy `lore-decide`, `lore-list-decisions`, `lore-get-decision`, `lore-decision-context`, `lore-supersede`, `lore-review-decision` aliases |
-| `tools/tasks.ts` | `lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks` (P3-02; pending PF3-06 polymorphic subsumption) |
+| `tools/tasks.ts` | `lore-task` polymorphic + legacy `lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks` aliases (P3-02 + PF3-06) |
 
-## Polymorphic dispatch pattern (P3-01)
+## Polymorphic dispatch pattern (P3-01 + PF3-06)
 
-The seven `lore-*` tools above multiplex multiple actions behind one MCP
+The eight `lore-*` tools above multiplex multiple actions behind one MCP
 registration to keep per-session prompt overhead low. Each tool follows the
 same shape:
 
@@ -111,6 +113,41 @@ Use the polymorphic shape from day one. Single-purpose tools should only be
 introduced when the surface really is one action (e.g. `lore-status` made
 sense pre-P3-01 because it never grew beyond "show vault stats" — but even
 that collapsed into `lore-context action='status'`).
+
+### Deprecation timeline
+
+The 28 deprecated single-purpose aliases registered alongside the eight
+polymorphic dispatchers (24 from P3-01 + 4 from PF3-06) are slated for
+**removal in MCP server `0.5.0`** — the next minor after the current
+`0.4.0` line that this Phase-3-Followups closeout series shipped on. This
+matches the PF3-06 spec's "before the next major release" guidance and
+applies uniformly to every alias family, not just the new task family.
+
+Implementation markers:
+
+- Each tool file's deprecated-alias block carries a single
+  `// TODO(0.5.0): remove deprecated aliases — see "Deprecation
+  timeline" in src/mcp/AGENTS.md` sentinel above the block. A
+  `grep -rn "TODO(0.5.0)" src/mcp/tools/` finds the entire removal
+  surface atomically — there is no per-alias marker because the
+  block-level comment delimits the contiguous registration block in
+  every file.
+- The `0.5.0` server version bump in `src/mcp/server.ts` is the
+  trigger event: when the version line moves, every block under a
+  `TODO(0.5.0)` marker is removed in the same commit, the
+  `DEFAULT_SAVE_ALLOWLIST` in `src/hooks/background.ts` drops its
+  legacy entries, and the `polymorphic.test.ts` surface count
+  assertion drops to "8 polymorphic, 0 aliases."
+- Until the bump lands, **do not remove or weaken any alias** — the
+  per-alias deprecation-window safety net is what makes a long-running
+  `claude -p` background process with an old prompt baked in continue
+  to work.
+
+This is a hard timeline rather than a soft one because every alias's
+schema is rendered into the agent-visible config string and therefore
+consumes prompt budget on every reconnecting session for as long as the
+alias exists. The `0.5.0` cap prevents that overhead from drifting to
+forever.
 
 ## Tool Registration Pattern
 
@@ -440,7 +477,7 @@ designed to remove.
 
 | Action | Purpose | Read-only | Legacy alias |
 |--------|---------|-----------|--------------|
-| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are rejected post-P3-02 with a directive redirect to `lore-task-create`. | No | `lore-learn` |
+| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are rejected post-P3-02 with a directive redirect to `lore-task` action='create'. | No | `lore-learn` |
 | `invalidate` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) | `lore-correct` |
 | `extend` | Push back a fact's review-by date | No | `lore-extend` |
 
@@ -448,18 +485,32 @@ Read-side fact paths (`ask`, `open-loops`, `audit`) live on `lore-query` —
 see the table above. After P3-02 the `ask` action also surfaces tasks
 touching the entity in a fourth bucket so post-migration vaults still
 get the open-loops view at `lore-ask` time. The `open-loops` action is
-deprecated in favour of `lore-tasks` — it remains available so
-un-migrated vaults can still surface their legacy tracking facts during
-the transition window.
+deprecated in favour of `lore-task` action='list' — it remains available
+so un-migrated vaults can still surface their legacy tracking facts
+during the transition window.
 
-### Task Tools
+### `lore-task` — task lifecycle (PF3-06)
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-task-create` | Create a `Kind = task` memory with description in the page body | No |
-| `lore-task-update` | Change state, blocker, due date, subject, or description | No |
-| `lore-task-close` | Mark done (or cancelled — distinguished for metrics) | No (destructive) |
-| `lore-tasks` | List tasks with Overdue/Active sections; filters by state, entity, due | Yes |
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `create` | Create a `Kind = task` memory with description in the page body | No | `lore-task-create` |
+| `update` | Change state, blocker, due date, subject, or description | No | `lore-task-update` |
+| `close` | Mark done (or cancelled — distinguished for metrics) | No (destructive) | `lore-task-close` |
+| `list` | List tasks with Overdue/Active sections; filters by state, entity, due | Yes | `lore-tasks` |
+
+PF3-06 brought the P3-02 standalone task family under the same polymorphic
+dispatcher pattern as the rest of P3-01. The standalone names
+(`lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks`)
+remain registered as deprecated aliases sharing the same handlers, so
+callers wired to the standalone names continue to work until removal.
+The same dual-list rule applies as in PR #80: do not remove the
+standalone names, only mark them deprecated. `DEFAULT_SAVE_ALLOWLIST` in
+`src/hooks/background.ts` lists both `lore-task` and `lore-task-create` so
+spawned subagents reach the surface either way during the transition.
+
+**Removal target: MCP server `0.5.0`** — see "Deprecation timeline"
+above. The four task aliases ride the same removal sweep as the 24 P3-01
+aliases.
 
 #### P3-02 task model
 
@@ -470,7 +521,7 @@ Tasks supersede the legacy tracking-predicate facts. Three new properties on the
 
 The body of a task page carries the full description (no rich_text length cap), unlike the old tracking facts whose 187-char-average Object field was a Jira-ticket-shaped paragraph in a graph slot meant for atomic relationship objects.
 
-`lore-learn` rejects tracking predicates with a redirect to `lore-task-create`. Existing tracking facts can be ported via `lore migrate --migrate-tracking-to-tasks --yes`. The migration carries the source memory forward as the task's `Affects` relation so `lore-ask(entity)` retracing still works.
+`lore-fact` action='create' (and its `lore-learn` alias) rejects tracking predicates with a redirect to `lore-task` action='create'. Existing tracking facts can be ported via `lore migrate --migrate-tracking-to-tasks --yes`. The migration carries the source memory forward as the task's `Affects` relation so `lore-ask(entity)` retracing still works.
 
 #### Open loops ranking contract
 

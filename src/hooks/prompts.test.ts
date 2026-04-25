@@ -25,10 +25,12 @@ describe("buildProjectSelectionGuidance", () => {
     const guidance = buildProjectSelectionGuidance(["Mail Backend"], "Mail")
     // P3-01 collapsed save tools into the polymorphic surface; the
     // prompt teaches the new names so subagents we drive learn the
-    // canonical surface, not the deprecated aliases.
+    // canonical surface, not the deprecated aliases. PF3-06 added
+    // `lore-task` to that surface for open-loop tracking.
     expect(guidance).toContain("lore-memory")
     expect(guidance).toContain("lore-fact")
     expect(guidance).toContain("lore-decision")
+    expect(guidance).toContain("lore-task")
     // lore-journal is soft-deprecated and no longer invited from the prompt.
     expect(guidance).not.toContain("lore-journal")
   })
@@ -56,15 +58,31 @@ describe("buildSessionEndPrompt", () => {
 
   it("lists only tools the session-end sub-agent is actually allowed to call", () => {
     // spawnBackgroundSave allows the polymorphic surface (lore-memory,
-    // lore-fact, lore-decision) plus the legacy aliases as a transition-
-    // window safety net. The prompt itself teaches the polymorphic
-    // surface so subagents we drive learn the canonical names.
+    // lore-fact, lore-decision, lore-task) plus the legacy aliases as a
+    // transition-window safety net. The prompt itself teaches the
+    // polymorphic surface so subagents we drive learn the canonical
+    // names.
     const prompt = buildSessionEndPrompt([], null, "")
     expect(prompt).toContain("lore-memory")
     expect(prompt).toContain("lore-fact")
     expect(prompt).toContain("lore-decision")
+    expect(prompt).toContain("lore-task")
     // lore-journal is soft-deprecated and no longer invited from the prompt.
     expect(prompt).not.toContain("lore-journal")
+  })
+
+  it("redirects open-loop work from lore-fact tracking predicates to lore-task", () => {
+    // P3-02 made `lore-fact` reject `needs_action` / `waiting_on` /
+    // `blocked_by` predicates with a redirect to `lore-task-create`.
+    // PF3-06 brings the polymorphic surface in line, so the autosave
+    // prompt teaches `lore-task action='create'` for open work and
+    // names that the legacy tracking predicates are no longer accepted
+    // on `lore-fact`. Without this redirect, subagents trained on the
+    // pre-P3-02 prompt fan their open-loop work back into a path the
+    // server now rejects.
+    const prompt = buildSessionEndPrompt([], null, "")
+    expect(prompt).toContain("lore-task action='create'")
+    expect(prompt).toMatch(/needs_action.*lore-task/s)
   })
 
   it("injects project guidance when sub-projects exist", () => {

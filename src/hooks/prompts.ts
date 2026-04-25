@@ -28,7 +28,7 @@ export function buildProjectSelectionGuidance(
     )
   }
   lines.push(
-    `Pass projectName (single sub-project) or projectNames (multiple) on every lore-memory / lore-fact / lore-decision call. ` +
+    `Pass projectName (single sub-project) or projectNames (multiple) on every lore-memory / lore-fact / lore-decision / lore-task call. ` +
       `If work spans multiple sub-projects, prefer multi-project saves over the catch-all.`
   )
   return lines.join("\n")
@@ -74,6 +74,7 @@ Save only if the session produced at least one of:
 2. An architectural decision with explicit rationale (→ lore-decision action='create')
 3. A runbook or policy worth reusing (→ lore-memory action='save' with kind: runbook or kind: policy)
 4. A fact about a system component worth linking (→ lore-fact action='create')
+5. An open loop — work that needs action, is waiting on someone, or is blocked (→ lore-task action='create')
 
 Before saving, check whether a similar memory or decision already exists; if so, prefer lore-memory action='update' over creating a duplicate. Autosave fires every N messages in long sessions, so the same discovery can arrive twice.
 
@@ -92,7 +93,7 @@ function buildSourceLinkGuidance(): string {
 
 /**
  * Tool-call guidance emitted after the extraction filter. Enumerates the
- * three save tools that remain in the prompt and their required/recommended
+ * four save tools that remain in the prompt and their required/recommended
  * fields. `kind` is required on every `lore-memory` action='save' call —
  * diary-style memories with `kind: null` were the dominant pollution source
  * in the Mail vault. sourceMemoryId guidance lives in
@@ -100,19 +101,27 @@ function buildSourceLinkGuidance(): string {
  * this string.
  *
  * P3-01 collapsed the 24-tool surface into seven polymorphic dispatchers;
- * this prompt teaches the new action-dispatch surface so background
+ * PF3-06 added `lore-task` to subsume the standalone task tools landed by
+ * P3-02. This prompt teaches the action-dispatch surface so background
  * subagents we drive learn the canonical names rather than the deprecated
- * aliases. The legacy names (`lore-remember`, `lore-learn`, `lore-decide`)
- * remain in the allowlist (see `background.ts:DEFAULT_SAVE_ALLOWLIST`) so
- * any previously-spawned process with an older prompt baked in continues
- * to work during the transition.
+ * aliases. The legacy names (`lore-remember`, `lore-learn`, `lore-decide`,
+ * `lore-task-create`) remain in the allowlist (see
+ * `background.ts:DEFAULT_SAVE_ALLOWLIST`) so any previously-spawned
+ * process with an older prompt baked in continues to work during the
+ * transition.
+ *
+ * Tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`)
+ * are now rejected on `lore-fact` action='create'; open work goes through
+ * `lore-task` action='create' instead, which has structural state /
+ * blocker / due-date columns rather than a freeform `Object` paragraph.
  */
 function buildToolGuidance(): string {
   return `When a save is warranted, call lore-* tools now. For each one, pick the project based on which files you actually read or edited — not where the session was launched.
 
 • lore-memory action='save' — Save a durable discovery. Always pass kind ("note" | "decision" | "incident" | "runbook" | "postmortem" | "policy"), relevant tags, and topicName when the memory fits an existing topic.
-• lore-fact action='create' — Record entity relationships (subject —predicate→ object). Use needs_action / waiting_on / blocked_by predicates for open work, and pass reviewBy (YYYY-MM-DD) so the fact resurfaces.
+• lore-fact action='create' — Record entity relationships (subject —predicate→ object). Use uses / depends_on / is_a / replaces / extends / conflicts_with for structural relationships. Open work (needs_action / waiting_on / blocked_by) goes through lore-task action='create' instead, NOT lore-fact.
 • lore-decision action='create' — Use this (not lore-memory) for architectural decisions. Include rationale, alternatives considered, consequences, affects (entity names), and reviewBy.
+• lore-task action='create' — Open a task for work that needs action, is waiting on someone, or is blocked. Pass subject (one-line title), state ("open" | "in-progress" | "blocked"), entity (the PR / service / person it's about), and dueDate (YYYY-MM-DD) when known. If state is "blocked", blockedBy is required.
 
 ${buildSourceLinkGuidance()}
 

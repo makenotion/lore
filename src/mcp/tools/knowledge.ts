@@ -84,15 +84,15 @@ function rankActive(a: Fact, b: Fact): number {
 }
 
 /**
- * Predicates accepted on `lore-learn`. The tracking predicates
- * (`needs_action`, `waiting_on`, `blocked_by`) are deliberately absent
- * after P3-02 — those workflows live on `lore-task-create` now. Keeping
- * them in the union but rejecting at the validation layer is what gives
- * us the "type one" -> directive error UX.
+ * Predicates accepted on `lore-fact` (and the `lore-learn` alias). The
+ * tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are
+ * deliberately absent after P3-02 — those workflows live on `lore-task`
+ * action='create' now. Keeping them in the union but rejecting at the
+ * validation layer is what gives us the "type one" -> directive error UX.
  *
  * Decision-graph predicates (`decided_by`, `supersedes_decision`,
  * `informs`) stay internal-only — created by `DecisionService` and
- * never via `lore-learn` regardless of P3-02.
+ * never via `lore-fact` regardless of P3-02.
  */
 const PREDICATE_VALUES = [
   "is_a",
@@ -115,11 +115,17 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
- * Build the redirect message agents see when they call `lore-learn` with
- * a tracking predicate. The wording tells them the right tool to call,
- * names the closest equivalent task state, and shows the field mapping
- * — `Subject → subject`, `Object → description` — so the agent doesn't
- * have to guess at how to translate.
+ * Build the redirect message agents see when they call `lore-fact`
+ * action='create' (or its `lore-learn` alias) with a tracking predicate.
+ * The wording tells them the right tool to call, names the closest
+ * equivalent task state, and shows the field mapping — `Subject →
+ * subject`, `Object → description` — so the agent doesn't have to
+ * guess at how to translate.
+ *
+ * Names the polymorphic surface (`lore-task` action='create' / 'list')
+ * rather than the deprecated `lore-task-create` / `lore-tasks` aliases
+ * after PF3-06 — the rejection message is the moment-of-mistake nudge,
+ * so it must teach the surface that's not itself deprecated.
  */
 function trackingPredicateRedirect(predicate: FactPredicate): string {
   const stateHint =
@@ -131,10 +137,10 @@ function trackingPredicateRedirect(predicate: FactPredicate): string {
       ? "\n  • blockedBy: (the Object you'd have used)"
       : ""
   return (
-    `Tracking predicate \`${predicate}\` is no longer accepted by lore-learn. ` +
+    `Tracking predicate \`${predicate}\` is no longer accepted by lore-fact. ` +
     `Tracked work lives on tasks now (P3-02): the description goes in the page body, the subject is structurally indexed, ` +
-    `and lore-tasks queries by entity / state / due date.\n\n` +
-    `Use \`lore-task-create\` instead:\n` +
+    `and lore-task action='list' queries by entity / state / due date.\n\n` +
+    `Use \`lore-task\` with \`action: 'create'\` instead:\n` +
     `  • subject: (the Subject you'd have used)\n` +
     `  • description: (the Object — full prose, no 2000-char limit)${blockerLine}\n` +
     `  • state: "${stateHint}"\n` +
@@ -948,7 +954,10 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
   )
 
   // -------------------------------------------------------------------------
-  // Deprecated aliases — preserved for the one-release transition window.
+  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
+  // in src/mcp/AGENTS.md.
+  //
+  // Deprecated aliases — preserved through the 0.5.0 transition window.
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-learn",
@@ -1041,7 +1050,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       title: "List open loops",
       description:
         "Deprecated alias — prefer `lore-query` with `action: 'open-loops'`. " +
-        "Post-P3-02 tracked work lives on `lore-tasks`.",
+        "Post-P3-02 tracked work: `lore-task` action='list'.",
       inputSchema: {
         projectName: z.string().optional().describe("Override the auto-detected project."),
         entity: z

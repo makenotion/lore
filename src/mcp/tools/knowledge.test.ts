@@ -1166,7 +1166,7 @@ describe("lore-learn — P3-02 tracking predicate rejection", () => {
   }
 
   it.each(["needs_action", "waiting_on", "blocked_by"])(
-    "rejects %s with a redirect to lore-task-create",
+    "rejects %s with a redirect to the polymorphic lore-task action='create'",
     async (predicate) => {
       const mockServer = createMockServer()
       const services = makeServices()
@@ -1181,9 +1181,13 @@ describe("lore-learn — P3-02 tracking predicate rejection", () => {
 
       const payload = result as { content: Array<{ text: string }>; isError?: boolean }
       expect(payload.isError).toBe(true)
-      // The error message names the right new tool and fields, not just
-      // "deprecated".
-      expect(payload.content[0].text).toContain("lore-task-create")
+      // The error message names the polymorphic surface (PF3-06) — not the
+      // deprecated `lore-task-create` alias. The rejection is the
+      // moment-of-mistake nudge, so it must teach the surface that's not
+      // itself deprecated.
+      expect(payload.content[0].text).toContain("lore-task")
+      expect(payload.content[0].text).toContain("action: 'create'")
+      expect(payload.content[0].text).not.toMatch(/`lore-task-create`/)
       expect(payload.content[0].text).toContain("subject")
       expect(payload.content[0].text).toContain("description")
       // Crucially: no fact was written.

@@ -38,24 +38,33 @@ import {
 /**
  * Tool allowlist for the catch-all session save agent. Broad on purpose —
  * the session-end worker may fan out across save / fact-create /
- * decision-create depending on what the session produced.
+ * decision-create / task-create depending on what the session produced.
  *
  * Lists both the new polymorphic names (`lore-memory`, `lore-fact`,
- * `lore-decision`) AND the legacy aliases (`lore-remember`, `lore-learn`,
- * `lore-decide`). The save prompt teaches the polymorphic surface, so the
- * spawned subagent normally calls the new names; the legacy entries keep
- * working as a deprecation-window safety net for any previously-spawned
- * process that still has an old prompt baked in.
+ * `lore-decision`, `lore-task`) AND the legacy aliases (`lore-remember`,
+ * `lore-learn`, `lore-decide`, `lore-task-create`). The save prompt
+ * teaches the polymorphic surface, so the spawned subagent normally
+ * calls the new names; the legacy entries keep working as a
+ * deprecation-window safety net for any previously-spawned process that
+ * still has an old prompt baked in.
+ *
+ * TODO(0.5.0): remove the four legacy alias entries in the second half
+ * of this list — they ride the same removal sweep as the deprecated
+ * tool registrations themselves (see "Deprecation timeline" in
+ * src/mcp/AGENTS.md).
  */
 export const DEFAULT_SAVE_ALLOWLIST = [
-  // P3-01 polymorphic surface — what the prompt now teaches.
+  // P3-01 + PF3-06 polymorphic surface — what the prompt now teaches.
   "mcp__lore__lore-memory",
   "mcp__lore__lore-fact",
   "mcp__lore__lore-decision",
-  // Legacy aliases — preserved for the deprecation window.
+  "mcp__lore__lore-task",
+  // TODO(0.5.0): remove — legacy aliases preserved through the 0.5.0
+  // transition window (see src/mcp/AGENTS.md "Deprecation timeline").
   "mcp__lore__lore-remember",
   "mcp__lore__lore-learn",
   "mcp__lore__lore-decide",
+  "mcp__lore__lore-task-create",
 ].join(",")
 
 /**

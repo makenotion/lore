@@ -273,13 +273,17 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
   )
 
   // -------------------------------------------------------------------------
+  // TODO(0.5.0): remove deprecated alias — see "Deprecation timeline"
+  // in src/mcp/AGENTS.md.
+  //
   // Deprecated alias — the legacy `lore-read-journal` tool. The legacy
   // `lore-journal` *write* tool is collapsed directly into the polymorphic
   // tool above (action: 'write' is the default mental model for the
   // existing name), so no separate write-only alias is necessary.
   //
-  // Existing callers of `lore-read-journal` continue to work; their
-  // schema is preserved so calls do not break.
+  // Existing callers of `lore-read-journal` continue to work through the
+  // 0.5.0 transition window; their schema is preserved so calls do not
+  // break.
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-read-journal",

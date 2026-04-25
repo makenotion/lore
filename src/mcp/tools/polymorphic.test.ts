@@ -1,9 +1,11 @@
 /**
- * Polymorphic dispatcher tests for the seven `lore-*` tools introduced
- * in P3-01 (`lore-context`, `lore-memory`, `lore-query`, `lore-fact`,
- * `lore-decision`, `lore-journal`, `lore-project`).
+ * Polymorphic dispatcher tests for the eight `lore-*` tools — the seven
+ * introduced in P3-01 (`lore-context`, `lore-memory`, `lore-query`,
+ * `lore-fact`, `lore-decision`, `lore-journal`, `lore-project`) plus
+ * `lore-task` added in PF3-06 to subsume the standalone task tools
+ * landed by P3-02.
  *
- * These tests verify the new contract:
+ * These tests verify the contract:
  * 1. Each polymorphic tool is registered.
  * 2. Each declared `action` value reaches the right underlying handler.
  * 3. Invalid `action` values produce a clean discriminated-union error.
@@ -13,7 +15,8 @@
  *
  * Per-handler behavior is exercised by the existing per-file test suites
  * (`memory.test.ts`, `decisions.test.ts`, `knowledge.test.ts`,
- * `context.test.ts`). This file specifically covers the dispatcher.
+ * `context.test.ts`, `tasks.test.ts`). This file specifically covers
+ * the dispatcher.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -25,6 +28,7 @@ import { registerKnowledgeTools } from "./knowledge.js"
 import { registerDecisionTools } from "./decisions.js"
 import { registerJournalTools } from "./journal.js"
 import { registerProjectTools } from "./project.js"
+import { registerTaskTools } from "./tasks.js"
 
 type Handler = (...args: never[]) => Promise<unknown>
 
@@ -149,6 +153,10 @@ interface StubOpts {
   decisionsGetById?: ReturnType<typeof vi.fn>
   decisionsSupersede?: ReturnType<typeof vi.fn>
   decisionsReviewCompleted?: ReturnType<typeof vi.fn>
+  tasksCreate?: ReturnType<typeof vi.fn>
+  tasksUpdate?: ReturnType<typeof vi.fn>
+  tasksClose?: ReturnType<typeof vi.fn>
+  tasksList?: ReturnType<typeof vi.fn>
 }
 
 function makeServices(opts: StubOpts = {}): unknown {
@@ -203,6 +211,12 @@ function makeServices(opts: StubOpts = {}): unknown {
       supersede: opts.decisionsSupersede ?? vi.fn(async () => undefined),
       reviewCompleted: opts.decisionsReviewCompleted ?? vi.fn(async () => undefined),
       queryOverdue: vi.fn(async () => []),
+    },
+    tasks: {
+      create: opts.tasksCreate ?? vi.fn(),
+      update: opts.tasksUpdate ?? vi.fn(),
+      close: opts.tasksClose ?? vi.fn(async () => undefined),
+      list: opts.tasksList ?? vi.fn(async () => ({ items: [] })),
     },
     sessionMemories: { record: vi.fn(), get: vi.fn(() => null) },
   }
@@ -710,11 +724,187 @@ describe("lore-journal polymorphic dispatcher", () => {
 })
 
 // -------------------------------------------------------------------------
-// Tool surface count — the P3-01 acceptance criterion
+// lore-task (PF3-06)
+// -------------------------------------------------------------------------
+
+describe("lore-task polymorphic dispatcher", () => {
+  it("registers lore-task plus all four deprecated aliases", () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    expect(mock.has("lore-task")).toBe(true)
+    for (const alias of [
+      "lore-task-create",
+      "lore-task-update",
+      "lore-task-close",
+      "lore-tasks",
+    ]) {
+      expect(mock.has(alias)).toBe(true)
+      expect(mock.description(alias).toLowerCase()).toContain("deprecated")
+    }
+  })
+
+  it("dispatches action='create' to tasks.create with subject threading through", async () => {
+    const tasksCreate = vi.fn(async () => ({
+      id: "t-1",
+      title: "Rotate keys",
+      projectIds: [],
+      taskState: "open",
+      blockedBy: "",
+      entity: "Rotate keys",
+      reviewBy: null,
+    }))
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksCreate }) as never)
+    const result = await mock.get("lore-task")({
+      action: "create",
+      subject: "Rotate keys",
+      description: "Roll the signing key.",
+    } as never)
+    expect(tasksCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "Rotate keys",
+        description: "Roll the signing key.",
+      }),
+    )
+    expect(extractText(result)).toContain("Created task")
+    expect(extractText(result)).toContain("State: open")
+  })
+
+  it("dispatches action='update' to tasks.update", async () => {
+    const tasksUpdate = vi.fn(async () => ({
+      id: "t-1",
+      title: "Rotate keys",
+      projectIds: [],
+      taskState: "in-progress",
+      blockedBy: "",
+      entity: "Rotate keys",
+      reviewBy: null,
+    }))
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksUpdate }) as never)
+    await mock.get("lore-task")({
+      action: "update",
+      taskId: "t-1",
+      state: "in-progress",
+    } as never)
+    expect(tasksUpdate).toHaveBeenCalledWith(
+      "t-1",
+      expect.objectContaining({ state: "in-progress" }),
+    )
+  })
+
+  it("dispatches action='close' with default state=done", async () => {
+    const tasksClose = vi.fn(async () => undefined)
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksClose }) as never)
+    const result = await mock.get("lore-task")({
+      action: "close",
+      taskId: "t-1",
+    } as never)
+    expect(tasksClose).toHaveBeenCalledWith("t-1", "done")
+    expect(extractText(result)).toContain("Closed task t-1")
+  })
+
+  it("dispatches action='list' to tasks.list", async () => {
+    const tasksList = vi.fn(async () => ({ items: [] }))
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksList }) as never)
+    const result = await mock.get("lore-task")({
+      action: "list",
+      entity: "PR-99",
+    } as never)
+    expect(tasksList).toHaveBeenCalled()
+    expect(extractText(result)).toContain("No tasks found")
+  })
+
+  it("rejects an invalid action with a discriminator error", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({ action: "explode" } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-task")
+    expect(extractText(result)).toContain("action")
+  })
+
+  it("rejects action='create' without subject", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({ action: "create" } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-task")
+  })
+
+  it("rejects action='update' without taskId", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({
+      action: "update",
+      state: "in-progress",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-task")
+  })
+
+  it("preserves the create-time blocked-without-blockedBy guard at the polymorphic surface", async () => {
+    const tasksCreate = vi.fn()
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksCreate }) as never)
+    const result = await mock.get("lore-task")({
+      action: "create",
+      subject: "Ship release",
+      state: "blocked",
+    } as never)
+    expect(tasksCreate).not.toHaveBeenCalled()
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("blockedBy")
+  })
+
+  it("preserves the update-time blocked-without-blockedBy guard at the polymorphic surface", async () => {
+    // Mirrors the create-time guard: `handleUpdate` rejects a transition
+    // into `state: 'blocked'` unless `blockedBy` is restated in the same
+    // call (even if a prior write already set it). The per-handler
+    // `tasks.test.ts` exercises this through the `lore-task-update`
+    // alias; this assertion pins the same contract at the polymorphic
+    // dispatcher so a future regression in the dispatch path can't
+    // silently drop the guard.
+    const tasksUpdate = vi.fn()
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksUpdate }) as never)
+    const result = await mock.get("lore-task")({
+      action: "update",
+      taskId: "task-id",
+      state: "blocked",
+    } as never)
+    expect(tasksUpdate).not.toHaveBeenCalled()
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("blockedBy")
+  })
+
+  it("rejects update transitioning to blocked when blockedBy is empty string at the polymorphic surface", async () => {
+    // Empty string with `state: "blocked"` is rejected — restating is
+    // required, and an empty restate is unactionable. Exercises the
+    // second branch of the cross-field guard via the polymorphic
+    // dispatcher.
+    const tasksUpdate = vi.fn()
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksUpdate }) as never)
+    const result = await mock.get("lore-task")({
+      action: "update",
+      taskId: "task-id",
+      state: "blocked",
+      blockedBy: "",
+    } as never)
+    expect(tasksUpdate).not.toHaveBeenCalled()
+    expect(isError(result)).toBe(true)
+  })
+})
+
+// -------------------------------------------------------------------------
+// Tool surface count — the P3-01 + PF3-06 acceptance criterion
 // -------------------------------------------------------------------------
 
 describe("P3-01 tool surface", () => {
-  it("registers 7 polymorphic tools (~8 per the plan) and 17 deprecated aliases", () => {
+  it("registers 8 polymorphic tools and 28 deprecated aliases", () => {
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -724,10 +914,12 @@ describe("P3-01 tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
+    registerTaskTools(mock.server, services)
 
     const allNames = mock.names()
 
-    // The seven new polymorphic tools.
+    // The eight polymorphic tools — seven from P3-01 plus `lore-task`
+    // added in PF3-06 to subsume the standalone task tools.
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -736,11 +928,12 @@ describe("P3-01 tool surface", () => {
       "lore-decision",
       "lore-journal",
       "lore-project",
+      "lore-task",
     ]
     for (const name of polymorphic) {
       expect(allNames).toContain(name)
     }
-    expect(polymorphic.length).toBe(7)
+    expect(polymorphic.length).toBe(8)
 
     // The legacy aliases that must still be reachable per the stability
     // rule. Note `lore-journal` is BOTH the new polymorphic name AND the
@@ -771,6 +964,12 @@ describe("P3-01 tool surface", () => {
       "lore-read-journal",
       "lore-list-projects",
       "lore-get-project",
+      // PF3-06 task-family aliases — the P3-02 standalone names kept for
+      // the deprecation window.
+      "lore-task-create",
+      "lore-task-update",
+      "lore-task-close",
+      "lore-tasks",
     ]
     for (const name of legacyAliases) {
       expect(allNames).toContain(name)
@@ -794,6 +993,7 @@ describe("P3-01 tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
+    registerTaskTools(mock.server, services)
 
     // Every legacy alias's description must be a one-liner deprecation
     // pointer. We assert a tight upper bound so a future PR cannot
@@ -823,6 +1023,10 @@ describe("P3-01 tool surface", () => {
       "lore-read-journal",
       "lore-list-projects",
       "lore-get-project",
+      "lore-task-create",
+      "lore-task-update",
+      "lore-task-close",
+      "lore-tasks",
     ]
     const SHORT_DESCRIPTION_LIMIT = 120
     for (const alias of legacyAliases) {
@@ -857,6 +1061,7 @@ describe("P3-01 tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
+    registerTaskTools(mock.server, services)
 
     // Per-tool description ceiling. Generous to current values — a real
     // new action can land within this budget. The intent is to catch
@@ -870,6 +1075,7 @@ describe("P3-01 tool surface", () => {
       "lore-decision",
       "lore-journal",
       "lore-project",
+      "lore-task",
     ]
     for (const name of polymorphic) {
       const desc = mock.description(name)
@@ -880,7 +1086,7 @@ describe("P3-01 tool surface", () => {
     }
   })
 
-  it("the seven polymorphic tools' descriptions sum stays within the combined budget", () => {
+  it("the eight polymorphic tools' descriptions sum stays within the combined budget", () => {
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -890,11 +1096,13 @@ describe("P3-01 tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
+    registerTaskTools(mock.server, services)
 
-    // Combined ceiling. Polymorphic descriptions currently total ~4600
-    // chars; this gives ~25% headroom while still preventing a
+    // Combined ceiling. Polymorphic descriptions previously totalled
+    // ~4600 chars across seven tools; PF3-06 adds `lore-task`, so the
+    // budget grows roughly proportionally while still preventing a
     // surface-doubling regression.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 6000
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7000
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -903,6 +1111,7 @@ describe("P3-01 tool surface", () => {
       "lore-decision",
       "lore-journal",
       "lore-project",
+      "lore-task",
     ]
     const total = polymorphic.reduce(
       (sum, name) => sum + mock.description(name).length,
@@ -929,6 +1138,7 @@ describe("P3-01 tool surface", () => {
     registerDecisionTools(mock.server, services)
     registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
+    registerTaskTools(mock.server, services)
 
     // Per-tool full-config ceiling. Currently `lore-decision` is the
     // largest at ~3500 chars rendered; budget is set at 5000 to keep
@@ -943,6 +1153,7 @@ describe("P3-01 tool surface", () => {
       "lore-decision",
       "lore-journal",
       "lore-project",
+      "lore-task",
     ]
     for (const name of polymorphic) {
       const size = mock.renderedSize(name)

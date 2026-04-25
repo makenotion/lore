@@ -774,7 +774,10 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
   )
 
   // -------------------------------------------------------------------------
-  // Deprecated aliases — preserved for the one-release transition window.
+  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
+  // in src/mcp/AGENTS.md.
+  //
+  // Deprecated aliases — preserved through the 0.5.0 transition window.
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-decide",
