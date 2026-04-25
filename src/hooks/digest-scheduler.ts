@@ -139,6 +139,13 @@ export async function fireDigestIfStale(
   if (digest.recentMemoryCount === 0) {
     // No activity in the window — touch the marker anyway so we don't retry
     // every session. A quiet week shouldn't wake the synthesizer repeatedly.
+    //
+    // Trade-off: a project with sustained-low-volume activity (e.g. 1–2
+    // routine memories per week, all below the digest-worthy bar) can drift
+    // here every session-end without ever producing a `source: "digest"`
+    // memory, leaving `lore-wake-up`'s fast path dark for that project.
+    // The explicit escape is `lore digest --since YYYY-MM-DD`, which
+    // widens the window past the per-project 7-day debounce.
     await touch(state.configRoot, project.name)
     return "no-activity"
   }

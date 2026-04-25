@@ -223,5 +223,6 @@ When working in this project, you have access to `lore-*` MCP tools. Use them:
 The session-end hook fires a background `claude -p` digest synthesizer at most once per project per 7 days (filesystem-marker debounced) when the cwd resolves to a single sub-project. The digest writes a `source: "digest"` memory that `lore-wake-up`'s fast path surfaces at session start and uses to trim the recent-memories section to 3.
 
 - **Manual invocation**: `lore digest --project <name>` (`--dry-run` previews the raw data without spawning; `--period day|week` controls the window).
+- **Sustained-low-volume escape**: a project that averages 1–2 memories per week never accumulates digest-worthy content within the auto-path's 7-day window, so the scheduler's quiet-week branch keeps touching the marker and no `source: "digest"` memory ever lands. Run `lore digest --since YYYY-MM-DD` to widen the window past the debounce — the CLI re-touches the marker after spawning so the next session-end won't immediately retry.
 - **Disable**: set `hooks.autoDigest: false` in `.lore.yaml`, or export `LORE_AUTO_DIGEST=false`. The CLI path still works — only the session-end scheduler is suppressed.
 - **Debounce reset**: `rm $TMPDIR/lore-hook-state/digest.*.last` (per-config-root hashed filename).

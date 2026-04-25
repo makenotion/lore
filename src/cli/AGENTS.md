@@ -147,6 +147,14 @@ Mechanics:
   preview what the synthesizer will see before burning an API call.
 - When no memories fall in the window, the command exits early without
   spawning (nothing to digest).
+- `--since YYYY-MM-DD` (paired with optional `--until`) widens the window
+  past the auto-scheduler's `period: "week"` default. Use this for
+  projects that hover below the digest-worthy bar week-over-week — the
+  session-end scheduler's quiet-week branch keeps touching the marker
+  for those, so no `source: "digest"` memory ever lands and
+  `lore-wake-up`'s fast path stays dark. The CLI re-touches the same
+  marker after spawning, so a manual run debounces the next
+  session-end's auto-path correctly.
 
 Operators invoke `lore digest --project Mail` (or any configured
 sub-project). It's the explicit path; the session-end hook fires it
