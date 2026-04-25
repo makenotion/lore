@@ -21,11 +21,14 @@ describe("buildProjectSelectionGuidance", () => {
     expect(guidance).toContain("ONLY when the work is genuinely repo-wide")
   })
 
-  it("instructs explicit projectName passing on the save tools that remain in the prompt", () => {
+  it("instructs explicit projectName passing on the polymorphic save tools that remain in the prompt", () => {
     const guidance = buildProjectSelectionGuidance(["Mail Backend"], "Mail")
-    expect(guidance).toContain("lore-remember")
-    expect(guidance).toContain("lore-learn")
-    expect(guidance).toContain("lore-decide")
+    // P3-01 collapsed save tools into the polymorphic surface; the
+    // prompt teaches the new names so subagents we drive learn the
+    // canonical surface, not the deprecated aliases.
+    expect(guidance).toContain("lore-memory")
+    expect(guidance).toContain("lore-fact")
+    expect(guidance).toContain("lore-decision")
     // lore-journal is soft-deprecated and no longer invited from the prompt.
     expect(guidance).not.toContain("lore-journal")
   })
@@ -52,12 +55,15 @@ describe("buildSessionEndPrompt", () => {
   })
 
   it("lists only tools the session-end sub-agent is actually allowed to call", () => {
-    // spawnBackgroundSave allows: lore-journal, lore-remember, lore-learn, lore-decide.
-    // The prompt itself only invites the three non-deprecated writers.
+    // spawnBackgroundSave allows the polymorphic surface (lore-memory,
+    // lore-fact, lore-decision) plus the legacy aliases as a transition-
+    // window safety net. The prompt itself teaches the polymorphic
+    // surface so subagents we drive learn the canonical names.
     const prompt = buildSessionEndPrompt([], null, "")
-    expect(prompt).toContain("lore-remember")
-    expect(prompt).toContain("lore-learn")
-    expect(prompt).toContain("lore-decide")
+    expect(prompt).toContain("lore-memory")
+    expect(prompt).toContain("lore-fact")
+    expect(prompt).toContain("lore-decision")
+    // lore-journal is soft-deprecated and no longer invited from the prompt.
     expect(prompt).not.toContain("lore-journal")
   })
 
@@ -118,10 +124,13 @@ describe("buildDigestPrompt", () => {
     expect(prompt).toContain("Digest — 2026-04-24 — Mail")
   })
 
-  it('enforces source: "digest" on the lore-remember call', () => {
+  it('enforces source: "digest" on the lore-memory action=save call', () => {
     const prompt = buildDigestPrompt(rawData, "Mail", "2026-04-24", null)
     expect(prompt).toContain(`source: "digest"`)
-    expect(prompt).toContain("lore-remember")
+    // P3-01: prompt teaches the polymorphic surface; the digest synthesizer
+    // is told to call `lore-memory` action='save', not the deprecated
+    // `lore-remember` alias.
+    expect(prompt).toContain("lore-memory")
   })
 
   it("passes the project name through explicitly so the synthesizer scopes the save", () => {
@@ -154,9 +163,12 @@ describe("buildDigestPrompt", () => {
     expect(prompt).toContain("chronological session log")
   })
 
-  it("forbids fanning out to lore-learn / lore-decide — the digest is one memory", () => {
+  it("forbids fanning out to lore-fact / lore-decision — the digest is one memory", () => {
     const prompt = buildDigestPrompt(rawData, "Mail", "2026-04-24", null)
-    expect(prompt).toContain("Do not call `lore-learn` or `lore-decide`")
+    // P3-01: ban-list updated to the polymorphic names that the prompt
+    // teaches; the legacy `lore-learn` / `lore-decide` aliases continue
+    // to work via the shared handlers but are not the surface taught here.
+    expect(prompt).toContain("Do not call `lore-fact` or `lore-decision`")
   })
 
   it("offers a no-op escape hatch when the raw data is signal-free", () => {

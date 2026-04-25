@@ -37,20 +37,37 @@ import {
 
 /**
  * Tool allowlist for the catch-all session save agent. Broad on purpose —
- * the session-end worker may fan out across remember / learn / decide
- * depending on what the session produced.
+ * the session-end worker may fan out across save / fact-create /
+ * decision-create depending on what the session produced.
+ *
+ * Lists both the new polymorphic names (`lore-memory`, `lore-fact`,
+ * `lore-decision`) AND the legacy aliases (`lore-remember`, `lore-learn`,
+ * `lore-decide`). The save prompt teaches the polymorphic surface, so the
+ * spawned subagent normally calls the new names; the legacy entries keep
+ * working as a deprecation-window safety net for any previously-spawned
+ * process that still has an old prompt baked in.
  */
-export const DEFAULT_SAVE_ALLOWLIST =
-  "mcp__lore__lore-remember,mcp__lore__lore-learn,mcp__lore__lore-decide"
+export const DEFAULT_SAVE_ALLOWLIST = [
+  // P3-01 polymorphic surface — what the prompt now teaches.
+  "mcp__lore__lore-memory",
+  "mcp__lore__lore-fact",
+  "mcp__lore__lore-decision",
+  // Legacy aliases — preserved for the deprecation window.
+  "mcp__lore__lore-remember",
+  "mcp__lore__lore-learn",
+  "mcp__lore__lore-decide",
+].join(",")
 
 /**
  * Tool allowlist for the digest synthesizer. Narrower than the session-end
  * allowlist so a bad synthesizer prompt violation (e.g. trying to call
- * `lore-learn`) becomes a tool-call error, not a silent extra write. The
- * prompt at `prompts.ts:buildDigestPrompt` already instructs this; the
- * allowlist is defense in depth.
+ * `lore-fact` action='create') becomes a tool-call error, not a silent
+ * extra write. The prompt at `prompts.ts:buildDigestPrompt` already
+ * instructs this; the allowlist is defense in depth.
  */
-export const DIGEST_ALLOWLIST = "mcp__lore__lore-remember"
+export const DIGEST_ALLOWLIST = ["mcp__lore__lore-memory", "mcp__lore__lore-remember"].join(
+  ",",
+)
 
 export function findClaudeBinary(): string | null {
   try {

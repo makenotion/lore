@@ -15,16 +15,20 @@ import { registerMemoryTools } from "./tools/memory.js"
 import { registerProjectTools } from "./tools/project.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
 import { registerJournalTools } from "./tools/journal.js"
-import { registerDigestTools } from "./tools/digest.js"
 import { registerDecisionTools } from "./tools/decisions.js"
+import { registerQueryTools } from "./tools/query.js"
 
 // Re-export for consumers that already import from this module
 export type { LoreServices } from "../services.js"
 export { initServices } from "../services.js"
 
 async function main(): Promise<void> {
+  // P3-01 collapsed the tool surface from 24 single-purpose tools to seven
+  // polymorphic dispatchers (with the prior names retained as deprecated
+  // aliases). The shape of every reconnecting client's tool list shifts
+  // observably, so the server version bumps 0.3.0 → 0.4.0.
   const server = new McpServer(
-    { name: "lore", version: "0.3.0" },
+    { name: "lore", version: "0.4.0" },
     {
       capabilities: {
         tools: {},
@@ -46,13 +50,16 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  // Register all tools
+  // Register all tools. P3-01 collapsed the surface to seven polymorphic
+  // tools (lore-context / lore-memory / lore-query / lore-fact /
+  // lore-decision / lore-journal / lore-project) with the prior 24 tool
+  // names retained as deprecated aliases. See src/mcp/AGENTS.md.
   registerContextTools(server, services)
   registerMemoryTools(server, services)
+  registerQueryTools(server, services)
   registerProjectTools(server, services)
   registerKnowledgeTools(server, services)
   registerJournalTools(server, services)
-  registerDigestTools(server, services)
   registerDecisionTools(server, services)
 
   // Start the stdio transport

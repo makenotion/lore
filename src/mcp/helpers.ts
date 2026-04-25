@@ -2,6 +2,8 @@
  * MCP tool helpers.
  */
 
+import type { ZodError } from "zod"
+
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
@@ -76,4 +78,19 @@ const CONTROL_CHARS = /[\x00-\x1F\x7F]/g
 
 function oneLine(value: string): string {
   return value.replace(CONTROL_CHARS, " ")
+}
+
+/**
+ * Render a Zod validation error as a single-line dispatch error message
+ * for the polymorphic `lore-*` tools (P3-01). Surfaces the first issue
+ * with `field.path: message` so the calling agent can correct the call
+ * without parsing a stack trace. Discriminated-union mismatches manifest
+ * as `action: Invalid discriminator value` which already names the
+ * offending field, so no extra formatting is needed for that case.
+ */
+export function formatDispatchError(toolName: string, error: ZodError): string {
+  const issue = error.issues[0]
+  if (!issue) return `${toolName}: invalid arguments`
+  const path = issue.path.length > 0 ? issue.path.join(".") : "(root)"
+  return `${toolName}: ${path}: ${issue.message}`
 }

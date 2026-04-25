@@ -6,21 +6,108 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes 25 tools across seven registration files.
+exposes seven polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
+`lore-fact`, `lore-decision`, `lore-journal`, `lore-project` — plus the prior
+24 single-purpose tool names registered as deprecated aliases for the
+one-release transition window mandated by the stability rule.
 
 ## Files
 
 | File | Responsibility |
 |------|---------------|
 | `server.ts` | Server entry point: init services, register tools, start stdio transport |
-| `helpers.ts` | `toolError()` helper for formatting error responses |
-| `tools/context.ts` | `lore-status`, `lore-wake-up` |
-| `tools/memory.ts` | `lore-remember`, `lore-search`, `lore-recall`, `lore-expand`, `lore-forget`, `lore-update` |
-| `tools/project.ts` | `lore-list-projects`, `lore-get-project` |
-| `tools/knowledge.ts` | `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` |
-| `tools/digest.ts` | `lore-digest` |
-| `tools/journal.ts` | `lore-journal`, `lore-read-journal` |
-| `tools/decisions.ts` | `lore-decide`, `lore-list-decisions`, `lore-get-decision`, `lore-decision-context`, `lore-supersede`, `lore-review-decision` |
+| `helpers.ts` | `toolError()`, `paginationFooter()`, `debugLogPartialFailures()`, `formatDispatchError()` |
+| `tools/context.ts` | `lore-context` polymorphic + legacy `lore-status`, `lore-wake-up`, `lore-digest` aliases |
+| `tools/memory.ts` | `lore-memory` polymorphic + legacy `lore-remember`, `lore-update`, `lore-forget`, `lore-expand`, `lore-recall`, `lore-search` aliases |
+| `tools/query.ts` | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts) |
+| `tools/project.ts` | `lore-project` polymorphic + legacy `lore-list-projects`, `lore-get-project` aliases |
+| `tools/knowledge.ts` | `lore-fact` polymorphic + legacy `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` aliases |
+| `tools/journal.ts` | `lore-journal` polymorphic (defaults action='write' for legacy call shape) + legacy `lore-read-journal` alias |
+| `tools/decisions.ts` | `lore-decision` polymorphic + legacy `lore-decide`, `lore-list-decisions`, `lore-get-decision`, `lore-decision-context`, `lore-supersede`, `lore-review-decision` aliases |
+
+## Polymorphic dispatch pattern (P3-01)
+
+The seven `lore-*` tools above multiplex multiple actions behind one MCP
+registration to keep per-session prompt overhead low. Each tool follows the
+same shape:
+
+1. **Flat MCP-level `inputSchema`.** A top-level `action` enum field plus
+   every action's parameters as optional fields. Each parameter description
+   names which actions use it (e.g. "(action='create') The entity this fact
+   is about"). This keeps the schema readable as a single property table for
+   agents — discriminated unions at the MCP boundary would surface as a JSON
+   Schema `oneOf` which agents handle less consistently than flat property
+   lists.
+
+2. **Module-level discriminated union for runtime validation.** A
+   `z.discriminatedUnion("action", [...])` schema parses the args inside the
+   handler. Failed parses route through `formatDispatchError()` so the agent
+   gets a single-line `tool: field: message` error instead of a stack trace.
+
+3. **One handler per action, shared with the legacy alias.** Handlers
+   are local async functions named `handle<Action>` taking `(services, args)
+   → Promise<ToolResult>`. The polymorphic dispatcher and the legacy alias
+   both call the same handler so behavior cannot drift between the two
+   surfaces during the deprecation window.
+
+Skeleton:
+
+```typescript
+async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolResult> { ... }
+async function handleArchive(services: LoreServices, args: ArchiveArgs): Promise<ToolResult> { ... }
+
+const memoryDispatchSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("save"), title: z.string(), content: z.string(), ... }),
+  z.object({ action: z.literal("archive"), memoryId: z.string() }),
+  ...
+])
+
+server.registerTool("lore-memory", {
+  title: "Memory operations",
+  description: "Action-dispatched: save | archive | ...",
+  inputSchema: {
+    action: z.enum(["save", "archive", ...]).describe("..."),
+    title: z.string().optional().describe("(action='save') Required."),
+    memoryId: z.string().optional().describe("(action='archive') Required."),
+    ...
+  },
+}, async (args) => {
+  const parsed = memoryDispatchSchema.safeParse(args)
+  if (!parsed.success) {
+    return toolError(new Error(formatDispatchError("lore-memory", parsed.error)))
+  }
+  switch (parsed.data.action) {
+    case "save": return handleSave(services, parsed.data)
+    case "archive": return handleArchive(services, parsed.data)
+    ...
+  }
+})
+
+// Deprecated alias — preserved for the transition window.
+server.registerTool("lore-remember", {
+  title: "Save a memory",
+  description: "Deprecated alias — prefer `lore-memory` with `action: 'save'`.",
+  inputSchema: { /* original lore-remember schema, unchanged */ },
+}, async (args) => handleSave(services, args))
+```
+
+### Adding a new action to a polymorphic tool
+
+1. Write a `handleX` function following the existing pattern.
+2. Add a new branch to the `discriminatedUnion` for that action's params.
+3. Add the action value to the top-level `action` enum and add any new
+   per-action fields to the flat `inputSchema`.
+4. Add the dispatch case to the handler's `switch (parsed.data.action)`.
+5. Update the polymorphic tool's description with a one-line bullet for
+   the new action.
+6. Add a test in `polymorphic.test.ts` exercising the new dispatch path.
+
+### Adding a brand-new tool family
+
+Use the polymorphic shape from day one. Single-purpose tools should only be
+introduced when the surface really is one action (e.g. `lore-status` made
+sense pre-P3-01 because it never grew beyond "show vault stats" — but even
+that collapsed into `lore-context action='status'`).
 
 ## Tool Registration Pattern
 
@@ -100,12 +187,18 @@ export function registerFooTools(
 
 ## Tool Reference
 
-### Context Tools
+> Each polymorphic tool is documented as a single row with its action set;
+> the "alias" column lists the legacy single-purpose tool name kept for the
+> deprecation window. Behavior of the polymorphic action and its alias is
+> identical because both call the same handler.
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-status` | Vault status, database counts, active project | Yes |
-| `lore-wake-up` | Load recent memories + facts for session priming | Yes |
+### `lore-context` — vault context operations
+
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `status` | Vault page id, database counts, active project, configured projects | Yes | `lore-status` |
+| `wake-up` | Load digest + recent memories + open loops + active facts + decisions requiring attention | Yes | `lore-wake-up` |
+| `digest` | Gather raw activity data for synthesis into a `source: digest` memory | Yes | `lore-digest` |
 
 #### Two-tier default for `lore-wake-up`
 
@@ -143,16 +236,29 @@ This joins `lore-recall` / `lore-search` under the `0.2.0` server
 version. MCP clients that relied on the previous eager-body default
 will observe the change on reconnect.
 
-### Memory Tools
+### `lore-memory` — memory mutations + batch hydration
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-remember` | Save a new memory to the vault | No |
-| `lore-search` | Semantic search across memories (uses Notion search) | Yes |
-| `lore-recall` | List recent memories with optional filters | Yes |
-| `lore-expand` | Batch-fetch memory bodies by ID (up to 20, parallelized) | Yes |
-| `lore-forget` | Archive a memory by ID | No (destructive) |
-| `lore-update` | Update a memory's title, content, tags, or categorization | No |
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `save` | Create a new memory (with parallel near-duplicate probe) | No | `lore-remember` |
+| `update` | Mutate title / body / tags / kind / status / relations on an existing memory | No | `lore-update` |
+| `archive` | Soft-delete a memory by ID | No (destructive) | `lore-forget` |
+| `expand` | Batch-fetch full markdown bodies for up to 20 IDs (parallelized) | Yes | `lore-expand` |
+
+Read-side `recall` and `search` live on `lore-query` since they share
+structural overlap with the rest of the read-path surface. Their legacy
+`lore-recall` and `lore-search` aliases are kept registered alongside the
+memory family to mirror the prior file layout.
+
+### `lore-query` — vault read paths
+
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `recall` | List recent memories with server-side filters; cursor-paginated | Yes | `lore-recall` |
+| `search` | Semantic search over memories (Notion vector similarity); `kind`/`status` post-filter | Yes | `lore-search` |
+| `ask` | Query facts about an entity, grouped into Governance / Structure / Tracking buckets | Yes | `lore-ask` |
+| `open-loops` | List active tracking-predicate facts; capped at 10 per section unless `{all: true}` | Yes | `lore-open-loops` |
+| `audit` | List facts and decisions past their review-by date | Yes | `lore-audit` |
 
 #### Near-duplicate probe on `lore-remember` and `lore-decide`
 
@@ -224,23 +330,23 @@ hydrate only the rows that matter. Blind-hydrating every title in chunks
 of 20 re-introduces the prompt tax that content-off defaults were
 designed to remove.
 
-### Project Tools
+### `lore-project` — project read paths
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-list-projects` | List all projects in the vault | Yes |
-| `lore-get-project` | Get project details including topics and recent activity | Yes |
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `list` | List all projects in the vault | Yes | `lore-list-projects` |
+| `get` | Get project details including topics and recent activity | Yes | `lore-get-project` |
 
-### Knowledge Tools
+### `lore-fact` — knowledge graph mutations
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-learn` | Add a subject-predicate-object fact triple | No |
-| `lore-ask` | Query facts about an entity (as subject or object) | Yes |
-| `lore-correct` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) |
-| `lore-open-loops` | List open loops, ranked and capped (tracking predicate facts) | Yes |
-| `lore-audit` | List all facts past their review-by date | Yes |
-| `lore-extend` | Push back a fact's review-by date | No |
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`) | No | `lore-learn` |
+| `invalidate` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) | `lore-correct` |
+| `extend` | Push back a fact's review-by date | No | `lore-extend` |
+
+Read-side fact paths (`ask`, `open-loops`, `audit`) live on `lore-query` —
+see the table above.
 
 #### Open loops ranking contract
 
@@ -286,35 +392,35 @@ use a single-page helper. A 100-page safety valve (`LIST_TRACKING_MAX_PAGES`)
 clips runaway walks; the resulting `hasMore: true` surfaces to the
 agent as a "safety cap" warning.
 
-### Digest Tools
+### `lore-journal` — agent diary (deprecated tool family)
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-digest` | Generate a project digest for a time window | Yes |
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `write` (default) | Save an agent diary entry (memory with `source: 'agent_diary'`) | No | `lore-journal` itself (legacy write-only call shape preserved by defaulting `action` to `write`) |
+| `read` | List recent diary entries, optionally filtered by agent | Yes | `lore-read-journal` |
 
-### Journal Tools
+The whole tool family is itself deprecated in favor of `lore-memory` with
+`kind: 'note'` for durable knowledge or `lore-decision` for architectural
+decisions. The polymorphic registration consolidates the legacy two-tool
+surface so the overall surface count stays at the planned ~8.
 
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-journal` | Write an agent diary entry | No |
-| `lore-read-journal` | Read recent journal entries | Yes |
+### `lore-decision` — decision lifecycle
 
-### Decision Tools
-
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `lore-decide` | Save a decision; auto-creates `decided_by` facts per affects entry and `supersedes_decision` facts if superseding | No |
-| `lore-list-decisions` | Index-tier listing of decisions (properties only, no body fetch) | Yes |
-| `lore-get-decision` | Load full rationale + metadata for one decision | Yes |
-| `lore-decision-context` | Graph walk: return all active decisions governing an entity (via `decided_by` facts) | Yes |
-| `lore-supersede` | Mark old decision as superseded by new; atomic + creates `supersedes_decision` fact | No |
-| `lore-review-decision` | Mark a decision as reviewed, push `Review By` forward (default +90 days) | No |
+| Action | Purpose | Read-only | Legacy alias |
+|--------|---------|-----------|--------------|
+| `create` | Save a decision; auto-creates `decided_by` facts per `affects` entry and `supersedes_decision` facts if superseding | No | `lore-decide` |
+| `list` | Index-tier listing of decisions (properties only, no body fetch) | Yes | `lore-list-decisions` |
+| `get` | Load full rationale + metadata for one decision | Yes | `lore-get-decision` |
+| `context` | Graph walk: every active decision governing an entity (via `decided_by` facts) | Yes | `lore-decision-context` |
+| `supersede` | Mark old decision as superseded by new; atomic + creates `supersedes_decision` fact | No | `lore-supersede` |
+| `review` | Mark a decision as reviewed, push `Review By` forward (default +90 days) | No | `lore-review-decision` |
 
 **Decision predicates are internal-only.** `decided_by`, `supersedes_decision`,
 and `informs` are in the `FactPredicate` union and the Notion `Predicate`
 select options, but they are NOT in `PREDICATE_VALUES` in `tools/knowledge.ts`.
-This prevents users from creating inconsistent decision edges via `lore-learn`
-— only `DecisionService` and the decision tools create these facts.
+This prevents users from creating inconsistent decision edges via `lore-fact`
+(or its legacy `lore-learn` alias) — only `DecisionService` and the decision
+tools create these facts.
 
 **`lore-learn` expects `sourceMemoryId` (soft-phase).** Every fact
 should link back to a supporting memory so `lore-ask` can retrace the
@@ -350,17 +456,27 @@ cross-process persistence.
 
 ## Adding a New Tool
 
-1. Decide which tool file it belongs in, or create a new file if it represents a
-   new domain.
-2. Follow the registration pattern above exactly.
-3. Register it in `server.ts` if you created a new file:
+Prefer adding a new **action** to an existing polymorphic tool — see "Adding
+a new action to a polymorphic tool" above. Only introduce a new tool family
+when the surface genuinely doesn't fit any existing one.
+
+To add a new family:
+
+1. Create `src/mcp/tools/<family>.ts` following the polymorphic pattern in
+   any existing file. Define `handle<Action>` functions, a discriminated
+   union schema, and a `register<Family>Tools(server, services)` exporter.
+2. Register it in `server.ts`:
    ```typescript
-   import { registerNewTools } from "./tools/new.js"
+   import { register<Family>Tools } from "./tools/<family>.js"
    // ... in main():
-   registerNewTools(server, services)
+   register<Family>Tools(server, services)
    ```
-4. Do not forget the try/catch + `toolError()` wrapper.
-5. Add the tool to the table in this file and in the root `README.md`.
+3. Do not forget the try/catch + `toolError()` wrapper inside each handler.
+4. Add the tool to the Tool Reference table in this file and in the root
+   `README.md`.
+5. Add tests to `polymorphic.test.ts` exercising at least: registration,
+   each action's dispatch, an unknown-action error, and a per-action
+   missing-required-field error.
 
 ## Error Handling
 

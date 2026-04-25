@@ -185,7 +185,10 @@ describe("registerDecisionTools", () => {
     expect(text).toContain('Saved decision: "Replace auth middleware"')
     expect(text).toContain("Warning:")
     expect(text).toContain("dec-old")
-    expect(text).toContain("lore-supersede")
+    // Post-P3-01 the supersede call site is rendered via the polymorphic
+    // tool (`lore-decision({ action: 'supersede', ... })`).
+    expect(text).toContain("lore-decision")
+    expect(text).toContain("action: \"supersede\"")
     expect(text).toContain('newDecisionId: "dec-new"')
     expect(text).toContain('oldDecisionId: "dec-old"')
 

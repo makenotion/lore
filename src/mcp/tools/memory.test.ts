@@ -182,7 +182,10 @@ describe("lore-remember near-duplicate probe", () => {
     expect(text).toContain("Warning:")
     expect(text).toContain("existing memory looks similar")
     expect(text).toContain("mem-old")
-    expect(text).toContain("lore-update")
+    // Post-P3-01 the recommendation points at the polymorphic tool, with
+    // the legacy `lore-update` flow surfaced via `action: 'update'`.
+    expect(text).toContain("lore-memory")
+    expect(text).toContain("action: 'update'")
     // Probe scoped to project + top-2 tags — crucially, NOT narrowed by
     // kind. The spec's motivating duplicate chain spans note/note/agent_diary
     // and a kind filter would mask it.

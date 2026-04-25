@@ -86,59 +86,73 @@ lower-token starting point than a long stream of individual memories.
 
 ## MCP Tools
 
-### Context
+Lore exposes seven polymorphic tools, each multiplexing several actions
+behind one MCP registration. The 24 prior single-purpose tool names remain
+registered as deprecated aliases that delegate to the same handlers — see
+`src/mcp/AGENTS.md` for the full alias map.
 
-| Tool           | Description                                            |
-| -------------- | ------------------------------------------------------ |
-| `lore-status`  | Show vault status, database counts, and active project |
-| `lore-wake-up` | Load latest digest, recent memories, open loops, decisions needing attention, and memories related to the open loops already in scope |
+### `lore-context` — vault context
 
-### Memory
+| Action     | Description |
+| ---------- | ----------- |
+| `status`   | Show vault status, database counts, and active project |
+| `wake-up`  | Load latest digest, recent memories, open loops, decisions needing attention, and memories related to those open loops |
+| `digest`   | Gather raw activity data for synthesis into a `source: "digest"` memory |
 
-| Tool            | Description                                               |
-| --------------- | --------------------------------------------------------- |
-| `lore-remember` | Save a new memory (markdown content stored as page body)  |
-| `lore-search`   | Semantic search across memories using Notion's search API |
-| `lore-recall`   | List recent memories with optional filters                |
-| `lore-expand`   | Batch-fetch memory bodies by ID (up to 20, parallelized)  |
-| `lore-update`   | Update a memory's title, content, tags, or categorization |
-| `lore-forget`   | Archive a memory by ID                                    |
+### `lore-memory` — memory mutations + batch hydration
 
-### Project
+| Action    | Description |
+| --------- | ----------- |
+| `save`    | Save a new memory (markdown content stored as page body) |
+| `update`  | Update a memory's title, content, tags, or categorization |
+| `archive` | Soft-delete a memory by ID |
+| `expand`  | Batch-fetch memory bodies by ID (up to 20, parallelized) |
 
-| Tool                 | Description                                      |
-| -------------------- | ------------------------------------------------ |
-| `lore-list-projects` | List all projects in the vault                   |
-| `lore-get-project`   | Get project details, topics, and recent activity |
+### `lore-query` — vault read paths
 
-### Knowledge
+| Action       | Description |
+| ------------ | ----------- |
+| `recall`     | List recent memories with optional filters |
+| `search`     | Semantic search across memories using Notion's search API |
+| `ask`        | Query facts about an entity (as subject or object) |
+| `open-loops` | List active open loops (tracking-predicate facts) |
+| `audit`      | List overdue facts and decisions past their review date |
 
-| Tool             | Description                                                  |
-| ---------------- | ------------------------------------------------------------ |
-| `lore-learn`     | Add a subject-predicate-object fact triple                   |
-| `lore-ask`       | Query facts about an entity (as subject or object)           |
-| `lore-correct`   | Invalidate a fact (sets Valid Until date, preserves history) |
-| `lore-open-loops` | List active open loops (tracking-predicate facts)           |
-| `lore-audit`     | List overdue facts and decisions past their review date      |
-| `lore-extend`    | Push a fact's review-by date forward                         |
+### `lore-fact` — knowledge graph mutations
 
-### Decisions
+| Action       | Description |
+| ------------ | ----------- |
+| `create`     | Add a subject-predicate-object fact triple |
+| `invalidate` | Invalidate a fact (sets Valid Until date, preserves history) |
+| `extend`     | Push a fact's review-by date forward |
 
-| Tool                    | Description                                                          |
-| ----------------------- | -------------------------------------------------------------------- |
-| `lore-decide`           | Record a decision with rationale, alternatives, consequences; auto-creates `decided_by` facts |
-| `lore-list-decisions`   | Index-tier listing of decisions (no body fetch)                      |
-| `lore-get-decision`     | Load full rationale + metadata for a specific decision               |
-| `lore-decision-context` | Find every decision governing an entity via the facts graph          |
-| `lore-supersede`        | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact |
-| `lore-review-decision`  | Mark a decision as reviewed, push `Review By` forward                |
+### `lore-decision` — decision lifecycle
 
-### Journal
+| Action      | Description |
+| ----------- | ----------- |
+| `create`    | Record a decision with rationale, alternatives, consequences; auto-creates `decided_by` facts |
+| `list`      | Index-tier listing of decisions (no body fetch) |
+| `get`       | Load full rationale + metadata for a specific decision |
+| `context`   | Find every decision governing an entity via the facts graph |
+| `supersede` | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact |
+| `review`    | Mark a decision as reviewed, push `Review By` forward |
 
-| Tool                | Description                 |
-| ------------------- | --------------------------- |
-| `lore-journal`      | Write an agent diary entry  |
-| `lore-read-journal` | Read recent journal entries |
+### `lore-journal` — agent diary (deprecated tool family)
+
+| Action  | Description |
+| ------- | ----------- |
+| `write` | Save an agent diary entry (default action; legacy `lore-journal({title, content})` call shape preserved) |
+| `read`  | Read recent journal entries |
+
+The whole tool family is itself deprecated — prefer `lore-memory` with
+`kind: 'note'` for durable knowledge or `lore-decision` for decisions.
+
+### `lore-project` — project read paths
+
+| Action | Description |
+| ------ | ----------- |
+| `list` | List all projects in the vault |
+| `get`  | Get project details, topics, and recent activity |
 
 ## CLI Commands
 

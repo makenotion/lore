@@ -1,7 +1,12 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError, paginationFooter, debugLogPartialFailures } from "../helpers.js"
+import {
+  formatDispatchError,
+  paginationFooter,
+  toolError,
+  debugLogPartialFailures,
+} from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import {
   resolveCanonicalDecisionLinks,
@@ -15,13 +20,15 @@ import {
   type NearDuplicateMatch,
 } from "../../core/near-duplicate.js"
 
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>
+  isError?: boolean
+}
+
 /**
  * Trigram threshold for the `lore-decide` near-duplicate probe. Lower
  * than the memory threshold because decisions carry more ceremony and
- * redundant decisions are more costly than redundant notes — we'd rather
- * surface a supersession suggestion that the caller ignores than miss a
- * real replacement. Paired with same-project + same-topic scoping, which
- * already pre-filters aggressively.
+ * redundant decisions are more costly than redundant notes.
  */
 const DECISION_NEAR_DUPLICATE_THRESHOLD = 0.6
 
@@ -31,12 +38,6 @@ const DECISION_POOL_LIMIT = 50
 /** Max candidates to surface in the response. */
 const DECISION_SURFACE_LIMIT = 3
 
-/**
- * The P2-03 spec scopes the decision probe to `Status IN (accepted,
- * proposed)` — superseded / deprecated / rejected decisions should not
- * surface as supersession targets. Notion's `dataSources.query` accepts
- * one `Status` clause; the probe post-filters these client-side.
- */
 const ACTIVE_DECISION_STATUSES: DecisionStatus[] = ["accepted", "proposed"]
 
 function formatNearDuplicateDecisions(
@@ -46,7 +47,7 @@ function formatNearDuplicateDecisions(
   const lines: string[] = []
   const shown = matches.slice(0, DECISION_SURFACE_LIMIT)
   lines.push(
-    `Warning: ${matches.length} existing ${matches.length === 1 ? "decision looks" : "decisions look"} similar. If this supersedes any of them, use \`lore-supersede\`:`,
+    `Warning: ${matches.length} existing ${matches.length === 1 ? "decision looks" : "decisions look"} similar. If this supersedes any of them, use \`lore-decision\` with \`action: 'supersede'\`:`,
   )
   for (const m of shown) {
     const sim = m.titleSimilarity.toFixed(2)
@@ -55,7 +56,7 @@ function formatNearDuplicateDecisions(
       `  - "${m.title}" (${m.id})${when} — trigram ${sim}, status ${m.status}`,
     )
     lines.push(
-      `    lore-supersede({ newDecisionId: "${newDecisionId}", oldDecisionId: "${m.id}" })`,
+      `    lore-decision({ action: "supersede", newDecisionId: "${newDecisionId}", oldDecisionId: "${m.id}" })`,
     )
   }
   if (matches.length > shown.length) {
@@ -86,12 +87,6 @@ function addDaysISO(base: Date, days: number): string {
   return next.toISOString().split("T")[0]
 }
 
-/**
- * Render a relation-list row: `Title (id)` when resolved, short hint
- * otherwise. Keeps the ID visible on a hit so readers can cross-reference
- * back to `lore-get-decision <id>`; on a miss, `displayId` already
- * produces a truncated-hint form so we don't double-print 36 hex chars.
- */
 function formatIdLine(id: string, titleMap: Map<string, string>): string {
   const title = titleMap.get(id.toLowerCase())
   return title ? `${title} (${id})` : displayId(id, titleMap)
@@ -109,20 +104,683 @@ function formatSummary(d: DecisionSummary): string {
   return `**${status}${decided}${reviewPart} | ID: ${d.id}**`
 }
 
+// -------------------------------------------------------------------------
+// Handlers — extracted so the polymorphic `lore-decision` tool and the
+// deprecated single-purpose aliases share single implementations.
+// -------------------------------------------------------------------------
+
+interface CreateArgs {
+  decision: string
+  rationale: string
+  projectName?: string
+  projectNames?: string[]
+  topicName?: string
+  status?: (typeof DECISION_STATUSES)[number]
+  confidence?: (typeof CONFIDENCES)[number]
+  reviewBy?: string
+  decidedAt?: string
+  supersedesIds?: string[]
+  affects?: string[]
+  alternatives?: string
+  consequences?: string
+  tags?: string[]
+  keywords?: string
+  agent?: string
+  session?: string
+}
+
+async function handleCreate(services: LoreServices, args: CreateArgs): Promise<ToolResult> {
+  try {
+    const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+
+    let topicId: string | undefined
+    let topicLabel = "none"
+    if (args.topicName && resolved.ids.length > 0) {
+      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids)
+      topicId = topic.id
+      topicLabel = args.topicName
+    } else if (args.topicName) {
+      resolved.warnings.push(
+        `Topic "${args.topicName}" skipped (requires at least one project)`,
+      )
+    }
+
+    const probeProjectId = resolved.ids[0]
+    const probePromise = probeProjectId
+      ? findNearDuplicates(services.memories, {
+          title: args.decision,
+          tags: args.tags ?? [],
+          projectId: probeProjectId,
+          topicId,
+          kind: "decision",
+          statuses: ACTIVE_DECISION_STATUSES,
+          threshold: DECISION_NEAR_DUPLICATE_THRESHOLD,
+          limit: DECISION_POOL_LIMIT,
+          onError: (err) =>
+            debugLogPartialFailures("lore-decide", [
+              { rootId: "near-duplicate-probe", error: err },
+            ]),
+        })
+      : Promise.resolve([] as NearDuplicateMatch[])
+
+    const [created, nearDuplicates] = await Promise.all([
+      services.decisions.create({
+        decision: args.decision,
+        rationale: args.rationale,
+        projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+        topicId,
+        status: (args.status ?? "accepted") as DecisionStatus,
+        confidence: args.confidence,
+        reviewBy: args.reviewBy,
+        decidedAt: args.decidedAt,
+        alternatives: args.alternatives,
+        consequences: args.consequences,
+        tags: args.tags,
+        keywords: args.keywords,
+        agent: args.agent,
+        session: args.session,
+      }),
+      probePromise,
+    ])
+
+    const duplicateMatches = nearDuplicates.filter((m) => m.id !== created.id)
+
+    services.sessionMemories.record(
+      { agent: args.agent, session: args.session },
+      { memoryId: created.id, projectIds: created.projectIds },
+    )
+
+    const affectsCreated: string[] = []
+    for (const entity of args.affects ?? []) {
+      await services.facts.create({
+        subject: entity,
+        predicate: "decided_by",
+        object: created.id,
+        projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
+        sourceMemoryId: created.id,
+        confidence: created.confidence,
+      })
+      affectsCreated.push(entity)
+    }
+
+    const supersededEntries: Array<{ id: string; title: string }> = []
+    const reachabilityUpdates: string[] = []
+    for (const oldId of args.supersedesIds ?? []) {
+      const oldDecision = await services.decisions.getById(oldId)
+      await services.decisions.supersede(created.id, oldId)
+      await services.facts.create({
+        subject: created.id,
+        predicate: "supersedes_decision",
+        object: oldId,
+        projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
+        sourceMemoryId: created.id,
+        confidence: created.confidence,
+      })
+      const reachability = await syncDecisionReachability(services, oldId, created)
+      supersededEntries.push({ id: oldId, title: oldDecision.title })
+      if (reachability.invalidated > 0) {
+        reachabilityUpdates.push(
+          `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`,
+        )
+      }
+    }
+
+    const projectLabel = args.projectNames?.length
+      ? args.projectNames.join(", ")
+      : args.projectName ?? services.context.project?.name ?? "none (vault-wide)"
+
+    const lines: string[] = [
+      `Saved decision: "${created.title}" (${created.id})`,
+      `Status: ${created.status} | Decided at: ${created.decidedAt ?? "today"}${created.reviewBy ? ` | Review by: ${created.reviewBy}` : ""}`,
+      `Project: ${projectLabel} | Topic: ${topicLabel}`,
+      `Confidence: ${created.confidence}`,
+    ]
+    if (created.alternatives) lines.push(`Alternatives: ${created.alternatives}`)
+    if (created.consequences) lines.push(`Consequences: ${created.consequences}`)
+
+    if (affectsCreated.length > 0) {
+      lines.push("", "Auto-created `decided_by` facts:")
+      for (const e of affectsCreated) lines.push(`  - ${e} → "${created.title}"`)
+    }
+    if (supersededEntries.length > 0) {
+      lines.push("", "Superseded:")
+      for (const { id, title } of supersededEntries) {
+        lines.push(`  - ${id} → "${title}" (marked superseded)`)
+      }
+    }
+    if (reachabilityUpdates.length > 0) {
+      lines.push("", "Graph updates:")
+      for (const update of reachabilityUpdates) lines.push(`  - ${update}`)
+    }
+    const supersededIdSet = new Set(args.supersedesIds ?? [])
+    const decisionMatches = duplicateMatches.filter((m) => !supersededIdSet.has(m.id))
+    if (decisionMatches.length > 0) {
+      lines.push("", ...formatNearDuplicateDecisions(decisionMatches, created.id))
+    }
+    if (resolved.warnings.length > 0) {
+      lines.push("", `Warnings: ${resolved.warnings.join("; ")}`)
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+interface ListArgs {
+  projectName?: string
+  status?: (typeof DECISION_STATUSES)[number]
+  reviewBefore?: string
+  limit?: number
+  startCursor?: string
+}
+
+async function handleList(services: LoreServices, args: ListArgs): Promise<ToolResult> {
+  try {
+    let projectId: string | undefined
+    if (args.projectName) {
+      const found = await services.projects.findByName(args.projectName)
+      if (!found) {
+        return {
+          content: [{ type: "text", text: `Project "${args.projectName}" not found.` }],
+        }
+      }
+      projectId = found.id
+    } else if (services.context.project) {
+      projectId = services.context.project.id
+    }
+
+    const { items: decisions, nextCursor } = await services.decisions.list({
+      projectId,
+      status: args.status as DecisionStatus | undefined,
+      reviewBefore: args.reviewBefore,
+      limit: args.limit ?? 20,
+      startCursor: args.startCursor,
+    })
+
+    if (decisions.length === 0) {
+      const header = nextCursor
+        ? "No matching decisions on this page."
+        : "No decisions found."
+      return {
+        content: [
+          { type: "text", text: `${header}${paginationFooter(nextCursor)}` },
+        ],
+      }
+    }
+
+    const lines = [`Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`]
+    for (const d of decisions) {
+      lines.push(`### ${d.title}`)
+      lines.push(formatSummary(d))
+      if (d.alternatives) lines.push(`Alternatives: ${d.alternatives}`)
+      if (d.consequences) lines.push(`Consequences: ${d.consequences}`)
+      lines.push("")
+    }
+
+    return {
+      content: [
+        { type: "text", text: `${lines.join("\n")}${paginationFooter(nextCursor)}` },
+      ],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+async function handleGet(
+  services: LoreServices,
+  args: { decisionId: string },
+): Promise<ToolResult> {
+  try {
+    const decision = await services.decisions.getById(args.decisionId)
+    const lines = [
+      `# ${decision.title}`,
+      "",
+      `**Status:** ${decision.status}  `,
+      `**Decided:** ${decision.decidedAt ?? "unknown"}  `,
+      decision.reviewBy ? `**Review by:** ${decision.reviewBy}  ` : null,
+      `**Confidence:** ${decision.confidence}  `,
+      `**ID:** ${decision.id}`,
+    ].filter((l): l is string => l !== null)
+
+    if (decision.alternatives) {
+      lines.push("", "## Alternatives considered", decision.alternatives)
+    }
+    if (decision.consequences) {
+      lines.push("", "## Consequences", decision.consequences)
+    }
+    const relationTitles = await resolveTitles(
+      [...decision.supersedesIds, ...decision.affectsIds],
+      (id) => services.memories.getTitleById(id),
+    )
+    if (decision.supersedesIds.length > 0) {
+      lines.push("", "## Supersedes")
+      for (const id of decision.supersedesIds) {
+        lines.push(`- ${formatIdLine(id, relationTitles)}`)
+      }
+    }
+    if (decision.affectsIds.length > 0) {
+      lines.push("", "## Affects (cross-linked memories)")
+      for (const id of decision.affectsIds) {
+        lines.push(`- ${formatIdLine(id, relationTitles)}`)
+      }
+    }
+    if (decision.content) {
+      lines.push("", "---", "", "## Rationale", "", decision.content)
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+interface ContextArgs {
+  entity: string
+  projectName?: string
+  limit?: number
+}
+
+async function handleContext(
+  services: LoreServices,
+  args: ContextArgs,
+  toolName: string,
+): Promise<ToolResult> {
+  try {
+    let projectId: string | undefined
+    const warnings: string[] = []
+    const formatWarnings = () =>
+      warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
+    if (args.projectName) {
+      const found = await services.projects.findByName(args.projectName)
+      if (!found) {
+        return {
+          content: [{ type: "text", text: `Project "${args.projectName}" not found.` }],
+        }
+      }
+      projectId = found.id
+    } else if (services.context.project) {
+      projectId = services.context.project.id
+    }
+
+    const facts = await services.facts.queryBySubject(args.entity, {
+      projectId,
+      predicates: ["decided_by"],
+    })
+
+    if (facts.length === 0) {
+      return {
+        content: [
+          { type: "text", text: `No decisions found governing "${args.entity}".` },
+        ],
+      }
+    }
+
+    const { links, failures: linkFailures } = await resolveCanonicalDecisionLinks(
+      services,
+      facts,
+      { projectId },
+    )
+    if (linkFailures.length > 0) {
+      debugLogPartialFailures(toolName, linkFailures)
+      const rootIds = linkFailures.map(({ rootId }) => rootId).join(", ")
+      warnings.push(
+        `Could not resolve ${linkFailures.length} decision root${linkFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
+      )
+    }
+    const decisions = Array.from(
+      new Map(links.map(({ decision }) => [decision.id, decision])).values(),
+    )
+
+    if (decisions.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `No active decisions found governing "${args.entity}".${formatWarnings()}`,
+          },
+        ],
+      }
+    }
+
+    decisions.sort((a, b) =>
+      (b.decidedAt ?? b.updatedAt).localeCompare(a.decidedAt ?? a.updatedAt),
+    )
+
+    const cap = args.limit ?? 10
+    const shown = decisions.slice(0, cap)
+
+    const lines: string[] = [
+      `${shown.length} active decision${shown.length === 1 ? "" : "s"} governing "${args.entity}"` +
+        (decisions.length > shown.length
+          ? ` (showing ${shown.length} of ${decisions.length})`
+          : "") +
+        ":\n",
+    ]
+
+    for (const d of shown) {
+      lines.push(`### ${d.title}`)
+      lines.push(
+        `**[${d.status}]${d.decidedAt ? ` | decided ${d.decidedAt}` : ""} | ID: ${d.id}**`,
+      )
+      if (d.alternatives) lines.push(`Alternatives: ${d.alternatives}`)
+      if (d.consequences) lines.push(`Consequences: ${d.consequences}`)
+      lines.push("")
+    }
+
+    const historicalRoots = new Set(
+      facts
+        .map((fact) => fact.sourceMemoryId ?? fact.object)
+        .filter((value): value is string => value !== null && value.length > 0),
+    )
+    const resolvedOnward = historicalRoots.size - decisions.length - linkFailures.length
+    if (resolvedOnward > 0) {
+      lines.push(
+        `_${resolvedOnward} superseded decision link${resolvedOnward === 1 ? "" : "s"} resolved forward to current replacements._`,
+      )
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") + formatWarnings() }],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+async function handleSupersede(
+  services: LoreServices,
+  args: { newDecisionId: string; oldDecisionId: string },
+): Promise<ToolResult> {
+  try {
+    const [newDecision, oldDecision] = await Promise.all([
+      services.decisions.getById(args.newDecisionId),
+      services.decisions.getById(args.oldDecisionId),
+    ])
+
+    await services.decisions.supersede(args.newDecisionId, args.oldDecisionId)
+
+    await services.facts.create({
+      subject: newDecision.id,
+      predicate: "supersedes_decision",
+      object: oldDecision.id,
+      projectIds: newDecision.projectIds.length > 0 ? newDecision.projectIds : undefined,
+      sourceMemoryId: newDecision.id,
+      confidence: newDecision.confidence,
+    })
+    const reachability = await syncDecisionReachability(
+      services,
+      args.oldDecisionId,
+      newDecision,
+    )
+
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Superseded "${oldDecision.title}" (${args.oldDecisionId}) with "${newDecision.title}" (${args.newDecisionId}).\n` +
+            `Auto-created fact: ${args.newDecisionId} → supersedes_decision → ${args.oldDecisionId}\n` +
+            `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"}.`,
+        },
+      ],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+async function handleReview(
+  services: LoreServices,
+  args: { decisionId: string; reviewBy?: string },
+): Promise<ToolResult> {
+  try {
+    const newDate = args.reviewBy ?? addDaysISO(new Date(), 90)
+    await services.decisions.reviewCompleted(args.decisionId, newDate)
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Marked decision ${args.decisionId} as reviewed. New review date: ${newDate}`,
+        },
+      ],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+const decisionDispatchSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("create"),
+    decision: z.string(),
+    rationale: z.string(),
+    projectName: z.string().optional(),
+    projectNames: z.array(z.string()).optional(),
+    topicName: z.string().optional(),
+    status: z.enum(DECISION_STATUSES).optional(),
+    confidence: z.enum(CONFIDENCES).optional(),
+    reviewBy: z.string().regex(YMD_REGEX).optional(),
+    decidedAt: z.string().regex(YMD_REGEX).optional(),
+    supersedesIds: z.array(z.string()).optional(),
+    affects: z.array(z.string()).optional(),
+    alternatives: z.string().optional(),
+    consequences: z.string().optional(),
+    tags: tagsSchema.optional(),
+    keywords: keywordsSchema.optional(),
+    agent: z.string().optional(),
+    session: z.string().optional(),
+  }),
+  z.object({
+    action: z.literal("list"),
+    projectName: z.string().optional(),
+    status: z.enum(DECISION_STATUSES).optional(),
+    reviewBefore: z.string().regex(YMD_REGEX).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    startCursor: z.string().min(1).optional(),
+  }),
+  z.object({
+    action: z.literal("get"),
+    decisionId: z.string(),
+  }),
+  z.object({
+    action: z.literal("context"),
+    entity: z.string(),
+    projectName: z.string().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  z.object({
+    action: z.literal("supersede"),
+    newDecisionId: z.string(),
+    oldDecisionId: z.string(),
+  }),
+  z.object({
+    action: z.literal("review"),
+    decisionId: z.string(),
+    reviewBy: z.string().regex(YMD_REGEX).optional(),
+  }),
+])
+
 export function registerDecisionTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-decide
+  // lore-decision — polymorphic dispatcher (P3-01)
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    "lore-decision",
+    {
+      title: "Decision lifecycle operations",
+      description:
+        "Record, query, or supersede architectural decisions. Action-dispatched:\n\n" +
+        "- `action: 'create'` — record a decision (rationale, alternatives, consequences, review date). Auto-creates `decided_by` facts for each entry in `affects` and `supersedes_decision` facts when `supersedesIds` is set. Use this instead of `lore-memory action='save'` for decisions.\n" +
+        "- `action: 'list'` — index-tier listing (no body fetch). Cursor-paginated.\n" +
+        "- `action: 'get'` — load full rationale + metadata + relations for one decision.\n" +
+        "- `action: 'context'` — graph walk: every active decision governing an entity, resolved through any supersession chain.\n" +
+        "- `action: 'supersede'` — atomically mark `oldDecisionId` superseded by `newDecisionId` and create the `supersedes_decision` fact.\n" +
+        "- `action: 'review'` — mark a decision reviewed, push the review-by date forward (default +90 days).",
+      inputSchema: {
+        action: z
+          .enum(["create", "list", "get", "context", "supersede", "review"])
+          .describe(
+            "Operation: create, list, get (one), context (governing decisions for entity), supersede, review.",
+          ),
+        // create
+        decision: z
+          .string()
+          .optional()
+          .describe("(action='create') Required. One-line decision statement (becomes the title)."),
+        rationale: z
+          .string()
+          .optional()
+          .describe("(action='create') Required. Prose explaining the reasoning (page body)."),
+        // create | list | context
+        projectName: z
+          .string()
+          .optional()
+          .describe(
+            "(create | list | context) Project name. Defaults to auto-detected for create.",
+          ),
+        // create
+        projectNames: z
+          .array(z.string())
+          .optional()
+          .describe("(action='create') Multiple project names for cross-project decisions."),
+        topicName: z
+          .string()
+          .optional()
+          .describe("(action='create') Topic name within the project (auto-created if missing)."),
+        // create | list
+        status: z
+          .enum(DECISION_STATUSES)
+          .optional()
+          .describe(
+            "(action='create') Lifecycle state (default: accepted). (action='list') Filter.",
+          ),
+        // create
+        confidence: z
+          .enum(CONFIDENCES)
+          .optional()
+          .describe("(action='create') Confidence (default: certain)."),
+        // create | list | review
+        reviewBy: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe(
+            "(action='create') Review-by date. (action='review') New review date (default +90d). " +
+              "Note: list filter uses `reviewBefore` instead.",
+          ),
+        // list only
+        reviewBefore: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("(action='list') Filter to decisions with `Review By` on or before this."),
+        // create
+        decidedAt: z
+          .string()
+          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .optional()
+          .describe("(action='create') Canonical decision date (default: today)."),
+        supersedesIds: z
+          .array(z.string())
+          .optional()
+          .describe("(action='create') Decision IDs this decision replaces."),
+        affects: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "(action='create') Entity names affected. Each auto-creates a `decided_by` fact.",
+          ),
+        alternatives: z
+          .string()
+          .optional()
+          .describe("(action='create') Alternatives considered (≤2000 chars)."),
+        consequences: z
+          .string()
+          .optional()
+          .describe("(action='create') Consequences accepted (≤2000 chars)."),
+        tags: tagsSchema.optional().describe("(action='create') Closed-vocabulary tags."),
+        keywords: keywordsSchema.optional().describe("(action='create') Free-form labels."),
+        agent: z
+          .string()
+          .optional()
+          .describe("(action='create') Name of the AI agent recording this decision."),
+        session: z
+          .string()
+          .optional()
+          .describe("(action='create') Session ID to group related records."),
+        // list | context
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("(list | context) Max results. Defaults: list 20, context 10."),
+        startCursor: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("(action='list') Opaque pagination cursor."),
+        // get | review
+        decisionId: z
+          .string()
+          .optional()
+          .describe(
+            "Required for action='get' and action='review'. The decision's page ID.",
+          ),
+        // context | (search-style)
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            "(action='context') Required. Entity to look up (matches `decided_by` Subject).",
+          ),
+        // supersede
+        newDecisionId: z
+          .string()
+          .optional()
+          .describe("(action='supersede') Required. ID of the new decision."),
+        oldDecisionId: z
+          .string()
+          .optional()
+          .describe("(action='supersede') Required. ID of the decision being replaced."),
+      },
+    },
+    async (args) => {
+      const parsed = decisionDispatchSchema.safeParse(args)
+      if (!parsed.success) {
+        return toolError(
+          new Error(formatDispatchError("lore-decision", parsed.error)),
+        )
+      }
+      switch (parsed.data.action) {
+        case "create":
+          return handleCreate(services, parsed.data)
+        case "list":
+          return handleList(services, parsed.data)
+        case "get":
+          return handleGet(services, parsed.data)
+        case "context":
+          return handleContext(services, parsed.data, "lore-decision")
+        case "supersede":
+          return handleSupersede(services, parsed.data)
+        case "review":
+          return handleReview(services, parsed.data)
+      }
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // Deprecated aliases — preserved for the one-release transition window.
   // -------------------------------------------------------------------------
   server.registerTool(
     "lore-decide",
     {
       title: "Record a decision",
-      description:
-        "Record an architectural decision as a first-class entity with rationale, alternatives, consequences, and review date. " +
-        "Use this instead of `lore-remember` for decisions — it produces structured, queryable records that participate in `lore-audit` and `lore-wake-up`.\n\n" +
-        "`tags` is a closed vocabulary. For free-form labels (PR numbers, ticket IDs, file paths), use `keywords`.\n\n" +
-        "Auto-creates `decided_by` facts for each entity name in `affects`, so the decision surfaces automatically via `lore-ask` or `lore-decision-context`. " +
-        "If `supersedesIds` is set, marks the old decision(s) as superseded and auto-creates `supersedes_decision` facts.",
+      description: "Deprecated alias — prefer `lore-decision` with `action: 'create'`.",
       inputSchema: {
         decision: z.string().describe("One-line decision statement (becomes the title)"),
         rationale: z.string().describe("Prose explaining the reasoning (becomes the page body)"),
@@ -150,250 +808,45 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .string()
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
           .optional()
-          .describe("Date (YYYY-MM-DD) when this decision should be reviewed for staleness"),
+          .describe("Review-by date YYYY-MM-DD."),
         decidedAt: z
           .string()
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
           .optional()
-          .describe("Canonical decision date (default: today)"),
+          .describe("Canonical decision date YYYY-MM-DD."),
         supersedesIds: z
           .array(z.string())
           .optional()
-          .describe("Decision IDs this decision replaces. Each old decision is marked superseded."),
+          .describe("Decision IDs this decision replaces."),
         affects: z
           .array(z.string())
           .optional()
-          .describe(
-            "Entity names affected by this decision (e.g., \"AuthService\"). " +
-              "Each entry auto-creates a `decided_by` fact so the decision surfaces via `lore-ask`."
-          ),
+          .describe("Entity names affected — auto-creates `decided_by` facts."),
         alternatives: z
           .string()
           .optional()
-          .describe("Alternatives considered, as a short free-text summary (2000 char limit)"),
+          .describe("Alternatives considered (≤2000 char)"),
         consequences: z
           .string()
           .optional()
-          .describe("Consequences accepted, as a short free-text summary (2000 char limit)"),
+          .describe("Consequences accepted (≤2000 char)"),
         tags: tagsSchema.optional(),
         keywords: keywordsSchema.optional(),
         agent: z.string().optional().describe("Name of the AI agent recording this decision"),
         session: z.string().optional().describe("Session ID to group related records"),
       },
     },
-    async ({
-      decision,
-      rationale,
-      projectName,
-      projectNames,
-      topicName,
-      status,
-      confidence,
-      reviewBy,
-      decidedAt,
-      supersedesIds,
-      affects,
-      alternatives,
-      consequences,
-      tags,
-      keywords,
-      agent,
-      session,
-    }) => {
-      try {
-        const resolved = await resolveProjectIds(services, projectName, projectNames)
-
-        let topicId: string | undefined
-        let topicLabel = "none"
-        if (topicName && resolved.ids.length > 0) {
-          const topic = await services.topics.getOrCreate(topicName, resolved.ids)
-          topicId = topic.id
-          topicLabel = topicName
-        } else if (topicName) {
-          // Decisions without any project can't anchor a topic: the topic
-          // would be orphaned (not visible in `lore status topics <project>`
-          // or `lore-get-project`). Surface the skip because the caller
-          // explicitly asked to link one.
-          resolved.warnings.push(
-            `Topic "${topicName}" skipped (requires at least one project)`
-          )
-        }
-
-        // Probe for near-duplicate decisions in parallel with the create.
-        // Same-project + same-topic is the P2-03 rule; the probe returns
-        // only active (accepted/proposed) decisions so superseded rows
-        // don't show up as supersession targets. Running in parallel
-        // keeps wall-clock latency at max(create, probe). The probe
-        // short-circuits (returns []) when no project scope is available.
-        // Probe failures route through `debugLogPartialFailures` (opt-in
-        // under `LORE_DEBUG=1`) but never fail the save.
-        const probeProjectId = resolved.ids[0]
-        const probePromise = probeProjectId
-          ? findNearDuplicates(services.memories, {
-              title: decision,
-              tags: tags ?? [],
-              projectId: probeProjectId,
-              topicId,
-              kind: "decision",
-              statuses: ACTIVE_DECISION_STATUSES,
-              threshold: DECISION_NEAR_DUPLICATE_THRESHOLD,
-              limit: DECISION_POOL_LIMIT,
-              onError: (err) =>
-                debugLogPartialFailures("lore-decide", [
-                  { rootId: "near-duplicate-probe", error: err },
-                ]),
-            })
-          : Promise.resolve([] as NearDuplicateMatch[])
-
-        // Create the decision itself. supersedesIds are applied via
-        // DecisionService.supersede() below (which also marks the old
-        // decisions superseded), not as part of create — we want the
-        // full atomic supersession semantic for each one.
-        const [created, nearDuplicates] = await Promise.all([
-          services.decisions.create({
-            decision,
-            rationale,
-            projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-            topicId,
-            status: (status ?? "accepted") as DecisionStatus,
-            confidence,
-            reviewBy,
-            decidedAt,
-            alternatives,
-            consequences,
-            tags,
-            keywords,
-            agent,
-            session,
-          }),
-          probePromise,
-        ])
-
-        // Drop self in case the eventual-consistency race lets Notion's
-        // query index surface the freshly-created row under the probe
-        // filter.
-        const duplicateMatches = nearDuplicates.filter((m) => m.id !== created.id)
-
-        // Record for auto-linking on subsequent `lore-learn` calls in the
-        // same (agent, session). Decisions already auto-source their own
-        // `decided_by` and `supersedes_decision` facts below, but a plain
-        // `lore-learn` call made after `lore-decide` in the same turn should
-        // pick up the decision as the supporting memory — subject to the
-        // project-overlap check in knowledge.ts.
-        services.sessionMemories.record(
-          { agent, session },
-          { memoryId: created.id, projectIds: created.projectIds }
-        )
-
-        // Process affects first so any explicit context links already exist
-        // before supersession reconciliation deduplicates inherited ones.
-        const affectsCreated: string[] = []
-        for (const entity of affects ?? []) {
-          await services.facts.create({
-            subject: entity,
-            predicate: "decided_by",
-            object: created.id,
-            projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
-            sourceMemoryId: created.id,
-            confidence: created.confidence,
-          })
-          affectsCreated.push(entity)
-        }
-
-        // Process supersessions: atomic memory-level supersede + auto-fact.
-        const supersededEntries: Array<{ id: string; title: string }> = []
-        const reachabilityUpdates: string[] = []
-        for (const oldId of supersedesIds ?? []) {
-          const oldDecision = await services.decisions.getById(oldId)
-          await services.decisions.supersede(created.id, oldId)
-          await services.facts.create({
-            subject: created.id,
-            predicate: "supersedes_decision",
-            object: oldId,
-            projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
-            sourceMemoryId: created.id,
-            confidence: created.confidence,
-          })
-          const reachability = await syncDecisionReachability(services, oldId, created)
-          supersededEntries.push({ id: oldId, title: oldDecision.title })
-          if (reachability.invalidated > 0) {
-            reachabilityUpdates.push(
-              `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`
-            )
-          }
-        }
-
-        const projectLabel = projectNames?.length
-          ? projectNames.join(", ")
-          : projectName ?? services.context.project?.name ?? "none (vault-wide)"
-
-        const lines: string[] = [
-          `Saved decision: "${created.title}" (${created.id})`,
-          `Status: ${created.status} | Decided at: ${created.decidedAt ?? "today"}${created.reviewBy ? ` | Review by: ${created.reviewBy}` : ""}`,
-          `Project: ${projectLabel} | Topic: ${topicLabel}`,
-          `Confidence: ${created.confidence}`,
-        ]
-        if (created.alternatives) lines.push(`Alternatives: ${created.alternatives}`)
-        if (created.consequences) lines.push(`Consequences: ${created.consequences}`)
-
-        if (affectsCreated.length > 0) {
-          lines.push("", "Auto-created `decided_by` facts:")
-          for (const e of affectsCreated) lines.push(`  - ${e} → "${created.title}"`)
-        }
-        if (supersededEntries.length > 0) {
-          lines.push("", "Superseded:")
-          for (const { id, title } of supersededEntries) {
-            lines.push(`  - ${id} → "${title}" (marked superseded)`)
-          }
-        }
-        if (reachabilityUpdates.length > 0) {
-          lines.push("", "Graph updates:")
-          for (const update of reachabilityUpdates) lines.push(`  - ${update}`)
-        }
-        // Drop rows the caller already explicitly superseded — they are
-        // expected duplicates and warning again would be noise. What's
-        // left is "looks similar but the caller didn't call them out as
-        // replacements" — the interesting near-dup surface.
-        const supersededIdSet = new Set(supersedesIds ?? [])
-        const decisionMatches = duplicateMatches.filter(
-          (m) => !supersededIdSet.has(m.id),
-        )
-        if (decisionMatches.length > 0) {
-          lines.push(
-            "",
-            ...formatNearDuplicateDecisions(decisionMatches, created.id),
-          )
-        }
-        if (resolved.warnings.length > 0) {
-          lines.push("", `Warnings: ${resolved.warnings.join("; ")}`)
-        }
-
-        return { content: [{ type: "text", text: lines.join("\n") }] }
-      } catch (err) {
-        return toolError(err)
-      }
-    }
+    async (args) => handleCreate(services, args),
   )
 
-  // -------------------------------------------------------------------------
-  // lore-list-decisions
-  // -------------------------------------------------------------------------
   server.registerTool(
     "lore-list-decisions",
     {
       title: "List decisions",
-      description:
-        "List decisions matching the given filters. Returns summaries without markdown bodies — O(1) Notion API calls regardless of result count. " +
-        "Use this to discover what decisions have been made; use `lore-get-decision` to read the full rationale for a specific one.\n\n" +
-        "Returns up to `limit` decisions per call. When more exist, the response ends with a fenced " +
-        "```json block `{\"nextCursor\":\"...\"}` — pass that value as `startCursor` on the next call to " +
-        "continue enumerating. Absence of the footer means the final page.",
+      description: "Deprecated alias — prefer `lore-decision` with `action: 'list'`.",
       inputSchema: {
         projectName: z.string().optional().describe("Scope to a project"),
-        status: z
-          .enum(DECISION_STATUSES)
-          .optional()
-          .describe("Filter by lifecycle state"),
+        status: z.enum(DECISION_STATUSES).optional().describe("Filter by lifecycle state"),
         reviewBefore: z
           .string()
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
@@ -410,149 +863,32 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .string()
           .min(1)
           .optional()
-          .describe(
-            "Opaque cursor from a previous response's `nextCursor`. Pass to continue " +
-              "enumerating from where the last page ended. Keep all other filters identical."
-          ),
+          .describe("Opaque cursor from a previous response's `nextCursor`."),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ projectName, status, reviewBefore, limit, startCursor }) => {
-      try {
-        let projectId: string | undefined
-        if (projectName) {
-          const found = await services.projects.findByName(projectName)
-          if (!found) {
-            return {
-              content: [{ type: "text", text: `Project "${projectName}" not found.` }],
-            }
-          }
-          projectId = found.id
-        } else if (services.context.project) {
-          projectId = services.context.project.id
-        }
-
-        const { items: decisions, nextCursor } = await services.decisions.list({
-          projectId,
-          status: status as DecisionStatus | undefined,
-          reviewBefore,
-          limit: limit ?? 20,
-          startCursor,
-        })
-
-        if (decisions.length === 0) {
-          // Server-side filters can yield an empty page mid-enumeration; we
-          // must surface the cursor so callers don't stop early on a false
-          // "end of results" signal.
-          const header = nextCursor
-            ? "No matching decisions on this page."
-            : "No decisions found."
-          return {
-            content: [
-              { type: "text", text: `${header}${paginationFooter(nextCursor)}` },
-            ],
-          }
-        }
-
-        const lines = [`Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`]
-        for (const d of decisions) {
-          lines.push(`### ${d.title}`)
-          lines.push(formatSummary(d))
-          if (d.alternatives) lines.push(`Alternatives: ${d.alternatives}`)
-          if (d.consequences) lines.push(`Consequences: ${d.consequences}`)
-          lines.push("")
-        }
-
-        return {
-          content: [
-            { type: "text", text: `${lines.join("\n")}${paginationFooter(nextCursor)}` },
-          ],
-        }
-      } catch (err) {
-        return toolError(err)
-      }
-    }
+    async (args) => handleList(services, args),
   )
 
-  // -------------------------------------------------------------------------
-  // lore-get-decision
-  // -------------------------------------------------------------------------
   server.registerTool(
     "lore-get-decision",
     {
       title: "Get a decision",
-      description:
-        "Load the full rationale and metadata for a specific decision. Use `lore-list-decisions` to find the ID first.",
+      description: "Deprecated alias — prefer `lore-decision` with `action: 'get'`.",
       inputSchema: {
         decisionId: z.string().describe("The decision's page ID"),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ decisionId }) => {
-      try {
-        const decision = await services.decisions.getById(decisionId)
-        const lines = [
-          `# ${decision.title}`,
-          "",
-          `**Status:** ${decision.status}  `,
-          `**Decided:** ${decision.decidedAt ?? "unknown"}  `,
-          decision.reviewBy ? `**Review by:** ${decision.reviewBy}  ` : null,
-          `**Confidence:** ${decision.confidence}  `,
-          `**ID:** ${decision.id}`,
-        ].filter((l): l is string => l !== null)
-
-        if (decision.alternatives) {
-          lines.push("", "## Alternatives considered", decision.alternatives)
-        }
-        if (decision.consequences) {
-          lines.push("", "## Consequences", decision.consequences)
-        }
-        // Resolve relation IDs to titles so readers can scan the chain
-        // without cross-referencing opaque UUIDs. Both Supersedes and
-        // Affects rows live in the Memories DB, so one title-only
-        // fetcher handles the whole set; we batch the two ID lists
-        // together to minimize the network fan-out on a single render.
-        const relationTitles = await resolveTitles(
-          [...decision.supersedesIds, ...decision.affectsIds],
-          (id) => services.memories.getTitleById(id),
-        )
-        if (decision.supersedesIds.length > 0) {
-          lines.push("", "## Supersedes")
-          for (const id of decision.supersedesIds) {
-            lines.push(`- ${formatIdLine(id, relationTitles)}`)
-          }
-        }
-        if (decision.affectsIds.length > 0) {
-          lines.push("", "## Affects (cross-linked memories)")
-          for (const id of decision.affectsIds) {
-            lines.push(`- ${formatIdLine(id, relationTitles)}`)
-          }
-        }
-        if (decision.content) {
-          lines.push("", "---", "", "## Rationale", "", decision.content)
-        }
-
-        return { content: [{ type: "text", text: lines.join("\n") }] }
-      } catch (err) {
-        return toolError(err)
-      }
-    }
+    async ({ decisionId }) => handleGet(services, { decisionId }),
   )
 
-  // -------------------------------------------------------------------------
-  // lore-decision-context
-  // -------------------------------------------------------------------------
-  // Single binding for both the MCP registration string and the operator
-  // log's `tool=` field so a future rename can't desync the two surfaces.
-  const decisionContextName = "lore-decision-context"
+  const decisionContextLegacyName = "lore-decision-context"
   server.registerTool(
-    decisionContextName,
+    decisionContextLegacyName,
     {
       title: "Find decisions governing an entity",
-      description:
-        "Find every decision that governs a specific entity (e.g., \"AuthService\"). " +
-        "Walks the facts graph: queries `decided_by` facts for the entity, resolves each to the current canonical decision through any supersession chain, and returns the active decisions sorted by decided date (newest first).\n\n" +
-        "Use this before editing a subsystem — it answers \"what decisions already apply here?\"",
+      description: "Deprecated alias — prefer `lore-decision` with `action: 'context'`.",
       inputSchema: {
         entity: z
           .string()
@@ -568,186 +904,27 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ entity, projectName, limit }) => {
-      try {
-        let projectId: string | undefined
-        const warnings: string[] = []
-        // Built just-in-time at each return site so warnings added later
-        // (decision-graph partial failures) aren't silently dropped.
-        const formatWarnings = () =>
-          warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
-
-        if (projectName) {
-          const found = await services.projects.findByName(projectName)
-          if (!found) {
-            return {
-              content: [{ type: "text", text: `Project "${projectName}" not found.` }],
-            }
-          }
-          projectId = found.id
-        } else if (services.context.project) {
-          projectId = services.context.project.id
-        }
-
-        const facts = await services.facts.queryBySubject(entity, {
-          projectId,
-          predicates: ["decided_by"],
-        })
-
-        if (facts.length === 0) {
-          return {
-            content: [
-              { type: "text", text: `No decisions found governing "${entity}".` },
-            ],
-          }
-        }
-
-        const { links, failures: linkFailures } = await resolveCanonicalDecisionLinks(
-          services,
-          facts,
-          { projectId },
-        )
-        if (linkFailures.length > 0) {
-          debugLogPartialFailures(decisionContextName, linkFailures)
-          const rootIds = linkFailures.map(({ rootId }) => rootId).join(", ")
-          warnings.push(
-            `Could not resolve ${linkFailures.length} decision root${linkFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
-          )
-        }
-        const decisions = Array.from(
-          new Map(links.map(({ decision }) => [decision.id, decision])).values()
-        )
-
-        if (decisions.length === 0) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `No active decisions found governing "${entity}".${formatWarnings()}`,
-              },
-            ],
-          }
-        }
-
-        decisions.sort((a, b) =>
-          (b.decidedAt ?? b.updatedAt).localeCompare(a.decidedAt ?? a.updatedAt)
-        )
-
-        const cap = limit ?? 10
-        const shown = decisions.slice(0, cap)
-
-        const lines: string[] = [
-          `${shown.length} active decision${shown.length === 1 ? "" : "s"} governing "${entity}"` +
-            (decisions.length > shown.length
-              ? ` (showing ${shown.length} of ${decisions.length})`
-              : "") +
-            ":\n",
-        ]
-
-        for (const d of shown) {
-          lines.push(`### ${d.title}`)
-          lines.push(
-            `**[${d.status}]${d.decidedAt ? ` | decided ${d.decidedAt}` : ""} | ID: ${d.id}**`
-          )
-          if (d.alternatives) lines.push(`Alternatives: ${d.alternatives}`)
-          if (d.consequences) lines.push(`Consequences: ${d.consequences}`)
-          lines.push("")
-        }
-
-        const historicalRoots = new Set(
-          facts
-            .map((fact) => fact.sourceMemoryId ?? fact.object)
-            .filter((value): value is string => value !== null && value.length > 0)
-        )
-        // Subtract failures from the "resolved forward" count so a root
-        // whose walk rejected doesn't read as if it was successfully
-        // resolved onward to a live replacement.
-        const resolvedOnward =
-          historicalRoots.size - decisions.length - linkFailures.length
-        if (resolvedOnward > 0) {
-          lines.push(
-            `_${resolvedOnward} superseded decision link${resolvedOnward === 1 ? "" : "s"} resolved forward to current replacements._`
-          )
-        }
-
-        return {
-          content: [{ type: "text", text: lines.join("\n") + formatWarnings() }],
-        }
-      } catch (err) {
-        return toolError(err)
-      }
-    }
+    async (args) => handleContext(services, args, decisionContextLegacyName),
   )
 
-  // -------------------------------------------------------------------------
-  // lore-supersede
-  // -------------------------------------------------------------------------
   server.registerTool(
     "lore-supersede",
     {
       title: "Supersede a decision",
-      description:
-        "Mark an old decision as superseded by a new one. Atomic: adds the old decision's ID to the new decision's `Supersedes` relation, then sets the old decision's `Status` to `superseded`. " +
-        "Auto-creates a `supersedes_decision` fact using stable decision IDs and updates any inherited `decided_by` graph links.",
+      description: "Deprecated alias — prefer `lore-decision` with `action: 'supersede'`.",
       inputSchema: {
-        newDecisionId: z
-          .string()
-          .describe("ID of the new decision that takes precedence"),
-        oldDecisionId: z
-          .string()
-          .describe("ID of the old decision being replaced"),
+        newDecisionId: z.string().describe("ID of the new decision that takes precedence"),
+        oldDecisionId: z.string().describe("ID of the old decision being replaced"),
       },
     },
-    async ({ newDecisionId, oldDecisionId }) => {
-      try {
-        const [newDecision, oldDecision] = await Promise.all([
-          services.decisions.getById(newDecisionId),
-          services.decisions.getById(oldDecisionId),
-        ])
-
-        await services.decisions.supersede(newDecisionId, oldDecisionId)
-
-        await services.facts.create({
-          subject: newDecision.id,
-          predicate: "supersedes_decision",
-          object: oldDecision.id,
-          projectIds: newDecision.projectIds.length > 0 ? newDecision.projectIds : undefined,
-          sourceMemoryId: newDecision.id,
-          confidence: newDecision.confidence,
-        })
-        const reachability = await syncDecisionReachability(
-          services,
-          oldDecisionId,
-          newDecision
-        )
-
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                `Superseded "${oldDecision.title}" (${oldDecisionId}) with "${newDecision.title}" (${newDecisionId}).\n` +
-                `Auto-created fact: ${newDecisionId} → supersedes_decision → ${oldDecisionId}\n` +
-                `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"}.`,
-            },
-          ],
-        }
-      } catch (err) {
-        return toolError(err)
-      }
-    }
+    async (args) => handleSupersede(services, args),
   )
 
-  // -------------------------------------------------------------------------
-  // lore-review-decision
-  // -------------------------------------------------------------------------
   server.registerTool(
     "lore-review-decision",
     {
       title: "Mark a decision reviewed",
-      description:
-        "Mark a decision as reviewed, pushing its `Review By` date forward. " +
-        "Without a date, defaults to +90 days from today. Use after confirming a decision is still valid.",
+      description: "Deprecated alias — prefer `lore-decision` with `action: 'review'`.",
       inputSchema: {
         decisionId: z.string().describe("The decision's page ID"),
         reviewBy: z
@@ -757,21 +934,6 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .describe("New review date (YYYY-MM-DD). Default: +90 days from today."),
       },
     },
-    async ({ decisionId, reviewBy }) => {
-      try {
-        const newDate = reviewBy ?? addDaysISO(new Date(), 90)
-        await services.decisions.reviewCompleted(decisionId, newDate)
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Marked decision ${decisionId} as reviewed. New review date: ${newDate}`,
-            },
-          ],
-        }
-      } catch (err) {
-        return toolError(err)
-      }
-    }
+    async (args) => handleReview(services, args),
   )
 }

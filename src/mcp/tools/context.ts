@@ -1,13 +1,14 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { toolError } from "../helpers.js"
+import { formatDispatchError, toolError } from "../helpers.js"
 import {
   DEFAULT_WAKEUP_MEMORY_LIMIT,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
+import { gatherDigestData } from "../../core/digest.js"
 import type { Memory } from "../../types.js"
 import {
   type CollapsedMemoryGroup,
@@ -16,6 +17,11 @@ import {
   renderFact,
   resolveReferencedTitles,
 } from "../render.js"
+
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>
+  isError?: boolean
+}
 
 /**
  * Multiplier applied to each memory-section cap when we over-fetch to
@@ -78,69 +84,313 @@ function renderMemoryEntry(
   return lines
 }
 
-export function registerContextTools(server: McpServer, services: LoreServices): void {
-  // -------------------------------------------------------------------------
-  // lore-status
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-status",
-    {
-      title: "Vault status",
-      description:
-        "Show the current vault status including database counts, active project context, and configuration summary.",
-      annotations: { readOnlyHint: true },
-    },
-    async () => {
-      try {
-        const stats = await services.vault.stats()
-        const project = services.context.project
+// -------------------------------------------------------------------------
+// Handlers — extracted so both the polymorphic `lore-context` tool and the
+// legacy `lore-status` / `lore-wake-up` / `lore-digest` aliases share one
+// implementation per action.
+// -------------------------------------------------------------------------
 
-        const lines = [
-          `Vault: ${services.context.vault.pageId}`,
-          `Current project: ${project ? `${project.name} (${project.path || "no path"})` : "none (vault-wide scope)"}`,
-          "",
-          "Database counts:",
-          `  Projects: ${stats.projects}`,
-          `  Topics:   ${stats.topics}`,
-          `  Memories: ${stats.memories}`,
-          `  Facts:    ${stats.facts}`,
-        ]
+async function handleStatus(services: LoreServices): Promise<ToolResult> {
+  try {
+    const stats = await services.vault.stats()
+    const project = services.context.project
 
-        if (services.config.projects?.length) {
-          lines.push("", "Configured projects:")
-          for (const p of services.config.projects) {
-            lines.push(`  - ${p.name} (${p.path})`)
-          }
-        }
+    const lines = [
+      `Vault: ${services.context.vault.pageId}`,
+      `Current project: ${project ? `${project.name} (${project.path || "no path"})` : "none (vault-wide scope)"}`,
+      "",
+      "Database counts:",
+      `  Projects: ${stats.projects}`,
+      `  Topics:   ${stats.topics}`,
+      `  Memories: ${stats.memories}`,
+      `  Facts:    ${stats.facts}`,
+    ]
 
-        return { content: [{ type: "text", text: lines.join("\n") }] }
-      } catch (err) {
-        return toolError(err)
+    if (services.config.projects?.length) {
+      lines.push("", "Configured projects:")
+      for (const p of services.config.projects) {
+        lines.push(`  - ${p.name} (${p.path})`)
       }
     }
-  )
 
+    return { content: [{ type: "text", text: lines.join("\n") }] }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+async function handleWakeUp(
+  services: LoreServices,
+  args: {
+    projectName?: string
+    expand?: boolean
+    limit?: number
+    openLoopLimit?: number
+    knowledgeFactLimit?: number
+  },
+): Promise<ToolResult> {
+  try {
+    let projectId = services.context.project?.id
+    const warnings: string[] = []
+
+    if (args.projectName) {
+      const found = await services.projects.findByName(args.projectName)
+      if (found) {
+        projectId = found.id
+      } else {
+        warnings.push(
+          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
+        )
+      }
+    }
+
+    const includeContent = args.expand === true
+    const recentCap = args.limit ?? DEFAULT_WAKEUP_MEMORY_LIMIT
+    const relatedCap = args.limit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
+    const recentOverfetch = recentCap * COLLAPSE_OVERFETCH_MULTIPLIER
+    const relatedOverfetch = relatedCap * COLLAPSE_OVERFETCH_MULTIPLIER
+    const {
+      digest,
+      memories,
+      openLoops,
+      knowledgeFacts,
+      proposedDecisions,
+      overdueDecisions,
+      relatedMemories,
+    } = await loadWakeUpData(services, {
+      projectId: projectId ?? undefined,
+      memoryLimit: recentOverfetch,
+      memoryLimitWithDigest: recentOverfetch,
+      relatedMemoryLimit: relatedOverfetch,
+      openLoopLimit: args.openLoopLimit,
+      knowledgeFactLimit: args.knowledgeFactLimit,
+      includeMemoryContent: includeContent,
+    })
+
+    const sections: string[] = []
+
+    if (services.context.project) {
+      sections.push(
+        `Project: ${services.context.project.name} (${services.context.project.path || "root"})\n`,
+      )
+    }
+
+    if (warnings.length > 0) {
+      sections.push(`> ${warnings.join("\n> ")}\n`)
+    }
+
+    if (digest) {
+      sections.push(`## Latest Digest — ${digest.createdAt.split("T")[0]}\n`)
+      sections.push(`**${digest.title}**\n`)
+      if (digest.content) {
+        sections.push(digest.content.trim(), "")
+      }
+    }
+
+    if (memories.length > 0) {
+      const heading = digest
+        ? "## Recent Memories (since digest)\n"
+        : "## Recent Memories\n"
+      sections.push(heading)
+      const groups = collapseOverlappingMemories(memories).slice(0, recentCap)
+      const groupsByKeepId = new Map(groups.map((g) => [g.keep.id, g]))
+      const buckets = new Map<string, Memory[]>()
+      for (const group of groups) {
+        const bucket = dateBucket(group.keep.createdAt)
+        if (!buckets.has(bucket)) buckets.set(bucket, [])
+        buckets.get(bucket)!.push(group.keep)
+      }
+      for (const label of ["Today", "Yesterday", "Earlier"] as const) {
+        const mems = buckets.get(label)
+        if (!mems) continue
+        sections.push(`### ${label}\n`)
+        for (const mem of mems) {
+          const group = groupsByKeepId.get(mem.id)
+          sections.push(...renderMemoryEntry(mem, group, includeContent, 4))
+        }
+      }
+    } else if (!digest) {
+      sections.push("No memories found for this context.\n")
+    }
+
+    if (relatedMemories.length > 0) {
+      sections.push("## Related to Open Loops\n")
+      sections.push(
+        "*Memories surfaced by a relevance query seeded from your open-loop entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n",
+      )
+      const groups = collapseOverlappingMemories(relatedMemories).slice(0, relatedCap)
+      for (const group of groups) {
+        sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
+      }
+    }
+
+    if (proposedDecisions.length > 0 || overdueDecisions.length > 0) {
+      const today = new Date().toISOString().split("T")[0]
+      sections.push("## Decisions Requiring Attention\n")
+      if (proposedDecisions.length > 0) {
+        sections.push(`### Proposed (${proposedDecisions.length})\n`)
+        for (const d of proposedDecisions) {
+          sections.push(
+            `- **${d.title}** — proposed${d.decidedAt ? ` ${d.decidedAt}` : ""} | ID: ${d.id}`,
+          )
+        }
+        sections.push("")
+      }
+      if (overdueDecisions.length > 0) {
+        sections.push(`### Overdue for Review (${overdueDecisions.length})\n`)
+        for (const d of overdueDecisions) {
+          const days = d.reviewBy
+            ? Math.floor(
+                (new Date(today).getTime() - new Date(d.reviewBy).getTime()) /
+                  86_400_000,
+              )
+            : 0
+          sections.push(
+            `- **${d.title}** [${d.status}] — review by ${d.reviewBy ?? "?"} (${days} day${days === 1 ? "" : "s"} overdue) | ID: ${d.id}`,
+          )
+        }
+        sections.push("")
+      }
+    }
+
+    const factTitleMap = await resolveReferencedTitles(
+      [...openLoops, ...knowledgeFacts],
+      services,
+    )
+
+    if (openLoops.length > 0) {
+      const today = new Date().toISOString().split("T")[0]
+      sections.push("## Open Loops\n")
+      for (const fact of openLoops) {
+        const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
+        const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
+        const subject = displayValue(fact.subject, factTitleMap)
+        const object = displayValue(fact.object, factTitleMap)
+        sections.push(
+          `- **${subject}** → ${fact.predicate.replace(/_/g, " ")} → **${object}** [${fact.confidence}]${since}${overdue}`,
+        )
+      }
+      sections.push("")
+    }
+
+    if (knowledgeFacts.length > 0) {
+      sections.push("## Active Facts\n")
+      for (const fact of knowledgeFacts) {
+        sections.push(
+          renderFact(fact, {
+            titleMap: factTitleMap,
+            trailing: `(${fact.confidence})`,
+          }),
+        )
+      }
+    }
+
+    return { content: [{ type: "text", text: sections.join("\n") }] }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return toolError(new Error(`lore-wake-up failed to load context: ${message}`))
+  }
+}
+
+async function handleDigest(
+  services: LoreServices,
+  args: {
+    period?: "day" | "week"
+    since?: string
+    until?: string
+    projectName?: string
+  },
+): Promise<ToolResult> {
+  try {
+    let projectId = services.context.project?.id
+    let projectLabel = services.context.project?.name ?? "vault-wide"
+
+    const warnings: string[] = []
+
+    if (args.projectName) {
+      const found = await services.projects.findByName(args.projectName)
+      if (found) {
+        projectId = found.id
+        projectLabel = found.name
+      } else {
+        warnings.push(
+          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
+        )
+      }
+    }
+
+    const digest = await gatherDigestData(services, {
+      projectId,
+      projectLabel,
+      since: args.since,
+      until: args.until,
+      period: args.period,
+    })
+
+    const parts: string[] = [digest.raw]
+    if (warnings.length > 0) {
+      parts.push(`## Warnings\n${warnings.join("\n")}`, "")
+    }
+    parts.push(
+      "---\n" +
+        "To save this digest, synthesize the above into a concise summary and call " +
+        '`lore-memory` with `action: "save"` and `source: "digest"` (or the deprecated ' +
+        "`lore-remember` alias).",
+    )
+
+    return { content: [{ type: "text", text: parts.join("\n") }] }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
+const contextDispatchSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("status") }),
+  z.object({
+    action: z.literal("wake-up"),
+    projectName: z.string().optional(),
+    expand: z.boolean().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+    openLoopLimit: z.number().int().min(0).max(50).optional(),
+    knowledgeFactLimit: z.number().int().min(0).max(50).optional(),
+  }),
+  z.object({
+    action: z.literal("digest"),
+    period: z.enum(["day", "week"]).optional(),
+    since: z.string().optional(),
+    until: z.string().optional(),
+    projectName: z.string().optional(),
+  }),
+])
+
+export function registerContextTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
-  // lore-wake-up
+  // lore-context — polymorphic dispatcher (P3-01)
   // -------------------------------------------------------------------------
   server.registerTool(
-    "lore-wake-up",
+    "lore-context",
     {
-      title: "Load session context",
+      title: "Vault context operations",
       description:
-        "Load relevant context for the current session. When a recent project digest exists it is surfaced first, followed by a trimmed list of recent memories, open loops, and active facts. Call this at the start of a conversation to prime context.\n\n" +
-        "Returns title-tier entries by default — each memory renders with metadata (source, tags, date) but no markdown body. Pass `expand: true` when you need bodies inline; otherwise fetch the few bodies you actually want via `lore-recall` / `lore-get-decision`. The digest memory always keeps its body because the digest IS the content.\n\n" +
-        "Overlapping memories (near-duplicate title tokens or tag overlap) collapse into a single row with a `(related: <uuid>, <uuid>)` trailer listing the full Notion IDs of the suppressed peers — pass any trailer ID to `lore-recall` or `lore-get-decision` to fetch the peer's body. Even when `expand: true`, collapsed peers' bodies stay suppressed; only the representative renders with its body. `limit` caps the number of distinct clusters rendered, not the raw memory count: wake-up over-fetches and slices after collapse so the visible section size is stable.",
+        "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
+        "- `action: 'status'` — vault page id, database counts, active project, configured projects.\n" +
+        "- `action: 'wake-up'` — load digest + recent memories + open loops + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies.\n" +
+        "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {
+        action: z
+          .enum(["status", "wake-up", "digest"])
+          .describe("Operation: 'status', 'wake-up' (session priming), or 'digest' (raw data)."),
+        // wake-up + digest
         projectName: z
           .string()
           .optional()
-          .describe("Override the auto-detected project. Use a project name."),
+          .describe("(action='wake-up' or 'digest') Override the auto-detected project."),
+        // wake-up
         expand: z
           .boolean()
           .optional()
           .describe(
-            "Include each recent/related memory's markdown body (default false). Each body costs one extra Notion round-trip, so leave this off for ambient session priming and flip it on only when the caller genuinely needs bodies inline. Digest bodies render regardless.",
+            "(action='wake-up') Include each memory's markdown body inline (default false). Each body costs one extra Notion round-trip.",
           ),
         limit: z
           .number()
@@ -149,7 +399,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .max(50)
           .optional()
           .describe(
-            "Max distinct clusters per memory section (default 10 recent / 5 related; recent is trimmed when a fresh digest is surfaced). Applies AFTER topical collapse — so `limit: 10` means 10 visible clusters, not 10 raw rows. Acts as a per-section cap across both the recent-memories and related-to-open-loops sections so callers can bound total prompt size.",
+            "(action='wake-up') Max distinct clusters per memory section after topical collapse.",
           ),
         openLoopLimit: z
           .number()
@@ -158,7 +408,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .max(50)
           .optional()
           .describe(
-            "Max open-loop facts to surface (default: all tracking-predicate facts up to one Notion page). Set 0 to skip the section entirely — which also skips the related-memory seeding that feeds off open-loop entities.",
+            "(action='wake-up') Max open-loop facts. 0 skips the section (and the related-memory seed).",
           ),
         knowledgeFactLimit: z
           .number()
@@ -166,209 +416,123 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .min(0)
           .max(50)
           .optional()
+          .describe("(action='wake-up') Max active-facts rendered (default 25). 0 skips."),
+        // digest
+        period: z
+          .enum(["day", "week"])
+          .optional()
           .describe(
-            "Max active-facts rendered (non-tracking predicates, default 25). Set 0 to skip the section entirely.",
+            "(action='digest') Time window: 'day' (last 24h) or 'week' (last 7 days). Ignored if since/until provided.",
           ),
+        since: z
+          .string()
+          .optional()
+          .describe(
+            "(action='digest') Custom start (ISO datetime, e.g. 2025-04-14T00:00:00Z). Overrides period.",
+          ),
+        until: z
+          .string()
+          .optional()
+          .describe("(action='digest') Custom end (ISO datetime). Defaults to now."),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ projectName, expand, limit, openLoopLimit, knowledgeFactLimit }) => {
-      try {
-        let projectId = services.context.project?.id
-        const warnings: string[] = []
-
-        if (projectName) {
-          const found = await services.projects.findByName(projectName)
-          if (found) {
-            projectId = found.id
-          } else {
-            warnings.push(
-              `Project "${projectName}" not found — falling back to auto-detected project.`,
-            )
-          }
-        }
-
-        // The shared wake-up bundle loads the digest, recent memories,
-        // partitioned facts, proposed + overdue decisions, and related
-        // memories seeded from open-loop entities. All in one helper so the
-        // hook and MCP surfaces stay aligned.
-        //
-        // Memory sections over-fetch so `limit` bounds the number of
-        // visible *clusters* after collapse, not raw rows. Without
-        // over-fetching, a cluster of 3 duplicates would shrink a 10-row
-        // section to 8 — paying the collapse cost with no prompt-size
-        // benefit. The hook path doesn't apply collapse, so this
-        // multiplier stays at the tool layer, not the data layer.
-        const includeContent = expand === true
-        const recentCap = limit ?? DEFAULT_WAKEUP_MEMORY_LIMIT
-        const relatedCap = limit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
-        const recentOverfetch = recentCap * COLLAPSE_OVERFETCH_MULTIPLIER
-        const relatedOverfetch = relatedCap * COLLAPSE_OVERFETCH_MULTIPLIER
-        const {
-          digest,
-          memories,
-          openLoops,
-          knowledgeFacts,
-          proposedDecisions,
-          overdueDecisions,
-          relatedMemories,
-        } = await loadWakeUpData(services, {
-          projectId: projectId ?? undefined,
-          memoryLimit: recentOverfetch,
-          // Honor the caller's explicit limit even when a digest is present:
-          // the trim is a default, not a cap the user can't override. Still
-          // over-fetched so collapse has headroom.
-          memoryLimitWithDigest: recentOverfetch,
-          // Apply the over-fetched related cap too so `limit` bounds the
-          // visible-cluster count in the Related section as well.
-          relatedMemoryLimit: relatedOverfetch,
-          openLoopLimit,
-          knowledgeFactLimit,
-          // Title-tier default: skip the N+1 markdown fetch unless the
-          // caller explicitly opted into `expand: true`. The digest memory
-          // is always fetched with content inside loadWakeUpData, since
-          // the digest IS the content.
-          includeMemoryContent: includeContent,
-        })
-
-        const sections: string[] = []
-
-        if (services.context.project) {
-          sections.push(
-            `Project: ${services.context.project.name} (${services.context.project.path || "root"})\n`
-          )
-        }
-
-        if (warnings.length > 0) {
-          sections.push(`> ${warnings.join("\n> ")}\n`)
-        }
-
-        if (digest) {
-          sections.push(`## Latest Digest — ${digest.createdAt.split("T")[0]}\n`)
-          sections.push(`**${digest.title}**\n`)
-          if (digest.content) {
-            sections.push(digest.content.trim(), "")
-          }
-        }
-
-        if (memories.length > 0) {
-          const heading = digest
-            ? "## Recent Memories (since digest)\n"
-            : "## Recent Memories\n"
-          sections.push(heading)
-          // Topical dedup: collapse clusters of near-duplicate memories
-          // (same debugging session retitled, same topic tagged twice)
-          // so we render the newest representative with an IDs trailer
-          // instead of N nearly-identical entries eating prompt budget.
-          // Slice by cluster count AFTER collapse so `limit` bounds the
-          // number of distinct topics shown, not the pre-collapse rows.
-          const groups = collapseOverlappingMemories(memories).slice(0, recentCap)
-          const groupsByKeepId = new Map(groups.map((g) => [g.keep.id, g]))
-          // Group by date bucket
-          const buckets = new Map<string, Memory[]>()
-          for (const group of groups) {
-            const bucket = dateBucket(group.keep.createdAt)
-            if (!buckets.has(bucket)) buckets.set(bucket, [])
-            buckets.get(bucket)!.push(group.keep)
-          }
-          for (const label of ["Today", "Yesterday", "Earlier"] as const) {
-            const mems = buckets.get(label)
-            if (!mems) continue
-            sections.push(`### ${label}\n`)
-            for (const mem of mems) {
-              const group = groupsByKeepId.get(mem.id)
-              sections.push(...renderMemoryEntry(mem, group, includeContent, 4))
-            }
-          }
-        } else if (!digest) {
-          sections.push("No memories found for this context.\n")
-        }
-
-        if (relatedMemories.length > 0) {
-          sections.push("## Related to Open Loops\n")
-          sections.push(
-            "*Memories surfaced by a relevance query seeded from your open-loop entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n",
-          )
-          const groups = collapseOverlappingMemories(relatedMemories).slice(0, relatedCap)
-          for (const group of groups) {
-            sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
-          }
-        }
-
-        // Decisions that need attention — proposed awaiting decision, or
-        // overdue for review. Surfaces the subset of decisions an agent
-        // should consider before acting.
-        if (proposedDecisions.length > 0 || overdueDecisions.length > 0) {
-          const today = new Date().toISOString().split("T")[0]
-          sections.push("## Decisions Requiring Attention\n")
-          if (proposedDecisions.length > 0) {
-            sections.push(`### Proposed (${proposedDecisions.length})\n`)
-            for (const d of proposedDecisions) {
-              sections.push(
-                `- **${d.title}** — proposed${d.decidedAt ? ` ${d.decidedAt}` : ""} | ID: ${d.id}`
-              )
-            }
-            sections.push("")
-          }
-          if (overdueDecisions.length > 0) {
-            sections.push(`### Overdue for Review (${overdueDecisions.length})\n`)
-            for (const d of overdueDecisions) {
-              const days = d.reviewBy
-                ? Math.floor(
-                    (new Date(today).getTime() - new Date(d.reviewBy).getTime()) /
-                      86_400_000
-                  )
-                : 0
-              sections.push(
-                `- **${d.title}** [${d.status}] — review by ${d.reviewBy ?? "?"} (${days} day${days === 1 ? "" : "s"} overdue) | ID: ${d.id}`
-              )
-            }
-            sections.push("")
-          }
-        }
-
-        // Resolve every UUID referenced by an open-loop or active fact
-        // in one batched fan-out so the two sections share a single
-        // network round-trip per unique page ID. `displayValue` (Open
-        // Loops' arrow format) and `renderFact` (Active Facts' flat
-        // format) both read from the same map.
-        const factTitleMap = await resolveReferencedTitles(
-          [...openLoops, ...knowledgeFacts],
-          services,
+    async (args) => {
+      const parsed = contextDispatchSchema.safeParse(args)
+      if (!parsed.success) {
+        return toolError(
+          new Error(formatDispatchError("lore-context", parsed.error)),
         )
-
-        if (openLoops.length > 0) {
-          const today = new Date().toISOString().split("T")[0]
-          sections.push("## Open Loops\n")
-          for (const fact of openLoops) {
-            const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
-            const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
-            const subject = displayValue(fact.subject, factTitleMap)
-            const object = displayValue(fact.object, factTitleMap)
-            sections.push(
-              `- **${subject}** \u2192 ${fact.predicate.replace(/_/g, " ")} \u2192 **${object}** [${fact.confidence}]${since}${overdue}`
-            )
-          }
-          sections.push("")
-        }
-
-        if (knowledgeFacts.length > 0) {
-          sections.push("## Active Facts\n")
-          for (const fact of knowledgeFacts) {
-            sections.push(
-              renderFact(fact, {
-                titleMap: factTitleMap,
-                trailing: `(${fact.confidence})`,
-              }),
-            )
-          }
-        }
-
-        return { content: [{ type: "text", text: sections.join("\n") }] }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        return toolError(new Error(`lore-wake-up failed to load context: ${message}`))
       }
-    }
+      switch (parsed.data.action) {
+        case "status":
+          return handleStatus(services)
+        case "wake-up":
+          return handleWakeUp(services, parsed.data)
+        case "digest":
+          return handleDigest(services, parsed.data)
+      }
+    },
+  )
+
+  // -------------------------------------------------------------------------
+  // Deprecated aliases — preserved for the one-release transition window
+  // mandated by the stability rule in src/mcp/AGENTS.md. Schemas are
+  // preserved so existing callers do not break; descriptions shrink to
+  // redirect agents to the polymorphic tool.
+  // -------------------------------------------------------------------------
+  server.registerTool(
+    "lore-status",
+    {
+      title: "Vault status",
+      description: "Deprecated alias — prefer `lore-context` with `action: 'status'`.",
+      annotations: { readOnlyHint: true },
+    },
+    async () => handleStatus(services),
+  )
+
+  server.registerTool(
+    "lore-wake-up",
+    {
+      title: "Load session context",
+      description: "Deprecated alias — prefer `lore-context` with `action: 'wake-up'`.",
+      inputSchema: {
+        projectName: z
+          .string()
+          .optional()
+          .describe("Override the auto-detected project. Use a project name."),
+        expand: z
+          .boolean()
+          .optional()
+          .describe("Include each memory's markdown body inline (default false)."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe(
+            "Max distinct clusters per memory section after topical collapse.",
+          ),
+        openLoopLimit: z
+          .number()
+          .int()
+          .min(0)
+          .max(50)
+          .optional()
+          .describe("Max open-loop facts; 0 skips the section."),
+        knowledgeFactLimit: z
+          .number()
+          .int()
+          .min(0)
+          .max(50)
+          .optional()
+          .describe("Max active-facts rendered (default 25)."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => handleWakeUp(services, args),
+  )
+
+  server.registerTool(
+    "lore-digest",
+    {
+      title: "Gather project digest data",
+      description: "Deprecated alias — prefer `lore-context` with `action: 'digest'`.",
+      inputSchema: {
+        period: z
+          .enum(["day", "week"])
+          .optional()
+          .describe("Time window: day or week (ignored if since/until provided)."),
+        since: z.string().optional().describe("Custom start (ISO datetime)."),
+        until: z.string().optional().describe("Custom end (ISO datetime). Defaults to now."),
+        projectName: z
+          .string()
+          .optional()
+          .describe("Override the auto-detected project."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => handleDigest(services, args),
   )
 }
