@@ -103,7 +103,7 @@ try {
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
-| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags` | Add missing schema properties and select options to vault data sources (add-only, idempotent) |
+| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent) |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 
 ## The migrate Command
@@ -124,6 +124,30 @@ try {
 Combining `--dry-run --upgrade-decision-tags` shows schema drift but does not
 apply the tag upgrade (tag upgrade has no dry-run mode — it's opt-in by
 design).
+
+### Agent identity normalization (`--normalize-agents`)
+
+PF3-02. Scans every non-archived memory's `Agent` field and collapses
+the seven Claude variants observed in the production Mail vault audit
+(`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`,
+`Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`,
+`claude-code-opus-4-7`) plus the bare-version cousin
+`Claude Opus 4.7` onto the single canonical string `"Claude Code"`.
+Explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through
+unchanged so the PF1-04 explicit-over-inferred contract stays intact.
+
+Plan-then-execute, same posture as `--fix-fact-encoding` /
+`--fix-memory-encoding`: bare invocation prints the plan grouped by
+canonical destination; re-run with `--yes` to apply. Idempotent — a
+second run reports zero rows once the vault is canonicalized.
+
+The write-time canonicalizer in `src/hooks/agent-identity.ts` is the
+single source of truth for the canonical-variant table. New Lore-produced
+Agent strings route through it inside `deriveAgentName`, so the migration
+exists to canonicalize *historical* rows. Future agent integrations
+should set `LORE_AGENT_NAME=<Name>` explicitly — only add to the
+canonical table when a new *default-detection* variant appears in the
+wild.
 
 ## The digest Command
 

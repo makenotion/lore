@@ -25,6 +25,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
 | `fact-encoding.ts`   | `fixFactEncoding()`   | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions |
 | `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |
+| `agent-normalization.ts` | `normalizeAgents()` | `lore migrate --normalize-agents` — collapse fragmented `Agent` strings onto their canonical form (PF3-02) |
 | `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
 | `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
 
@@ -375,6 +376,61 @@ Ordering vs. downstream work: land encoding migrations before P2-03
 canonicalization), and P3-04 (DS-scoped memory search). Those features
 compare plain-text values, so an encoded Title inflates trigram distance
 and silently suppresses duplicate detection.
+
+## Agent Identity Canonicalization (PF3-02)
+
+Memory `Agent` is a free-form `rich_text` column populated by
+`deriveAgentName` in `src/hooks/helpers.ts`. Default detection produced
+seven different spellings of the same Claude Code instance in the
+production Mail vault (`Claude Code`, `claude-code`, `Claude Opus 4.7
+(1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`,
+`claude-opus-4-7`, `claude-code-opus-4-7` — see PF3-02), fragmenting
+per-agent grouping, retention queries, and dashboards across multiple
+buckets per actually-distinct agent. The bare-version cousin
+`Claude Opus 4.7` (no parenthetical) is pinned in
+`agent-identity.test.ts` as the eighth — the regex grammar covers it,
+so passing it through unchanged would re-fragment by one more spelling.
+
+`canonicalizeAgentName` (`src/hooks/agent-identity.ts`) is the single
+canonical-table source. It normalizes whitespace + hyphen separators to
+spaces, lowercases for matching, and applies a structured Claude variant
+regex. Match → `"Claude Code"`. No match → input passed through verbatim.
+Idempotent.
+
+The closed-table approach is intentional. The `LORE_AGENT_NAME` env
+override (PF1-04) is the explicit-over-inferred path for third-party
+integrators (Codex, Cline, Cursor, Aider). Their names don't match the
+Claude regex and pass through unchanged, preserving attribution. Only add
+to the canonical table when a new *default-detection* variant appears in
+the wild — i.e., another Claude string we ourselves produce.
+
+Two ingest points:
+
+- **Write-time** in `deriveAgentName`: both the override path and the
+  Claude-marker inference path route their result through
+  `canonicalizeAgentName` so newly-saved memories never re-fragment.
+- **Backfill** via `lore migrate --normalize-agents`
+  (`agent-normalization.ts:normalizeAgents`): scans every non-archived
+  memory, rewrites rows whose stored Agent differs from its canonical
+  form via `pages.update` on the `Agent` rich_text column. Plan-only by
+  default; `--yes` applies. Idempotent; a second run finds zero rows.
+
+**Agent column scope**: This canonicalization stops at the Agent string.
+The version-suffix variants (`Claude Opus 4.7`) are deliberately collapsed
+without a separate `Model` column — every observed variant resolves
+cleanly to `Claude Code`, and a future query like "memories from Opus 4.7
+sessions" can be served from `Keywords` until a real consumer demands it
+(YAGNI). Resist the urge to add a `Model` field, an `Agent` enum, or a
+separate Agents DB row in this issue.
+
+**Future model families**: The regex closes around `code` and `opus`-versioned
+spellings only. When Anthropic ships a Claude family Claude Code routes to
+(Sonnet, Haiku, three-component versions like `4.7.1`), autosave starts
+producing strings the regex *intentionally* leaves unchanged — re-fragmenting
+the Agent column. The extension recipe lives next to the regex in
+`src/hooks/agent-identity.ts` (the JSDoc on `CLAUDE_VARIANTS`), with
+companion no-match tests in `agent-identity.test.ts:future-families` that
+have to be flipped in lockstep.
 
 ## Decision Service
 

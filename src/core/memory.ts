@@ -36,6 +36,10 @@ import {
   fixMemoryEncoding,
   type MemoryEncodingReport,
 } from "./memory-encoding.js"
+import {
+  normalizeAgents,
+  type AgentNormalizationReport,
+} from "./agent-normalization.js"
 import { LruCache } from "./cache.js"
 import {
   isFullPage,
@@ -499,6 +503,19 @@ export class MemoryService {
     options: { dryRun?: boolean } = {}
   ): Promise<MemoryEncodingReport> {
     return fixMemoryEncoding(this.client, this.db, options)
+  }
+
+  /**
+   * Run the agent-identity normalization pass against this service's
+   * Memories DB. Same shape as `fixEncoding` — thin wrapper over the
+   * standalone migration function in `agent-normalization.ts` so the CLI
+   * doesn't need to reach past the service boundary for the client +
+   * DatabaseRef.
+   */
+  async normalizeAgents(
+    options: { dryRun?: boolean } = {}
+  ): Promise<AgentNormalizationReport> {
+    return normalizeAgents(this.client, this.db, options)
   }
 
   async archive(id: string): Promise<void> {

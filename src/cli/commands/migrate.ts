@@ -16,6 +16,7 @@ import {
   migrateTrackingFactsToTasks,
   type TrackingFactMigrationResult,
 } from "../../core/task-migration.js"
+import type { NormalizableAgentRow } from "../../core/agent-normalization.js"
 
 export const migrateCommand = new Command("migrate")
   .description("Add missing schema properties to the vault's data sources")
@@ -69,8 +70,12 @@ export const migrateCommand = new Command("migrate")
     "Convert every live tracking-predicate fact (needs_action / waiting_on / blocked_by) into a `Kind: task` memory and invalidate the source fact. The fact's Subject becomes the task title; its Object becomes the task body (full prose, no rich_text length cap); its Source memory carries forward as the task's Affects relation. Plan-only by default — re-run with `--yes` to apply. Idempotent (invalidated facts are skipped on the next pass)."
   )
   .option(
+    "--normalize-agents",
+    "Collapse free-form `Agent` strings on every memory onto their canonical form. The seven Claude variants observed in the PF3-02 Mail-vault audit (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`, `claude-code-opus-4-7`) plus the bare-version cousin (`Claude Opus 4.7`) all rewrite to `Claude Code`; explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through unchanged. Plan-only by default — re-run with `--yes` to apply. Idempotent."
+  )
+  .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, or `--migrate-tracking-to-tasks`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--migrate-tracking-to-tasks`, or `--normalize-agents`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -88,6 +93,7 @@ export const migrateCommand = new Command("migrate")
       merge?: boolean
       yes?: boolean
       migrateTrackingToTasks?: boolean
+      normalizeAgents?: boolean
     }) => {
       try {
         // Validate flag combinations BEFORE running the schema migration so
@@ -104,10 +110,11 @@ export const migrateCommand = new Command("migrate")
           !opts.merge &&
           !opts.fixFactEncoding &&
           !opts.fixMemoryEncoding &&
-          !opts.migrateTrackingToTasks
+          !opts.migrateTrackingToTasks &&
+          !opts.normalizeAgents
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, or --migrate-tracking-to-tasks."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --migrate-tracking-to-tasks, or --normalize-agents."
           )
           process.exit(1)
         }
@@ -364,6 +371,13 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.normalizeAgents) {
+          await runAgentNormalization(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: opts.dryRun,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -409,15 +423,17 @@ export const migrateCommand = new Command("migrate")
           if (duplicateTopics.length > 0 && !opts.mergeDuplicateTopics) {
             flagHints.push("`--merge-duplicate-topics`")
           }
-          // Fact / memory encoding (and the tracking-to-tasks migration)
-          // are plan-then-execute: `--yes` applies, not "re-run without
-          // --dry-run". Suppress the generic footer when the user
-          // explicitly asked for one of those flags — the dispatcher's
-          // own output already tells them how to apply.
+          // Fact / memory encoding, the tracking-to-tasks migration, and
+          // the agent-identity normalizer are all plan-then-execute:
+          // `--yes` applies, not "re-run without --dry-run". Suppress the
+          // generic footer when the user explicitly asked for one of those
+          // flags — the dispatcher's own output already tells them how to
+          // apply.
           const encodingFlagUsed =
             opts.fixFactEncoding ||
             opts.fixMemoryEncoding ||
-            opts.migrateTrackingToTasks
+            opts.migrateTrackingToTasks ||
+            opts.normalizeAgents
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -1164,4 +1180,78 @@ export async function runTrackingToTasksMigration(
   }
 
   return result
+}
+
+/**
+ * Drive the agent-identity normalization pass and render the report.
+ * Plan-only by default; `--yes` flips to apply mode. Mirrors the report
+ * shape `runFactEncodingFix` / `runMemoryEncodingFix` use.
+ *
+ * Exported so the migrate CLI tests can exercise it without invoking
+ * commander's argv plumbing.
+ */
+export async function runAgentNormalization(
+  services: LoreServices,
+  options: { apply: boolean; dryRun?: boolean }
+): Promise<void> {
+  const planOnly = !options.apply
+  const report = await services.memories.normalizeAgents({ dryRun: planOnly })
+
+  if (report.encoded.length === 0) {
+    console.log(
+      "\nNo memories with non-canonical Agent strings found — every Agent value is already in its canonical form."
+    )
+    return
+  }
+
+  // Group by canonical destination so the operator sees, at a glance, how
+  // many fragmented variants are collapsing onto each canonical string.
+  // The "8 → Claude Code" framing is the value driver of this migration;
+  // a flat per-row list buries it under prefix repetition.
+  const byCanonical = new Map<string, NormalizableAgentRow[]>()
+  for (const row of report.encoded) {
+    const bucket = byCanonical.get(row.canonicalAgent) ?? []
+    bucket.push(row)
+    byCanonical.set(row.canonicalAgent, bucket)
+  }
+
+  const verb = planOnly ? "Would normalize" : "Normalized"
+  const written = planOnly ? report.encoded.length : report.fixes.length
+  console.log(
+    `\n${verb} ${written} memor${written === 1 ? "y" : "ies"} ` +
+      `(${byCanonical.size} canonical bucket${byCanonical.size === 1 ? "" : "s"}).`
+  )
+
+  for (const [canonical, rows] of byCanonical) {
+    const variants = new Map<string, number>()
+    for (const row of rows) {
+      variants.set(row.rawAgent, (variants.get(row.rawAgent) ?? 0) + 1)
+    }
+    const ordered = Array.from(variants.entries()).sort((a, b) => b[1] - a[1])
+    console.log(
+      `  → "${canonical}" (${rows.length} memor${rows.length === 1 ? "y" : "ies"})`
+    )
+    for (const [variant, count] of ordered) {
+      console.log(`     "${variant}" × ${count}`)
+    }
+  }
+
+  if (report.errors.length > 0) {
+    console.log(
+      `\nFailed to rewrite ${report.errors.length} row${report.errors.length === 1 ? "" : "s"} (re-run to retry — the apply step is idempotent):`
+    )
+    const PREVIEW_LIMIT = 10
+    for (const e of report.errors.slice(0, PREVIEW_LIMIT)) {
+      console.log(`  ${e.id}: ${e.message}`)
+    }
+    if (report.errors.length > PREVIEW_LIMIT) {
+      console.log(`  … and ${report.errors.length - PREVIEW_LIMIT} more failures.`)
+    }
+  }
+
+  if (planOnly) {
+    console.log(
+      "\nPlan only — no rewrites written. Re-run with `--yes` to canonicalize the Agent column."
+    )
+  }
 }

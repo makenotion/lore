@@ -38,6 +38,7 @@ import {
 import { spawnBackgroundSave } from "./background.js"
 import { fireDigestIfStale } from "./digest-scheduler.js"
 import { getStateDir } from "./lock.js"
+import { canonicalizeAgentName } from "./agent-identity.js"
 
 /** Hook payload fields shared by Claude Code and Codex. */
 interface HookEvent {
@@ -59,15 +60,25 @@ interface HookEvent {
  * stamping a confident-but-wrong guess onto the memory. The Codex installer
  * should inject `LORE_AGENT_NAME=Codex` into `.codex/hooks.json`'s env so
  * Codex sessions resolve here; other integrations do the same.
+ *
+ * Both resolution paths route through `canonicalizeAgentName` so the eight
+ * Claude variants we've produced in the wild collapse to one bucket on the
+ * write side. Third-party names (`Codex`, `Cline`, `Cursor`) pass through
+ * unchanged, preserving the PF1-04 explicit-over-inferred contract.
+ *
+ * Exported for unit-test coverage; not part of the module's public surface
+ * for production callers.
  */
-function deriveAgentName(_event: HookEvent): string | undefined {
+export function deriveAgentName(_event: HookEvent): string | undefined {
   const override = process.env["LORE_AGENT_NAME"]
-  if (override && override.trim()) return override.trim()
+  if (override && override.trim()) return canonicalizeAgentName(override)
 
   const claudeCodeMarkers = Object.keys(process.env).some((k) =>
     k.startsWith("CLAUDE_CODE_")
   )
-  if (claudeCodeMarkers || process.env["CLAUDECODE"] === "1") return "Claude Code"
+  if (claudeCodeMarkers || process.env["CLAUDECODE"] === "1") {
+    return canonicalizeAgentName("Claude Code")
+  }
 
   return undefined
 }

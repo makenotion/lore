@@ -64,7 +64,12 @@ import {
   releaseSessionLock,
   tryAcquireSessionLock,
 } from "./lock.js"
-import { handleStop, handleSessionEnd, parseUserQueryFromEvent } from "./helpers.js"
+import {
+  deriveAgentName,
+  handleStop,
+  handleSessionEnd,
+  parseUserQueryFromEvent,
+} from "./helpers.js"
 
 // Stand-in for a spawned `claude -p` process. Returning a live PID (this
 // process) means subsequent lock-aliveness checks see it as "still running",
@@ -794,5 +799,65 @@ describe("parseUserQueryFromEvent", () => {
     // Empty stdin (the more common Codex shape) also falls back.
     expect(parseUserQueryFromEvent("")).toBeUndefined()
     expect(parseUserQueryFromEvent(undefined)).toBeUndefined()
+  })
+})
+
+describe("deriveAgentName", () => {
+  // Snapshot env so the per-test mutations don't leak across tests in this
+  // file (or into the suites above, which assume a clean fixture).
+  const savedEnv = { ...process.env }
+
+  afterEach(() => {
+    process.env = { ...savedEnv }
+  })
+
+  function clearAgentInputs(): void {
+    delete process.env["LORE_AGENT_NAME"]
+    delete process.env["CLAUDECODE"]
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("CLAUDE_CODE_")) delete process.env[key]
+    }
+  }
+
+  it("canonicalizes the inferred Claude Code marker path", () => {
+    clearAgentInputs()
+    process.env["CLAUDECODE"] = "1"
+    expect(deriveAgentName({})).toBe("Claude Code")
+  })
+
+  it("canonicalizes a Claude variant set explicitly via LORE_AGENT_NAME", () => {
+    // A future Claude installer that sets `LORE_AGENT_NAME=claude-code-opus-4-7`
+    // by mistake must still resolve to the canonical bucket — the
+    // override path is wrapped to keep the Agent column from re-fragmenting.
+    clearAgentInputs()
+    process.env["LORE_AGENT_NAME"] = "claude-code-opus-4-7"
+    expect(deriveAgentName({})).toBe("Claude Code")
+  })
+
+  it("preserves explicit third-party Agent names (PF1-04 contract)", () => {
+    // `Codex`, `Cline`, etc. set explicitly must pass through verbatim —
+    // canonicalization is for messy default-detection variants, not for
+    // explicitly-attributed third-party agents.
+    clearAgentInputs()
+    process.env["LORE_AGENT_NAME"] = "Codex"
+    expect(deriveAgentName({})).toBe("Codex")
+
+    process.env["LORE_AGENT_NAME"] = "Cline"
+    expect(deriveAgentName({})).toBe("Cline")
+
+    process.env["LORE_AGENT_NAME"] = "Cursor"
+    expect(deriveAgentName({})).toBe("Cursor")
+  })
+
+  it("returns undefined when neither the override nor any Claude marker is set", () => {
+    clearAgentInputs()
+    expect(deriveAgentName({})).toBeUndefined()
+  })
+
+  it("explicit override beats inference (LORE_AGENT_NAME wins over CLAUDECODE)", () => {
+    clearAgentInputs()
+    process.env["CLAUDECODE"] = "1"
+    process.env["LORE_AGENT_NAME"] = "Codex"
+    expect(deriveAgentName({})).toBe("Codex")
   })
 })
