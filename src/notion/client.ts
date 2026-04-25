@@ -1,6 +1,6 @@
 import { Client } from "@notionhq/client"
 
-const USER_AGENT = "lore/0.4.0"
+const USER_AGENT = "lore/0.5.0"
 
 /**
  * Create a configured Notion client.
