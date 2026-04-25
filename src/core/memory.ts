@@ -66,6 +66,77 @@ const TITLE_CACHE_TTL_MS = 60_000
  */
 export const HYBRID_FALLBACK_THRESHOLD = 3
 
+// eslint-disable-next-line no-control-regex -- coercing to a single log line is the point
+const HYBRID_LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
+
+/**
+ * Flatten any rejection reason — including a stringly `Promise.reject("foo")`
+ * or a `Promise.reject()` (rejection with `undefined`) — into a single
+ * stderr-safe line. Mirrors the redaction posture of
+ * `mcp/helpers.ts:debugLogPartialFailures` (only `error.message` for real
+ * Error subclasses) but adds an explicit fallback for `null`/`undefined` so
+ * the log line never reads `error=undefined`, which is parsable but not
+ * diagnostic.
+ */
+function rejectionToLogLine(reason: unknown): string {
+  let raw: string
+  if (reason instanceof Error) {
+    raw = reason.message
+  } else if (reason === undefined || reason === null) {
+    raw = "<non-error rejection>"
+  } else {
+    raw = String(reason)
+  }
+  return raw.replace(HYBRID_LOG_CONTROL_CHARS, " ")
+}
+
+/**
+ * Operator observability for **partial** hybrid-search failures (one
+ * branch rejected, the other survived). The surviving branch's rows are
+ * the response, so this signal is opt-in via `LORE_DEBUG=1` to avoid
+ * noisy stderr on transient blips. The both-fail path uses
+ * `logHybridBothFailure` instead — that one logs unconditionally because
+ * there is no surviving response to mask noise on.
+ *
+ * Format: `[lore] partial-failure: branch=<contains|semantic> error=<message> source=hybrid-search`
+ *
+ * The format intentionally diverges from `mcp/helpers.ts:debugLogPartialFailures`
+ * (`root=<id> tool=<name>`): a hybrid branch isn't a Notion root id, and
+ * `tool=hybrid-search` would be misleading because hybrid search is a core
+ * service path, not an MCP tool. The shared contract is the
+ * `[lore] partial-failure:` prefix and the `error=` field — see
+ * `src/core/AGENTS.md` and `src/mcp/AGENTS.md` for the full discussion.
+ */
+function debugLogHybridBranchFailure(
+  branch: "contains" | "semantic",
+  reason: unknown,
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] partial-failure: branch=${branch} error=${rejectionToLogLine(reason)} source=hybrid-search\n`,
+  )
+}
+
+/**
+ * Operator observability for the **both-fail** hybrid-search case. Logs
+ * unconditionally — not gated on `LORE_DEBUG=1` — because both-fail is the
+ * worst-case scenario: there is no surviving response to mask diagnostic
+ * noise on, the caller's `try/catch` only sees the chosen `throw`, and an
+ * operator triaging a real outage needs every rejection reason on stderr
+ * regardless of how their environment was started.
+ *
+ * Single line, both branches' messages on it, so log aggregators see one
+ * event per occurrence — same one-event-per-line invariant as the
+ * partial-failure helper.
+ *
+ * Format: `[lore] both-failure: contains=<message> semantic=<message> source=hybrid-search`
+ */
+function logHybridBothFailure(containsReason: unknown, semanticReason: unknown): void {
+  process.stderr.write(
+    `[lore] both-failure: contains=${rejectionToLogLine(containsReason)} semantic=${rejectionToLogLine(semanticReason)} source=hybrid-search\n`,
+  )
+}
+
 /**
  * Every plain-text field that flows through the agent boundary and lands
  * in a Memory page. Run them through `decodeTextEntities` before writing
@@ -881,10 +952,12 @@ export class MemoryService {
 
   /**
    * Hybrid path: speculative parallelism. Fires the contains and semantic
-   * queries concurrently via `Promise.all` so the worst-case wall-clock
-   * stays at one round-trip (≈ `client.search` latency) regardless of which
-   * leg saturates. The decision to use the semantic result or discard it
-   * happens *after* both queries return.
+   * queries concurrently via `Promise.allSettled` so the worst-case
+   * wall-clock stays at one round-trip (≈ `client.search` latency)
+   * regardless of which leg saturates AND so a transient single-branch
+   * failure cannot sink a query the surviving branch could answer on its
+   * own. The decision to use the semantic result or discard it happens
+   * *after* both queries settle.
    *
    * - **Saturating case** (`containsHits >= HYBRID_FALLBACK_THRESHOLD`):
    *   uses contains rows alone, ignoring the parallel semantic call.
@@ -899,6 +972,19 @@ export class MemoryService {
    * on under-shoot — strictly worse than the pre-PR single-call wall-clock
    * for a query that's now the *common* case.
    *
+   * **Single-branch resilience (PF3-03).** A `Promise.all` over both legs
+   * would propagate any rejection (a transient 429 from `client.search`,
+   * for instance) to the caller, even when contains saturated independently
+   * — a regression vs. the pre-P3-04 single-call latency floor. With
+   * `Promise.allSettled` a rejected branch degrades to an empty result and
+   * the surviving branch's rows are returned; both-branches-rejected still
+   * surfaces an error so a fully broken search subsystem doesn't masquerade
+   * as an empty-result silence. Branch failures are logged to stderr under
+   * `LORE_DEBUG=1` so operators can distinguish a one-off blip from a
+   * pathological loop. The kill switch (`LORE_FORCE_SEMANTIC_SEARCH=1`)
+   * remains the manual rollback for sustained problems; this guard is the
+   * automatic one for transient ones.
+   *
    * **Empty-query note.** With no text filter, the contains leg returns a
    * recency listing under property filters; the semantic leg returns
    * `client.search({ query: "" })` (Notion's own empty-query behavior,
@@ -911,10 +997,42 @@ export class MemoryService {
     input: SearchMemoriesInput,
     limit: number,
   ): Promise<PageObjectResponse[]> {
-    const [containsPages, semanticPages] = await Promise.all([
+    const [containsResult, semanticResult] = await Promise.allSettled([
       this.searchByContainsPages(input),
       this.searchBySemanticPages(input),
     ])
+
+    if (containsResult.status === "rejected" && semanticResult.status === "rejected") {
+      // Both legs failed — log both messages on one stderr line
+      // unconditionally (operators triaging a real outage need both
+      // rejection reasons regardless of LORE_DEBUG), then surface one to
+      // the caller. We choose `containsResult.reason` so the caller's
+      // existing `try/catch` sees a structured, DS-scoped error from
+      // `dataSources.query` rather than a `client.search` workspace-wide
+      // error whose request-scoped detail is less actionable. The choice
+      // is also stable across releases — a future refactor that flips it
+      // to `semanticResult.reason` would be observable to callers and
+      // should be a coordinated change, not a drive-by.
+      // We considered `AggregateError([contains, semantic])` here for
+      // structural completeness but every current `search()` call site
+      // catches a generic Error and surfaces `err.message`; the caller
+      // contract is intentionally unchanged. The unconditional stderr
+      // log is the operator-facing answer.
+      logHybridBothFailure(containsResult.reason, semanticResult.reason)
+      throw containsResult.reason
+    }
+
+    const containsPages =
+      containsResult.status === "fulfilled" ? containsResult.value : []
+    const semanticPages =
+      semanticResult.status === "fulfilled" ? semanticResult.value : []
+
+    if (containsResult.status === "rejected") {
+      debugLogHybridBranchFailure("contains", containsResult.reason)
+    }
+    if (semanticResult.status === "rejected") {
+      debugLogHybridBranchFailure("semantic", semanticResult.reason)
+    }
 
     if (containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
       return containsPages

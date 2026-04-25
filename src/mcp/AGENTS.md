@@ -655,6 +655,18 @@ line, so `grep` and log-aggregator parsers can rely on newline-delimited
 events even if a future caller threads a stringly-typed multi-line error
 through the same helper.
 
+**Per-surface key names diverge; the prefix and `error=` field are
+the stable contract.** Core-layer surfaces emit `[lore]
+partial-failure:` lines too (e.g. hybrid search in
+`src/core/memory.ts:debugLogHybridBranchFailure` uses
+`branch=<contains|semantic> source=hybrid-search`) because a
+non-MCP failure isn't a Notion root id and `tool=` would be
+misleading for a core-service path. Downstream log parsers should
+match on the `[lore] partial-failure:` prefix and the `error=`
+field; per-surface keys are scoped to their surface and may
+introduce new names as future call sites land. See
+`src/core/AGENTS.md` for the hybrid-search divergence in detail.
+
 ## Server Versioning
 
 The lore version is reported in four places that **must move together**:

@@ -786,6 +786,361 @@ describe("MemoryService.search — hybrid mode", () => {
   })
 })
 
+describe("MemoryService.search — hybrid single-branch resilience (PF3-03)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildHybridPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("returns contains-only results when the semantic branch rejects", async () => {
+    // Pre-PF3-03 (Promise.all): a transient 429 from client.search would
+    // propagate to the caller even though contains saturated independently.
+    // With Promise.allSettled the surviving branch's rows pass through.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("c-1", "one"),
+        buildHybridPage("c-2", "two"),
+        buildHybridPage("c-3", "three"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => {
+      throw new Error("simulated 429 from client.search")
+    })
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["c-1", "c-2", "c-3"])
+    // Both branches were dispatched — the failure path runs after settle,
+    // not before dispatch.
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("returns semantic-only results when the contains branch rejects", async () => {
+    // Inverted scenario: a Notion outage on dataSources.query while
+    // client.search still serves vector hits. Contains' empty result is
+    // treated as "no contains rows", semantic provides the full output.
+    const querySpy = vi.fn(async () => {
+      throw new Error("simulated 5xx from dataSources.query")
+    })
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("s-1", "semantic 1"),
+        buildHybridPage("s-2", "semantic 2"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["s-1", "s-2"])
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("surfaces an error when both branches reject (no silent empty)", async () => {
+    // Both-failure case must propagate. A genuinely broken search
+    // subsystem should not look identical to "no results found" — that
+    // would mask a production outage.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const containsError = new Error("contains-failed")
+      const semanticError = new Error("semantic-failed")
+      const querySpy = vi.fn(async () => {
+        throw containsError
+      })
+      const searchSpy = vi.fn(async () => {
+        throw semanticError
+      })
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      await expect(
+        service.search({ query: "q", mode: "hybrid", includeContent: false }),
+      ).rejects.toThrow("contains-failed")
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("LORE_DEBUG=1 emits one stderr line per failing branch with branch= and error=", async () => {
+    // Operator observability: under LORE_DEBUG=1 a failed branch logs
+    // exactly one line so log aggregators can correlate transient blips
+    // without the caller seeing them. No log line under default LORE_DEBUG.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      const querySpy = vi.fn(async () => ({
+        results: [
+          buildHybridPage("c-1", "one"),
+          buildHybridPage("c-2", "two"),
+          buildHybridPage("c-3", "three"),
+        ],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => {
+        throw new Error("simulated rate-limit")
+      })
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      await service.search({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
+      const hybridLines = lines.filter((l) => l.includes("source=hybrid-search"))
+      expect(hybridLines).toHaveLength(1)
+      expect(hybridLines[0]).toContain("branch=semantic")
+      expect(hybridLines[0]).toContain("error=simulated rate-limit")
+      // One-event-per-line invariant — the line is newline-terminated.
+      expect(hybridLines[0].endsWith("\n")).toBe(true)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+
+  it("emits no stderr line when LORE_DEBUG is unset (default-quiet)", async () => {
+    // The default operator experience: a transient blip degrades to a
+    // surviving-branch-only result with zero stderr noise. Operators
+    // who want visibility opt in via LORE_DEBUG=1.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    delete process.env["LORE_DEBUG"]
+    try {
+      const querySpy = vi.fn(async () => ({
+        results: [
+          buildHybridPage("c-1", "one"),
+          buildHybridPage("c-2", "two"),
+          buildHybridPage("c-3", "three"),
+        ],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => {
+        throw new Error("simulated rate-limit")
+      })
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      await service.search({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      const hybridLines = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("source=hybrid-search"))
+      expect(hybridLines).toHaveLength(0)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+
+  it("returns an empty result when one branch rejects and the survivor genuinely has zero hits", async () => {
+    // The visibility cost called out in the spec: a caller cannot
+    // distinguish "contains down + no semantic match" from "clean miss".
+    // This is by design — the surviving branch's empty result IS the
+    // honest answer to the query — but pinning the contract here keeps
+    // the tradeoff greppable. LORE_DEBUG=1 is the operator-side
+    // mitigation; the production followup is an error-counter dashboard.
+    //
+    // stderrSpy is defensive: under default LORE_DEBUG the partial-failure
+    // helper is a no-op, but a parent test that leaks LORE_DEBUG=1 (or a
+    // future vitest pool config flip from `forks` to `threads`) would let
+    // stderr noise pollute test output. Cheap insurance.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const querySpy = vi.fn(async () => {
+        throw new Error("simulated 5xx from dataSources.query")
+      })
+      const searchSpy = vi.fn(async () => ({ results: [] }))
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      const results = await service.search({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      // Zero rows surfaced — same shape a genuine clean-miss would return.
+      // The caller cannot tell the difference; only the operator can, via
+      // the LORE_DEBUG=1 stderr line covered by a separate test.
+      expect(results).toEqual([])
+      expect(querySpy).toHaveBeenCalledTimes(1)
+      expect(searchSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("both-fail emits a [lore] both-failure line UNCONDITIONALLY (not gated on LORE_DEBUG)", async () => {
+    // Reviewer concern: the both-fail case is the worst-case scenario —
+    // there is no surviving response to mask noise on, the caller's
+    // try/catch only sees the chosen throw, and the operator needs every
+    // rejection reason on stderr regardless of LORE_DEBUG. Logging
+    // unconditionally is the right tradeoff here even though the
+    // partial-failure path stays opt-in.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    delete process.env["LORE_DEBUG"]
+    try {
+      const querySpy = vi.fn(async () => {
+        throw new Error("contains-down")
+      })
+      const searchSpy = vi.fn(async () => {
+        throw new Error("semantic-down")
+      })
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      await expect(
+        service.search({ query: "q", mode: "hybrid", includeContent: false }),
+      ).rejects.toThrow("contains-down")
+
+      const bothFailureLines = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("[lore] both-failure:"))
+      expect(bothFailureLines).toHaveLength(1)
+      const line = bothFailureLines[0]
+      // Both rejection messages on the single line — operators see the
+      // suppressed-branch error alongside the thrown one.
+      expect(line).toContain("contains=contains-down")
+      expect(line).toContain("semantic=semantic-down")
+      expect(line).toContain("source=hybrid-search")
+      expect(line.endsWith("\n")).toBe(true)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+
+  it("non-Error rejection reasons (undefined, null, plain string) render as diagnostic strings, not 'undefined'", async () => {
+    // Defensive log-quality fallback: a sloppy `Promise.reject()` (no arg)
+    // would otherwise read `error=undefined`, which is parsable but not
+    // diagnostic. Plain-string rejections pass through unchanged.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      const querySpy = vi.fn(async () => ({
+        results: [
+          buildHybridPage("c-1", "one"),
+          buildHybridPage("c-2", "two"),
+          buildHybridPage("c-3", "three"),
+        ],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => Promise.reject(undefined))
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      await service.search({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      const hybridLines = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("source=hybrid-search"))
+      expect(hybridLines).toHaveLength(1)
+      expect(hybridLines[0]).toContain("error=<non-error rejection>")
+      // Crucially NOT this — that's the bug the fallback fixes.
+      expect(hybridLines[0]).not.toContain("error=undefined")
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+})
+
 describe("MemoryService.search — kill switch", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 

@@ -159,24 +159,67 @@ tokens.
 ### `mode: "hybrid"` (default)
 
 Speculative parallelism. `searchByHybridPages` fires `searchByContainsPages`
-and `searchBySemanticPages` concurrently via `Promise.all`. Once both
-settle:
+and `searchBySemanticPages` concurrently via `Promise.allSettled`. Once
+both settle:
 
 - **Saturating case** (`containsPages.length >= HYBRID_FALLBACK_THRESHOLD`,
   default 3): the contains rows alone become the result. The parallel
   semantic call is discarded — wasted bandwidth, but no wall-clock cost
-  since `Promise.all` resolves at `max(contains_latency, semantic_latency)`,
+  since `Promise.allSettled` resolves at `max(contains_latency, semantic_latency)`,
   which is the same as a pre-PR semantic-only call.
 - **Under-shooting case**: contains rows come first, then unique semantic
   rows are concatenated until `limit` is filled. Dedup is by page id;
   contains wins ties because precision-ranked hits should beat workspace
   ranking when both surface the same row.
+- **Single-branch failure (PF3-03).** A rejected branch degrades to an
+  empty result; the surviving branch's rows pass through unchanged. A
+  transient `429`/`5xx` from `client.search` no longer takes down a
+  contains query that saturated independently, and an outage on
+  `dataSources.query` no longer takes down a semantic query that
+  returned. `LORE_DEBUG=1` emits one stderr line per failed branch
+  (`[lore] partial-failure: branch=<contains|semantic> error=<message>
+  source=hybrid-search`) so an operator can distinguish a transient
+  blip from a pathological loop. **Both branches rejected** still
+  surfaces an error so a fully broken search subsystem doesn't
+  masquerade as "no results found." The both-fail path additionally
+  writes `[lore] both-failure: contains=<message> semantic=<message>
+  source=hybrid-search` **unconditionally** — not gated on
+  `LORE_DEBUG` — because there is no surviving response to mask
+  noise on, the caller's `try/catch` only sees one chosen `throw`,
+  and an operator triaging a real outage needs both rejection
+  reasons regardless of how their environment was started. The
+  surfaced error is `containsResult.reason` (DS-scoped, structured
+  filter errors are more actionable than `client.search`
+  workspace-wide errors); flipping that choice would be observable
+  to callers and should be a coordinated change.
+
+  **Visibility-cost note.** A genuine clean-miss and a "one branch
+  down, the other returned zero hits" both surface as an empty
+  result to the caller — by design, since the surviving branch's
+  empty result IS the honest answer to the query. The operator-side
+  mitigation is the `LORE_DEBUG=1` stderr line; the production
+  followup is an error-counter dashboard alert.
+
+  **Log-format divergence from `mcp/helpers.ts:debugLogPartialFailures`.**
+  Both helpers share the `[lore] partial-failure:` prefix and the
+  `error=` field — that is the stable contract for `grep`-based
+  log aggregation. The key names diverge: hybrid search uses
+  `branch=<contains|semantic>` and `source=hybrid-search` because
+  a hybrid branch isn't a Notion root id, and `tool=hybrid-search`
+  would be misleading (hybrid search is a core-service path, not
+  an MCP tool). Downstream parsers should match on the prefix and
+  the `error=` field; per-surface key names are intentionally
+  scoped to their surface.
 
 The earlier sequential design (run contains, then run semantic if it
 under-shot) traded latency *against* itself in the under-shooting case,
 which is the *common* case for phrase-shaped queries. Parallelism
 restores the pre-PR worst-case wall-clock while keeping the precision
-of contains when it produces enough signal.
+of contains when it produces enough signal. Switching from `Promise.all`
+to `Promise.allSettled` preserves the wall-clock guarantee while
+decoupling the failure domains — the kill switch
+(`LORE_FORCE_SEMANTIC_SEARCH=1`) remains the manual rollback for
+sustained problems; this guard is the automatic one for transient ones.
 
 Three is a tradeoff: small enough that a niche query with one or two
 title hits still gets the benefit of body-relevance ranking, large enough
