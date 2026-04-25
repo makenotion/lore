@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
-import type { z } from "zod"
+import { z } from "zod"
 import { registerTaskTools } from "./tasks.js"
 import type { Task, TaskSummary } from "../../types.js"
 
@@ -55,6 +55,19 @@ function createMockServer() {
       const handler = handlers.get(name)
       if (!handler) throw new Error(`No handler registered for ${name}`)
       return handler
+    },
+    /**
+     * Materialise the registered Zod object schema for a tool. Used to
+     * exercise input validation directly — `McpServer.registerTool`
+     * applies the schema in production, but the mock above stores the
+     * shape verbatim so tests have to compose it themselves.
+     */
+    getInputSchema: (name: string) => {
+      const config = configs.get(name)
+      if (!config?.inputSchema) {
+        throw new Error(`No input schema registered for ${name}`)
+      }
+      return z.object(config.inputSchema)
     },
   }
 }
@@ -229,23 +242,6 @@ describe("lore-task-close", () => {
 })
 
 describe("lore-task-update", () => {
-  it("rejects malformed dueDate before any Notion round-trip", async () => {
-    const svc = services()
-    const mockServer = createMockServer()
-    registerTaskTools(mockServer.server, svc as never)
-
-    const handler = mockServer.getHandler("lore-task-update")
-    const result = await handler({
-      taskId: "task-id",
-      dueDate: "not-a-date",
-    } as never)
-
-    expect(svc.tasks.update).not.toHaveBeenCalled()
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect(text).toContain("Error")
-    expect(text).toContain("YYYY-MM-DD")
-  })
-
   it("translates empty dueDate string into null (clear the date)", async () => {
     const svc = services()
     svc.tasks.update = vi.fn().mockResolvedValue({
@@ -262,6 +258,147 @@ describe("lore-task-update", () => {
       "task-id",
       expect.objectContaining({ dueDate: null })
     )
+  })
+})
+
+/**
+ * PF3-07 Issue B: optional task fields all share the rule "empty
+ * string == absence", and the Zod boundary rejects whitespace-only
+ * values so a stray `"  "` can't slip through and corrupt the row's
+ * rich_text column.
+ */
+describe("optional-string Zod boundary", () => {
+  function createSchema(toolName: string) {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    return mockServer.getInputSchema(toolName)
+  }
+
+  describe("lore-task-create", () => {
+    const baseInput = { subject: "Rotate keys" }
+
+    it("accepts empty string for blockedBy / entity / description (absence semantic)", () => {
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({
+        ...baseInput,
+        blockedBy: "",
+        entity: "",
+        description: "",
+      })
+      expect(parsed.success).toBe(true)
+    })
+
+    it("rejects whitespace-only blockedBy", () => {
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({ ...baseInput, blockedBy: "   " })
+      expect(parsed.success).toBe(false)
+      if (!parsed.success) {
+        expect(parsed.error.issues[0].message).toContain("Whitespace-only")
+      }
+    })
+
+    it("rejects whitespace-only entity", () => {
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({ ...baseInput, entity: " \t " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects whitespace-only description", () => {
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({ ...baseInput, description: "  \n  " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects whitespace-only subject — title can never be absent", () => {
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({ subject: "   " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects malformed dueDate at the Zod boundary on create too", () => {
+      // Create and update share the same `dueDateSchema()` — pin both
+      // sides so a future refactor of one path can't desync from the
+      // other.
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({
+        ...baseInput,
+        dueDate: "tomorrow-please",
+      })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("accepts an empty dueDate on create as 'no due date set'", () => {
+      const schema = createSchema("lore-task-create")
+      const parsed = schema.safeParse({ ...baseInput, dueDate: "" })
+      expect(parsed.success).toBe(true)
+    })
+  })
+
+  describe("lore-task-update", () => {
+    const baseInput = { taskId: "task-id" }
+
+    it("accepts empty string on every empty-able field", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({
+        ...baseInput,
+        blockedBy: "",
+        entity: "",
+        description: "",
+        dueDate: "",
+      })
+      expect(parsed.success).toBe(true)
+    })
+
+    it("rejects whitespace-only blockedBy", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, blockedBy: "   " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects whitespace-only entity", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, entity: " " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects whitespace-only description", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, description: " \t " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects whitespace-only subject — renaming to whitespace is meaningless", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, subject: "   " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects whitespace-only dueDate at the Zod boundary", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, dueDate: "   " })
+      expect(parsed.success).toBe(false)
+    })
+
+    it("rejects malformed (non-YMD) dueDate at the Zod boundary", () => {
+      // YMD enforcement now lives in the schema (`dueDateSchema`)
+      // rather than a separate handler runtime check, so the rejection
+      // happens before the handler runs at all. Pin both paths so a
+      // future refactor can't quietly move the validation back into
+      // the handler and make the schema misleading.
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, dueDate: "not-a-date" })
+      expect(parsed.success).toBe(false)
+      if (!parsed.success) {
+        expect(parsed.error.issues[0].message).toContain("YYYY-MM-DD")
+      }
+    })
+
+    it("accepts a well-formed YMD dueDate", () => {
+      const schema = createSchema("lore-task-update")
+      const parsed = schema.safeParse({ ...baseInput, dueDate: "2026-05-01" })
+      expect(parsed.success).toBe(true)
+    })
   })
 })
 

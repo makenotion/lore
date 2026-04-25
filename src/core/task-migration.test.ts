@@ -96,6 +96,7 @@ describe("migrateTrackingFactsToTasks", () => {
   }
   type TaskServiceMock = {
     create: ReturnType<typeof vi.fn>
+    findMigratedFactIds: ReturnType<typeof vi.fn>
   }
 
   function makeFactsService(facts: Fact[]): FactsServiceMock {
@@ -105,13 +106,17 @@ describe("migrateTrackingFactsToTasks", () => {
     }
   }
 
-  function makeTaskService(idPrefix = "task"): TaskServiceMock {
+  function makeTaskService(
+    idPrefix = "task",
+    migrationMap: Map<string, string> = new Map()
+  ): TaskServiceMock {
     let counter = 0
     return {
       create: vi.fn().mockImplementation(async () => {
         counter += 1
         return { id: `${idPrefix}-${counter}` } as unknown as Task
       }),
+      findMigratedFactIds: vi.fn().mockResolvedValue(migrationMap),
     }
   }
 
@@ -179,6 +184,7 @@ describe("migrateTrackingFactsToTasks", () => {
         .fn()
         .mockResolvedValueOnce({ id: "task-1" } as unknown as Task)
         .mockRejectedValueOnce(new Error("notion 5xx")),
+      findMigratedFactIds: vi.fn().mockResolvedValue(new Map()),
     }
 
     const result = await migrateTrackingFactsToTasks(factsService as never, taskService as never, {
@@ -194,5 +200,191 @@ describe("migrateTrackingFactsToTasks", () => {
     })
     // Plans array still records the failed row but with taskId=null.
     expect(result.plans.find((p) => p.fact.id === "fact-bad")?.taskId).toBeNull()
+  })
+
+  it("writes the migrated-from-fact keyword so reruns can find the row", async () => {
+    // The keyword token is the idempotency hinge — without it, a
+    // partial-failure rerun has nothing to look up. Pin the format so
+    // a future refactor of `buildMigrationKeyword` doesn't silently
+    // break heal-path detection.
+    const facts = [makeFact({ id: "fact-1", predicate: "needs_action" })]
+    const factsService = makeFactsService(facts)
+    const taskService = makeTaskService()
+
+    await migrateTrackingFactsToTasks(factsService as never, taskService as never, {
+      apply: true,
+    })
+
+    expect(taskService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        keywords: "migrated-from-fact fact-1",
+      })
+    )
+  })
+
+  it("rerun with a migrated-fact map skips create, retries invalidate, and tags rows already-migrated", async () => {
+    // Simulates the failure mode the issue calls out:
+    //   1. Prior apply pass: created task-existing-1 for fact-1 +
+    //      task-existing-2 for fact-2.
+    //   2. Both invalidate steps failed (network blip), so both facts
+    //      remain live and re-surface as candidates this pass.
+    //   3. This pass must not re-create — the existing tasks are
+    //      bound via the migration map — but it must retry both
+    //      invalidations to converge on a clean state.
+    const facts = [
+      makeFact({ id: "fact-1", predicate: "needs_action" }),
+      makeFact({ id: "fact-2", predicate: "blocked_by" }),
+    ]
+    const factsService = makeFactsService(facts)
+    const taskService = makeTaskService(
+      "task",
+      new Map([
+        ["fact-1", "task-existing-1"],
+        ["fact-2", "task-existing-2"],
+      ])
+    )
+
+    const result = await migrateTrackingFactsToTasks(factsService as never, taskService as never, {
+      apply: true,
+    })
+
+    expect(taskService.create).not.toHaveBeenCalled()
+    expect(factsService.invalidate).toHaveBeenCalledWith("fact-1")
+    expect(factsService.invalidate).toHaveBeenCalledWith("fact-2")
+    expect(result.alreadyMigrated).toBe(2)
+    expect(result.invalidated).toBe(2)
+    expect(result.plans).toEqual([
+      expect.objectContaining({
+        taskId: "task-existing-1",
+        alreadyMigrated: true,
+      }),
+      expect.objectContaining({
+        taskId: "task-existing-2",
+        alreadyMigrated: true,
+      }),
+    ])
+  })
+
+  it("plan-only rerun surfaces already-migrated rows without writing anything", async () => {
+    // Mirrors the previous test but with apply: false. The plan output
+    // must still show the existing taskId so an operator running with
+    // --dry-run can see what would be skipped.
+    const facts = [makeFact({ id: "fact-1", predicate: "needs_action" })]
+    const factsService = makeFactsService(facts)
+    const taskService = makeTaskService(
+      "task",
+      new Map([["fact-1", "task-existing-1"]])
+    )
+
+    const result = await migrateTrackingFactsToTasks(factsService as never, taskService as never, {
+      apply: false,
+    })
+
+    expect(taskService.create).not.toHaveBeenCalled()
+    expect(factsService.invalidate).not.toHaveBeenCalled()
+    expect(result.planOnly).toBe(true)
+    expect(result.alreadyMigrated).toBe(1)
+    expect(result.invalidated).toBe(0)
+    expect(result.plans[0]).toMatchObject({
+      taskId: "task-existing-1",
+      alreadyMigrated: true,
+    })
+  })
+
+  it("rerun heal path tolerates a still-failing invalidate without re-creating the task", async () => {
+    // The third failure mode: the marker exists, the heal path retries
+    // the invalidate, and that retry *also* fails. The migration must
+    // not create a duplicate task — it must surface the error and
+    // leave the next run to try once more. The whole point of this
+    // change is "no duplicate tasks ever," even when retries fail.
+    const facts = [makeFact({ id: "fact-1", predicate: "needs_action" })]
+    const factsService: FactsServiceMock = {
+      queryBySubject: vi.fn().mockResolvedValue(facts),
+      invalidate: vi.fn().mockRejectedValue(new Error("notion 5xx")),
+    }
+    const taskService = makeTaskService(
+      "task",
+      new Map([["fact-1", "task-existing-1"]])
+    )
+
+    const result = await migrateTrackingFactsToTasks(factsService as never, taskService as never, {
+      apply: true,
+    })
+
+    expect(taskService.create).not.toHaveBeenCalled()
+    expect(result.invalidated).toBe(0)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0].factId).toBe("fact-1")
+    expect(result.plans[0]).toMatchObject({
+      taskId: "task-existing-1",
+      alreadyMigrated: true,
+    })
+  })
+
+  it("falls back to empty map when findMigratedFactIds rejects with the missing-task-option validation error", async () => {
+    // Pre-schema-migration vault: no `task` option exists yet, so
+    // `findMigratedFactIds` rejects with a validation_error pointing at
+    // the missing option. The migration must proceed (empty map is
+    // correct — no migrated tasks can exist), not crash with an
+    // unhelpful error in the middle of an `--migrate-tracking-to-tasks`
+    // dry run that the operator was using to preview before applying.
+    const facts = [makeFact({ id: "fact-1", predicate: "needs_action" })]
+    const factsService = makeFactsService(facts)
+    const taskService: TaskServiceMock = {
+      create: vi.fn().mockResolvedValue({ id: "task-1" } as unknown as Task),
+      findMigratedFactIds: vi.fn().mockRejectedValue(
+        Object.assign(
+          new Error('select option "task" not found for property "Kind"'),
+          { code: "validation_error" }
+        )
+      ),
+    }
+
+    const result = await migrateTrackingFactsToTasks(
+      factsService as never,
+      taskService as never,
+      { apply: false }
+    )
+
+    expect(result.alreadyMigrated).toBe(0)
+    expect(result.plans).toHaveLength(1)
+    expect(result.plans[0].alreadyMigrated).toBe(false)
+  })
+
+  it("re-throws non-validation errors from findMigratedFactIds so the caller hears about transient failures", async () => {
+    // The narrow fallback above must NOT swallow rate_limited / network
+    // / any-other errors. Otherwise a transient failure would degrade
+    // into "no idempotency, may double-create" — the very bug this
+    // change is meant to close.
+    const facts = [makeFact({ id: "fact-1", predicate: "needs_action" })]
+    const factsService = makeFactsService(facts)
+    const taskService: TaskServiceMock = {
+      create: vi.fn(),
+      findMigratedFactIds: vi.fn().mockRejectedValue(
+        Object.assign(new Error("rate limited"), { code: "rate_limited" })
+      ),
+    }
+
+    await expect(
+      migrateTrackingFactsToTasks(factsService as never, taskService as never, {
+        apply: true,
+      })
+    ).rejects.toThrow("rate limited")
+    expect(taskService.create).not.toHaveBeenCalled()
+  })
+
+  it("skips the migration-map lookup entirely when there are no candidates", async () => {
+    // Clean vault — no tracking facts. The bulk pre-fetch should not
+    // fire because there's nothing to look up; saves one round-trip on
+    // every "nothing to migrate" run.
+    const factsService = makeFactsService([])
+    const taskService = makeTaskService()
+
+    const result = await migrateTrackingFactsToTasks(factsService as never, taskService as never, {
+      apply: true,
+    })
+
+    expect(taskService.findMigratedFactIds).not.toHaveBeenCalled()
+    expect(result.plans).toHaveLength(0)
   })
 })

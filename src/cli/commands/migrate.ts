@@ -1138,9 +1138,26 @@ export async function runTrackingToTasksMigration(
   }
 
   const verb = planOnly ? "Would migrate" : "Migrated"
+  // Distinguish fresh vs. already-migrated rows so a rerun of a
+  // partially-failed prior pass reads as "0 new, N healed" rather than
+  // "N migrated" — which would be misleading when no fresh tasks land.
+  const freshCount = result.plans.length - result.alreadyMigrated
   console.log(
-    `\n${verb} ${result.plans.length} tracking fact${result.plans.length === 1 ? "" : "s"} → task memor${result.plans.length === 1 ? "y" : "ies"}.`
+    `\n${verb} ${freshCount} tracking fact${freshCount === 1 ? "" : "s"} → task memor${freshCount === 1 ? "y" : "ies"}.`
   )
+  if (result.alreadyMigrated > 0) {
+    // Mirror the apply path's "skipped + retried" framing in plan
+    // mode so the preview tells the operator exactly what `--yes`
+    // will do — the heal path retries the invalidate, not just the
+    // create. Telling them only half the story trains them to ignore
+    // the preview when they re-run with `--yes`.
+    const action = planOnly
+      ? "would skip task creation and would retry invalidation of source facts that were left active"
+      : "skipped task creation and re-attempted invalidation of any source facts that were left active"
+    console.log(
+      `Found ${result.alreadyMigrated} fact${result.alreadyMigrated === 1 ? "" : "s"} already migrated by a prior run — ${action}.`
+    )
+  }
   if (!planOnly) {
     console.log(
       `Invalidated ${result.invalidated} source fact${result.invalidated === 1 ? "" : "s"}.`
@@ -1152,7 +1169,13 @@ export async function runTrackingToTasksMigration(
   const PREVIEW_LIMIT = 10
   const preview = result.plans.slice(0, PREVIEW_LIMIT)
   for (const row of preview) {
-    const idHint = row.taskId ? ` → task ${row.taskId}` : planOnly ? "" : " (failed)"
+    const idHint = row.alreadyMigrated
+      ? ` → existing task ${row.taskId} (already migrated)`
+      : row.taskId
+        ? ` → task ${row.taskId}`
+        : planOnly
+          ? ""
+          : " (failed)"
     console.log(
       `  "${row.task.subject}" [${row.task.state}]${idHint}`
     )

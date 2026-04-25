@@ -881,6 +881,7 @@ describe("runTrackingToTasksMigration", () => {
   function fakeServices(opts: {
     candidates: Fact[]
     createImpl?: () => Promise<{ id: string }>
+    migrationMap?: Map<string, string>
   }) {
     return {
       facts: {
@@ -892,6 +893,9 @@ describe("runTrackingToTasksMigration", () => {
           opts.createImpl
             ? vi.fn().mockImplementation(opts.createImpl)
             : vi.fn().mockResolvedValue({ id: "task-new" }),
+        findMigratedFactIds: vi
+          .fn()
+          .mockResolvedValue(opts.migrationMap ?? new Map<string, string>()),
       },
     } as never
   }
@@ -960,5 +964,61 @@ describe("runTrackingToTasksMigration", () => {
     await runTrackingToTasksMigration(services, { apply: true })
 
     expect(logs.join("\n")).toContain("No tracking-predicate facts found")
+  })
+
+  it("renders the already-migrated count and binds plan rows to existing tasks on rerun", async () => {
+    // Prior run created tasks for these two facts but the invalidate
+    // step failed on both. Rerun must skip create and surface the
+    // already-migrated subtotal so an operator reading the report sees
+    // why "Migrated 0" doesn't mean "nothing happened."
+    const candidates: Fact[] = [
+      {
+        id: "f1",
+        subject: "AuthService",
+        predicate: "needs_action",
+        object: "Audit",
+        projectIds: [],
+        validFrom: "2026-04-01",
+        validUntil: null,
+        reviewBy: "2026-04-15",
+        sourceMemoryId: null,
+        confidence: "certain",
+      },
+      {
+        id: "f2",
+        subject: "Scheduler",
+        predicate: "blocked_by",
+        object: "PR #25750",
+        projectIds: [],
+        validFrom: "2026-04-01",
+        validUntil: null,
+        reviewBy: null,
+        sourceMemoryId: null,
+        confidence: "certain",
+      },
+    ]
+    const services = fakeServices({
+      candidates,
+      migrationMap: new Map([
+        ["f1", "task-existing-1"],
+        ["f2", "task-existing-2"],
+      ]),
+    })
+
+    const result = await runTrackingToTasksMigration(services, { apply: true })
+
+    const joined = logs.join("\n")
+    // Zero fresh migrations, two already-migrated → the heal path retries
+    // the invalidate without re-creating any task.
+    expect(joined).toContain("Migrated 0 tracking facts")
+    expect(joined).toContain("2 facts already migrated")
+    expect(joined).toContain("existing task task-existing-1")
+    expect(joined).toContain("existing task task-existing-2")
+    expect(result.alreadyMigrated).toBe(2)
+    expect(result.invalidated).toBe(2)
+    expect(
+      (services as { tasks: { create: { mock: { calls: unknown[] } } } }).tasks
+        .create.mock.calls
+    ).toHaveLength(0)
   })
 })

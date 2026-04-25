@@ -46,6 +46,53 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
+ * Zod schema for an optional task field that follows the
+ * "empty string == absence" rule. `""` is allowed (the caller wants
+ * the field cleared / left absent); whitespace-only strings are
+ * rejected so a stray `"  "` doesn't slip past the empty-string check
+ * and land as literal whitespace in a Notion `rich_text` column.
+ *
+ * Apply consistently to every empty-able optional task field
+ * (`blockedBy`, `entity`, `description`, `subject` on update,
+ * `dueDate`). For fields with extra validation (e.g. `dueDate`'s
+ * YYYY-MM-DD format), compose the additional `.refine()` directly on
+ * the returned schema so the MCP boundary rejects malformed input
+ * up-front instead of relying on a duplicate runtime check in the
+ * handler.
+ */
+function optionalAbsenceString() {
+  return z
+    .string()
+    .refine((s) => s === "" || s.trim().length > 0, {
+      message:
+        'Whitespace-only strings are not allowed. Pass "" (empty string) to clear the field, ' +
+        "or non-whitespace text to set it.",
+    })
+    .optional()
+}
+
+/**
+ * Zod schema for the `dueDate` field. Composed from
+ * `optionalAbsenceString` (whitespace rejection + empty-string
+ * absence) plus the YYYY-MM-DD regex applied only to non-empty
+ * values, so the Zod boundary alone enforces every legal shape:
+ * `undefined` (leave untouched), `""` (clear), or a valid YMD date.
+ *
+ * Folding the YMD check into the schema lets the handler drop its
+ * runtime regex check + string error throw — the value reaching the
+ * handler is already proven to be one of those three shapes.
+ */
+function dueDateSchema() {
+  return optionalAbsenceString().refine(
+    (s) => s === undefined || s === "" || YMD_REGEX.test(s),
+    {
+      message:
+        'dueDate must be empty string ("") to clear, or YYYY-MM-DD format (e.g. "2026-05-01").',
+    }
+  )
+}
+
+/**
  * Default cap for `lore-tasks` listings. Matches `lore-open-loops`'
  * default so the agent UX is consistent across the deprecation period.
  * Per-section, not total — mirrors how `lore-open-loops` splits Overdue
@@ -667,20 +714,17 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         subject: z
           .string()
           .min(1)
+          .refine((s) => s.trim().length > 0, {
+            message: "subject must contain non-whitespace text.",
+          })
           .describe("One-line task subject. Becomes the page title."),
-        description: z
-          .string()
-          .optional()
-          .describe(
-            "Free-form description / context. Becomes the page body (markdown supported).",
-          ),
-        entity: z
-          .string()
-          .optional()
-          .describe(
-            "Normalized entity name the task is about (PR number, service, person). " +
-              "Defaults to the subject.",
-          ),
+        description: optionalAbsenceString().describe(
+          'Free-form description / context. Becomes the page body (markdown supported). Empty string ("") leaves the body empty.'
+        ),
+        entity: optionalAbsenceString().describe(
+          "Normalized entity name the task is about (PR number, service, person). " +
+            "Defaults to the subject. `lore-ask(entity)` filters tasks by this column."
+        ),
         state: z
           .enum(TASK_STATES)
           .optional()
@@ -688,18 +732,13 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
             "Initial state (default `open`). Use `blocked` only when an external dependency exists; " +
               "pair with `blockedBy` to name the blocker.",
           ),
-        blockedBy: z
-          .string()
-          .optional()
-          .describe(
-            "Free-form blocker label (PR number, person, external service). " +
-              "Only meaningful when `state` is `blocked`.",
-          ),
-        dueDate: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Due date (YYYY-MM-DD). Maps to the Review By column."),
+        blockedBy: optionalAbsenceString().describe(
+          "Free-form blocker label (PR number, person, external service). " +
+            "Only meaningful when `state` is `blocked`."
+        ),
+        dueDate: dueDateSchema().describe(
+          "Due date (YYYY-MM-DD). Maps to the Review By column."
+        ),
         affectsIds: z
           .array(z.string())
           .optional()
@@ -745,28 +784,26 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .describe(
             "New state. Use `lore-task` with `action: 'close'` if you only need to mark a task done.",
           ),
-        blockedBy: z
+        blockedBy: optionalAbsenceString().describe(
+          'New blocker label. Pass "" (empty string) to clear. Only meaningful when `state` is `blocked`.'
+        ),
+        entity: optionalAbsenceString().describe(
+          'New normalized entity name. Pass "" to clear.'
+        ),
+        dueDate: dueDateSchema().describe(
+          'New due date (YYYY-MM-DD). Pass "" to clear the date entirely. ' +
+            "Validated at the Zod boundary; non-empty values must match YYYY-MM-DD."
+        ),
+        subject: z
           .string()
+          .refine((s) => s.trim().length > 0, {
+            message: "subject must contain non-whitespace text.",
+          })
           .optional()
-          .describe(
-            "New blocker label (or empty string to clear). Only meaningful when `state` is `blocked`.",
-          ),
-        entity: z
-          .string()
-          .optional()
-          .describe("New normalized entity name."),
-        dueDate: z
-          .string()
-          .optional()
-          .describe(
-            "New due date (YYYY-MM-DD). Pass an empty string to clear the date entirely. " +
-              "Validated server-side; non-empty values must match YYYY-MM-DD.",
-          ),
-        subject: z.string().optional().describe("New subject (page title)."),
-        description: z
-          .string()
-          .optional()
-          .describe("New description (replaces page body)."),
+          .describe("New subject (page title)."),
+        description: optionalAbsenceString().describe(
+          'New description (replaces page body). Pass "" to clear.'
+        ),
         tags: tagsSchema.optional(),
         keywords: keywordsSchema.optional(),
       },
