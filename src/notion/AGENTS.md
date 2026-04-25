@@ -159,7 +159,8 @@ export function memoriesProperties(projectsDbId: string, topicsDbId: string): Pr
 1. **Projects** -- no dependencies
 2. **Topics** -- relation to Projects
 3. **Memories** -- relations to Projects and Topics
-4. **Facts** -- relations to Projects and Memories
+4. **Entities** (PF3-01) -- relations to Projects and Memories
+5. **Facts** -- relations to Projects, Memories, and Entities
 
 The `createDbArgs()` helper handles the type casting needed for
 `initial_data_source.properties`. If you need to create a new database, follow
@@ -167,6 +168,14 @@ this pattern.
 
 `verifyVaultDatabases()` reads the vault page's child blocks and matches
 database titles to the expected names. This is used by `VaultManager.load()`.
+
+**Required vs optional databases.** Projects / Topics / Memories / Facts
+are mandatory — `verifyVaultDatabases` throws when any of them are absent.
+The Entities database is optional: pre-PF3-01 vaults still load with
+`vault.databases.entities` left undefined. `migrateVaultSchema` keys the
+expected-shape map off whichever databases actually exist, so a legacy
+vault doesn't surface phantom drift on the entity relation columns until
+the operator runs `lore migrate --build-entities` to wire them in.
 
 ## Rate Limiting
 

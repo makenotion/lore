@@ -53,6 +53,8 @@ function makeFact(
     reviewBy: null,
     sourceMemoryId: null,
     confidence: overrides.confidence ?? "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
     ...overrides,
   }
 }
@@ -647,6 +649,84 @@ describe("syncDecisionReachability", () => {
       projectIds: ["proj-1"],
       sourceMemoryId: "new-id",
       confidence: "likely",
+      subjectEntityId: undefined,
     })
+  })
+
+  it("carries SubjectEntity forward when retargeting (PF3-01)", async () => {
+    const newDecision = makeDecision("new-id", {
+      title: "New decision",
+      projectIds: ["proj-1"],
+      confidence: "certain",
+    })
+    const services = createServices({
+      decisions: { "new-id": newDecision },
+      factsBySourceMemory: {
+        "old-id": [
+          makeFact("old-fact-1", {
+            subject: "MemoryService",
+            predicate: "decided_by",
+            object: "Old decision",
+            sourceMemoryId: "old-id",
+            projectIds: ["proj-1"],
+            subjectEntityId: "ent-memory-service",
+          }),
+        ],
+        "new-id": [],
+      },
+    })
+
+    await syncDecisionReachability(services, "old-id", newDecision)
+
+    expect(services.facts.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "MemoryService",
+        subjectEntityId: "ent-memory-service",
+      }),
+    )
+  })
+
+  it("dedups retargets by canonical entity even when raw subjects differ (PF3-01)", async () => {
+    // Pre-PF3-01 contract: dedup keyed on raw `fact.subject`. Two
+    // facts with cosmetic-variant subjects ("MemoryService" vs
+    // "memoryservice") for the same entity would create two retarget
+    // rows. After PF3-01, both share `subjectEntityId` so the second
+    // hits the existing-keys set and is skipped.
+    const newDecision = makeDecision("new-id", {
+      title: "New decision",
+      projectIds: ["proj-1"],
+      confidence: "certain",
+    })
+    const services = createServices({
+      decisions: { "new-id": newDecision },
+      factsBySourceMemory: {
+        "old-id": [
+          makeFact("old-1", {
+            subject: "MemoryService",
+            predicate: "decided_by",
+            object: "Old",
+            sourceMemoryId: "old-id",
+            projectIds: ["proj-1"],
+            subjectEntityId: "ent-ms",
+          }),
+          makeFact("old-2", {
+            subject: "memoryservice",
+            predicate: "decided_by",
+            object: "Old",
+            sourceMemoryId: "old-id",
+            projectIds: ["proj-1"],
+            subjectEntityId: "ent-ms",
+          }),
+        ],
+        "new-id": [],
+      },
+    })
+
+    const result = await syncDecisionReachability(services, "old-id", newDecision)
+
+    // Both old facts invalidated, but only ONE retarget created — the
+    // second was deduped via `factSubjectKey` (entity:ent-ms).
+    expect(result).toEqual({ invalidated: 2, created: 1 })
+    expect(services.facts.create).toHaveBeenCalledTimes(1)
   })
 })

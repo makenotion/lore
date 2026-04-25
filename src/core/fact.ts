@@ -81,6 +81,15 @@ type ListTrackingOpts = {
    */
   entity?: string
   /**
+   * Pre-resolved canonical Entity ID. When supplied, the entity filter
+   * additionally OR-s a relation match against `SubjectEntity` /
+   * `ObjectEntity` so post-PF3-01 rows that share the canonical entity
+   * surface even when their Subject/Object text wouldn't substring-
+   * match the caller's input. The substring branch still runs in the
+   * same OR for un-migrated rows. PR #88 closeout.
+   */
+  entityId?: string
+  /**
    * Cap total rows fetched across pages. `undefined` means "fetch all" and
    * paginates until the cursor is exhausted — unlike `listRecent`, which is
    * single-page by design for the wake-up hot path. Callers wanting every
@@ -92,6 +101,40 @@ type ListTrackingOpts = {
 
 /** Notion's hard ceiling on `page_size`. */
 const NOTION_MAX_PAGE_SIZE = 100
+
+/**
+ * Match Notion API errors that signal "the property you're filtering
+ * on doesn't exist on this data source." Used to gate the recall-
+ * preserving empty-result path in `queryByEntityTextOnUnmigrated`:
+ * legacy vaults whose Facts DB lacks the `SubjectEntity` /
+ * `ObjectEntity` columns 400 with `validation_error`, and we want
+ * those to silently fall through to the relation-only result set.
+ * Transient 5xx / rate-limit / network errors must NOT match — those
+ * propagate so the caller sees the failure instead of getting a
+ * silently-halved union.
+ *
+ * Matches by error `code` rather than checking `instanceof
+ * APIResponseError` to keep the dependency surface narrow (the SDK's
+ * error class hierarchy has churned between v4 and v5). The
+ * `validation_error` code is stable across versions per the SDK
+ * `APIErrorCode` enum.
+ */
+function isMissingPropertyError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  const code = (err as { code?: unknown }).code
+  if (code !== "validation_error") return false
+  const message =
+    typeof (err as { message?: unknown }).message === "string"
+      ? ((err as { message: string }).message)
+      : ""
+  // Notion's validation_error wraps several distinct schema mistakes;
+  // match the substring that names the missing-property case so a
+  // genuinely-malformed-filter validation_error (e.g. wrong operator
+  // for the property type) still propagates. The SDK's error message
+  // shape is "Could not find property with name or id: <name>" or
+  // similar — match either spelling defensively.
+  return /property/i.test(message) && /(not found|could not find|does not exist)/i.test(message)
+}
 
 /**
  * Safety cap on `listTracking` pagination: at 100 rows per page this caps at
@@ -150,6 +193,93 @@ export class FactService {
   async create(input: CreateFactInput): Promise<Fact> {
     const { fact } = await this.createWithDedup(input)
     return fact
+  }
+
+  /**
+   * Set or replace the `SubjectEntity` / `ObjectEntity` relation on an
+   * existing fact. Used by `lore migrate --build-entities` to re-point
+   * historical rows after their canonical Entity is created. Either side
+   * may be passed independently; `null` clears the column.
+   */
+  async setEntityRelations(
+    id: string,
+    relations: { subjectEntityId?: string | null; objectEntityId?: string | null }
+  ): Promise<void> {
+    const properties: Record<string, unknown> = {}
+    if (relations.subjectEntityId !== undefined) {
+      properties["SubjectEntity"] = {
+        relation: relations.subjectEntityId
+          ? [{ id: relations.subjectEntityId }]
+          : [],
+      }
+    }
+    if (relations.objectEntityId !== undefined) {
+      properties["ObjectEntity"] = {
+        relation: relations.objectEntityId
+          ? [{ id: relations.objectEntityId }]
+          : [],
+      }
+    }
+    if (Object.keys(properties).length === 0) return
+
+    await this.client.pages.update({
+      page_id: id,
+      properties: properties as UpdatePageParameters["properties"],
+    })
+  }
+
+  /**
+   * Find live facts where the given Entity row appears on either the
+   * Subject or Object side via the canonical relation columns. This is
+   * the post-PF3-01 read path: a single round-trip with deduped results
+   * across both sides, no substring fragility.
+   *
+   * Returns `[]` on a vault that hasn't run the build-entities migration
+   * yet — no rows reference the entity, so the result is empty by
+   * construction. Callers that want substring fallback should fan out
+   * to `queryByEntity(name)` after consulting the entity name.
+   */
+  async queryByEntityId(
+    entityId: string,
+    opts?: { projectId?: string; includeInvalidated?: boolean }
+  ): Promise<Fact[]> {
+    const filters: Array<Record<string, unknown>> = [
+      {
+        or: [
+          { property: "SubjectEntity", relation: { contains: entityId } },
+          { property: "ObjectEntity", relation: { contains: entityId } },
+        ],
+      },
+    ]
+
+    if (opts?.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+    if (!opts?.includeInvalidated) {
+      filters.push({
+        property: "Valid Until",
+        date: { is_empty: true },
+      })
+    }
+
+    const filter = filters.length > 1 ? { and: filters } : filters[0]
+    const results: PageObjectResponse[] = []
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: NOTION_MAX_PAGE_SIZE,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        results.push(page)
+      }
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return results.map((p) => this.pageToFact(p))
   }
 
   /**
@@ -238,6 +368,14 @@ export class FactService {
         confidence: decodedInput.confidence ?? "certain",
         dedupKey,
         subjectKey,
+        // PF3-01 — optional entity ids. When the caller has resolved
+        // them upstream (`lore-fact action='create'` after
+        // `EntityService.resolveOrCreateEntity`), the new fact lands
+        // with canonical relations from day one. Omitted callers
+        // (legacy paths, internal decision-graph helpers) still write
+        // valid rows; the migration backfills relations later.
+        subjectEntityId: decodedInput.subjectEntityId,
+        objectEntityId: decodedInput.objectEntityId,
       }),
     })
 
@@ -711,33 +849,43 @@ export class FactService {
       })),
     })
 
-    if (opts.entity) {
+    if (opts.entity || opts.entityId) {
       // Subject is a `title` column; Object is `rich_text`. Notion's typed
       // filter param requires the right slot on each side — a `title` filter
       // with `rich_text.contains` is a runtime 400.
       //
-      // SubjectKey rides on the Subject side so case-variant entity inputs
-      // resolve against the canonicalized column (P3-03 Part A); the raw
-      // Subject contains stays as a fallback for un-backfilled rows. The
-      // Object side stays case-sensitive — Part A doesn't add an
-      // `ObjectKey` column, that's Part B (Entities DB) work.
-      //
-      // SubjectKey clause is suppressed when the entity normalizes to
-      // empty (punctuation/whitespace-only input) — same broadening trap
-      // as `queryBySubject` above. The raw Subject + Object branches
-      // still run, preserving pre-P3-03 semantics for these edge inputs.
-      const entityKey = computeSubjectKey(opts.entity)
+      // Three branches OR'd into one server-side clause:
+      // 1. PF3-01 relation match: when `entityId` is supplied, OR a
+      //    `SubjectEntity contains entityId` and `ObjectEntity contains
+      //    entityId` so post-migration rows surface by exact relation
+      //    regardless of the raw Subject/Object text.
+      // 2. SubjectKey case-fold (P3-03 Part A): rides on the Subject
+      //    side so case-variant entity inputs resolve against the
+      //    canonicalized column; suppressed when normalize collapses
+      //    to empty (punctuation/whitespace-only input).
+      // 3. Raw Subject + Object substring: preserves pre-P3-03
+      //    semantics and covers un-migrated rows whose SubjectKey is
+      //    blank.
       const orClauses: Array<Record<string, unknown>> = []
-      if (entityKey) {
-        orClauses.push({
-          property: "SubjectKey",
-          rich_text: { contains: entityKey },
-        })
+      if (opts.entityId) {
+        orClauses.push(
+          { property: "SubjectEntity", relation: { contains: opts.entityId } },
+          { property: "ObjectEntity", relation: { contains: opts.entityId } },
+        )
       }
-      orClauses.push(
-        { property: "Subject", title: { contains: opts.entity } },
-        { property: "Object", rich_text: { contains: opts.entity } },
-      )
+      if (opts.entity) {
+        const entityKey = computeSubjectKey(opts.entity)
+        if (entityKey) {
+          orClauses.push({
+            property: "SubjectKey",
+            rich_text: { contains: entityKey },
+          })
+        }
+        orClauses.push(
+          { property: "Subject", title: { contains: opts.entity } },
+          { property: "Object", rich_text: { contains: opts.entity } },
+        )
+      }
       filters.push({ or: orClauses })
     }
 
@@ -805,30 +953,134 @@ export class FactService {
   /**
    * Find facts where an entity appears on either side of the triple.
    *
-   * Subject side is case-folded via `queryBySubject` (P3-03 Part A); the
-   * Object side stays case-sensitive because Part A intentionally only
-   * adds a `SubjectKey` column. Asymmetric until P3-03 Part B introduces
-   * an `Entities` DB that canonicalizes both sides via relation joins —
-   * callers that need fully case-insensitive entity lookup today should
-   * normalize their input upstream of this method.
+   * **PF3-01 path (preferred when `entityId` resolves).** Runs a
+   * relation-based query (`SubjectEntity contains entityId OR
+   * ObjectEntity contains entityId`) AND an unbackfilled-only
+   * substring query in parallel, then unions the two. Symmetric, exact
+   * on the relation side; recall-preserving for transition-window
+   * vaults where some facts haven't been re-pointed yet.
    *
-   * **Silent recall caveat for the Object side**: a fact whose Object
-   * stores `"pr #25751"` (lowercase) won't match a `queryByEntity("PR
-   * #25751")` Object-side hit, even though the Subject side now would.
-   * Callers that issue PR / ticket-ID / file-path style entity lookups
-   * — where the casing convention varies by who wrote the row — should
-   * either (a) normalize the input themselves and accept that the
-   * normalized form must also appear in the stored Object, or (b) wait
-   * for Part B. Tool descriptions for `lore-ask` should surface this
-   * caveat to agents so they don't assume entity recall is symmetric.
+   * Why the parallel substring is gated on un-backfilled rows: a
+   * relation-only path silently drops every fact whose
+   * `SubjectEntity`/`ObjectEntity` is still empty even when the
+   * `Subject`/`Object` text would have matched. The substring path is
+   * filtered to rows where BOTH relation columns are empty so we
+   * don't double-count rows that the relation path already returned.
+   * Caught by review on PR #88.
+   *
+   * **Pre-PF3-01 fallback.** When `entityId` is null/undefined (the
+   * caller's resolver couldn't pick a canonical row), falls back to
+   * the pre-PF3-01 shape: Subject side is case-folded via
+   * `queryBySubject` (P3-03 Part A), Object side stays case-sensitive
+   * `contains`. Asymmetric on the Object side — callers should
+   * normalize input or accept the asymmetry.
+   *
+   * Returns deduped: a fact whose Subject AND Object both reference
+   * the entity surfaces once.
    */
-  async queryByEntity(entity: string, opts?: { projectId?: string }): Promise<Fact[]> {
+  async queryByEntity(
+    entity: string,
+    opts?: { projectId?: string; entityId?: string | null }
+  ): Promise<Fact[]> {
+    if (opts?.entityId) {
+      // Hot-path: relation hits + un-backfilled substring hits, run in
+      // parallel so wall-clock is one round-trip, not two.
+      const [byRelation, byTextOnUnmigrated] = await Promise.all([
+        this.queryByEntityId(opts.entityId, { projectId: opts.projectId }),
+        this.queryByEntityTextOnUnmigrated(entity, { projectId: opts.projectId }),
+      ])
+      const seen = new Set(byRelation.map((f) => f.id))
+      return [
+        ...byRelation,
+        ...byTextOnUnmigrated.filter((f) => !seen.has(f.id)),
+      ]
+    }
+
     const asSubject = await this.queryBySubject(entity, opts)
-
     const asObject = await this.queryByObject(entity, opts)
-
     const seen = new Set(asSubject.map((f) => f.id))
     return [...asSubject, ...asObject.filter((f) => !seen.has(f.id))]
+  }
+
+  /**
+   * Substring search restricted to facts whose `SubjectEntity` AND
+   * `ObjectEntity` relations are both empty — i.e. rows the
+   * build-entities migration hasn't re-pointed yet. Used by
+   * `queryByEntity` to keep recall on transition-window vaults where
+   * some facts still lack relation columns.
+   *
+   * Mirrors `queryBySubject`'s SubjectKey-aware OR + `queryByObject`'s
+   * raw `contains`. Returns the union deduped by id.
+   */
+  private async queryByEntityTextOnUnmigrated(
+    entity: string,
+    opts?: { projectId?: string }
+  ): Promise<Fact[]> {
+    if (!entity) return []
+
+    const baseFilters: Array<Record<string, unknown>> = [
+      // The relation columns may not exist on the live schema yet (a
+      // legacy vault that hasn't run schema migration). Notion's
+      // `relation.is_empty` filter on a missing column is a 400, so
+      // we wrap the whole query in a try/catch and treat the failure
+      // as "vault has no Entities DB; substring fallback already ran
+      // through the legacy path elsewhere — return empty here so we
+      // don't double-count."
+      { property: "SubjectEntity", relation: { is_empty: true } },
+      { property: "ObjectEntity", relation: { is_empty: true } },
+      { property: "Valid Until", date: { is_empty: true } },
+    ]
+    if (opts?.projectId) {
+      baseFilters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+
+    const subjectKey = computeSubjectKey(entity)
+    const textOr: Array<Record<string, unknown>> = []
+    if (subjectKey) {
+      textOr.push({
+        property: "SubjectKey",
+        rich_text: { contains: subjectKey },
+      })
+    }
+    textOr.push(
+      { property: "Subject", title: { contains: entity } },
+      { property: "Object", rich_text: { contains: entity } },
+    )
+    baseFilters.push({ or: textOr })
+
+    try {
+      const results: PageObjectResponse[] = []
+      let cursor: string | undefined = undefined
+      do {
+        const response = await this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: { and: baseFilters } as QueryDataSourceParameters["filter"],
+          sorts: [{ timestamp: "created_time", direction: "descending" }],
+          page_size: NOTION_MAX_PAGE_SIZE,
+          start_cursor: cursor,
+        })
+        for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+          results.push(page)
+        }
+        cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      } while (cursor)
+      return results.map((p) => this.pageToFact(p))
+    } catch (err) {
+      // Narrow swallow: only the "relation column doesn't exist on the
+      // schema yet" case (a legacy vault that hasn't run schema
+      // migration) should silently return `[]`. Transient errors —
+      // 5xx, rate-limit blips, network — must propagate so the
+      // relation-path side of the union surfaces a real failure to
+      // the caller instead of silently halving the result set.
+      //
+      // Notion's SDK reports the missing-column case via
+      // `validation_error` (HTTP 400). We match by code prefix to
+      // tolerate both v5 and any future SDK variants.
+      if (isMissingPropertyError(err)) {
+        return []
+      }
+      throw err
+    }
   }
 
   /**
@@ -977,6 +1229,13 @@ export class FactService {
   private pageToFact(page: PageObjectResponse): Fact {
     const props = page.properties
     const sourceIds = extractRelationIds(props["Source"])
+    // PF3-01 — relation columns return `[]` on un-migrated rows
+    // because Notion responds with an empty list when the column
+    // exists in the schema but is unset on the row. Treat any populated
+    // relation as the canonical entity id; ignore the [1+] case (a
+    // Fact only ever points at one canonical Entity per side).
+    const subjectEntityIds = extractRelationIds(props["SubjectEntity"])
+    const objectEntityIds = extractRelationIds(props["ObjectEntity"])
 
     return {
       id: page.id,
@@ -989,6 +1248,8 @@ export class FactService {
       reviewBy: extractDate(props["Review By"]),
       sourceMemoryId: sourceIds[0] ?? null,
       confidence: extractSelect(props["Confidence"], "certain") as FactConfidence,
+      subjectEntityId: subjectEntityIds[0] ?? null,
+      objectEntityId: objectEntityIds[0] ?? null,
     }
   }
 }

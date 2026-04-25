@@ -45,6 +45,8 @@ function makeFact(overrides: Partial<Fact>): Fact {
     reviewBy: null,
     sourceMemoryId: null,
     confidence: "likely",
+    subjectEntityId: null,
+    objectEntityId: null,
     ...overrides,
   }
 }

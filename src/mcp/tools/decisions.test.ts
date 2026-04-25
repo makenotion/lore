@@ -46,6 +46,8 @@ function makeFact(id: string): Fact {
     reviewBy: null,
     sourceMemoryId: "decision-id",
     confidence: "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
   }
 }
 

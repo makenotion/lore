@@ -2,9 +2,11 @@
 
 AI memory backed by Notion.
 
-Lore stores knowledge as Notion pages organized across four databases: Projects,
-Topics, Memories, and Facts. It provides an MCP server for AI assistants, a CLI
-for humans, and shell hooks for automated context loading and session saving.
+Lore stores knowledge as Notion pages organized across four core databases —
+Projects, Topics, Memories, and Facts — plus an optional fifth database
+(Entities, PF3-01) for canonical-handle resolution. It provides an MCP server
+for AI assistants, a CLI for humans, and shell hooks for automated context
+loading and session saving.
 
 ## Quick Start
 
@@ -31,8 +33,11 @@ Create a page in Notion and share it with your integration, then:
 lore init <page-id>
 ```
 
-This creates the four databases inside the page and writes a `.lore.yaml`
-config file.
+This creates the five databases inside the page (Projects, Topics, Memories,
+Entities, Facts) and writes a `.lore.yaml` config file. Existing vaults from
+before PF3-01 keep working without the Entities database; run
+`lore migrate --build-entities --yes` to add it and canonicalize the fact
+graph in one pass.
 
 ### 4. Configure Your AI Assistant
 
@@ -57,14 +62,21 @@ Codex only loads project-scoped `.codex/*` files for trusted projects.
 
 ## Data Model
 
-A vault is a Notion page containing four linked databases:
+A vault is a Notion page containing four core databases plus an optional
+fifth (Entities, PF3-01):
 
-| Database     | Title Property | Key Properties                                         | Relations                |
-| ------------ | -------------- | ------------------------------------------------------ | ------------------------ |
-| **Projects** | Name           | Type (project/person/agent), Path, Status, Description | --                       |
-| **Topics**   | Name           | Description                                            | Project                  |
-| **Memories** | Title          | Source, Author, Agent, Tags, Session + page body       | Project, Topic           |
-| **Facts**    | Subject        | Predicate, Object, Valid From, Valid Until, Confidence | Project, Source (Memory) |
+| Database     | Title Property | Key Properties                                         | Relations                                    |
+| ------------ | -------------- | ------------------------------------------------------ | -------------------------------------------- |
+| **Projects** | Name           | Type (project/person/agent), Path, Status, Description | --                                           |
+| **Topics**   | Name           | Description                                            | Project                                      |
+| **Memories** | Title          | Source, Author, Agent, Tags, Session + page body       | Project, Topic                               |
+| **Entities** | Name           | Aliases, Kind, Description                             | Project, Source (Memory)                     |
+| **Facts**    | Subject        | Predicate, Object, Valid From, Valid Until, Confidence | Project, Source (Memory), SubjectEntity, ObjectEntity |
+
+**Entities** is created automatically by `lore init` on new vaults. Existing
+vaults from before PF3-01 can opt in via `lore migrate --build-entities --yes`,
+which also adds the `SubjectEntity` / `ObjectEntity` relation columns to Facts
+and re-points historical rows in one pass.
 
 **Predicate values**: `is_a`, `has_a`, `uses`, `depends_on`, `related_to`,
 `created_by`, `owned_by`, `replaces`, `extends`, `conflicts_with`,
@@ -184,7 +196,7 @@ The whole tool family is itself deprecated — prefer `lore-memory` with
 | `lore status`                  | Show vault status, database counts, and active projects          |
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
-| `lore migrate`                 | Add missing schema properties to vault data sources (`--dry-run`, `--upgrade-decision-tags`) |
+| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, etc.) |
 
 ## Hooks
 

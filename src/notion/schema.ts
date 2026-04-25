@@ -221,15 +221,94 @@ export function memoriesSelfRelationProperties(
 }
 
 // ---------------------------------------------------------------------------
+// Entities Database (PF3-01 — canonical entity registry)
+// ---------------------------------------------------------------------------
+
+export const ENTITIES_DB_TITLE = "Entities"
+export const ENTITIES_DB_ICON = "🪪"
+
+/**
+ * `Aliases` is a single rich_text cell holding a comma-separated list
+ * rather than a `multi_select`. Multi-select option lists require a
+ * schema migration whenever a new alias appears, but aliases are
+ * deeply free-form (case variants, "MemoryService.create" alongside
+ * "MemoryService", legacy spellings) — every new fact would force a
+ * `dataSources.update` round-trip.
+ *
+ * `Kind` defaults to a small open vocabulary mirroring `EntityKind`.
+ * The migration leaves it blank when it can't infer a kind, so reads
+ * MUST treat the column as optional.
+ */
+export function entitiesProperties(
+  projectsDbId: string,
+  memoriesDbId: string
+): PropertyConfig {
+  return {
+    Name: { title: {} },
+    Aliases: { rich_text: {} },
+    Kind: {
+      select: {
+        options: [
+          { name: "class", color: "blue" },
+          { name: "function", color: "green" },
+          { name: "file", color: "yellow" },
+          { name: "workflow", color: "purple" },
+          { name: "pr", color: "orange" },
+          { name: "task-id", color: "red" },
+          { name: "person", color: "pink" },
+          { name: "system", color: "gray" },
+        ],
+      },
+    },
+    Description: { rich_text: {} },
+    Project: {
+      relation: {
+        // Many-to-many: a class or workflow may span the same set of
+        // projects its referencing facts span (e.g. "AuthMiddleware"
+        // touches every project that imports it). Mirroring Topics'
+        // dual-property keeps cross-project entities reachable from
+        // either side without fragmenting the graph.
+        dual_property: {},
+        data_source_id: projectsDbId,
+      },
+    },
+    /**
+     * Memory rows that defined or first introduced this entity. Optional
+     * — the migration leaves it empty because the source memory for
+     * pre-PF3-01 rows lives on the Fact's Source relation. Used by future
+     * tools that want to surface "where did this entity first appear"
+     * without walking every fact.
+     */
+    Source: {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDbId,
+      },
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Facts Database (Knowledge Graph)
 // ---------------------------------------------------------------------------
 
 export const FACTS_DB_TITLE = "Facts"
 export const FACTS_DB_ICON = "🔗"
 
+/**
+ * Build the Facts DB property config.
+ *
+ * `entitiesDsId` is optional: an un-migrated vault has no Entities DB
+ * yet, so `migrateVaultSchema`'s diff path passes `undefined` to
+ * exclude the relation columns from the expected shape until the
+ * Entities DB has been created in a separate pass. Once Entities lands,
+ * a follow-up `lore migrate` adds the `SubjectEntity` / `ObjectEntity`
+ * columns to existing Facts rows.
+ */
 export function factsProperties(
   projectsDbId: string,
-  memoriesDbId: string
+  memoriesDbId: string,
+  entitiesDsId?: string
 ): PropertyConfig {
   return {
     Subject: { title: {} },
@@ -294,6 +373,32 @@ export function factsProperties(
     // we need `contains` substring matching, which Notion doesn't run
     // against hashed values.
     SubjectKey: { rich_text: {} },
+    // PF3-01 — canonical entity relation columns. Filled by the
+    // build-entities migration and by `lore-fact action='create'` after
+    // the resolver picks an Entity row. Pre-migration rows have empty
+    // relations; queries that filter by entity ID fall back to the
+    // SubjectKey path on those rows.
+    //
+    // Only emitted when `entitiesDsId` is supplied so a `migrateVaultSchema`
+    // run on a vault that hasn't created the Entities DB yet doesn't
+    // surface a phantom drift (relation columns pointing at an undefined
+    // data source).
+    ...(entitiesDsId
+      ? {
+          SubjectEntity: {
+            relation: {
+              single_property: {},
+              data_source_id: entitiesDsId,
+            },
+          },
+          ObjectEntity: {
+            relation: {
+              single_property: {},
+              data_source_id: entitiesDsId,
+            },
+          },
+        }
+      : {}),
   }
 }
 
@@ -434,6 +539,47 @@ export function buildMemoryProps(input: {
   return props
 }
 
+/**
+ * Serialize an alias list to the rich_text format the Entities DB stores.
+ * Joined with `, ` so a Notion-side `Aliases contains "foo"` filter can
+ * find any single alias substring without the caller knowing the
+ * delimiter.
+ */
+export function buildEntityProps(input: {
+  name: string
+  aliases?: string[]
+  kind?: string
+  description?: string
+  projectIds?: string[]
+  sourceMemoryId?: string
+}): PageProperties {
+  const props: PageProperties = {
+    Name: { title: [{ text: { content: input.name } }] },
+  }
+  if (input.aliases !== undefined) {
+    // Always emit, even on empty arrays, so a clear-aliases update can
+    // wipe the cell. Notion ignores `rich_text: []` on missing fields,
+    // so the explicit empty-string text block is the cleanest write path.
+    const joined = input.aliases.join(", ")
+    props["Aliases"] = { rich_text: [{ text: { content: joined } }] }
+  }
+  if (input.kind) {
+    props["Kind"] = { select: { name: input.kind } }
+  }
+  if (input.description !== undefined) {
+    props["Description"] = {
+      rich_text: [{ text: { content: input.description } }],
+    }
+  }
+  if (input.projectIds?.length) {
+    props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
+  }
+  if (input.sourceMemoryId) {
+    props["Source"] = { relation: [{ id: input.sourceMemoryId }] }
+  }
+  return props
+}
+
 export function buildFactProps(input: {
   subject: string
   predicate: string
@@ -445,6 +591,8 @@ export function buildFactProps(input: {
   confidence?: string
   dedupKey?: string
   subjectKey?: string
+  subjectEntityId?: string
+  objectEntityId?: string
 }): PageProperties {
   const props: PageProperties = {
     Subject: { title: [{ text: { content: input.subject } }] },
@@ -476,6 +624,16 @@ export function buildFactProps(input: {
   if (input.subjectKey !== undefined) {
     props["SubjectKey"] = {
       rich_text: [{ text: { content: input.subjectKey } }],
+    }
+  }
+  if (input.subjectEntityId) {
+    props["SubjectEntity"] = {
+      relation: [{ id: input.subjectEntityId }],
+    }
+  }
+  if (input.objectEntityId) {
+    props["ObjectEntity"] = {
+      relation: [{ id: input.objectEntityId }],
     }
   }
   return props

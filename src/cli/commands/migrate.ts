@@ -17,6 +17,11 @@ import {
   type TrackingFactMigrationResult,
 } from "../../core/task-migration.js"
 import type { NormalizableAgentRow } from "../../core/agent-normalization.js"
+import {
+  buildEntities,
+  type EntityMigrationResult,
+} from "../../core/entity-migration.js"
+import { EntityService } from "../../core/entity.js"
 
 export const migrateCommand = new Command("migrate")
   .description("Add missing schema properties to the vault's data sources")
@@ -66,6 +71,10 @@ export const migrateCommand = new Command("migrate")
     "With --dedup-keys, show the survivor/loser plan for collapsing live duplicate triples. Re-run with --yes to execute."
   )
   .option(
+    "--build-entities",
+    "Group every fact's Subject and Object strings by their normalized key, propose one canonical Entity row per group with the remaining raw forms as aliases, and re-point each fact's SubjectEntity/ObjectEntity relation. Plan-only by default — re-run with --yes to apply. Run on a quiet vault (no concurrent autosaves writing facts): the migration has no lock, so two concurrent `--yes` runs can produce duplicate Entity rows for groups that didn't previously exist. PF3-01."
+  )
+  .option(
     "--migrate-tracking-to-tasks",
     "Convert every live tracking-predicate fact (needs_action / waiting_on / blocked_by) into a `Kind: task` memory and invalidate the source fact. The fact's Subject becomes the task title; its Object becomes the task body (full prose, no rich_text length cap); its Source memory carries forward as the task's Affects relation. Plan-only by default — re-run with `--yes` to apply. Idempotent (invalidated facts are skipped on the next pass)."
   )
@@ -75,7 +84,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--migrate-tracking-to-tasks`, or `--normalize-agents`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--migrate-tracking-to-tasks`, `--normalize-agents`, or `--build-entities`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -94,6 +103,7 @@ export const migrateCommand = new Command("migrate")
       yes?: boolean
       migrateTrackingToTasks?: boolean
       normalizeAgents?: boolean
+      buildEntities?: boolean
     }) => {
       try {
         // Validate flag combinations BEFORE running the schema migration so
@@ -111,10 +121,11 @@ export const migrateCommand = new Command("migrate")
           !opts.fixFactEncoding &&
           !opts.fixMemoryEncoding &&
           !opts.migrateTrackingToTasks &&
-          !opts.normalizeAgents
+          !opts.normalizeAgents &&
+          !opts.buildEntities
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --migrate-tracking-to-tasks, or --normalize-agents."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --migrate-tracking-to-tasks, --normalize-agents, or --build-entities."
           )
           process.exit(1)
         }
@@ -378,6 +389,13 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.buildEntities) {
+          await runBuildEntitiesMigration(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: opts.dryRun,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -433,7 +451,8 @@ export const migrateCommand = new Command("migrate")
             opts.fixFactEncoding ||
             opts.fixMemoryEncoding ||
             opts.migrateTrackingToTasks ||
-            opts.normalizeAgents
+            opts.normalizeAgents ||
+            opts.buildEntities
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -1277,4 +1296,123 @@ export async function runAgentNormalization(
       "\nPlan only — no rewrites written. Re-run with `--yes` to canonicalize the Agent column."
     )
   }
+}
+
+/**
+ * Drive `--build-entities`. Plan-only by default; `--yes` flips to
+ * apply. Mirrors the structure of `runFactEncodingFix` and friends so
+ * the operator-facing language is consistent across the encoding /
+ * task / entity migration family.
+ *
+ * Refuses to run when the vault doesn't have an Entities DB — points
+ * the operator at `lore migrate` (no flags) so the next `lore init`-
+ * less path runs `verifyVaultDatabases` and surfaces the missing DB
+ * via stderr drift detection.
+ */
+export async function runBuildEntitiesMigration(
+  services: LoreServices,
+  options: { apply: boolean; dryRun?: boolean }
+): Promise<EntityMigrationResult | null> {
+  // Resolve the EntityService against the live vault. On legacy vaults
+  // the Entities DB doesn't exist yet — `--yes` triggers a one-time
+  // creation, while plan-only mode refuses to write and surfaces a
+  // directive error so an operator running `--dry-run` doesn't see a
+  // misleading "0 groups" plan against a missing database.
+  let entitiesService = services.entities
+  if (!entitiesService) {
+    if (options.apply) {
+      const result = await services.vault.ensureEntitiesDatabase()
+      if (result.created) {
+        // ensureEntitiesDatabase is no-op-on-existing, so the `created`
+        // flag here is the upgrade-path arrow we want surfaced once.
+        // The same call extends the Facts DB schema with the relation
+        // columns so the apply pass below has columns to write to.
+        console.log(
+          "\nCreated the Entities database on the vault page and added " +
+            "SubjectEntity/ObjectEntity columns to the Facts database (PF3-01)."
+        )
+      }
+      // Use the rate-limited client the vault is already managing rather
+      // than allocating a new one — keeps the shared concurrency gate
+      // governing this migration's writes.
+      entitiesService = new EntityService(services.vault.getClient(), result.ref)
+      // Note: `services.entities` stays null on the original handle so
+      // any unrelated tool calls in the same process still see the
+      // pre-migration null. The migration drives the new service
+      // through to completion and the next `initServices` (next run /
+      // process) picks up the freshly-wired service from
+      // `verifyVaultDatabases` cleanly.
+    } else {
+      console.log(
+        "\nThe Entities database does not exist on this vault yet. " +
+          "Re-run with `--yes` to create it and migrate in one pass. " +
+          "Plan-only mode refuses to scaffold the database (the migration " +
+          "would have nothing to plan against until it lands)."
+      )
+      return null
+    }
+  }
+
+  const planOnly = !options.apply
+  const result = await buildEntities(services.facts, entitiesService, {
+    apply: options.apply,
+    dryRun: options.dryRun,
+  })
+
+  if (result.plans.length === 0) {
+    console.log("\nNo fact subjects/objects found — nothing to canonicalize.")
+    return result
+  }
+
+  const verb = planOnly ? "Would canonicalize" : "Canonicalized"
+  const newRows = result.entitiesCreated
+  const aliasRows = result.aliasesAdded
+  console.log(
+    `\n${verb} ${result.plans.length} entity group${result.plans.length === 1 ? "" : "s"} ` +
+      `(${planOnly ? "would create" : "created"} ${newRows} new entit${newRows === 1 ? "y" : "ies"}, ` +
+      `${planOnly ? "would extend" : "extended"} ${aliasRows} alias${aliasRows === 1 ? "" : "es"} on existing rows; ` +
+      `${planOnly ? "would re-point" : "re-pointed"} ${result.factsRepointed} fact relation${result.factsRepointed === 1 ? "" : "s"}).`
+  )
+
+  // Preview — surface the largest collapses first so the operator can
+  // sanity-check the canonical/alias picks. Cap at 15 so a vault with
+  // hundreds of groups doesn't flood the terminal.
+  const PREVIEW_LIMIT = 15
+  for (const plan of result.plans.slice(0, PREVIEW_LIMIT)) {
+    const status = plan.existing ? " (existing)" : " (new)"
+    const aliasPreview =
+      plan.aliases.length === 0
+        ? ""
+        : `\n    aliases: ${plan.aliases
+            .slice(0, 5)
+            .map((a) => `"${a}"`)
+            .join(", ")}${plan.aliases.length > 5 ? `, …${plan.aliases.length - 5} more` : ""}`
+    console.log(
+      `  "${plan.canonical}"${status} — ${plan.factCount} fact${plan.factCount === 1 ? "" : "s"}${aliasPreview}`
+    )
+  }
+  if (result.plans.length > PREVIEW_LIMIT) {
+    console.log(`  … and ${result.plans.length - PREVIEW_LIMIT} more groups.`)
+  }
+
+  if (result.errors.length > 0) {
+    console.log(
+      `\nFailed on ${result.errors.length} item${result.errors.length === 1 ? "" : "s"}:`
+    )
+    for (const e of result.errors.slice(0, PREVIEW_LIMIT)) {
+      const where = e.factId ? `fact ${e.factId}` : `entity "${e.entityKey ?? "?"}"`
+      console.log(`  ${where}: ${e.message}`)
+    }
+    if (result.errors.length > PREVIEW_LIMIT) {
+      console.log(`  … and ${result.errors.length - PREVIEW_LIMIT} more failures.`)
+    }
+  }
+
+  if (planOnly) {
+    console.log(
+      "\nPlan only — no changes written. Re-run with `--yes` to create entity rows and re-point fact relations."
+    )
+  }
+
+  return result
 }

@@ -257,6 +257,104 @@ export async function handleLearn(
     let autoLinkedFromSession = false
     const toolWarnings: string[] = [...resolved.warnings]
 
+    // PF3-01 — resolve subject and object to canonical Entity rows.
+    // Auto-creates on miss (default), surfaces ambiguity candidates
+    // back to the agent on multi-match. Skip silently when the vault
+    // hasn't been migrated yet — `services.entities` is null on
+    // legacy vaults and the relation columns are absent, so the
+    // create still lands as a pre-PF3-01 row.
+    let subjectEntityId: string | undefined
+    let objectEntityId: string | undefined
+    const ambiguous: Array<{ side: "subject" | "object"; input: string; candidates: string[] }> = []
+    if (services.entities) {
+      // Per-side `.catch(() => null)` instead of `Promise.all`: a
+      // transient Notion 5xx on either resolver must NOT sink the
+      // whole `lore-fact action='create'` call. Autosave callers have
+      // no human in the loop; the fact is more valuable than the
+      // relation. Treat a rejected resolution as "couldn't resolve,
+      // omit the relation, surface a warning" — the substring-fallback
+      // path in `queryByEntity` still finds the row later.
+      //
+      // Caught by review on PR #88. Mirrors the resilience posture
+      // `lore-ask`'s tasks lookup (further down in this file) already
+      // uses for the same reason.
+      const entityServices = services.entities
+      const [subjectResolution, objectResolution] = await Promise.all([
+        entityServices
+          .resolveOrCreateEntity(args.subject, {
+            autoCreate: true,
+            projectIds: factProjectIds,
+          })
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err)
+            toolWarnings.push(
+              `Subject entity resolution failed: ${message}. Fact written without SubjectEntity relation.`,
+            )
+            return null
+          }),
+        entityServices
+          .resolveOrCreateEntity(args.object, {
+            autoCreate: true,
+            projectIds: factProjectIds,
+          })
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err)
+            toolWarnings.push(
+              `Object entity resolution failed: ${message}. Fact written without ObjectEntity relation.`,
+            )
+            return null
+          }),
+      ])
+      if (subjectResolution?.ambiguous) {
+        ambiguous.push({
+          side: "subject",
+          input: args.subject,
+          candidates: subjectResolution.candidates.map((c) => `${c.name} (${c.id})`),
+        })
+      } else if (subjectResolution?.entity) {
+        subjectEntityId = subjectResolution.entity.id
+      }
+      if (objectResolution?.ambiguous) {
+        ambiguous.push({
+          side: "object",
+          input: args.object,
+          candidates: objectResolution.candidates.map((c) => `${c.name} (${c.id})`),
+        })
+      } else if (objectResolution?.entity) {
+        objectEntityId = objectResolution.entity.id
+      }
+    }
+
+    // On ambiguity, surface candidates as a warning and write the fact
+    // with the entity relation OMITTED on the ambiguous side. This
+    // protects two contracts that would otherwise conflict:
+    //
+    // 1. Autosave-driven `lore-learn` calls have no human in the loop
+    //    to disambiguate. Refusing to write would silently drop the
+    //    fact from the autosave stream — worse than a half-canonical
+    //    fact, which the substring-fallback `queryByEntity` path can
+    //    still surface.
+    //
+    // 2. We must not guess and bind the fact to the wrong canonical
+    //    row. Omitting the relation lets the operator (or a future
+    //    `lore migrate --build-entities` re-run) attach the right
+    //    entity later via `setEntityRelations`.
+    //
+    // The candidate list goes into `toolWarnings` so the agent sees it
+    // alongside other tool diagnostics and can re-issue the call with
+    // a more-specific name. Tracked by spec line 30 ("tool surfaces
+    // candidates back to the caller; no auto-create") — surfacing
+    // does not require refusing.
+    if (ambiguous.length > 0) {
+      for (const a of ambiguous) {
+        toolWarnings.push(
+          `Ambiguous ${a.side} "${a.input}" — matched ${a.candidates.length} entities (${a.candidates.join(", ")}). ` +
+            `Fact written without ${a.side === "subject" ? "Subject" : "Object"}Entity relation. ` +
+            `Re-issue with the canonical name to attach the relation.`,
+        )
+      }
+    }
+
     if (!effectiveSource) {
       const candidate = services.sessionMemories.get({ agent: args.agent, session: args.session })
       if (candidate) {
@@ -280,6 +378,8 @@ export async function handleLearn(
       reviewBy: args.reviewBy,
       confidence: args.confidence,
       sourceMemoryId: effectiveSource,
+      subjectEntityId,
+      objectEntityId,
     })
 
     const verb = !deduped
@@ -379,12 +479,44 @@ export async function handleAsk(
       projectId = services.context.project.id
     }
 
+    // PF3-01 — resolve the entity name to a canonical row first so the
+    // fact lookup can ride the relation join. Strict mode (no
+    // auto-create): the read path must not mint canonical rows just by
+    // looking up an unknown entity. Ambiguity surfaces as a warning;
+    // the substring-fallback query still runs underneath so the agent
+    // sees something useful even when the user's input maps to two
+    // distinct canonical entities (e.g. `User (auth context)` and
+    // `User (db schema)`).
+    let entityId: string | null = null
+    if (services.entities) {
+      const resolution = await services.entities
+        .resolveOrCreateEntity(args.entity, { autoCreate: false })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          warnings.push(`Entity lookup failed: ${message}`)
+          return null
+        })
+      if (resolution) {
+        if (resolution.ambiguous) {
+          const candidateLabels = resolution.candidates
+            .map((c) => `"${c.name}" (${c.id})`)
+            .join(", ")
+          warnings.push(
+            `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
+              `Disambiguate by passing one of: ${candidateLabels}.`,
+          )
+        } else if (resolution.entity) {
+          entityId = resolution.entity.id
+        }
+      }
+    }
+
     // Fetch facts and tasks in parallel — they're independent queries
     // and `lore-ask` is on the agent hot path. Failures on the tasks side
     // surface as a warning rather than collapsing the call so a transient
     // 5xx on the tasks query does not nuke the facts response.
     const [facts, taskListing] = await Promise.all([
-      services.facts.queryByEntity(args.entity, { projectId }),
+      services.facts.queryByEntity(args.entity, { projectId, entityId }),
       services.tasks
         .list({ projectId, entity: args.entity, limit: 50 })
         .catch((err) => {
@@ -635,9 +767,36 @@ export async function handleOpenLoops(
         ? args.limit
         : DEFAULT_OPEN_LOOPS_LIMIT
 
+    // PF3-01 — resolve `entity` to a canonical Entity ID so the
+    // server-side filter can OR a relation match alongside the
+    // substring branches. Strict (no auto-create) and rejection-safe;
+    // a failed resolve falls through to substring-only filtering with
+    // a warning. Mirrors the resilience contract `handleAsk` uses.
+    let entityId: string | undefined
+    if (args.entity && services.entities) {
+      const resolution = await services.entities
+        .resolveOrCreateEntity(args.entity, { autoCreate: false })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          warnings.push(`Entity lookup failed: ${message}`)
+          return null
+        })
+      if (resolution?.ambiguous) {
+        const labels = resolution.candidates
+          .map((c) => `"${c.name}" (${c.id})`)
+          .join(", ")
+        warnings.push(
+          `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring filter. Disambiguate by passing one of: ${labels}.`,
+        )
+      } else if (resolution?.entity) {
+        entityId = resolution.entity.id
+      }
+    }
+
     const { items: loops, hasMore: serviceClipped } = await services.facts.listTracking({
       projectId,
       entity: args.entity,
+      entityId,
     })
 
     if (serviceClipped) {

@@ -9,6 +9,7 @@ import {
   loadTopicAliasMerges,
   printAliasMergeResults,
   proposeSourceMemory,
+  runBuildEntitiesMigration,
   runFactEncodingFix,
   runMemoryEncodingFix,
   runTrackingToTasksMigration,
@@ -26,6 +27,8 @@ function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
     reviewBy: null,
     sourceMemoryId: null,
     confidence: "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
     ...overrides,
   }
 }
@@ -913,6 +916,8 @@ describe("runTrackingToTasksMigration", () => {
         reviewBy: "2026-04-15",
         sourceMemoryId: null,
         confidence: "certain",
+        subjectEntityId: null,
+        objectEntityId: null,
       },
     ]
     const services = fakeServices({ candidates })
@@ -946,6 +951,8 @@ describe("runTrackingToTasksMigration", () => {
         reviewBy: "2026-04-15",
         sourceMemoryId: "mem-1",
         confidence: "certain",
+        subjectEntityId: null,
+        objectEntityId: null,
       },
     ]
     const services = fakeServices({ candidates })
@@ -1020,5 +1027,65 @@ describe("runTrackingToTasksMigration", () => {
       (services as { tasks: { create: { mock: { calls: unknown[] } } } }).tasks
         .create.mock.calls
     ).toHaveLength(0)
+  })
+})
+
+describe("runBuildEntitiesMigration", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logs.push(args.map((a) => String(a)).join(" "))
+      })
+  })
+  afterEach(() => {
+    logSpy.mockRestore()
+  })
+
+  it("plan-only mode without an Entities DB refuses with directive", async () => {
+    const services = {
+      entities: null,
+      vault: {
+        ensureEntitiesDatabase: vi.fn(),
+        getClient: vi.fn(),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([]),
+      },
+    } as never
+
+    const result = await runBuildEntitiesMigration(services, { apply: false })
+    expect(result).toBeNull()
+    const joined = logs.join("\n")
+    expect(joined).toContain("Entities database does not exist")
+    expect(joined).toContain("--yes")
+    // Refused without writing — no DB-create or service call ran.
+    expect(
+      (services as { vault: { ensureEntitiesDatabase: { mock: { calls: unknown[] } } } })
+        .vault.ensureEntitiesDatabase.mock.calls,
+    ).toHaveLength(0)
+  })
+
+  it("emits 'No fact subjects/objects' when the graph is empty", async () => {
+    const services = {
+      entities: {
+        listAll: vi.fn().mockResolvedValue([]),
+        clearNameCache: vi.fn(),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([]),
+      },
+      vault: {
+        ensureEntitiesDatabase: vi.fn(),
+        getClient: vi.fn(),
+      },
+    } as never
+
+    await runBuildEntitiesMigration(services, { apply: false })
+    expect(logs.join("\n")).toContain("nothing to canonicalize")
   })
 })

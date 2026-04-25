@@ -67,6 +67,8 @@ function makeFact(
     reviewBy: null,
     sourceMemoryId: null,
     confidence: overrides.confidence ?? "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
     ...overrides,
   }
 }

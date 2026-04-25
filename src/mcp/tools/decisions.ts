@@ -191,7 +191,39 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
     )
 
     const affectsCreated: string[] = []
+    const affectsWarnings: string[] = []
     for (const entity of args.affects ?? []) {
+      // PF3-01 — resolve each `affects` entry through EntityService so
+      // the auto-created `decided_by` fact carries a canonical
+      // `SubjectEntity` relation. Strict per-entry try/catch matches
+      // the lore-fact resilience posture: a transient resolver blip
+      // must NOT sink the whole decision-create. On rejection we
+      // create the fact without the relation and surface a warning.
+      let subjectEntityId: string | undefined
+      if (services.entities) {
+        try {
+          const resolution = await services.entities.resolveOrCreateEntity(entity, {
+            autoCreate: true,
+            projectIds: created.projectIds,
+          })
+          if (resolution.ambiguous) {
+            const labels = resolution.candidates
+              .map((c) => `${c.name} (${c.id})`)
+              .join(", ")
+            affectsWarnings.push(
+              `Ambiguous \`affects\` entry "${entity}" — matched ${resolution.candidates.length} entities (${labels}). Decided_by fact written without SubjectEntity.`,
+            )
+          } else if (resolution.entity) {
+            subjectEntityId = resolution.entity.id
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          affectsWarnings.push(
+            `Entity resolution failed for \`affects\` entry "${entity}": ${message}. Decided_by fact written without SubjectEntity.`,
+          )
+        }
+      }
+
       await services.facts.create({
         subject: entity,
         predicate: "decided_by",
@@ -199,6 +231,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
         projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
         sourceMemoryId: created.id,
         confidence: created.confidence,
+        subjectEntityId,
       })
       affectsCreated.push(entity)
     }
@@ -257,8 +290,9 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
     if (decisionMatches.length > 0) {
       lines.push("", ...formatNearDuplicateDecisions(decisionMatches, created.id))
     }
-    if (resolved.warnings.length > 0) {
-      lines.push("", `Warnings: ${resolved.warnings.join("; ")}`)
+    const allWarnings = [...resolved.warnings, ...affectsWarnings]
+    if (allWarnings.length > 0) {
+      lines.push("", `Warnings: ${allWarnings.join("; ")}`)
     }
 
     return { content: [{ type: "text", text: lines.join("\n") }] }

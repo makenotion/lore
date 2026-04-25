@@ -21,6 +21,10 @@ export type {
   DecisionStatus,
   CreateDecisionInput,
   ListDecisionsOpts,
+  Entity,
+  EntityKind,
+  EntityResolution,
+  CreateEntityInput,
   Fact,
   CreateFactInput,
   FactPredicate,
@@ -52,6 +56,7 @@ export { TopicService } from "./core/topic.js"
 export { MemoryService } from "./core/memory.js"
 export { FactService } from "./core/fact.js"
 export { DecisionService } from "./core/decision.js"
+export { EntityService } from "./core/entity.js"
 export {
   resolveProject,
   isCatchAllProject,

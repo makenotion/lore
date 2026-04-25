@@ -47,6 +47,8 @@ function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
     reviewBy: null,
     sourceMemoryId: "decision-id",
     confidence: "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
     ...overrides,
   }
 }
@@ -872,6 +874,8 @@ describe("lore-open-loops", () => {
       reviewBy: null,
       sourceMemoryId: null,
       confidence: "certain",
+      subjectEntityId: null,
+      objectEntityId: null,
       ...overrides,
     }
   }
@@ -1149,6 +1153,142 @@ describe("lore-audit projectName resolution", () => {
     expect(text).toContain('Project "Typo" not found')
     expect(queryOverdueFacts).not.toHaveBeenCalled()
     expect(queryOverdueDecisions).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-learn — PF3-01 entity ambiguity surface", () => {
+  function makeServices(entitiesBehavior: {
+    subjectAmbiguous?: boolean
+    objectAmbiguous?: boolean
+    skipService?: boolean
+  } = {}) {
+    const ambiguousResolution = (input: string) => ({
+      entity: null,
+      ambiguous: true,
+      candidates: [
+        {
+          id: "ent-a",
+          name: `${input} (auth context)`,
+          aliases: [input],
+          kind: null,
+          description: "",
+        },
+        {
+          id: "ent-b",
+          name: `${input} (db schema)`,
+          aliases: [input],
+          kind: null,
+          description: "",
+        },
+      ],
+      created: false,
+    })
+    const uniqueResolution = (input: string) => ({
+      entity: {
+        id: `ent-unique-${input}`,
+        name: input,
+        aliases: [],
+        kind: null,
+        description: "",
+      },
+      ambiguous: false,
+      candidates: [],
+      created: false,
+    })
+
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        createWithDedup: vi.fn().mockImplementation(async (input) => ({
+          fact: makeFact("fact-created", {
+            subject: input.subject,
+            predicate: input.predicate,
+            object: input.object,
+            sourceMemoryId: input.sourceMemoryId ?? null,
+            subjectEntityId: input.subjectEntityId ?? null,
+            objectEntityId: input.objectEntityId ?? null,
+          }),
+          deduped: false,
+          enriched: [],
+        })),
+        queryByEntity: vi.fn(),
+        queryByObject: vi.fn(),
+      },
+      decisions: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn().mockReturnValue(undefined),
+      },
+      entities: entitiesBehavior.skipService
+        ? null
+        : {
+            resolveOrCreateEntity: vi.fn().mockImplementation(async (input: string) => {
+              if (input.toLowerCase().includes("user") && entitiesBehavior.subjectAmbiguous) {
+                return ambiguousResolution(input)
+              }
+              if (input.toLowerCase().includes("session") && entitiesBehavior.objectAmbiguous) {
+                return ambiguousResolution(input)
+              }
+              return uniqueResolution(input)
+            }),
+          },
+    }
+  }
+
+  it("writes the fact with a warning and omits SubjectEntity on ambiguous subject", async () => {
+    // Autosave fan-out scenario: an ambiguous "User" subject should
+    // not block the fact write. The substring fallback in
+    // queryByEntity still finds the row later.
+    const mockServer = createMockServer()
+    const services = makeServices({ subjectAmbiguous: true })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "User",
+      predicate: "has_a",
+      object: "session",
+      sourceMemoryId: "mem-1",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    const text = payload.content[0].text
+    expect(text).toContain("Ambiguous subject")
+    expect(text).toContain("ent-a")
+    expect(text).toContain("ent-b")
+    // Fact created without SubjectEntity binding — Object resolved fine.
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subjectEntityId: undefined,
+        objectEntityId: "ent-unique-session",
+      }),
+    )
+  })
+
+  it("legacy vault path (services.entities === null) skips resolver entirely", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({ skipService: true })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getHandler("lore-learn")
+
+    const result = await loreLearn({
+      subject: "Anything",
+      predicate: "uses",
+      object: "Else",
+      sourceMemoryId: "mem-1",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    // No entity ids on the create call — pre-PF3-01 fact.
+    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subjectEntityId: undefined,
+        objectEntityId: undefined,
+      }),
+    )
   })
 })
 

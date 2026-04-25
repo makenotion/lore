@@ -7,7 +7,7 @@
 
 import type { Client } from "@notionhq/client"
 import type { BlockObjectResponse } from "@notionhq/client"
-import type { Vault, VaultDatabases } from "../types.js"
+import type { DatabaseRef, Vault, VaultDatabases } from "../types.js"
 import {
   PROJECTS_DB_TITLE,
   PROJECTS_DB_ICON,
@@ -19,6 +19,9 @@ import {
   MEMORIES_DB_ICON,
   memoriesProperties,
   memoriesSelfRelationProperties,
+  ENTITIES_DB_TITLE,
+  ENTITIES_DB_ICON,
+  entitiesProperties,
   FACTS_DB_TITLE,
   FACTS_DB_ICON,
   factsProperties,
@@ -94,13 +97,33 @@ export async function createVaultDatabases(
     >[0]["properties"],
   })
 
-  // 4. Facts (depends on Projects + Memories)
+  // 4. Entities (depends on Projects + Memories) — PF3-01
+  const entitiesDb = await client.databases.create(
+    createDbArgs(
+      pageId,
+      ENTITIES_DB_TITLE,
+      ENTITIES_DB_ICON,
+      entitiesProperties(
+        dsId(projectsDb as unknown as Record<string, unknown>),
+        dsId(memoriesDb as unknown as Record<string, unknown>)
+      )
+    )
+  )
+
+  // 5. Facts (depends on Projects + Memories + Entities). The Facts DB
+  // gains `SubjectEntity` / `ObjectEntity` relation columns post-PF3-01;
+  // wiring them up at creation time means new vaults skip the
+  // `lore migrate --build-entities` schema-drift detour entirely.
   const factsDb = await client.databases.create(
     createDbArgs(
       pageId,
       FACTS_DB_TITLE,
       FACTS_DB_ICON,
-      factsProperties(dsId(projectsDb as unknown as Record<string, unknown>), dsId(memoriesDb as unknown as Record<string, unknown>))
+      factsProperties(
+        dsId(projectsDb as unknown as Record<string, unknown>),
+        dsId(memoriesDb as unknown as Record<string, unknown>),
+        dsId(entitiesDb as unknown as Record<string, unknown>)
+      )
     )
   )
 
@@ -119,8 +142,63 @@ export async function createVaultDatabases(
       projects: toRef(projectsDb as unknown as Record<string, unknown>),
       topics: toRef(topicsDb as unknown as Record<string, unknown>),
       memories: toRef(memoriesDb as unknown as Record<string, unknown>),
+      entities: toRef(entitiesDb as unknown as Record<string, unknown>),
       facts: toRef(factsDb as unknown as Record<string, unknown>),
     },
+  }
+}
+
+/**
+ * Create the Entities database (PF3-01) on an existing vault page that
+ * was set up before the database existed. Idempotent: returns the
+ * existing database when one is already present, only writing on a
+ * true cold start.
+ *
+ * Used by `lore migrate --build-entities` to upgrade legacy vaults in
+ * place. New vaults skip this entirely because `createVaultDatabases`
+ * already creates Entities as part of the standard init flow.
+ *
+ * Returns the `DatabaseRef` so the caller can stitch the new database
+ * into a refreshed `Vault` snapshot before invoking the rest of the
+ * migration.
+ */
+export async function ensureEntitiesDatabase(
+  client: Client,
+  vault: Vault
+): Promise<{ ref: DatabaseRef; created: boolean }> {
+  if (vault.databases.entities) {
+    return { ref: vault.databases.entities, created: false }
+  }
+
+  const dsId = (db: Record<string, unknown>): string => {
+    const ds = db["data_sources"] as Array<{ id: string }> | undefined
+    return ds?.[0]?.id ?? (db["id"] as string)
+  }
+
+  const entitiesDb = await client.databases.create({
+    parent: { type: "page_id" as const, page_id: vault.pageId },
+    title: [{ text: { content: ENTITIES_DB_TITLE } }],
+    icon: { emoji: ENTITIES_DB_ICON as "🪪" },
+    initial_data_source: {
+      properties: entitiesProperties(
+        vault.databases.projects.dataSourceId,
+        vault.databases.memories.dataSourceId
+      ) as Parameters<
+        Client["databases"]["create"]
+      >[0]["initial_data_source"] extends { properties?: infer P }
+        ? P
+        : never,
+    },
+  })
+
+  const dbRecord = entitiesDb as unknown as Record<string, unknown>
+  const id = dbRecord["id"] as string
+  return {
+    ref: {
+      databaseId: id,
+      dataSourceId: dsId(dbRecord),
+    },
+    created: true,
   }
 }
 
@@ -313,7 +391,14 @@ export async function migrateVaultSchema(
   options: { dryRun?: boolean } = {}
 ): Promise<MigrationDiff[]> {
   const db = vault.databases
-  const expectedByDb: Record<keyof VaultDatabases, AnyProperties> = {
+  // Entities DB is optional in `VaultDatabases`. When present, the Facts
+  // schema sees the entity DS id and grows the `SubjectEntity` /
+  // `ObjectEntity` relation columns. When absent, the Facts schema stays
+  // at its pre-PF3-01 shape — `migrateVaultSchema` won't surface the new
+  // columns as drift on a vault that hasn't run the build-entities
+  // migration yet.
+  const entitiesDsId = db.entities?.dataSourceId
+  const expectedByDb: Partial<Record<keyof VaultDatabases, AnyProperties>> = {
     projects: projectsProperties,
     topics: topicsProperties(db.projects.dataSourceId),
     memories: memoriesProperties(
@@ -321,14 +406,27 @@ export async function migrateVaultSchema(
       db.topics.dataSourceId,
       db.memories.dataSourceId
     ),
-    facts: factsProperties(db.projects.dataSourceId, db.memories.dataSourceId),
+    facts: factsProperties(
+      db.projects.dataSourceId,
+      db.memories.dataSourceId,
+      entitiesDsId
+    ),
+  }
+  if (db.entities) {
+    expectedByDb.entities = entitiesProperties(
+      db.projects.dataSourceId,
+      db.memories.dataSourceId
+    )
   }
 
   const diffs: MigrationDiff[] = []
 
   for (const key of Object.keys(expectedByDb) as Array<keyof VaultDatabases>) {
     const expected = expectedByDb[key]
-    const dsId = db[key].dataSourceId
+    if (!expected) continue
+    const ref = db[key]
+    if (!ref) continue
+    const dsId = ref.dataSourceId
 
     const live = await client.dataSources.retrieve({ data_source_id: dsId })
     const liveProps = (live as { properties: Record<string, unknown> }).properties
@@ -410,11 +508,23 @@ export async function verifyVaultDatabases(
     page_size: 100,
   })
 
-  const expectedTitles: Record<keyof VaultDatabases, string> = {
+  // Required-vs-optional split. Entities (PF3-01) is optional so vaults
+  // created before the migration ran still load — `lore migrate
+  // --build-entities` is the path that lifts a legacy vault into a
+  // post-PF3-01 schema. The four core databases (Projects / Topics /
+  // Memories / Facts) remain mandatory; their absence is a setup error
+  // worth blocking on.
+  const requiredTitles: Record<
+    Exclude<keyof VaultDatabases, "entities">,
+    string
+  > = {
     projects: PROJECTS_DB_TITLE,
     topics: TOPICS_DB_TITLE,
     memories: MEMORIES_DB_TITLE,
     facts: FACTS_DB_TITLE,
+  }
+  const optionalTitles: Record<"entities", string> = {
+    entities: ENTITIES_DB_TITLE,
   }
 
   const dbBlockIds: Partial<Record<keyof VaultDatabases, string>> = {}
@@ -425,14 +535,17 @@ export async function verifyVaultDatabases(
     if (fullBlock.type !== "child_database") continue
 
     const title = fullBlock.child_database.title
-    for (const [key, expectedTitle] of Object.entries(expectedTitles)) {
+    for (const [key, expectedTitle] of Object.entries({
+      ...requiredTitles,
+      ...optionalTitles,
+    })) {
       if (title === expectedTitle) {
         dbBlockIds[key as keyof VaultDatabases] = fullBlock.id
       }
     }
   }
 
-  const missing = Object.entries(expectedTitles)
+  const missing = Object.entries(requiredTitles)
     .filter(([key]) => !dbBlockIds[key as keyof VaultDatabases])
     .map(([, title]) => title)
 

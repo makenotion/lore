@@ -18,6 +18,8 @@ function makeFact(overrides: Partial<Fact> & { predicate: FactPredicate }): Fact
     reviewBy: "2026-04-15",
     sourceMemoryId: "mem-source",
     confidence: "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
   }
   return { ...base, ...overrides }
 }

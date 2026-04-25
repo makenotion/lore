@@ -1,5 +1,33 @@
 import { settleAll } from "../core/settle.js"
+import { computeSubjectKey } from "../notion/normalize.js"
 import type { CreateFactInput, Decision, Fact, FactPredicate } from "../types.js"
+
+/**
+ * Entity-aware identity key for a fact's Subject side. Used by the
+ * decision-graph BFS / retarget paths to dedup links that refer to the
+ * same canonical entity even when the underlying facts carry different
+ * raw Subject strings.
+ *
+ * - When `subjectEntityId` is populated (post-PF3-01 row that's been
+ *   re-pointed by `--build-entities` or written through
+ *   `lore-fact action='create'` after the resolver), the relation id
+ *   is the canonical key.
+ * - When the relation column is empty (pre-migration row), fall back
+ *   to `computeSubjectKey(subject)` — the same case/whitespace fold
+ *   `SubjectKey` uses. Two facts with cosmetic Subject variants still
+ *   collapse to one key so the existing dedup contract holds; two
+ *   facts with structurally different Subjects still produce different
+ *   keys.
+ *
+ * Caught by review on PR #88: without this, two facts about the same
+ * entity but with cosmetically different Subject strings produced
+ * duplicate `decided_by` rows in `syncDecisionReachability` and
+ * duplicate canonical links in `resolveCanonicalDecisionLinks`.
+ */
+function factSubjectKey(fact: Fact): string {
+  if (fact.subjectEntityId) return `entity:${fact.subjectEntityId}`
+  return `subject:${computeSubjectKey(fact.subject)}`
+}
 
 type QueryFactsOpts = {
   projectId?: string
@@ -268,7 +296,11 @@ export async function resolveCanonicalDecisionLinks(
 
     const fact = facts[i]
     for (const decision of resolution.current) {
-      const key = `${fact.subject}\u0000${decision.id}`
+      // Dedup by canonical entity (post-PF3-01) with case-folded
+      // Subject fallback for un-migrated rows. Pre-PF3-01 the key was
+      // raw `fact.subject`, which double-counted "MemoryService" and
+      // "memoryservice" as distinct links.
+      const key = `${factSubjectKey(fact)}\u0000${decision.id}`
       if (seen.has(key)) continue
       seen.add(key)
       links.push({ fact, decision })
@@ -303,7 +335,13 @@ export async function syncDecisionReachability(
     }),
   ])
 
-  const existingSubjects = new Set(existingNewFacts.map((fact) => fact.subject))
+  // Use entity-aware key so two existing decided_by facts referencing
+  // the same canonical entity (one with a populated SubjectEntity, one
+  // without) collapse to one slot. Pre-PF3-01 the set was keyed on raw
+  // `fact.subject`, which would create a duplicate retarget when the
+  // new and old facts had cosmetically different subject strings for
+  // the same entity. PR #88 review.
+  const existingKeys = new Set(existingNewFacts.map((fact) => factSubjectKey(fact)))
   let invalidated = 0
   let created = 0
 
@@ -311,7 +349,8 @@ export async function syncDecisionReachability(
     await services.facts.invalidate(fact.id)
     invalidated++
 
-    if (existingSubjects.has(fact.subject)) continue
+    const factKey = factSubjectKey(fact)
+    if (existingKeys.has(factKey)) continue
 
     await services.facts.create({
       subject: fact.subject,
@@ -325,9 +364,15 @@ export async function syncDecisionReachability(
             : undefined,
       sourceMemoryId: newDecision.id,
       confidence: newDecision.confidence,
+      // Carry the canonical entity relation forward so the retargeted
+      // row stays exact-recall under `queryByEntityId`. `null`
+      // (un-migrated source fact) flows through as `undefined` and the
+      // fact lands as a pre-PF3-01 row that the next `--build-entities`
+      // pass can re-point.
+      subjectEntityId: fact.subjectEntityId ?? undefined,
     })
 
-    existingSubjects.add(fact.subject)
+    existingKeys.add(factKey)
     created++
   }
 

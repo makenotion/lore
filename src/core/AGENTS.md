@@ -20,6 +20,8 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue. P3-02 successor to tracking-predicate facts. |
 | `task-migration.ts` | `migrateTrackingFactsToTasks()` | One-shot conversion from tracking facts → task memories. Plan-then-execute via `lore migrate --migrate-tracking-to-tasks --yes`. |
+| `entity.ts`   | `EntityService`    | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases. Optional service — `null` on legacy vaults that pre-date the Entities DB. `merge` was scoped out of PF3-01 because it requires a `FactService.repointEntity` helper that hasn't landed yet. |
+| `entity-migration.ts` | `buildEntities()` | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`. |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
 | `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + open-loop-related memories for wake-up surfaces (MCP tool + shell hook) |
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
@@ -330,6 +332,85 @@ side uses `AND (Predicate does_not_equal ...)` per tracking predicate). This
 replaced the earlier `queryBySubject("")` full-scan in `loadWakeUpData`,
 which paginated the entire project fact table on every hook fire just to
 populate two bounded sections.
+
+## Entity Resolution and the SubjectKey / SubjectEntity coexistence (PF3-01)
+
+The Facts DB carries two parallel canonicalization columns by design:
+
+| Column | Type | Role |
+|---|---|---|
+| `SubjectKey` | rich_text | Lowercased + NFC + whitespace-collapsed + trailing-punct-stripped form of `Subject`. Populated by `FactService.create` and the `--dedup-keys` migration. Backs the substring-fallback path in `queryBySubject` / `listTracking` for vaults that haven't run `--build-entities`. |
+| `SubjectEntity` / `ObjectEntity` | relation → Entities | Canonical entity row IDs. Populated by `lore-fact action='create'` after `EntityService.resolveOrCreateEntity` and by the `--build-entities` migration. Backs `queryByEntityId` for vaults that have. |
+
+Why both columns coexist for one release cycle:
+
+1. **Transition-window recall.** `queryByEntity` runs both paths in
+   parallel when `entityId` resolves: the relation hit + the substring
+   hit on rows whose entity relations are still empty (i.e. rows
+   `--build-entities` hasn't re-pointed yet). Dropping `SubjectKey`
+   immediately would silently lose every un-backfilled row from
+   `lore-ask` results.
+2. **Safety net for PF3-01 bugs.** If the entity-resolution path
+   surfaces a regression in production, operators can flip back to the
+   substring path by archiving the Entities DB. The fallback only
+   works while `SubjectKey` is still populated on every fact.
+3. **Spec carve-out.** The PF3-01 spec explicitly says "Keep the
+   column for one release cycle as a safety net, then drop in a
+   follow-on cleanup." A separate issue tracks `SubjectKey` removal.
+
+Read paths must therefore handle three vault states: pre-PF3-01 (no
+Entities DB, `SubjectKey` only), mid-migration (Entities DB exists but
+not every fact has been re-pointed, both paths needed), and
+post-migration (every live fact has relations, but the safety net
+hasn't been removed yet). `queryByEntity`'s union semantics cover all
+three; `pageToFact` populates `subjectEntityId`/`objectEntityId` from
+the relation column when present and falls through to `null` otherwise.
+
+### Measuring whether `--build-entities` collapsed the orphan graph
+
+The PF3-01 spec's flagship acceptance criterion is "post-migration,
+the orphan-rate metric (`subjects appearing in exactly 1 fact`) drops
+from 79.6% to <50% on the Mail vault." The migration ships with
+case-folding-only canonical clustering — `computeSubjectKey` collapses
+case/whitespace/trailing-punct variants but does NOT recognize that
+`MemoryService.create` is a richer-handle variant of `MemoryService`
+or that `PR #25705 (SENTRY-MAIL-IOS-2E3)` is metadata-tagged onto the
+same `PR #25705` entity. The next contributor evaluating whether to
+ship a richer canonical clusterer needs to be able to compute this
+metric without re-deriving the methodology.
+
+**How to compute the metric** post-migration:
+
+1. Snapshot every live fact:
+   `dataSources.query` against the Facts DS, filter `Valid Until is_empty`,
+   paginate to exhaustion. Project-scoped or vault-wide depending on
+   what the spec criterion measures (Mail vault is project-scoped).
+2. Group by canonical entity. The post-migration row's
+   `SubjectEntity` relation IS the canonical key — empty relations
+   mean the row hasn't been re-pointed (either pre-migration or a
+   transient migration miss). For the metric, **count rows by
+   `SubjectEntity[0]?.id ?? computeSubjectKey(Subject)`** so
+   un-migrated rows still cluster by their case-folded form.
+3. Compute `1 - groups_with_count >= 2 / total_groups`. The
+   numerator is groups with at least one peer; the denominator is
+   total distinct entities/keys. Pre-PF3-01 baseline on the Mail vault
+   was 79.6% (560 facts → ~445 distinct subjects → ~89 had a peer).
+
+The measurement script lives in spirit in
+`src/cli/commands/migrate.ts:runBuildEntitiesMigration` — the
+`factCount` field on each `EntityGroupPlan` is the raw input. A
+follow-up that wires the metric into `lore status` (or a dedicated
+`lore migrate --build-entities --report-orphan-rate`) would close the
+measurability gap; until then operators run the numbers manually
+against the `groupCount` / `factsRepointed` output of a `--dry-run`
+pass.
+
+If the metric stays above 50% on a real vault after `--yes`, the case-
+folding pass alone wasn't enough — the richer-vs-bare clusterer becomes
+load-bearing and the spec's deferred follow-up needs to land. If the
+metric drops below 50%, case-folding was sufficient and the deferred
+clusterer can be skipped or scoped down to operator-curated alias
+merges via `EntityService.addAliases`.
 
 ## Fact Write-Side Dedup
 

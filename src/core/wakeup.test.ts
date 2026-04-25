@@ -67,6 +67,8 @@ function buildFact(overrides: Partial<Fact>): Fact {
     reviewBy: null,
     sourceMemoryId: null,
     confidence: "certain",
+    subjectEntityId: null,
+    objectEntityId: null,
     ...overrides,
   }
 }

@@ -98,6 +98,19 @@ export interface VaultDatabases {
   projects: DatabaseRef
   topics: DatabaseRef
   memories: DatabaseRef
+  /**
+   * Canonical-entity registry (PF3-01). Sits between Memories and Facts in
+   * the dependency graph because Facts now relate to Entity rows via
+   * `SubjectEntity` / `ObjectEntity` while Entities themselves only
+   * reference Projects + Memories.
+   *
+   * Optional in the type so a vault that pre-dates PF3-01 still loads
+   * without a hard error — `verifyVaultDatabases` populates the field
+   * only when the database exists. Code paths that read `entities` must
+   * guard against `undefined` and fall back to the SubjectKey/Subject
+   * substring path.
+   */
+  entities?: DatabaseRef
   facts: DatabaseRef
 }
 
@@ -523,6 +536,78 @@ export interface ListTasksOpts {
 }
 
 // ---------------------------------------------------------------------------
+// Entity (Canonical entity registry — PF3-01)
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminator for Entity rows. Open enum on purpose — agents will hit
+ * cases the enum doesn't yet cover (a new domain that wants its own
+ * label) and the right move is to add the value, not force it into a
+ * neighbour. Sized to the spec's call-out so the migration path lands on
+ * a stable starting set.
+ */
+export type EntityKind =
+  | "class"
+  | "function"
+  | "file"
+  | "workflow"
+  | "pr"
+  | "task-id"
+  | "person"
+  | "system"
+
+export const ENTITY_KINDS: EntityKind[] = [
+  "class",
+  "function",
+  "file",
+  "workflow",
+  "pr",
+  "task-id",
+  "person",
+  "system",
+]
+
+export interface Entity {
+  id: string
+  /** Canonical display name. Title cell on the Entities DB. */
+  name: string
+  /**
+   * Comma-separated alias forms that resolve to this entity. Stored as
+   * one rich_text cell rather than a multi_select because the alias
+   * values are free-form (case-variant subjects, richer-handle suffixes,
+   * legacy spellings) and a closed select option set would force every
+   * new alias through a schema migration.
+   */
+  aliases: string[]
+  kind: EntityKind | null
+  description: string
+}
+
+export interface CreateEntityInput {
+  name: string
+  aliases?: string[]
+  kind?: EntityKind
+  description?: string
+}
+
+/**
+ * Result of `EntityService.resolveOrCreateEntity`. A unique match returns
+ * `{ entity, ambiguous: false }`; multiple matches return
+ * `{ entity: null, ambiguous: true, candidates }` so the caller can
+ * surface the candidates back to the agent without auto-picking.
+ *
+ * `created` is true only when the resolver minted a new row (caller asked
+ * for auto-create AND no existing match was found). On strict mode no
+ * match returns `{ entity: null, ambiguous: false, candidates: [] }`.
+ */
+export interface EntityResolution {
+  entity: Entity | null
+  ambiguous: boolean
+  candidates: Entity[]
+  created: boolean
+}
+
+// ---------------------------------------------------------------------------
 // Fact (Knowledge Graph)
 // ---------------------------------------------------------------------------
 
@@ -566,6 +651,22 @@ export interface Fact {
   reviewBy: string | null
   sourceMemoryId: string | null
   confidence: FactConfidence
+  /**
+   * Entity ID the fact's Subject relates to. Populated post-PF3-01 by
+   * the build-entities migration and by `lore-fact action='create'`
+   * after the resolver runs. `null` on un-migrated rows; queries that
+   * filter by entity must accept that and fall back to the SubjectKey /
+   * Subject substring path.
+   *
+   * Optional on the type — external consumers deserializing pre-PF3-01
+   * `Fact` JSON would otherwise see "missing field" validation errors.
+   * Internal `pageToFact` always populates the field (`null` when the
+   * column is absent), so domain-internal callers can rely on it being
+   * present without an explicit guard.
+   */
+  subjectEntityId?: string | null
+  /** Mirror of `subjectEntityId` for the Object side of the triple. */
+  objectEntityId?: string | null
 }
 
 export interface CreateFactInput {
@@ -577,6 +678,16 @@ export interface CreateFactInput {
   reviewBy?: string
   sourceMemoryId?: string
   confidence?: FactConfidence
+  /**
+   * Pre-resolved entity ids. When provided, the create path skips its
+   * resolver pass and writes the relation directly. When omitted, the
+   * caller is expected to resolve via `EntityService.resolveOrCreateEntity`
+   * before reaching the service — leaving these `undefined` produces a
+   * fact whose Subject/Object text are the only handles, just like
+   * pre-PF3-01 rows. Queries fall back to the SubjectKey path for those.
+   */
+  subjectEntityId?: string
+  objectEntityId?: string
 }
 
 // ---------------------------------------------------------------------------

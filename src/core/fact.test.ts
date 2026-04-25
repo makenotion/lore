@@ -365,6 +365,55 @@ describe("FactService.listTracking", () => {
     })
   })
 
+  it("OR-s SubjectEntity/ObjectEntity relation clauses when entityId is set (PF3-01)", async () => {
+    // Post-PF3-01 callers (handleOpenLoops resolving via EntityService)
+    // pass an entityId alongside the substring entity. The server-side
+    // filter must include both relation clauses AND the substring
+    // clauses so post-migration rows surface by exact relation while
+    // un-migrated rows still surface via substring.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.listTracking({
+      projectId: "p1",
+      entity: "PR #25751",
+      entityId: "ent-pr-25751",
+    })
+
+    // Find the entity OR group — distinguished from the predicate OR
+    // group by the presence of Subject/Object/SubjectEntity clauses.
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    const entityGroup = filter.and.find((c) => {
+      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+      if (!Array.isArray(maybeOr)) return false
+      const props = maybeOr.map((clause) => (clause as { property?: string }).property)
+      return props.includes("Subject") || props.includes("SubjectEntity")
+    }) as { or: Array<Record<string, unknown>> }
+    expect(entityGroup).toBeDefined()
+
+    const subjectEntity = entityGroup.or.find(
+      (c) => (c as { property?: string }).property === "SubjectEntity",
+    ) as { property: string; relation: { contains: string } }
+    const objectEntity = entityGroup.or.find(
+      (c) => (c as { property?: string }).property === "ObjectEntity",
+    ) as { property: string; relation: { contains: string } }
+    expect(subjectEntity).toMatchObject({
+      property: "SubjectEntity",
+      relation: { contains: "ent-pr-25751" },
+    })
+    expect(objectEntity).toMatchObject({
+      property: "ObjectEntity",
+      relation: { contains: "ent-pr-25751" },
+    })
+
+    // The substring branches still ride along — un-migrated rows
+    // remain reachable.
+    const subjectSubstring = entityGroup.or.find(
+      (c) => (c as { property?: string }).property === "Subject",
+    )
+    expect(subjectSubstring).toBeDefined()
+  })
+
   it("sorts by Review By ascending, then created_time descending", async () => {
     // Pinned: the service-side sort biases early pages toward high-signal
     // rows (soonest review first) so capped callers see the important

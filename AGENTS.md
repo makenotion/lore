@@ -16,7 +16,9 @@
 ## Repo-Wide Reference
 
 Notion-backed memory system. Stores knowledge as Notion pages organized across
-four databases and exposes three interfaces: an MCP server, a CLI, and shell hooks.
+four core databases (Projects, Topics, Memories, Facts) plus an optional fifth
+database (Entities, PF3-01) for canonical-handle resolution. Exposes three
+interfaces: an MCP server, a CLI, and shell hooks.
 
 ### Architecture
 
@@ -35,9 +37,17 @@ four databases and exposes three interfaces: an MCP server, a CLI, and shell hoo
                  (domain services)   (SDK + extractors)
 ```
 
-**Data model**: A Vault is a Notion page containing four child databases linked by
+**Data model**: A Vault is a Notion page containing four core child databases
+plus an optional fifth database for canonical-handle resolution, all linked by
 relations. Creation order matters because of foreign keys:
-Projects --> Topics --> Memories --> Facts.
+Projects --> Topics --> Memories --> Entities --> Facts.
+
+The Entities database (PF3-01) is opt-in on legacy vaults — `verifyVaultDatabases`
+populates `vault.databases.entities` only when the database exists, and
+`services.entities` is `null` until `lore migrate --build-entities` runs. Code
+paths that read entity ids from facts MUST handle both shapes (relation
+populated post-migration, empty pre-migration) and fall back to the SubjectKey
+substring path on un-backfilled rows.
 
 ### Quick Start Commands
 

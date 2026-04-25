@@ -16,6 +16,7 @@ import { MemoryService } from "./core/memory.js"
 import { FactService } from "./core/fact.js"
 import { DecisionService } from "./core/decision.js"
 import { TaskService } from "./core/task.js"
+import { EntityService } from "./core/entity.js"
 import { resolveProject } from "./core/context.js"
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
 import type { LoreConfig, ResolvedContext } from "./types.js"
@@ -28,6 +29,14 @@ export interface LoreServices {
   facts: FactService
   decisions: DecisionService
   tasks: TaskService
+  /**
+   * Canonical-entity registry (PF3-01). `null` on vaults that pre-date
+   * the migration — the Entities DB doesn't exist yet, so the service
+   * can't be wired up. Code paths that read `services.entities` must
+   * guard against null and fall back to substring queries on the
+   * Subject/Object text.
+   */
+  entities: EntityService | null
   context: ResolvedContext
   config: LoreConfig
   configRoot: string
@@ -67,6 +76,11 @@ export async function initServicesFromConfig(
   // Tasks (P3-02) are likewise Memories-DB backed via the `Kind = task`
   // discriminator. They supersede tracking-predicate facts.
   const tasks = new TaskService(client, db.memories)
+  // PF3-01 — Entities DB is optional on legacy vaults. Wire up the
+  // service only when the database exists; downstream code paths
+  // already null-check `services.entities` and fall back to the
+  // SubjectKey/Subject substring path.
+  const entities = db.entities ? new EntityService(client, db.entities) : null
 
   const resolution = await resolveProject(cwd, configRoot, config, projects)
 
@@ -78,6 +92,7 @@ export async function initServicesFromConfig(
     facts,
     decisions,
     tasks,
+    entities,
     context: {
       vault: vault.get(),
       project: resolution.project,
@@ -115,4 +130,5 @@ export function clearServiceCaches(services: LoreServices): void {
   services.topics.clearNameCache()
   services.memories.clearTitleCache()
   services.decisions.clearCache()
+  services.entities?.clearNameCache()
 }
