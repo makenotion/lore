@@ -84,6 +84,7 @@ type SearchCall = {
   projectId?: string
   limit?: number
   includeContent?: boolean
+  mode?: "contains" | "semantic" | "hybrid"
 }
 
 type QueryCall = { subject: string; opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number } }
@@ -762,6 +763,31 @@ describe("loadWakeUpData", () => {
 
     const relatedCall = services.memoriesSearchCalls[0]
     expect(relatedCall?.includeContent).toBe(false)
+  })
+
+  it("requests semantic mode for the related-memory search (P3-04)", async () => {
+    // Phrase-shaped fact subjects don't substring-match titles, so the
+    // contains leg of hybrid would mostly miss and force the same semantic
+    // round-trip after a wasted contains pass. Wake-up explicitly opts
+    // into `mode: "semantic"` to skip that wasted round-trip and lock in
+    // the relevance-ranked behavior the surrounding logic depends on.
+    const openLoop = buildFact({
+      id: "f-loop",
+      predicate: "needs_action",
+      subject: "Router migration",
+      object: "OIDC",
+    })
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [openLoop],
+      relatedMemories: [],
+    })
+
+    await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    const relatedCall = services.memoriesSearchCalls[0]
+    expect(relatedCall?.mode).toBe("semantic")
   })
 })
 

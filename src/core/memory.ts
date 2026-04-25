@@ -21,6 +21,7 @@ import type {
   CreateMemoryInput,
   UpdateMemoryInput,
   SearchMemoriesInput,
+  SearchMode,
   MemorySource,
   MemoryKind,
   MemoryStatus,
@@ -53,6 +54,17 @@ import {
  *  governance. Titles and `Kind=decision` pages share this pool. */
 const TITLE_CACHE_MAX = 500
 const TITLE_CACHE_TTL_MS = 60_000
+
+/**
+ * Minimum contains-mode hit count that satisfies a hybrid query without
+ * firing the workspace-wide semantic fallback. Three is chosen empirically
+ * to match the P3-04 spec's "Option A returns < 3 hits" threshold — small
+ * enough that a niche query with one or two title matches still benefits
+ * from semantic body relevance, large enough that the common case (a
+ * caller searching a specific PR number, file name, or function) skips
+ * the second Notion round-trip.
+ */
+export const HYBRID_FALLBACK_THRESHOLD = 3
 
 /**
  * Every plain-text field that flows through the agent boundary and lands
@@ -644,19 +656,166 @@ export class MemoryService {
   }
 
   /**
-   * Semantic search for memories using Notion's search API.
+   * Search memories. Three execution modes (see `SearchMode` in `types.ts`):
    *
-   * Content stored in Notion is automatically embedded and indexed by
-   * Notion's vector search pipeline. This search leverages that index.
+   * - `"contains"` — DS-scoped `dataSources.query` with Title/Keywords
+   *   `contains` filters and server-side property filters
+   *   (`projectId` / `topicId` / `tags` / `kind` / `status`). No workspace
+   *   leakage, no vector ranking — best for substring/exact-phrase queries.
+   * - `"semantic"` — Workspace-wide `client.search`, ranked by Notion's
+   *   embedding index over titles AND bodies. Property filters degrade to
+   *   client-side post-filters since `client.search` lacks property-filter
+   *   support. Best for phrase-shaped queries that need body relevance.
+   * - `"hybrid"` (default) — fire contains and semantic in parallel; if
+   *   contains saturates (`>= HYBRID_FALLBACK_THRESHOLD` hits), use the
+   *   contains rows alone and discard the parallel semantic result.
+   *   Otherwise concatenate the unique semantic rows after the contains
+   *   rows. Speculative parallelism keeps wall-clock at one round-trip
+   *   (≈ `client.search` latency) regardless of which leg saturates —
+   *   the cheap-path waste is one discarded Notion call, governed by the
+   *   shared rate limiter.
    *
-   * Notion's `search` endpoint returns results ranked by relevance when no
-   * `sort` parameter is passed. Passing `sort` switches to recency ordering
-   * and demotes the query to a lexical filter — which defeats the point.
-   * We pay for a larger `page_size` instead so the client-side filter to
-   * the Memories database has enough headroom when the workspace contains
-   * other pages that happen to match the query tokens.
+   * **Materialization happens exactly once** — the per-mode helpers
+   * return raw `PageObjectResponse[]` and `materializeMemories` runs at
+   * the top level on the merged-and-capped list. Without this, the
+   * hybrid fallback could fetch markdown for `containsHits + semanticHits`
+   * candidates (potentially 100+) when only `limit` (default 10) will
+   * be returned.
+   *
+   * **Kill switch.** `LORE_FORCE_SEMANTIC_SEARCH=1` overrides the
+   * caller's mode and forces every search through the legacy
+   * workspace-wide path. Use as a rollback escape hatch if the contains
+   * path silently under-recalls in a vault that hasn't run
+   * `lore migrate --fix-memory-encoding` yet (encoded titles miss
+   * substring matches against post-decode queries) — see P2-10.
    */
   async search(input: SearchMemoriesInput): Promise<Memory[]> {
+    const requested: SearchMode = input.mode ?? "hybrid"
+    const mode: SearchMode =
+      process.env["LORE_FORCE_SEMANTIC_SEARCH"] === "1" ? "semantic" : requested
+    const limit = input.limit ?? 10
+
+    let pages: PageObjectResponse[]
+    if (mode === "contains") {
+      pages = await this.searchByContainsPages(input)
+    } else if (mode === "semantic") {
+      pages = await this.searchBySemanticPages(input)
+    } else {
+      pages = await this.searchByHybridPages(input, limit)
+    }
+
+    return this.materializeMemories(pages.slice(0, limit), input.includeContent)
+  }
+
+  /**
+   * DS-scoped query path. Runs against the Memories data source only — no
+   * workspace-wide leakage. Filters compose as a single `and`: project
+   * inheritance (project relation contains projectId OR is_empty) plus topic,
+   * tags, kind, status, and finally a `(Title contains query) OR
+   * (Keywords contains query)` clause.
+   *
+   * Returns raw `PageObjectResponse[]` so the caller can dedupe with other
+   * paths' output before materializing markdown bodies.
+   *
+   * **Body matches are not searched** — Notion's `dataSources.query` filter
+   * surface only exposes property predicates, not page-body text. Callers
+   * that need body relevance should use `"semantic"` or rely on the
+   * `"hybrid"` fallback.
+   */
+  private async searchByContainsPages(
+    input: SearchMemoriesInput,
+  ): Promise<PageObjectResponse[]> {
+    const limit = Math.min(input.limit ?? 10, 100)
+    const filters: Array<Record<string, unknown>> = []
+
+    if (input.projectId) {
+      filters.push(projectOrUnscopedFilter(input.projectId))
+    }
+    if (input.topicId) {
+      filters.push({ property: "Topic", relation: { contains: input.topicId } })
+    }
+    if (input.tags?.length) {
+      // Mirrors the OR semantics of `MemoryService.list`: any-tag-matches.
+      // Tightening to AND would silently under-shoot the candidate pool for
+      // multi-tag queries.
+      filters.push(
+        input.tags.length === 1
+          ? { property: "Tags", multi_select: { contains: input.tags[0] } }
+          : {
+              or: input.tags.map((t) => ({
+                property: "Tags",
+                multi_select: { contains: t },
+              })),
+            },
+      )
+    }
+    if (input.kind) {
+      filters.push({ property: "Kind", select: { equals: input.kind } })
+    }
+    if (input.status) {
+      filters.push({ property: "Status", select: { equals: input.status } })
+    }
+
+    // Empty-string query degenerates to "match every page in the data source"
+    // because `contains: ""` is satisfied by every value. Skip the text
+    // clause entirely so the caller gets a recency-ordered listing of
+    // whatever the surrounding property filters select — the same result
+    // semantic search would give for an empty query, but DS-scoped.
+    const trimmed = input.query.trim()
+    if (trimmed.length > 0) {
+      filters.push({
+        or: [
+          { property: "Title", title: { contains: trimmed } },
+          { property: "Keywords", rich_text: { contains: trimmed } },
+        ],
+      })
+    }
+
+    // No filters AND empty query → `filter: undefined` returns every row in
+    // the DS sorted by recency, capped at `limit`. Intentional, not a
+    // degenerate-input bug: callers passing only `mode: "contains"` with
+    // no scope and no query get the equivalent of `lore-recall` minus
+    // cursor pagination. A future reader: do not add a guard here.
+    const filter =
+      filters.length > 1
+        ? { and: filters }
+        : filters.length === 1
+          ? filters[0]
+          : undefined
+
+    const response = await this.client.dataSources.query({
+      data_source_id: this.db.dataSourceId,
+      filter: filter as QueryDataSourceParameters["filter"],
+      // No relevance ranking is available on `dataSources.query`; sort by
+      // recency so the most recently touched matches surface first.
+      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+      page_size: limit,
+    })
+
+    return response.results.filter(isFullPage) as PageObjectResponse[]
+  }
+
+  /**
+   * Workspace-wide semantic search via `client.search`. Notion's `search`
+   * endpoint returns results ranked by relevance when no `sort` parameter
+   * is passed. Passing `sort` switches to recency ordering and demotes the
+   * query to a lexical filter — which defeats the point. We pay for a
+   * larger `page_size` instead so the client-side filter to the Memories
+   * database has enough headroom when the workspace contains other pages
+   * that happen to match the query tokens.
+   *
+   * Property filters (`kind` / `status` / `tags` / `topicId`) apply as
+   * client-side post-filters only — `client.search` does not accept them.
+   * `projectId` post-filters with the same scope-inheritance semantics as
+   * the contains path.
+   *
+   * Returns raw `PageObjectResponse[]`. Markdown bodies are *not* fetched
+   * here — `search()` runs `materializeMemories` once on the final
+   * merged-and-capped list.
+   */
+  private async searchBySemanticPages(
+    input: SearchMemoriesInput,
+  ): Promise<PageObjectResponse[]> {
     const response = await this.client.search({
       query: input.query,
       filter: { property: "object", value: "page" },
@@ -680,7 +839,8 @@ export class MemoryService {
       return false
     })
 
-    // Apply additional filters (project, topic, tags)
+    // Apply additional filters (project, topic, tags, kind, status). The
+    // search API has no property-filter support, so these are post-filters.
     let filtered = memoryPages
     if (input.projectId) {
       filtered = filtered.filter((page) => {
@@ -700,21 +860,95 @@ export class MemoryService {
         return input.tags!.some((t) => pageTags.includes(t))
       })
     }
-
-    // Cap at the caller's requested limit before paying the per-page markdown
-    // round-trip. `client.search()` ignores our limit and returns up to
-    // `page_size`, so we trim here.
-    const capped = filtered.slice(0, input.limit ?? 10)
-
-    if (input.includeContent === false) {
-      return capped.map((page) => this.pageToMemory(page, ""))
+    if (input.kind) {
+      filtered = filtered.filter(
+        (page) => extractSelect(page.properties["Kind"], "note") === input.kind,
+      )
+    }
+    if (input.status) {
+      filtered = filtered.filter(
+        (page) =>
+          extractSelect(page.properties["Status"], "informational") === input.status,
+      )
     }
 
+    // Trim before returning so the caller only sees the top-`limit` rows
+    // semantic ranked. The final `slice(0, limit)` in `search()` is
+    // belt-and-braces; this trim keeps the merge in `searchByHybridPages`
+    // from carrying a 100-row tail into the dedupe loop.
+    return filtered.slice(0, input.limit ?? 10)
+  }
+
+  /**
+   * Hybrid path: speculative parallelism. Fires the contains and semantic
+   * queries concurrently via `Promise.all` so the worst-case wall-clock
+   * stays at one round-trip (≈ `client.search` latency) regardless of which
+   * leg saturates. The decision to use the semantic result or discard it
+   * happens *after* both queries return.
+   *
+   * - **Saturating case** (`containsHits >= HYBRID_FALLBACK_THRESHOLD`):
+   *   uses contains rows alone, ignoring the parallel semantic call.
+   *   Wasted one Notion call but no wall-clock cost. The shared rate
+   *   limiter (see `notion/rate-limit.ts`) bounds the cost.
+   * - **Under-shooting case**: concatenates unique semantic rows after the
+   *   contains rows, dedup'd by id, capped at `limit`. Contains rows
+   *   sort first because precision-ranked hits beat workspace ranking
+   *   when both surface the same row.
+   *
+   * The earlier sequential design paid `containsLatency + semanticLatency`
+   * on under-shoot — strictly worse than the pre-PR single-call wall-clock
+   * for a query that's now the *common* case.
+   *
+   * **Empty-query note.** With no text filter, the contains leg returns a
+   * recency listing under property filters; the semantic leg returns
+   * `client.search({ query: "" })` (Notion's own empty-query behavior,
+   * which is not documented). If contains saturates, semantic is
+   * discarded — empty-query hybrid effectively behaves as `mode:
+   * "contains"`. Callers wanting predictable empty-query semantics should
+   * pass `mode: "contains"` explicitly.
+   */
+  private async searchByHybridPages(
+    input: SearchMemoriesInput,
+    limit: number,
+  ): Promise<PageObjectResponse[]> {
+    const [containsPages, semanticPages] = await Promise.all([
+      this.searchByContainsPages(input),
+      this.searchBySemanticPages(input),
+    ])
+
+    if (containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
+      return containsPages
+    }
+
+    const seen = new Set(containsPages.map((p) => p.id))
+    const merged: PageObjectResponse[] = [...containsPages]
+    for (const page of semanticPages) {
+      if (seen.has(page.id)) continue
+      seen.add(page.id)
+      merged.push(page)
+      if (merged.length >= limit) break
+    }
+    return merged
+  }
+
+  /**
+   * Hydrate a list of `PageObjectResponse` rows into `Memory` domain types,
+   * honoring `includeContent`. Called exactly once at the top of `search()`
+   * on the final merged-and-capped page list, so hybrid never fetches
+   * markdown for candidates that won't survive the dedupe and limit cap.
+   */
+  private async materializeMemories(
+    pages: PageObjectResponse[],
+    includeContent: boolean | undefined,
+  ): Promise<Memory[]> {
+    if (includeContent === false) {
+      return pages.map((page) => this.pageToMemory(page, ""))
+    }
     return Promise.all(
-      capped.map(async (page) => {
+      pages.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
         return this.pageToMemory(page, md.markdown)
-      })
+      }),
     )
   }
 

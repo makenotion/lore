@@ -51,6 +51,7 @@ const queryDispatchSchema = z.discriminatedUnion("action", [
     action: z.literal("search"),
     query: z.string(),
     projectName: z.string().optional(),
+    topicName: z.string().optional(),
     // Closed-vocab tags here too: the inner discriminated union is the
     // dispatcher's runtime contract, and the architecture in
     // src/mcp/AGENTS.md says it must mirror the closed-vocab guarantee
@@ -62,6 +63,7 @@ const queryDispatchSchema = z.discriminatedUnion("action", [
     status: z.enum(STATUSES).optional(),
     limit: z.number().int().min(1).max(50).optional(),
     includeContent: z.boolean().optional(),
+    mode: z.enum(["contains", "semantic", "hybrid"]).optional(),
   }),
   z.object({
     action: z.literal("ask"),
@@ -98,7 +100,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
       description:
         "Read the vault: list memories, search memories, query the fact graph, list open loops, or audit overdue items. Action-dispatched:\n\n" +
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows by default; `includeContent: true` to fetch bodies. Cursor-paginated.\n" +
-        "- `action: 'search'` — semantic search over memories (Notion vector similarity). Title-tier by default. `kind`/`status` are post-filters.\n" +
+        "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `hybrid`). `contains` is DS-scoped substring with server-side filters; `semantic` is workspace-wide vector ranking over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
         "- `action: 'ask'` — query facts about an entity. Returns Governance/Structure/Tracking buckets capped at 5 each (raise via `limit`).\n" +
         "- `action: 'open-loops'` — list active tracking-predicate facts (needs_action / waiting_on / blocked_by). Capped at 10 per section unless `{all: true}`.\n" +
         "- `action: 'audit'` — list facts and decisions past their review-by date.",
@@ -126,11 +128,14 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .string()
           .optional()
           .describe("Scope to a project (recall, search, ask, open-loops, audit)."),
-        // recall only
+        // recall | search
         topicName: z
           .string()
           .optional()
-          .describe("(action='recall') Filter by topic name."),
+          .describe(
+            "(action='recall') Filter by topic name. " +
+              "(action='search') Scope to a topic. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+          ),
         source: z
           .enum(SOURCES)
           .optional()
@@ -140,13 +145,15 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .enum(KINDS)
           .optional()
           .describe(
-            "(action='recall') Filter by memory kind. (action='search') Post-filter by kind.",
+            "(action='recall') Filter by memory kind. " +
+              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
           ),
         status: z
           .enum(STATUSES)
           .optional()
           .describe(
-            "(action='recall') Filter by lifecycle status. (action='search') Post-filter.",
+            "(action='recall') Filter by lifecycle status. " +
+              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
           ),
         // recall only
         reviewBefore: z
@@ -159,7 +166,18 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(action='search') Filter by closed-vocabulary tags (matches any). " +
+              "Server-side filter in `contains`/`hybrid`; post-filter in `semantic`. " +
               "For free-form keyword filtering, use `query`.",
+          ),
+        // search only
+        mode: z
+          .enum(["contains", "semantic", "hybrid"])
+          .optional()
+          .describe(
+            "(action='search') Search mode (default `hybrid`). `contains` for DS-scoped substring " +
+              "matching with server-side property filters; `semantic` for workspace-wide vector " +
+              "relevance over titles AND bodies; `hybrid` fires both in parallel and uses contains " +
+              "alone when it saturates (≥ 3 hits) or merges in semantic rows when it doesn't.",
           ),
         // shared (recall | search | ask | open-loops)
         limit: z

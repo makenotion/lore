@@ -106,28 +106,111 @@ hold arbitrarily large content.
 
 ## Memory Search
 
-`MemoryService.search()` uses Notion's built-in search API (`client.search()`),
-which includes vector similarity matching on page content. Results are
-post-filtered to:
+`MemoryService.search()` switches on `input.mode` (default `"hybrid"`)
+between three execution paths. Each path returns the same `Memory[]` shape;
+they differ in scope, filter capability, and ranking.
 
-- Only include pages from the Memories database — matching either
-  `parent.type === "database_id"` against `db.databaseId` **or**
-  `parent.type === "data_source_id"` against `db.dataSourceId`. Notion SDK
-  v5 returns both shapes in the wild depending on when and how the page
-  was created; accepting only `database_id` silently filters out every
-  real result from a data-source-backed workspace.
-- Optionally filter by project, topic, or tags.
+### `mode: "contains"` (DS-scoped, server-side filters)
+
+Issues a `dataSources.query` against the Memories DS only — never touches
+`client.search`. The filter is composed as a single `and`:
+
+- Project inheritance: `Project relation contains projectId OR Project is_empty`
+  (mirrors `MemoryService.list`).
+- Topic: `Topic relation contains topicId`.
+- Tags: any-match `OR` across tag values (single value collapses to a flat
+  `multi_select.contains`).
+- Kind / Status: server-side `select.equals`.
+- Text clause: `(Title contains query) OR (Keywords contains query)`.
+
+**Empty / whitespace-only queries skip the text clause** — `contains: ""`
+matches every row in Notion, which would degenerate the query into "every
+page in the DS." Skipping the clause lets the surrounding property filters
+drive the result set, giving the caller a recency-ordered listing under
+their other filters. Sort is `last_edited_time desc`; `page_size` is the
+caller's `limit` (max 100).
+
+Body matches are **not** searched here — `dataSources.query` only filters
+on properties. Callers that need body relevance should use `"semantic"`
+or rely on the hybrid fallback below.
+
+### `mode: "semantic"` (workspace-wide, vector-ranked)
+
+The legacy path. Uses `client.search()` for relevance ranking against page
+titles AND bodies. Results are post-filtered to the Memories DS — matching
+either `parent.type === "database_id"` against `db.databaseId` **or**
+`parent.type === "data_source_id"` against `db.dataSourceId`. Notion SDK
+v5 returns both shapes in the wild depending on when and how the page was
+created; accepting only `database_id` silently filters out every real
+result from a data-source-backed workspace.
+
+Property filters (`projectId` / `topicId` / `tags` / `kind` / `status`)
+all post-filter client-side because `client.search` has no property-filter
+support.
 
 **Do not pass a `sort` parameter to `client.search()`.** Notion's `search`
 endpoint returns results ranked by relevance when no `sort` is provided.
 Passing a `sort` switches to recency ordering and demotes the query to a
-lexical filter — which defeats the whole purpose of semantic search. We fetch
-`page_size: 100` instead so the client-side parent-DB filter has headroom when
-the workspace contains unrelated pages matching the query tokens.
+lexical filter — which defeats the whole purpose of semantic search. We
+fetch `page_size: 100` instead so the post-filter to the Memories DS has
+headroom when the workspace contains unrelated pages matching the query
+tokens.
 
-The `search()` input supports `includeContent: false` to skip the per-page
+### `mode: "hybrid"` (default)
+
+Speculative parallelism. `searchByHybridPages` fires `searchByContainsPages`
+and `searchBySemanticPages` concurrently via `Promise.all`. Once both
+settle:
+
+- **Saturating case** (`containsPages.length >= HYBRID_FALLBACK_THRESHOLD`,
+  default 3): the contains rows alone become the result. The parallel
+  semantic call is discarded — wasted bandwidth, but no wall-clock cost
+  since `Promise.all` resolves at `max(contains_latency, semantic_latency)`,
+  which is the same as a pre-PR semantic-only call.
+- **Under-shooting case**: contains rows come first, then unique semantic
+  rows are concatenated until `limit` is filled. Dedup is by page id;
+  contains wins ties because precision-ranked hits should beat workspace
+  ranking when both surface the same row.
+
+The earlier sequential design (run contains, then run semantic if it
+under-shot) traded latency *against* itself in the under-shooting case,
+which is the *common* case for phrase-shaped queries. Parallelism
+restores the pre-PR worst-case wall-clock while keeping the precision
+of contains when it produces enough signal.
+
+Three is a tradeoff: small enough that a niche query with one or two
+title hits still gets the benefit of body-relevance ranking, large enough
+that the common case (a caller searching a specific PR number, file
+name, or function) skips merging with semantic. If the threshold ever
+needs tuning, change the `HYBRID_FALLBACK_THRESHOLD` constant in
+`memory.ts` — it's exported so callers can reference it in their own
+diagnostics.
+
+### Materialization is a single pass
+
+`searchByContainsPages` / `searchBySemanticPages` / `searchByHybridPages`
+return raw `PageObjectResponse[]`. `search()` slices the merged result
+to `limit` and runs `materializeMemories` exactly once on the survivors.
+This is load-bearing: without it, hybrid's under-shooting path could
+fetch markdown for `containsHits + semanticHits` candidates (potentially
+100+) before the dedupe and `limit` cap. With the single-pass discipline,
+hybrid never fetches markdown for a row that isn't in the final response.
+
+### `includeContent: false`
+
+`materializeMemories` honors `includeContent: false` to skip the per-page
 `retrieveMarkdown` round-trip. Use it when the caller renders only title /
 date / tags (e.g. the shell wake-up hook's related-memories section).
+
+### Kill switch: `LORE_FORCE_SEMANTIC_SEARCH=1`
+
+Operator escape hatch checked inside `search()`. When set, every search
+routes through the legacy workspace-wide path regardless of the caller's
+`mode`. Use as a rollback if the contains path silently under-recalls in
+a vault that hasn't run `lore migrate --fix-memory-encoding` yet —
+encoded titles miss substring matches against post-decode queries
+(see P2-10). Same posture as `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an
+opt-in defensive lever, not a default.
 
 The `list()` method uses `dataSources.query()` with property filters and is
 suited for browsing recent memories by project/topic/source. It has no

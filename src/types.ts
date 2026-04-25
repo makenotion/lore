@@ -316,6 +316,31 @@ export interface UpdateMemoryInput {
   entity?: string
 }
 
+/**
+ * Search execution mode. Trades off scope precision against ranking quality:
+ *
+ * - `"contains"` — `dataSources.query` against the Memories DB with
+ *   `Title contains` / `Keywords contains` filters. Strictly DS-scoped (no
+ *   workspace leakage), supports server-side property filters
+ *   (`kind` / `status` / `tags`), but loses Notion's vector relevance ranking
+ *   over page bodies. Best for substring/exact-phrase queries on titles and
+ *   keyword tokens (PR numbers, ticket IDs, function names).
+ * - `"semantic"` — workspace-wide `client.search` ranked by Notion's vector
+ *   index over titles AND bodies. Preserves relevance ranking, but cannot
+ *   apply server-side property filters and may rank non-Memory pages from
+ *   the same workspace ahead of real hits when the query is niche. Best for
+ *   phrase-shaped or conceptual queries where body matches matter.
+ * - `"hybrid"` (default) — fires `contains` and `semantic` in parallel via
+ *   `Promise.all`. If contains saturates (`>= HYBRID_FALLBACK_THRESHOLD`
+ *   hits), the contains rows are used alone and the parallel semantic
+ *   result is discarded; otherwise unique semantic rows are concatenated
+ *   after the contains rows. Speculative parallelism keeps the worst-case
+ *   wall-clock at one round-trip (≈ `client.search` latency) regardless
+ *   of which leg saturates — the cheap-path waste is one discarded Notion
+ *   call governed by the shared rate limiter.
+ */
+export type SearchMode = "contains" | "semantic" | "hybrid"
+
 export interface SearchMemoriesInput {
   query: string
   projectId?: string
@@ -323,9 +348,15 @@ export interface SearchMemoriesInput {
   /**
    * Search/read filters accept any tag string, not just the closed
    * `Tag` vocabulary — legacy memories predate the vocabulary and must
-   * remain filterable.
+   * remain filterable. Applied server-side in `mode: "contains"` (and the
+   * contains leg of `"hybrid"`); applied as a post-filter in `"semantic"`.
    */
   tags?: string[]
+  /**
+   * Server-side filter in `"contains"` (and the contains leg of `"hybrid"`);
+   * post-filter in `"semantic"` because `client.search` does not accept
+   * property filters.
+   */
   kind?: MemoryKind
   status?: MemoryStatus
   limit?: number
@@ -336,6 +367,11 @@ export interface SearchMemoriesInput {
    * so the hot path doesn't pay N+1 markdown fetches.
    */
   includeContent?: boolean
+  /**
+   * Search execution mode. Defaults to `"hybrid"`. See `SearchMode` for the
+   * tradeoffs between scope precision and ranking quality.
+   */
+  mode?: SearchMode
 }
 
 // ---------------------------------------------------------------------------

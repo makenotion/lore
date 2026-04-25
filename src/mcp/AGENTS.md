@@ -258,7 +258,7 @@ memory family to mirror the prior file layout.
 | Action | Purpose | Read-only | Legacy alias |
 |--------|---------|-----------|--------------|
 | `recall` | List recent memories with server-side filters; cursor-paginated | Yes | `lore-recall` |
-| `search` | Semantic search over memories (Notion vector similarity); `kind`/`status` post-filter | Yes | `lore-search` |
+| `search` | Memory search — DS-scoped contains, workspace-wide semantic, or parallel hybrid (default). `mode` selects; see "lore-search mode parameter (P3-04)" below | Yes | `lore-search` |
 | `ask` | Query facts about an entity, grouped into Governance / Structure / Tracking buckets | Yes | `lore-ask` |
 | `open-loops` | List active tracking-predicate facts; capped at 10 per section unless `{all: true}` | Yes | `lore-open-loops` |
 | `audit` | List facts and decisions past their review-by date | Yes | `lore-audit` |
@@ -306,6 +306,66 @@ a handful of bodies for the rows the agent actually cares about.
 Changing this default is a breaking change for agents that relied on eager
 bodies; the server version is bumped to `0.2.0` in `server.ts` so MCP
 clients see the shift immediately.
+
+#### `lore-search` mode parameter (P3-04)
+
+`lore-search` exposes three execution modes via a `mode` parameter
+(default `"hybrid"`). The MCP tool surfaces the mode but the actual
+switching lives in `MemoryService.search` — see `src/core/AGENTS.md` for
+the per-mode filter composition.
+
+| Mode | Notion endpoint | Scope | Property filters | Body relevance |
+|------|----------------|-------|------------------|----------------|
+| `contains` | `dataSources.query` | Memories DS only | Server-side | No (titles + keywords only) |
+| `semantic` | `client.search` | Workspace-wide | Post-filter | Yes |
+| `hybrid` (default) | Both, in parallel | Best-of-both | Server-side on the contains leg, post-filter on the merged tail | When contains under-shoots |
+
+Why default to hybrid:
+
+- **No more workspace leakage on the saturating case.** Pre-P3-04, every
+  `lore-search` paid for `client.search`'s 100-row workspace-wide page
+  even when 99 of the 100 results were unrelated pages from the user's
+  personal Notion. Hybrid uses contains rows alone when contains
+  saturates (`>= HYBRID_FALLBACK_THRESHOLD`, default 3), so the result
+  set is DS-scoped and free of workspace pages.
+- **Server-side property filters when scoped.** Contains and the
+  contains leg of hybrid apply `kind`, `status`, `tags`, and `topicName`
+  server-side. Pre-P3-04, all of these were post-filters, so a
+  `kind: "decision"` search would fetch 100 candidates and discard
+  most. Now Notion does the narrowing.
+- **Vector ranking when contains is too narrow.** Phrase-shaped
+  fact subjects like `"PR #25650 outlook label.applied classifier"`
+  do not appear verbatim in titles, so contains may miss them. The
+  parallel semantic call backfills body-ranking results, capped at
+  `limit` after dedupe.
+
+**Speculative parallelism — wall-clock = max(contains, semantic).**
+The hybrid path fires both queries via `Promise.all`. Worst-case
+wall-clock is one round-trip (≈ `client.search` latency) regardless of
+which leg saturates. The discarded-saturating-case cost is one wasted
+Notion call governed by the shared rate limiter; the round-trip itself
+overlaps the contains query. The earlier sequential design (run
+contains, then run semantic on under-shoot) regressed wall-clock for
+the common phrase-shaped case — that's been replaced.
+
+Callers can opt out of hybrid:
+
+- Pass `mode: "contains"` for "scope tightly, never leak workspace pages,
+  never pay the wasted semantic call." Use when you know the query is a
+  literal substring (PR numbers, file names, function names).
+- Pass `mode: "semantic"` to force the workspace-wide ranked path
+  (e.g. `loadWakeUpData`'s related-memory pass relies on Notion's
+  vector ranking against open-loop entity names).
+
+`HYBRID_FALLBACK_THRESHOLD` is exported from `core/memory.ts` so test
+fixtures and diagnostics can reference the same constant.
+
+**Rollback lever.** `LORE_FORCE_SEMANTIC_SEARCH=1` (read inside
+`MemoryService.search`) routes every call through the legacy
+workspace-wide path regardless of the caller's `mode`. Use as a
+defensive escape hatch — same posture as
+`LORE_DISABLE_NEAR_DUPLICATE_PROBE`. See `src/core/AGENTS.md` for the
+encoding-migration scenario it's designed to handle.
 
 #### `recall` → `expand` pattern
 

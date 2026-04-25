@@ -9,7 +9,13 @@ import {
 } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
-import type { Memory, MemoryKind, MemoryStatus, MemoryConfidence } from "../../types.js"
+import type {
+  Memory,
+  MemoryKind,
+  MemoryStatus,
+  MemoryConfidence,
+  SearchMode,
+} from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
   findNearDuplicates,
@@ -439,11 +445,13 @@ export async function handleRecall(
 interface SearchArgs {
   query: string
   projectName?: string
+  topicName?: string
   tags?: string[]
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
   limit?: number
   includeContent?: boolean
+  mode?: SearchMode
 }
 
 export async function handleSearch(
@@ -452,6 +460,7 @@ export async function handleSearch(
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
+    let topicId: string | undefined
     const warnings: string[] = []
 
     if (args.projectName) {
@@ -468,20 +477,46 @@ export async function handleSearch(
       projectId = services.context.project.id
     }
 
-    const withContent = args.includeContent === true
+    // Topics span projects (many-to-many Topic.Project), so resolve
+    // globally rather than scoping by project — same posture as
+    // `handleRecall`'s topic resolution.
+    if (args.topicName) {
+      const found = await services.topics.findByName(args.topicName)
+      if (!found) {
+        return {
+          content: [{ type: "text", text: `No topic named "${args.topicName}" found.` }],
+        }
+      }
+      topicId = found.id
+    }
 
+    const withContent = args.includeContent === true
+    const resolvedMode: SearchMode = args.mode ?? "hybrid"
+
+    // Over-fetch slightly only when post-filters are still active — i.e.
+    // semantic mode, which can't apply kind/status server-side. Contains
+    // and hybrid push kind/status/tags/topicName into the Notion query, so
+    // the requested limit is already authoritative there.
     const searchResults = await services.memories.search({
       query: args.query,
       projectId,
+      topicId,
       tags: args.tags,
-      limit: Math.min((args.limit ?? 10) * 2, 50),
+      kind: args.kind as MemoryKind | undefined,
+      status: args.status as MemoryStatus | undefined,
+      limit:
+        resolvedMode === "semantic"
+          ? Math.min((args.limit ?? 10) * 2, 50)
+          : (args.limit ?? 10),
       includeContent: withContent,
+      mode: resolvedMode,
     })
 
-    let results = searchResults
-    if (args.kind) results = results.filter((m) => m.kind === args.kind)
-    if (args.status) results = results.filter((m) => m.status === args.status)
-    results = results.slice(0, args.limit ?? 10)
+    // The service applies kind/status server-side in contains/hybrid and
+    // post-filter in semantic, so the result set is already correctly
+    // narrowed by mode. The final slice protects against the semantic
+    // over-fetch above leaking extra rows past the caller's limit.
+    const results = searchResults.slice(0, args.limit ?? 10)
 
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
@@ -892,11 +927,27 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       title: "Search memories",
       description: "Deprecated alias — prefer `lore-query` with `action: 'search'`.",
       inputSchema: {
-        query: z.string().describe("Natural language search query"),
+        query: z.string().describe("Natural language or substring search query"),
         projectName: z.string().optional().describe("Scope search to a specific project"),
+        topicName: z
+          .string()
+          .optional()
+          .describe(
+            "Scope to a topic. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+          ),
         tags: z.array(z.string()).optional().describe("Filter by tags (matches any)"),
-        kind: z.enum(KINDS).optional().describe("Post-filter by memory kind"),
-        status: z.enum(STATUSES).optional().describe("Post-filter by lifecycle status"),
+        kind: z
+          .enum(KINDS)
+          .optional()
+          .describe(
+            "Filter by memory kind. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+          ),
+        status: z
+          .enum(STATUSES)
+          .optional()
+          .describe(
+            "Filter by lifecycle status. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+          ),
         limit: z
           .number()
           .int()
@@ -904,6 +955,15 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .max(50)
           .optional()
           .describe("Max results (default 10)"),
+        mode: z
+          .enum(["contains", "semantic", "hybrid"])
+          .optional()
+          .describe(
+            "Search mode (default `hybrid`). `contains` for DS-scoped substring matching with " +
+              "server-side property filters; `semantic` for workspace-wide vector relevance over titles AND bodies; " +
+              "`hybrid` fires both in parallel and uses contains alone when it saturates (≥ 3 hits) " +
+              "or merges in the semantic rows when it doesn't.",
+          ),
         includeContent: z
           .boolean()
           .optional()

@@ -957,6 +957,146 @@ describe("lore-search content-off default", () => {
   })
 })
 
+describe("lore-search mode parameter", () => {
+  it("defaults mode to hybrid and forwards it to the service", async () => {
+    // P3-04: The new default. Hybrid runs contains first and only falls
+    // back to semantic when contains under-shoots. The MCP layer threads
+    // the mode through so the service can switch on it.
+    const mockServer = createMockServer()
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([makeMemory("mem-1", { title: "ok" })])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    await search({ query: "q" } as never)
+
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "hybrid" }),
+    )
+  })
+
+  it("threads mode: contains through to the service and forwards kind/status as server-side filters", async () => {
+    // Acceptance criterion: contains mode applies kind/status server-side.
+    // The MCP tool forwards them rather than swallowing them at the
+    // boundary.
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    await search({
+      query: "PR-25650",
+      mode: "contains",
+      kind: "decision",
+      status: "accepted",
+      tags: ["architecture"],
+    } as never)
+
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "contains",
+        kind: "decision",
+        status: "accepted",
+        tags: ["architecture"],
+      }),
+    )
+  })
+
+  it("over-fetches in semantic mode but uses the requested limit verbatim in contains/hybrid", async () => {
+    // Semantic mode still post-filters kind/status because client.search
+    // ignores property filters — the over-fetch keeps the post-filter from
+    // starving output. Contains/hybrid filter server-side so no over-fetch
+    // is needed; the tool forwards the requested limit verbatim.
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([])
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    await search({ query: "q", limit: 5, mode: "semantic" } as never)
+    expect(memoriesSearch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: "semantic", limit: 10 }),
+    )
+
+    await search({ query: "q", limit: 5, mode: "contains" } as never)
+    expect(memoriesSearch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: "contains", limit: 5 }),
+    )
+
+    await search({ query: "q", limit: 5, mode: "hybrid" } as never)
+    expect(memoriesSearch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mode: "hybrid", limit: 5 }),
+    )
+  })
+
+  it("resolves topicName to a topic id and threads it through", async () => {
+    const mockServer = createMockServer()
+    const findTopic = vi.fn().mockResolvedValue(makeTopic("topic-1", { name: "GraphQL" }))
+    const memoriesSearch = vi.fn().mockResolvedValue([])
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: findTopic },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    await search({ query: "q", topicName: "GraphQL" } as never)
+
+    expect(findTopic).toHaveBeenCalledWith("GraphQL")
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ topicId: "topic-1" }),
+    )
+  })
+
+  it("returns an error when topicName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const findTopic = vi.fn().mockResolvedValue(null)
+    const memoriesSearch = vi.fn().mockResolvedValue([])
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: findTopic },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const search = mockServer.getHandler("lore-search")
+
+    const result = await search({ query: "q", topicName: "Nope" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('No topic named "Nope" found')
+    // Service was not called — short-circuited at the topic resolver.
+    expect(memoriesSearch).not.toHaveBeenCalled()
+  })
+})
+
 describe("lore-expand", () => {
   // UUIDs valid per z.string().uuid() — Notion returns dashed UUIDs from
   // page.id, so these match the shape agents would actually pass in.

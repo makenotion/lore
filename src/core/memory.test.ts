@@ -216,7 +216,7 @@ describe("MemoryService.search", () => {
     )
   }
 
-  it("requests relevance-ranked results — no sort parameter — with a 100-page fetch window", async () => {
+  it("semantic mode requests relevance-ranked results — no sort parameter — with a 100-page fetch window", async () => {
     const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
     const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
     const client = {
@@ -225,7 +225,7 @@ describe("MemoryService.search", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    await service.search({ query: "autolabel", limit: 5 })
+    await service.search({ query: "autolabel", limit: 5, mode: "semantic" })
 
     expect(searchSpy).toHaveBeenCalledTimes(1)
     const args = searchSpy.mock.calls[0][0]
@@ -236,7 +236,7 @@ describe("MemoryService.search", () => {
     expect(args).not.toHaveProperty("sort")
   })
 
-  it("filters to the Memories database and caps at the caller's limit before fetching markdown", async () => {
+  it("semantic mode filters to the Memories database and caps at the caller's limit before fetching markdown", async () => {
     const client = {
       search: vi.fn(async () => ({
         results: [
@@ -255,7 +255,7 @@ describe("MemoryService.search", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    const results = await service.search({ query: "q", limit: 2 })
+    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
 
     expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
     // Markdown fetched only for the capped subset — not wasted on filtered-out
@@ -265,7 +265,7 @@ describe("MemoryService.search", () => {
     ).toBe(2)
   })
 
-  it("skips the per-page markdown fetch when includeContent: false", async () => {
+  it("semantic mode skips the per-page markdown fetch when includeContent: false", async () => {
     // Callers that render only title / date / tags (e.g. the hook wake-up
     // path's related-memories section) pass includeContent: false to avoid
     // N+1 `retrieveMarkdown` round-trips on a hot path.
@@ -281,14 +281,18 @@ describe("MemoryService.search", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    const results = await service.search({ query: "q", includeContent: false })
+    const results = await service.search({
+      query: "q",
+      includeContent: false,
+      mode: "semantic",
+    })
 
     expect(results).toHaveLength(2)
     expect(results.every((m) => m.content === "")).toBe(true)
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
   })
 
-  it("accepts pages with a data_source_id parent (Notion SDK v5 shape)", async () => {
+  it("semantic mode accepts pages with a data_source_id parent (Notion SDK v5 shape)", async () => {
     // Regression test: Notion's `client.search()` returns pages with
     // `parent.type === "data_source_id"` in v5 workspaces — which is the
     // shape observed in production. If the filter only accepted
@@ -315,9 +319,510 @@ describe("MemoryService.search", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    const results = await service.search({ query: "q", limit: 10 })
+    const results = await service.search({ query: "q", limit: 10, mode: "semantic" })
 
     expect(results.map((m) => m.id).sort()).toEqual(["db-hit", "ds-hit"])
+  })
+
+  it("semantic mode applies kind/status as client-side post-filters (search API has no property filters)", async () => {
+    // Regression-safety pin for P3-04: callers passing `kind` / `status`
+    // in semantic mode still get post-filtering, since `client.search`
+    // ignores property filters. The service narrows the result set to
+    // matching kind/status before fetching markdown.
+    const decisionPage = buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: "decision row" }] },
+        Kind: { type: "select", select: { name: "decision" } },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      },
+      { id: "a", parent: { type: "database_id", database_id: db.databaseId } },
+    )
+    const notePage = buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: "note row" }] },
+        Kind: { type: "select", select: { name: "note" } },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      },
+      { id: "b", parent: { type: "database_id", database_id: db.databaseId } },
+    )
+    const searchSpy = vi.fn(async () => ({ results: [decisionPage, notePage] }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      kind: "decision",
+      mode: "semantic",
+      includeContent: false,
+    })
+
+    // Only the decision row survives — the note is post-filtered out.
+    expect(results.map((m) => m.id)).toEqual(["a"])
+    // The post-filter path goes through `client.search`, not `dataSources.query`.
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("MemoryService.search — contains mode", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeQueryClient(rows: PageObjectResponse[]) {
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      results: rows,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "body" }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    return { client, querySpy, searchSpy, retrieveMarkdownSpy }
+  }
+
+  function buildContainsPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("issues dataSources.query against the Memories DS — never client.search", async () => {
+    const { client, querySpy, searchSpy } = makeQueryClient([
+      buildContainsPage("c-1", "PR #25650 autolabel notes"),
+    ])
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "autolabel", mode: "contains", includeContent: false })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).not.toHaveBeenCalled()
+    const args = querySpy.mock.calls[0][0]
+    expect(args["data_source_id"]).toBe(db.dataSourceId)
+  })
+
+  it("filters by Title OR Keywords contains for non-empty queries", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "PR-25650", mode: "contains" })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as
+      | { or?: Array<Record<string, unknown>>; and?: Array<Record<string, unknown>> }
+      | undefined
+    // Only the text filter is set — no project/topic/tags/kind/status, so
+    // the wrapper isn't an `and`. The single filter is the OR of Title and
+    // Keywords contains.
+    expect(filter?.or).toBeDefined()
+    expect(filter?.or).toEqual([
+      { property: "Title", title: { contains: "PR-25650" } },
+      { property: "Keywords", rich_text: { contains: "PR-25650" } },
+    ])
+  })
+
+  it("composes server-side property filters: kind + status + tags", async () => {
+    // Acceptance criterion: kind/status/tags currently post-filter in
+    // semantic mode become server-side filters in contains mode.
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "anything",
+      mode: "contains",
+      kind: "decision",
+      status: "accepted",
+      tags: ["architecture", "backend"],
+    })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toBeDefined()
+    // Kind, Status, Tags-OR, and the title/keywords OR all land in the
+    // `and` block — DS-scoped, server-side.
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        { property: "Kind", select: { equals: "decision" } },
+        { property: "Status", select: { equals: "accepted" } },
+        {
+          or: [
+            { property: "Tags", multi_select: { contains: "architecture" } },
+            { property: "Tags", multi_select: { contains: "backend" } },
+          ],
+        },
+      ]),
+    )
+  })
+
+  it("composes the project-or-unscoped filter when projectId is set", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "x",
+      projectId: "proj-1",
+      mode: "contains",
+    })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        {
+          or: [
+            { property: "Project", relation: { contains: "proj-1" } },
+            { property: "Project", relation: { is_empty: true } },
+          ],
+        },
+      ]),
+    )
+  })
+
+  it("drops the text clause for an empty query — falls back to property-filter recency listing", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    // An empty query in semantic mode degenerates because `contains: ""`
+    // matches every row. Skip the text clause entirely so the surrounding
+    // property filters drive the result set.
+    await service.search({ query: "   ", projectId: "proj-1", mode: "contains" })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as
+      | { and?: Array<Record<string, unknown>>; or?: Array<Record<string, unknown>> }
+      | undefined
+    // Only the project filter — text clause omitted.
+    expect(filter?.or).toBeDefined()
+    expect(filter?.or).toEqual([
+      { property: "Project", relation: { contains: "proj-1" } },
+      { property: "Project", relation: { is_empty: true } },
+    ])
+  })
+
+  it("sorts by last_edited_time desc and applies the requested limit as page_size", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "q", mode: "contains", limit: 7 })
+
+    const args = querySpy.mock.calls[0][0]
+    expect(args["sorts"]).toEqual([
+      { timestamp: "last_edited_time", direction: "descending" },
+    ])
+    expect(args["page_size"]).toBe(7)
+  })
+
+  it("honors includeContent: false on the materialization step", async () => {
+    const { client, retrieveMarkdownSpy } = makeQueryClient([
+      buildContainsPage("c-1", "row"),
+    ])
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].content).toBe("")
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("MemoryService.search — hybrid mode", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildHybridPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("is the default mode and returns contains-only results when contains saturates", async () => {
+    // Three contains hits is the threshold; the parallel semantic call
+    // still fires (speculative parallelism keeps wall-clock at one
+    // round-trip) but its result is discarded.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("a", "Title a"),
+        buildHybridPage("b", "Title b"),
+        buildHybridPage("c", "Title c"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      // Semantic returns rows that would be merged on under-shoot — but
+      // contains saturated, so this whole result is dropped.
+      results: [
+        buildHybridPage("z-discarded", "would-be-semantic"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    // No `mode` argument — exercises the "default to hybrid" branch.
+    const results = await service.search({ query: "q", includeContent: false })
+
+    expect(results.map((m) => m.id)).toEqual(["a", "b", "c"])
+    // Both queries fire in parallel — the saturation decision happens
+    // after Promise.all settles, not before the second call dispatches.
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("hybrid fires both queries in parallel — wall-clock is max(contains, semantic), not sum", async () => {
+    // Pin the speculative-parallelism contract: Promise.all dispatches
+    // both the dataSources.query and the client.search before either
+    // resolves. Without this, an under-shooting hybrid would pay
+    // contains-then-semantic sequentially, regressing wall-clock vs the
+    // pre-PR single-call path.
+    let dispatchedSearchAt = 0
+    let containsResolvedAt = 0
+    let now = 0
+    const querySpy = vi.fn(async () => {
+      // The query takes 50 simulated ms to resolve.
+      await new Promise<void>((resolve) =>
+        setTimeout(() => {
+          containsResolvedAt = ++now
+          resolve()
+        }, 0),
+      )
+      return {
+        results: [buildHybridPage("c-1", "one")],
+        has_more: false,
+        next_cursor: null,
+      }
+    })
+    const searchSpy = vi.fn(async () => {
+      dispatchedSearchAt = ++now
+      return { results: [] }
+    })
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "q", mode: "hybrid", includeContent: false })
+
+    // Search dispatched BEFORE contains resolved → parallel, not sequential.
+    expect(dispatchedSearchAt).toBeGreaterThan(0)
+    expect(dispatchedSearchAt).toBeLessThan(containsResolvedAt)
+  })
+
+  it("falls back to semantic when contains returns < 3 hits and merges unique rows", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [buildHybridPage("contains-only", "Substring hit")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        // Same row that contains already returned — should be deduped.
+        buildHybridPage("contains-only", "Substring hit"),
+        // New rows that contains missed (semantic ranking found body matches).
+        buildHybridPage("semantic-only-1", "Something else"),
+        buildHybridPage("semantic-only-2", "And another"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      limit: 5,
+      includeContent: false,
+    })
+
+    // Contains row first, then unique semantic rows, no duplicate id.
+    expect(results.map((m) => m.id)).toEqual([
+      "contains-only",
+      "semantic-only-1",
+      "semantic-only-2",
+    ])
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("hybrid caps the merged result list at the caller's limit", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [buildHybridPage("c-1", "one")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("s-1", "two"),
+        buildHybridPage("s-2", "three"),
+        buildHybridPage("s-3", "four"),
+        buildHybridPage("s-4", "five"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      limit: 2,
+      includeContent: false,
+    })
+
+    // Limit caps the merged list at 2 even though more semantic rows exist.
+    expect(results.map((m) => m.id)).toEqual(["c-1", "s-1"])
+  })
+
+  it("hybrid materializes markdown only for the final capped set, never for discarded candidates", async () => {
+    // Round-trip protection: under-shooting hybrid with includeContent: true
+    // must not fetch markdown for every contains + semantic candidate
+    // before the dedupe+cap. Concretely: limit=3, contains returns 1,
+    // semantic returns 4 (1 dedup'd) → final merged size is 3 → exactly
+    // 3 retrieveMarkdown calls, not 5.
+    const querySpy = vi.fn(async () => ({
+      results: [buildHybridPage("c-1", "contains row")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        // Dup'd against contains — would pre-fetch markdown if materialization
+        // happened in the per-mode helpers.
+        buildHybridPage("c-1", "contains row"),
+        buildHybridPage("s-1", "semantic 1"),
+        buildHybridPage("s-2", "semantic 2"),
+        buildHybridPage("s-3", "semantic 3 — over the cap"),
+      ],
+    }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "body" }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      limit: 3,
+      includeContent: true, // forces the materialization path
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["c-1", "s-1", "s-2"])
+    // 3 markdown fetches — not 5 (1 contains + 4 semantic candidates).
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it("hybrid fires exactly two data round-trips (one dataSources.query + one client.search)", async () => {
+    // Pin the round-trip count contract for hybrid: parallelism keeps
+    // wall-clock at one round-trip, but the work is two API calls.
+    // Adding a third (e.g. a sequential semantic call after contains)
+    // would regress.
+    const querySpy = vi.fn(async () => ({
+      results: [buildHybridPage("c-1", "one"), buildHybridPage("c-2", "two")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "q", mode: "hybrid", includeContent: false })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("MemoryService.search — kill switch", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("LORE_FORCE_SEMANTIC_SEARCH=1 routes every call through client.search regardless of caller mode", async () => {
+    // Operator escape hatch for the rollback story raised in review:
+    // if contains under-recalls in a vault that hasn't run
+    // `lore migrate --fix-memory-encoding` yet, set this env var to
+    // force every search through the legacy workspace-wide path.
+    const querySpy = vi.fn(async () => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const original = process.env["LORE_FORCE_SEMANTIC_SEARCH"]
+    process.env["LORE_FORCE_SEMANTIC_SEARCH"] = "1"
+    try {
+      await service.search({ query: "q", mode: "contains" })
+      await service.search({ query: "q", mode: "hybrid" })
+    } finally {
+      if (original === undefined) {
+        delete process.env["LORE_FORCE_SEMANTIC_SEARCH"]
+      } else {
+        process.env["LORE_FORCE_SEMANTIC_SEARCH"] = original
+      }
+    }
+
+    // Both calls routed through client.search, neither touched dataSources.query.
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+    expect(querySpy).not.toHaveBeenCalled()
   })
 })
 
