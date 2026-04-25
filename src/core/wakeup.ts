@@ -71,6 +71,44 @@ export const DEFAULT_WAKEUP_TASK_LIMIT = 10
  */
 export const DEFAULT_WAKEUP_TASK_MEMORY_LIMIT = 3
 /**
+ * Per-section caps applied when the caller passes a non-empty `userQuery`
+ * and hasn't overridden the section explicitly. Tighter than the
+ * surface-default caps above because relevance-ranked top hits carry more
+ * signal-per-row than timestamp-ordered recents — a smaller bundle yields
+ * better wake-up density. Values come straight from the P3-05 spec.
+ *
+ * Shared across both wake-up surfaces (`src/hooks/helpers.ts` and
+ * `src/mcp/tools/context.ts`) so the prompt-budget contract stays
+ * identical regardless of which surface fired wake-up. A caller-supplied
+ * value still wins — these are defaults, not ceilings.
+ *
+ * The MCP tool layers `COLLAPSE_OVERFETCH_MULTIPLIER` on top of these
+ * caps to leave headroom for topical collapse before the cluster slice;
+ * the hook applies them flat because it skips collapse. Both surfaces
+ * end up rendering the same number of visible rows for the same input.
+ *
+ * `taskMemoryLimit` matches the no-query default deliberately — the
+ * task-memory section only renders when `userQuery` is set, so the
+ * default cap and the ranked cap are the same number.
+ *
+ * `memoryLimitWithDigest` is pinned explicitly rather than letting the
+ * digest branch fall back to `DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST`.
+ * Without it, the no-digest branch follows the ranked cap while the
+ * digest branch follows an unrelated constant — a future tightening of
+ * `memoryLimit` would silently desync the two intra-surface branches and
+ * across surfaces. Pinning both branches in one place keeps the contract
+ * "ranked wake-up renders this many memory rows" true regardless of
+ * whether a fresh digest exists.
+ */
+export const RANKED_WAKEUP_LIMITS = {
+  memoryLimit: 3,
+  memoryLimitWithDigest: 3,
+  relatedMemoryLimit: 2,
+  openLoopLimit: 5,
+  knowledgeFactLimit: 10,
+  taskMemoryLimit: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+} as const
+/**
  * Hard cap on `userQuery` length before it's sent to the search API.
  * A user pasting an entire log file or transcript would otherwise either
  * blow Notion's query-string budget or drown the relevance signal in
@@ -283,12 +321,26 @@ export async function loadWakeUpData(
   // instead of stacking on top. Only fire when scoped to a project AND
   // the user query is present — without scope the relevance hits would
   // come from arbitrary projects, and without a query there's nothing to
-  // seed. The fetch window over-fetches by a fixed slack of
-  // `digest(1) + memoryLimit + relatedLimit` — the maximum set we can
-  // possibly dedupe against — so `taskMemoryLimit` survivors are
-  // guaranteed even when every candidate collides with already-surfaced
-  // memories. Bounded by Notion's per-page ceiling so this hot-path
-  // query never paginates.
+  // seed.
+  //
+  // Over-fetch accounting: `taskMemories` dedupes against the union of
+  // (digest, `memories`, `relatedMemories`). Worst case those sets are
+  // disjoint and every task candidate collides with one of them, so the
+  // slack must cover the maximum cardinality of each:
+  //   - `1` — at most one digest memory.
+  //   - `memoryLimit` — upper bound on `memories`. We use the no-digest
+  //     ceiling rather than `memoryLimitWithDigest` because the digest
+  //     branch is mutually exclusive with the no-digest branch, so adding
+  //     `1 + memoryLimit` over-counts by `memoryLimit - memoryLimitWithDigest`
+  //     in the digest case. The over-count is harmless (we already cap
+  //     at `NOTION_PAGE_SIZE`) and keeps the slack independent of whether
+  //     a digest is fresh — without that the slack would have to be
+  //     recomputed after the digest probe lands, which would either
+  //     require the parallel fan-out to wait for the digest query or
+  //     pessimise the slack by always assuming the looser case anyway.
+  //   - `relatedLimit` — upper bound on `relatedMemories`.
+  // Bounded by Notion's per-page ceiling so this hot-path query never
+  // paginates.
   const taskFetchSlack = 1 + memoryLimit + relatedLimit
   const taskFetchLimit =
     userQuery && taskMemoryLimit > 0

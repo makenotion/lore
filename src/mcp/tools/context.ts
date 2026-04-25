@@ -3,10 +3,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { formatDispatchError, toolError } from "../helpers.js"
 import {
+  DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
+  DEFAULT_WAKEUP_OPEN_LOOP_LIMIT,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   DEFAULT_WAKEUP_TASK_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+  RANKED_WAKEUP_LIMITS,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
@@ -151,18 +154,52 @@ async function handleWakeUp(
     }
 
     const includeContent = args.expand === true
-    const recentCap = args.limit ?? DEFAULT_WAKEUP_MEMORY_LIMIT
-    const relatedCap = args.limit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
+    // PF3-04: when `userQuery` is set the MCP surface mirrors the shell
+    // hook's `RANKED_WAKEUP_LIMITS` for the per-section defaults, so the
+    // prompt-budget contract for ranked wake-up is identical regardless of
+    // which surface fired. An explicit caller-supplied cap still wins —
+    // these defaults only apply when the corresponding arg is absent.
+    const ranked = typeof args.userQuery === "string" && args.userQuery.trim().length > 0
+    const recentDefault = ranked
+      ? RANKED_WAKEUP_LIMITS.memoryLimit
+      : DEFAULT_WAKEUP_MEMORY_LIMIT
+    const relatedDefault = ranked
+      ? RANKED_WAKEUP_LIMITS.relatedMemoryLimit
+      : DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
+    const recentCap = args.limit ?? recentDefault
+    const relatedCap = args.limit ?? relatedDefault
     const recentOverfetch = recentCap * COLLAPSE_OVERFETCH_MULTIPLIER
     const relatedOverfetch = relatedCap * COLLAPSE_OVERFETCH_MULTIPLIER
-    // Task-memory section: relevance hits seeded by `userQuery`. The
-    // default cap matches the hook's `RANKED_WAKEUP_LIMITS.taskMemoryLimit`
-    // so MCP-direct callers see the same density as Claude Code's
-    // first-prompt wake-up. Over-fetch by the collapse multiplier so the
+    // Task-memory section: relevance hits seeded by `userQuery`. Routes
+    // through the same `ranked ? RANKED : DEFAULT` ternary as the other
+    // sections so a future tightening of `RANKED_WAKEUP_LIMITS.taskMemoryLimit`
+    // doesn't silently desync the surfaces. Today the two constants are
+    // equal by construction (3) — that equality is documented in
+    // `RANKED_WAKEUP_LIMITS` itself — but mirroring the structure removes
+    // the silent-divergence trap and makes the section's policy obvious
+    // at the call site. Over-fetch by the collapse multiplier so the
     // visible-cluster slice has headroom — same discipline as Recent and
     // Related, since this section also runs through `collapseOverlappingMemories`.
-    const taskCap = args.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
+    const taskCap =
+      args.taskMemoryLimit ??
+      (ranked ? RANKED_WAKEUP_LIMITS.taskMemoryLimit : DEFAULT_WAKEUP_TASK_MEMORY_LIMIT)
     const taskOverfetch = taskCap * COLLAPSE_OVERFETCH_MULTIPLIER
+    // Open-loop and knowledge-fact sections don't run through topical
+    // collapse, so the ranked defaults flow straight through to the data
+    // layer without an over-fetch step. Caller-supplied values win as
+    // before; absent values fall to the ranked cap when `userQuery` is
+    // set, otherwise to the data-layer constants resolved here at the
+    // call site rather than relying on `loadWakeUpData`'s internal `??`
+    // defaulting. Self-contained resolution keeps the MCP call's policy
+    // visible in this file — a future change to the data-layer defaulting
+    // discipline (e.g. switching to required params) can't silently shift
+    // the MCP path.
+    const openLoopLimit =
+      args.openLoopLimit ??
+      (ranked ? RANKED_WAKEUP_LIMITS.openLoopLimit : DEFAULT_WAKEUP_OPEN_LOOP_LIMIT)
+    const knowledgeFactLimit =
+      args.knowledgeFactLimit ??
+      (ranked ? RANKED_WAKEUP_LIMITS.knowledgeFactLimit : DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
     const {
       digest,
       memories,
@@ -178,8 +215,8 @@ async function handleWakeUp(
       memoryLimit: recentOverfetch,
       memoryLimitWithDigest: recentOverfetch,
       relatedMemoryLimit: relatedOverfetch,
-      openLoopLimit: args.openLoopLimit,
-      knowledgeFactLimit: args.knowledgeFactLimit,
+      openLoopLimit,
+      knowledgeFactLimit,
       taskLimit: args.taskLimit,
       userQuery: args.userQuery,
       taskMemoryLimit: taskOverfetch,

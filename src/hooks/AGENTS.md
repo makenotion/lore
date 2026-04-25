@@ -77,6 +77,12 @@ Current Task** section seeded by `MemoryService.search(userQuery)`.
 The section is omitted entirely on the fallback path so unranked
 output stays identical to the pre-P3-05 shape.
 
+`RANKED_WAKEUP_LIMITS` lives in `src/core/wakeup.ts` and is shared
+with the MCP `lore-context action='wake-up'` handler — both surfaces
+fall back to the same caps when `userQuery` is set and the caller
+hasn't overridden a section. Tighten the constant in one place and
+both surfaces pick it up. (PF3-04.)
+
 `taskMemories` is deduped against digest, recents, AND `relatedMemories`
 in the data layer (`loadWakeUpData` in `src/core/wakeup.ts`) so the
 same memory never renders across the three memory sections. The user
@@ -85,14 +91,23 @@ blow Notion's query budget or drown relevance.
 
 ### Operator log
 
-`LORE_DEBUG=1` emits `[lore] wakeup: no user query available — falling
-back to unranked output.` to stderr when the helper hits the fallback
-path. Useful for triaging "why didn't wake-up surface task-relevant
-memories?" — the most common cause is `wakeup.sh` not forwarding stdin
-(legacy hook, or a host assistant that fires wake-up off a non-prompt
-event). Gated behind `LORE_DEBUG=1` because Codex `SessionStart`
-*always* hits the fallback path, and an unconditional log would flood
-stderr on every Codex session.
+`LORE_DEBUG=1` emits one stderr line per wake-up firing in the same
+`[lore] <subsystem>: key=value` shape as the `[lore] partial-failure:`
+line in `src/mcp/AGENTS.md`. Two variants:
+
+```
+[lore] wakeup: ranked=true queryLen=42 memory=3 related=2 openLoops=5 knowledge=10 taskMemories=3
+[lore] wakeup: ranked=false reason=no-user-query
+```
+
+The ranked variant reports the per-section caps applied so an operator
+triaging "why is wake-up surfacing only 3 memories?" can confirm the
+ranked path fired without chasing the constant. The fallback variant
+distinguishes the wakeup.sh-not-forwarding case from a ranked-but-
+surprising-hits case — directing operators to fix the forwarder vs.
+inspect the relevance index. Gated behind `LORE_DEBUG=1` because Codex
+`SessionStart` *always* hits the fallback path, and an unconditional
+log would flood stderr on every Codex session.
 
 ## Concurrency guard
 

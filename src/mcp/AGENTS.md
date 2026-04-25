@@ -270,10 +270,39 @@ pivot) see the same query-aware output the hook ships on first prompt.
   callers see the same `userQuery` / `taskMemoryLimit` options on
   `WakeUpOptions`; the only divergence is rendering (the hook emits
   flat list items, the MCP tool routes through `collapseOverlappingMemories`).
-- **Per-tool limits parity.** The MCP `taskMemoryLimit` schema accepts
-  `0..20`; the hook's `RANKED_WAKEUP_LIMITS` is hard-coded. The
-  follow-up to unify these knobs across both surfaces is tracked as
-  PF3-04 (mcp-ranked-wakeup-limits-parity).
+- **Per-section caps mirror the hook (PF3-04).** When `userQuery` is
+  set and the caller hasn't overridden a section, the MCP tool falls
+  back to the same `RANKED_WAKEUP_LIMITS` constant that the hook
+  applies — exported from `src/core/wakeup.ts` so the surfaces share
+  one source of truth. Caller-supplied `limit`, `openLoopLimit`,
+  `knowledgeFactLimit`, and `taskMemoryLimit` still win; the ranked
+  caps are defaults, not ceilings. The MCP layer then over-fetches by
+  `COLLAPSE_OVERFETCH_MULTIPLIER` for the memory sections that go
+  through topical collapse, so visible row counts converge with the
+  hook output even though the data-layer requests differ.
+
+  | Section | Ranked cap (`userQuery` set) | Surface default (no `userQuery`) |
+  |---------|------------------------------|----------------------------------|
+  | Recent Memories (no digest) | 3 | 10 |
+  | Recent Memories (with digest) | 3 | 3 |
+  | Related to Open Loops | 2 | 5 |
+  | Open Loops | 5 | 100 |
+  | Active Facts | 10 | 25 |
+  | For Your Current Task | 3 | n/a (section omitted) |
+
+  Values live in `RANKED_WAKEUP_LIMITS` and the `DEFAULT_WAKEUP_*`
+  constants in `src/core/wakeup.ts`; restated here so an operator
+  triaging "why is wake-up surfacing only 3 memories?" doesn't have to
+  chase the constants.
+
+  **Backwards-compat note:** an MCP-direct caller that passes `userQuery`
+  without explicit per-section args sees fewer rows post-PF3-04 than
+  pre-PF3-04. That is the entire point — the prior behavior diverged
+  from the hook's ranked output. Callers that want the looser caps
+  back can pass them explicitly (`limit: 10, openLoopLimit: 100`,
+  etc.) and the explicit args win over the ranked defaults. The MCP
+  server version is bumped (`0.4.0 → 0.5.0`) so reconnecting clients
+  observe the change.
 
 ### `lore-memory` — memory mutations + batch hydration
 

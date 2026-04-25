@@ -28,8 +28,15 @@ async function main(): Promise<void> {
   // polymorphic dispatchers (with the prior names retained as deprecated
   // aliases). The shape of every reconnecting client's tool list shifts
   // observably, so the server version bumps 0.3.0 → 0.4.0.
+  //
+  // PF3-04 tightens the MCP `lore-context action='wake-up'` per-section
+  // defaults whenever `userQuery` is non-empty (mirroring the shell hook's
+  // `RANKED_WAKEUP_LIMITS`). MCP-direct callers that previously relied on
+  // the looser `DEFAULT_WAKEUP_*` caps for ranked calls now see fewer
+  // rows — observable shape change with no schema delta — so the server
+  // version bumps 0.4.0 → 0.5.0.
   const server = new McpServer(
-    { name: "lore", version: "0.4.0" },
+    { name: "lore", version: "0.5.0" },
     {
       capabilities: {
         tools: {},

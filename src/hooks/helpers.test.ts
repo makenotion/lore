@@ -778,6 +778,43 @@ describe("parseUserQueryFromEvent", () => {
     expect(parseUserQueryFromEvent(raw)).toBe("fix the path /etc/hosts handling")
   })
 
+  it("rejects events whose hook_event_name is not UserPromptSubmit, even if they carry a prompt field (PF3-04 nit)", () => {
+    // Defensive measure: today only `UserPromptSubmit` is contracted to
+    // carry a usable `prompt`. If a future Claude Code release adds a
+    // `prompt` field to a different event (e.g. a hypothetical
+    // `MidStreamPrompt`), we should NOT silently consume it as a wake-up
+    // search seed without an explicit decision here. Future event
+    // support requires extending the allowlist.
+    const offEvent = JSON.stringify({
+      session_id: "abc",
+      hook_event_name: "PreToolUse",
+      prompt: "this should not be used",
+    })
+    expect(parseUserQueryFromEvent(offEvent)).toBeUndefined()
+  })
+
+  it("rejects events whose hook_event_name is an empty string (sentinel for unknown event)", () => {
+    // A forwarder that emits `hook_event_name: ""` as a sentinel for
+    // "unknown event" should degrade to fallback rather than be
+    // treated as if the field were absent — the field IS present, it
+    // just doesn't say `UserPromptSubmit`. Empty string trips the
+    // string-typed `!== "UserPromptSubmit"` branch deliberately.
+    const emptyNamedEvent = JSON.stringify({
+      hook_event_name: "",
+      prompt: "fix auth",
+    })
+    expect(parseUserQueryFromEvent(emptyNamedEvent)).toBeUndefined()
+  })
+
+  it("accepts events with no hook_event_name (legacy / stripped forwarders)", () => {
+    // The wakeup.sh shim doesn't always preserve the full event shape.
+    // When `hook_event_name` is absent we fall through to the prompt
+    // check rather than rejecting — this preserves compatibility with
+    // forwarders that synthesize a minimal `{prompt}` payload.
+    const minimalEvent = JSON.stringify({ prompt: "fix auth bug" })
+    expect(parseUserQueryFromEvent(minimalEvent)).toBe("fix auth bug")
+  })
+
   it("falls back when a resumed Claude Code session fires SessionStart instead of UserPromptSubmit", () => {
     // Resumed sessions in Claude Code fire SessionStart, not
     // UserPromptSubmit — there's no user prompt yet. The wakeup.sh

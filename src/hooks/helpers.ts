@@ -31,7 +31,7 @@ import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildSessionEndPrompt } from "./prompts.js"
 import {
-  DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+  RANKED_WAKEUP_LIMITS,
   dateBucket,
   loadWakeUpData,
 } from "../core/wakeup.js"
@@ -391,25 +391,6 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
 // helper before that lands.
 
 /**
- * Per-section caps applied to wake-up output when the user's first
- * message is available (`userQuery` non-empty). Tighter than the data-
- * layer defaults because relevance-ranked top hits carry more signal-per-
- * row than timestamp-ordered recents — a smaller bundle yields better
- * wake-up density. Values come straight from the P3-05 spec.
- *
- * Without a user query (Codex `SessionStart`, or Claude Code initial-
- * session edge cases), the hook falls through to the data-layer defaults
- * for backward compatibility with the pre-P3-05 wake-up output.
- */
-const RANKED_WAKEUP_LIMITS = {
-  memoryLimit: 3,
-  relatedMemoryLimit: 2,
-  openLoopLimit: 5,
-  knowledgeFactLimit: 10,
-  taskMemoryLimit: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
-} as const
-
-/**
  * Parse the JSON payload Claude Code's `UserPromptSubmit` hook delivers
  * on stdin (forwarded by `wakeup.sh` via `LORE_WAKEUP_EVENT`). Returns
  * the user's prompt text when present, `undefined` otherwise. The
@@ -452,7 +433,22 @@ export function parseUserQueryFromEvent(raw: string | undefined): string | undef
     return undefined
   }
   if (typeof parsed !== "object" || parsed === null) return undefined
-  const prompt = (parsed as { prompt?: unknown }).prompt
+  const event = parsed as { prompt?: unknown; hook_event_name?: unknown }
+  // PF3-04 (bundled): when `hook_event_name` is set and is NOT
+  // `UserPromptSubmit`, drop to the fallback path. Today only
+  // `UserPromptSubmit` carries a usable `prompt` field; a future event
+  // that happens to include `prompt` shouldn't be silently consumed
+  // as a search seed without an explicit decision here. Absent or
+  // non-string `hook_event_name` is treated as legacy/unknown — fall
+  // through to the prompt check so we don't break callers that strip
+  // the field.
+  if (
+    typeof event.hook_event_name === "string" &&
+    event.hook_event_name !== "UserPromptSubmit"
+  ) {
+    return undefined
+  }
+  const prompt = event.prompt
   if (typeof prompt !== "string") return undefined
   const trimmed = prompt.trim()
   if (trimmed.length === 0) return undefined
@@ -495,13 +491,26 @@ async function wakeup(): Promise<void> {
   // that has no prompt yet leaves the env var unset; we fall through to
   // the data-layer defaults.
   const userQuery = parseUserQueryFromEvent(process.env["LORE_WAKEUP_EVENT"])
-  if (!userQuery && process.env["LORE_DEBUG"] === "1") {
-    // Operator-facing log: a session that fired wake-up without a user
-    // query is degraded to unranked output. Useful when triaging "why
-    // did wake-up surface iOS notes when I asked about backend auth?"
-    process.stderr.write(
-      "[lore] wakeup: no user query available — falling back to unranked output.\n",
-    )
+  const debug = process.env["LORE_DEBUG"] === "1"
+  if (debug) {
+    // Operator-facing log: report whether ranked output fired and which
+    // caps applied. Useful when triaging "why did wake-up surface iOS
+    // notes when I asked about backend auth?" — distinguishes the
+    // fallback path (no query reached the helper) from a ranked path
+    // that simply produced surprising hits, which in turn directs
+    // operators to the right next step (fix the wakeup.sh forwarding
+    // vs. inspect the relevance index).
+    // Format mirrors `[lore] partial-failure: key=value key=value` so a
+    // single grep against `[lore] ` parses uniformly across operator logs.
+    if (userQuery) {
+      process.stderr.write(
+        `[lore] wakeup: ranked=true queryLen=${userQuery.length} memory=${RANKED_WAKEUP_LIMITS.memoryLimit} related=${RANKED_WAKEUP_LIMITS.relatedMemoryLimit} openLoops=${RANKED_WAKEUP_LIMITS.openLoopLimit} knowledge=${RANKED_WAKEUP_LIMITS.knowledgeFactLimit} taskMemories=${RANKED_WAKEUP_LIMITS.taskMemoryLimit}\n`,
+      )
+    } else {
+      process.stderr.write(
+        "[lore] wakeup: ranked=false reason=no-user-query\n",
+      )
+    }
   }
   const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
 

@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
+import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
 import type { Fact, Memory } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
@@ -480,6 +481,159 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     // The data layer skips the search when the effective limit is zero,
     // so no extra Notion round-trip fires.
     expect(services._calls.memoriesSearch).not.toHaveBeenCalled()
+  })
+
+  // PF3-04: per-section caps must match the shell hook's `RANKED_WAKEUP_LIMITS`
+  // when a userQuery is provided, otherwise an MCP-direct caller's prompt
+  // budget diverges from a Claude Code first-prompt wake-up — the AGENTS.md
+  // claim "rendering is the only divergence" only holds if the row counts
+  // line up across both surfaces.
+
+  it("applies RANKED_WAKEUP_LIMITS to the open-loop and knowledge-fact sections when userQuery is set", async () => {
+    // The data-layer caps for sections that don't run through topical
+    // collapse (open loops + knowledge facts) should flow straight from
+    // RANKED_WAKEUP_LIMITS into the underlying service calls.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "fix auth",
+      taskMemories: [makeMemory("task-1")],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    await wake({ userQuery: "fix auth" } as never)
+
+    expect(services._calls.factsQueryBySubject).toHaveBeenCalledWith(
+      "",
+      expect.objectContaining({ limit: RANKED_WAKEUP_LIMITS.openLoopLimit }),
+    )
+    expect(services._calls.factsListRecent).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: RANKED_WAKEUP_LIMITS.knowledgeFactLimit }),
+    )
+  })
+
+  it("falls back to surface defaults when userQuery is absent", async () => {
+    // Pin the inverse: without userQuery the existing per-section defaults
+    // apply, so legacy MCP callers see no change in row counts.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({})
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    await wake({} as never)
+
+    const knowledgeCall = services._calls.factsListRecent.mock.calls[0]?.[0] as
+      | { limit?: number }
+      | undefined
+    // Default knowledge-fact cap is 25; ranked cap is 10. Without
+    // userQuery we keep the looser default.
+    expect(knowledgeCall?.limit).not.toBe(RANKED_WAKEUP_LIMITS.knowledgeFactLimit)
+  })
+
+  it("respects caller-supplied caps even when userQuery is set", async () => {
+    // Explicit args still win over the ranked defaults — the ranked path
+    // is "use tighter limits when the caller hasn't told us otherwise."
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "fix auth",
+      taskMemories: [makeMemory("task-1")],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getHandler("lore-wake-up")
+    await wake({
+      userQuery: "fix auth",
+      openLoopLimit: 42,
+      knowledgeFactLimit: 47,
+    } as never)
+
+    expect(services._calls.factsQueryBySubject).toHaveBeenCalledWith(
+      "",
+      expect.objectContaining({ limit: 42 }),
+    )
+    expect(services._calls.factsListRecent).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 47 }),
+    )
+  })
+
+  it("renders the same number of memory rows as the hook for the same input (parity)", async () => {
+    // PF3-04 acceptance: when both surfaces fire ranked wake-up against
+    // the same input, the visible row counts in each memory section must
+    // match. The hook applies RANKED_WAKEUP_LIMITS flat; the MCP path
+    // over-fetches by COLLAPSE_OVERFETCH_MULTIPLIER and then slices by
+    // cluster — but the final visible counts converge because both
+    // surfaces enforce the same ranked cap.
+
+    // Build a fixture with more candidates than any cap so every section
+    // saturates: 6 distinct memories (above ranked memoryLimit=3),
+    // 6 distinct task hits (above taskMemoryLimit=3). Titles share NO
+    // 3+ char tokens so topical collapse is a no-op on the MCP side —
+    // this test pins the cap, not the collapse heuristic.
+    const recentTitles = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"]
+    const taskTitles = ["Quux", "Plugh", "Xyzzy", "Thud", "Wibble", "Wobble"]
+    const recentMemories: Memory[] = recentTitles.map((title, i) =>
+      makeMemory(`recent-${i}`, {
+        title,
+        tags: [`uniq-recent-${i}`],
+        createdAt: `2026-04-${String(20 - i).padStart(2, "0")}T00:00:00Z`,
+      }),
+    )
+    const taskMemoriesFixture: Memory[] = taskTitles.map((title, i) =>
+      makeMemory(`task-${i}`, {
+        title,
+        tags: [`uniq-task-${i}`],
+        createdAt: `2026-03-${String(20 - i).padStart(2, "0")}T00:00:00Z`,
+      }),
+    )
+
+    // MCP surface
+    const mcpServer = createMockServer()
+    const mcpServices = makeWakeServices({
+      memories: recentMemories,
+      taskQuery: "auth bug",
+      taskMemories: taskMemoriesFixture,
+    })
+    registerContextTools(mcpServer.server, mcpServices as never)
+    const mcpWake = mcpServer.getHandler("lore-wake-up")
+    const mcpResult = await mcpWake({ userQuery: "auth bug" } as never)
+    const mcpText = extractText(mcpResult)
+
+    // Hook-equivalent surface — drive `loadWakeUpData` directly with the
+    // shared RANKED_WAKEUP_LIMITS so any future drift is caught here.
+    const hookServices = makeWakeServices({
+      memories: recentMemories,
+      taskQuery: "auth bug",
+      taskMemories: taskMemoriesFixture,
+    })
+    const hookData = await loadWakeUpData(hookServices as never, {
+      projectId: "proj-1",
+      userQuery: "auth bug",
+      includeMemoryContent: false,
+      ...RANKED_WAKEUP_LIMITS,
+    })
+
+    // Recent Memories renders one bullet per memory under date buckets
+    // (`#### `), and the cluster-slice on the MCP side bounds the visible
+    // count at recentCap (= memoryLimit = 3 under ranked). Pin the actual
+    // *titles* visible on each surface, not just the count — comparing
+    // both sides to a literal constant would be a tautology that wouldn't
+    // catch a divergence where MCP picked [Bravo, Delta, Foxtrot] while
+    // the hook picked [Alpha, Bravo, Charlie].
+    const mcpRecentTitles = recentTitles
+      .filter((t) => mcpText.includes(`#### ${t}\n`))
+      .sort()
+    const hookRecentTitles = hookData.memories.map((m) => m.title).sort()
+    expect(mcpRecentTitles).toHaveLength(RANKED_WAKEUP_LIMITS.memoryLimit)
+    expect(hookRecentTitles).toHaveLength(RANKED_WAKEUP_LIMITS.memoryLimit)
+    expect(mcpRecentTitles).toEqual(hookRecentTitles)
+
+    // For Your Current Task renders one heading per cluster (`### `).
+    // Same set-equality check as Recent Memories.
+    const mcpTaskTitles = taskTitles.filter((t) => mcpText.includes(`### ${t}\n`)).sort()
+    const hookTaskTitles = hookData.taskMemories.map((m) => m.title).sort()
+    expect(mcpTaskTitles).toHaveLength(RANKED_WAKEUP_LIMITS.taskMemoryLimit)
+    expect(hookTaskTitles).toHaveLength(RANKED_WAKEUP_LIMITS.taskMemoryLimit)
+    expect(mcpTaskTitles).toEqual(hookTaskTitles)
   })
 
   it("dedupes taskMemories against recents and related at the MCP layer", async () => {
