@@ -74,6 +74,11 @@ export async function touchDigestMarker(
  * retries.
  *
  * No-op when the marker is already absent.
+ *
+ * Unlike `touchDigestMarker`, this helper intentionally does not `mkdir`
+ * the state dir: `rm({ force: true })` already tolerates a missing path
+ * (file or any parent), so ensuring the dir before deletion would be
+ * wasted I/O on every rollback.
  */
 export async function clearDigestMarker(
   configRoot: string,
