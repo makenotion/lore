@@ -655,6 +655,41 @@ line, so `grep` and log-aggregator parsers can rely on newline-delimited
 events even if a future caller threads a stringly-typed multi-line error
 through the same helper.
 
+## Server Versioning
+
+The lore version is reported in four places that **must move together**:
+
+1. `package.json#version` — what `npm`, dependency consumers, and `npm publish` see.
+2. The `version` string passed to `new McpServer({ name, version }, ...)` in
+   `src/mcp/server.ts` — what every connected MCP client sees on the protocol handshake.
+3. The `.version(...)` argument in `src/cli/index.ts` — what `lore --version`
+   reports to humans on the command line.
+4. The `USER_AGENT` constant in `src/notion/client.ts` — the `User-Agent` header
+   sent on every Notion API request, used by Notion's API analytics to attribute
+   lore traffic.
+
+These are intentionally separate string literals (no runtime
+`import` of `package.json`, no generated `version.ts`) so the build has
+zero JSON-resolution wiring. The cost is that drift is silent: a bump in
+one file will not fail the build or any test. Treat them as a paired
+release-checklist item — when bumping the version for an agent-observable
+change (new tool, removed alias, default-behavior flip), update all four
+files in the same commit and add a row to the historical-bumps table
+below so the table doesn't go stale.
+
+A vitest assertion that reads each file, parses the version literal, and
+asserts equality was considered and deferred — release-checklist
+discipline suffices at the current bump cadence. Revisit if a future
+change introduces a `version.ts` source of truth or if the cadence picks up.
+
+Historical bumps and what they signalled:
+
+| Version | Signal |
+|---------|--------|
+| `0.2.0` | Content-off default for `lore-recall` / `lore-search` (and later `lore-wake-up`) |
+| `0.3.0` | Open loops ranking contract (`OVERDUE_SEVERE_DAYS` / `OVERDUE_MILD_DAYS`) |
+| `0.4.0` | P3-01 polymorphic tool surface (24 → 7 dispatchers + deprecated aliases) |
+
 ## Server Startup
 
 `server.ts` runs as a standalone process (the `dist/mcp.js` entry point):
