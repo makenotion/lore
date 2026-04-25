@@ -217,8 +217,8 @@ export async function findEncodedMemories(
  * Run the memory encoding fix pass. Scans every non-archived memory,
  * rewrites `Title` via `pages.update`, and — when the body is within
  * `BODY_SIZE_CAP_BYTES` — rewrites body markdown via
- * `pages.updateMarkdown({ type: "replace_content_range", content_range:
- * "full_page" })`. Idempotent.
+ * `pages.updateMarkdown({ type: "replace_content", replace_content: { new_str } })`.
+ * Idempotent.
  *
  * Oversized bodies are surfaced in `oversizedSkipped` so the CLI can report
  * them as a distinct bucket; Title-only fixes on those rows still run,
@@ -263,10 +263,9 @@ export async function fixMemoryEncoding(
     ) {
       await client.pages.updateMarkdown({
         page_id: row.id,
-        type: "replace_content_range",
-        replace_content_range: {
-          content: row.decodedContent,
-          content_range: "full_page",
+        type: "replace_content",
+        replace_content: {
+          new_str: row.decodedContent,
           allow_deleting_content: true,
         },
       })

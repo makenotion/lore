@@ -1425,7 +1425,7 @@ describe("MemoryService.update — HTML entity decode at write", () => {
     }
     const updateSpy = vi.fn(async (_args: FullUpdateArgs) => ({}))
     const updateMarkdownSpy = vi.fn(
-      async (_args: { replace_content_range: { content: string } }) => ({}),
+      async (_args: { replace_content: { new_str: string } }) => ({}),
     )
     const retrieveSpy = vi.fn(async () =>
       buildPage(
@@ -1464,7 +1464,7 @@ describe("MemoryService.update — HTML entity decode at write", () => {
     expect(props.Keywords?.rich_text[0].text.content).toBe("PR & branch")
 
     const mdArgs = updateMarkdownSpy.mock.calls[0][0]
-    expect(mdArgs.replace_content_range.content).toBe("Body & body")
+    expect(mdArgs.replace_content.new_str).toBe("Body & body")
   })
 })
 

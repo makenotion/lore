@@ -310,10 +310,9 @@ describe("fixMemoryEncoding", () => {
     })
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith({
       page_id: "m1",
-      type: "replace_content_range",
-      replace_content_range: {
-        content: "Rollup & Vite",
-        content_range: "full_page",
+      type: "replace_content",
+      replace_content: {
+        new_str: "Rollup & Vite",
         allow_deleting_content: true,
       },
     })

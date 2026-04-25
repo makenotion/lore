@@ -384,10 +384,9 @@ export class TaskService {
     if (input.description !== undefined) {
       await this.client.pages.updateMarkdown({
         page_id: id,
-        type: "replace_content_range",
-        replace_content_range: {
-          content: decodeTextEntities(input.description),
-          content_range: "full_page",
+        type: "replace_content",
+        replace_content: {
+          new_str: decodeTextEntities(input.description),
           allow_deleting_content: true,
         },
       })

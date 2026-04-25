@@ -536,10 +536,9 @@ export class MemoryService {
     if (decoded.content) {
       await this.client.pages.updateMarkdown({
         page_id: id,
-        type: "replace_content_range",
-        replace_content_range: {
-          content: decoded.content,
-          content_range: "full_page",
+        type: "replace_content",
+        replace_content: {
+          new_str: decoded.content,
           allow_deleting_content: true,
         },
       })

@@ -220,16 +220,44 @@ class FixtureVault {
         updateMarkdown: async (args: {
           page_id: string
           type: string
-          replace_content_range?: { content: string }
+          replace_content?: { new_str: string }
+          replace_content_range?: { content: string; content_range: string }
+          insert_content?: { content: string; after?: string }
         }) => {
           this.writeCount++
-          if (args.type !== "replace_content_range" || !args.replace_content_range) {
-            throw new Error(
-              `fixture does not model updateMarkdown type=${args.type}`
-            )
+          if (args.type === "replace_content" && args.replace_content) {
+            this.markdown.set(args.page_id, args.replace_content.new_str)
+            return {}
           }
-          this.markdown.set(args.page_id, args.replace_content_range.content)
-          return {}
+          if (args.type === "replace_content_range" && args.replace_content_range) {
+            // Faithfully model Notion's contract: `content_range` is a literal
+            // selector inside the existing page body, expressed as
+            // "start...end". The whole-page replace primitive lives behind
+            // `type: "replace_content"` — passing magic strings like
+            // "full_page" hits the Notion API as a substring search and
+            // returns `validation_error: String not found: <pattern>...`.
+            // Enforcing that here is what would have caught issue #90.
+            const existing = this.markdown.get(args.page_id) ?? ""
+            const range = args.replace_content_range.content_range
+            if (!existing.includes(range)) {
+              throw new Error(
+                `String not found: <pattern>${range}...${range}</pattern> in current version of the page`
+              )
+            }
+            this.markdown.set(args.page_id, args.replace_content_range.content)
+            return {}
+          }
+          if (args.type === "insert_content" && args.insert_content) {
+            const existing = this.markdown.get(args.page_id) ?? ""
+            this.markdown.set(
+              args.page_id,
+              existing + args.insert_content.content
+            )
+            return {}
+          }
+          throw new Error(
+            `fixture does not model updateMarkdown type=${args.type}`
+          )
         },
       },
     } as unknown as Client
