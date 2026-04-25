@@ -99,7 +99,7 @@ try {
 | `lore auth` | none | none | Show authentication status and setup instructions |
 | `lore search <query>` | Search query | `-p`, `-t`, `-n` | Semantic search across memories |
 | `lore mine [path]` | Directory path | `-p`, `-t`, `--pattern`, `--dry-run`, `-n` | Index project files as memories |
-| `lore status` | none | none | Show vault status, database counts, active projects |
+| `lore status` | none | none | Show vault status, database counts, active projects, and per-project digest watermarks |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
@@ -155,6 +155,33 @@ sub-project. Both paths touch a per-project marker file under the hook
 state directory (`$TMPDIR/lore-hook-state/digest.<project>.last`) so the
 session-end path respects the debounce. The CLI also touches the marker
 so a manual run won't be immediately overridden by the next session-end.
+
+## The status Command
+
+`status` prints vault metadata (page id, current project, database counts,
+active projects) plus a per-project **Digests** section that surfaces:
+
+- Date of the latest existing `source: digest` memory linked to the project
+  (or `no digest yet`).
+- Marker mtime age in days (or `marker missing`).
+- An estimated time until the next auto-digest fire, derived from
+  `DIGEST_STALE_DAYS - markerAge`.
+
+The section header surfaces the auto-digest disabled state when either
+`LORE_AUTO_DIGEST=false` or `hooks.autoDigest: false` is set, so an
+operator who set the env var and forgot sees it on the next `lore status`
+without having to grep their shell rc.
+
+Cost: exactly one extra Notion call beyond the existing status output —
+a vault-wide `memories.list({ source: digest })` capped at 50 rows,
+grouped client-side by `projectIds`. Per-project marker `stat`s are pure
+filesystem and proportional to configured sub-projects. A vault with no
+configured sub-projects (catch-all only) suppresses the section entirely.
+
+The pure renderer (`formatDigestStatus`) and the loader
+(`loadDigestStatus`) are exported from `commands/status.ts` and unit-
+tested in `commands/status.test.ts` — extend those tests when adding
+new branches to the watermark display.
 
 ## Adding a New Command
 
