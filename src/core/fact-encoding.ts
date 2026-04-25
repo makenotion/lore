@@ -29,7 +29,7 @@ import {
   isFullPage,
 } from "../notion/extractors.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
-import { computeFactDedupKey } from "../notion/normalize.js"
+import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 
 /** One fact row whose stored Subject or Object contains HTML entities that
  *  would decode to a cleaner string. Also used as the return shape of an
@@ -259,12 +259,21 @@ export async function fixFactEncoding(
   const fixes: FactEncodingFixResult[] = []
   for (const row of encoded) {
     if (blockedIds.has(row.id)) continue
+    // Decoding `Subject` changes its canonical SubjectKey too — recompute
+    // and bundle into the same atomic update so a future case-insensitive
+    // `queryBySubject` (P3-03 Part A) matches against the decoded form.
+    // Splitting the write would leave a window where SubjectKey lags and
+    // queries silently miss the just-fixed row.
+    const decodedSubjectKey = computeSubjectKey(row.decodedSubject)
     await client.pages.update({
       page_id: row.id,
       properties: {
         Subject: { title: [{ text: { content: row.decodedSubject } }] },
         Object: { rich_text: [{ text: { content: row.decodedObject } }] },
         DedupKey: { rich_text: [{ text: { content: row.decodedDedupKey } }] },
+        SubjectKey: {
+          rich_text: [{ text: { content: decodedSubjectKey } }],
+        },
       } as CreatePageParameters["properties"],
     })
     fixes.push(row)

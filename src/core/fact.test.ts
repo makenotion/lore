@@ -1,7 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { FactService, __resetProbeFailureLogForTests } from "./fact.js"
-import { normalize, computeFactDedupKey } from "../notion/normalize.js"
+import {
+  normalize,
+  computeFactDedupKey,
+  computeSubjectKey,
+} from "../notion/normalize.js"
 import {
   TRACKING_PREDICATES,
   type DatabaseRef,
@@ -315,10 +319,15 @@ describe("FactService.listTracking", () => {
     })
   })
 
-  it("adds an OR(Subject contains, Object contains) clause when entity is set", async () => {
+  it("adds an OR(SubjectKey, Subject, Object contains) clause when entity is set", async () => {
     // Entity filter must match both sides — PR slugs commonly appear as
     // the Object of a `waiting_on` fact, while service names are
     // Subjects. Losing either side silently halves recall.
+    //
+    // The Subject side gets the SubjectKey case-folded variant alongside
+    // the raw Subject so case-variant entity names resolve correctly
+    // (P3-03 Part A); the Object side stays raw because Part A doesn't
+    // add an ObjectKey column (Part B work).
     const { client, calls } = createClient([{ results: [] }])
     const service = new FactService(client, db)
 
@@ -333,12 +342,19 @@ describe("FactService.listTracking", () => {
     }) as { or: Array<Record<string, unknown>> }
     expect(entityGroup).toBeDefined()
 
+    const subjectKey = entityGroup.or.find(
+      (c) => (c as { property?: string }).property === "SubjectKey",
+    ) as { property: string; rich_text: { contains: string } }
     const subject = entityGroup.or.find(
       (c) => (c as { property?: string }).property === "Subject",
     ) as { property: string; title: { contains: string } }
     const object = entityGroup.or.find(
       (c) => (c as { property?: string }).property === "Object",
     ) as { property: string; rich_text: { contains: string } }
+    expect(subjectKey).toMatchObject({
+      property: "SubjectKey",
+      rich_text: { contains: computeSubjectKey("PR #25751") },
+    })
     expect(subject).toMatchObject({
       property: "Subject",
       title: { contains: "PR #25751" },
@@ -451,6 +467,40 @@ describe("FactService.listTracking", () => {
 
     expect(items).toHaveLength(100)
     expect(hasMore).toBe(false)
+  })
+
+  it("suppresses the SubjectKey OR branch when entity normalizes to empty", async () => {
+    // Same broadening trap as `queryBySubject` — `lore-open-loops` with
+    // an entity input of `"."` or `"   "` would otherwise silently match
+    // every populated-SubjectKey row in the vault. The Subject + Object
+    // raw-contains branches still run, preserving the pre-P3-03
+    // substring semantics for these edge inputs.
+    for (const entity of [".", "   ", "!!!"]) {
+      const { client, calls } = createClient([{ results: [] }])
+      await new FactService(client, db).listTracking({
+        projectId: "p1",
+        entity,
+      })
+
+      expect(computeSubjectKey(entity)).toBe("")
+
+      const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+      const entityGroup = filter.and.find((c) => {
+        const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+        if (!Array.isArray(maybeOr)) return false
+        const props = maybeOr.map(
+          (clause) => (clause as { property?: string }).property,
+        )
+        return props.includes("Subject") && props.includes("Object")
+      }) as { or: Array<Record<string, unknown>> }
+      expect(entityGroup).toBeDefined()
+
+      const properties = entityGroup.or.map(
+        (c) => (c as { property?: string }).property,
+      )
+      expect(properties).not.toContain("SubjectKey")
+      expect(properties).toEqual(expect.arrayContaining(["Subject", "Object"]))
+    }
   })
 
   it("drops the Valid Until filter when includeInvalidated is true", async () => {
@@ -1124,5 +1174,227 @@ describe("FactService.create (default path)", () => {
     })
 
     expect(fact.id).toBe("f1")
+  })
+})
+
+describe("computeSubjectKey", () => {
+  it("collapses cosmetic subject variants to one key (P3-03 Part A)", () => {
+    expect(computeSubjectKey("MemoryService")).toBe(
+      computeSubjectKey("memoryservice")
+    )
+    expect(computeSubjectKey("MemoryService")).toBe(
+      computeSubjectKey("MemoryService ")
+    )
+    expect(computeSubjectKey("MemoryService")).toBe(
+      computeSubjectKey(" MemoryService.")
+    )
+  })
+
+  it("preserves embedded punctuation and dots so file-like subjects survive", () => {
+    expect(computeSubjectKey("file.ts")).toBe("file.ts")
+    expect(computeSubjectKey("FactService.create")).toBe("factservice.create")
+  })
+
+  it("agrees with the dedup-key fold so a SubjectKey/DedupKey divergence is impossible", () => {
+    // Pin the two normalize outputs to the same shape — splitting the
+    // fold rules between the two columns would silently re-fragment the
+    // entity-canonicalization story P3-03 closes.
+    expect(computeSubjectKey("AuthService")).toBe(normalize("AuthService"))
+  })
+})
+
+describe("FactService.createWithDedup — SubjectKey write", () => {
+  it("writes SubjectKey alongside DedupKey on a fresh row", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      factPage({ id: "new", subject: "MemoryService" })
+    )
+    const service = new FactService(client, DB)
+
+    await service.createWithDedup({
+      subject: "MemoryService",
+      predicate: "uses",
+      object: "Notion",
+    })
+
+    const createCall = client.pages.create.mock.calls[0][0]
+    expect(createCall.properties.SubjectKey.rich_text[0].text.content).toBe(
+      computeSubjectKey("MemoryService")
+    )
+    // Subject still carries the human-readable form — SubjectKey is the
+    // case-folded mirror, not a replacement.
+    expect(createCall.properties.Subject.title[0].text.content).toBe(
+      "MemoryService"
+    )
+  })
+
+  it("computes SubjectKey from the decoded subject so encoded inputs canonicalize consistently", async () => {
+    // Pre-PF1-06 inputs sometimes arrive doubly-HTML-encoded. The decode
+    // happens at the write boundary, so SubjectKey must be derived from
+    // the post-decode value — otherwise `lore-ask("Foo & Bar")` would
+    // miss the row written from `Foo &amp;amp; Bar`.
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      factPage({ id: "new", subject: "Foo & Bar" })
+    )
+    const service = new FactService(client, DB)
+
+    await service.createWithDedup({
+      subject: "Foo &amp;amp; Bar",
+      predicate: "uses",
+      object: "x",
+    })
+
+    const createCall = client.pages.create.mock.calls[0][0]
+    expect(createCall.properties.SubjectKey.rich_text[0].text.content).toBe(
+      computeSubjectKey("Foo & Bar")
+    )
+  })
+})
+
+describe("FactService.queryBySubject — case-insensitive match", () => {
+  it("issues an OR(SubjectKey contains, Subject contains) filter when given a non-empty subject", async () => {
+    // The two-clause OR is the migration-period contract: SubjectKey
+    // catches every row backfilled by `lore migrate --dedup-keys` (P3-03
+    // Part A's primary path), while the Subject fallback keeps
+    // pre-migration rows reachable until the backfill lands. Both
+    // clauses must use `contains` so partial-match semantics carry over
+    // from the pre-P3-03 query.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryBySubject("MemoryService", { projectId: "p1" })
+
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    expect(filter).toHaveProperty("and")
+    const orGroup = filter.and.find((c) => {
+      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+      if (!Array.isArray(maybeOr)) return false
+      const props = maybeOr.map(
+        (clause) => (clause as { property?: string }).property
+      )
+      return props.includes("SubjectKey") && props.includes("Subject")
+    }) as { or: Array<Record<string, unknown>> } | undefined
+    expect(orGroup).toBeDefined()
+
+    const subjectKeyClause = orGroup!.or.find(
+      (c) => (c as { property?: string }).property === "SubjectKey"
+    ) as { property: string; rich_text: { contains: string } }
+    expect(subjectKeyClause.rich_text.contains).toBe(
+      computeSubjectKey("MemoryService")
+    )
+
+    const subjectClause = orGroup!.or.find(
+      (c) => (c as { property?: string }).property === "Subject"
+    ) as { property: string; title: { contains: string } }
+    expect(subjectClause.title.contains).toBe("MemoryService")
+  })
+
+  it("normalizes case-variant queries to the same SubjectKey filter value", async () => {
+    // The bug P3-03 closes: `lore-ask("MemoryService")` and
+    // `lore-ask("memoryservice")` must reach the same fact set. The
+    // service-side filter normalizes the input, so both calls hit the
+    // same SubjectKey contains value.
+    const { client: c1, calls: cs1 } = createClient([{ results: [] }])
+    const { client: c2, calls: cs2 } = createClient([{ results: [] }])
+
+    await new FactService(c1, db).queryBySubject("MemoryService", {
+      projectId: "p1",
+    })
+    await new FactService(c2, db).queryBySubject("memoryservice ", {
+      projectId: "p1",
+    })
+
+    const findKey = (calls: Array<Record<string, unknown>>): string => {
+      const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+      const orGroup = filter.and.find((c) => {
+        const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+        return Array.isArray(maybeOr)
+      }) as { or: Array<Record<string, unknown>> }
+      const sk = orGroup.or.find(
+        (c) => (c as { property?: string }).property === "SubjectKey"
+      ) as { rich_text: { contains: string } }
+      return sk.rich_text.contains
+    }
+
+    expect(findKey(cs1)).toBe(findKey(cs2))
+  })
+
+  it("omits the OR clause entirely when subject is empty (list-all-in-scope)", async () => {
+    // Empty subject means "list every fact in scope" — adding a
+    // `SubjectKey contains ""` clause would constrain the result to rows
+    // with non-empty SubjectKey, silently hiding pre-migration rows.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryBySubject("", { projectId: "p1" })
+
+    const filter = calls[0].filter as Record<string, unknown>
+    const clauses: Array<Record<string, unknown>> = Array.isArray(filter.and)
+      ? (filter.and as Array<Record<string, unknown>>)
+      : [filter]
+    const hasSubjectClause = clauses.some((c) => {
+      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+      if (!Array.isArray(maybeOr)) return false
+      return maybeOr.some(
+        (clause) =>
+          (clause as { property?: string }).property === "SubjectKey" ||
+          (clause as { property?: string }).property === "Subject"
+      )
+    })
+    expect(hasSubjectClause).toBe(false)
+  })
+
+  it("falls back to raw Subject when input normalizes to empty (punctuation/whitespace only)", async () => {
+    // Pin the broadening fix: a punctuation-only entity (`"."`, `"!!!"`)
+    // or a whitespace-only string normalizes to `""`. Notion's
+    // `rich_text contains ""` matches every populated SubjectKey row, so
+    // a naive `OR(SubjectKey contains norm, Subject contains raw)` would
+    // silently turn `lore-ask({entity: "."})` into "every fact in
+    // scope". Suppressing the SubjectKey clause when the normalized form
+    // is empty preserves pre-P3-03 substring semantics — the agent gets
+    // the rows whose Subject literally contains the input, not the whole
+    // vault.
+    for (const subject of [".", "   ", "!!!"]) {
+      const { client, calls } = createClient([{ results: [] }])
+      await new FactService(client, db).queryBySubject(subject, {
+        projectId: "p1",
+      })
+
+      // Normalize input matches the assertion fixture so the test fails
+      // loudly if `computeSubjectKey` ever stops stripping these chars.
+      expect(computeSubjectKey(subject)).toBe("")
+
+      const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+      const clauses = Array.isArray(filter.and) ? filter.and : [filter]
+
+      // No OR group with SubjectKey — that's the broadening trap.
+      const hasSubjectKeyClause = clauses.some((c) => {
+        const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+        if (!Array.isArray(maybeOr)) return false
+        return maybeOr.some(
+          (clause) => (clause as { property?: string }).property === "SubjectKey",
+        )
+      })
+      expect(hasSubjectKeyClause).toBe(false)
+
+      // Raw Subject filter still applied — caller still gets literal-
+      // substring semantics.
+      const subjectClause = clauses.find(
+        (c) => (c as { property?: string }).property === "Subject",
+      ) as { property: string; title: { contains: string } } | undefined
+      expect(subjectClause).toBeDefined()
+      expect(subjectClause!.title.contains).toBe(subject)
+    }
   })
 })

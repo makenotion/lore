@@ -273,6 +273,13 @@ export function factsProperties(
     // into a single row. Pre-migration pages have this blank; the migrate
     // command backfills it.
     DedupKey: { rich_text: {} },
+    // Lowercased + whitespace-collapsed form of `Subject`, used by
+    // `FactService.queryBySubject` for case-insensitive matching (P3-03
+    // Part A). Pre-migration rows have this blank; `lore migrate
+    // --dedup-keys` backfills it. Distinct from `DedupKey` (a hash) because
+    // we need `contains` substring matching, which Notion doesn't run
+    // against hashed values.
+    SubjectKey: { rich_text: {} },
   }
 }
 
@@ -411,6 +418,7 @@ export function buildFactProps(input: {
   sourceMemoryId?: string
   confidence?: string
   dedupKey?: string
+  subjectKey?: string
 }): PageProperties {
   const props: PageProperties = {
     Subject: { title: [{ text: { content: input.subject } }] },
@@ -434,6 +442,15 @@ export function buildFactProps(input: {
   }
   if (input.dedupKey) {
     props["DedupKey"] = { rich_text: [{ text: { content: input.dedupKey } }] }
+  }
+  // Truthy-gate would silently skip the column for punctuation-only subjects
+  // (e.g. `"."` normalizes to `""`), creating rows that the dedup backfill
+  // then has to re-pick-up. Write the empty string explicitly so the create
+  // path is consistent with the backfill path's "always populate" contract.
+  if (input.subjectKey !== undefined) {
+    props["SubjectKey"] = {
+      rich_text: [{ text: { content: input.subjectKey } }],
+    }
   }
   return props
 }

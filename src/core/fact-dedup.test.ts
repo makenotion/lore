@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { runFactDedupBackfill } from "./fact-dedup.js"
-import { computeFactDedupKey } from "../notion/normalize.js"
+import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import type { DatabaseRef } from "../types.js"
 
 function buildRow(overrides: {
@@ -10,10 +10,23 @@ function buildRow(overrides: {
   predicate?: string
   object: string
   dedupKey?: string
+  /**
+   * Stored SubjectKey. Default to `computeSubjectKey(subject)` so legacy
+   * fixtures stay focused on DedupKey behaviour without being implicitly
+   * "stale on SubjectKey too" — the backfill now re-runs whenever either
+   * column drifts, and propagating that into every fixture would obscure
+   * the test under exercise. Pass an empty string explicitly to model a
+   * pre-P3-03 row.
+   */
+  subjectKey?: string
   validUntil?: string | null
   reviewBy?: string | null
   createdTime?: string
 }): PageObjectResponse {
+  const subjectKey =
+    overrides.subjectKey !== undefined
+      ? overrides.subjectKey
+      : computeSubjectKey(overrides.subject)
   return {
     object: "page",
     id: overrides.id,
@@ -40,6 +53,10 @@ function buildRow(overrides: {
         rich_text: overrides.dedupKey
           ? [{ plain_text: overrides.dedupKey }]
           : [],
+      } as unknown,
+      SubjectKey: {
+        type: "rich_text",
+        rich_text: subjectKey ? [{ plain_text: subjectKey }] : [],
       } as unknown,
       "Valid Until": {
         type: "date",
@@ -69,11 +86,18 @@ const DB: DatabaseRef = {
 }
 
 describe("runFactDedupBackfill — backfill phase", () => {
-  it("writes DedupKey on rows where it is empty", async () => {
+  it("writes DedupKey and SubjectKey in one update on a pre-migration row", async () => {
     const client = createMockClient()
     client.dataSources.query.mockResolvedValueOnce({
       results: [
-        buildRow({ id: "f1", subject: "A", predicate: "uses", object: "B" }),
+        buildRow({
+          id: "f1",
+          subject: "A",
+          predicate: "uses",
+          object: "B",
+          // Pre-migration: both columns empty.
+          subjectKey: "",
+        }),
       ],
       has_more: false,
       next_cursor: null,
@@ -83,6 +107,9 @@ describe("runFactDedupBackfill — backfill phase", () => {
 
     expect(result.backfilled).toBe(1)
     expect(result.skipped).toBe(0)
+    // Single atomic update covers both columns — bundling matters because
+    // every fact in a Mail-scale vault would otherwise pay 2× the writes.
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
     expect(client.pages.update).toHaveBeenCalledWith({
       page_id: "f1",
       properties: {
@@ -99,11 +126,14 @@ describe("runFactDedupBackfill — backfill phase", () => {
             },
           ],
         },
+        SubjectKey: {
+          rich_text: [{ text: { content: computeSubjectKey("A") } }],
+        },
       },
     })
   })
 
-  it("skips rows whose DedupKey already matches", async () => {
+  it("skips rows whose DedupKey and SubjectKey already match", async () => {
     const client = createMockClient()
     const key = computeFactDedupKey({
       subject: "A",
@@ -118,6 +148,8 @@ describe("runFactDedupBackfill — backfill phase", () => {
           predicate: "uses",
           object: "B",
           dedupKey: key,
+          // buildRow defaults SubjectKey to the canonical form, so this
+          // row is fully up-to-date.
         }),
       ],
       has_more: false,
@@ -131,11 +163,57 @@ describe("runFactDedupBackfill — backfill phase", () => {
     expect(client.pages.update).not.toHaveBeenCalled()
   })
 
+  it("writes only SubjectKey when DedupKey is up-to-date but SubjectKey is empty", async () => {
+    // Pinned: vaults migrated to P1-04 (DedupKey) but not yet to P3-03
+    // (SubjectKey) must still get a SubjectKey write per row, and only
+    // SubjectKey — re-writing a stable DedupKey is wasted I/O on a
+    // hot-reused column.
+    const client = createMockClient()
+    const key = computeFactDedupKey({
+      subject: "A",
+      predicate: "uses",
+      object: "B",
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        buildRow({
+          id: "f1",
+          subject: "A",
+          predicate: "uses",
+          object: "B",
+          dedupKey: key,
+          subjectKey: "",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await runFactDedupBackfill(client, DB)
+
+    expect(result.backfilled).toBe(1)
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "f1",
+      properties: {
+        SubjectKey: {
+          rich_text: [{ text: { content: computeSubjectKey("A") } }],
+        },
+      },
+    })
+  })
+
   it("is a no-op under dryRun", async () => {
     const client = createMockClient()
     client.dataSources.query.mockResolvedValueOnce({
       results: [
-        buildRow({ id: "f1", subject: "A", predicate: "uses", object: "B" }),
+        buildRow({
+          id: "f1",
+          subject: "A",
+          predicate: "uses",
+          object: "B",
+          subjectKey: "",
+        }),
       ],
       has_more: false,
       next_cursor: null,

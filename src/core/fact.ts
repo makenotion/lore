@@ -21,7 +21,7 @@ import type {
 import { TRACKING_PREDICATES } from "../types.js"
 import { buildFactProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
-import { computeFactDedupKey } from "../notion/normalize.js"
+import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   runFactDedupBackfill,
@@ -208,6 +208,7 @@ export class FactService {
       predicate: decodedInput.predicate,
       object: decodedInput.object,
     })
+    const subjectKey = computeSubjectKey(decodedInput.subject)
 
     const existing = await this.findLiveByDedupKey(dedupKey).catch((err) => {
       // Probe failure (e.g. transient network blip, or a pre-migration vault
@@ -236,6 +237,7 @@ export class FactService {
         sourceMemoryId: decodedInput.sourceMemoryId,
         confidence: decodedInput.confidence ?? "certain",
         dedupKey,
+        subjectKey,
       }),
     })
 
@@ -370,7 +372,36 @@ export class FactService {
 
     // Allow empty subject to list all facts in scope
     if (subject) {
-      filters.push({ property: "Subject", title: { contains: subject } })
+      // Case-insensitive match via the normalized SubjectKey column
+      // (P3-03 Part A) so `MemoryService` and `memoryservice` resolve to
+      // the same fact set. The OR with a raw Subject `contains` keeps
+      // pre-migration rows reachable until `lore migrate --dedup-keys`
+      // backfills SubjectKey on every fact — once the backfill lands the
+      // raw-side branch becomes redundant, but it costs one cheap clause
+      // and avoids a window where queries silently lose results.
+      //
+      // Punctuation/whitespace-only inputs (`"."`, `"   "`, `"!!!"`) all
+      // normalize to `""`. Notion's `rich_text contains ""` matches every
+      // row with a non-null SubjectKey value — i.e., it broadens the
+      // query to "every fact in scope" rather than restricting it. Skip
+      // the SubjectKey clause when the normalized form is empty and fall
+      // back to the raw `Subject contains <input>` filter, which
+      // preserves pre-P3-03 literal-substring semantics for these edge
+      // inputs.
+      const normalizedKey = computeSubjectKey(subject)
+      if (normalizedKey) {
+        filters.push({
+          or: [
+            {
+              property: "SubjectKey",
+              rich_text: { contains: normalizedKey },
+            },
+            { property: "Subject", title: { contains: subject } },
+          ],
+        })
+      } else {
+        filters.push({ property: "Subject", title: { contains: subject } })
+      }
     }
 
     if (opts?.projectId) {
@@ -436,6 +467,12 @@ export class FactService {
     const filters: Array<Record<string, unknown>> = []
 
     if (object) {
+      // Case-sensitive `contains` on the raw Object column — symmetric
+      // with the pre-P3-03 `queryBySubject` semantics. P3-03 Part A only
+      // canonicalizes Subject because Part A's spec adds `SubjectKey`
+      // alone; an `ObjectKey` mirror is Part B work (Entities DB) and
+      // intentionally out of scope. Until then, `queryByEntity` is
+      // half-canonical: case-folded against Subject, raw against Object.
       filters.push({ property: "Object", rich_text: { contains: object } })
     }
 
@@ -678,12 +715,30 @@ export class FactService {
       // Subject is a `title` column; Object is `rich_text`. Notion's typed
       // filter param requires the right slot on each side — a `title` filter
       // with `rich_text.contains` is a runtime 400.
-      filters.push({
-        or: [
-          { property: "Subject", title: { contains: opts.entity } },
-          { property: "Object", rich_text: { contains: opts.entity } },
-        ],
-      })
+      //
+      // SubjectKey rides on the Subject side so case-variant entity inputs
+      // resolve against the canonicalized column (P3-03 Part A); the raw
+      // Subject contains stays as a fallback for un-backfilled rows. The
+      // Object side stays case-sensitive — Part A doesn't add an
+      // `ObjectKey` column, that's Part B (Entities DB) work.
+      //
+      // SubjectKey clause is suppressed when the entity normalizes to
+      // empty (punctuation/whitespace-only input) — same broadening trap
+      // as `queryBySubject` above. The raw Subject + Object branches
+      // still run, preserving pre-P3-03 semantics for these edge inputs.
+      const entityKey = computeSubjectKey(opts.entity)
+      const orClauses: Array<Record<string, unknown>> = []
+      if (entityKey) {
+        orClauses.push({
+          property: "SubjectKey",
+          rich_text: { contains: entityKey },
+        })
+      }
+      orClauses.push(
+        { property: "Subject", title: { contains: opts.entity } },
+        { property: "Object", rich_text: { contains: opts.entity } },
+      )
+      filters.push({ or: orClauses })
     }
 
     const filter =
@@ -747,6 +802,26 @@ export class FactService {
     return { items, hasMore }
   }
 
+  /**
+   * Find facts where an entity appears on either side of the triple.
+   *
+   * Subject side is case-folded via `queryBySubject` (P3-03 Part A); the
+   * Object side stays case-sensitive because Part A intentionally only
+   * adds a `SubjectKey` column. Asymmetric until P3-03 Part B introduces
+   * an `Entities` DB that canonicalizes both sides via relation joins —
+   * callers that need fully case-insensitive entity lookup today should
+   * normalize their input upstream of this method.
+   *
+   * **Silent recall caveat for the Object side**: a fact whose Object
+   * stores `"pr #25751"` (lowercase) won't match a `queryByEntity("PR
+   * #25751")` Object-side hit, even though the Subject side now would.
+   * Callers that issue PR / ticket-ID / file-path style entity lookups
+   * — where the casing convention varies by who wrote the row — should
+   * either (a) normalize the input themselves and accept that the
+   * normalized form must also appear in the stored Object, or (b) wait
+   * for Part B. Tool descriptions for `lore-ask` should surface this
+   * caveat to agents so they don't assume entity recall is symmetric.
+   */
   async queryByEntity(entity: string, opts?: { projectId?: string }): Promise<Fact[]> {
     const asSubject = await this.queryBySubject(entity, opts)
 
@@ -843,9 +918,18 @@ export class FactService {
   }
 
   /**
-   * Run the DedupKey backfill / merge pass against this service's Facts DB.
-   * Thin wrapper over the standalone migration function so callers don't
-   * need to reach through the service to grab the raw client + DatabaseRef.
+   * Run the DedupKey + SubjectKey backfill / merge pass against this
+   * service's Facts DB. Thin wrapper over the standalone migration
+   * function so callers don't need to reach through the service to grab
+   * the raw client + DatabaseRef.
+   *
+   * **Schema dependency**: writes target the `DedupKey` and `SubjectKey`
+   * rich_text columns. Both must exist on the live data source, or
+   * `pages.update` returns 400 from Notion. The expected call chain is
+   * `lore migrate` (which auto-runs `migrateVaultSchema` to add any
+   * missing columns) → `lore migrate --dedup-keys` (which calls this
+   * method). Direct callers outside that orchestration must invoke
+   * `migrateVaultSchema` first.
    */
   async backfillDedupKeys(
     options: FactDedupOptions = {}
@@ -876,6 +960,20 @@ export class FactService {
     })
   }
 
+  /**
+   * Map a Notion page to the `Fact` domain type.
+   *
+   * `SubjectKey` and `DedupKey` are deliberately *not* projected onto
+   * `Fact` — they're query-only indexes derived from the canonical
+   * `Subject` / `Object` / `Predicate` triple, not domain data. Surfacing
+   * them on `Fact` would invite callers to read the cached normalized
+   * form instead of recomputing it from the source-of-truth fields, and
+   * a stale cache (e.g. mid-encoding-fix) would silently diverge from
+   * the canonical value. The repo `AGENTS.md` rule that adding a DB
+   * property requires updating `Fact` + `pageToFact` is intentionally
+   * waived for these two columns; the next contributor should not
+   * "fix" the asymmetry by exposing them.
+   */
   private pageToFact(page: PageObjectResponse): Fact {
     const props = page.properties
     const sourceIds = extractRelationIds(props["Source"])

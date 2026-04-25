@@ -54,7 +54,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--dedup-keys",
-    "Backfill the DedupKey column on every fact. Auto-runs schema migration first."
+    "Backfill the DedupKey and SubjectKey columns on every fact. Auto-runs schema migration first. SubjectKey rides on the same pass because P3-03 Part A's case-insensitive `queryBySubject` depends on every row having it populated."
   )
   .option(
     "--merge",
@@ -274,8 +274,15 @@ export const migrateCommand = new Command("migrate")
             yes: opts.yes,
           })
           const dedupVerb = opts.dryRun ? "Would backfill" : "Backfilled"
+          // "key columns" instead of naming both: `result.backfilled`
+          // counts rows where *either* DedupKey or SubjectKey drifted, so
+          // a P1-04-migrated vault where only SubjectKey needed writing
+          // would otherwise show "Backfilled DedupKey + SubjectKey on N
+          // facts" and have the operator wondering why DedupKey got
+          // rewritten. The aggregate phrasing matches the trigger
+          // semantics without needing per-column counters.
           console.log(
-            `\n${dedupVerb} DedupKey on ${result.backfilled} fact${result.backfilled === 1 ? "" : "s"} (${result.skipped} already up to date).`
+            `\n${dedupVerb} key columns on ${result.backfilled} fact${result.backfilled === 1 ? "" : "s"} (${result.skipped} already up to date).`
           )
           if (opts.merge) {
             const plannedLosers = result.plans.reduce(

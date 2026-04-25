@@ -3,8 +3,13 @@
  *
  * Run on demand by `lore migrate --dedup-keys`:
  *
- * 1. Backfill: compute and write `DedupKey` on every fact whose cell is empty
- *    (idempotent — rows with a matching key are skipped).
+ * 1. Backfill: compute and write `DedupKey` AND `SubjectKey` on every fact
+ *    whose cell is empty or stale (idempotent — rows whose stored values
+ *    already match the current normalize output are skipped). `SubjectKey`
+ *    rides on the same pagination because P3-03 Part A's case-insensitive
+ *    `queryBySubject` depends on every fact having the column populated;
+ *    splitting it into a separate command would double the migration cost
+ *    for no agent-visible benefit.
  * 2. Merge (opt-in via `--merge`): group live facts by their normalized key,
  *    pick the row with the latest `Review By` (ties broken by oldest
  *    `created_time`) as the canonical survivor, invalidate the others.
@@ -12,7 +17,7 @@
  */
 
 import type { Client } from "@notionhq/client"
-import type { PageObjectResponse } from "@notionhq/client"
+import type { PageObjectResponse, UpdatePageParameters } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
 import {
   isFullPage,
@@ -21,7 +26,7 @@ import {
   extractSelect,
   extractDate,
 } from "../notion/extractors.js"
-import { computeFactDedupKey } from "../notion/normalize.js"
+import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 
 export interface FactMergePlan {
   /** Key shared by the survivor and every loser (stable hash digest). */
@@ -35,9 +40,14 @@ export interface FactMergePlan {
 }
 
 export interface FactDedupBackfillResult {
-  /** Rows whose `DedupKey` was empty and has now been populated. */
+  /**
+   * Rows whose `DedupKey` and/or `SubjectKey` were stale or empty and have
+   * now been populated. A single row counts once toward this total even
+   * when both columns were rewritten in the same atomic update — the
+   * counter measures rows touched, not properties touched.
+   */
   backfilled: number
-  /** Rows that already had the correct key (no write issued). */
+  /** Rows whose `DedupKey` AND `SubjectKey` already matched (no write issued). */
   skipped: number
   /** Duplicate groups collapsed (only populated when `merge: true`). */
   mergedGroups: number
@@ -92,26 +102,46 @@ export async function runFactDedupBackfill(
   let backfilled = 0
   let skipped = 0
 
-  // Phase 1 — backfill DedupKey on every row missing one.
+  // Phase 1 — backfill DedupKey AND SubjectKey on every row whose stored
+  // values diverge from the current normalize output. Bundled into one
+  // `pages.update` per row so a vault with hundreds of pre-migration rows
+  // pays N round-trips, not 2N. Either column drifting is enough to
+  // trigger the write — `skipped` only fires when both already match.
   for (const row of rows) {
-    const expected = computeFactDedupKey({
+    const expectedDedupKey = computeFactDedupKey({
       subject: row.subject,
       predicate: row.predicate,
       object: row.object,
     })
-    if (row.dedupKey === expected) {
+    const expectedSubjectKey = computeSubjectKey(row.subject)
+
+    const dedupNeedsWrite = row.dedupKey !== expectedDedupKey
+    const subjectNeedsWrite = row.subjectKey !== expectedSubjectKey
+
+    if (!dedupNeedsWrite && !subjectNeedsWrite) {
       skipped++
       continue
     }
+
     if (!options.dryRun) {
+      const properties: Record<string, unknown> = {}
+      if (dedupNeedsWrite) {
+        properties["DedupKey"] = {
+          rich_text: [{ text: { content: expectedDedupKey } }],
+        }
+      }
+      if (subjectNeedsWrite) {
+        properties["SubjectKey"] = {
+          rich_text: [{ text: { content: expectedSubjectKey } }],
+        }
+      }
       await client.pages.update({
         page_id: row.id,
-        properties: {
-          DedupKey: { rich_text: [{ text: { content: expected } }] },
-        },
+        properties: properties as UpdatePageParameters["properties"],
       })
     }
-    row.dedupKey = expected
+    row.dedupKey = expectedDedupKey
+    row.subjectKey = expectedSubjectKey
     backfilled++
   }
 
@@ -203,6 +233,7 @@ interface FactRow {
   predicate: string
   object: string
   dedupKey: string
+  subjectKey: string
   validUntil: string | null
   reviewBy: string | null
   createdTime: string
@@ -233,6 +264,7 @@ async function listAllFacts(
         predicate: extractSelect(page.properties["Predicate"], "related_to"),
         object: extractRichText(page.properties["Object"]),
         dedupKey: extractRichText(page.properties["DedupKey"]),
+        subjectKey: extractRichText(page.properties["SubjectKey"]),
         validUntil: extractDate(page.properties["Valid Until"]),
         reviewBy: extractDate(page.properties["Review By"]),
         createdTime: page.created_time,

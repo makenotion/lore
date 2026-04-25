@@ -5,7 +5,7 @@ import {
   findPostDecodeFactCollisions,
   fixFactEncoding,
 } from "./fact-encoding.js"
-import { computeFactDedupKey } from "../notion/normalize.js"
+import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import type { DatabaseRef } from "../types.js"
 
 function factPage(overrides: {
@@ -369,6 +369,16 @@ describe("fixFactEncoding", () => {
               }),
             },
           },
+        ],
+      },
+      // Decoding `Subject` shifts the canonical SubjectKey, so the
+      // encoding-fix pass MUST update it in the same atomic write —
+      // otherwise a case-insensitive `queryBySubject` against the
+      // decoded form would silently miss the just-fixed row until the
+      // next dedup-key backfill pass.
+      SubjectKey: {
+        rich_text: [
+          { text: { content: computeSubjectKey("Build & Tooling") } },
         ],
       },
     })

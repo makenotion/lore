@@ -80,3 +80,24 @@ export function computeFactDedupKey(input: FactTripleInput): string {
   ].join(DEDUP_KEY_SEP)
   return createHash("sha256").update(raw).digest("hex")
 }
+
+/**
+ * Canonical subject key for case-insensitive `queryBySubject` matching
+ * (P3-03 Part A). Stored on the Facts DB's `SubjectKey` rich_text column
+ * alongside the human-readable `Subject` title.
+ *
+ * Implemented as a thin alias over `normalize` because the two share the
+ * same fold semantics (NFC, whitespace collapse, trailing-terminator strip,
+ * lowercase) — a separate "subject fold" would inevitably drift from the
+ * dedup-key fold and reintroduce the very fragmentation P3-03 closes. A
+ * future Part B (Entities DB) replaces this with a relation-based join,
+ * but the rich_text key is sufficient for the substring-contains queries
+ * `lore-ask` and `queryByEntity` issue today.
+ *
+ * Stored values are bounded by `Subject` itself (Notion title cells cap
+ * around 2000 chars), so we don't hash here — the column needs to support
+ * `contains`, which Notion doesn't run against hashed values.
+ */
+export function computeSubjectKey(subject: string): string {
+  return normalize(subject)
+}
