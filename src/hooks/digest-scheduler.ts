@@ -21,7 +21,7 @@
  */
 
 import { initServicesFromConfig } from "../services.js"
-import type { LoreServices } from "../services.js"
+import type { InitServicesOptions, LoreServices } from "../services.js"
 import type { LoreConfig } from "../types.js"
 import { resolveProjectPathFromCwd } from "../core/context.js"
 import {
@@ -68,6 +68,7 @@ export interface DigestSchedulerDeps {
     cwd: string,
     configRoot: string,
     config: LoreConfig,
+    options?: InitServicesOptions,
   ) => Promise<LoreServices>
   gatherDigest?: (
     services: LoreServices,
@@ -114,7 +115,13 @@ export async function fireDigestIfStale(
 
   let services: LoreServices
   try {
-    services = await initSvc(cwd, state.configRoot, state.config)
+    // Session-end is the same hot startup path the wake-up hook runs on:
+    // debounce the drift check so the scheduler doesn't pile a Topics
+    // scan + per-DS retrieve onto whatever Notion work the digest
+    // gather is about to do.
+    services = await initSvc(cwd, state.configRoot, state.config, {
+      driftCheck: "debounced",
+    })
   } catch (err) {
     log(
       `[lore] digest scheduler: init failed — ${err instanceof Error ? err.message : err}\n`,

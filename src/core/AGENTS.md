@@ -772,12 +772,46 @@ honor it without duplicate plumbing.
 
 ## Schema Drift Detection
 
-`VaultManager.load()` fires a non-blocking `detectDrift()` check that runs the
-same diff logic as `lore migrate` but read-only. If drift is found, a stderr
-warning is emitted nudging the user to run `lore migrate`. Failures in the
-check are silently swallowed — the vault still loads. Reads on drifted vaults
-keep working via extractor fallbacks; writes that need missing properties
-fail at the Notion API with a 400.
+`VaultManager.load()` can fire a non-blocking `detectDrift()` check that runs
+the same diff logic as `lore migrate` but read-only — when drift is found, a
+stderr warning nudges the user to run `lore migrate`. Failures in the check
+are caught and logged (not silently swallowed) so we don't lose the nudge
+when the check itself is broken; the vault still loads. Reads on drifted
+vaults keep working via extractor fallbacks; writes that need missing
+properties fail at the Notion API with a 400.
+
+The check is **opt-in** as of 0.6.0 (issue 02): it is gated by an explicit
+`driftCheck` boolean on `VaultManager.load`, resolved at the
+`initServicesFromConfig` seam from the tri-state `DriftCheckMode`:
+
+| Mode (`InitServicesOptions.driftCheck`) | Behavior |
+|------|----------|
+| `true` | Always run; bypass the marker; touch the marker so a sibling debounced caller skips. |
+| `false` (default) | Always skip; don't read or touch the marker. |
+| `"debounced"` | Run only if the per-config-root drift marker is ≥ `DRIFT_DEBOUNCE_DAYS` (7) old. Optimistically touch before returning. |
+
+Per-surface policy:
+
+| Surface | Mode | Why |
+|---------|------|-----|
+| MCP server (`src/mcp/server.ts`) | `"debounced"` | Hot startup path; every reconnecting client would otherwise re-run the scan. |
+| Hooks wake-up (`src/hooks/helpers.ts`) | `"debounced"` | Fires on every session start / first user prompt. |
+| Digest scheduler (`src/hooks/digest-scheduler.ts`) | `"debounced"` | Same hot path as wake-up. |
+| `lore status` (`src/cli/commands/status.ts`) | `true` | Canonical operator-facing drift surface. |
+| `lore migrate` (`src/cli/commands/migrate.ts`) | `true` | Operator-facing drift surface. |
+| Other CLI (`search`, `mine`, `digest`, status subcommands) | (default) `false` | Don't surface drift; don't pay for it. |
+
+Why this layering rather than option 3 (a separate low-priority client):
+the drift work is short-lived enough that a once-per-week run on the same
+rate-limited client is cheaper than maintaining two parallel pools, and
+the tri-state seam keeps the policy decision explicit at every entry
+point. If sustained contention shows up post-rollout, revisit.
+
+The debounce marker is keyed on a sha256 hash of the resolved `configRoot`
+so multiple worktrees pointing at the same vault share one suppression
+window — without that keying, every parallel worktree would rediscover
+drift independently and the debounce would degrade for stacked PR work.
+See `src/hooks/drift-marker.ts`; same shape as `digest-marker.ts`.
 
 ## Extractors Dependency
 

@@ -10,7 +10,9 @@ export const statusCommand = new Command("status")
   .description("Show vault status and project list")
   .action(async () => {
     try {
-      const services = await initServices()
+      // `lore status` is the canonical operator-facing surface for drift
+      // warnings — always run the check, bypass the debounce marker.
+      const services = await initServices(undefined, { driftCheck: true })
       const stats = await services.vault.stats()
       const project = services.context.project
 
@@ -58,7 +60,11 @@ const projectsCmd = new Command("projects")
   .option("-a, --all", "Include archived projects")
   .action(async (opts: { all?: boolean }) => {
     try {
-      const services = await initServices()
+      // Sub-commands are narrow read-only listings — they don't surface
+      // drift, so they take the default `false`. Made explicit so a
+      // future contributor adding a third subcommand sees the policy in
+      // grep, not just the AGENTS.md table.
+      const services = await initServices(undefined, { driftCheck: false })
       const projects = await services.projects.list(opts.all ? undefined : "active")
 
       if (projects.length === 0) {
@@ -82,7 +88,9 @@ const topicsCmd = new Command("topics")
   .argument("[project]", "Project name (default: current project)")
   .action(async (projectName: string | undefined) => {
     try {
-      const services = await initServices()
+      // See `projectsCmd` above — narrow listing, default `false` made
+      // explicit for grep discoverability.
+      const services = await initServices(undefined, { driftCheck: false })
 
       let projectId: string | undefined
       if (projectName) {

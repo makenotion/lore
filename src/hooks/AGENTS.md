@@ -12,13 +12,15 @@ and either injects context (`wakeup`) or spawns a background save (`autosave`
 
 ## Files
 
-| File            | Responsibility                                                        |
-| --------------- | --------------------------------------------------------------------- |
-| `helpers.ts`    | Entry point: routes to `autosave` / `wakeup` / `session-end` handlers |
-| `prompts.ts`    | Pure prompt builders for background-save sub-agents                   |
-| `transcript.ts` | Parse Claude Code / Codex transcript formats into messages            |
-| `lock.ts`       | Per-session concurrency guard for background saves                    |
-| `config.ts`     | `.lore.yaml` `hooks` section defaults + merge                         |
+| File              | Responsibility                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------ |
+| `helpers.ts`      | Entry point: routes to `autosave` / `wakeup` / `session-end` handlers                                  |
+| `prompts.ts`      | Pure prompt builders for background-save sub-agents                                                    |
+| `transcript.ts`   | Parse Claude Code / Codex transcript formats into messages                                             |
+| `lock.ts`         | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir |
+| `config.ts`       | `.lore.yaml` `hooks` section defaults + merge                                                          |
+| `digest-marker.ts`| Per-config-root debounce marker for the auto-digest scheduler                                          |
+| `drift-marker.ts` | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)          |
 
 Tests for each module sit alongside it (`*.test.ts`). `helpers.ts` runs
 `main()` only when invoked as the Node entry point (`dist/hooks/helpers.js`)

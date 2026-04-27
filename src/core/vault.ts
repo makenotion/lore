@@ -28,6 +28,24 @@ import {
   type TopicMergeResult,
 } from "./topic-merge.js"
 
+export interface VaultLoadOptions {
+  /**
+   * Whether to fire a non-blocking schema drift check after loading the
+   * vault. The check paginates the Topics database twice and calls
+   * `dataSources.retrieve` per live datasource, all sharing the
+   * rate-limited client with the hot path — so it must NOT default to
+   * true on hot startup paths.
+   *
+   * Resolution policy lives at the `initServices` seam (see
+   * `src/services.ts`'s `InitServicesOptions.driftCheck`); by the time
+   * the value reaches here it has been resolved from any debounce
+   * decision into a plain boolean.
+   *
+   * Default: `false`.
+   */
+  driftCheck?: boolean
+}
+
 export interface VaultMigrateResult {
   /** Per-database schema drift (missing props, added options, relation upgrades). */
   diffs: MigrationDiff[]
@@ -68,19 +86,27 @@ export class VaultManager {
     return this.vault
   }
 
-  async load(): Promise<Vault> {
+  async load(options: VaultLoadOptions = {}): Promise<Vault> {
     this.vault = await verifyVaultDatabases(this.client, this.pageId)
-    // Best-effort drift detection — surfaces a stderr warning when the live
-    // schema is behind the code. Never blocks: transient API errors during
-    // the check should not prevent the vault from loading. Unlike a bare
-    // `.catch(() => {})`, failures are logged so we don't silently lose the
-    // "run `lore migrate`" nudge when the drift check itself is broken.
-    this.detectDrift().catch((err) => {
-      console.error(
-        "[lore] Schema drift check failed:",
-        err instanceof Error ? err.message : err
-      )
-    })
+    // Drift detection is opt-in. The pre-0.6.0 default fired drift on every
+    // load, which forced wake-up, autosave, CLI reads, and MCP startup to
+    // contend with a multi-page Topics scan + per-DS `dataSources.retrieve`
+    // for the same rate-limited client. Callers that want occasional drift
+    // warnings without contention pass `driftCheck: "debounced"` at the
+    // `initServices` seam, which resolves to a boolean here. Explicit
+    // operator-facing surfaces (`lore status`, `lore migrate`) pass `true`.
+    if (options.driftCheck) {
+      // Best-effort: never blocks. Transient API errors during the check
+      // should not prevent the vault from loading. Unlike a bare
+      // `.catch(() => {})`, failures are logged so we don't silently lose
+      // the "run `lore migrate`" nudge when the drift check itself is broken.
+      this.detectDrift().catch((err) => {
+        console.error(
+          "[lore] Schema drift check failed:",
+          err instanceof Error ? err.message : err
+        )
+      })
+    }
     return this.vault
   }
 

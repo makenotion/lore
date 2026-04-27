@@ -48,7 +48,12 @@ async function main(): Promise<void> {
   let services: LoreServices
 
   try {
-    services = await initServices()
+    // MCP startup is a hot path — every reconnecting client kicks off a
+    // fresh process and would otherwise enqueue a full schema-drift scan
+    // against the same rate-limited client used for tool calls. Debounce
+    // it: the per-config-root marker (see `src/hooks/drift-marker.ts`)
+    // ensures the scan fires at most once per `DRIFT_DEBOUNCE_DAYS`.
+    services = await initServices(undefined, { driftCheck: "debounced" })
   } catch (err) {
     // If initialization fails, still start the server but with limited tools
     // so the user can get a helpful error message

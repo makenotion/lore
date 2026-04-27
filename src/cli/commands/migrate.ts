@@ -137,7 +137,12 @@ export const migrateCommand = new Command("migrate")
           aliasMergePlans = await loadTopicAliasMerges(opts.mergeTopics)
         }
 
-        const services = await initServices()
+        // `lore migrate` is an operator-facing drift surface — always run
+        // the read-only drift check on init, bypassing the debounce, even
+        // though the migrate logic itself re-runs the same diff. The
+        // stderr nudge is informational; the foreground migrate report is
+        // the authoritative output.
+        const services = await initServices(undefined, { driftCheck: true })
 
         // When `--upgrade-decision-tags` is combined with `--dry-run`, we still
         // want to report schema drift but NOT apply anything. So dry-run always

@@ -483,10 +483,16 @@ async function wakeup(): Promise<void> {
 
   let services: Awaited<ReturnType<typeof initServicesFromConfig>>
   try {
+    // Wake-up fires on every session start / first user prompt. Drift
+    // detection is debounced via the per-config-root marker so an
+    // operator on a stale vault still gets occasional warnings without
+    // the multi-page Topics scan running against the rate-limited
+    // client every fire. See `src/hooks/drift-marker.ts`.
     services = await initServicesFromConfig(
       process.cwd(),
       hookState.configRoot,
-      hookState.config
+      hookState.config,
+      { driftCheck: "debounced" }
     )
   } catch (err) {
     process.stderr.write(

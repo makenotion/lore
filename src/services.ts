@@ -18,8 +18,39 @@ import { DecisionService } from "./core/decision.js"
 import { TaskService } from "./core/task.js"
 import { EntityService } from "./core/entity.js"
 import { resolveProject } from "./core/context.js"
+import {
+  DRIFT_DEBOUNCE_DAYS,
+  driftMarkerAgeDays,
+  touchDriftMarker,
+} from "./hooks/drift-marker.js"
 import { SessionMemoryTracker } from "./session-memory-tracker.js"
 import type { LoreConfig, ResolvedContext } from "./types.js"
+
+/**
+ * Drift-check policy for `initServices` / `initServicesFromConfig`.
+ *
+ * - `true` — run the schema drift check unconditionally; bypass the
+ *   per-config-root debounce. Use for explicit operator-facing surfaces
+ *   (`lore status`, `lore migrate`) where the user expects drift output.
+ * - `false` (default) — skip the drift check entirely. Use for narrow
+ *   CLI commands (`lore search`, `lore mine`, `lore digest`) and any
+ *   path that does not surface drift; this also applies when no policy
+ *   is provided, to keep the safest default.
+ * - `"debounced"` — run the drift check at most once per config root per
+ *   `DRIFT_DEBOUNCE_DAYS`. Use for hot startup paths (MCP server, shell
+ *   hooks) so an operator on a stale vault still gets occasional nudges
+ *   without paying the multi-page scan on every fire.
+ *
+ * Precedence (matches the 0.6.0 issue 02 contract):
+ * - explicit `true` always runs; bypasses the marker
+ * - explicit `false` always skips; ignores the marker
+ * - the marker only suppresses the implicit/`"debounced"` path
+ */
+export type DriftCheckMode = boolean | "debounced"
+
+export interface InitServicesOptions {
+  driftCheck?: DriftCheckMode
+}
 
 export interface LoreServices {
   vault: VaultManager
@@ -52,6 +83,7 @@ export async function initServicesFromConfig(
   cwd: string,
   configRoot: string,
   config: LoreConfig,
+  options: InitServicesOptions = {},
 ): Promise<LoreServices> {
   const auth = await resolveAuth(config)
   const rawClient = createClient(auth.token, auth.baseUrl)
@@ -62,7 +94,8 @@ export async function initServicesFromConfig(
   const client = createLimitedClient(rawClient, concurrency)
 
   const vault = new VaultManager(client, config.vault.pageId)
-  await vault.load()
+  const driftCheck = await resolveDriftCheck(configRoot, options.driftCheck)
+  await vault.load({ driftCheck })
 
   const db = vault.databases
   const projects = new ProjectService(client, db.projects)
@@ -107,8 +140,15 @@ export async function initServicesFromConfig(
 
 /**
  * Initialize all services from config. Shared by both MCP server and CLI.
+ *
+ * `options.driftCheck` controls whether the post-load schema drift scan
+ * fires; see `DriftCheckMode`. Defaults to skipping the scan, which keeps
+ * narrow CLI surfaces (search / mine / digest) off the scan path.
  */
-export async function initServices(cwd?: string): Promise<LoreServices> {
+export async function initServices(
+  cwd?: string,
+  options: InitServicesOptions = {},
+): Promise<LoreServices> {
   const workDir = cwd ?? process.cwd()
 
   const found = await findConfigFile(workDir)
@@ -117,7 +157,45 @@ export async function initServices(cwd?: string): Promise<LoreServices> {
   }
 
   const config = await loadConfig(found.path)
-  return initServicesFromConfig(workDir, found.root, config)
+  return initServicesFromConfig(workDir, found.root, config, options)
+}
+
+/**
+ * Resolve a `DriftCheckMode` into the concrete boolean passed to
+ * `VaultManager.load`. Three branches:
+ *
+ * - explicit `true` → run; the marker is irrelevant (still touched so a
+ *   sibling debounced caller starting concurrently sees a fresh marker
+ *   and skips its own scan).
+ * - explicit `false` (or undefined) → skip; the marker is left untouched.
+ * - `"debounced"` → consult the marker. If it's stale (≥
+ *   `DRIFT_DEBOUNCE_DAYS` old or missing), touch it now and run; if
+ *   fresh, skip. The touch happens *before* the scan fires so a
+ *   concurrent debounced caller can't double-fire — the scan itself is
+ *   fire-and-forget and a transient failure does not get rolled back
+ *   (next debounce window will retry naturally).
+ *
+ * Touching the marker on the explicit-`true` path keeps the cheap
+ * "debounced caller racing against an explicit operator" case from
+ * double-firing too.
+ *
+ * Exported for unit-test coverage; not part of the module's public
+ * surface for production callers.
+ */
+export async function resolveDriftCheck(
+  configRoot: string,
+  mode: DriftCheckMode | undefined,
+): Promise<boolean> {
+  if (mode === true) {
+    await touchDriftMarker(configRoot)
+    return true
+  }
+  if (mode === false || mode === undefined) return false
+  // mode === "debounced"
+  const ageDays = await driftMarkerAgeDays(configRoot)
+  if (ageDays < DRIFT_DEBOUNCE_DAYS) return false
+  await touchDriftMarker(configRoot)
+  return true
 }
 
 /**
