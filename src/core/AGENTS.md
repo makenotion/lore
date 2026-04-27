@@ -300,7 +300,7 @@ signal). All methods exclude invalidated facts by default.
 | `queryBySubject(subject, opts)` | Finds facts where `Subject` title contains the string; paginates until exhausted or `limit` is reached |
 | `queryByObject(object, opts)`   | Same shape as `queryBySubject` but matches the `Object` rich-text property     |
 | `queryBySourceMemory(id, opts)` | Finds facts whose `Source` relation points at a given memory page              |
-| `queryByEntity(entity, opts)`   | Finds facts where the entity appears as either Subject or Object, deduplicates |
+| `queryByEntity(entity, opts)`   | Finds facts where the entity appears as either Subject or Object, deduplicates. `limit` is forwarded into both underlying branches as a `page_size` clamp + early-stop, then re-applied as a post-dedup slice so `limit: 25` never returns more than 25 rows |
 | `queryOrphans(opts)`            | Returns current facts whose `Source` relation is empty. Used by `lore migrate --backfill-fact-sources` |
 
 ### Hot-path listing (single page)

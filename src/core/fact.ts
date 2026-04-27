@@ -103,6 +103,28 @@ type ListTrackingOpts = {
 const NOTION_MAX_PAGE_SIZE = 100
 
 /**
+ * Clamp a caller-supplied `limit` to a Notion-safe `page_size`. Six
+ * `FactService` retrieval methods share this shape: unlimited
+ * (`undefined`) → Notion's max; bounded → `min(max(limit, 1), 100)`.
+ *
+ * The `Math.max(_, 1)` guard defends against `limit: 0` reaching the
+ * wire as `page_size: 0`, which Notion rejects with a 400. The
+ * `Math.min(_, 100)` guard defends against oversized requests;
+ * pagination satisfies the over-100 case via the cursor loop, not by
+ * inflating `page_size`.
+ *
+ * `queryOverdue` is deliberately left on its own clamp shape
+ * (`Math.min(limit ?? 100, 100)`, missing the `Math.max(_, 1)` guard)
+ * — folding it onto this helper would change behavior for the
+ * `limit: 0` caller (a 400 today, an empty result tomorrow). Worth
+ * doing in a separate, scoped refactor; out of scope here.
+ */
+function clampPageSize(limit: number | undefined): number {
+  if (limit === undefined) return NOTION_MAX_PAGE_SIZE
+  return Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
+}
+
+/**
  * Match Notion API errors that signal "the property you're filtering
  * on doesn't exist on this data source." Used to gate the recall-
  * preserving empty-result path in `queryByEntityTextOnUnmigrated`:
@@ -275,6 +297,13 @@ export class FactService {
       projectId?: string
       includeInvalidated?: boolean
       predicates?: FactPredicate[]
+      /**
+       * Cap total results. Pagination stops as soon as this is reached and
+       * the per-request `page_size` is clamped to `min(limit, 100)` so a
+       * top-N consumer doesn't pay for a full unbounded walk. Mirrors the
+       * shape of `queryBySubject` / `queryByObject` / `queryBySourceMemory`.
+       */
+      limit?: number
     }
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
@@ -302,17 +331,21 @@ export class FactService {
     const filter = filters.length > 1 ? { and: filters } : filters[0]
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
+    const limit = opts?.limit
+    const pageSize = clampPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: filter as QueryDataSourceParameters["filter"],
         sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: NOTION_MAX_PAGE_SIZE,
+        page_size: pageSize,
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
         results.push(page)
+        if (limit !== undefined && results.length >= limit) break
       }
+      if (limit !== undefined && results.length >= limit) break
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
@@ -616,10 +649,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize =
-      limit !== undefined
-        ? Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
-        : NOTION_MAX_PAGE_SIZE
+    const pageSize = clampPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -692,10 +722,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize =
-      limit !== undefined
-        ? Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
-        : NOTION_MAX_PAGE_SIZE
+    const pageSize = clampPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -758,10 +785,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize =
-      limit !== undefined
-        ? Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
-        : NOTION_MAX_PAGE_SIZE
+    const pageSize = clampPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -827,8 +851,7 @@ export class FactService {
           ? filters[0]
           : undefined
 
-    const limit = opts.limit ?? NOTION_MAX_PAGE_SIZE
-    const pageSize = Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
+    const pageSize = clampPageSize(opts.limit)
 
     const response = await this.client.dataSources.query({
       data_source_id: this.db.dataSourceId,
@@ -1033,35 +1056,58 @@ export class FactService {
       projectId?: string
       entityId?: string | null
       predicates?: FactPredicate[]
+      /**
+       * Cap total results returned to the caller. Forwarded into both
+       * underlying branches as a per-branch `page_size` clamp + early-stop,
+       * and applied again as a post-dedup slice so a `limit: 25` consumer
+       * never sees more than 25 rows even when both branches contribute
+       * distinct hits. `undefined` paginates each branch to exhaustion —
+       * required by wake-up paths and migration scans that need the full
+       * slice.
+       */
+      limit?: number
     }
   ): Promise<Fact[]> {
+    const limit = opts?.limit
+    const sliceToLimit = (rows: Fact[]): Fact[] =>
+      limit !== undefined ? rows.slice(0, limit) : rows
+
     if (opts?.entityId) {
       // Hot-path: relation hits + un-backfilled substring hits, run in
       // parallel so wall-clock is one round-trip, not two. Predicate
       // filter applies server-side on both branches so callers like
       // `lore-decision-context` (predicates: ["decided_by"]) don't
-      // over-fetch unrelated facts touching the same entity.
+      // over-fetch unrelated facts touching the same entity. The limit
+      // is forwarded into both branches so each underlying query clamps
+      // its `page_size` and stops after `limit` rows; the post-dedup
+      // slice below caps the union (two branches × `limit` could
+      // otherwise return up to `2 × limit` distinct rows).
       const [byRelation, byTextOnUnmigrated] = await Promise.all([
         this.queryByEntityId(opts.entityId, {
           projectId: opts.projectId,
           predicates: opts.predicates,
+          limit,
         }),
         this.queryByEntityTextOnUnmigrated(entity, {
           projectId: opts.projectId,
           predicates: opts.predicates,
+          limit,
         }),
       ])
       const seen = new Set(byRelation.map((f) => f.id))
-      return [
+      return sliceToLimit([
         ...byRelation,
         ...byTextOnUnmigrated.filter((f) => !seen.has(f.id)),
-      ]
+      ])
     }
 
     const asSubject = await this.queryBySubject(entity, opts)
     const asObject = await this.queryByObject(entity, opts)
     const seen = new Set(asSubject.map((f) => f.id))
-    return [...asSubject, ...asObject.filter((f) => !seen.has(f.id))]
+    return sliceToLimit([
+      ...asSubject,
+      ...asObject.filter((f) => !seen.has(f.id)),
+    ])
   }
 
   /**
@@ -1076,7 +1122,7 @@ export class FactService {
    */
   private async queryByEntityTextOnUnmigrated(
     entity: string,
-    opts?: { projectId?: string; predicates?: FactPredicate[] }
+    opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number }
   ): Promise<Fact[]> {
     if (!entity) return []
 
@@ -1116,17 +1162,21 @@ export class FactService {
     try {
       const results: PageObjectResponse[] = []
       let cursor: string | undefined = undefined
+      const limit = opts?.limit
+      const pageSize = clampPageSize(limit)
       do {
         const response = await this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,
           filter: { and: baseFilters } as QueryDataSourceParameters["filter"],
           sorts: [{ timestamp: "created_time", direction: "descending" }],
-          page_size: NOTION_MAX_PAGE_SIZE,
+          page_size: pageSize,
           start_cursor: cursor,
         })
         for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
           results.push(page)
+          if (limit !== undefined && results.length >= limit) break
         }
+        if (limit !== undefined && results.length >= limit) break
         cursor = response.has_more ? response.next_cursor ?? undefined : undefined
       } while (cursor)
       return results.map((p) => this.pageToFact(p))

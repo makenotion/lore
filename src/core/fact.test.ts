@@ -1653,6 +1653,221 @@ describe("FactService.queryOverdue", () => {
   })
 })
 
+describe("FactService.queryByEntity — limit clamp and post-dedup slice (issue 0.6.0/10)", () => {
+  // Issue 01 clamped `page_size` on the other three retrieval methods
+  // (queryBySubject, queryByObject, queryBySourceMemory). queryByEntity
+  // is the fourth in that family and previously had no `limit` knob, so
+  // every `lore-ask` against an entity walked both internal branches to
+  // exhaustion at page_size: 100 even when the surfacing layer rendered
+  // only the top N. These tests pin: (1) the per-branch page_size clamp,
+  // (2) the post-dedup slice, and (3) that dedup priority is unchanged.
+  it("forwards limit to both branches on the entityId path as page_size: limit", async () => {
+    // Two queries fire in parallel (queryByEntityId + queryByEntity-
+    // TextOnUnmigrated). Both must clamp page_size to the requested limit
+    // — otherwise the parallel branch silently restores the full-walk
+    // wall-clock cost issue 01 fixed for the sequential family.
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      limit: 25,
+    })
+
+    expect(calls.length).toBe(2)
+    expect(calls[0].page_size).toBe(25)
+    expect(calls[1].page_size).toBe(25)
+  })
+
+  it("forwards limit to queryBySubject and queryByObject on the no-entityId path as page_size: limit", async () => {
+    // The no-entityId branch is the pre-PF3-01 / ambiguous-resolution
+    // path; queryBySubject + queryByObject already accept `limit`
+    // (issue 01), so this just verifies the wiring threads through.
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", { projectId: "p1", limit: 25 })
+
+    expect(calls.length).toBe(2)
+    expect(calls[0].page_size).toBe(25)
+    expect(calls[1].page_size).toBe(25)
+  })
+
+  it("falls back to page_size: 100 when limit is undefined on the entityId path", async () => {
+    // Wake-up paths and migration scans that need the full slice cannot
+    // be silently truncated. Unlimited callers still get Notion's max
+    // page size on every branch, so the cursor loop runs the same
+    // number of round-trips as before.
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+    })
+
+    expect(calls.length).toBe(2)
+    expect(calls[0].page_size).toBe(100)
+    expect(calls[1].page_size).toBe(100)
+  })
+
+  it("falls back to page_size: 100 when limit is undefined on the no-entityId path", async () => {
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", { projectId: "p1" })
+
+    expect(calls.length).toBe(2)
+    expect(calls[0].page_size).toBe(100)
+    expect(calls[1].page_size).toBe(100)
+  })
+
+  it("clamps oversized limits to Notion's 100-row ceiling on every branch", async () => {
+    // A caller passing limit: 250 must not produce page_size: 250 — the
+    // outer cursor loop satisfies the over-100 request, not an inflated
+    // page_size that Notion rejects with a 400.
+    const { client, calls } = createClient([
+      { results: [] },
+      { results: [] },
+    ])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      limit: 250,
+    })
+
+    expect(calls[0].page_size).toBe(100)
+    expect(calls[1].page_size).toBe(100)
+  })
+
+  it("slices the unioned result to limit after dedup on the entityId path", async () => {
+    // Both branches return up to `limit` distinct rows on their own; the
+    // union before slicing can be 2 × limit. The post-dedup slice caps
+    // the user-visible result so a caller asking for limit: 2 never
+    // sees more than 2 rows.
+    const relationRow = factPage({ id: "rel-1", subject: "AuthService" })
+    const textRow = factPage({ id: "text-1", subject: "AuthService" })
+    const { client } = createClient([
+      { results: [relationRow] }, // queryByEntityId
+      { results: [textRow] }, // queryByEntityTextOnUnmigrated
+    ])
+    const service = new FactService(client, db)
+
+    const result = await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      limit: 1,
+    })
+
+    expect(result).toHaveLength(1)
+    // Relation-hit wins ordering — must be the relation row, not the
+    // text-fallback row.
+    expect(result[0].id).toBe("rel-1")
+  })
+
+  it("preserves dedup priority (relation-hit wins over text-fallback) when both branches contribute the same row", async () => {
+    // Overlapping rows: the same fact id appears in both branches with
+    // distinguishable payloads (different `reviewBy` dates per branch).
+    // The relation-hit payload must survive; the text-fallback
+    // duplicate is dropped. Pinning the payload — not just the id —
+    // makes a future flip of `seen = new Set(byTextOnUnmigrated.map(...))`
+    // observably wrong.
+    const sharedFromRelation = factPage({
+      id: "shared-1",
+      subject: "AuthService",
+      reviewBy: "2026-05-01",
+    })
+    const sharedFromText = factPage({
+      id: "shared-1",
+      subject: "AuthService",
+      reviewBy: "2026-06-15",
+    })
+    const textOnly = factPage({ id: "text-only-1", subject: "AuthService" })
+    const { client } = createClient([
+      { results: [sharedFromRelation] },
+      { results: [sharedFromText, textOnly] },
+    ])
+    const service = new FactService(client, db)
+
+    const result = await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      limit: 25,
+    })
+
+    expect(result).toHaveLength(2)
+    expect(result.map((f) => f.id)).toEqual(["shared-1", "text-only-1"])
+    // The surviving shared row must carry the relation-branch payload —
+    // a flipped dedup priority would surface "2026-06-15" here.
+    expect(result[0].reviewBy).toBe("2026-05-01")
+  })
+
+  it("preserves subject-hit wins over object-hit dedup priority on the no-entityId path", async () => {
+    // Same id, distinguishable payloads per branch. The subject-side
+    // hit must survive; the object-side duplicate is dropped. Without
+    // the payload assertion, swapping `seen = new Set(asObject.map(...))`
+    // would be a silent regression.
+    const sharedFromSubject = factPage({
+      id: "shared-1",
+      subject: "AuthService",
+      reviewBy: "2026-05-01",
+    })
+    const sharedFromObject = factPage({
+      id: "shared-1",
+      subject: "AuthService",
+      reviewBy: "2026-06-15",
+    })
+    const objectOnly = factPage({ id: "obj-only-1", subject: "Other" })
+    const { client } = createClient([
+      { results: [sharedFromSubject] }, // queryBySubject
+      { results: [sharedFromObject, objectOnly] }, // queryByObject
+    ])
+    const service = new FactService(client, db)
+
+    const result = await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      limit: 25,
+    })
+
+    expect(result.map((f) => f.id)).toEqual(["shared-1", "obj-only-1"])
+    expect(result[0].reviewBy).toBe("2026-05-01")
+  })
+
+  it("slices a `2 × limit` distinct-row union down to `limit` on the entityId path", async () => {
+    // Coverage for the spec's flagship invariant at scale: each branch
+    // returns 25 distinct rows (no overlap), so the pre-slice union is
+    // 50. The post-dedup slice must cap the result at exactly 25 — not
+    // 50, not 26. Distinct from the `limit: 1` test above, which
+    // exercises the same mechanism at the smallest possible scale.
+    const relationRows = Array.from({ length: 25 }, (_, i) =>
+      factPage({ id: `rel-${i}`, subject: "AuthService" }),
+    )
+    const textRows = Array.from({ length: 25 }, (_, i) =>
+      factPage({ id: `text-${i}`, subject: "AuthService" }),
+    )
+    const { client } = createClient([
+      { results: relationRows },
+      { results: textRows },
+    ])
+    const service = new FactService(client, db)
+
+    const result = await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      limit: 25,
+    })
+
+    expect(result).toHaveLength(25)
+    // Relation-branch rows fill the window first; the text branch
+    // contributes nothing because the slice runs after dedup but the
+    // window was already full of relation rows.
+    expect(result.every((f) => f.id.startsWith("rel-"))).toBe(true)
+  })
+})
+
 describe("FactService.queryByEntity — predicates option (issue 0.6.0/05)", () => {
   function findPredicateClause(
     filter: { and: Array<Record<string, unknown>> } | Record<string, unknown>,
