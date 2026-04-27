@@ -107,19 +107,29 @@ const NOTION_MAX_PAGE_SIZE = 100
  * `FactService` retrieval methods share this shape: unlimited
  * (`undefined`) → Notion's max; bounded → `min(max(limit, 1), 100)`.
  *
- * The `Math.max(_, 1)` guard defends against `limit: 0` reaching the
- * wire as `page_size: 0`, which Notion rejects with a 400. The
- * `Math.min(_, 100)` guard defends against oversized requests;
- * pagination satisfies the over-100 case via the cursor loop, not by
- * inflating `page_size`.
+ * - `limit: undefined` paginates to exhaustion at `NOTION_MAX_PAGE_SIZE`
+ *   (callers that need the full slice — wake-up paths, migration scans).
+ * - `limit: 0` is clamped up to 1; passing `0` to `dataSources.query`
+ *   either infinite-loops or 400s depending on SDK version.
+ * - `limit: > NOTION_MAX_PAGE_SIZE` is clamped down to the ceiling;
+ *   pagination satisfies the over-100 case via the cursor loop, not by
+ *   inflating `page_size`.
+ *
+ * The verbose name is load-bearing: a bare `clampPageSize` invites
+ * callers from a future non-Notion query layer (a search index, an
+ * upstream aggregator) that has a different ceiling. The `Notion`
+ * prefix is the constraint that protects future correctness — this
+ * helper is **not** a general clamping utility.
  *
  * `queryOverdue` is deliberately left on its own clamp shape
  * (`Math.min(limit ?? 100, 100)`, missing the `Math.max(_, 1)` guard)
  * — folding it onto this helper would change behavior for the
  * `limit: 0` caller (a 400 today, an empty result tomorrow). Worth
  * doing in a separate, scoped refactor; out of scope here.
+ *
+ * @internal — Notion-specific. Not a general clamping utility.
  */
-function clampPageSize(limit: number | undefined): number {
+export function clampNotionPageSize(limit: number | undefined): number {
   if (limit === undefined) return NOTION_MAX_PAGE_SIZE
   return Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
 }
@@ -332,7 +342,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize = clampPageSize(limit)
+    const pageSize = clampNotionPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -649,7 +659,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize = clampPageSize(limit)
+    const pageSize = clampNotionPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -722,7 +732,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize = clampPageSize(limit)
+    const pageSize = clampNotionPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -785,7 +795,7 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
-    const pageSize = clampPageSize(limit)
+    const pageSize = clampNotionPageSize(limit)
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
@@ -851,7 +861,7 @@ export class FactService {
           ? filters[0]
           : undefined
 
-    const pageSize = clampPageSize(opts.limit)
+    const pageSize = clampNotionPageSize(opts.limit)
 
     const response = await this.client.dataSources.query({
       data_source_id: this.db.dataSourceId,
@@ -1163,7 +1173,7 @@ export class FactService {
       const results: PageObjectResponse[] = []
       let cursor: string | undefined = undefined
       const limit = opts?.limit
-      const pageSize = clampPageSize(limit)
+      const pageSize = clampNotionPageSize(limit)
       do {
         const response = await this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,

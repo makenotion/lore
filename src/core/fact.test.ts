@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { FactService, __resetProbeFailureLogForTests } from "./fact.js"
+import {
+  FactService,
+  __resetProbeFailureLogForTests,
+  clampNotionPageSize,
+} from "./fact.js"
 import {
   normalize,
   computeFactDedupKey,
@@ -1445,6 +1449,38 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
       expect(subjectClause).toBeDefined()
       expect(subjectClause!.title.contains).toBe(subject)
     }
+  })
+})
+
+describe("clampNotionPageSize", () => {
+  // Direct unit tests for the shared helper (issue 0.6.0/15). The
+  // call-shape tests below still pin every retrieval method's wire
+  // behavior, but those go through `dataSources.query` mocks; this
+  // block pins the input/output mapping deterministically so a future
+  // edit to the floor (`>= 1`) or ceiling (`<= 100`) can't slip
+  // through under a single-method test.
+  it("returns NOTION_MAX_PAGE_SIZE when limit is undefined", () => {
+    expect(clampNotionPageSize(undefined)).toBe(100)
+  })
+
+  it("clamps limit: 0 up to 1 (Notion 400s on page_size: 0)", () => {
+    expect(clampNotionPageSize(0)).toBe(1)
+  })
+
+  it("passes limit: 1 through unchanged", () => {
+    expect(clampNotionPageSize(1)).toBe(1)
+  })
+
+  it("passes mid-range limits through unchanged", () => {
+    expect(clampNotionPageSize(25)).toBe(25)
+  })
+
+  it("passes the boundary limit: 100 through unchanged", () => {
+    expect(clampNotionPageSize(100)).toBe(100)
+  })
+
+  it("clamps oversized limits down to NOTION_MAX_PAGE_SIZE", () => {
+    expect(clampNotionPageSize(150)).toBe(100)
   })
 })
 

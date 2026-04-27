@@ -303,6 +303,13 @@ signal). All methods exclude invalidated facts by default.
 | `queryByEntity(entity, opts)`   | Finds facts where the entity appears as either Subject or Object, deduplicates. `limit` is forwarded into both underlying branches as a `page_size` clamp + early-stop, then re-applied as a post-dedup slice so `limit: 25` never returns more than 25 rows |
 | `queryOrphans(opts)`            | Returns current facts whose `Source` relation is empty. Used by `lore migrate --backfill-fact-sources` |
 
+All paginating retrieval methods derive their per-request `page_size`
+via the shared `clampNotionPageSize(limit)` helper in `fact.ts` —
+unlimited (`undefined`) → 100; bounded → `min(max(limit, 1), 100)`.
+A new retrieval method should reuse it rather than re-inlining the
+arithmetic; the verbose `Notion` prefix marks it as Notion-specific
+and not a general clamp utility.
+
 ### Hot-path listing (single page)
 
 | Method                          | Behavior                                                                       |
