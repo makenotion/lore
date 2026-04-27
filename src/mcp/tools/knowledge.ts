@@ -588,8 +588,33 @@ export async function handleAsk(
       (fact) => fact.predicate === "supersedes_decision",
     )
 
-    const { links: decisionLinks, failures: decisionFailures } =
-      await resolveCanonicalDecisionLinks(services, decidedByFacts, { projectId })
+    // Dispatch the canonical-decision-link walk and the title-resolution
+    // pass in parallel — they're data-independent (different fact subsets
+    // in, disjoint outputs out) and both ride the shared rate-limited
+    // Notion client, so concurrency here cuts wall-clock to the slower
+    // of the two without raising peak Notion load. Sequential awaits
+    // here used to add `T(decisionLinks) + T(titleMap)` to every
+    // `lore-ask` call.
+    //
+    // Failure-semantics note: `Promise.all` short-circuits on the first
+    // rejection, which would lose `debugLogPartialFailures` observability
+    // if either callee threw. Neither does under normal Notion error
+    // paths — `resolveCanonicalDecisionLinks` surfaces failures through
+    // a structured `failures` array via `settleAll`, and
+    // `MemoryService.getTitleById` swallows fetch errors and returns
+    // `null` (see `src/core/memory.ts`'s `fetchTitleAndCache`). If a
+    // future change makes either callee throw, swap to
+    // `Promise.allSettled` here so the failures bucket is still drained.
+    const [
+      { links: decisionLinks, failures: decisionFailures },
+      titleMap,
+    ] = await Promise.all([
+      resolveCanonicalDecisionLinks(services, decidedByFacts, { projectId }),
+      resolveReferencedTitles(
+        [...supersedesFacts, ...structure, ...tracking],
+        services,
+      ),
+    ])
 
     if (decisionFailures.length > 0) {
       debugLogPartialFailures(toolName, decisionFailures)
@@ -598,11 +623,6 @@ export async function handleAsk(
         `Could not resolve ${decisionFailures.length} decision root${decisionFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
       )
     }
-
-    const titleMap = await resolveReferencedTitles(
-      [...supersedesFacts, ...structure, ...tracking],
-      services,
-    )
 
     type Governed = { sortKey: string | null; line: string }
     const governanceItems: Governed[] = [

@@ -314,6 +314,102 @@ describe("lore-ask — partial decision resolution", () => {
   })
 })
 
+describe("lore-ask — parallel decision and title resolution", () => {
+  it("dispatches resolveCanonicalDecisionLinks and resolveReferencedTitles concurrently", async () => {
+    // Pins the parallel `Promise.all` in handleAsk: both passes are
+    // data-independent (different fact subsets in, disjoint outputs
+    // out), so serializing them adds wall-clock on every `lore-ask`
+    // call. Mock both underlying loaders with manually-controlled
+    // deferreds and prove both are in flight before either resolves.
+    // If a future refactor re-serializes the awaits, only
+    // `decisions.getById` would have been called by the microtask
+    // flush — `memories.getTitleById` would still be downstream of the
+    // first await and the second assertion would fail.
+    const mockServer = createMockServer()
+
+    // Definite-assignment (`!:`) is load-bearing here: a `let` typed as
+    // `((...) => void) | null = null` gets narrowed at the call site
+    // because TS can't prove the Promise executor ran synchronously,
+    // even though the spec guarantees it. The `!` says "this is assigned
+    // before any read" — true for the executor, and the assertion is
+    // what unblocks `resolveDecision(null)` below without an unsafe cast.
+    let resolveDecision!: (d: Decision | null) => void
+    const decisionPromise = new Promise<Decision | null>((resolve) => {
+      resolveDecision = resolve
+    })
+    const getById = vi.fn(() => decisionPromise)
+
+    let resolveTitle!: (t: string | null) => void
+    const titlePromise = new Promise<string | null>((resolve) => {
+      resolveTitle = resolve
+    })
+    const getTitleById = vi.fn(() => titlePromise)
+
+    // UUID-shaped object on a structure fact forces title resolution
+    // to issue a `memories.getTitleById` call. A non-UUID would short-
+    // circuit at `resolveTitles` and the title pass would never reach
+    // the loader, defeating the parallelism assertion.
+    const uuidObject = "11111111-1111-4111-8111-111111111111"
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([
+          // Drives the decision-link path: `decided_by` lands in the
+          // governance bucket and forces a `decisions.getById("new-id")`
+          // through `resolveCurrentDecisions`'s BFS.
+          makeFact("fact-decided", {
+            predicate: "decided_by",
+            sourceMemoryId: "new-id",
+            object: "new-id",
+          }),
+          // Drives the title-resolution path: UUID-shaped object on a
+          // structure-class fact forces a `memories.getTitleById(uuid)`.
+          makeFact("fact-uses", {
+            predicate: "uses",
+            object: uuidObject,
+          }),
+        ]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      decisions: { getById },
+      memories: { getTitleById },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null },
+    }
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const pending = loreAsk({ entity: "AuthService" } as never)
+    // Flush microtasks so any synchronously-dispatched calls land on
+    // their mocks. `setImmediate` matches the cadence used by the
+    // sibling parallel-dispatch test in `memory.test.ts` (lore-expand).
+    await new Promise((r) => setImmediate(r))
+
+    // Both passes are mid-flight before either deferred resolves. If
+    // `handleAsk` had `await resolveCanonicalDecisionLinks(...)` ahead
+    // of `resolveReferencedTitles(...)`, the title loader would never
+    // have been called because the decision deferred is still pending.
+    expect(getById).toHaveBeenCalled()
+    expect(getTitleById).toHaveBeenCalled()
+
+    // Drain the deferreds so the handler can complete and the test
+    // doesn't hang. Decision side resolves to null → BFS terminates
+    // with zero canonical leaves and an empty `links` list. Title
+    // side resolves to null → the UUID renders as its unresolved
+    // hint, but the response still composes successfully.
+    resolveDecision(null)
+    resolveTitle(null)
+
+    const result = (await pending) as { content: Array<{ text: string }> }
+    // Sanity: the response composition still works end-to-end. The
+    // structure bucket renders the `uses` fact even when its object
+    // title didn't resolve.
+    expect(result.content[0].text).toContain("Structure")
+  })
+})
+
 describe("lore-ask grouped display (P2-06)", () => {
   function services(facts: Fact[], overrides: Record<string, unknown> = {}) {
     return {
