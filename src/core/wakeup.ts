@@ -132,6 +132,17 @@ const NOTION_PAGE_SIZE = 100
  * size per section independently of the recent-memory cap.
  */
 export const DEFAULT_WAKEUP_OPEN_LOOP_LIMIT = NOTION_PAGE_SIZE
+/**
+ * Hint rendered under the Open Loops section when `listTracking` reports
+ * `hasMore: true` — i.e. the cap clipped the eligible set and the agent
+ * should fall through to the paginating surface for the full picture.
+ * Shared by both wake-up renderers (MCP `lore-wake-up` and the shell
+ * hook) so the directive stays in lockstep across surfaces. Names
+ * `lore-task action='list'` rather than the deprecated `lore-open-loops`
+ * alias since P3-02 made the polymorphic surface the canonical one.
+ */
+export const WAKEUP_OPEN_LOOPS_TRUNCATED_HINT =
+  "_Additional tracking facts not shown — call `lore-task action='list'` for the full list._"
 /** Upper bound on entity-name seeds passed into the `titleAny` filter. */
 const MAX_ENTITY_CANDIDATES = 10
 /** Skip entity strings shorter than this — too noisy to match on. */
@@ -161,10 +172,17 @@ export interface WakeUpServices {
     }): Promise<Memory[]>
   }
   facts: {
-    queryBySubject(
-      subject: string,
-      opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number },
-    ): Promise<Fact[]>
+    /**
+     * Tracking-predicate partition for the open-loops section. Sorts
+     * `Review By asc` with `created_time desc` as the tiebreaker, so when
+     * the cap clips, the rows that survive are biased toward most-overdue
+     * — the inverse of `queryBySubject("")`'s `created_time desc` sort,
+     * which would silently drop the rows wake-up exists to surface.
+     */
+    listTracking(opts?: {
+      projectId?: string
+      limit?: number
+    }): Promise<{ items: Fact[]; hasMore: boolean }>
     listRecent(opts: {
       projectId?: string
       excludePredicates?: FactPredicate[]
@@ -253,6 +271,14 @@ export interface WakeUpData {
   memories: Memory[]
   /** Facts with tracking predicates (needs_action, waiting_on, blocked_by). */
   openLoops: Fact[]
+  /**
+   * `true` when `listTracking` reported additional rows beyond
+   * `openLoopLimit`. Surfaces in rendered output so an agent knows to
+   * fall through to `lore-task action='list'` (or the deprecated
+   * `lore-open-loops`) for the full picture rather than treating the
+   * capped slice as exhaustive.
+   */
+  openLoopsHasMore: boolean
   /** All other facts, capped at `knowledgeFactLimit`. */
   knowledgeFacts: Fact[]
   /** Proposed decisions awaiting resolution (project-scoped). */
@@ -319,6 +345,17 @@ export async function loadWakeUpData(
   // a bounded output. Server-side predicate filters collapse that to one
   // page per section.
   //
+  // Tracking side uses `listTracking`, not `queryBySubject("",
+  // { predicates: TRACKING_PREDICATES, ... })`. Both partition the same
+  // rows, but `queryBySubject` sorts by `created_time desc`, which under
+  // a cap drops the rows whose `Review By` is furthest in the past —
+  // exactly the rows wake-up exists to surface. `listTracking` sorts by
+  // `Review By asc` with `created_time desc` as the tiebreaker, so when
+  // the cap clips the truncation lands on the soonest-due / no-due rows
+  // rather than on the most-overdue tail. The eligible-set sort also
+  // exposes `hasMore` so we can hint at the follow-up surface
+  // (`lore-task action='list'`) rather than silently truncate.
+  //
   // The task-memories search runs in the same `Promise.all` as the other
   // queries so its latency overlaps with the existing wake-up fan-out
   // instead of stacking on top. Only fire when scoped to a project AND
@@ -358,7 +395,7 @@ export async function loadWakeUpData(
   const [
     { items: rawMemories },
     { items: latestDigestList },
-    openLoops,
+    { items: openLoops, hasMore: openLoopsHasMore },
     { items: knowledgeFacts },
     { items: proposedDecisions },
     overdueDecisions,
@@ -367,7 +404,7 @@ export async function loadWakeUpData(
   ]: [
     { items: Memory[] },
     { items: Memory[] },
-    Fact[],
+    { items: Fact[]; hasMore: boolean },
     { items: Fact[]; hasMore: boolean },
     { items: DecisionSummary[] },
     DecisionSummary[],
@@ -391,12 +428,11 @@ export async function loadWakeUpData(
         })
       : Promise.resolve({ items: [] as Memory[] }),
     projectId && openLoopLimit > 0
-      ? services.facts.queryBySubject("", {
+      ? services.facts.listTracking({
           projectId,
-          predicates: TRACKING_PREDICATES,
           limit: openLoopLimit,
         })
-      : Promise.resolve([] as Fact[]),
+      : Promise.resolve({ items: [] as Fact[], hasMore: false }),
     projectId
       ? services.facts.listRecent({
           projectId,
@@ -523,6 +559,7 @@ export async function loadWakeUpData(
     digest,
     memories,
     openLoops,
+    openLoopsHasMore,
     knowledgeFacts,
     proposedDecisions,
     overdueDecisions,

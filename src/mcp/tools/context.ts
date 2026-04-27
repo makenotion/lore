@@ -10,6 +10,7 @@ import {
   DEFAULT_WAKEUP_TASK_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
   RANKED_WAKEUP_LIMITS,
+  WAKEUP_OPEN_LOOPS_TRUNCATED_HINT,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
@@ -204,6 +205,7 @@ async function handleWakeUp(
       digest,
       memories,
       openLoops,
+      openLoopsHasMore,
       knowledgeFacts,
       proposedDecisions,
       overdueDecisions,
@@ -374,6 +376,14 @@ async function handleWakeUp(
         sections.push(
           `- **${subject}** → ${fact.predicate.replace(/_/g, " ")} → **${object}** [${fact.confidence}]${since}${overdue}`,
         )
+      }
+      // The tracking-partition fetch is urgency-biased under the cap
+      // (`Review By asc`), so the displayed slice survives the rows the
+      // pre-PR `created_time desc` shape would have dropped. When more
+      // exist beyond the cap, point the agent at the paginating surface
+      // rather than implying the slice is exhaustive.
+      if (openLoopsHasMore) {
+        sections.push(WAKEUP_OPEN_LOOPS_TRUNCATED_HINT)
       }
       sections.push("")
     }

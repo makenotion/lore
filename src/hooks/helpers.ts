@@ -32,6 +32,7 @@ import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildSessionEndPrompt } from "./prompts.js"
 import {
   RANKED_WAKEUP_LIMITS,
+  WAKEUP_OPEN_LOOPS_TRUNCATED_HINT,
   dateBucket,
   loadWakeUpData,
 } from "../core/wakeup.js"
@@ -525,12 +526,19 @@ async function wakeup(): Promise<void> {
   }
   const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
 
-  let digest, memories, openLoops, knowledgeFacts, relatedMemories, taskMemories
+  let digest,
+    memories,
+    openLoops,
+    openLoopsHasMore,
+    knowledgeFacts,
+    relatedMemories,
+    taskMemories
   try {
     ;({
       digest,
       memories,
       openLoops,
+      openLoopsHasMore,
       knowledgeFacts,
       relatedMemories,
       taskMemories,
@@ -625,6 +633,14 @@ async function wakeup(): Promise<void> {
           `- ${fact.subject} → ${fact.predicate.replace(/_/g, " ")} → ${fact.object} (${fact.confidence}${since}${review})`
         )
       }
+    }
+
+    // The tracking-partition fetch capped at `openLoopLimit`. Surface the
+    // truncation so the agent knows the displayed slice is biased toward
+    // most-overdue (urgency-ranked under the cap) rather than exhaustive,
+    // and points at the surface that paginates to exhaustion.
+    if (openLoopsHasMore) {
+      sections.push(WAKEUP_OPEN_LOOPS_TRUNCATED_HINT)
     }
   }
 

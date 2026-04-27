@@ -324,7 +324,7 @@ separating `TRACKING_PREDICATES` from knowledge facts), fire **two targeted
 queries in parallel** rather than one full-scan followed by a client-side
 partition:
 
-- Tracking side: `queryBySubject("", { projectId, predicates: TRACKING_PREDICATES, limit: 100 })`
+- Tracking side: `listTracking({ projectId, limit: 100 })`
 - Knowledge side: `listRecent({ projectId, excludePredicates: TRACKING_PREDICATES, limit: N })`
 
 Both queries run server-side against Notion's `select` filter (the knowledge
@@ -332,6 +332,21 @@ side uses `AND (Predicate does_not_equal ...)` per tracking predicate). This
 replaced the earlier `queryBySubject("")` full-scan in `loadWakeUpData`,
 which paginated the entire project fact table on every hook fire just to
 populate two bounded sections.
+
+**Use `listTracking`, not `queryBySubject("")`, for the tracking side.**
+Both methods can produce the tracking partition, but the sort order under
+the cap diverges in a way that quietly breaks recall:
+
+| Method | Sort order | Under-cap behaviour |
+|--------|-----------|---------------------|
+| `queryBySubject("", { predicates: TRACKING_PREDICATES, limit: N })` | `created_time desc` | Drops the rows whose `Review By` is furthest in the past — the rows wake-up exists to surface. |
+| `listTracking({ limit: N })` | `Review By asc`, then `created_time desc` | Drops the soonest-due / no-due-date tail. The most-overdue rows survive. |
+
+`listTracking` also returns `{ items, hasMore }`, so callers can hint at
+the follow-up surface (`lore-task action='list'`) when truncation
+happens rather than silently capping. Do not regress this back to
+`queryBySubject("")` for an open-loops surface — see the 0.6.0 review,
+issue 04.
 
 ## Entity Resolution and the SubjectKey / SubjectEntity coexistence (PF3-01)
 

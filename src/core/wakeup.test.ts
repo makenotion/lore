@@ -90,7 +90,7 @@ type SearchCall = {
   mode?: "contains" | "semantic" | "hybrid"
 }
 
-type QueryCall = { subject: string; opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number } }
+type ListTrackingCall = { projectId?: string; limit?: number }
 type ListRecentCall = {
   projectId?: string
   excludePredicates?: FactPredicate[]
@@ -100,7 +100,7 @@ type ListRecentCall = {
 interface StubServices extends WakeUpServices {
   memoriesCalls: ListCall[]
   memoriesSearchCalls: SearchCall[]
-  factsCalls: QueryCall[]
+  factsTrackingCalls: ListTrackingCall[]
   factsListRecentCalls: ListRecentCall[]
   decisionsListCalls: ListDecisionsOpts[]
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
@@ -126,12 +126,13 @@ function stubServices(opts: {
 }): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
-  const factsCalls: QueryCall[] = []
+  const factsTrackingCalls: ListTrackingCall[] = []
   const factsListRecentCalls: ListRecentCall[] = []
   const decisionsListCalls: ListDecisionsOpts[] = []
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const tasksListCalls: ListTasksOpts[] = []
   const factsResult = opts.facts ?? []
+  const trackingPredicateSet = new Set<FactPredicate>(TRACKING_PREDICATES)
 
   return {
     memories: {
@@ -155,19 +156,30 @@ function stubServices(opts: {
       }),
     },
     facts: {
-      // Simulates Notion's server-side predicate filter so a single fixture
-      // array produces the right shard for each query path.
-      queryBySubject: vi.fn(async (subject: string, queryOpts) => {
-        factsCalls.push({ subject, opts: queryOpts })
-        let filtered = factsResult
-        if (queryOpts?.predicates?.length) {
-          const allowed = new Set<FactPredicate>(queryOpts.predicates)
-          filtered = filtered.filter((f) => allowed.has(f.predicate))
-        }
-        if (queryOpts?.limit !== undefined) {
-          filtered = filtered.slice(0, queryOpts.limit)
-        }
-        return filtered
+      // `listTracking` partitions to tracking predicates server-side and
+      // sorts `Review By asc` (with `created_time desc` as the tiebreaker)
+      // so the urgency-biased eligible set survives any cap. The stub
+      // mimics that ordering so cap-clip tests can pin which rows are
+      // expected to remain after the slice.
+      listTracking: vi.fn(async (listOpts: ListTrackingCall = {}) => {
+        factsTrackingCalls.push(listOpts)
+        const tracking = factsResult.filter((f) =>
+          trackingPredicateSet.has(f.predicate),
+        )
+        // Stable sort: rows with no `reviewBy` sink last (the real service
+        // sorts `Review By asc`, where Notion treats null as "after"
+        // populated dates). Tiebreaker is fixture order, which the tests
+        // arrange to match `created_time desc`.
+        const sorted = [...tracking].sort((a, b) => {
+          if (a.reviewBy === b.reviewBy) return 0
+          if (a.reviewBy === null) return 1
+          if (b.reviewBy === null) return -1
+          return a.reviewBy < b.reviewBy ? -1 : 1
+        })
+        const total = sorted.length
+        const items =
+          listOpts.limit !== undefined ? sorted.slice(0, listOpts.limit) : sorted
+        return { items, hasMore: items.length < total }
       }),
       listRecent: vi.fn(async (listOpts: ListRecentCall) => {
         factsListRecentCalls.push(listOpts)
@@ -201,7 +213,7 @@ function stubServices(opts: {
     },
     memoriesCalls,
     memoriesSearchCalls,
-    factsCalls,
+    factsTrackingCalls,
     factsListRecentCalls,
     decisionsListCalls,
     decisionsOverdueCalls,
@@ -373,14 +385,17 @@ describe("loadWakeUpData", () => {
 
     await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
-    expect(services.factsCalls).toHaveLength(1)
-    const openLoopCall = services.factsCalls[0]
-    expect(openLoopCall.subject).toBe("")
-    expect(openLoopCall.opts?.projectId).toBe("p1")
-    expect(openLoopCall.opts?.predicates).toEqual(TRACKING_PREDICATES)
+    // Tracking partition rides on `listTracking` (urgency-biased sort)
+    // rather than `queryBySubject("")` (creation-time sort). The two
+    // partition the same rows, but `listTracking`'s `Review By asc`
+    // ordering is what makes the cap drop the *least* overdue rows
+    // rather than the *most* overdue ones — see issue #04 (0.6.0).
+    expect(services.factsTrackingCalls).toHaveLength(1)
+    const openLoopCall = services.factsTrackingCalls[0]
+    expect(openLoopCall.projectId).toBe("p1")
     // Bounded by Notion's per-page ceiling so wake-up never paginates.
-    expect(openLoopCall.opts?.limit).toBeDefined()
-    expect(openLoopCall.opts?.limit).toBeLessThanOrEqual(100)
+    expect(openLoopCall.limit).toBeDefined()
+    expect(openLoopCall.limit).toBeLessThanOrEqual(100)
 
     expect(services.factsListRecentCalls).toHaveLength(1)
     const knowledgeCall = services.factsListRecentCalls[0]
@@ -412,7 +427,7 @@ describe("loadWakeUpData", () => {
 
     await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 4, now: NOW })
 
-    expect(services.factsCalls[0]?.opts?.limit).toBe(4)
+    expect(services.factsTrackingCalls[0]?.limit).toBe(4)
   })
 
   it("clamps openLoopLimit to Notion's per-page ceiling", async () => {
@@ -424,7 +439,7 @@ describe("loadWakeUpData", () => {
 
     await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 500, now: NOW })
 
-    expect(services.factsCalls[0]?.opts?.limit).toBeLessThanOrEqual(100)
+    expect(services.factsTrackingCalls[0]?.limit).toBeLessThanOrEqual(100)
   })
 
   it("skips the tracking-predicate query when openLoopLimit is 0", async () => {
@@ -436,7 +451,82 @@ describe("loadWakeUpData", () => {
     const data = await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 0, now: NOW })
 
     expect(data.openLoops).toEqual([])
-    expect(services.facts.queryBySubject).not.toHaveBeenCalled()
+    expect(data.openLoopsHasMore).toBe(false)
+    expect(services.facts.listTracking).not.toHaveBeenCalled()
+  })
+
+  it("biases the eligible open-loop set toward most-overdue when the cap clips", async () => {
+    // The whole point of using `listTracking` over `queryBySubject("")`:
+    // when more tracking facts exist than `openLoopLimit`, the rows that
+    // survive the cap must be the most-overdue ones (Review By asc), not
+    // the most-recently-created ones (created_time desc, the old shape).
+    // The Mail vault has 271 open loops vs. a default cap of 100 — under
+    // the old shape ~171 of the most-overdue rows were silently dropped.
+    const overdueOldest = buildFact({
+      id: "f-overdue-old",
+      predicate: "needs_action",
+      reviewBy: "2025-09-01",
+    })
+    const overdueRecent = buildFact({
+      id: "f-overdue-recent",
+      predicate: "blocked_by",
+      reviewBy: "2026-01-15",
+    })
+    const futureReview = buildFact({
+      id: "f-future",
+      predicate: "waiting_on",
+      reviewBy: "2026-08-01",
+    })
+    const noReview = buildFact({
+      id: "f-no-review",
+      predicate: "needs_action",
+      reviewBy: null,
+    })
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [futureReview, noReview, overdueOldest, overdueRecent],
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      openLoopLimit: 2,
+      now: NOW,
+    })
+
+    // Cap = 2. The two most-overdue (oldest `Review By`) survive; the
+    // future-dated and no-review-date rows fall off the tail. Prior
+    // behaviour would have surfaced whichever two were created most
+    // recently regardless of urgency.
+    expect(data.openLoops.map((f) => f.id)).toEqual([
+      "f-overdue-old",
+      "f-overdue-recent",
+    ])
+    // Service-layer truncation propagates so renderers can hint at
+    // `lore-task action='list'` for the full slice.
+    expect(data.openLoopsHasMore).toBe(true)
+  })
+
+  it("propagates hasMore: false when the eligible set fits under the cap", async () => {
+    // Mirror of the cap-clip case. With two rows and a generous limit,
+    // there is no truncation and renderers shouldn't hint at follow-up.
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [
+        buildFact({ id: "f1", predicate: "needs_action", reviewBy: "2025-09-01" }),
+        buildFact({ id: "f2", predicate: "waiting_on", reviewBy: "2026-01-15" }),
+      ],
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      openLoopLimit: 50,
+      now: NOW,
+    })
+
+    expect(data.openLoops).toHaveLength(2)
+    expect(data.openLoopsHasMore).toBe(false)
   })
 
   it("skips digest, fact, decision, and related-memory lookup when no project is resolved", async () => {
@@ -452,7 +542,7 @@ describe("loadWakeUpData", () => {
     expect(data.relatedMemories).toEqual([])
     expect(services.memoriesCalls.some((c) => c.source === "digest")).toBe(false)
     expect(services.memoriesSearchCalls).toEqual([])
-    expect(services.facts.queryBySubject).not.toHaveBeenCalled()
+    expect(services.facts.listTracking).not.toHaveBeenCalled()
     expect(services.facts.listRecent).not.toHaveBeenCalled()
     expect(services.decisions.list).not.toHaveBeenCalled()
     expect(services.decisions.queryOverdue).not.toHaveBeenCalled()

@@ -104,11 +104,26 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     return overrides.relatedMemories ?? []
   })
   const getTitleById = vi.fn(async () => null)
-  const factsQueryBySubject = vi.fn(
-    async (_subject: string, opts?: { predicates?: string[]; limit?: number }) => {
-      if (!opts?.predicates) return overrides.facts ?? []
-      const allowed = new Set(opts.predicates)
-      return (overrides.facts ?? []).filter((f) => allowed.has(f.predicate))
+  // Mirror the tracking-partition contract: filter to tracking predicates
+  // and bias the surviving rows toward most-overdue under any cap. Tests
+  // that pin specific cap behavior arrange fixture order to match the
+  // urgency-biased ordering the real `listTracking` produces.
+  const trackingPredicates = new Set(["needs_action", "waiting_on", "blocked_by"])
+  const factsListTracking = vi.fn(
+    async (opts: { projectId?: string; limit?: number } = {}) => {
+      const tracking = (overrides.facts ?? []).filter((f) =>
+        trackingPredicates.has(f.predicate),
+      )
+      const sorted = [...tracking].sort((a, b) => {
+        if (a.reviewBy === b.reviewBy) return 0
+        if (a.reviewBy === null) return 1
+        if (b.reviewBy === null) return -1
+        return a.reviewBy < b.reviewBy ? -1 : 1
+      })
+      const total = sorted.length
+      const items =
+        opts.limit !== undefined ? sorted.slice(0, opts.limit) : sorted
+      return { items, hasMore: items.length < total }
     },
   )
   const factsListRecent = vi.fn(
@@ -127,7 +142,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       getTitleById,
     },
     facts: {
-      queryBySubject: factsQueryBySubject,
+      listTracking: factsListTracking,
       listRecent: factsListRecent,
     },
     decisions: {
@@ -143,7 +158,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     _calls: {
       memoriesList,
       memoriesSearch,
-      factsQueryBySubject,
+      factsListTracking,
       factsListRecent,
     },
   }
@@ -286,7 +301,7 @@ describe("lore-wake-up — Part D: per-section limits", () => {
     const wake = mockServer.getHandler("lore-wake-up")
     await wake({ openLoopLimit: 7 } as never)
 
-    const [, opts] = services._calls.factsQueryBySubject.mock.calls[0]
+    const [opts] = services._calls.factsListTracking.mock.calls[0]
     expect(opts?.limit).toBe(7)
   })
 
@@ -317,7 +332,7 @@ describe("lore-wake-up — Part D: per-section limits", () => {
 
     const text = extractText(result)
     expect(text).not.toContain("## Open Loops")
-    expect(services._calls.factsQueryBySubject).not.toHaveBeenCalled()
+    expect(services._calls.factsListTracking).not.toHaveBeenCalled()
   })
 
   it("openLoopLimit: 0 cascades to skip the related-memory search", async () => {
@@ -505,8 +520,7 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     const wake = mockServer.getHandler("lore-wake-up")
     await wake({ userQuery: "fix auth" } as never)
 
-    expect(services._calls.factsQueryBySubject).toHaveBeenCalledWith(
-      "",
+    expect(services._calls.factsListTracking).toHaveBeenCalledWith(
       expect.objectContaining({ limit: RANKED_WAKEUP_LIMITS.openLoopLimit }),
     )
     expect(services._calls.factsListRecent).toHaveBeenCalledWith(
@@ -549,8 +563,7 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
       knowledgeFactLimit: 47,
     } as never)
 
-    expect(services._calls.factsQueryBySubject).toHaveBeenCalledWith(
-      "",
+    expect(services._calls.factsListTracking).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 42 }),
     )
     expect(services._calls.factsListRecent).toHaveBeenCalledWith(
