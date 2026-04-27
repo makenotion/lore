@@ -1525,3 +1525,130 @@ describe("FactService — page_size clamping on retrieval queries", () => {
     expect(calls[0].page_size).toBe(100)
   })
 })
+
+describe("FactService.queryOverdue", () => {
+  it("paginates beyond the first 100 rows when no limit is supplied", async () => {
+    // Pre-fix behavior: a single dataSources.query with no page_size
+    // and no cursor loop silently truncated at Notion's default 100-row
+    // page. A vault with 271 overdue facts (mirroring the production
+    // Mail vault's open-loops scale) lost ~63% of the result set.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f1-${i}` }),
+    )
+    const page2 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f2-${i}` }),
+    )
+    const page3 = Array.from({ length: 71 }, (_, i) =>
+      buildFactPage({ id: `f3-${i}` }),
+    )
+    const { client, querySpy } = createClient([
+      { results: page1, has_more: true, next_cursor: "c1" },
+      { results: page2, has_more: true, next_cursor: "c2" },
+      { results: page3, has_more: false, next_cursor: null },
+    ])
+    const service = new FactService(client, db)
+
+    const items = await service.queryOverdue({ projectId: "p1" })
+
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    expect(items).toHaveLength(271)
+    // Cursor must thread across pages — without this the second call
+    // would re-fetch page 1 forever.
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
+    expect(querySpy.mock.calls[2][0]).toMatchObject({ start_cursor: "c2" })
+  })
+
+  it("stops paginating once the limit is reached", async () => {
+    // Limit-reached-mid-page: Notion's first response had 100 rows, the
+    // caller asked for 10. A second query MUST NOT fire — over-fetching
+    // beyond `limit` defeats the page_size clamp.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f-${i}` }),
+    )
+    const { client, querySpy } = createClient([
+      { results: page1, has_more: true, next_cursor: "c1" },
+    ])
+    const service = new FactService(client, db)
+
+    const items = await service.queryOverdue({ projectId: "p1", limit: 10 })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(items).toHaveLength(10)
+  })
+
+  it("clamps page_size to min(limit, 100) when limit is small", async () => {
+    // The fact-side companion of issue 01: a caller asking for the 5
+    // most-overdue facts shouldn't pull 100 rows over the wire. Without
+    // the clamp, page_size defaults to 100 and we waste 95 rows per call.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryOverdue({ projectId: "p1", limit: 5 })
+
+    expect(calls[0].page_size).toBe(5)
+  })
+
+  it("clamps page_size to Notion's 100-row ceiling when no limit is supplied", async () => {
+    // Boundary on the other side: `limit ?? 100` resolves to 100 when
+    // unset, so page_size is exactly 100 — Notion's hard maximum.
+    // Going higher would 400 from Notion.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryOverdue({ projectId: "p1" })
+
+    expect(calls[0].page_size).toBe(100)
+  })
+
+  it("clamps page_size to 100 when limit exceeds Notion's ceiling", async () => {
+    // A caller passing limit=500 must not produce page_size=500 — Notion
+    // rejects > 100 with a 400. The clamp is `Math.min(limit ?? 100, 100)`.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f-${i}` }),
+    )
+    const { client, calls } = createClient([
+      { results: page1, has_more: false, next_cursor: null },
+    ])
+    const service = new FactService(client, db)
+
+    await service.queryOverdue({ projectId: "p1", limit: 500 })
+
+    expect(calls[0].page_size).toBe(100)
+  })
+
+  it("preserves Review By ascending sort across page boundaries", async () => {
+    // The sort is server-side and the page_size clamp doesn't change
+    // ordering — pin the sort filter so a future refactor can't
+    // accidentally drop it. `Review By asc` is what makes the truncation
+    // bug (pre-fix) drop the *least* overdue tail, not the head.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryOverdue({ projectId: "p1" })
+
+    expect(calls[0].sorts).toEqual([
+      { property: "Review By", direction: "ascending" },
+    ])
+  })
+
+  it("filters by Review By on_or_before today and Valid Until is_empty", async () => {
+    // The active-overdue intent: rows past their review date AND not
+    // already invalidated. Skipping `Valid Until is_empty` would surface
+    // historical rows the operator already corrected.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryOverdue({ projectId: "p1" })
+
+    const today = new Date().toISOString().split("T")[0]
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    expect(filter.and).toContainEqual({
+      property: "Review By",
+      date: { on_or_before: today },
+    })
+    expect(filter.and).toContainEqual({
+      property: "Valid Until",
+      date: { is_empty: true },
+    })
+  })
+})

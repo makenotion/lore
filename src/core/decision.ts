@@ -272,8 +272,19 @@ export class DecisionService {
    * Find decisions that are past their review date and still in an active
    * state (proposed or accepted). Superseded/deprecated/rejected decisions
    * are excluded — they don't need review attention.
+   *
+   * Paginates to exhaustion (or to `limit`). A single-shot query against
+   * Notion silently truncates at the default 100-row page; on a vault
+   * with more than 100 overdue decisions, the rows beyond the first page
+   * never come back. Sort order is `Review By asc`, so truncation drops
+   * the *least* overdue tail — but the gap is real: an operator who runs
+   * `lore-audit` and counts the rendered rows would believe that is the
+   * complete set.
    */
-  async queryOverdue(opts?: { projectId?: string }): Promise<DecisionSummary[]> {
+  async queryOverdue(opts?: {
+    projectId?: string
+    limit?: number
+  }): Promise<DecisionSummary[]> {
     const today = todayISO()
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "decision" } },
@@ -289,14 +300,26 @@ export class DecisionService {
       filters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: { and: filters } as QueryDataSourceParameters["filter"],
-      sorts: [{ property: "Review By", direction: "ascending" }],
-    })
+    const limit = opts?.limit
+    const items: DecisionSummary[] = []
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: { and: filters } as QueryDataSourceParameters["filter"],
+        sorts: [{ property: "Review By", direction: "ascending" }],
+        page_size: Math.min(limit ?? 100, 100),
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        items.push(toDecisionSummary(pageToMemory(page, "") as Decision))
+        if (limit !== undefined && items.length >= limit) break
+      }
+      if (limit !== undefined && items.length >= limit) break
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
 
-    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-    return pages.map((page) => toDecisionSummary(pageToMemory(page, "") as Decision))
+    return items
   }
 
   /** Reset the in-process decision cache. Used by tests and by the

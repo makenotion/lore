@@ -1130,7 +1130,10 @@ export class FactService {
     return results.map((p) => this.pageToFact(p))
   }
 
-  async queryOverdue(opts?: { projectId?: string }): Promise<Fact[]> {
+  async queryOverdue(opts?: {
+    projectId?: string
+    limit?: number
+  }): Promise<Fact[]> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
       { property: "Review By", date: { on_or_before: today } },
@@ -1141,15 +1144,30 @@ export class FactService {
       filters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: { and: filters } as QueryDataSourceParameters["filter"],
-      sorts: [{ property: "Review By", direction: "ascending" }],
-    })
+    // Paginate to exhaustion (or to `limit`) — Notion's default page is 100
+    // rows, so a single-shot query silently truncates a vault that has more
+    // than 100 overdue facts. Mirror the `queryBySubject` loop shape so the
+    // service exposes one consistent paginating-read pattern.
+    const limit = opts?.limit
+    const items: Fact[] = []
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: { and: filters } as QueryDataSourceParameters["filter"],
+        sorts: [{ property: "Review By", direction: "ascending" }],
+        page_size: Math.min(limit ?? NOTION_MAX_PAGE_SIZE, NOTION_MAX_PAGE_SIZE),
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        items.push(this.pageToFact(page))
+        if (limit !== undefined && items.length >= limit) break
+      }
+      if (limit !== undefined && items.length >= limit) break
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
 
-    return (response.results.filter(isFullPage) as PageObjectResponse[]).map((p) =>
-      this.pageToFact(p)
-    )
+    return items
   }
 
   async extendReview(id: string, reviewBy: string): Promise<void> {

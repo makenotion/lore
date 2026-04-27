@@ -173,7 +173,10 @@ export interface WakeUpServices {
   }
   decisions: {
     list(opts?: ListDecisionsOpts): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
-    queryOverdue(opts?: { projectId?: string }): Promise<DecisionSummary[]>
+    queryOverdue(opts?: {
+      projectId?: string
+      limit?: number
+    }): Promise<DecisionSummary[]>
   }
   tasks: {
     list(opts?: ListTasksOpts): Promise<{ items: TaskSummary[]; nextCursor?: string }>

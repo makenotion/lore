@@ -465,6 +465,113 @@ describe("DecisionService.queryOverdue", () => {
     expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
     expect(results[0]).not.toHaveProperty("content")
   })
+
+  it("paginates beyond the first 100 rows when no limit is supplied", async () => {
+    // Pre-fix behavior: a single dataSources.query with no page_size
+    // and no cursor loop silently truncated at Notion's default 100-row
+    // page. A vault with > 100 overdue decisions lost the tail. The
+    // sort is `Review By asc` so truncation drops the *least* overdue
+    // rows — but the gap is real: an operator running `lore-audit`
+    // and counting visible rows would believe that's the complete set.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      decisionPage(`d1-${i}`, { reviewBy: "2026-01-01" }),
+    )
+    const page2 = Array.from({ length: 50 }, (_, i) =>
+      decisionPage(`d2-${i}`, { reviewBy: "2026-02-01" }),
+    )
+    const responses = [
+      { results: page1, has_more: true, next_cursor: "c1" },
+      { results: page2, has_more: false, next_cursor: null },
+    ]
+    let i = 0
+    const querySpy = vi.fn().mockImplementation(() => {
+      const r = responses[Math.min(i, responses.length - 1)]
+      i += 1
+      return Promise.resolve(r)
+    })
+    const client = {
+      pages: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        update: vi.fn(),
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(),
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new DecisionService(client, DB)
+
+    const results = await service.queryOverdue()
+
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(results).toHaveLength(150)
+    // Cursor must thread across pages.
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
+  })
+
+  it("stops paginating once the limit is reached", async () => {
+    // Limit-reached-mid-page: caller asked for 10, Notion's first
+    // response carried 100 rows. A second query MUST NOT fire.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      decisionPage(`d-${i}`, { reviewBy: "2026-01-01" }),
+    )
+    const querySpy = vi.fn().mockResolvedValue({
+      results: page1,
+      has_more: true,
+      next_cursor: "c1",
+    })
+    const client = {
+      pages: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        update: vi.fn(),
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(),
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new DecisionService(client, DB)
+
+    const results = await service.queryOverdue({ limit: 10 })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(results).toHaveLength(10)
+  })
+
+  it("clamps page_size to min(limit, 100) when limit is small", async () => {
+    // Avoid pulling 100 rows when the caller only wants a handful.
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.queryOverdue({ limit: 5 })
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(queryArgs.page_size).toBe(5)
+  })
+
+  it("clamps page_size to Notion's 100-row ceiling when no limit is supplied", async () => {
+    // `limit ?? 100` defaults to 100 and Math.min(100, 100) === 100.
+    // Going higher would 400 from Notion.
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.queryOverdue()
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(queryArgs.page_size).toBe(100)
+  })
+
+  it("clamps page_size to 100 when limit exceeds Notion's ceiling", async () => {
+    // A caller passing limit=500 must not produce page_size=500 —
+    // Notion rejects > 100 with a 400.
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.queryOverdue({ limit: 500 })
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(queryArgs.page_size).toBe(100)
+  })
 })
 
 describe("DecisionService.getById — cache", () => {
