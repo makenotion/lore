@@ -265,11 +265,26 @@ export class TaskService {
         })),
       })
     }
-    if (opts?.entity) {
-      filters.push({
-        property: "Entity",
-        rich_text: { contains: opts.entity },
-      })
+    if (opts?.entities && opts.entities.length > 0) {
+      // Server-side OR over `Entity rich_text contains` so alias-aware
+      // recall in `lore-ask` produces the same task set whether the
+      // user typed the canonical name or any registered alias. A
+      // single variant collapses to a flat clause so legacy
+      // single-entity callers keep producing the same Notion filter
+      // shape they did pre-PF4.
+      if (opts.entities.length === 1) {
+        filters.push({
+          property: "Entity",
+          rich_text: { contains: opts.entities[0] },
+        })
+      } else {
+        filters.push({
+          or: opts.entities.map((variant) => ({
+            property: "Entity",
+            rich_text: { contains: variant },
+          })),
+        })
+      }
     }
     if (opts?.dueBefore) {
       filters.push({

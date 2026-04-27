@@ -535,11 +535,19 @@ export interface UpdateTaskInput {
 export interface ListTasksOpts {
   projectId?: string
   /**
-   * Filter to a specific entity. Matches against the `Entity` column
-   * server-side via `rich_text.contains` — same scoping rule
-   * `lore-ask(entity)` uses.
+   * Filter to one or more entity variants. Each variant runs as
+   * `Entity rich_text contains <variant>`; multiple variants compose
+   * server-side as an OR so a single canonical entity's aliases all
+   * recall the same task set. Deduplicated and trimmed by the caller —
+   * `TaskService.list` lifts an empty list to "no entity filter."
+   *
+   * Singular-input call sites (`lore-task` action='list') wrap their
+   * one user-facing string into a one-element array; alias-expanding
+   * call sites (`lore-ask`) hand in the canonical name plus aliases
+   * from `EntityService`. Caps live at the boundary that owns the
+   * expansion (see `expandEntityQueryVariants` in `core/entity.ts`).
    */
-  entity?: string
+  entities?: string[]
   /** Filter by state. Omit to use `ACTIVE_TASK_STATES`. */
   states?: TaskState[]
   /** Only tasks with `Review By` on or before this date. */

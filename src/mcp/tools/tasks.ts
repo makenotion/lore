@@ -396,9 +396,17 @@ async function handleList(
       ? [args.state as TaskState]
       : ACTIVE_TASK_STATES
 
+    // `TaskService.list` consumes a multi-variant `entities` filter so
+    // alias-aware callers (`lore-ask`) can OR over canonical + aliases
+    // server-side. `lore-task` action='list' deliberately keeps a
+    // singular user-facing `entity` input — the agent typed one
+    // string, the tool surfaces tasks containing exactly that string.
+    // Canonicalization here would change the user's filter shape
+    // without their knowledge; canonical-aware recall is `lore-ask`'s
+    // job.
     const { items: tasks } = await services.tasks.list({
       projectId,
-      entity: args.entity,
+      entities: args.entity ? [args.entity] : undefined,
       states,
       dueBefore: args.dueBefore,
       limit: fetchLimit,

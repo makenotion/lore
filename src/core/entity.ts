@@ -114,6 +114,126 @@ export interface ResolveOptions {
 const NOTION_MAX_PAGE_SIZE = 100
 
 /**
+ * Maximum number of `Entity rich_text contains` predicates that
+ * `expandEntityQueryVariants` will compose for a single resolved
+ * entity. Notion's filter nesting is bounded and `TaskService.list`
+ * still slices to a 100-row response window — a runaway alias set
+ * would inflate the filter shape without improving recall, the worst
+ * of both worlds.
+ *
+ * 10 covers every alias set we have observed in the Mail vault by
+ * an order of magnitude (the widest alias entries hover at 2–3),
+ * leaves headroom for legacy spellings + the canonical name + the
+ * raw user input, and is small enough that an alias drift to "every
+ * subject ever seen" fails loudly via the warning channel rather
+ * than silently. Tune up only if a real vault hits the cap on
+ * legitimate aliases — and surface the bump alongside the warning
+ * UI so operators can see why their cap moved.
+ */
+export const ENTITY_QUERY_VARIANT_CAP = 10
+
+/**
+ * Result of {@link expandEntityQueryVariants}.
+ *
+ * `variants` is the deduplicated, capped list of strings that should
+ * be OR'd against the `Entity rich_text contains` filter. Always
+ * non-empty when a meaningful input was passed (the raw input is the
+ * baseline variant). `hitCap` flags when the canonical entity has
+ * more aliases than the cap absorbs — callers surface this as a
+ * warning so an operator can see that recall is being clipped rather
+ * than the cap silently degrading task lookup.
+ *
+ * `dropped` lists alias variants the cap excluded (canonical
+ * preserved, raw input preserved, alias overflow trimmed). Surfaced
+ * for the warning text so operators see exactly which aliases stop
+ * being recalled when the cap fires.
+ */
+export interface EntityQueryVariants {
+  variants: string[]
+  hitCap: boolean
+  dropped: string[]
+}
+
+/**
+ * Expand a resolved entity into the case-insensitively-deduped set of
+ * strings to feed `TaskService.list`'s `entities` filter.
+ *
+ * Variant ownership lives on `EntityService` rather than the call
+ * site so a future extension (e.g. include normalized synonyms, drop
+ * the raw input on a guaranteed-canonical caller) is one helper edit
+ * — not a sweep across every caller of `lore-task` action='list'
+ * that does its own ad-hoc string composition. The `lore-ask` task
+ * recall path is the canonical caller; future surfaces should reuse
+ * this helper or accept that they will re-derive the same logic
+ * incorrectly.
+ *
+ * Behavior:
+ * - The raw user input is always preserved as the first variant so
+ *   un-migrated tasks that store a free-form spelling (the Mail
+ *   vault has many) still match. The canonical name follows when
+ *   distinct.
+ * - Aliases are appended in their stored order so a `--build-entities`
+ *   migration that placed canonical-adjacent variants first surfaces
+ *   them first under the cap.
+ * - Deduplication runs on the same normalized key Facts use
+ *   (`normalizeEntityKey`), so case variants and trailing-punct
+ *   variants collapse rather than burning slots under the cap.
+ * - Output preserves original spelling — Notion `contains` is
+ *   case-insensitive but the variant text surfaces in the warning
+ *   message, so showing the user-recognisable form matters.
+ *
+ * Returns `{ variants: [trimmed], hitCap: false, dropped: [] }` for an
+ * empty / null `entity` resolution so callers can pass through the
+ * raw input untouched (legacy vault path).
+ */
+export function expandEntityQueryVariants(
+  rawInput: string,
+  entity: Pick<Entity, "name" | "aliases"> | null,
+  cap = ENTITY_QUERY_VARIANT_CAP,
+): EntityQueryVariants {
+  const trimmed = rawInput.trim()
+  if (!trimmed) {
+    return { variants: [], hitCap: false, dropped: [] }
+  }
+
+  const seen = new Set<string>()
+  const variants: string[] = []
+  const pushIfFresh = (value: string): boolean => {
+    const candidate = value.trim()
+    if (!candidate) return false
+    const key = normalizeEntityKey(candidate)
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    variants.push(candidate)
+    return true
+  }
+
+  pushIfFresh(trimmed)
+  if (entity) {
+    pushIfFresh(entity.name)
+  }
+
+  const dropped: string[] = []
+  if (entity) {
+    for (const alias of entity.aliases) {
+      if (variants.length >= cap) {
+        const candidate = alias.trim()
+        if (!candidate) continue
+        const key = normalizeEntityKey(candidate)
+        if (!key || seen.has(key)) continue
+        // Track only fresh aliases we had to drop — duplicates of an
+        // already-included variant don't represent lost recall.
+        dropped.push(candidate)
+        continue
+      }
+      pushIfFresh(alias)
+    }
+  }
+
+  return { variants, hitCap: dropped.length > 0, dropped }
+}
+
+/**
  * Safety cap on `findByName`'s contains-fallback and `findByAlias`
  * pagination. At 100 rows per page this caps at 1000 candidates per
  * lookup — large enough that real-world ambiguity surfaces still fit

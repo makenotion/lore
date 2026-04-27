@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
 import {
+  ENTITY_QUERY_VARIANT_CAP,
   EntityService,
+  expandEntityQueryVariants,
   normalizeEntityKey,
   parseAliases,
 } from "./entity.js"
@@ -238,5 +240,87 @@ describe("EntityService.addAliases", () => {
     // should be appended a second time.
     expect(updated.aliases.filter((a) => a.toLowerCase() === "auth")).toHaveLength(1)
     expect(client.pages.update).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("expandEntityQueryVariants", () => {
+  it("returns the trimmed raw input as the only variant when the entity is null", () => {
+    const result = expandEntityQueryVariants("  AuthService  ", null)
+    expect(result.variants).toEqual(["AuthService"])
+    expect(result.hitCap).toBe(false)
+    expect(result.dropped).toEqual([])
+  })
+
+  it("returns an empty variant set on whitespace-only input so callers can detect the degenerate case", () => {
+    const result = expandEntityQueryVariants("   ", null)
+    expect(result.variants).toEqual([])
+    expect(result.hitCap).toBe(false)
+  })
+
+  it("preserves the raw input as the first variant even when canonical exists — un-migrated rows still match", () => {
+    const result = expandEntityQueryVariants("AuthSvc", {
+      name: "AuthService",
+      aliases: ["AuthSvc", "auth-service"],
+    })
+    expect(result.variants[0]).toBe("AuthSvc")
+    expect(result.variants).toContain("AuthService")
+    expect(result.variants).toContain("auth-service")
+  })
+
+  it("collapses case-variant aliases via normalizeEntityKey so cap slots aren't burned on duplicates", () => {
+    const result = expandEntityQueryVariants("AuthService", {
+      name: "AuthService",
+      aliases: ["authservice", "AUTHSERVICE", "AuthSvc"],
+    })
+    // Raw input + canonical normalize to one slot; the two case-variant
+    // aliases also collapse onto that key. Net: 2 variants (canonical
+    // + the truly distinct AuthSvc alias).
+    expect(result.variants).toEqual(["AuthService", "AuthSvc"])
+    expect(result.hitCap).toBe(false)
+  })
+
+  it("caps at ENTITY_QUERY_VARIANT_CAP variants and reports the dropped aliases", () => {
+    const aliases = Array.from({ length: 12 }, (_, i) => `Alias-${i}`)
+    const result = expandEntityQueryVariants("AuthService", {
+      name: "AuthService",
+      aliases,
+    })
+    // Slot 0: raw == canonical (AuthService). Slots 1–9: aliases 0–8.
+    // Aliases 9, 10, 11 overflow.
+    expect(result.variants).toHaveLength(ENTITY_QUERY_VARIANT_CAP)
+    expect(result.hitCap).toBe(true)
+    expect(result.dropped).toEqual(["Alias-9", "Alias-10", "Alias-11"])
+  })
+
+  it("hitCap stays false when overflow aliases were duplicates of already-included variants", () => {
+    // 10 distinct aliases + 3 case-duplicate trailing aliases. The
+    // trailing duplicates fail the dedup check before the cap fires,
+    // so they're not surfaced as "dropped recall" — they would have
+    // been redundant slots anyway.
+    const aliases = [
+      ...Array.from({ length: 9 }, (_, i) => `Alias-${i}`),
+      "AUTHSERVICE",
+      "authservice",
+      "ALIAS-0",
+    ]
+    const result = expandEntityQueryVariants("AuthService", {
+      name: "AuthService",
+      aliases,
+    })
+    expect(result.variants).toHaveLength(ENTITY_QUERY_VARIANT_CAP)
+    expect(result.hitCap).toBe(false)
+    expect(result.dropped).toEqual([])
+  })
+
+  it("respects a caller-supplied cap override for tests / future tuning", () => {
+    const result = expandEntityQueryVariants(
+      "AuthSvc",
+      { name: "AuthService", aliases: ["alpha", "beta", "gamma"] },
+      3,
+    )
+    // Cap = 3: raw ("AuthSvc"), canonical ("AuthService"), one alias.
+    expect(result.variants).toHaveLength(3)
+    expect(result.hitCap).toBe(true)
+    expect(result.dropped).toEqual(["beta", "gamma"])
   })
 })

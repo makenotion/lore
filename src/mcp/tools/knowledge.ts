@@ -9,6 +9,7 @@ import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../rende
 import type { Decision, Fact, FactPredicate, TaskSummary } from "../../types.js"
 import { TRACKING_PREDICATES } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
+import { expandEntityQueryVariants } from "../../core/entity.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -488,6 +489,7 @@ export async function handleAsk(
     // distinct canonical entities (e.g. `User (auth context)` and
     // `User (db schema)`).
     let entityId: string | null = null
+    let resolvedEntity: { name: string; aliases: string[] } | null = null
     if (services.entities) {
       const resolution = await services.entities
         .resolveOrCreateEntity(args.entity, { autoCreate: false })
@@ -507,18 +509,54 @@ export async function handleAsk(
           )
         } else if (resolution.entity) {
           entityId = resolution.entity.id
+          resolvedEntity = {
+            name: resolution.entity.name,
+            aliases: resolution.entity.aliases,
+          }
         }
       }
+    }
+
+    // Fact recall already rides the canonical relation when the entity
+    // resolves; tasks are still a free-form text column, so mirror the
+    // fact side's alias awareness by expanding the resolved entity into
+    // a deduped variant set. Legacy / ambiguous / unresolved paths
+    // collapse to the raw input and behave like the pre-PF4 substring
+    // contract. The cap warning surfaces only when an alias drift
+    // would have clipped recall; under the cap the lookup is silent.
+    const taskVariants = expandEntityQueryVariants(args.entity, resolvedEntity)
+    if (taskVariants.hitCap) {
+      const droppedLabel = taskVariants.dropped
+        .slice(0, 3)
+        .map((d) => `"${d}"`)
+        .join(", ")
+      const remainder =
+        taskVariants.dropped.length > 3
+          ? `, +${taskVariants.dropped.length - 3} more`
+          : ""
+      warnings.push(
+        `Task recall capped at ${taskVariants.variants.length} alias variants for "${args.entity}" — ` +
+          `dropped ${droppedLabel}${remainder}. Tasks written under the dropped aliases may be missed.`,
+      )
     }
 
     // Fetch facts and tasks in parallel — they're independent queries
     // and `lore-ask` is on the agent hot path. Failures on the tasks side
     // surface as a warning rather than collapsing the call so a transient
     // 5xx on the tasks query does not nuke the facts response.
+    //
+    // `expandEntityQueryVariants` returns the raw input as the first
+    // variant whenever the input is non-empty, so the fallback to
+    // `[args.entity]` only fires for the degenerate empty / whitespace
+    // case (preserves the legacy `entity: args.entity` contract there
+    // — Notion's substring filter against `""` is a vault-wide match
+    // and the call is degenerate either way).
+    const taskListEntities =
+      taskVariants.variants.length > 0 ? taskVariants.variants : [args.entity]
     const [facts, taskListing] = await Promise.all([
       services.facts.queryByEntity(args.entity, { projectId, entityId }),
       services.tasks
-        .list({ projectId, entity: args.entity, limit: 50 })
+        .list({ projectId, entities: taskListEntities, limit: 50 })
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err)
           warnings.push(`Tasks lookup failed: ${message}`)

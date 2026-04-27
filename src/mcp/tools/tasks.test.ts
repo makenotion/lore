@@ -441,4 +441,41 @@ describe("lore-tasks", () => {
     expect(text).toContain("No tasks found")
     expect(text).toContain("PR #99")
   })
+
+  it("wraps the singular `entity` input into a one-element entities array — does not canonicalize", async () => {
+    // The user-facing `entity` argument is intentionally singular: an
+    // agent calling `lore-task` action='list' typed exactly one
+    // string and expects tasks containing that string. Alias-aware
+    // recall belongs to `lore-ask`, which knows the canonical entity.
+    // This test pins that boundary so a future refactor doesn't
+    // silently start re-resolving the user's input behind their back.
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-tasks")
+    await handler({ entity: "AuthSvc" } as never)
+
+    const callArgs = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs.entities).toEqual(["AuthSvc"])
+    // No legacy `entity` field — service-layer surface is single
+    // source of truth on the multi-variant shape.
+    expect(callArgs).not.toHaveProperty("entity")
+  })
+
+  it("omits the entities filter entirely when no entity input is provided", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-tasks")
+    await handler({} as never)
+
+    const callArgs = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs.entities).toBeUndefined()
+  })
 })

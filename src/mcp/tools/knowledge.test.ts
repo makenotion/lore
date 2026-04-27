@@ -1381,7 +1381,7 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
     expect(text).toMatch(/⚠ \*\*Rotate JWT keys/)
   })
 
-  it("filters tasks by entity server-side, not client-side", async () => {
+  it("filters tasks by entity server-side via the multi-variant entities filter", async () => {
     const mockServer = createMockServer()
     const services = makeAskServices()
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1389,9 +1389,16 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
 
     await loreAsk({ entity: "AuthService" } as never)
 
+    // Legacy vault path (no `services.entities`) collapses the variant
+    // set to the raw input — alias-aware recall is the EntityService
+    // path, exercised separately below. The contract here is that
+    // `lore-ask` always feeds `TaskService.list` through the new
+    // `entities` array surface, never the removed `entity` field.
     expect(services.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ entity: "AuthService" })
+      expect.objectContaining({ entities: ["AuthService"] }),
     )
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs).not.toHaveProperty("entity")
   })
 
   it("does not pass a `states` override to TaskService.list — service-side ACTIVE_TASK_STATES default applies", async () => {
@@ -1452,5 +1459,165 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
     expect(text).toContain("transient 5xx")
     // Facts still rendered — the warning didn't sink the call.
     expect(text).toContain("JWT")
+  })
+})
+
+describe("lore-ask — task recall honors canonical entity aliases", () => {
+  function makeAskServicesWithEntity(
+    resolution: {
+      entity?: { id: string; name: string; aliases: string[] } | null
+      ambiguous?: boolean
+      candidates?: Array<{ id: string; name: string }>
+    },
+    overrides: Record<string, unknown> = {},
+  ) {
+    const candidates = (resolution.candidates ?? []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      aliases: [],
+      kind: null,
+      description: "",
+    }))
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      decisions: { getById: vi.fn() },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null },
+      entities: {
+        resolveOrCreateEntity: vi.fn().mockResolvedValue({
+          entity: resolution.entity ?? null,
+          ambiguous: resolution.ambiguous ?? false,
+          candidates: resolution.entity
+            ? [
+                {
+                  ...resolution.entity,
+                  kind: null,
+                  description: "",
+                },
+              ]
+            : candidates,
+          created: false,
+        }),
+      },
+      ...overrides,
+    }
+  }
+
+  it("expands the canonical entity into name + aliases when the resolver returns a unique row", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServicesWithEntity({
+      entity: {
+        id: "ent-auth",
+        name: "AuthService",
+        aliases: ["AuthSvc", "auth-service"],
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    // User typed an alias — variants must include the canonical name
+    // and the other registered aliases so a task stored under any of
+    // them surfaces.
+    await loreAsk({ entity: "AuthSvc" } as never)
+
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs.entities).toEqual(
+      expect.arrayContaining(["AuthSvc", "AuthService", "auth-service"]),
+    )
+    // Raw user input is preserved as the first variant — un-migrated
+    // tasks that store the original alias spelling still match.
+    expect(callArgs.entities[0]).toBe("AuthSvc")
+  })
+
+  it("collapses case-variant aliases via the same normalization Facts use", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServicesWithEntity({
+      entity: {
+        id: "ent-auth",
+        name: "AuthService",
+        // Aliases are stored verbatim but two of these collapse onto
+        // the canonical key — they should not consume cap slots.
+        aliases: ["authservice", "AUTHSERVICE", "AuthSvc"],
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    await loreAsk({ entity: "AuthService" } as never)
+
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    // Raw input + canonical name dedupe to one variant; the two
+    // case-variant aliases also collapse onto the canonical key.
+    // Net: `AuthService` (raw == canonical) + `AuthSvc` (distinct).
+    expect(callArgs.entities).toEqual(["AuthService", "AuthSvc"])
+  })
+
+  it("falls back to the raw input on ambiguous resolution and surfaces the disambiguate warning", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServicesWithEntity({
+      ambiguous: true,
+      candidates: [
+        { id: "ent-auth", name: "User (auth context)" },
+        { id: "ent-db", name: "User (db schema)" },
+      ],
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const result = await loreAsk({ entity: "User" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Ambiguity surfaces but the call doesn't collapse — task lookup
+    // still runs against the raw substring so the agent sees something
+    // useful.
+    expect(text).toContain("matches 2 entities")
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs.entities).toEqual(["User"])
+  })
+
+  it("legacy vault (services.entities === null) feeds the raw input through unchanged", async () => {
+    const mockServer = createMockServer()
+    const services = makeAskServicesWithEntity({})
+    services.entities = null as never
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    await loreAsk({ entity: "AuthService" } as never)
+
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs.entities).toEqual(["AuthService"])
+  })
+
+  it("warns when the alias set exceeds the variant cap and lists the dropped aliases", async () => {
+    // 12 distinct aliases on a single entity — variants land at the
+    // 10-slot cap (raw input + canonical + 8 aliases). The two
+    // overflow aliases surface in the warning so an operator can see
+    // exactly which alias spellings are no longer recalled.
+    const aliases = Array.from({ length: 12 }, (_, i) => `Auth-Alias-${i}`)
+    const mockServer = createMockServer()
+    const services = makeAskServicesWithEntity({
+      entity: {
+        id: "ent-auth",
+        name: "AuthService",
+        aliases,
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    const loreAsk = mockServer.getHandler("lore-ask")
+
+    const result = await loreAsk({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Task recall capped at 10 alias variants")
+    // Spec acceptance criterion: surface a warning naming the
+    // overflowed aliases so the cap is observable, not silent.
+    expect(text).toContain("Auth-Alias-9")
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(callArgs.entities).toHaveLength(10)
   })
 })

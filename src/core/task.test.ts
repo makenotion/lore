@@ -214,15 +214,50 @@ describe("TaskService.list", () => {
     expect(JSON.stringify(args.filter)).not.toContain('"cancelled"')
   })
 
-  it("scopes by entity via rich_text contains on the Entity column", async () => {
+  it("scopes by a single entity variant as a flat rich_text contains clause", async () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
-    await service.list({ entity: "PR #25700" })
+    await service.list({ entities: ["PR #25700"] })
 
     const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    expect(JSON.stringify(args.filter)).toContain('"Entity"')
-    expect(JSON.stringify(args.filter)).toContain('"PR #25700"')
+    const filter = JSON.stringify(args.filter)
+    expect(filter).toContain('"Entity"')
+    expect(filter).toContain('"PR #25700"')
+    // Single-variant inputs collapse to a flat clause — no `or` group
+    // in the entity slot, so the filter shape matches the pre-PF4
+    // single-string contract Notion saw on legacy callers.
+    expect(filter).not.toMatch(/"or":\s*\[[^\]]*"Entity"/)
+  })
+
+  it("ORs multiple variants over the Entity column for alias-aware recall", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.list({ entities: ["AuthService", "AuthSvc", "auth-service"] })
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const filter = JSON.stringify(args.filter)
+    // Each variant lands as its own `Entity rich_text contains` clause
+    // so a task whose Entity column stores any one of the aliases
+    // surfaces in the response.
+    expect(filter).toContain('"AuthService"')
+    expect(filter).toContain('"AuthSvc"')
+    expect(filter).toContain('"auth-service"')
+    // The clauses compose under a single `or` group so Notion handles
+    // the union server-side rather than the caller paginating over
+    // each variant individually.
+    expect(filter).toMatch(/"or":\s*\[/)
+  })
+
+  it("omits the entity filter when entities is empty (no spurious vault-wide narrowing)", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.list({ entities: [] })
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(JSON.stringify(args.filter)).not.toContain('"Entity"')
   })
 
   it("strips body content from summaries (no retrieveMarkdown calls)", async () => {
