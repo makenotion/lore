@@ -436,11 +436,11 @@ describe("lore-list-decisions projectName resolution", () => {
 describe("lore-decision-context projectName resolution", () => {
   it("returns an explicit error when projectName does not resolve", async () => {
     const mockServer = createMockServer()
-    const queryBySubject = vi.fn()
+    const queryByEntity = vi.fn()
     const services = {
       decisions: {},
       projects: { findByName: vi.fn().mockResolvedValue(null) },
-      facts: { queryBySubject },
+      facts: { queryByEntity },
       topics: {},
       context: { project: { id: "proj-ambient", name: "Ambient" } },
     }
@@ -452,7 +452,7 @@ describe("lore-decision-context projectName resolution", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain('Project "Typo" not found')
-    expect(queryBySubject).not.toHaveBeenCalled()
+    expect(queryByEntity).not.toHaveBeenCalled()
   })
 })
 
@@ -468,7 +468,7 @@ describe("lore-decision-context — partial decision resolution", () => {
       },
       projects: { findByName: vi.fn() },
       facts: {
-        queryBySubject: vi.fn().mockResolvedValue([
+        queryByEntity: vi.fn().mockResolvedValue([
           { ...makeFact("fact-ok"), sourceMemoryId: "good-id", object: "good-id" },
           { ...makeFact("fact-bad"), sourceMemoryId: "bad-root", object: "bad-root" },
         ]),
@@ -553,5 +553,207 @@ describe("lore-decision-context — partial decision resolution", () => {
       vi.unstubAllEnvs()
       stderr.mockRestore()
     }
+  })
+})
+
+describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
+  function makeServicesWithEntities(opts: {
+    entityResolution?: {
+      entity?: { id: string; name: string; aliases: string[] } | null
+      ambiguous?: boolean
+      candidates?: Array<{ id: string; name: string }>
+    }
+    skipEntities?: boolean
+    decision?: Decision
+    facts?: Fact[]
+  }) {
+    const decision =
+      opts.decision ?? makeDecision("dec-1", { title: "Use JWT for sessions" })
+
+    return {
+      decisions: {
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === decision.id) return decision
+          throw new Error(`unknown decision ${id}`)
+        }),
+      },
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(
+          opts.facts ??
+            [
+              {
+                ...makeFact("fact-1"),
+                sourceMemoryId: decision.id,
+                object: decision.id,
+              },
+            ],
+        ),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      topics: {},
+      context: { project: { id: "proj-a", name: "Ambient" } },
+      entities: opts.skipEntities
+        ? null
+        : {
+            resolveOrCreateEntity: vi.fn().mockImplementation(async () => ({
+              entity: opts.entityResolution?.entity ?? null,
+              ambiguous: opts.entityResolution?.ambiguous ?? false,
+              candidates:
+                opts.entityResolution?.candidates ??
+                (opts.entityResolution?.entity
+                  ? [opts.entityResolution.entity]
+                  : []),
+              created: false,
+            })),
+          },
+    }
+  }
+
+  it("routes through resolveOrCreateEntity with autoCreate=false and forwards entityId to queryByEntity", async () => {
+    // Acceptance criterion: alias input ("AuthSvc") resolves to canonical
+    // entity ("AuthService") and queryByEntity is called with the
+    // resolved entityId so the relation join surfaces backfilled facts.
+    // autoCreate must be false — the read path cannot mint entities.
+    const mockServer = createMockServer()
+    const services = makeServicesWithEntities({
+      entityResolution: {
+        entity: {
+          id: "ent-auth",
+          name: "AuthService",
+          aliases: ["AuthSvc"],
+        },
+      },
+    })
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    await handler({ entity: "AuthSvc" } as never)
+
+    expect(services.entities!.resolveOrCreateEntity).toHaveBeenCalledWith(
+      "AuthSvc",
+      expect.objectContaining({ autoCreate: false }),
+    )
+    expect(services.facts.queryByEntity).toHaveBeenCalledWith(
+      "AuthSvc",
+      expect.objectContaining({
+        projectId: "proj-a",
+        entityId: "ent-auth",
+        predicates: ["decided_by"],
+      }),
+    )
+  })
+
+  it("surfaces an ambiguity warning instead of silently picking one entity", async () => {
+    // Acceptance criterion: when the resolver returns ambiguous=true,
+    // emit a warning naming the candidates so the caller can disambiguate.
+    // The substring fallback inside queryByEntity still runs underneath
+    // (entityId is null), so the agent gets the best-effort hit set.
+    const mockServer = createMockServer()
+    const services = makeServicesWithEntities({
+      entityResolution: {
+        entity: null,
+        ambiguous: true,
+        candidates: [
+          { id: "ent-a", name: "User (auth context)" },
+          { id: "ent-b", name: "User (db schema)" },
+        ],
+      },
+    })
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    const result = await handler({ entity: "User" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Warnings:")
+    expect(text).toContain("matches 2 entities")
+    expect(text).toContain("ent-a")
+    expect(text).toContain("ent-b")
+    // queryByEntity still called, but entityId is undefined so the
+    // call falls through to the substring path under queryByEntity.
+    expect(services.facts.queryByEntity).toHaveBeenCalledWith(
+      "User",
+      expect.objectContaining({
+        projectId: "proj-a",
+        predicates: ["decided_by"],
+      }),
+    )
+    const opts = (services.facts.queryByEntity as ReturnType<typeof vi.fn>)
+      .mock.calls[0][1]
+    expect(opts.entityId).toBeUndefined()
+  })
+
+  it("legacy vault path (services.entities === null) skips resolver and queries by raw entity", async () => {
+    // Pre-PF3-01 vault: queryByEntity's entityId-null branch falls through
+    // to queryBySubject ∪ queryByObject. The tool must still pass
+    // predicates: ['decided_by'] so the union is server-side narrowed.
+    const mockServer = createMockServer()
+    const services = makeServicesWithEntities({ skipEntities: true })
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    await handler({ entity: "AuthService" } as never)
+
+    expect(services.facts.queryByEntity).toHaveBeenCalledWith(
+      "AuthService",
+      expect.objectContaining({
+        projectId: "proj-a",
+        predicates: ["decided_by"],
+      }),
+    )
+    const opts = (services.facts.queryByEntity as ReturnType<typeof vi.fn>)
+      .mock.calls[0][1]
+    expect(opts.entityId).toBeUndefined()
+  })
+
+  it("surfaces ambiguity warning even when queryByEntity returns zero facts", async () => {
+    // Pin the no-facts early return rendering the warnings footer.
+    // Without it, a vault where the ambiguous input has zero matching
+    // facts would silently swallow the candidate disambiguation hint —
+    // the user would see a misleading "No decisions found" with no
+    // signal that the input was even ambiguous.
+    const mockServer = createMockServer()
+    const services = makeServicesWithEntities({
+      entityResolution: {
+        entity: null,
+        ambiguous: true,
+        candidates: [
+          { id: "ent-a", name: "User (auth context)" },
+          { id: "ent-b", name: "User (db schema)" },
+        ],
+      },
+      facts: [],
+    })
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    const result = await handler({ entity: "User" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("No decisions found")
+    expect(text).toContain("Warnings:")
+    expect(text).toContain("matches 2 entities")
+    expect(text).toContain("ent-a")
+    expect(text).toContain("ent-b")
+  })
+
+  it("warns and continues when entity resolution throws (transient failure)", async () => {
+    // The resolver path must never collapse the whole tool call —
+    // queryByEntity's substring fallback still produces useful results.
+    const mockServer = createMockServer()
+    const services = makeServicesWithEntities({})
+    services.entities!.resolveOrCreateEntity = vi
+      .fn()
+      .mockRejectedValue(new Error("notion 429"))
+    registerDecisionTools(mockServer.server, services as never)
+    const handler = mockServer.getHandler("lore-decision-context")
+
+    const result = await handler({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Entity lookup failed")
+    expect(text).toContain("notion 429")
+    expect(services.facts.queryByEntity).toHaveBeenCalled()
   })
 })

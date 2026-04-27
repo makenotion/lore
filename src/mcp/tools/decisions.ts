@@ -439,15 +439,53 @@ async function handleContext(
       projectId = services.context.project.id
     }
 
-    const facts = await services.facts.queryBySubject(args.entity, {
+    // PF3-01 — resolve the entity name to a canonical row first so the
+    // fact lookup can ride the relation join. This brings
+    // `lore-decision-context` to parity with `lore-ask` (issue 0.6.0/03):
+    // both surfaces should agree on which decisions govern a given
+    // canonical entity, regardless of whether the caller typed the name
+    // or an alias. Strict mode (no auto-create): the read path must not
+    // mint canonical rows just by looking up an unknown entity.
+    // Ambiguity surfaces as a warning; the substring-fallback inside
+    // `queryByEntity` still runs underneath so the agent sees something
+    // useful even when the input maps to two distinct canonical entities.
+    let entityId: string | null = null
+    if (services.entities) {
+      const resolution = await services.entities
+        .resolveOrCreateEntity(args.entity, { autoCreate: false })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          warnings.push(`Entity lookup failed: ${message}`)
+          return null
+        })
+      if (resolution) {
+        if (resolution.ambiguous) {
+          const candidateLabels = resolution.candidates
+            .map((c) => `"${c.name}" (${c.id})`)
+            .join(", ")
+          warnings.push(
+            `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
+              `Disambiguate by passing one of: ${candidateLabels}.`,
+          )
+        } else if (resolution.entity) {
+          entityId = resolution.entity.id
+        }
+      }
+    }
+
+    const facts = await services.facts.queryByEntity(args.entity, {
       projectId,
+      entityId: entityId ?? undefined,
       predicates: ["decided_by"],
     })
 
     if (facts.length === 0) {
       return {
         content: [
-          { type: "text", text: `No decisions found governing "${args.entity}".` },
+          {
+            type: "text",
+            text: `No decisions found governing "${args.entity}".${formatWarnings()}`,
+          },
         ],
       }
     }
@@ -770,7 +808,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .string()
           .optional()
           .describe(
-            "(action='context') Required. Entity to look up (matches `decided_by` Subject).",
+            "(action='context') Required. Entity to look up. Resolves through canonical entity registry (aliases + case-insensitive name) when available; matches `decided_by` facts whose Subject (preferred, via canonical relation) or Object text contains the input.",
           ),
         // supersede
         newDecisionId: z
@@ -929,7 +967,9 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       inputSchema: {
         entity: z
           .string()
-          .describe("The entity to look up (matches the Subject of `decided_by` facts)"),
+          .describe(
+            "The entity to look up. Resolves through canonical entity registry (aliases + case-insensitive name) when available; matches `decided_by` facts whose Subject (preferred, via canonical relation) or Object text contains the input. The Object-side text clause is structurally always present — for `decided_by` facts the Object stores a decision UUID, so it rarely returns extra hits in practice.",
+          ),
         projectName: z.string().optional().describe("Scope to a project"),
         limit: z
           .number()

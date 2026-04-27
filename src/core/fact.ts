@@ -145,6 +145,36 @@ function isMissingPropertyError(err: unknown): boolean {
 const LIST_TRACKING_MAX_PAGES = 100
 
 /**
+ * Build the server-side `Predicate` filter clause for a list of predicates.
+ * Returns `undefined` when the input is empty so callers can skip pushing
+ * a no-op clause. A single predicate collapses to `select.equals`; multiple
+ * predicates fan out as an OR-of-equals (Notion's `select` filter has no
+ * `is_one_of` primitive).
+ *
+ * Centralized so `queryBySubject`, `queryByObject`, `queryByEntityId`, and
+ * `queryByEntityTextOnUnmigrated` apply the same shape — the predicate
+ * filter is a recurring need across the entity-side read paths and a
+ * helper avoids drift.
+ */
+function predicateFilterClause(
+  predicates: FactPredicate[] | undefined,
+): Record<string, unknown> | undefined {
+  if (!predicates?.length) return undefined
+  if (predicates.length === 1) {
+    return {
+      property: "Predicate",
+      select: { equals: predicates[0] },
+    }
+  }
+  return {
+    or: predicates.map((p) => ({
+      property: "Predicate",
+      select: { equals: p },
+    })),
+  }
+}
+
+/**
  * A created-or-deduped fact. `deduped === true` means the write was absorbed
  * into an existing live row (same normalized triple) and the caller should
  * surface that to the user instead of silently returning a stale-looking ID.
@@ -241,7 +271,11 @@ export class FactService {
    */
   async queryByEntityId(
     entityId: string,
-    opts?: { projectId?: string; includeInvalidated?: boolean }
+    opts?: {
+      projectId?: string
+      includeInvalidated?: boolean
+      predicates?: FactPredicate[]
+    }
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
       {
@@ -261,6 +295,9 @@ export class FactService {
         date: { is_empty: true },
       })
     }
+
+    const predicateClause = predicateFilterClause(opts?.predicates)
+    if (predicateClause) filters.push(predicateClause)
 
     const filter = filters.length > 1 ? { and: filters } : filters[0]
     const results: PageObjectResponse[] = []
@@ -992,14 +1029,27 @@ export class FactService {
    */
   async queryByEntity(
     entity: string,
-    opts?: { projectId?: string; entityId?: string | null }
+    opts?: {
+      projectId?: string
+      entityId?: string | null
+      predicates?: FactPredicate[]
+    }
   ): Promise<Fact[]> {
     if (opts?.entityId) {
       // Hot-path: relation hits + un-backfilled substring hits, run in
-      // parallel so wall-clock is one round-trip, not two.
+      // parallel so wall-clock is one round-trip, not two. Predicate
+      // filter applies server-side on both branches so callers like
+      // `lore-decision-context` (predicates: ["decided_by"]) don't
+      // over-fetch unrelated facts touching the same entity.
       const [byRelation, byTextOnUnmigrated] = await Promise.all([
-        this.queryByEntityId(opts.entityId, { projectId: opts.projectId }),
-        this.queryByEntityTextOnUnmigrated(entity, { projectId: opts.projectId }),
+        this.queryByEntityId(opts.entityId, {
+          projectId: opts.projectId,
+          predicates: opts.predicates,
+        }),
+        this.queryByEntityTextOnUnmigrated(entity, {
+          projectId: opts.projectId,
+          predicates: opts.predicates,
+        }),
       ])
       const seen = new Set(byRelation.map((f) => f.id))
       return [
@@ -1026,7 +1076,7 @@ export class FactService {
    */
   private async queryByEntityTextOnUnmigrated(
     entity: string,
-    opts?: { projectId?: string }
+    opts?: { projectId?: string; predicates?: FactPredicate[] }
   ): Promise<Fact[]> {
     if (!entity) return []
 
@@ -1045,6 +1095,9 @@ export class FactService {
     if (opts?.projectId) {
       baseFilters.push(projectOrUnscopedFilter(opts.projectId))
     }
+
+    const predicateClause = predicateFilterClause(opts?.predicates)
+    if (predicateClause) baseFilters.push(predicateClause)
 
     const subjectKey = computeSubjectKey(entity)
     const textOr: Array<Record<string, unknown>> = []

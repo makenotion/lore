@@ -1652,3 +1652,123 @@ describe("FactService.queryOverdue", () => {
     })
   })
 })
+
+describe("FactService.queryByEntity — predicates option (issue 0.6.0/05)", () => {
+  function findPredicateClause(
+    filter: { and: Array<Record<string, unknown>> } | Record<string, unknown>,
+  ): Record<string, unknown> | undefined {
+    const clauses = Array.isArray(
+      (filter as { and?: Array<Record<string, unknown>> }).and,
+    )
+      ? ((filter as { and: Array<Record<string, unknown>> }).and)
+      : [filter as Record<string, unknown>]
+    return clauses.find((c) => {
+      const property = (c as { property?: string }).property
+      if (property === "Predicate") return true
+      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
+      if (!Array.isArray(maybeOr)) return false
+      return maybeOr.every(
+        (clause) =>
+          (clause as { property?: string }).property === "Predicate",
+      )
+    })
+  }
+
+  it("applies a single-predicate equals clause server-side on the relation branch (entityId resolved)", async () => {
+    // The relation branch dispatches both queryByEntityId and the
+    // unbackfilled-text companion in parallel. Both must carry the
+    // predicate clause server-side so a downstream `lore-decision-context`
+    // doesn't over-fetch unrelated facts touching the same entity.
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      predicates: ["decided_by"],
+    })
+
+    // Two queries fired in parallel: relation match + un-backfilled text
+    // companion. Both should carry the predicate filter.
+    expect(calls.length).toBe(2)
+    for (const call of calls) {
+      const filter = call.filter as
+        | { and: Array<Record<string, unknown>> }
+        | Record<string, unknown>
+      const predClause = findPredicateClause(filter)
+      expect(predClause).toBeDefined()
+      // Single-predicate input collapses to `select.equals`.
+      expect(predClause).toMatchObject({
+        property: "Predicate",
+        select: { equals: "decided_by" },
+      })
+    }
+  })
+
+  it("falls back to queryBySubject ∪ queryByObject with the predicate filter when entityId is not resolved", async () => {
+    // Pre-PF3-01 path / ambiguous resolution — queryByEntity falls
+    // through to the subject + object union. Each side must apply the
+    // predicate filter on its own query so the union is server-side
+    // narrowed.
+    const { client, calls } = createClient([
+      { results: [] },
+      { results: [] },
+    ])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      predicates: ["decided_by"],
+    })
+
+    // Two sequential queries: queryBySubject then queryByObject.
+    expect(calls.length).toBe(2)
+    for (const call of calls) {
+      const filter = call.filter as { and: Array<Record<string, unknown>> }
+      const predClause = findPredicateClause(filter)
+      expect(predClause).toMatchObject({
+        property: "Predicate",
+        select: { equals: "decided_by" },
+      })
+    }
+  })
+
+  it("emits an OR-of-equals across multiple predicates", async () => {
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+      predicates: ["decided_by", "supersedes_decision"],
+    })
+
+    for (const call of calls) {
+      const filter = call.filter as { and: Array<Record<string, unknown>> }
+      const predClause = findPredicateClause(filter) as
+        | { or: Array<{ property: string; select: { equals: string } }> }
+        | undefined
+      expect(predClause).toBeDefined()
+      const values = predClause!.or.map((c) => c.select.equals).sort()
+      expect(values).toEqual(["decided_by", "supersedes_decision"])
+    }
+  })
+
+  it("does not emit a Predicate clause when predicates is omitted (no behavior change for legacy callers)", async () => {
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+    })
+
+    for (const call of calls) {
+      const filter = call.filter as
+        | { and: Array<Record<string, unknown>> }
+        | Record<string, unknown>
+      const predClause = findPredicateClause(filter)
+      expect(predClause).toBeUndefined()
+    }
+  })
+})
