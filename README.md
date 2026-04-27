@@ -303,6 +303,10 @@ npm run test         # Run tests with vitest
 npm run dev          # Watch mode (tsup --watch)
 ```
 
+## Changelog
+
+Notable user-facing changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## License
 
 MIT
