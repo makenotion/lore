@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest"
-import { computeRelationConfigDiff, computeSelectOptionDiff } from "./setup.js"
+import type { Client } from "@notionhq/client"
+import type { Vault } from "../types.js"
+import {
+  computeRelationConfigDiff,
+  computeSelectOptionDiff,
+  migrateVaultSchema,
+  verifyVaultDatabases,
+} from "./setup.js"
+import {
+  ENTITIES_DB_TITLE,
+  FACTS_DB_TITLE,
+  MEMORIES_DB_TITLE,
+  PROJECTS_DB_TITLE,
+  TOPICS_DB_TITLE,
+} from "./schema.js"
 
 describe("computeSelectOptionDiff", () => {
   it("returns null for non-select property types", () => {
@@ -368,5 +382,233 @@ describe("computeRelationConfigDiff", () => {
       },
     }
     expect(computeRelationConfigDiff("Project", postApplyLive, expected)).toBeNull()
+  })
+})
+
+/**
+ * Stand-in for the SDK methods that `verifyVaultDatabases` and
+ * `migrateVaultSchema` exercise. Records the maximum number of in-flight
+ * retrieves so a parallel fan-out is observable: a sequential `for...of
+ * await` loop drives `maxInFlight` to 1, while a `Promise.all` over N
+ * retrieves drives it to N.
+ */
+function makeStartupStub({
+  childDatabases,
+  liveProperties,
+  retrieveDelayMs = 10,
+}: {
+  childDatabases: Array<{ id: string; title: string }>
+  liveProperties: Record<string, Record<string, unknown>>
+  retrieveDelayMs?: number
+}): {
+  client: Client
+  maxInFlight: () => number
+  databasesRetrieveCalls: () => string[]
+  dataSourcesRetrieveCalls: () => string[]
+} {
+  let inFlight = 0
+  let maxInFlight = 0
+  const databasesRetrieveCalls: string[] = []
+  const dataSourcesRetrieveCalls: string[] = []
+
+  const track = async <T>(value: T): Promise<T> => {
+    inFlight++
+    if (inFlight > maxInFlight) maxInFlight = inFlight
+    await new Promise((r) => setTimeout(r, retrieveDelayMs))
+    inFlight--
+    return value
+  }
+
+  const stub = {
+    blocks: {
+      children: {
+        list: async () => ({
+          results: childDatabases.map((db) => ({
+            type: "child_database",
+            id: db.id,
+            child_database: { title: db.title },
+          })),
+        }),
+      },
+    },
+    databases: {
+      retrieve: async (args: { database_id: string }) => {
+        databasesRetrieveCalls.push(args.database_id)
+        return track({
+          id: args.database_id,
+          data_sources: [{ id: `ds-${args.database_id}` }],
+        })
+      },
+    },
+    dataSources: {
+      retrieve: async (args: { data_source_id: string }) => {
+        dataSourcesRetrieveCalls.push(args.data_source_id)
+        return track({ properties: liveProperties })
+      },
+      update: async () => ({}),
+    },
+  } as unknown as Client
+
+  return {
+    client: stub,
+    maxInFlight: () => maxInFlight,
+    databasesRetrieveCalls: () => databasesRetrieveCalls,
+    dataSourcesRetrieveCalls: () => dataSourcesRetrieveCalls,
+  }
+}
+
+describe("verifyVaultDatabases parallel retrieves", () => {
+  it("issues every databases.retrieve call concurrently", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-entities", title: ENTITIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, maxInFlight, databasesRetrieveCalls } = makeStartupStub({
+      childDatabases,
+      liveProperties: {},
+    })
+
+    const vault = await verifyVaultDatabases(client, "page-1")
+
+    // The acceptance criterion is that the retrieves overlap, not that any
+    // specific count is reached. A sequential loop pins maxInFlight to 1; a
+    // parallel fan-out drives it past 1. (The bare stub is not wrapped in
+    // `createLimitedClient`, so no concurrency cap applies; tightening to a
+    // specific number would silently break if the test stub is ever wrapped.)
+    expect(maxInFlight()).toBeGreaterThan(1)
+    expect(databasesRetrieveCalls().sort()).toEqual([
+      "block-entities",
+      "block-facts",
+      "block-memories",
+      "block-projects",
+      "block-topics",
+    ])
+    expect(vault.databases.projects).toEqual({
+      databaseId: "block-projects",
+      dataSourceId: "ds-block-projects",
+    })
+    expect(vault.databases.entities).toEqual({
+      databaseId: "block-entities",
+      dataSourceId: "ds-block-entities",
+    })
+  })
+
+  it("skips the optional Entities DB when absent without holding back the rest", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, maxInFlight } = makeStartupStub({
+      childDatabases,
+      liveProperties: {},
+    })
+
+    const vault = await verifyVaultDatabases(client, "page-1")
+
+    expect(maxInFlight()).toBeGreaterThan(1)
+    expect(vault.databases.entities).toBeUndefined()
+  })
+})
+
+describe("migrateVaultSchema parallel retrieves", () => {
+  function vaultFixture({ withEntities }: { withEntities: boolean }): Vault {
+    const databases: Vault["databases"] = {
+      projects: { databaseId: "p-db", dataSourceId: "p-ds" },
+      topics: { databaseId: "t-db", dataSourceId: "t-ds" },
+      memories: { databaseId: "m-db", dataSourceId: "m-ds" },
+      facts: { databaseId: "f-db", dataSourceId: "f-ds" },
+    }
+    if (withEntities) {
+      databases.entities = { databaseId: "e-db", dataSourceId: "e-ds" }
+    }
+    return { pageId: "page-1", databases }
+  }
+
+  it("issues dataSources.retrieve concurrently across every target DB", async () => {
+    // No-drift fixture: live properties are a superset, so Phase B emits no
+    // updates. We only care about Phase A's fan-out shape here.
+    const liveProperties: Record<string, Record<string, unknown>> = {}
+    const { client, maxInFlight, dataSourcesRetrieveCalls } = makeStartupStub({
+      childDatabases: [],
+      liveProperties,
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+
+    // 5 expected DBs (projects, topics, memories, facts, entities).
+    expect(dataSourcesRetrieveCalls()).toHaveLength(5)
+    expect(maxInFlight()).toBeGreaterThan(1)
+    // Diff order must match Object.keys(expectedByDb) enumeration order. The
+    // production code populates the literal with projects/topics/memories/
+    // facts and then assigns `expectedByDb.entities` last, so spec-defined
+    // string-key insertion order puts entities at the end. This is the
+    // contract being asserted, not an accident of V8.
+    expect(diffs.map((d) => d.database)).toEqual([
+      "projects",
+      "topics",
+      "memories",
+      "facts",
+      "entities",
+    ])
+  })
+
+  it("omits the Entities entry when the vault has no entities database", async () => {
+    const { client, maxInFlight, dataSourcesRetrieveCalls } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: false }))
+
+    expect(dataSourcesRetrieveCalls()).toHaveLength(4)
+    expect(maxInFlight()).toBeGreaterThan(1)
+    expect(diffs.map((d) => d.database)).toEqual([
+      "projects",
+      "topics",
+      "memories",
+      "facts",
+    ])
+  })
+
+  it("preserves per-database error attribution on update failure", async () => {
+    // Force every DB to surface a missing-property diff so Phase B issues an
+    // update for each one. The `memories` update rejects — the thrown error
+    // must name `memories`, not `projects` or the batch.
+    const liveProperties: Record<string, Record<string, unknown>> = {}
+
+    let dataSourcesRetrieveCount = 0
+    const updateCalls: string[] = []
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async () => {
+          dataSourcesRetrieveCount++
+          return { properties: liveProperties }
+        },
+        update: async (args: { data_source_id: string }) => {
+          updateCalls.push(args.data_source_id)
+          if (args.data_source_id === "m-ds") {
+            throw new Error("validation_error: bad payload")
+          }
+          return {}
+        },
+      },
+    } as unknown as Client
+
+    await expect(
+      migrateVaultSchema(stub, vaultFixture({ withEntities: true })),
+    ).rejects.toThrow(/Schema migration failed on memories DB/)
+    // We still hit retrieve on every DB before the update phase failed.
+    expect(dataSourcesRetrieveCount).toBe(5)
+    // Phase B must remain sequential and short-circuit on the first
+    // failure. If updates ran in parallel, all five would be observed; if
+    // a batched try/catch wrapped them, attribution would collapse.
+    expect(updateCalls).toEqual(["p-ds", "t-ds", "m-ds"])
   })
 })

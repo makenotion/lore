@@ -421,16 +421,34 @@ export async function migrateVaultSchema(
 
   const diffs: MigrationDiff[] = []
 
-  for (const key of Object.keys(expectedByDb) as Array<keyof VaultDatabases>) {
-    const expected = expectedByDb[key]
-    if (!expected) continue
-    const ref = db[key]
-    if (!ref) continue
-    const dsId = ref.dataSourceId
+  // Phase A — fan out the live-schema retrieves. Each retrieve is independent
+  // and the diff logic is purely local computation, so the only wall-clock
+  // cost worth shaving here is the retrieve fan-out. The shared rate-limited
+  // client gates concurrency, so this never bursts past the configured cap.
+  const targets = (Object.keys(expectedByDb) as Array<keyof VaultDatabases>)
+    .flatMap((key) => {
+      const expected = expectedByDb[key]
+      const ref = db[key]
+      if (!expected || !ref) return []
+      return [{ key, expected, dsId: ref.dataSourceId }] as const
+    })
 
-    const live = await client.dataSources.retrieve({ data_source_id: dsId })
-    const liveProps = (live as { properties: Record<string, unknown> }).properties
+  // Colocate each target with its retrieved live properties so Phase B
+  // never has to index two parallel arrays (a known footgun if anything
+  // ever filters between A and B).
+  const resolved = await Promise.all(
+    targets.map(async (t) => {
+      const live = await client.dataSources.retrieve({ data_source_id: t.dsId })
+      const liveProps = (live as { properties: Record<string, unknown> }).properties
+      return { ...t, liveProps }
+    }),
+  )
 
+  // Phase B — per-database diff and (for non-dry-run) update. Stays
+  // sequential so the phase-attributed `Schema migration failed on ...`
+  // error message keeps pointing at a single DB instead of a batched
+  // rejection.
+  for (const { key, expected, dsId, liveProps } of resolved) {
     // Phase 1: detect missing property names.
     const missing = Object.keys(expected).filter((name) => !(name in liveProps))
 
@@ -559,16 +577,27 @@ export async function verifyVaultDatabases(
   // Resolve both IDs from each database block:
   // - databaseId (block ID) for pages.create() parent
   // - dataSourceId for dataSources.query()
+  // Retrieves are independent — fan them out concurrently. The shared
+  // rate-limited client gates concurrency, so this never bursts past the
+  // configured cap.
+  const entries = Object.entries(dbBlockIds) as Array<
+    [keyof VaultDatabases, string]
+  >
+  const retrieved = await Promise.all(
+    entries.map(async ([key, dbId]) => {
+      const db = await client.databases.retrieve({ database_id: dbId })
+      const dataSources = (db as Record<string, unknown>)["data_sources"] as
+        | Array<{ id: string }>
+        | undefined
+      return [
+        key,
+        { databaseId: dbId, dataSourceId: dataSources?.[0]?.id ?? dbId },
+      ] as const
+    }),
+  )
   const resolved: Partial<VaultDatabases> = {}
-  for (const [key, dbId] of Object.entries(dbBlockIds)) {
-    const db = await client.databases.retrieve({ database_id: dbId! })
-    const dataSources = (db as Record<string, unknown>)["data_sources"] as
-      | Array<{ id: string }>
-      | undefined
-    resolved[key as keyof VaultDatabases] = {
-      databaseId: dbId!,
-      dataSourceId: dataSources?.[0]?.id ?? dbId!,
-    }
+  for (const [key, ref] of retrieved) {
+    resolved[key] = ref
   }
 
   return {
