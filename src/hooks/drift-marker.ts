@@ -9,21 +9,18 @@
  * at the same vault share a single suppression window — without that
  * keying, every worktree would rediscover drift independently and the
  * debounce would lose most of its value on agents who rotate worktrees
- * for stacked PR work. The hash is truncated to 8 hex chars because
- * collisions across an operator's own config roots are a theoretical
- * concern and we prefer short filenames; same posture as
- * `digest-marker.ts`. If the two markers ever need to compose with each
- * other (e.g. cross-marker invariants), lift `configKey` to a shared
- * helper so they stay in lockstep on the truncation tradeoff.
+ * for stacked PR work. Key derivation lives in `marker-key.ts` alongside
+ * `digest-marker.ts`'s helpers so the truncation tradeoff stays in
+ * lockstep across every filesystem marker.
  *
  * Reuses `getStateDir()` from `lock.ts` so `LORE_HOOK_STATE_DIR` overrides
  * (parallel test files) flow through automatically.
  */
 
-import { createHash } from "node:crypto"
 import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
-import { join, resolve as resolvePath } from "node:path"
+import { join } from "node:path"
 import { getStateDir } from "./lock.js"
+import { configKey } from "./marker-key.js"
 
 /**
  * Days between debounced drift checks. A week is the same window as the
@@ -32,10 +29,6 @@ import { getStateDir } from "./lock.js"
  * schema-extending change still gets nudged within one workweek.
  */
 export const DRIFT_DEBOUNCE_DAYS = 7
-
-function configKey(configRoot: string): string {
-  return createHash("sha256").update(resolvePath(configRoot)).digest("hex").slice(0, 8)
-}
 
 export function driftMarkerPath(configRoot: string): string {
   return join(getStateDir(), `drift.${configKey(configRoot)}.last`)

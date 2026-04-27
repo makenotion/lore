@@ -7,33 +7,28 @@
  * Keyed on a short hash of the config root *plus* the project name so two
  * vaults that both have a `Mail` project in the same user's `$TMPDIR` don't
  * collide — a cross-vault collision would silently debounce the second
- * vault's digest forever. The hash is truncated to 8 hex chars because
- * collisions across an operator's own config roots are a theoretical concern
- * and we prefer short filenames.
- *
- * The slash-to-underscore replacement on the project name guards against
- * path injection from exotic names without coupling to Notion's id format.
+ * vault's digest forever. Key derivation and project-name sanitization live
+ * in `marker-key.ts` so this module and `drift-marker.ts` stay in lockstep
+ * on the truncation length and the sanitization charset.
  *
  * The state dir is resolved per-call via `getStateDir()` from `lock.ts` so
  * `LORE_HOOK_STATE_DIR` overrides (used by parallel test files for
  * isolation) flow through automatically.
  */
 
-import { createHash } from "node:crypto"
 import { stat, writeFile, utimes, mkdir, rm } from "node:fs/promises"
-import { join, resolve as resolvePath } from "node:path"
+import { join } from "node:path"
 import { getStateDir } from "./lock.js"
-
-function configKey(configRoot: string): string {
-  return createHash("sha256").update(resolvePath(configRoot)).digest("hex").slice(0, 8)
-}
+import { configKey, safeProjectName } from "./marker-key.js"
 
 export function digestMarkerPath(
   configRoot: string,
   projectName: string,
 ): string {
-  const safeName = projectName.replace(/[^A-Za-z0-9_.-]/g, "_")
-  return join(getStateDir(), `digest.${configKey(configRoot)}.${safeName}.last`)
+  return join(
+    getStateDir(),
+    `digest.${configKey(configRoot)}.${safeProjectName(projectName)}.last`,
+  )
 }
 
 /**

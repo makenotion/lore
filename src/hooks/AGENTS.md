@@ -21,6 +21,12 @@ and either injects context (`wakeup`) or spawns a background save (`autosave`
 | `config.ts`       | `.lore.yaml` `hooks` section defaults + merge                                                          |
 | `digest-marker.ts`| Per-config-root debounce marker for the auto-digest scheduler                                          |
 | `drift-marker.ts` | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)          |
+| `marker-key.ts`   | Shared `configKey()` and `safeProjectName()` helpers for every filesystem marker in this dir           |
+
+New marker modules under `src/hooks/` derive their config key and
+sanitize free-form name segments via `marker-key.ts` rather than
+re-implementing the hash or the regex — that keeps the truncation
+length and sanitization charset in lockstep across every marker.
 
 Tests for each module sit alongside it (`*.test.ts`). `helpers.ts` runs
 `main()` only when invoked as the Node entry point (`dist/hooks/helpers.js`)
