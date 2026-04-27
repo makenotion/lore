@@ -128,6 +128,143 @@ describe("resolveCurrentDecisions", () => {
       })
     )
   })
+
+  it("dispatches the id and legacy-title queryByObject calls in parallel", async () => {
+    // When `decision.title !== decision.id`, `lookupKeys` carries both
+    // — the id (canonical) and the title (legacy fallback). Pre-fix the
+    // BFS step awaited each call in a serial `for...of`, which doubled
+    // round-trip cost per node. Post-fix both calls fire under one
+    // `Promise.all`, so both are in flight before either resolves.
+    //
+    // Gate `queryByObject` so neither call resolves until both have
+    // dispatched. A serial implementation would block on the first
+    // call's gate forever; a parallel one reaches both gates and lets
+    // the test release them.
+    const pending = new Map<string, (facts: Fact[]) => void>()
+    const services = createServices({
+      decisions: {
+        "old-id": makeDecision("old-id", {
+          title: "Old decision",
+          status: "superseded",
+        }),
+      },
+    })
+    services.facts.queryByObject = vi.fn(
+      (object: string) =>
+        new Promise<Fact[]>((resolve) => {
+          pending.set(object, resolve)
+        }),
+    )
+
+    const walkPromise = resolveCurrentDecisions(services, ["old-id"])
+
+    // Both keys must reach the dispatch site before either resolves.
+    // Serial dispatch would only ever have one outstanding call here.
+    await vi.waitFor(() => {
+      expect(services.facts.queryByObject).toHaveBeenCalledTimes(2)
+    })
+
+    const dispatchedKeys = services.facts.queryByObject.mock.calls
+      .map((call) => call[0] as string)
+      .sort()
+    expect(dispatchedKeys).toEqual(["Old decision", "old-id"])
+
+    // Release both gates and let the walk finish.
+    pending.get("old-id")?.([])
+    pending.get("Old decision")?.([])
+    await walkPromise
+  })
+
+  it("preserves the exact-match guard when a fact's object is not in the lookup keys", async () => {
+    // Notion's `Object contains <key>` filter can return rows whose
+    // Object value isn't an exact match for any lookup key (substring
+    // hits, case variants). Pre-fix the per-iteration `key` was the
+    // guard; post-fix the guard is the `lookupKeys` set. Both shapes
+    // must reject substring noise.
+    const services = createServices({
+      decisions: {
+        "old-id": makeDecision("old-id", {
+          title: "Old decision",
+          status: "superseded",
+        }),
+        "new-id": makeDecision("new-id", {
+          title: "New decision",
+          status: "accepted",
+        }),
+      },
+      factsByObject: {
+        "old-id": [
+          makeFact("sup-real", {
+            subject: "new-id",
+            predicate: "supersedes_decision",
+            object: "old-id",
+            sourceMemoryId: "new-id",
+          }),
+          // A `contains "old-id"` substring hit whose Object isn't
+          // actually one of the lookup keys. Must NOT contribute a
+          // successor — if it did, `noise-decision` would walk and
+          // either become a phantom leaf or push `replacedCount` past
+          // the legitimate `old-id` replacement.
+          makeFact("sup-noise", {
+            subject: "noise-decision",
+            predicate: "supersedes_decision",
+            object: "unrelated-old-id-suffix",
+            sourceMemoryId: "noise-decision",
+          }),
+        ],
+      },
+    })
+
+    const resolved = await resolveCurrentDecisions(services, ["old-id"])
+
+    // Only the exact-match fact's successor walks: old-id → new-id.
+    expect(resolved.current.map((d) => d.id)).toEqual(["new-id"])
+    expect(resolved.replacedCount).toBe(1)
+  })
+
+  it("treats deprecated and rejected leaves as non-current", async () => {
+    // Pre-fix the leaf filter only matched `=== "superseded"`, so a
+    // decision in `deprecated` or `rejected` status with no successors
+    // surfaced as "current governing." Post-fix the filter consults
+    // `ACTIVE_DECISION_STATUSES`, so only `accepted` / `proposed`
+    // leaves count as current; everything else is replaced.
+    const services = createServices({
+      decisions: {
+        "deprecated-id": makeDecision("deprecated-id", {
+          title: "Deprecated decision",
+          status: "deprecated",
+        }),
+        "rejected-id": makeDecision("rejected-id", {
+          title: "Rejected decision",
+          status: "rejected",
+        }),
+        "accepted-id": makeDecision("accepted-id", {
+          title: "Accepted decision",
+          status: "accepted",
+        }),
+        "proposed-id": makeDecision("proposed-id", {
+          title: "Proposed decision",
+          status: "proposed",
+        }),
+      },
+    })
+
+    const resolved = await resolveCurrentDecisions(services, [
+      "deprecated-id",
+      "rejected-id",
+      "accepted-id",
+      "proposed-id",
+    ])
+
+    // Only `accepted` / `proposed` leaves surface as current.
+    expect(resolved.current.map((d) => d.id).sort()).toEqual([
+      "accepted-id",
+      "proposed-id",
+    ])
+    // The two non-active leaves are counted as replaced (i.e. not
+    // current), matching how `superseded` was already treated.
+    expect(resolved.replacedCount).toBe(2)
+  })
 })
 
 describe("resolveCanonicalDecisionLinks", () => {

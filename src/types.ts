@@ -398,6 +398,19 @@ export interface SearchMemoriesInput {
 export type DecisionStatus = Exclude<MemoryStatus, "informational">
 
 /**
+ * Decisions whose `status` qualifies them as "currently governing." A
+ * decision in `superseded`, `deprecated`, or `rejected` is conceptually
+ * inactive and should never surface as a current/governing decision via
+ * `resolveCurrentDecisions` or the near-duplicate probe pool.
+ *
+ * Single source of truth — both the BFS leaf filter in
+ * `src/mcp/decision-graph.ts` and the near-duplicate probe in
+ * `src/mcp/tools/decisions.ts` consult this list, so a status added or
+ * removed here flows to both surfaces in lockstep.
+ */
+export const ACTIVE_DECISION_STATUSES: DecisionStatus[] = ["accepted", "proposed"]
+
+/**
  * A decision is a Memory where `kind === "decision"`. Exposed as a distinct
  * type so downstream code can narrow against the discriminator without
  * runtime checks.

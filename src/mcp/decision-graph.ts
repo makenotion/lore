@@ -1,6 +1,13 @@
 import { settleAll } from "../core/settle.js"
 import { computeSubjectKey } from "../notion/normalize.js"
-import type { CreateFactInput, Decision, Fact, FactPredicate } from "../types.js"
+import { ACTIVE_DECISION_STATUSES } from "../types.js"
+import type {
+  CreateFactInput,
+  Decision,
+  Fact,
+  FactPredicate,
+  MemoryStatus,
+} from "../types.js"
 
 /**
  * Entity-aware identity key for a fact's Subject side. Used by the
@@ -183,16 +190,47 @@ export async function resolveCurrentDecisions(
         lookupKeys.push(decision.title)
       }
 
-      const successors = new Set<string>()
-      for (const key of lookupKeys) {
-        const facts = await services.facts.queryByObject(key, {
-          projectId: opts.projectId,
-          predicates: ["supersedes_decision"],
-          limit: 25,
-        })
+      // Parallel lookup: the two `queryByObject` calls (one for `id`,
+      // one for the legacy title fallback) are independent — they
+      // filter on different values of the same column. Awaiting them
+      // sequentially would double the round-trip cost per BFS node.
+      // The shared rate-limited Notion client governs concurrency, so
+      // peak throughput is unchanged. Wall-clock per node drops from
+      // `T(query[id]) + T(query[title])` to `max(...)`.
+      const factsPerKey = await Promise.all(
+        lookupKeys.map((key) =>
+          services.facts.queryByObject(key, {
+            projectId: opts.projectId,
+            predicates: ["supersedes_decision"],
+            limit: 25,
+          }),
+        ),
+      )
 
+      // Exact-match guard: a fact only contributes a successor if its
+      // `Object` is one of the lookup keys. Comparing against the set
+      // (rather than the per-iteration `key` from the old serial loop)
+      // preserves the substring-hit rejection while letting the
+      // queries fan out.
+      //
+      // Subtle: this is *at-least-as-strict* as the old per-iteration
+      // check, not formally identical. Old: a fact matched only if it
+      // was returned by the query for `key` AND `fact.object === key`.
+      // New: a fact matches if `fact.object ∈ lookupKeys`. The two
+      // diverge only when a query returns a row whose Object is
+      // another lookup key (e.g. `queryByObject(id)` returning a row
+      // with `object === title`). In the old code that row was
+      // dropped on the id pass and recovered on the title pass; here
+      // it's accepted directly. Net behavior is equivalent for sane
+      // server-side filters; pathological `contains` results are
+      // slightly more permissively recovered, never spuriously
+      // accepted (the substring-noise test pins this).
+      const lookupKeySet = new Set(lookupKeys)
+      const successors = new Set<string>()
+      for (const facts of factsPerKey) {
         for (const fact of facts) {
-          if (fact.predicate !== "supersedes_decision" || fact.object !== key) continue
+          if (fact.predicate !== "supersedes_decision") continue
+          if (!lookupKeySet.has(fact.object)) continue
           const successorId = fact.sourceMemoryId ?? fact.subject
           if (successorId && successorId !== id) {
             successors.add(successorId)
@@ -223,7 +261,16 @@ export async function resolveCurrentDecisions(
     const successorIds = await getSuccessorIds(currentId)
     if (successorIds.length === 0) {
       const decision = await getDecision(currentId)
-      if (!decision || decision.status === "superseded") {
+      // A leaf (no successors) only counts as a current governing
+      // decision when its status is in `ACTIVE_DECISION_STATUSES`.
+      // The previous hard-coded `=== "superseded"` check let
+      // `deprecated` and `rejected` decisions surface as "current"
+      // even though they are conceptually inactive. The widening cast
+      // lets `includes` accept the broader `MemoryStatus` carried by
+      // `Memory.status`; every value in `ACTIVE_DECISION_STATUSES` is
+      // itself a `MemoryStatus`, so the widening is sound.
+      const activeStatuses = ACTIVE_DECISION_STATUSES as readonly MemoryStatus[]
+      if (!decision || !activeStatuses.includes(decision.status)) {
         replaced.add(currentId)
         continue
       }

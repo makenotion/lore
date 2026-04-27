@@ -13,6 +13,7 @@ import {
   syncDecisionReachability,
 } from "../decision-graph.js"
 import { displayId, resolveTitles } from "../render.js"
+import { ACTIVE_DECISION_STATUSES } from "../../types.js"
 import type { DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
@@ -37,8 +38,6 @@ const DECISION_POOL_LIMIT = 50
 
 /** Max candidates to surface in the response. */
 const DECISION_SURFACE_LIMIT = 3
-
-const ACTIVE_DECISION_STATUSES: DecisionStatus[] = ["accepted", "proposed"]
 
 function formatNearDuplicateDecisions(
   matches: NearDuplicateMatch[],
