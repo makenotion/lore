@@ -1447,3 +1447,81 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
     }
   })
 })
+
+describe("FactService — page_size clamping on retrieval queries", () => {
+  // Hot-path callers like `loadWakeUpData` (openLoopLimit forwarded into
+  // `queryBySubject`) and `resolveCurrentDecisions` (limit: 25 forwarded
+  // into `queryByObject`) ask for a handful of rows but used to issue
+  // `page_size: 100` regardless. Clamping `page_size` to the requested
+  // limit cuts transfer budget and rate-limiter dwell on those paths
+  // without changing pagination semantics — the outer cursor loop still
+  // walks more pages when `limit` exceeds 100.
+  it("queryBySubject({ limit: 4 }) sends page_size: 4", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    await new FactService(client, db).queryBySubject("MemoryService", {
+      projectId: "p1",
+      limit: 4,
+    })
+
+    expect(calls[0].page_size).toBe(4)
+  })
+
+  it("queryByObject({ limit: 25 }) sends page_size: 25", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    await new FactService(client, db).queryByObject("decision-x", {
+      projectId: "p1",
+      limit: 25,
+    })
+
+    expect(calls[0].page_size).toBe(25)
+  })
+
+  it("queryBySourceMemory({ limit: 1 }) sends page_size: 1", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    await new FactService(client, db).queryBySourceMemory("mem-1", {
+      projectId: "p1",
+      limit: 1,
+    })
+
+    expect(calls[0].page_size).toBe(1)
+  })
+
+  it("falls back to page_size: 100 when limit is undefined", async () => {
+    // Three back-to-back assertions — one per query method — pin the
+    // unlimited-path contract: callers that genuinely need to walk the
+    // result set still get Notion's max page size, so the caller-side
+    // pagination loop runs the same number of round-trips as before.
+    const subjectCall = createClient([{ results: [] }])
+    await new FactService(subjectCall.client, db).queryBySubject(
+      "MemoryService",
+      { projectId: "p1" },
+    )
+    expect(subjectCall.calls[0].page_size).toBe(100)
+
+    const objectCall = createClient([{ results: [] }])
+    await new FactService(objectCall.client, db).queryByObject("decision-x", {
+      projectId: "p1",
+    })
+    expect(objectCall.calls[0].page_size).toBe(100)
+
+    const sourceCall = createClient([{ results: [] }])
+    await new FactService(sourceCall.client, db).queryBySourceMemory("mem-1", {
+      projectId: "p1",
+    })
+    expect(sourceCall.calls[0].page_size).toBe(100)
+  })
+
+  it("clamps oversized limits to Notion's 100-row ceiling", async () => {
+    // A caller that asks for `limit: 250` still must not send
+    // `page_size: 250` — Notion rejects values above 100 with a 400.
+    // Pagination satisfies the over-100 request via the cursor loop,
+    // not by inflating page_size.
+    const { client, calls } = createClient([{ results: [] }])
+    await new FactService(client, db).queryBySubject("MemoryService", {
+      projectId: "p1",
+      limit: 250,
+    })
+
+    expect(calls[0].page_size).toBe(100)
+  })
+})

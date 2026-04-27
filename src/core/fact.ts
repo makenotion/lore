@@ -579,12 +579,16 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
+    const pageSize =
+      limit !== undefined
+        ? Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
+        : NOTION_MAX_PAGE_SIZE
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: filter as QueryDataSourceParameters["filter"],
         sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: 100,
+        page_size: pageSize,
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
@@ -651,12 +655,16 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
+    const pageSize =
+      limit !== undefined
+        ? Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
+        : NOTION_MAX_PAGE_SIZE
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: filter as QueryDataSourceParameters["filter"],
         sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: 100,
+        page_size: pageSize,
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
@@ -713,12 +721,16 @@ export class FactService {
     const results: PageObjectResponse[] = []
     let cursor: string | undefined = undefined
     const limit = opts?.limit
+    const pageSize =
+      limit !== undefined
+        ? Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
+        : NOTION_MAX_PAGE_SIZE
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: filter as QueryDataSourceParameters["filter"],
         sorts: [{ timestamp: "created_time", direction: "descending" }],
-        page_size: 100,
+        page_size: pageSize,
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
