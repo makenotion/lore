@@ -5,6 +5,10 @@ import type { Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
 import { digestMarkerAgeDays } from "../../hooks/digest-marker.js"
+import {
+  DRIFT_DEBOUNCE_DAYS,
+  driftMarkerAgeDays,
+} from "../../hooks/drift-marker.js"
 
 export const statusCommand = new Command("status")
   .description("Show vault status and project list")
@@ -47,6 +51,18 @@ export const statusCommand = new Command("status")
       if (digestLines.length > 0) {
         console.log()
         for (const line of digestLines) console.log(line)
+      }
+
+      // Drift section reflects what *debounced* callers (MCP server, shell
+      // hooks, digest scheduler) will see on their next fire. `lore status`
+      // itself runs with `driftCheck: true`, so `resolveDriftCheck` has
+      // already touched the marker — the watermark is purely informational
+      // on this path.
+      const driftReport = await loadDriftStatus(services.configRoot)
+      const driftLines = formatDriftStatus(driftReport)
+      if (driftLines.length > 0) {
+        console.log()
+        for (const line of driftLines) console.log(line)
       }
     } catch (err) {
       console.error("Status failed:", err instanceof Error ? err.message : err)
@@ -370,4 +386,97 @@ function formatDigestRow(row: DigestRow, longestName: number): string {
   // suffixed string so the alignment column starts after the longest name.
   const label = `${row.name}:`.padEnd(longestName + 2)
   return `  ${label}${parts.join(" · ")}`
+}
+
+// ---------------------------------------------------------------------------
+// Drift section
+// ---------------------------------------------------------------------------
+
+/**
+ * State surfaced in the Drift section. Single row per vault — the drift
+ * marker is keyed on `configRoot`, not project name — so the report
+ * collapses to a single age value rather than the per-project list the
+ * digest section carries.
+ */
+export interface DriftStatusReport {
+  /**
+   * Marker mtime age in days, or `null` when no marker file exists. The
+   * loader normalizes `driftMarkerAgeDays`'s `Infinity` sentinel into `null`
+   * at this seam so the renderer can show "marker missing" instead of
+   * "Infinity days old". `configured: false` is the orthogonal seam for
+   * the no-config-root case.
+   */
+  markerAgeDays: number | null
+  /**
+   * False when the loader was called without a `.lore.yaml` config root —
+   * the renderer drops the entire section so the output stays clean. Always
+   * true when called from `lore status`, since `initServices()` requires a
+   * config root to succeed; the seam exists for symmetry with how
+   * `loadDigestStatus` suppresses the section on no-sub-projects vaults.
+   */
+  configured: boolean
+}
+
+export interface DriftStatusDeps {
+  /**
+   * Marker-age probe. Defaults to the real filesystem stat; tests inject a
+   * fake to drive the age deterministically.
+   */
+  markerAge?: (configRoot: string) => Promise<number>
+}
+
+/**
+ * Gather drift watermark data for the Drift section.
+ *
+ * Zero Notion calls — the marker is filesystem-only. Returns a report whose
+ * rendering is empty when no `configRoot` is provided, matching the
+ * digest path's "section omitted entirely" suppression behavior.
+ */
+export async function loadDriftStatus(
+  configRoot: string | null | undefined,
+  deps: DriftStatusDeps = {},
+): Promise<DriftStatusReport> {
+  if (!configRoot) {
+    return { markerAgeDays: null, configured: false }
+  }
+  const markerAge = deps.markerAge ?? driftMarkerAgeDays
+  const ageDays = await markerAge(configRoot)
+  return {
+    markerAgeDays: Number.isFinite(ageDays) ? ageDays : null,
+    configured: true,
+  }
+}
+
+/**
+ * Render the Drift section from a loader report. Returns an empty array
+ * when `configured` is false so the caller can suppress the entire section
+ * with a single length check, mirroring the digest section's contract.
+ *
+ * Pure function: deterministic in `report`, no I/O.
+ */
+export function formatDriftStatus(report: DriftStatusReport): string[] {
+  if (!report.configured) return []
+
+  const lines: string[] = ["Drift check:"]
+  // Defense-in-depth pair with `loadDriftStatus`: non-finite ages
+  // (`Infinity`, `NaN`) collapse to the same "marker missing" branch as a
+  // genuine `null`, so a future caller constructing a `DriftStatusReport`
+  // directly without going through the loader can't render
+  // "marker Infinityd old". The loader still does this translation so the
+  // rest of `report.markerAgeDays`'s type narrows cleanly to `number`.
+  if (report.markerAgeDays === null || !Number.isFinite(report.markerAgeDays)) {
+    lines.push("  marker missing · next fire on next debounced session")
+    return lines
+  }
+
+  const ageDays = Math.floor(report.markerAgeDays)
+  const remaining = DRIFT_DEBOUNCE_DAYS - report.markerAgeDays
+  if (remaining <= 0) {
+    // Matches `resolveDriftCheck`'s `ageDays < DRIFT_DEBOUNCE_DAYS` check —
+    // a marker exactly at the boundary fires on the next debounced caller.
+    lines.push(`  marker ${ageDays}d old · next fire on next debounced session`)
+  } else {
+    lines.push(`  marker ${ageDays}d old · next fire ~${Math.ceil(remaining)}d`)
+  }
+  return lines
 }

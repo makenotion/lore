@@ -215,6 +215,24 @@ The pure renderer (`formatDigestStatus`) and the loader
 tested in `commands/status.test.ts` — extend those tests when adding
 new branches to the watermark display.
 
+A symmetric **Drift check** section (`formatDriftStatus` /
+`loadDriftStatus`) follows Digests. Three points only that aren't
+obvious from the rendered output:
+
+- Wording is "next fire on next *debounced session*", not "session-end"
+  like digest, because drift fires on every debounced caller (MCP
+  server, shell hooks, digest scheduler) — not just session-end.
+- `lore status` itself runs with `driftCheck: true`, so
+  `resolveDriftCheck` touches the marker *before* the loader reads it.
+  The section therefore reflects what debounced callers will see on
+  their next fire — not what `lore status` itself triggered. Looks
+  like a bug if you don't know to expect it.
+- Section-suppression contract: loader returns `configured: false`
+  (no `.lore.yaml` config root) → renderer returns `[]` → caller's
+  length-check drops the entire section. Mirrors how Digests
+  suppresses on no-sub-projects vaults. Single row today, but the
+  data shape leaves a `padEnd` seam free for a future multi-vault row.
+
 ## Adding a New Command
 
 1. Create `commands/foo.ts` following the pattern above.

@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   formatDigestStatus,
+  formatDriftStatus,
   groupLatestDigestByProject,
   loadDigestStatus,
+  loadDriftStatus,
   type DigestStatusReport,
+  type DriftStatusReport,
 } from "./status.js"
+import { DRIFT_DEBOUNCE_DAYS } from "../../hooks/drift-marker.js"
 import type { LoreServices } from "../../services.js"
 import type { LoreConfig, Memory, Project } from "../../types.js"
 
@@ -439,5 +443,136 @@ describe("loadDigestStatus", () => {
       markerAge: vi.fn(async () => 1),
     })
     expect(listSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("formatDriftStatus", () => {
+  it("returns no lines when configured=false so the section is suppressed", () => {
+    const report: DriftStatusReport = {
+      configured: false,
+      markerAgeDays: null,
+    }
+    expect(formatDriftStatus(report)).toEqual([])
+  })
+
+  it("renders the section header on the configured path", () => {
+    const report: DriftStatusReport = {
+      configured: true,
+      markerAgeDays: null,
+    }
+    expect(formatDriftStatus(report)[0]).toBe("Drift check:")
+  })
+
+  it("renders a missing-marker row with the debounced-session phrasing", () => {
+    // The wording differs from the digest section's "next fire on next
+    // session-end" because drift fires on every debounced caller (MCP
+    // server, shell hooks, digest scheduler) — not only on session-end.
+    const report: DriftStatusReport = {
+      configured: true,
+      markerAgeDays: null,
+    }
+    const [, row] = formatDriftStatus(report)
+    expect(row).toBe("  marker missing · next fire on next debounced session")
+  })
+
+  it("computes a fresh marker's remaining time as ceil(debounce_days - age)", () => {
+    const report: DriftStatusReport = {
+      configured: true,
+      markerAgeDays: 3,
+    }
+    const [, row] = formatDriftStatus(report)
+    expect(row).toBe("  marker 3d old · next fire ~4d")
+  })
+
+  it("rounds fractional remaining days up so 'next fire ~Xd' is a worst-case estimate", () => {
+    // 6.5 days old → 0.5 days remaining → ceil to 1 so the operator never
+    // sees "next fire ~0d" for a marker that's still inside the debounce.
+    const report: DriftStatusReport = {
+      configured: true,
+      markerAgeDays: 6.5,
+    }
+    const [, row] = formatDriftStatus(report)
+    expect(row).toBe("  marker 6d old · next fire ~1d")
+  })
+
+  it("treats a marker exactly at DRIFT_DEBOUNCE_DAYS as 'fire on next debounced session'", () => {
+    // markerAgeDays === DRIFT_DEBOUNCE_DAYS puts `remaining` at 0, which
+    // matches `resolveDriftCheck`'s `ageDays < DRIFT_DEBOUNCE_DAYS` semantic
+    // — at exactly the boundary the next debounced caller re-fires.
+    const report: DriftStatusReport = {
+      configured: true,
+      markerAgeDays: DRIFT_DEBOUNCE_DAYS,
+    }
+    const [, row] = formatDriftStatus(report)
+    expect(row).toBe(
+      `  marker ${DRIFT_DEBOUNCE_DAYS}d old · next fire on next debounced session`,
+    )
+  })
+
+  it("treats markers older than the debounce window as 'fire on next debounced session'", () => {
+    const report: DriftStatusReport = {
+      configured: true,
+      markerAgeDays: DRIFT_DEBOUNCE_DAYS + 2,
+    }
+    const [, row] = formatDriftStatus(report)
+    expect(row).toContain(`marker ${DRIFT_DEBOUNCE_DAYS + 2}d old`)
+    expect(row).toContain("next fire on next debounced session")
+  })
+
+  it("treats non-finite markerAgeDays as 'marker missing' instead of leaking 'Infinity'", () => {
+    // Defense-in-depth with `loadDriftStatus`: the loader normalizes the
+    // filesystem-level `Infinity` sentinel to `null`, but a future caller
+    // constructing a `DriftStatusReport` directly mustn't be able to print
+    // "marker Infinityd old · next fire on next debounced session".
+    // `Math.floor(Infinity)` is a no-op (`=== Infinity`) so without the
+    // renderer-side guard `Infinity` would template-stringify into the row.
+    for (const bogusAge of [Infinity, -Infinity, NaN]) {
+      const report: DriftStatusReport = {
+        configured: true,
+        markerAgeDays: bogusAge,
+      }
+      const [, row] = formatDriftStatus(report)
+      expect(row).toBe("  marker missing · next fire on next debounced session")
+    }
+  })
+})
+
+describe("loadDriftStatus", () => {
+  it("returns configured=false when no config root is provided", async () => {
+    for (const noConfig of [undefined, null, ""]) {
+      const report = await loadDriftStatus(noConfig)
+      expect(report.configured).toBe(false)
+      expect(report.markerAgeDays).toBeNull()
+    }
+  })
+
+  it("does not invoke the marker probe when there is no config root", async () => {
+    // Defensive: with no config root we should short-circuit before
+    // touching the filesystem so a stat() against an unset path can't
+    // throw or leak.
+    const probe = vi.fn(async () => 1)
+    await loadDriftStatus(undefined, { markerAge: probe })
+    expect(probe).not.toHaveBeenCalled()
+  })
+
+  it("converts Infinity marker age into null so the renderer shows 'marker missing'", async () => {
+    const report = await loadDriftStatus("/repo", {
+      markerAge: vi.fn(async () => Infinity),
+    })
+    expect(report.configured).toBe(true)
+    expect(report.markerAgeDays).toBeNull()
+  })
+
+  it("passes a finite marker age through verbatim for the renderer", async () => {
+    const report = await loadDriftStatus("/repo", {
+      markerAge: vi.fn(async () => 4.2),
+    })
+    expect(report.markerAgeDays).toBe(4.2)
+  })
+
+  it("forwards the configRoot to the marker probe so the underlying stat is keyed correctly", async () => {
+    const probe = vi.fn(async () => 0)
+    await loadDriftStatus("/some/repo", { markerAge: probe })
+    expect(probe).toHaveBeenCalledWith("/some/repo")
   })
 })
