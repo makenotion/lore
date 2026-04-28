@@ -726,6 +726,7 @@ Historical bumps and what they signalled:
 | `0.4.0` | P3-01 polymorphic tool surface (24 → 7 dispatchers + deprecated aliases) |
 | `0.5.0` | PF3-04 ranked-mode default caps for MCP `lore-context action='wake-up'` (parity with shell wake-up) |
 | `0.5.1` | `lore status` tracking-predicate preflight (issue 0.6.0/24) — counts live `needs_action` / `waiting_on` / `blocked_by` facts and warns operators to run `lore migrate --migrate-tracking-to-tasks --yes` before the 0.6.0 deprecation purge removes the read path. CLI / operator UX only; no MCP tool surface change, but the four version literals move together so the patch ships as one atomic bump |
+| `0.6.0` | Deprecation purge: 28 alias removals, `lore-journal` tool removal, `decodeTopicHtmlEntities` re-export removal, tracking-predicate read-path removal (issues #20+#21+#22+#23). RRF + explain in hybrid search (#16). Search intent parameter (#17). Per-project context on wake-up/ask (#18). OSC 8 CLI hyperlinks (#19). Claude Code SessionEnd hook install removal and Stop-triggered auto-digest (#26). Release coordinator: #25. |
 
 ## Server Startup
 
