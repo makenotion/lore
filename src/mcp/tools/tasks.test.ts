@@ -15,6 +15,7 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     status: "informational",
     confidence: "certain",
     reviewBy: null,
+    doneAt: null,
     decidedAt: null,
     supersedesIds: [],
     affectsIds: [],

@@ -54,6 +54,7 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.status).toBe("informational")
     expect(memory.confidence).toBe("certain")
     expect(memory.reviewBy).toBeNull()
+    expect(memory.doneAt).toBeNull()
     expect(memory.decidedAt).toBeNull()
     expect(memory.supersedesIds).toEqual([])
     expect(memory.affectsIds).toEqual([])
@@ -92,6 +93,7 @@ describe("pageToMemory — fully populated decision page", () => {
       Status: { type: "select", select: { name: "accepted" } },
       Confidence: { type: "select", select: { name: "likely" } },
       "Review By": { type: "date", date: { start: "2026-10-20" } },
+      "Done At": { type: "date", date: { start: "2026-04-25" } },
       "Decided At": { type: "date", date: { start: "2026-04-20" } },
       Supersedes: { type: "relation", relation: [{ id: "old-decision" }] },
       Affects: {
@@ -129,6 +131,7 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.status).toBe("accepted")
     expect(memory.confidence).toBe("likely")
     expect(memory.reviewBy).toBe("2026-10-20")
+    expect(memory.doneAt).toBe("2026-04-25")
     expect(memory.decidedAt).toBe("2026-04-20")
     expect(memory.supersedesIds).toEqual(["old-decision"])
     expect(memory.affectsIds).toEqual(["affected-1", "affected-2"])
@@ -2224,11 +2227,13 @@ describe("pageToMemory — partial migration (mixed defaults + real values)", ()
     const page = buildPage({
       Title: { type: "title", title: [{ plain_text: "Dateless" }] },
       "Review By": { type: "date", date: null },
+      "Done At": { type: "date", date: null },
       "Decided At": { type: "date", date: null },
     })
 
     const memory = pageToMemory(page)
     expect(memory.reviewBy).toBeNull()
+    expect(memory.doneAt).toBeNull()
     expect(memory.decidedAt).toBeNull()
   })
 })

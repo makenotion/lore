@@ -43,6 +43,7 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     status: "informational",
     confidence: "certain",
     reviewBy: null,
+    doneAt: null,
     decidedAt: null,
     supersedesIds: [],
     affectsIds: [],

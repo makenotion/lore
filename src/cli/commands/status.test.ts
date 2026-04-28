@@ -27,6 +27,7 @@ function makeMemory(overrides: Partial<Memory>): Memory {
     status: "informational",
     confidence: "certain",
     reviewBy: null,
+    doneAt: null,
     decidedAt: null,
     supersedesIds: [],
     affectsIds: [],

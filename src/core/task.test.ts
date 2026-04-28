@@ -273,28 +273,68 @@ describe("TaskService.list", () => {
 })
 
 describe("TaskService.close", () => {
-  it("defaults to state=done when no explicit state passed", async () => {
+  it("defaults to state=done when no explicit state passed and stamps Done At in the same atom", async () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
     await service.close("task-id")
 
-    expect(client.pages.update).toHaveBeenCalledWith({
-      page_id: "task-id",
-      properties: { "Task State": { select: { name: "done" } } },
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.page_id).toBe("task-id")
+    expect(args.properties["Task State"]).toEqual({ select: { name: "done" } })
+    // YYYY-MM-DD only — pinned so a future change to ISO timestamps would
+    // surface here rather than silently feeding a non-date-typed value
+    // into Notion's `date` column.
+    expect(args.properties["Done At"]).toEqual({
+      date: { start: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
     })
   })
 
-  it("supports cancelling — distinguished from done for metrics", async () => {
+  it("supports cancelling — distinguished from done for metrics — and stamps Done At", async () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
     await service.close("task-id", "cancelled")
 
-    expect(client.pages.update).toHaveBeenCalledWith({
-      page_id: "task-id",
-      properties: { "Task State": { select: { name: "cancelled" } } },
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties["Task State"]).toEqual({ select: { name: "cancelled" } })
+    expect(args.properties["Done At"]).toEqual({
+      date: { start: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
     })
+  })
+
+  it("byte-identical Done At shapes for `close` and `update({ state: 'done' })` on the same wall-clock day", async () => {
+    // The two write paths converge on one on-disk shape so closure-rate
+    // metrics don't have to know which API the caller used.
+    const closeClient = createMockClient()
+    const closeService = new TaskService(closeClient, DB)
+    await closeService.close("via-close")
+
+    const updateClient = createMockClient({
+      retrievedPages: { "via-update": taskPage("via-update", { state: "done" }) },
+    })
+    const updateService = new TaskService(updateClient, DB)
+    await updateService.update("via-update", { state: "done" })
+
+    const closeArgs = (closeClient.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const updateArgs = (updateClient.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(closeArgs.properties["Done At"]).toEqual(updateArgs.properties["Done At"])
+  })
+
+  it("is idempotent: a second close overwrites Done At with today (last-close-wins)", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.close("task-id")
+    await service.close("task-id")
+
+    // Two calls, same shape — both stamp Done At to today; the second
+    // overwrites the first, matching `Task State`'s last-write-wins
+    // posture under contention.
+    expect(client.pages.update).toHaveBeenCalledTimes(2)
+    const first = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const second = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[1][0]
+    expect(first.properties["Done At"]).toEqual(second.properties["Done At"])
   })
 })
 
@@ -310,6 +350,68 @@ describe("TaskService.update", () => {
 
     const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(args.properties["Review By"]).toEqual({ date: null })
+  })
+
+  it("stamps Done At when transitioning to state='done' so update-to-terminal matches close()", async () => {
+    const updatedPage = taskPage("task-id", { state: "done" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { state: "done" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties["Task State"]).toEqual({ select: { name: "done" } })
+    expect(args.properties["Done At"]).toEqual({
+      date: { start: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
+    })
+  })
+
+  it("stamps Done At when transitioning to state='cancelled'", async () => {
+    const updatedPage = taskPage("task-id", { state: "cancelled" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { state: "cancelled" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties["Task State"]).toEqual({ select: { name: "cancelled" } })
+    expect(args.properties["Done At"]).toEqual({
+      date: { start: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) },
+    })
+  })
+
+  it("does NOT touch Done At on a re-open (state='open') — preserved as historical fact", async () => {
+    const updatedPage = taskPage("task-id", { state: "open" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { state: "open" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties["Task State"]).toEqual({ select: { name: "open" } })
+    // Re-open is "the most recent close timestamp" preserved — the
+    // column tracks history, not the active close moment. Same posture
+    // for `in-progress` / `blocked` non-terminal transitions.
+    expect(args.properties["Done At"]).toBeUndefined()
+  })
+
+  it("does NOT touch Done At on non-terminal transitions like state='in-progress'", async () => {
+    const updatedPage = taskPage("task-id", { state: "in-progress" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { state: "in-progress" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties["Done At"]).toBeUndefined()
   })
 
 })

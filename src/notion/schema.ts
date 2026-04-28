@@ -165,6 +165,15 @@ export function memoriesProperties(
       },
     },
     "Review By": { date: {} },
+    // Most recent close timestamp for tasks. Stamped whenever a task
+    // transitions to a terminal state — either via `TaskService.close()`
+    // or via `TaskService.update({ state: 'done' | 'cancelled' })` —
+    // in the same `pages.update` atom as the state write. Preserved
+    // across `update({ state: 'open' })` re-opens as historical fact;
+    // null on non-task memories and on tasks that have never reached a
+    // terminal state. Read by `lore status` (#13) for closure-rate
+    // metrics — the only consumer in 0.7.0.
+    "Done At": { date: {} },
     "Decided At": { date: {} },
     Alternatives: { rich_text: {} },
     Consequences: { rich_text: {} },
@@ -457,6 +466,7 @@ export function buildMemoryProps(input: {
   status?: string
   confidence?: string
   reviewBy?: string | null
+  doneAt?: string | null
   decidedAt?: string | null
   supersedesIds?: string[]
   affectsIds?: string[]
@@ -495,6 +505,9 @@ export function buildMemoryProps(input: {
   // `null` explicitly clears a date; `undefined` leaves it untouched.
   if (input.reviewBy !== undefined) {
     props["Review By"] = input.reviewBy ? { date: { start: input.reviewBy } } : { date: null }
+  }
+  if (input.doneAt !== undefined) {
+    props["Done At"] = input.doneAt ? { date: { start: input.doneAt } } : { date: null }
   }
   if (input.decidedAt !== undefined) {
     props["Decided At"] = input.decidedAt ? { date: { start: input.decidedAt } } : { date: null }

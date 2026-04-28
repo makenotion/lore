@@ -15,6 +15,7 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     status: "accepted",
     confidence: "certain",
     reviewBy: null,
+    doneAt: null,
     decidedAt: "2026-04-20",
     supersedesIds: [],
     affectsIds: [],

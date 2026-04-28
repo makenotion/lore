@@ -270,6 +270,16 @@ export class TaskService {
     }
     if (input.state) {
       props["Task State"] = { select: { name: input.state } }
+      // Update-to-terminal stamps `Done At` in the same atom as the
+      // state write so a closure-via-update produces the same on-disk
+      // shape as `close()`. Without this, every update-to-terminal
+      // would silently undercount #13's closure-rate metric. Re-open
+      // (`state: "open"`) intentionally does NOT clear — `Done At`
+      // tracks "most recent close timestamp" as historical fact.
+      if (input.state === "done" || input.state === "cancelled") {
+        const today = new Date().toISOString().split("T")[0]
+        props["Done At"] = { date: { start: today } }
+      }
     }
     if (input.blockedBy !== undefined) {
       props["Blocked By"] = {
@@ -353,10 +363,18 @@ export class TaskService {
    * discipline.
    */
   async close(id: string, state: "done" | "cancelled" = "done"): Promise<void> {
+    // Stamp `Done At` in the same atom as the state write. Notion's
+    // per-request atomicity guarantees both columns either land or
+    // neither does — no two-phase write that could leave a closed task
+    // without a closure date or vice versa. Idempotent under contention:
+    // a second close overwrites with the new today, matching the existing
+    // last-write-wins state-overwrite posture.
+    const today = new Date().toISOString().split("T")[0]
     await this.client.pages.update({
       page_id: id,
       properties: {
         "Task State": { select: { name: state } },
+        "Done At": { date: { start: today } },
       } as CreatePageParameters["properties"],
     })
   }

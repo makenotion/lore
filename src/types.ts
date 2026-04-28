@@ -243,6 +243,17 @@ export interface Memory {
   status: MemoryStatus
   confidence: MemoryConfidence
   reviewBy: string | null
+  /**
+   * Most recent close timestamp for tasks. YYYY-MM-DD, or `null` for
+   * non-task memories and for tasks that have never reached a terminal
+   * state. Set automatically by `TaskService.close()` and by
+   * `TaskService.update()` whenever the incoming state is
+   * `done` / `cancelled`; preserved on re-open (`update({ state:
+   * 'open' })`) as historical fact. Not directly writable from the MCP
+   * surface — the field is owned by the task lifecycle paths, not the
+   * generic memory write tools.
+   */
+  doneAt: string | null
   decidedAt: string | null
   supersedesIds: string[]
   affectsIds: string[]

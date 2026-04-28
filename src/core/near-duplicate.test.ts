@@ -11,6 +11,7 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     status: "informational",
     confidence: "certain",
     reviewBy: null,
+    doneAt: null,
     decidedAt: null,
     supersedesIds: [],
     affectsIds: [],
