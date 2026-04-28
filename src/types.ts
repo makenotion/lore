@@ -385,6 +385,23 @@ export interface SearchMemoriesInput {
    * tradeoffs between scope precision and ranking quality.
    */
   mode?: SearchMode
+  /**
+   * Optional disambiguator. Threaded into the semantic branch's
+   * relevance query as context, NEVER into the contains branch's
+   * substring match. Use when `query` is short and ambiguous and the
+   * caller knows which sense they mean (e.g. `query: "auth"`,
+   * `intent: "WeChat session cookie"`).
+   *
+   * Whitespace-only intent (`"   "`) normalizes to unset across every
+   * consumer.
+   *
+   * Under `mode: "hybrid"` (default), setting intent disables the
+   * saturation cutoff so the RRF merge always runs — intent would
+   * otherwise be discarded when contains has `>= HYBRID_FALLBACK_THRESHOLD`
+   * hits. Under RRF, the contains lane is up-weighted so contains-precision
+   * still dominates ordering. Has no effect under `mode: "contains"`.
+   */
+  intent?: string
 }
 
 /**

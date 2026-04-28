@@ -896,18 +896,32 @@ export class MemoryService {
       process.env["LORE_FORCE_SEMANTIC_SEARCH"] === "1" ? "semantic" : requested
     const limit = input.limit ?? 10
 
+    // Normalize intent once at the entry point. Both the saturation-bypass
+    // gate in `searchByHybridPages` and the query composition in
+    // `searchBySemanticPages` need to agree on what counts as "intent is
+    // set." Whitespace-only intent (`"   "`) collapses to `null` here so a
+    // caller can't accidentally bypass the cutoff or pollute the semantic
+    // query with whitespace. See #17 / `src/core/AGENTS.md` for the rule.
+    const trimmedIntent = input.intent?.trim()
+    const intent =
+      trimmedIntent !== undefined && trimmedIntent.length > 0 ? trimmedIntent : null
+
     let pages: PageObjectResponse[]
     let explainBranch: SearchExplain["branch"]
     let hybridTrace: Map<string, HybridTraceEntry> | null = null
 
     if (mode === "contains") {
+      // `searchByContainsPages` deliberately ignores `input.intent`; it
+      // reads only `input.query` for the substring filter. Appending
+      // intent into a contains substring would narrow recall in the
+      // opposite direction the disambiguator exists to fix.
       pages = await this.searchByContainsPages(input)
       explainBranch = "contains-only"
     } else if (mode === "semantic") {
-      pages = await this.searchBySemanticPages(input)
+      pages = await this.searchBySemanticPages(input, intent)
       explainBranch = "semantic-only"
     } else {
-      const hybrid = await this.searchByHybridPages(input, limit)
+      const hybrid = await this.searchByHybridPages(input, limit, intent)
       pages = hybrid.pages
       explainBranch = hybrid.branch
       hybridTrace = hybrid.trace
@@ -1054,9 +1068,19 @@ export class MemoryService {
    */
   private async searchBySemanticPages(
     input: SearchMemoriesInput,
+    intent: string | null,
   ): Promise<PageObjectResponse[]> {
+    // Compose `client.search`'s `query` from the caller's `query` plus
+    // any normalized intent. The `[query.trim(), intent].filter(Boolean)`
+    // shape handles the edge case where `query` is empty (allowed on
+    // `MemoryService.search` callers that pass `""` for unscoped relevance
+    // lookups) without producing a leading space — `" intent"` may rank
+    // differently from `"intent"` alone under Notion's unspecified ranking.
+    // The contains branch sees ONLY `input.query`; intent never narrows it.
+    const composedQuery =
+      intent !== null ? [input.query.trim(), intent].filter(Boolean).join(" ") : input.query
     const response = await this.client.search({
-      query: input.query,
+      query: composedQuery,
       filter: { property: "object", value: "page" },
       page_size: 100,
     })
@@ -1168,6 +1192,7 @@ export class MemoryService {
   private async searchByHybridPages(
     input: SearchMemoriesInput,
     limit: number,
+    intent: string | null,
   ): Promise<{
     pages: PageObjectResponse[]
     branch: "contains-saturated" | "rrf"
@@ -1175,7 +1200,7 @@ export class MemoryService {
   }> {
     const [containsResult, semanticResult] = await Promise.allSettled([
       this.searchByContainsPages(input),
-      this.searchBySemanticPages(input),
+      this.searchBySemanticPages(input, intent),
     ])
 
     if (containsResult.status === "rejected" && semanticResult.status === "rejected") {
@@ -1215,7 +1240,17 @@ export class MemoryService {
     // `semanticRank: null` for every row even when semantic returned the
     // same id, because surfacing that rank would imply influence on
     // ordering that did not happen.
-    if (containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
+    //
+    // **Intent disables the cutoff.** When the caller passes a non-empty
+    // intent, the saturation gate is bypassed so the intent-augmented
+    // semantic lane gets to influence ordering — otherwise intent would
+    // be silently nullified in the common case (any non-trivial vault
+    // produces 3+ contains hits for a one-word query like `"auth"`).
+    // The cost is small (one Map walk + one sort) but observable: an
+    // agent passing intent on every call sees slightly different
+    // ordering on queries that today saturate. See #17 for the
+    // load-bearing tradeoff.
+    if (intent === null && containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
       const trace = new Map<string, HybridTraceEntry>()
       containsPages.forEach((page, rank) => {
         trace.set(page.id, {
@@ -1256,11 +1291,19 @@ export class MemoryService {
         }
       })
     }
-    // The `weight` argument on `accumulate` defaults to `1` and is the
-    // hookup point for #17's intent-aware up-weighting. Both calls use
-    // the default here; #17 will up-weight the contains lane to `2`
-    // when intent is set.
-    accumulate(containsPages, "contains")
+    // **Intent up-weights the contains lane.** When intent is set, the
+    // saturation cutoff was bypassed above so the RRF merge runs even
+    // when contains saturated. To keep contains-precision dominant in
+    // ordering (the literal-precision lane wins when both branches
+    // agree), the contains lane weight is bumped to 2 and the
+    // intent-augmented semantic lane stays at 1. This mirrors qmd's
+    // "original query ×2" rule. The constant is empirical; if real-query
+    // ordering shows contains drowning out useful semantic hits, lower
+    // it in a follow-up. An env knob (`LORE_HYBRID_CONTAINS_WEIGHT`) is
+    // intentionally NOT scoped here — operator-tuning, not caller-tuning;
+    // same posture as `LORE_HYBRID_RRF_K`.
+    const containsWeight = intent !== null ? 2 : 1
+    accumulate(containsPages, "contains", containsWeight)
     accumulate(semanticPages, "semantic")
 
     // Slice before building the trace so the map carries entries only for

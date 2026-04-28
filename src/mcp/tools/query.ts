@@ -29,12 +29,36 @@ const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as c
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
+ * Agent-facing description for `intent` on the `search` arm. Hoisted out of
+ * the inline `.describe()` because the contract is load-bearing (every
+ * sentence pins a behavior an agent caller relies on) and the inline form
+ * was the longest single description in the dispatcher schema. Adjacent
+ * surfaces (CLI, future tool-help renderers) can reuse the same string.
+ */
+const INTENT_DESCRIPTION =
+  "(action='search') Optional disambiguator threaded into the semantic " +
+  "branch's relevance query as context, NEVER into the contains branch's " +
+  "substring match. Use when `query` is short and ambiguous and the caller " +
+  "knows which sense they mean (e.g. `query: 'auth'`, `intent: 'WeChat " +
+  "session cookie'`). Under `mode: 'hybrid'` (default) setting intent " +
+  "disables the saturation cutoff so the merge always runs and up-weights " +
+  "the contains lane to keep precision dominant. Ignored under " +
+  "`mode: 'contains'`. Whitespace-only intent is treated as unset."
+
+/**
  * Polymorphic dispatcher schema for `lore-query`. The MCP-level inputSchema
  * is declared flat (every field optional with action-scoped descriptions);
  * this discriminated union runs at handler entry for clean per-action
  * validation errors.
+ *
+ * Exported solely so contract tests can pin per-arm field membership
+ * directly via `safeParse` — handler-side spies only observe the
+ * hand-constructed argument literals each `handleX` builds, which means
+ * a regression that re-introduces `intent` on a non-`search` arm of this
+ * schema would slip past every handler-level test. See `polymorphic.test.ts`
+ * for the negative-pin tests on `recall` / `ask` / `open-loops` / `audit`.
  */
-const queryDispatchSchema = z.discriminatedUnion("action", [
+export const queryDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("recall"),
     projectName: z.string().optional(),
@@ -63,6 +87,7 @@ const queryDispatchSchema = z.discriminatedUnion("action", [
     includeContent: z.boolean().optional(),
     mode: z.enum(["contains", "semantic", "hybrid"]).optional(),
     explain: z.boolean().optional(),
+    intent: z.string().optional(),
   }),
   z.object({
     action: z.literal("ask"),
@@ -176,6 +201,8 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .describe(
             "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did.",
           ),
+        // search only
+        intent: z.string().optional().describe(INTENT_DESCRIPTION),
         // shared (recall | search | ask)
         limit: z
           .number()

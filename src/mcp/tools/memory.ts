@@ -463,6 +463,7 @@ interface SearchArgs {
   includeContent?: boolean
   mode?: SearchMode
   explain?: boolean
+  intent?: string
 }
 
 export async function handleSearch(
@@ -522,6 +523,7 @@ export async function handleSearch(
           : (args.limit ?? 10),
       includeContent: withContent,
       mode: resolvedMode,
+      intent: args.intent,
     }
 
     let searchResults: Memory[]

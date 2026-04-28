@@ -251,6 +251,88 @@ needs tuning, change the `HYBRID_FALLBACK_THRESHOLD` constant in
 `memory.ts` — it's exported so callers can reference it in their own
 diagnostics.
 
+### Optional `intent` disambiguator (#17)
+
+`SearchMemoriesInput.intent` is an optional disambiguator threaded
+into the **semantic branch's relevance query as context only** —
+NEVER into the contains branch's substring match. Use when `query` is
+short and ambiguous and the caller knows which sense they mean (e.g.
+`query: "auth"`, `intent: "WeChat session cookie"`). Existing call
+sites that don't pass `intent` see byte-identical pre-#17 behavior.
+
+**Contains-vs-semantic asymmetry is the load-bearing rule.** Appending
+intent into `query` would break the contains branch's substring
+match — every Title without the literal disambiguator phrase drops
+out, narrowing recall in the opposite direction the disambiguator
+exists to fix. The contains branch sees ONLY `input.query`. Body
+matches are not searched in contains regardless (see the contains
+caveat above), so the asymmetry is doubly tight: contains-mode
+ignores `intent` end-to-end. Co-located here next to the contains
+caveat so a future contributor doesn't need to chase the rule across
+two surfaces.
+
+**Normalize once, whitespace-only treated as unset.** Both consumers
+(the saturation gate in `searchByHybridPages` and the query
+composition in `searchBySemanticPages`) read the same normalized
+value computed at the top of `runSearch`:
+
+```ts
+const trimmedIntent = input.intent?.trim()
+const intent =
+  trimmedIntent !== undefined && trimmedIntent.length > 0 ? trimmedIntent : null
+```
+
+Whitespace-only intent (`"   "`) collapses to `null` so it cannot
+accidentally bypass the saturation cutoff or pollute the semantic
+query with leading/trailing spaces. The `null` sentinel is the
+single signal of "intent is set"; helpers branch on `intent !== null`.
+
+**Saturation-cutoff bypass under intent.** `searchByHybridPages`
+gates the saturation cutoff on `intent === null`:
+
+```ts
+if (intent === null && containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
+  // contains-saturated branch — discard the parallel semantic call
+} else {
+  // RRF merge runs regardless of contains saturation
+}
+```
+
+Without this gate, a naive intent implementation has no effect in
+the common case: any non-trivial vault produces 3+ contains hits for
+a one-word query, the saturation cutoff fires, and the
+intent-augmented semantic call is built, dispatched, and discarded.
+The cost of the bypass is small (one Map walk + one sort) but
+observable — an agent passing intent on every call sees slightly
+different ordering on queries that today saturate. The alternative
+(keep the cutoff under intent) silently nullifies intent in the
+common case, which is worse.
+
+**Lane weighting under RRF when intent is set.** When intent
+disables the cutoff, the RRF merge runs with `containsWeight = 2`
+and `semanticWeight = 1`. Contains-precision still dominates
+ordering (the literal-precision lane wins when both branches agree)
+while the intent-augmented semantic lane can still surface a row
+contains missed. This mirrors qmd's "original query ×2" rule. When
+intent is unset, both weights default to `1` — byte-identical to
+the pre-#17 RRF baseline. The `2` is empirical and the same
+operator-tuning posture as `RRF_K`: a future env knob
+(`LORE_HYBRID_CONTAINS_WEIGHT`) is the next step if real-query
+ordering needs adjustment, not a per-call argument.
+
+**Empty `query` composition.** The semantic branch composes its
+`client.search` query as `[query.trim(), intent].filter(Boolean).join(" ")`,
+so an empty `query` (allowed on `MemoryService.search` callers that
+pass `""` for unscoped relevance lookups) produces `"intent"` rather
+than `" intent"` — Notion's `client.search` may rank a leading-space
+string differently from the bare term.
+
+The contains-vs-semantic asymmetry is the load-bearing decision and
+the most likely source of future regression. A future contributor
+tempted to "make intent symmetric across both branches" would
+silently re-introduce the recall-narrowing failure mode this
+parameter exists to avoid.
+
 ### Diagnostic trace via `searchWithExplain`
 
 `MemoryService.search` returns `Promise<Memory[]>` for every existing

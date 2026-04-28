@@ -23,7 +23,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { registerMemoryTools } from "./memory.js"
-import { registerQueryTools } from "./query.js"
+import { queryDispatchSchema, registerQueryTools } from "./query.js"
 import { registerKnowledgeTools } from "./knowledge.js"
 import { registerDecisionTools } from "./decisions.js"
 import { registerJournalTools } from "./journal.js"
@@ -406,6 +406,73 @@ describe("lore-query polymorphic dispatcher", () => {
     registerQueryTools(mock.server, makeServices() as never)
     const result = await mock.get("lore-query")({ action: "search" } as never)
     expect(isError(result)).toBe(true)
+  })
+
+  it("dispatches action='search' with intent forwarded to memories.search end-to-end (#17)", async () => {
+    // Acceptance criterion: `lore-query action='search'` forwards intent
+    // through to the service layer. Pin the dispatcher → handler → service
+    // composition so a future refactor that drops the field at any seam
+    // is caught here.
+    const memoriesSearch = vi.fn(async () => [])
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices({ memoriesSearch }) as never)
+    await mock.get("lore-query")({
+      action: "search",
+      query: "auth",
+      intent: "WeChat session cookie",
+    } as never)
+    expect(memoriesSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: "auth",
+        intent: "WeChat session cookie",
+      }),
+    )
+  })
+
+  it.each(["recall", "ask", "audit"] as const)(
+    "queryDispatchSchema strips intent from action='%s' (intent is absent from non-search arms)",
+    (action) => {
+      // Acceptance criterion: only the `search` arm accepts `intent`.
+      // Drive the schema directly via `safeParse` rather than through a
+      // handler stub — a handler-level spy only observes whatever
+      // hand-constructed argument literal each `handleX` builds, which
+      // would mask a regression that re-introduces `intent` on a non-
+      // `search` arm of the dispatcher schema.
+      //
+      // Zod's default `z.object` mode strips unknown keys silently. So a
+      // future contributor who adds `intent: z.string().optional()` to
+      // the recall (or any other) arm here would NOT cause `safeParse`
+      // to fail — the field would simply start surviving into
+      // `parsed.data`. Asserting `parsed.data` does not have `intent`
+      // is the load-bearing pin for the per-arm field membership.
+      const required: Record<string, unknown> =
+        action === "ask" ? { entity: "Auth" } : {}
+      const parsed = queryDispatchSchema.safeParse({
+        action,
+        intent: "should be stripped",
+        ...required,
+      })
+      expect(parsed.success).toBe(true)
+      if (!parsed.success) return
+      expect(parsed.data.action).toBe(action)
+      expect(parsed.data).not.toHaveProperty("intent")
+    },
+  )
+
+  it("queryDispatchSchema preserves intent on action='search' (positive control for the negative tests above)", () => {
+    // The negative tests rely on Zod's strip behavior — a passing parse
+    // with no `intent` key in `parsed.data` is the regression signal.
+    // This positive control proves the strip behavior isn't masking a
+    // schema-wide bug that drops `intent` from every arm.
+    const parsed = queryDispatchSchema.safeParse({
+      action: "search",
+      query: "auth",
+      intent: "WeChat session cookie",
+    })
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(parsed.data.action).toBe("search")
+    expect(parsed.data).toHaveProperty("intent", "WeChat session cookie")
   })
 
   it("dispatches action='search' with explain:true through searchWithExplain", async () => {

@@ -1123,6 +1123,395 @@ describe("tieBreakingRrfCompare — direct unit tests, one per tie-break level",
   })
 })
 
+describe("MemoryService.search — intent parameter (#17)", () => {
+  // Pin the contains-vs-semantic asymmetry, normalize-once rule (whitespace-only
+  // = unset), saturation-bypass-under-intent gate, and contains-lane up-weight
+  // under RRF. The tests below mirror the acceptance criteria in
+  // `Phase-2/17-search-intent-parameter.md` one-for-one.
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildIntentPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  function makeContainsClause(
+    args: Record<string, unknown>,
+  ): { property: string; rich_text?: { contains: string }; title?: { contains: string } }[] {
+    // Walk into the composed filter and pull out the `(Title contains q) OR
+    // (Keywords contains q)` clause so we can pin "intent never enters
+    // contains" by string-comparing the contains payload.
+    const filter = args["filter"] as { and?: unknown[] } | { or?: unknown[] } | undefined
+    if (!filter) return []
+    const ands = (filter as { and?: unknown[] }).and
+    const direct = (filter as { or?: unknown[] }).or
+    const orClause = ands
+      ? (ands.find((c) => typeof c === "object" && c !== null && "or" in c) as
+          | { or: unknown[] }
+          | undefined)
+      : direct
+        ? { or: direct }
+        : undefined
+    if (!orClause) return []
+    return orClause.or as ReturnType<typeof makeContainsClause>
+  }
+
+  it("intent does NOT enter the contains branch's filter — substring stays query-only", async () => {
+    // The motivating rule: appending intent into the substring filter would
+    // narrow recall in the wrong direction (Titles missing the literal
+    // disambiguator drop out). Pin contains' filter equals `query` alone.
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "auth",
+      intent: "WeChat session cookie",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    const containsArgs = querySpy.mock.calls[0][0] as Record<string, unknown>
+    const orClause = makeContainsClause(containsArgs)
+    // Both inner clauses contain `"auth"`, never `"WeChat"` or the joined string.
+    expect(orClause.length).toBeGreaterThan(0)
+    for (const clause of orClause) {
+      const needle =
+        clause.rich_text?.contains ?? clause.title?.contains ?? ""
+      expect(needle).toBe("auth")
+      expect(needle).not.toContain("WeChat")
+    }
+  })
+
+  it("intent enters the semantic branch's query when non-empty after trim", async () => {
+    // Composition is `[query.trim(), intent].filter(Boolean).join(" ")`.
+    // Standard non-empty case: `"auth WeChat session cookie"`.
+    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "auth",
+      intent: "WeChat session cookie",
+      mode: "semantic",
+    })
+
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy.mock.calls[0][0]["query"]).toBe("auth WeChat session cookie")
+  })
+
+  it("intent composition handles empty query without a leading space", async () => {
+    // Edge case from Fix 3: `MemoryService.search` callers may pass `""`
+    // for unscoped relevance lookups. Naive `${query.trim()} ${intent}`
+    // would produce `" intent"` — Notion ranks that differently from
+    // `"intent"`. The `filter(Boolean)` shape protects against this.
+    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "",
+      intent: "performance",
+      mode: "semantic",
+    })
+
+    expect(searchSpy.mock.calls[0][0]["query"]).toBe("performance")
+  })
+
+  it("whitespace-only intent (`'   '`) is byte-identical to unset on the semantic-branch composition", async () => {
+    // Pins the semantic-branch consumer of the normalize-once rule —
+    // whitespace-only intent collapses to `null` and the composed query
+    // is `"auth"`, not `"auth "` or `"auth    "`. The other two
+    // consumers (saturation gate, lane weighting under hybrid) are
+    // pinned independently by the dedicated test
+    // `"whitespace-only intent triggers neither saturation bypass nor
+    // lane up-weight"` below.
+    const searchSpy = vi.fn(async (_args: Record<string, unknown>) => ({ results: [] }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "auth", intent: "   ", mode: "semantic" })
+
+    // Whitespace-only intent → semantic query is `"auth"`, NOT `"auth    "`
+    // and NOT `"auth "` — byte-identical to the unset path.
+    expect(searchSpy.mock.calls[0][0]["query"]).toBe("auth")
+  })
+
+  it("mode='contains' ignores intent entirely — server-side filter identical to intent-unset", async () => {
+    // Acceptance: contains-mode filter shape is byte-identical with or
+    // without intent. Drive both calls and snapshot the filter argument.
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      // contains mode never touches client.search; presence here is just
+      // to satisfy the constructor.
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "auth", mode: "contains", includeContent: false })
+    const filterUnset = (querySpy.mock.calls[0][0] as Record<string, unknown>)["filter"]
+
+    await service.search({
+      query: "auth",
+      intent: "WeChat session cookie",
+      mode: "contains",
+      includeContent: false,
+    })
+    const filterWithIntent = (querySpy.mock.calls[1][0] as Record<string, unknown>)["filter"]
+
+    expect(filterWithIntent).toEqual(filterUnset)
+  })
+
+  it("mode='hybrid' bypasses the saturation cutoff when intent is non-empty after trim", async () => {
+    // Three contains hits would normally saturate. With intent set, the
+    // RRF merge runs anyway so the semantic lane can influence ordering.
+    const containsHits = [
+      buildIntentPage("c-0", "first"),
+      buildIntentPage("c-1", "second"),
+      buildIntentPage("c-2", "third"),
+    ]
+    const querySpy = vi.fn(async () => ({
+      results: containsHits,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      // A row only the semantic branch surfaces. If the saturation cutoff
+      // fired, this row would be discarded and the result would be
+      // contains-only (`["c-0", "c-1", "c-2"]`).
+      results: [buildIntentPage("semantic-only", "would float in under RRF")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "auth",
+      intent: "WeChat session cookie",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // The branch must be `rrf`, not `contains-saturated` — that is the
+    // signal the saturation gate was bypassed. The semantic-only row
+    // surfaces somewhere in the result set as well, but its position is
+    // covered by the dedicated lane-weighting test below.
+    expect(explain.every((e) => e.branch === "rrf")).toBe(true)
+    const ids = explain.map((e) => e.memoryId)
+    expect(ids).toContain("semantic-only")
+  })
+
+  it("mode='hybrid' with intent: contains lane is up-weighted (weight=2) under RRF", async () => {
+    // Up-weighting only matters when both branches return the same row.
+    // Construct a fixture where one row appears in both branches and one
+    // appears in only the semantic branch. Under weight=1 on contains
+    // (no intent), both rows would score 2/61 and 1/61 — same ordering.
+    // The cleanest way to pin "weight=2 actually applied" is the rrfScore
+    // on the cross-branch row: `2 * (1/61) + 1 * (1/61) = 3/61` instead
+    // of the unweighted `2/61`.
+    const querySpy = vi.fn(async () => ({
+      results: [buildIntentPage("cross", "in both branches")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [buildIntentPage("cross", "in both branches")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "auth",
+      intent: "WeChat",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(1)
+    expect(explain[0].memoryId).toBe("cross")
+    // contains weight=2 → 2/61; semantic weight=1 → 1/61; sum = 3/61.
+    expect(explain[0].rrfScore).toBeCloseTo(3 / 61, 10)
+  })
+
+  it("mode='hybrid' with intent unset: saturation cutoff fires + RRF weights default to 1 below it", async () => {
+    // Acceptance: when intent is unset, behavior is byte-identical to
+    // #16's baseline. Drive two scenarios under intent-unset and pin
+    // them both: (a) saturating cutoff still fires at the threshold,
+    // and (b) below-threshold RRF runs with both weights = 1.
+
+    // (a) Saturating: 3 contains hits → contains-saturated branch.
+    {
+      const querySpy = vi.fn(async () => ({
+        results: [
+          buildIntentPage("c-0", "first"),
+          buildIntentPage("c-1", "second"),
+          buildIntentPage("c-2", "third"),
+        ],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => ({
+        results: [buildIntentPage("semantic-only", "would float in under RRF")],
+      }))
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      const { explain } = await service.searchWithExplain({
+        query: "auth",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      expect(explain.every((e) => e.branch === "contains-saturated")).toBe(true)
+      expect(explain.map((e) => e.memoryId)).toEqual(["c-0", "c-1", "c-2"])
+    }
+
+    // (b) Under-shoot: intent unset, both lanes weight=1 → cross-branch row scores 2/61.
+    {
+      const querySpy = vi.fn(async () => ({
+        results: [buildIntentPage("cross", "in both branches")],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => ({
+        results: [buildIntentPage("cross", "in both branches")],
+      }))
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      const { explain } = await service.searchWithExplain({
+        query: "auth",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      expect(explain).toHaveLength(1)
+      expect(explain[0].rrfScore).toBeCloseTo(2 / 61, 10)
+    }
+  })
+
+  it("whitespace-only intent triggers neither saturation bypass nor lane up-weight", async () => {
+    // Reinforces the "whitespace-only is unset" rule across the two
+    // hybrid-only consumers: saturation gate must fire, and the RRF
+    // weights below the threshold must default to 1.
+
+    // Saturation case — whitespace-only intent should NOT bypass the cutoff.
+    {
+      const querySpy = vi.fn(async () => ({
+        results: [
+          buildIntentPage("c-0", "first"),
+          buildIntentPage("c-1", "second"),
+          buildIntentPage("c-2", "third"),
+        ],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => ({
+        results: [buildIntentPage("semantic-only", "would float in under RRF")],
+      }))
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      const { explain } = await service.searchWithExplain({
+        query: "auth",
+        intent: "   ",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      expect(explain.every((e) => e.branch === "contains-saturated")).toBe(true)
+      expect(explain.map((e) => e.memoryId)).toEqual(["c-0", "c-1", "c-2"])
+    }
+
+    // Under-shoot case — whitespace-only intent should NOT up-weight contains.
+    {
+      const querySpy = vi.fn(async () => ({
+        results: [buildIntentPage("cross", "in both branches")],
+        has_more: false,
+        next_cursor: null,
+      }))
+      const searchSpy = vi.fn(async () => ({
+        results: [buildIntentPage("cross", "in both branches")],
+      }))
+      const client = {
+        dataSources: { query: querySpy },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      const { explain } = await service.searchWithExplain({
+        query: "auth",
+        intent: "   ",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      expect(explain).toHaveLength(1)
+      // Both weights = 1 → 2/61, NOT 3/61.
+      expect(explain[0].rrfScore).toBeCloseTo(2 / 61, 10)
+    }
+  })
+})
+
 describe("MemoryService.searchWithExplain — branch-field rules and explain alignment", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
