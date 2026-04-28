@@ -35,8 +35,13 @@ async function main(): Promise<void> {
   // the looser `DEFAULT_WAKEUP_*` caps for ranked calls now see fewer
   // rows — observable shape change with no schema delta — so the server
   // version bumps 0.4.0 → 0.5.0.
+  //
+  // The 0.5.1 patch adds a `lore status` preflight that warns operators
+  // about live tracking-predicate facts while the migration command still
+  // exists. The agent-visible CLI/MCP version moves with that operator
+  // diagnostic so reconnecting clients and humans see the patch level.
   const server = new McpServer(
-    { name: "lore", version: "0.5.0" },
+    { name: "lore", version: "0.5.1" },
     {
       capabilities: {
         tools: {},

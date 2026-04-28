@@ -5,10 +5,9 @@ import type { Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
 import { digestMarkerAgeDays } from "../../hooks/digest-marker.js"
-import {
-  DRIFT_DEBOUNCE_DAYS,
-  driftMarkerAgeDays,
-} from "../../hooks/drift-marker.js"
+import { DRIFT_DEBOUNCE_DAYS, driftMarkerAgeDays } from "../../hooks/drift-marker.js"
+
+export const TRACKING_FACT_PREDICATE_VALUES = ["needs_action", "waiting_on", "blocked_by"]
 
 export const statusCommand = new Command("status")
   .description("Show vault status and project list")
@@ -17,8 +16,17 @@ export const statusCommand = new Command("status")
       // `lore status` is the canonical operator-facing surface for drift
       // warnings — always run the check, bypass the debounce marker.
       const services = await initServices(undefined, { driftCheck: true })
-      const stats = await services.vault.stats()
+      const [stats, trackingPredicateFactCount] = await Promise.all([
+        services.vault.stats(),
+        loadTrackingPredicatePreflight(services),
+      ])
       const project = services.context.project
+
+      const trackingPreflightLines = formatTrackingPredicatePreflight(
+        trackingPredicateFactCount
+      )
+      for (const line of trackingPreflightLines) console.log(line)
+      if (trackingPreflightLines.length > 0) console.log()
 
       console.log("Lore Vault Status")
       console.log("─".repeat(40))
@@ -144,6 +152,30 @@ statusCommand.addCommand(projectsCmd)
 statusCommand.addCommand(topicsCmd)
 
 // ---------------------------------------------------------------------------
+// Tracking-predicate preflight
+// ---------------------------------------------------------------------------
+
+export async function loadTrackingPredicatePreflight(
+  services: LoreServices
+): Promise<number> {
+  return services.facts.countByPredicateRaw([...TRACKING_FACT_PREDICATE_VALUES])
+}
+
+export function formatTrackingPredicatePreflight(count: number): string[] {
+  if (count <= 0) return []
+
+  return [
+    `⚠ Tracking-predicate facts detected: ${count} live row(s).`,
+    "  These predicates (`needs_action`, `waiting_on`, `blocked_by`) are",
+    "  scheduled for removal in the next minor lore release.",
+    "  Run `lore migrate --migrate-tracking-to-tasks --yes` BEFORE",
+    "  upgrading. After the next release, these rows become invisible",
+    "  to lore — Notion still stores them, but no read path surfaces",
+    "  them and the migration command will have been removed.",
+  ]
+}
+
+// ---------------------------------------------------------------------------
 // Digests section
 // ---------------------------------------------------------------------------
 
@@ -230,12 +262,12 @@ const DIGEST_LIST_LIMIT = 50
 export async function loadDigestStatus(
   services: LoreServices,
   configRoot: string,
-  deps: DigestStatusDeps = {},
+  deps: DigestStatusDeps = {}
 ): Promise<DigestStatusReport> {
   const subProjects = subProjectNames(services.config)
   const disabledReason = deriveDisabledReason(
     services.config.hooks?.autoDigest,
-    deps.autoDigestEnvOverride,
+    deps.autoDigestEnvOverride
   )
 
   if (subProjects.length === 0) {
@@ -262,7 +294,7 @@ export async function loadDigestStatus(
   const rows = await Promise.all(
     subProjects.map(async (name): Promise<DigestRow> => {
       const project = await services.projects.findByName(name)
-      const latest = project ? latestByProject.get(project.id) ?? null : null
+      const latest = project ? (latestByProject.get(project.id) ?? null) : null
       const ageDays = await markerAge(configRoot, name)
       return {
         name,
@@ -274,7 +306,7 @@ export async function loadDigestStatus(
           : null,
         markerAgeDays: Number.isFinite(ageDays) ? ageDays : null,
       }
-    }),
+    })
   )
 
   return {
@@ -293,7 +325,7 @@ export async function loadDigestStatus(
  * project.
  */
 export function groupLatestDigestByProject(
-  digestMemories: Memory[],
+  digestMemories: Memory[]
 ): Map<string, Memory> {
   const latest = new Map<string, Memory>()
   for (const mem of digestMemories) {
@@ -310,7 +342,7 @@ export function groupLatestDigestByProject(
 
 function deriveDisabledReason(
   configValue: boolean | undefined,
-  envValue: string | undefined,
+  envValue: string | undefined
 ): DigestStatusReport["disabledReason"] {
   if (envValue === "false") {
     return { source: "env", detail: "LORE_AUTO_DIGEST=false" }
@@ -342,19 +374,14 @@ export function formatDigestStatus(report: DigestStatusReport): string[] {
     ? `Digests (autoDigest=false via ${report.disabledReason.detail}):`
     : "Digests:"
 
-  const longestName = report.rows.reduce(
-    (max, row) => Math.max(max, row.name.length),
-    0,
-  )
+  const longestName = report.rows.reduce((max, row) => Math.max(max, row.name.length), 0)
 
   const lines: string[] = [header]
   for (const row of report.rows) {
     lines.push(formatDigestRow(row, longestName))
   }
   if (report.truncated) {
-    lines.push(
-      `  (showing latest ${DIGEST_LIST_LIMIT} digests; older may be truncated)`,
-    )
+    lines.push(`  (showing latest ${DIGEST_LIST_LIMIT} digests; older may be truncated)`)
   }
   return lines
 }
@@ -434,7 +461,7 @@ export interface DriftStatusDeps {
  */
 export async function loadDriftStatus(
   configRoot: string | null | undefined,
-  deps: DriftStatusDeps = {},
+  deps: DriftStatusDeps = {}
 ): Promise<DriftStatusReport> {
   if (!configRoot) {
     return { markerAgeDays: null, configured: false }

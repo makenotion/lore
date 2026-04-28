@@ -28,10 +28,7 @@ import {
   type FactDedupBackfillResult,
   type FactDedupOptions,
 } from "./fact-dedup.js"
-import {
-  fixFactEncoding,
-  type FactEncodingReport,
-} from "./fact-encoding.js"
+import { fixFactEncoding, type FactEncodingReport } from "./fact-encoding.js"
 import {
   isFullPage,
   extractTitle,
@@ -157,7 +154,7 @@ function isMissingPropertyError(err: unknown): boolean {
   if (code !== "validation_error") return false
   const message =
     typeof (err as { message?: unknown }).message === "string"
-      ? ((err as { message: string }).message)
+      ? (err as { message: string }).message
       : ""
   // Notion's validation_error wraps several distinct schema mistakes;
   // match the substring that names the missing-property case so a
@@ -165,7 +162,10 @@ function isMissingPropertyError(err: unknown): boolean {
   // for the property type) still propagates. The SDK's error message
   // shape is "Could not find property with name or id: <name>" or
   // similar — match either spelling defensively.
-  return /property/i.test(message) && /(not found|could not find|does not exist)/i.test(message)
+  return (
+    /property/i.test(message) &&
+    /(not found|could not find|does not exist)/i.test(message)
+  )
 }
 
 /**
@@ -189,7 +189,13 @@ const LIST_TRACKING_MAX_PAGES = 100
  * helper avoids drift.
  */
 function predicateFilterClause(
-  predicates: FactPredicate[] | undefined,
+  predicates: FactPredicate[] | undefined
+): Record<string, unknown> | undefined {
+  return predicateSelectFilterClause(predicates)
+}
+
+function predicateSelectFilterClause(
+  predicates: readonly string[] | undefined
 ): Record<string, unknown> | undefined {
   if (!predicates?.length) return undefined
   if (predicates.length === 1) {
@@ -270,16 +276,12 @@ export class FactService {
     const properties: Record<string, unknown> = {}
     if (relations.subjectEntityId !== undefined) {
       properties["SubjectEntity"] = {
-        relation: relations.subjectEntityId
-          ? [{ id: relations.subjectEntityId }]
-          : [],
+        relation: relations.subjectEntityId ? [{ id: relations.subjectEntityId }] : [],
       }
     }
     if (relations.objectEntityId !== undefined) {
       properties["ObjectEntity"] = {
-        relation: relations.objectEntityId
-          ? [{ id: relations.objectEntityId }]
-          : [],
+        relation: relations.objectEntityId ? [{ id: relations.objectEntityId }] : [],
       }
     }
     if (Object.keys(properties).length === 0) return
@@ -356,7 +358,7 @@ export class FactService {
         if (limit !== undefined && results.length >= limit) break
       }
       if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToFact(p))
@@ -509,9 +511,7 @@ export class FactService {
       (id) => !existing.projectIds.includes(id)
     )
     const mergedProjectIds =
-      missingProjectIds.length > 0
-        ? [...existing.projectIds, ...missingProjectIds]
-        : null
+      missingProjectIds.length > 0 ? [...existing.projectIds, ...missingProjectIds] : null
     // First-writer-wins on Source: if the existing row already has a
     // source memory we don't clobber it (PR #44's "no orphans" contract
     // only cares about filling the gap, not re-pointing a linked row).
@@ -582,10 +582,7 @@ export class FactService {
     return this.pageToFact(pages[0])
   }
 
-  async queryBySubject(
-    subject: string,
-    opts?: QueryFactsOpts,
-  ): Promise<Fact[]> {
+  async queryBySubject(subject: string, opts?: QueryFactsOpts): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = []
 
     // Allow empty subject to list all facts in scope
@@ -673,16 +670,13 @@ export class FactService {
         if (limit !== undefined && results.length >= limit) break
       }
       if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToFact(p))
   }
 
-  async queryByObject(
-    object: string,
-    opts?: QueryFactsOpts,
-  ): Promise<Fact[]> {
+  async queryByObject(object: string, opts?: QueryFactsOpts): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = []
 
     if (object) {
@@ -746,7 +740,7 @@ export class FactService {
         if (limit !== undefined && results.length >= limit) break
       }
       if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToFact(p))
@@ -754,7 +748,7 @@ export class FactService {
 
   async queryBySourceMemory(
     sourceMemoryId: string,
-    opts?: QueryFactsOpts,
+    opts?: QueryFactsOpts
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
       {
@@ -809,7 +803,7 @@ export class FactService {
         if (limit !== undefined && results.length >= limit) break
       }
       if (limit !== undefined && results.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToFact(p))
@@ -827,7 +821,7 @@ export class FactService {
    * more" affordance) detect truncation without issuing a second query.
    */
   async listRecent(
-    opts: ListRecentOpts = {},
+    opts: ListRecentOpts = {}
   ): Promise<{ items: Fact[]; hasMore: boolean }> {
     const filters: Array<Record<string, unknown>> = []
 
@@ -906,7 +900,7 @@ export class FactService {
    * invariant holds.
    */
   async listTracking(
-    opts: ListTrackingOpts = {},
+    opts: ListTrackingOpts = {}
   ): Promise<{ items: Fact[]; hasMore: boolean }> {
     const filters: Array<Record<string, unknown>> = []
 
@@ -952,7 +946,7 @@ export class FactService {
       if (opts.entityId) {
         orClauses.push(
           { property: "SubjectEntity", relation: { contains: opts.entityId } },
-          { property: "ObjectEntity", relation: { contains: opts.entityId } },
+          { property: "ObjectEntity", relation: { contains: opts.entityId } }
         )
       }
       if (opts.entity) {
@@ -965,7 +959,7 @@ export class FactService {
         }
         orClauses.push(
           { property: "Subject", title: { contains: opts.entity } },
-          { property: "Object", rich_text: { contains: opts.entity } },
+          { property: "Object", rich_text: { contains: opts.entity } }
         )
       }
       filters.push({ or: orClauses })
@@ -997,7 +991,9 @@ export class FactService {
       })
       pagesFetched += 1
       const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-      const nextCursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      const nextCursor = response.has_more
+        ? (response.next_cursor ?? undefined)
+        : undefined
 
       let appended = 0
       for (const page of pages) {
@@ -1030,6 +1026,42 @@ export class FactService {
     }
 
     return { items, hasMore }
+  }
+
+  /**
+   * Count live facts whose raw Notion `Predicate` select value matches one
+   * of the supplied strings.
+   *
+   * This intentionally accepts strings rather than `FactPredicate[]` so
+   * status preflights can keep matching retired select values after the
+   * typed predicate union narrows. It also returns a count directly rather
+   * than `Fact[]`: callers must not route this through `pageToFact`, because
+   * future read-path filters may stop materializing these rows while Notion
+   * still stores them.
+   */
+  async countByPredicateRaw(predicateValues: string[]): Promise<number> {
+    const predicateClause = predicateSelectFilterClause(predicateValues)
+    if (!predicateClause) return 0
+
+    const filters: Array<Record<string, unknown>> = [
+      { property: "Valid Until", date: { is_empty: true } },
+      predicateClause,
+    ]
+
+    let count = 0
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: { and: filters } as QueryDataSourceParameters["filter"],
+        page_size: NOTION_MAX_PAGE_SIZE,
+        start_cursor: cursor,
+      })
+      count += response.results.filter(isFullPage).length
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
+    } while (cursor)
+
+    return count
   }
 
   /**
@@ -1114,10 +1146,7 @@ export class FactService {
     const asSubject = await this.queryBySubject(entity, opts)
     const asObject = await this.queryByObject(entity, opts)
     const seen = new Set(asSubject.map((f) => f.id))
-    return sliceToLimit([
-      ...asSubject,
-      ...asObject.filter((f) => !seen.has(f.id)),
-    ])
+    return sliceToLimit([...asSubject, ...asObject.filter((f) => !seen.has(f.id))])
   }
 
   /**
@@ -1165,7 +1194,7 @@ export class FactService {
     }
     textOr.push(
       { property: "Subject", title: { contains: entity } },
-      { property: "Object", rich_text: { contains: entity } },
+      { property: "Object", rich_text: { contains: entity } }
     )
     baseFilters.push({ or: textOr })
 
@@ -1187,7 +1216,7 @@ export class FactService {
           if (limit !== undefined && results.length >= limit) break
         }
         if (limit !== undefined && results.length >= limit) break
-        cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+        cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
       } while (cursor)
       return results.map((p) => this.pageToFact(p))
     } catch (err) {
@@ -1237,16 +1266,13 @@ export class FactService {
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
         results.push(page)
       }
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToFact(p))
   }
 
-  async queryOverdue(opts?: {
-    projectId?: string
-    limit?: number
-  }): Promise<Fact[]> {
+  async queryOverdue(opts?: { projectId?: string; limit?: number }): Promise<Fact[]> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
       { property: "Review By", date: { on_or_before: today } },
@@ -1277,7 +1303,7 @@ export class FactService {
         if (limit !== undefined && items.length >= limit) break
       }
       if (limit !== undefined && items.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return items
@@ -1338,9 +1364,7 @@ export class FactService {
    * migration function in `fact-encoding.ts` so the CLI doesn't need to
    * reach past the service boundary for the client + DatabaseRef.
    */
-  async fixEncoding(
-    options: { dryRun?: boolean } = {}
-  ): Promise<FactEncodingReport> {
+  async fixEncoding(options: { dryRun?: boolean } = {}): Promise<FactEncodingReport> {
     return fixFactEncoding(this.client, this.db, options)
   }
 

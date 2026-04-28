@@ -10,7 +10,7 @@ import { digestCommand } from "./commands/digest.js"
 
 const program = new Command()
 
-program.name("lore").description("AI memory system backed by Notion").version("0.5.0")
+program.name("lore").description("AI memory system backed by Notion").version("0.5.1")
 
 program.addCommand(initCommand)
 program.addCommand(authCommand)

@@ -11,9 +11,21 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
-<!-- TODO(release): when cutting v0.6.0, append the release date to the
-heading below per Keep a Changelog v1.1.0 convention, e.g.
-`## [0.6.0] - 2026-04-27`. -->
+<!-- TODO(release): when cutting v0.5.1 or v0.6.0, append the release
+date to the matching heading below per Keep a Changelog v1.1.0 convention,
+e.g. `## [0.5.1] - 2026-04-27`. -->
+
+## [0.5.1]
+
+### Added
+
+- **`lore status` now warns when live tracking-predicate facts remain.**
+  Vaults with `needs_action`, `waiting_on`, or `blocked_by` facts will see
+  a preflight recommending
+  `lore migrate --migrate-tracking-to-tasks --yes` before the next minor
+  release. Ignoring the warning means those rows become invisible to Lore
+  after upgrade: Notion still stores them, but no read path surfaces them
+  once the tracking-predicate purge lands.
 
 ## [0.6.0]
 
@@ -34,4 +46,5 @@ heading below per Keep a Changelog v1.1.0 convention, e.g.
   fix.
 
 [Unreleased]: https://github.com/makenotion/lore/compare/v0.6.0...HEAD
+[0.5.1]: https://github.com/makenotion/lore/compare/v0.5.0...v0.5.1
 [0.6.0]: https://github.com/makenotion/lore/releases/tag/v0.6.0

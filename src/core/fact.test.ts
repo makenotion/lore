@@ -5,16 +5,8 @@ import {
   __resetProbeFailureLogForTests,
   clampNotionPageSize,
 } from "./fact.js"
-import {
-  normalize,
-  computeFactDedupKey,
-  computeSubjectKey,
-} from "../notion/normalize.js"
-import {
-  TRACKING_PREDICATES,
-  type DatabaseRef,
-  type FactPredicate,
-} from "../types.js"
+import { normalize, computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
+import { TRACKING_PREDICATES, type DatabaseRef, type FactPredicate } from "../types.js"
 
 const DB: DatabaseRef = {
   databaseId: "facts-db",
@@ -74,25 +66,19 @@ function factPage(overrides: {
         overrides.validUntil !== undefined
           ? ({
               type: "date",
-              date: overrides.validUntil
-                ? { start: overrides.validUntil }
-                : null,
+              date: overrides.validUntil ? { start: overrides.validUntil } : null,
             } as unknown)
           : ({ type: "date", date: null } as unknown),
       "Review By":
         overrides.reviewBy !== undefined
           ? ({
               type: "date",
-              date: overrides.reviewBy
-                ? { start: overrides.reviewBy }
-                : null,
+              date: overrides.reviewBy ? { start: overrides.reviewBy } : null,
             } as unknown)
           : ({ type: "date", date: null } as unknown),
       Source: {
         type: "relation",
-        relation: overrides.sourceMemoryId
-          ? [{ id: overrides.sourceMemoryId }]
-          : [],
+        relation: overrides.sourceMemoryId ? [{ id: overrides.sourceMemoryId }] : [],
       } as unknown,
       Confidence: {
         type: "select",
@@ -100,9 +86,7 @@ function factPage(overrides: {
       } as unknown,
       DedupKey: {
         type: "rich_text",
-        rich_text: overrides.dedupKey
-          ? [{ plain_text: overrides.dedupKey }]
-          : [],
+        rich_text: overrides.dedupKey ? [{ plain_text: overrides.dedupKey }] : [],
       } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
@@ -146,11 +130,13 @@ function buildFactPage(overrides: Partial<PageObjectResponse> = {}): PageObjectR
   } as PageObjectResponse
 }
 
-function createClient(responses: Array<{
-  results: PageObjectResponse[]
-  has_more?: boolean
-  next_cursor?: string | null
-}>) {
+function createClient(
+  responses: Array<{
+    results: PageObjectResponse[]
+    has_more?: boolean
+    next_cursor?: string | null
+  }>
+) {
   const calls: Array<Record<string, unknown>> = []
   let i = 0
   const querySpy = vi.fn(async (args: Record<string, unknown>) => {
@@ -217,7 +203,7 @@ describe("FactService.listRecent", () => {
     expect(filter).toHaveProperty("and")
     // Expect one does_not_equal clause per tracking predicate.
     const predicateClauses = filter.and.filter(
-      (c) => (c as { property?: string }).property === "Predicate",
+      (c) => (c as { property?: string }).property === "Predicate"
     )
     expect(predicateClauses).toHaveLength(TRACKING_PREDICATES.length)
     for (const clause of predicateClauses) {
@@ -227,7 +213,7 @@ describe("FactService.listRecent", () => {
       })
     }
     const excludedValues = predicateClauses.map(
-      (c) => (c as { select: { does_not_equal: string } }).select.does_not_equal,
+      (c) => (c as { select: { does_not_equal: string } }).select.does_not_equal
     )
     expect(excludedValues.sort()).toEqual([...TRACKING_PREDICATES].sort())
   })
@@ -260,7 +246,7 @@ describe("FactService.listRecent", () => {
 
     const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
     const validUntilClause = filter.and.find(
-      (c) => (c as { property?: string }).property === "Valid Until",
+      (c) => (c as { property?: string }).property === "Valid Until"
     )
     expect(validUntilClause).toMatchObject({
       property: "Valid Until",
@@ -281,7 +267,7 @@ describe("FactService.listRecent", () => {
       ? (filter.and as Array<Record<string, unknown>>)
       : [filter]
     const hasValidUntil = clauses.some(
-      (c) => (c as { property?: string }).property === "Valid Until",
+      (c) => (c as { property?: string }).property === "Valid Until"
     )
     expect(hasValidUntil).toBe(false)
   })
@@ -307,7 +293,7 @@ describe("FactService.listTracking", () => {
       const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
       if (!Array.isArray(maybeOr)) return false
       return maybeOr.every(
-        (clause) => (clause as { property?: string }).property === "Predicate",
+        (clause) => (clause as { property?: string }).property === "Predicate"
       )
     }) as { or: Array<{ property: string; select: { equals: string } }> }
     expect(predicateGroup).toBeDefined()
@@ -315,7 +301,7 @@ describe("FactService.listTracking", () => {
     expect(predicates).toEqual([...TRACKING_PREDICATES].sort())
 
     const validUntilClause = filter.and.find(
-      (c) => (c as { property?: string }).property === "Valid Until",
+      (c) => (c as { property?: string }).property === "Valid Until"
     )
     expect(validUntilClause).toMatchObject({
       property: "Valid Until",
@@ -347,13 +333,13 @@ describe("FactService.listTracking", () => {
     expect(entityGroup).toBeDefined()
 
     const subjectKey = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "SubjectKey",
+      (c) => (c as { property?: string }).property === "SubjectKey"
     ) as { property: string; rich_text: { contains: string } }
     const subject = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "Subject",
+      (c) => (c as { property?: string }).property === "Subject"
     ) as { property: string; title: { contains: string } }
     const object = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "Object",
+      (c) => (c as { property?: string }).property === "Object"
     ) as { property: string; rich_text: { contains: string } }
     expect(subjectKey).toMatchObject({
       property: "SubjectKey",
@@ -396,10 +382,10 @@ describe("FactService.listTracking", () => {
     expect(entityGroup).toBeDefined()
 
     const subjectEntity = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "SubjectEntity",
+      (c) => (c as { property?: string }).property === "SubjectEntity"
     ) as { property: string; relation: { contains: string } }
     const objectEntity = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "ObjectEntity",
+      (c) => (c as { property?: string }).property === "ObjectEntity"
     ) as { property: string; relation: { contains: string } }
     expect(subjectEntity).toMatchObject({
       property: "SubjectEntity",
@@ -413,7 +399,7 @@ describe("FactService.listTracking", () => {
     // The substring branches still ride along — un-migrated rows
     // remain reachable.
     const subjectSubstring = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "Subject",
+      (c) => (c as { property?: string }).property === "Subject"
     )
     expect(subjectSubstring).toBeDefined()
   })
@@ -437,15 +423,9 @@ describe("FactService.listTracking", () => {
     // `all: true` in the tool layer translates to limit=undefined here.
     // The worst-case Mail vault has ~271 open loops, which spans three
     // 100-row pages. A single-page walk would undercount by ~63%.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f1-${i}` }),
-    )
-    const page2 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f2-${i}` }),
-    )
-    const page3 = Array.from({ length: 71 }, (_, i) =>
-      buildFactPage({ id: `f3-${i}` }),
-    )
+    const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f1-${i}` }))
+    const page2 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f2-${i}` }))
+    const page3 = Array.from({ length: 71 }, (_, i) => buildFactPage({ id: `f3-${i}` }))
     const { client, querySpy } = createClient([
       { results: page1, has_more: true, next_cursor: "c1" },
       { results: page2, has_more: true, next_cursor: "c2" },
@@ -467,9 +447,7 @@ describe("FactService.listTracking", () => {
     // Limit-reached-mid-page is the interesting case: Notion may still
     // have rows in the response after we hit the cap. `hasMore` must
     // reflect that so the tool layer can surface a "+N more" hint.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f-${i}` }),
-    )
+    const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f-${i}` }))
     const { client, querySpy } = createClient([
       { results: page1, has_more: true, next_cursor: "c1" },
     ])
@@ -505,9 +483,7 @@ describe("FactService.listTracking", () => {
     // undefined — expect hasMore=false. Pinning this stops a future
     // refactor that accidentally sets `hasMore = true` whenever the
     // limit-branch fires.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f-${i}` }),
-    )
+    const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f-${i}` }))
     const { client } = createClient([
       { results: page1, has_more: false, next_cursor: null },
     ])
@@ -541,16 +517,12 @@ describe("FactService.listTracking", () => {
       const entityGroup = filter.and.find((c) => {
         const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
         if (!Array.isArray(maybeOr)) return false
-        const props = maybeOr.map(
-          (clause) => (clause as { property?: string }).property,
-        )
+        const props = maybeOr.map((clause) => (clause as { property?: string }).property)
         return props.includes("Subject") && props.includes("Object")
       }) as { or: Array<Record<string, unknown>> }
       expect(entityGroup).toBeDefined()
 
-      const properties = entityGroup.or.map(
-        (c) => (c as { property?: string }).property,
-      )
+      const properties = entityGroup.or.map((c) => (c as { property?: string }).property)
       expect(properties).not.toContain("SubjectKey")
       expect(properties).toEqual(expect.arrayContaining(["Subject", "Object"]))
     }
@@ -567,11 +539,138 @@ describe("FactService.listTracking", () => {
       ? (filter.and as Array<Record<string, unknown>>)
       : [filter]
     const hasValidUntil = clauses.some(
-      (c) => (c as { property?: string }).property === "Valid Until",
+      (c) => (c as { property?: string }).property === "Valid Until"
     )
     expect(hasValidUntil).toBe(false)
   })
 })
+
+describe("FactService.countByPredicateRaw", () => {
+  it("counts live rows matching raw predicate strings without materializing facts", async () => {
+    const fixture = [
+      factPage({ id: "tracking-1", predicate: "needs_action" }),
+      factPage({ id: "regular", predicate: "uses" }),
+      factPage({
+        id: "invalidated-tracking",
+        predicate: "waiting_on",
+        validUntil: "2026-03-01",
+      }),
+      factPage({ id: "tracking-2", predicate: "blocked_by" }),
+    ]
+    const querySpy = vi.fn(async (args: { filter: unknown }) => {
+      const predicateNames = predicateNamesFromFilter(args.filter)
+      return {
+        results: fixture.filter((page) => {
+          const props = page.properties
+          const predicate = (
+            props["Predicate"] as { select?: { name?: string } | null } | undefined
+          )?.select?.name
+          const validUntil = (
+            props["Valid Until"] as { date?: { start?: string } | null } | undefined
+          )?.date
+          return predicateNames.includes(predicate ?? "") && !validUntil
+        }),
+        has_more: false,
+        next_cursor: null,
+      }
+    })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new FactService(client, db)
+    const pageToFactSpy = vi
+      .spyOn(
+        service as unknown as { pageToFact: (page: PageObjectResponse) => never },
+        "pageToFact"
+      )
+      .mockImplementation(() => {
+        throw new Error("countByPredicateRaw must not construct Fact objects")
+      })
+
+    const count = await service.countByPredicateRaw([
+      "needs_action",
+      "waiting_on",
+      "blocked_by",
+    ])
+
+    expect(count).toBe(2)
+    expect(pageToFactSpy).not.toHaveBeenCalled()
+
+    const filter = querySpy.mock.calls[0][0].filter as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toContainEqual({
+      property: "Valid Until",
+      date: { is_empty: true },
+    })
+    const predicateGroup = filter.and.find((clause) =>
+      Array.isArray((clause as { or?: unknown }).or)
+    ) as { or: Array<{ property: string; select: { equals: string } }> }
+    expect(predicateGroup.or.map((clause) => clause.select.equals).sort()).toEqual([
+      "blocked_by",
+      "needs_action",
+      "waiting_on",
+    ])
+  })
+
+  it("paginates to exhaustion and returns the matched page count", async () => {
+    const { client, querySpy } = createClient([
+      {
+        results: [
+          factPage({ id: "tracking-1", predicate: "needs_action" }),
+          factPage({ id: "tracking-2", predicate: "waiting_on" }),
+        ],
+        has_more: true,
+        next_cursor: "page-2",
+      },
+      {
+        results: [factPage({ id: "tracking-3", predicate: "blocked_by" })],
+        has_more: false,
+        next_cursor: null,
+      },
+    ])
+    const service = new FactService(client, db)
+
+    const count = await service.countByPredicateRaw([
+      "needs_action",
+      "waiting_on",
+      "blocked_by",
+    ])
+
+    expect(count).toBe(3)
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "page-2" })
+  })
+
+  it("returns zero without querying when no predicate strings are provided", async () => {
+    const { client, querySpy } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await expect(service.countByPredicateRaw([])).resolves.toBe(0)
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+})
+
+function predicateNamesFromFilter(filter: unknown): string[] {
+  const clauses = (filter as { and?: Array<Record<string, unknown>> }).and ?? []
+  const predicateClause = clauses.find((clause) => {
+    if ((clause as { property?: string }).property === "Predicate") return true
+    const children = (clause as { or?: Array<Record<string, unknown>> }).or
+    return (
+      Array.isArray(children) &&
+      children.every((child) => (child as { property?: string }).property === "Predicate")
+    )
+  }) as
+    | { property: string; select: { equals: string } }
+    | { or: Array<{ property: string; select: { equals: string } }> }
+    | undefined
+
+  if (!predicateClause) return []
+  if ("or" in predicateClause) {
+    return predicateClause.or.map((child) => child.select.equals)
+  }
+  return [predicateClause.select.equals]
+}
 
 describe("normalize", () => {
   it("collapses case, whitespace, and trailing punctuation", () => {
@@ -785,9 +884,7 @@ describe("FactService.createWithDedup", () => {
         c[0].properties && c[0].properties.Source
     )
     if (!sourceUpdate) throw new Error("expected a Source update call")
-    expect(sourceUpdate[0].properties.Source.relation).toEqual([
-      { id: "mem-new" },
-    ])
+    expect(sourceUpdate[0].properties.Source.relation).toEqual([{ id: "mem-new" }])
   })
 
   it("preserves an existing sourceMemoryId (first-writer-wins, no clobber)", async () => {
@@ -890,9 +987,7 @@ describe("FactService.createWithDedup", () => {
       has_more: false,
       next_cursor: null,
     })
-    client.pages.create.mockResolvedValueOnce(
-      factPage({ id: "new-fact" })
-    )
+    client.pages.create.mockResolvedValueOnce(factPage({ id: "new-fact" }))
 
     const result = await service.createWithDedup({
       subject: "AuthService",
@@ -907,12 +1002,8 @@ describe("FactService.createWithDedup", () => {
   it("falls back to blind create when the dedup probe throws", async () => {
     __resetProbeFailureLogForTests()
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-    client.dataSources.query.mockRejectedValueOnce(
-      new Error("transient API error")
-    )
-    client.pages.create.mockResolvedValueOnce(
-      factPage({ id: "fallback-fact" })
-    )
+    client.dataSources.query.mockRejectedValueOnce(new Error("transient API error"))
+    client.pages.create.mockResolvedValueOnce(factPage({ id: "fallback-fact" }))
 
     const result = await service.createWithDedup({
       subject: "AuthService",
@@ -1130,10 +1221,7 @@ describe("FactService.createWithDedup", () => {
       sourceMemoryId: "mem-new",
     })
     expect(retryResult.deduped).toBe(true)
-    expect(retryResult.enriched).toEqual([
-      "added 1 project",
-      "linked source memory",
-    ])
+    expect(retryResult.enriched).toEqual(["added 1 project", "linked source memory"])
     // One update on the retry — a single atomic payload covering both
     // properties, identical to the shape the first attempt built.
     expect(client.pages.update).toHaveBeenCalledTimes(2)
@@ -1232,15 +1320,9 @@ describe("FactService.create (default path)", () => {
 
 describe("computeSubjectKey", () => {
   it("collapses cosmetic subject variants to one key (P3-03 Part A)", () => {
-    expect(computeSubjectKey("MemoryService")).toBe(
-      computeSubjectKey("memoryservice")
-    )
-    expect(computeSubjectKey("MemoryService")).toBe(
-      computeSubjectKey("MemoryService ")
-    )
-    expect(computeSubjectKey("MemoryService")).toBe(
-      computeSubjectKey(" MemoryService.")
-    )
+    expect(computeSubjectKey("MemoryService")).toBe(computeSubjectKey("memoryservice"))
+    expect(computeSubjectKey("MemoryService")).toBe(computeSubjectKey("MemoryService "))
+    expect(computeSubjectKey("MemoryService")).toBe(computeSubjectKey(" MemoryService."))
   })
 
   it("preserves embedded punctuation and dots so file-like subjects survive", () => {
@@ -1281,9 +1363,7 @@ describe("FactService.createWithDedup — SubjectKey write", () => {
     )
     // Subject still carries the human-readable form — SubjectKey is the
     // case-folded mirror, not a replacement.
-    expect(createCall.properties.Subject.title[0].text.content).toBe(
-      "MemoryService"
-    )
+    expect(createCall.properties.Subject.title[0].text.content).toBe("MemoryService")
   })
 
   it("computes SubjectKey from the decoded subject so encoded inputs canonicalize consistently", async () => {
@@ -1333,9 +1413,7 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
     const orGroup = filter.and.find((c) => {
       const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
       if (!Array.isArray(maybeOr)) return false
-      const props = maybeOr.map(
-        (clause) => (clause as { property?: string }).property
-      )
+      const props = maybeOr.map((clause) => (clause as { property?: string }).property)
       return props.includes("SubjectKey") && props.includes("Subject")
     }) as { or: Array<Record<string, unknown>> } | undefined
     expect(orGroup).toBeDefined()
@@ -1343,9 +1421,7 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
     const subjectKeyClause = orGroup!.or.find(
       (c) => (c as { property?: string }).property === "SubjectKey"
     ) as { property: string; rich_text: { contains: string } }
-    expect(subjectKeyClause.rich_text.contains).toBe(
-      computeSubjectKey("MemoryService")
-    )
+    expect(subjectKeyClause.rich_text.contains).toBe(computeSubjectKey("MemoryService"))
 
     const subjectClause = orGroup!.or.find(
       (c) => (c as { property?: string }).property === "Subject"
@@ -1436,7 +1512,7 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
         const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
         if (!Array.isArray(maybeOr)) return false
         return maybeOr.some(
-          (clause) => (clause as { property?: string }).property === "SubjectKey",
+          (clause) => (clause as { property?: string }).property === "SubjectKey"
         )
       })
       expect(hasSubjectKeyClause).toBe(false)
@@ -1444,7 +1520,7 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
       // Raw Subject filter still applied — caller still gets literal-
       // substring semantics.
       const subjectClause = clauses.find(
-        (c) => (c as { property?: string }).property === "Subject",
+        (c) => (c as { property?: string }).property === "Subject"
       ) as { property: string; title: { contains: string } } | undefined
       expect(subjectClause).toBeDefined()
       expect(subjectClause!.title.contains).toBe(subject)
@@ -1528,10 +1604,9 @@ describe("FactService — page_size clamping on retrieval queries", () => {
     // result set still get Notion's max page size, so the caller-side
     // pagination loop runs the same number of round-trips as before.
     const subjectCall = createClient([{ results: [] }])
-    await new FactService(subjectCall.client, db).queryBySubject(
-      "MemoryService",
-      { projectId: "p1" },
-    )
+    await new FactService(subjectCall.client, db).queryBySubject("MemoryService", {
+      projectId: "p1",
+    })
     expect(subjectCall.calls[0].page_size).toBe(100)
 
     const objectCall = createClient([{ results: [] }])
@@ -1568,15 +1643,9 @@ describe("FactService.queryOverdue", () => {
     // and no cursor loop silently truncated at Notion's default 100-row
     // page. A vault with 271 overdue facts (mirroring the production
     // Mail vault's open-loops scale) lost ~63% of the result set.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f1-${i}` }),
-    )
-    const page2 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f2-${i}` }),
-    )
-    const page3 = Array.from({ length: 71 }, (_, i) =>
-      buildFactPage({ id: `f3-${i}` }),
-    )
+    const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f1-${i}` }))
+    const page2 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f2-${i}` }))
+    const page3 = Array.from({ length: 71 }, (_, i) => buildFactPage({ id: `f3-${i}` }))
     const { client, querySpy } = createClient([
       { results: page1, has_more: true, next_cursor: "c1" },
       { results: page2, has_more: true, next_cursor: "c2" },
@@ -1598,9 +1667,7 @@ describe("FactService.queryOverdue", () => {
     // Limit-reached-mid-page: Notion's first response had 100 rows, the
     // caller asked for 10. A second query MUST NOT fire — over-fetching
     // beyond `limit` defeats the page_size clamp.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f-${i}` }),
-    )
+    const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f-${i}` }))
     const { client, querySpy } = createClient([
       { results: page1, has_more: true, next_cursor: "c1" },
     ])
@@ -1639,9 +1706,7 @@ describe("FactService.queryOverdue", () => {
   it("clamps page_size to 100 when limit exceeds Notion's ceiling", async () => {
     // A caller passing limit=500 must not produce page_size=500 — Notion
     // rejects > 100 with a 400. The clamp is `Math.min(limit ?? 100, 100)`.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f-${i}` }),
-    )
+    const page1 = Array.from({ length: 100 }, (_, i) => buildFactPage({ id: `f-${i}` }))
     const { client, calls } = createClient([
       { results: page1, has_more: false, next_cursor: null },
     ])
@@ -1662,9 +1727,7 @@ describe("FactService.queryOverdue", () => {
 
     await service.queryOverdue({ projectId: "p1" })
 
-    expect(calls[0].sorts).toEqual([
-      { property: "Review By", direction: "ascending" },
-    ])
+    expect(calls[0].sorts).toEqual([{ property: "Review By", direction: "ascending" }])
   })
 
   it("filters by Review By on_or_before today and Valid Until is_empty", async () => {
@@ -1763,10 +1826,7 @@ describe("FactService.queryByEntity — limit clamp and post-dedup slice (issue 
     // A caller passing limit: 250 must not produce page_size: 250 — the
     // outer cursor loop satisfies the over-100 request, not an inflated
     // page_size that Notion rejects with a 400.
-    const { client, calls } = createClient([
-      { results: [] },
-      { results: [] },
-    ])
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
     const service = new FactService(client, db)
 
     await service.queryByEntity("AuthService", {
@@ -1879,15 +1939,12 @@ describe("FactService.queryByEntity — limit clamp and post-dedup slice (issue 
     // 50, not 26. Distinct from the `limit: 1` test above, which
     // exercises the same mechanism at the smallest possible scale.
     const relationRows = Array.from({ length: 25 }, (_, i) =>
-      factPage({ id: `rel-${i}`, subject: "AuthService" }),
+      factPage({ id: `rel-${i}`, subject: "AuthService" })
     )
     const textRows = Array.from({ length: 25 }, (_, i) =>
-      factPage({ id: `text-${i}`, subject: "AuthService" }),
+      factPage({ id: `text-${i}`, subject: "AuthService" })
     )
-    const { client } = createClient([
-      { results: relationRows },
-      { results: textRows },
-    ])
+    const { client } = createClient([{ results: relationRows }, { results: textRows }])
     const service = new FactService(client, db)
 
     const result = await service.queryByEntity("AuthService", {
@@ -1906,12 +1963,12 @@ describe("FactService.queryByEntity — limit clamp and post-dedup slice (issue 
 
 describe("FactService.queryByEntity — predicates option (issue 0.6.0/05)", () => {
   function findPredicateClause(
-    filter: { and: Array<Record<string, unknown>> } | Record<string, unknown>,
+    filter: { and: Array<Record<string, unknown>> } | Record<string, unknown>
   ): Record<string, unknown> | undefined {
     const clauses = Array.isArray(
-      (filter as { and?: Array<Record<string, unknown>> }).and,
+      (filter as { and?: Array<Record<string, unknown>> }).and
     )
-      ? ((filter as { and: Array<Record<string, unknown>> }).and)
+      ? (filter as { and: Array<Record<string, unknown>> }).and
       : [filter as Record<string, unknown>]
     return clauses.find((c) => {
       const property = (c as { property?: string }).property
@@ -1919,8 +1976,7 @@ describe("FactService.queryByEntity — predicates option (issue 0.6.0/05)", () 
       const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
       if (!Array.isArray(maybeOr)) return false
       return maybeOr.every(
-        (clause) =>
-          (clause as { property?: string }).property === "Predicate",
+        (clause) => (clause as { property?: string }).property === "Predicate"
       )
     })
   }
@@ -1961,10 +2017,7 @@ describe("FactService.queryByEntity — predicates option (issue 0.6.0/05)", () 
     // through to the subject + object union. Each side must apply the
     // predicate filter on its own query so the union is server-side
     // narrowed.
-    const { client, calls } = createClient([
-      { results: [] },
-      { results: [] },
-    ])
+    const { client, calls } = createClient([{ results: [] }, { results: [] }])
     const service = new FactService(client, db)
 
     await service.queryByEntity("AuthService", {

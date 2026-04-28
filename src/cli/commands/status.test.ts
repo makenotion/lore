@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  formatTrackingPredicatePreflight,
   formatDigestStatus,
   formatDriftStatus,
   groupLatestDigestByProject,
+  loadTrackingPredicatePreflight,
   loadDigestStatus,
   loadDriftStatus,
+  TRACKING_FACT_PREDICATE_VALUES,
   type DigestStatusReport,
   type DriftStatusReport,
 } from "./status.js"
@@ -74,6 +77,11 @@ function makeServices(opts: {
         return { items: opts.digestMemories ?? [] }
       },
     },
+    facts: {
+      async countByPredicateRaw(): Promise<number> {
+        return 0
+      },
+    },
     projects: {
       async findByName(name: string): Promise<Project | null> {
         return projectsByName.get(name) ?? null
@@ -81,6 +89,33 @@ function makeServices(opts: {
     },
   } as unknown as LoreServices
 }
+
+describe("formatTrackingPredicatePreflight", () => {
+  it("returns no lines when there are zero tracking-predicate facts", () => {
+    expect(formatTrackingPredicatePreflight(0)).toEqual([])
+  })
+
+  it("renders the warning when tracking-predicate facts exist", () => {
+    const lines = formatTrackingPredicatePreflight(3)
+    const text = lines.join("\n")
+
+    expect(lines[0]).toBe("⚠ Tracking-predicate facts detected: 3 live row(s).")
+    expect(text).toContain("`needs_action`, `waiting_on`, `blocked_by`")
+    expect(text).toContain("lore migrate --migrate-tracking-to-tasks --yes")
+    expect(text).toContain("rows become invisible")
+    expect(text).toContain("no read path surfaces")
+  })
+
+  it("treats non-zero counts as informational instead of a refusal", async () => {
+    const countByPredicateRaw = vi.fn(async () => 2)
+    const services = {
+      facts: { countByPredicateRaw },
+    } as unknown as LoreServices
+
+    await expect(loadTrackingPredicatePreflight(services)).resolves.toBe(2)
+    expect(countByPredicateRaw).toHaveBeenCalledWith([...TRACKING_FACT_PREDICATE_VALUES])
+  })
+})
 
 describe("groupLatestDigestByProject", () => {
   it("keeps the most recent memory per project ID", () => {
@@ -143,7 +178,7 @@ describe("formatDigestStatus", () => {
       rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe(
-      "Digests (autoDigest=false via LORE_AUTO_DIGEST=false):",
+      "Digests (autoDigest=false via LORE_AUTO_DIGEST=false):"
     )
   })
 
@@ -154,7 +189,7 @@ describe("formatDigestStatus", () => {
       rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe(
-      "Digests (autoDigest=false via hooks.autoDigest: false):",
+      "Digests (autoDigest=false via hooks.autoDigest: false):"
     )
   })
 
@@ -212,9 +247,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
-      rows: [
-        { name: "Edge", lastDigest: null, markerAgeDays: 7 },
-      ],
+      rows: [{ name: "Edge", lastDigest: null, markerAgeDays: 7 }],
     }
     const [, row] = formatDigestStatus(report)
     expect(row).toContain("marker 7d old")
@@ -399,7 +432,7 @@ describe("loadDigestStatus", () => {
     // `memories.list({ source: digest })` saturated and older digests may
     // be missing — surfaced via the truncated flag for the renderer.
     const fifty = Array.from({ length: 50 }, (_, i) =>
-      makeMemory({ id: `d-${i}`, projectIds: ["p-a"] }),
+      makeMemory({ id: `d-${i}`, projectIds: ["p-a"] })
     )
     const services = makeServices({
       config: baseConfig,
@@ -505,7 +538,7 @@ describe("formatDriftStatus", () => {
     }
     const [, row] = formatDriftStatus(report)
     expect(row).toBe(
-      `  marker ${DRIFT_DEBOUNCE_DAYS}d old · next fire on next debounced session`,
+      `  marker ${DRIFT_DEBOUNCE_DAYS}d old · next fire on next debounced session`
     )
   })
 
