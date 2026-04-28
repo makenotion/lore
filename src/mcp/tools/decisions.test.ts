@@ -305,7 +305,11 @@ describe("registerDecisionTools", () => {
       topicName: "Auth",
     } as never)
 
-    expect(getOrCreate).toHaveBeenCalledWith("Auth", ["proj-a"])
+    // The third arg is the `opts` bag for the issue #109 probe controls
+    // — `forceNew: undefined` here because `forceNewTopic` was not set.
+    expect(getOrCreate).toHaveBeenCalledWith("Auth", ["proj-a"], {
+      forceNew: undefined,
+    })
     expect(list).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: "proj-a",

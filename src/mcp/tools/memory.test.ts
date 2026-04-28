@@ -142,6 +142,118 @@ describe("lore-remember session recording", () => {
   })
 })
 
+describe("lore-remember forceNewTopic (issue #109)", () => {
+  it("forwards forceNewTopic to topics.getOrCreate as { forceNew: true }", async () => {
+    // The MCP boundary takes a `forceNewTopic` flag; the service-layer
+    // contract is `forceNew`. This test pins the rename so a future
+    // refactor doesn't silently strip the flag at the boundary.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", { projectIds: ["proj-a"] })
+    const getOrCreate = vi
+      .fn()
+      .mockResolvedValue(makeTopic("t-new", { name: "Eval & Testing" }))
+
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    await remember({
+      title: "Wakeup hook crash diagnosis",
+      content: "body",
+      topicName: "Eval & Testing",
+      forceNewTopic: true,
+    } as never)
+
+    expect(getOrCreate).toHaveBeenCalledWith(
+      "Eval & Testing",
+      ["proj-a"],
+      { forceNew: true },
+    )
+  })
+
+  it("renders the canonical's stored name when normalized-equivalent collapse landed", async () => {
+    // When the agent saves "Eval & Testing" but the probe matches an
+    // existing "Evals & Testing" canonical, the response should echo
+    // the canonical name — not the input — so the agent's view of the
+    // vault stays consistent with what's stored.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", { projectIds: ["proj-a"] })
+    const canonical = makeTopic("t-canonical", { name: "Evals & Testing" })
+    const getOrCreate = vi.fn().mockResolvedValue(canonical)
+
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({
+      title: "Eval testing rollout",
+      content: "body",
+      topicName: "Eval & Testing",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Topic: Evals & Testing")
+  })
+
+  it("surfaces the SimilarTopicError message back through toolError", async () => {
+    // When the probe rejects, getOrCreate throws; the tool layer's
+    // try/catch routes the message into the `Error: ...` content.
+    const mockServer = createMockServer()
+    const getOrCreate = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'Topic "GraphQLL Federation" looks similar to 1 existing topic in this project:\n  - "GraphQL Federation" (similarity 0.86, id: t-1)\nUse one of the existing topic names verbatim, or pass `forceNew: true` to create a new topic anyway.',
+        ),
+      )
+
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate },
+      memories: { create: vi.fn(), list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getHandler("lore-remember")
+
+    const result = await remember({
+      title: "irrelevant",
+      content: "body",
+      topicName: "GraphQLL Federation",
+    } as never)
+
+    const wrapped = result as {
+      content: Array<{ text: string }>
+      isError?: boolean
+    }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("looks similar")
+    expect(wrapped.content[0].text).toContain("forceNew: true")
+    // Save was never attempted — the throw short-circuits before
+    // `memories.create`.
+    expect(services.memories.create).not.toHaveBeenCalled()
+  })
+})
+
 describe("lore-remember near-duplicate probe", () => {
   it("surfaces candidates whose title trigram similarity meets the 0.7 threshold", async () => {
     // The probe scans the recent memories in the same project + top-2

@@ -17,11 +17,15 @@ import {
   findDuplicateTopicNames,
   findEncodedTopicNames,
   findPostDecodeTopicCollisions,
+  findSimilarTopicGroups,
   fixTopicEncoding,
   mergeDuplicateTopics,
+  mergeSimilarTopics,
   mergeTopicsByAliasPlans,
   type DuplicateTopicGroup,
   type EncodedTopicRow,
+  type SimilarTopicGroup,
+  type SimilarTopicMergeResult,
   type TopicAliasMergePlan,
   type TopicAliasMergeResult,
   type TopicEncodingFixResult,
@@ -355,6 +359,44 @@ export class VaultManager {
       plans,
       options
     )
+  }
+
+  /**
+   * Detect normalized-equivalent topic groups (issue #109) — rows with
+   * different stored names that share a normalized lookup key — and
+   * optionally collapse each group onto a canonical row.
+   *
+   * Plan-then-execute: bare invocation (`dryRun: true`) returns the
+   * groups it would merge so the operator can review which canonical
+   * each loser will roll up into. Re-running with `dryRun: false`
+   * applies the plan.
+   *
+   * Distinct from `migrate({ mergeDuplicateTopics: true })`: that path
+   * only collapses *exact-name* duplicates and runs as part of the
+   * schema-migration sequence. This path runs as an explicit cleanup
+   * pass and rewrites the surviving topic name out from under the
+   * sibling rows, which is harder to roll back than the exact-name
+   * case where the surviving canonical's name was unchanged.
+   */
+  async migrateSimilarTopics(
+    options: { dryRun?: boolean } = {}
+  ): Promise<{
+    groups: SimilarTopicGroup[]
+    mergeResults: SimilarTopicMergeResult[]
+  }> {
+    const vault = this.get()
+    const groups = await findSimilarTopicGroups(
+      this.client,
+      vault.databases.topics
+    )
+    const mergeResults = await mergeSimilarTopics(
+      this.client,
+      vault.databases.topics,
+      vault.databases.memories,
+      groups,
+      { dryRun: options.dryRun === true }
+    )
+    return { groups, mergeResults }
   }
 
   /**

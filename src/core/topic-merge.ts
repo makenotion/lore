@@ -21,6 +21,7 @@ import {
 } from "../notion/extractors.js"
 import { buildTopicProps } from "../notion/schema.js"
 import { decodeTopicHtmlEntities } from "./topic.js"
+import { normalizeTopicNameForLookup } from "./topic-normalize.js"
 
 /** One duplicate-name group detected in the Topics DB. */
 export interface DuplicateTopicGroup {
@@ -376,6 +377,243 @@ function unionAllProjectIds(pages: PageObjectResponse[]): string[] {
     }
   }
   return ordered
+}
+
+// ---------------------------------------------------------------------------
+// Normalized-equivalent (similar) merges — issue #109 cleanup pass
+// ---------------------------------------------------------------------------
+
+/** One normalized-equivalent topic group detected in the Topics DB. Unlike
+ *  `DuplicateTopicGroup`, the member rows have *different* stored names —
+ *  they only collide once normalized via `normalizeTopicNameForLookup`. */
+export interface SimilarTopicGroup {
+  /** The normalized comparison key shared by every row in the group. */
+  normalizedKey: string
+  /** The chosen canonical's stored name. Selected by the same oldest-row
+   *  rule used by `mergeDuplicateTopics`, so a re-run of the same scan
+   *  produces the same canonical. */
+  canonicalName: string
+  /** The chosen canonical's id. */
+  canonicalId: string
+  /** Sibling topic ids whose stored names normalize to `normalizedKey`
+   *  but differ from `canonicalName`. These are the rows the apply pass
+   *  will collapse onto the canonical. */
+  siblingIds: string[]
+  /** Sibling stored names paired with their ids. Surfaced in the plan
+   *  output so the operator can read what's about to be archived without
+   *  having to cross-reference page ids in Notion. */
+  siblings: Array<{ id: string; name: string }>
+}
+
+/**
+ * Result of merging a single normalized-equivalent group. Mirrors the
+ * shape of `TopicMergeResult` so the CLI's table-printing code can
+ * uniformly report exact-match and normalized-equivalent passes.
+ */
+export interface SimilarTopicMergeResult {
+  normalizedKey: string
+  canonicalName: string
+  canonicalId: string
+  /** Final Project relation on the canonical, as the union of every
+   *  sibling's pre-merge relation. */
+  canonicalProjectIds: string[]
+  /** Sibling topic ids that were archived (memories re-pointed off them). */
+  archivedIds: string[]
+  /** Memory ids whose Topic relation was re-pointed to `canonicalId`. */
+  reassignedMemoryIds: string[]
+}
+
+/**
+ * Scan the Topics DB and return every normalized-key group with two or
+ * more rows where at least one row's stored name differs from another's.
+ * Pure exact-name dupes are filtered out — those flow through
+ * `findDuplicateTopicNames` / `--merge-duplicate-topics`, which is
+ * the simpler, lower-blast-radius pass an operator runs first.
+ *
+ * Stable ordering by `normalizedKey` so console output is deterministic.
+ */
+export async function findSimilarTopicGroups(
+  client: Client,
+  topicsDb: DatabaseRef
+): Promise<SimilarTopicGroup[]> {
+  const allTopics: PageObjectResponse[] = []
+  let cursor: string | undefined
+
+  do {
+    const response = await client.dataSources.query({
+      data_source_id: topicsDb.dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
+    })
+    allTopics.push(
+      ...(response.results.filter(isFullPage) as PageObjectResponse[])
+    )
+    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+  } while (cursor)
+
+  const byKey = new Map<string, PageObjectResponse[]>()
+  for (const page of allTopics) {
+    const name = extractTitle(page.properties["Name"])
+    if (name.length === 0) continue
+    const key = normalizeTopicNameForLookup(name)
+    if (key.length === 0) continue
+    const existing = byKey.get(key) ?? []
+    existing.push(page)
+    byKey.set(key, existing)
+  }
+
+  const groups: SimilarTopicGroup[] = []
+  for (const [normalizedKey, pages] of byKey.entries()) {
+    if (pages.length < 2) continue
+
+    const distinctNames = new Set(
+      pages.map((p) => extractTitle(p.properties["Name"]))
+    )
+    // Pure exact-name duplicates surface via `findDuplicateTopicNames`;
+    // here we want only groups where stored names actually differ.
+    if (distinctNames.size < 2) continue
+
+    const sorted = [...pages].sort((a, b) => {
+      const timeCompare = a.created_time.localeCompare(b.created_time)
+      if (timeCompare !== 0) return timeCompare
+      return a.id.localeCompare(b.id)
+    })
+    const [canonical, ...rest] = sorted
+    groups.push({
+      normalizedKey,
+      canonicalName: extractTitle(canonical.properties["Name"]),
+      canonicalId: canonical.id,
+      siblingIds: rest.map((p) => p.id),
+      siblings: rest.map((p) => ({
+        id: p.id,
+        name: extractTitle(p.properties["Name"]),
+      })),
+    })
+  }
+
+  return groups.sort((a, b) =>
+    a.normalizedKey.localeCompare(b.normalizedKey)
+  )
+}
+
+/**
+ * Collapse every normalized-equivalent group into one canonical topic.
+ * Idempotent: a second run finds no groups and returns an empty array.
+ *
+ * Same merge mechanics as `mergeDuplicateTopics`:
+ *   1. Union every group member's Project relation onto the canonical.
+ *   2. Re-point every memory whose Topic relation contains a sibling id
+ *      to the canonical.
+ *   3. Archive each sibling.
+ *
+ * Plan-then-execute: the caller passes `dryRun: true` to preview without
+ * writing. Posture matches `--fix-fact-encoding` / `--fix-memory-encoding`
+ * because the rewrite renames a topic out from under any URL or external
+ * link the operator may hold to the loser row, and is harder to roll
+ * back than the exact-name merge (un-archiving the loser leaves the
+ * memories pointing at the canonical).
+ */
+export async function mergeSimilarTopics(
+  client: Client,
+  topicsDb: DatabaseRef,
+  memoriesDb: DatabaseRef,
+  groups: SimilarTopicGroup[],
+  options: { dryRun?: boolean } = {}
+): Promise<SimilarTopicMergeResult[]> {
+  const results: SimilarTopicMergeResult[] = []
+  for (const group of groups) {
+    results.push(
+      await mergeOneSimilarGroup(client, topicsDb, memoriesDb, group, {
+        dryRun: options.dryRun === true,
+      })
+    )
+  }
+  return results
+}
+
+async function mergeOneSimilarGroup(
+  client: Client,
+  topicsDb: DatabaseRef,
+  memoriesDb: DatabaseRef,
+  group: SimilarTopicGroup,
+  options: { dryRun: boolean }
+): Promise<SimilarTopicMergeResult> {
+  // Re-fetch canonical + siblings by id so we operate on the freshest
+  // state — the scan that produced `group` may be minutes old by the
+  // time the operator confirms the apply pass.
+  const allIds = [group.canonicalId, ...group.siblingIds]
+  const pages: PageObjectResponse[] = []
+  for (const id of allIds) {
+    const page = (await client.pages.retrieve({ page_id: id })) as PageObjectResponse
+    if (page.archived) continue
+    pages.push(page)
+  }
+
+  const canonical = pages.find((p) => p.id === group.canonicalId)
+  if (!canonical) {
+    // Canonical was archived between scan and apply. Skip the group —
+    // a second scan after apply will pick a new canonical from the
+    // surviving siblings.
+    return {
+      normalizedKey: group.normalizedKey,
+      canonicalName: group.canonicalName,
+      canonicalId: group.canonicalId,
+      canonicalProjectIds: [],
+      archivedIds: [],
+      reassignedMemoryIds: [],
+    }
+  }
+  const siblings = pages.filter((p) => p.id !== group.canonicalId)
+
+  const canonicalProjectIds = extractRelationIds(canonical.properties["Project"])
+  const union = unionAllProjectIds(pages)
+  const missing = union.filter((id) => !canonicalProjectIds.includes(id))
+  const mergedProjectIds = [...canonicalProjectIds, ...missing]
+
+  if (missing.length > 0 && !options.dryRun) {
+    await client.pages.update({
+      page_id: canonical.id,
+      properties: {
+        Project: { relation: mergedProjectIds.map((id) => ({ id })) },
+      } as CreatePageParameters["properties"],
+    })
+  }
+
+  const reassignedMemoryIds: string[] = []
+  for (const sibling of siblings) {
+    const memoryIds = await listMemoryIdsByTopic(client, memoriesDb, sibling.id)
+    for (const memoryId of memoryIds) {
+      if (!options.dryRun) {
+        await client.pages.update({
+          page_id: memoryId,
+          properties: {
+            Topic: { relation: [{ id: canonical.id }] },
+          } as CreatePageParameters["properties"],
+        })
+      }
+      reassignedMemoryIds.push(memoryId)
+    }
+  }
+
+  const archivedIds: string[] = []
+  for (const sibling of siblings) {
+    if (!options.dryRun) {
+      await client.pages.update({
+        page_id: sibling.id,
+        archived: true,
+      })
+    }
+    archivedIds.push(sibling.id)
+  }
+
+  return {
+    normalizedKey: group.normalizedKey,
+    canonicalName: group.canonicalName,
+    canonicalId: group.canonicalId,
+    canonicalProjectIds: mergedProjectIds,
+    archivedIds,
+    reassignedMemoryIds,
+  }
 }
 
 // ---------------------------------------------------------------------------

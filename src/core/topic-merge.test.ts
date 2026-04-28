@@ -4,8 +4,10 @@ import {
   findDuplicateTopicNames,
   findEncodedTopicNames,
   findPostDecodeTopicCollisions,
+  findSimilarTopicGroups,
   fixTopicEncoding,
   mergeDuplicateTopics,
+  mergeSimilarTopics,
   mergeTopicsByAliasPlans,
   validateTopicAliasMergePlans,
 } from "./topic-merge.js"
@@ -1181,6 +1183,230 @@ describe("mergeTopicsByAliasPlans", () => {
       ])
     ).rejects.toThrow(/equals its canonical/i)
     expect(client.dataSources.query).not.toHaveBeenCalled()
+  })
+})
+
+describe("findSimilarTopicGroups", () => {
+  it("returns empty when every distinct stored name normalizes to its own key", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Auth" }),
+            topicPage("t2", { name: "Crypto" }),
+            topicPage("t3", { name: "Deployment" }),
+          ],
+        },
+      ],
+    })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    expect(groups).toEqual([])
+  })
+
+  it("collapses Eval & Testing siblings into one group (issue #109 repro)", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", {
+              name: "Evals & Testing",
+              createdAt: "2026-04-20T10:00:00.000Z",
+            }),
+            topicPage("t2", {
+              name: "Eval & Testing",
+              createdAt: "2026-04-21T10:00:00.000Z",
+            }),
+            topicPage("t3", {
+              name: "Evals & Quality", // distinct head noun, not a sibling
+              createdAt: "2026-04-22T10:00:00.000Z",
+            }),
+          ],
+        },
+      ],
+    })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    expect(groups).toHaveLength(1)
+    // Oldest row wins as canonical — deterministic across runs.
+    expect(groups[0].canonicalId).toBe("t1")
+    expect(groups[0].canonicalName).toBe("Evals & Testing")
+    expect(groups[0].siblingIds).toEqual(["t2"])
+    expect(groups[0].siblings[0].name).toBe("Eval & Testing")
+  })
+
+  it("does NOT report exact-name duplicates (those flow through findDuplicateTopicNames)", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "auth" }),
+            topicPage("t2", { name: "auth" }), // exact dup
+          ],
+        },
+      ],
+    })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    expect(groups).toEqual([])
+  })
+
+  it("collapses HTML-encoded vs decoded sibling pair", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", {
+              name: "Build & Tooling",
+              createdAt: "2026-04-01T10:00:00.000Z",
+            }),
+            topicPage("t2", {
+              name: "Build &amp; Tooling",
+              createdAt: "2026-04-05T10:00:00.000Z",
+            }),
+          ],
+        },
+      ],
+    })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].canonicalId).toBe("t1")
+    expect(groups[0].siblingIds).toEqual(["t2"])
+  })
+
+  it("sorts groups by normalized key for deterministic output", async () => {
+    const client = createMockClient({
+      queryResponses: [
+        {
+          results: [
+            topicPage("t1", { name: "Zebra" }),
+            topicPage("t2", { name: "zebra " }), // trailing space — normalizes to same
+            topicPage("t3", { name: "Alpha" }),
+            topicPage("t4", { name: "alpha." }),
+          ],
+        },
+      ],
+    })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    expect(groups.map((g) => g.normalizedKey)).toEqual(["alpha", "zebra"])
+  })
+})
+
+describe("mergeSimilarTopics", () => {
+  it("dry-run reports the plan without writing", async () => {
+    const t1 = topicPage("t1", {
+      name: "Evals & Testing",
+      projectIds: ["p1"],
+      createdAt: "2026-04-20T10:00:00.000Z",
+    })
+    const t2 = topicPage("t2", {
+      name: "Eval & Testing",
+      projectIds: ["p2"],
+      createdAt: "2026-04-21T10:00:00.000Z",
+    })
+    const client = createMockClient({
+      queryResponses: [{ results: [t1, t2] }],
+    })
+    // pages.retrieve returns the same rows for the apply-time refetch.
+    ;(client.pages as unknown as { retrieve: ReturnType<typeof vi.fn> }).retrieve =
+      vi.fn().mockImplementation(async ({ page_id }: { page_id: string }) => {
+        if (page_id === "t1") return t1
+        if (page_id === "t2") return t2
+        throw new Error(`unexpected retrieve: ${page_id}`)
+      })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    const results = await mergeSimilarTopics(
+      client,
+      TOPICS_DB,
+      MEMORIES_DB,
+      groups,
+      { dryRun: true }
+    )
+
+    expect(results).toHaveLength(1)
+    expect(results[0].canonicalId).toBe("t1")
+    expect(results[0].archivedIds).toEqual(["t2"])
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("apply-mode unions projects, re-points memories, archives siblings", async () => {
+    const t1 = topicPage("t1", {
+      name: "Evals & Testing",
+      projectIds: ["p1"],
+      createdAt: "2026-04-20T10:00:00.000Z",
+    })
+    const t2 = topicPage("t2", {
+      name: "Eval & Testing",
+      projectIds: ["p2"],
+      createdAt: "2026-04-21T10:00:00.000Z",
+    })
+    const memory1 = memoryPage("mem-1", "t2")
+    const memory2 = memoryPage("mem-2", "t2")
+
+    const queryMock = vi.fn()
+    queryMock
+      // findSimilarTopicGroups initial scan
+      .mockResolvedValueOnce({ results: [t1, t2], has_more: false, next_cursor: null })
+      // listMemoryIdsByTopic for sibling t2
+      .mockResolvedValueOnce({
+        results: [memory1, memory2],
+        has_more: false,
+        next_cursor: null,
+      })
+
+    const client = {
+      pages: {
+        update: vi.fn().mockResolvedValue({}),
+        create: vi.fn(),
+        retrieve: vi.fn().mockImplementation(async ({ page_id }: { page_id: string }) => {
+          if (page_id === "t1") return t1
+          if (page_id === "t2") return t2
+          throw new Error(`unexpected retrieve: ${page_id}`)
+        }),
+      },
+      dataSources: { query: queryMock },
+    } as unknown as Client & {
+      pages: {
+        update: ReturnType<typeof vi.fn>
+        retrieve: ReturnType<typeof vi.fn>
+      }
+      dataSources: { query: ReturnType<typeof vi.fn> }
+    }
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    const results = await mergeSimilarTopics(
+      client,
+      TOPICS_DB,
+      MEMORIES_DB,
+      groups,
+      { dryRun: false }
+    )
+
+    expect(results).toHaveLength(1)
+    expect(results[0].canonicalProjectIds).toEqual(["p1", "p2"])
+    expect(results[0].reassignedMemoryIds).toEqual(["mem-1", "mem-2"])
+    expect(results[0].archivedIds).toEqual(["t2"])
+
+    // Writes: 1 to extend canonical's projects, 2 to re-point memories,
+    // 1 to archive sibling — 4 update calls total.
+    expect(client.pages.update).toHaveBeenCalledTimes(4)
+  })
+
+  it("is idempotent — a second scan after apply finds no groups", async () => {
+    // First-pass apply leaves the vault clean. The second scan returns
+    // only the canonical (sibling is archived; apply mode normally
+    // filters archived rows but the test mock doesn't simulate that —
+    // the canonical alone produces no groups regardless).
+    const t1 = topicPage("t1", { name: "Evals & Testing", projectIds: ["p1"] })
+    const client = createMockClient({
+      queryResponses: [{ results: [t1] }],
+    })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    expect(groups).toEqual([])
   })
 })
 

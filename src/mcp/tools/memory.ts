@@ -99,6 +99,7 @@ interface SaveArgs {
   projectName?: string
   projectNames?: string[]
   topicName?: string
+  forceNewTopic?: boolean
   source?: (typeof SOURCES)[number]
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
@@ -118,9 +119,15 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     let topicId: string | undefined
     let topicLabel = "none"
     if (args.topicName && resolved.ids.length > 0) {
-      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids)
+      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids, {
+        forceNew: args.forceNewTopic,
+      })
       topicId = topic.id
-      topicLabel = args.topicName
+      // Use the canonical's stored name when normalized-equivalent
+      // collapse landed on an existing row — otherwise the response
+      // misleadingly echoes the caller's input even though the memory
+      // is now linked to a topic with a different name.
+      topicLabel = topic.name
     }
 
     const probeProjectId = resolved.ids[0]
@@ -199,6 +206,7 @@ interface UpdateArgs {
   projectName?: string
   projectNames?: string[]
   topicName?: string
+  forceNewTopic?: boolean
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
   confidence?: (typeof CONFIDENCES)[number]
@@ -239,7 +247,9 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
             `Pass projectName or projectNames.`,
         )
       }
-      const topic = await services.topics.getOrCreate(args.topicName, topicScope)
+      const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
+        forceNew: args.forceNewTopic,
+      })
       topicId = topic.id
       topicLabel = topic.name
     }
@@ -568,6 +578,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),
+    forceNewTopic: z.boolean().optional(),
     source: z.enum(SOURCES).optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
@@ -589,6 +600,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),
+    forceNewTopic: z.boolean().optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
     confidence: z.enum(CONFIDENCES).optional(),
@@ -666,7 +678,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "(save | update) Topic name within the project. Auto-created if missing on save.",
+            "(save | update) Topic name within the project. Auto-created if missing on save. Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation (e.g. `Eval & Testing` vs `Evals & Testing`) silently collapse onto the existing canonical row to prevent fan-out.",
+          ),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe(
+            "(save | update) Bypass the normalized-equivalent + trigram-similar check on `topicName` and create a fresh row. Use only when you've reviewed the candidates surfaced by the structured error and confirmed your name is intentionally distinct.",
           ),
         source: z
           .enum(SOURCES)
@@ -779,7 +797,11 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         topicName: z
           .string()
           .optional()
-          .describe("Topic name within the project. Created automatically if it doesn't exist."),
+          .describe("Topic name within the project. Created automatically if it doesn't exist. Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical."),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
         source: z
           .enum(SOURCES)
           .optional()
@@ -825,7 +847,16 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .array(z.string())
           .optional()
           .describe("Set multiple project associations"),
-        topicName: z.string().optional().describe("Move to a different topic"),
+        topicName: z
+          .string()
+          .optional()
+          .describe(
+            "Move to a different topic. Normalized-equivalent variants collapse onto the existing canonical.",
+          ),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
         kind: z.enum(KINDS).optional().describe("New memory kind"),
         status: z.enum(STATUSES).optional().describe("New lifecycle status"),
         confidence: z.enum(CONFIDENCES).optional().describe("New confidence level"),

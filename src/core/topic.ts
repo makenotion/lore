@@ -22,11 +22,74 @@ import {
   extractRelationIds,
 } from "../notion/extractors.js"
 import { LruCache } from "./cache.js"
+import { normalizeTopicNameForLookup } from "./topic-normalize.js"
+import { trigramJaccard } from "./similarity.js"
 
 /** Max retries for the optimistic `getOrCreate` extend loop when a concurrent
  *  writer clobbers the relation mid-update. Two retries is enough to cover
  *  single-writer jitter without turning a collision into an API hammer. */
 const GET_OR_CREATE_MAX_RETRIES = 2
+
+/**
+ * Trigram-Jaccard threshold above which the slow-path probe rejects a
+ * fresh-name create and surfaces the candidate to the caller. Tighter
+ * than the memory near-duplicate probe (0.7) because a topic-create
+ * rejection is *blocking*, not advisory: a false positive becomes a
+ * dead end for the agent until they pass `forceNew: true`.
+ *
+ * The dominant collapse axis (case / plural / `&`-vs-`and` / punctuation)
+ * is already handled by `normalizeTopicNameForLookup`, so the trigram
+ * pass is the residual safety net for typos and casing-only twins that
+ * survive normalization.
+ */
+const TOPIC_TRIGRAM_REJECT_THRESHOLD = 0.85
+
+/**
+ * How many similar candidates to surface in the structured error. Three
+ * is enough to be useful (the agent can pick one) and short enough to
+ * fit in a single tool-response line per candidate.
+ */
+const TOPIC_SIMILAR_CANDIDATES_SURFACED = 3
+
+/**
+ * Probe candidate returned to the caller in the structured error. Carries
+ * the trigram score so an operator triaging a noisy probe can read the
+ * margin without re-running the calculation.
+ */
+export interface SimilarTopicCandidate {
+  id: string
+  name: string
+  similarity: number
+}
+
+/**
+ * Thrown by `getOrCreate` when the slow-path probe finds a topic in the
+ * resolved project scope whose trigram similarity exceeds the reject
+ * threshold and no normalized-equivalent canonical exists. The structured
+ * `candidates` field lets the MCP tool layer render a copy-pasteable list
+ * without re-parsing the message.
+ */
+export class SimilarTopicError extends Error {
+  readonly attempted: string
+  readonly candidates: SimilarTopicCandidate[]
+
+  constructor(attempted: string, candidates: SimilarTopicCandidate[]) {
+    const lines = candidates
+      .map(
+        (c) =>
+          `  - "${c.name}" (similarity ${c.similarity.toFixed(2)}, id: ${c.id})`
+      )
+      .join("\n")
+    super(
+      `Topic "${attempted}" looks similar to ${candidates.length} existing topic${candidates.length === 1 ? "" : "s"} in this project:\n` +
+        `${lines}\n` +
+        "Use one of the existing topic names verbatim, or pass `forceNew: true` to create a new topic anyway."
+    )
+    this.name = "SimilarTopicError"
+    this.attempted = attempted
+    this.candidates = candidates
+  }
+}
 
 /**
  * Backwards-compatible alias for the shared `decodeTextEntities` helper.
@@ -198,18 +261,31 @@ export class TopicService {
    * Get a topic by name, creating or extending as needed so its Project
    * relation includes every id in `projectIds`.
    *
-   * - Not found → create with the given `projectIds`.
-   * - Found with all requested ids already linked → return existing.
-   * - Found but missing some ids → extend the relation via `pages.update`.
-   *   Re-reads after the write and verifies the requested ids landed; if a
-   *   concurrent writer clobbered us (replace semantics on relation
-   *   updates), retries up to `GET_OR_CREATE_MAX_RETRIES` times.
+   * Resolution order:
    *
-   * Relies on `findByName`'s global-uniqueness invariant. That invariant is
-   * established by `lore migrate --merge-duplicate-topics`; this method
-   * will throw if a legacy vault still has duplicate-name topics.
+   * 1. **Exact-name match** (via `findByName`) → extend the relation and
+   *    return. Relies on `findByName`'s global-uniqueness invariant
+   *    established by `lore migrate --merge-duplicate-topics`.
+   * 2. **Normalized-equivalent match** in any of the resolved projects
+   *    (via the slow-path probe) → silently extend that canonical row's
+   *    relation. Closes the issue #109 fan-out where agents drifted
+   *    pluralization / `&` ↔ `and` / casing variants of the same topic.
+   * 3. **Trigram-similar candidates ≥ `TOPIC_TRIGRAM_REJECT_THRESHOLD`**
+   *    in any of the resolved projects → throw `SimilarTopicError` with
+   *    the candidate list so the caller can use the existing name
+   *    verbatim, or pass `opts.forceNew = true` to create anyway.
+   * 4. **No matches at all** → create with the given `projectIds`.
+   *
+   * The probe runs on the slow path only (no exact match). Cost: one
+   * `dataSources.query` per project in `projectIds` to materialize the
+   * candidate pool. Skipped entirely when `projectIds` is empty (no
+   * project scope to probe) or `opts.forceNew` is set.
    */
-  async getOrCreate(name: string, projectIds: string[]): Promise<Topic> {
+  async getOrCreate(
+    name: string,
+    projectIds: string[],
+    opts: { forceNew?: boolean } = {}
+  ): Promise<Topic> {
     const decoded = decodeTopicHtmlEntities(name)
 
     // Writeback uses `existing.projectIds` as the merge base, so a stale
@@ -220,10 +296,45 @@ export class TopicService {
     // authoritative post-write state. Key on the decoded name so the
     // cache and the storage agree.
     this.nameCache.delete(decoded)
-    for (let attempt = 0; attempt <= GET_OR_CREATE_MAX_RETRIES; attempt++) {
-      const existing = await this.findByName(decoded)
-      if (!existing) return this.create({ name: decoded, projectIds })
 
+    const exact = await this.findByName(decoded)
+    if (exact) return this.extendOrReturn(exact, projectIds, decoded)
+
+    if (projectIds.length > 0 && !opts.forceNew) {
+      const probe = await this.probeSimilarInProjects(decoded, projectIds)
+      if (probe.canonicalByNormalize) {
+        // Treat the normalized-equivalent row as the canonical for this
+        // save: extend its relation if needed. The cache slot is keyed on
+        // the canonical's stored name, not the caller's input — a fresh
+        // `findByName(canonical.name)` should hit the post-extend state.
+        return this.extendOrReturn(
+          probe.canonicalByNormalize,
+          projectIds,
+          probe.canonicalByNormalize.name
+        )
+      }
+      if (probe.similar.length > 0) {
+        throw new SimilarTopicError(decoded, probe.similar)
+      }
+    }
+
+    return this.create({ name: decoded, projectIds })
+  }
+
+  /**
+   * Extend an existing topic's `Project` relation to include every id in
+   * `projectIds`, retrying on concurrent-writer clobber. `cacheKey` is
+   * the name we should populate the post-extend state under — for
+   * exact-match callers it's the decoded input; for normalized-canonical
+   * callers it's the canonical row's stored name.
+   */
+  private async extendOrReturn(
+    initial: Topic,
+    projectIds: string[],
+    cacheKey: string
+  ): Promise<Topic> {
+    let existing = initial
+    for (let attempt = 0; attempt <= GET_OR_CREATE_MAX_RETRIES; attempt++) {
       const missing = projectIds.filter((id) => !existing.projectIds.includes(id))
       if (missing.length === 0) return existing
 
@@ -240,27 +351,86 @@ export class TopicService {
       // read the same pre-state could have just clobbered our extension.
       const refetched = await this.getById(existing.id)
       if (projectIds.every((id) => refetched.projectIds.includes(id))) {
-        // Cache now holds the pre-extend projectIds from the
-        // `findByName` at the top of this loop. Replace with the
-        // authoritative post-extend state rather than leaving the
-        // cache to serve stale relations until TTL.
-        this.nameCache.set(name, refetched)
+        // Cache now holds the pre-extend projectIds from the read at
+        // the top of `getOrCreate`. Replace with the authoritative
+        // post-extend state rather than leaving the cache to serve
+        // stale relations until TTL.
+        this.nameCache.set(cacheKey, refetched)
         return refetched
       }
-      // Lost-update detected; try again.
-      this.nameCache.delete(name)
+      // Lost-update detected; try again from the freshly-read state.
+      this.nameCache.delete(cacheKey)
+      existing = refetched
     }
 
     // Fall through after retries — return whatever authoritative state
     // currently exists. The caller's desired relation may still be
     // incomplete; this is the documented failure mode under concurrency.
-    const final = await this.findByName(decoded)
-    if (!final) {
-      throw new Error(
-        `Topic "${decoded}" disappeared during concurrent getOrCreate retries`
-      )
+    return existing
+  }
+
+  /**
+   * Pull every topic in the resolved projects, deduped by id, and probe
+   * for normalized-equivalent and trigram-similar matches against
+   * `decoded`. Cost: one `listByProject` per project. Returns:
+   *
+   * - `canonicalByNormalize` — a topic whose normalized name matches
+   *   `decoded`'s normalized name. Tiebreak by lex-smallest id when more
+   *   than one row in the pool normalizes the same way (rare; would
+   *   indicate a normalized-equivalent duplicate that
+   *   `--merge-similar-topics` should collapse).
+   * - `similar` — up to `TOPIC_SIMILAR_CANDIDATES_SURFACED` topics whose
+   *   trigram similarity meets `TOPIC_TRIGRAM_REJECT_THRESHOLD`,
+   *   sorted by similarity descending. Empty when no candidate beats
+   *   the threshold.
+   */
+  private async probeSimilarInProjects(
+    decoded: string,
+    projectIds: string[]
+  ): Promise<{
+    canonicalByNormalize: Topic | null
+    similar: SimilarTopicCandidate[]
+  }> {
+    const seen = new Map<string, Topic>()
+    for (const projectId of projectIds) {
+      const topics = await this.listByProject(projectId)
+      for (const t of topics) {
+        if (!seen.has(t.id)) seen.set(t.id, t)
+      }
     }
-    return final
+
+    const targetNorm = normalizeTopicNameForLookup(decoded)
+    if (targetNorm.length === 0) {
+      return { canonicalByNormalize: null, similar: [] }
+    }
+
+    let canonicalByNormalize: Topic | null = null
+    const similar: SimilarTopicCandidate[] = []
+    for (const t of seen.values()) {
+      const candidateNorm = normalizeTopicNameForLookup(t.name)
+      if (candidateNorm.length === 0) continue
+
+      if (candidateNorm === targetNorm) {
+        // Multiple normalized-equivalent rows can exist on a vault that
+        // hasn't run `--merge-similar-topics` yet. Lex-smallest id is a
+        // deterministic tiebreaker independent of pagination order.
+        if (!canonicalByNormalize || t.id < canonicalByNormalize.id) {
+          canonicalByNormalize = t
+        }
+        continue
+      }
+
+      const sim = trigramJaccard(decoded, t.name)
+      if (sim >= TOPIC_TRIGRAM_REJECT_THRESHOLD) {
+        similar.push({ id: t.id, name: t.name, similarity: sim })
+      }
+    }
+
+    similar.sort((a, b) => b.similarity - a.similarity)
+    return {
+      canonicalByNormalize,
+      similar: similar.slice(0, TOPIC_SIMILAR_CANDIDATES_SURFACED),
+    }
   }
 
   /** Reset the in-process name cache. Used by tests and by the

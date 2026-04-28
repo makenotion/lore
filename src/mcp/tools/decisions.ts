@@ -114,6 +114,7 @@ interface CreateArgs {
   projectName?: string
   projectNames?: string[]
   topicName?: string
+  forceNewTopic?: boolean
   status?: (typeof DECISION_STATUSES)[number]
   confidence?: (typeof CONFIDENCES)[number]
   reviewBy?: string
@@ -135,9 +136,13 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
     let topicId: string | undefined
     let topicLabel = "none"
     if (args.topicName && resolved.ids.length > 0) {
-      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids)
+      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids, {
+        forceNew: args.forceNewTopic,
+      })
       topicId = topic.id
-      topicLabel = args.topicName
+      // Use the canonical's stored name when normalized-equivalent
+      // collapse landed on an existing row.
+      topicLabel = topic.name
     } else if (args.topicName) {
       resolved.warnings.push(
         `Topic "${args.topicName}" skipped (requires at least one project)`,
@@ -631,6 +636,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),
+    forceNewTopic: z.boolean().optional(),
     status: z.enum(DECISION_STATUSES).optional(),
     confidence: z.enum(CONFIDENCES).optional(),
     reviewBy: z.string().regex(YMD_REGEX).optional(),
@@ -720,7 +726,16 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         topicName: z
           .string()
           .optional()
-          .describe("(action='create') Topic name within the project (auto-created if missing)."),
+          .describe(
+            "(action='create') Topic name within the project (auto-created if missing). " +
+              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical row.",
+          ),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row.",
+          ),
         // create | list
         status: z
           .enum(DECISION_STATUSES)
@@ -869,7 +884,13 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         topicName: z
           .string()
           .optional()
-          .describe("Topic name within the project (auto-created if it doesn't exist)"),
+          .describe(
+            "Topic name within the project (auto-created if it doesn't exist). Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical.",
+          ),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
         status: z
           .enum(DECISION_STATUSES)
           .optional()

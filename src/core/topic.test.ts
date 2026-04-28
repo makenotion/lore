@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { TopicService, decodeTopicHtmlEntities } from "./topic.js"
+import {
+  SimilarTopicError,
+  TopicService,
+  decodeTopicHtmlEntities,
+} from "./topic.js"
 import type { DatabaseRef } from "../types.js"
 
 type MockablePage = Partial<PageObjectResponse> & { id: string }
@@ -618,6 +622,287 @@ describe("TopicService.getOrCreate — extend-on-find", () => {
     expect(client.pages.update).toHaveBeenCalledTimes(2)
     expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
     expect(topic.projectIds).toEqual(["proj-a", "proj-x", "proj-b"])
+  })
+})
+
+describe("TopicService.getOrCreate — normalized-equivalent collapse (issue #109)", () => {
+  function probeClient(opts: {
+    /** Empty result for the initial findByName(decoded). */
+    findByNameEmpty?: boolean
+    /** What listByProject returns from the probe scan, in order. */
+    projectScans?: PageObjectResponse[][]
+    /** What pages.retrieve returns for the canonical id (post-extend). */
+    canonicalAfterExtend?: PageObjectResponse
+  }) {
+    const client = createMockClient()
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock.mockReset()
+
+    // First call: findByName(decoded) — exact-match lookup.
+    queryMock.mockResolvedValueOnce({
+      results: opts.findByNameEmpty ? [] : [],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    // Subsequent calls: listByProject for each project scan.
+    for (const pages of opts.projectScans ?? []) {
+      queryMock.mockResolvedValueOnce({
+        results: pages,
+        has_more: false,
+        next_cursor: null,
+      })
+    }
+
+    if (opts.canonicalAfterExtend) {
+      const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
+      retrieveMock.mockResolvedValueOnce(opts.canonicalAfterExtend)
+    }
+
+    return client
+  }
+
+  it("collapses Eval & Testing onto the existing Evals & Testing canonical (Mail vault repro)", async () => {
+    // Reproduces the exact pair from issue #109's audit. The agent saved
+    // memories under both names same-day; pre-fix, getOrCreate created
+    // two sibling rows. Post-fix, the second save normalizes to the
+    // first and extends its Project relation rather than fanning out.
+    const canonical = topicPage("t-canonical", {
+      name: "Evals & Testing",
+      projectIds: ["proj-mail"],
+    })
+    const canonicalAfter = topicPage("t-canonical", {
+      name: "Evals & Testing",
+      projectIds: ["proj-mail"],
+    })
+    const client = probeClient({
+      findByNameEmpty: true,
+      projectScans: [[canonical]],
+      canonicalAfterExtend: canonicalAfter,
+    })
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate("Eval & Testing", ["proj-mail"])
+
+    expect(client.pages.create).not.toHaveBeenCalled()
+    expect(topic.id).toBe("t-canonical")
+    // The canonical's stored name wins — silent collapse, not a rename.
+    expect(topic.name).toBe("Evals & Testing")
+  })
+
+  it("extends the canonical's Project relation when a project is missing", async () => {
+    const canonical = topicPage("t-canonical", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a"],
+    })
+    const after = topicPage("t-canonical", {
+      name: "Build & Tooling",
+      projectIds: ["proj-a", "proj-b"],
+    })
+    const client = probeClient({
+      findByNameEmpty: true,
+      projectScans: [[canonical]],
+      canonicalAfterExtend: after,
+    })
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate("Build and Tooling", ["proj-b"])
+
+    expect(client.pages.create).not.toHaveBeenCalled()
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(topic.projectIds).toEqual(["proj-a", "proj-b"])
+  })
+
+  it("scans every project in projectIds and dedupes by topic id across the union", async () => {
+    // Same canonical row appears in two projects' listByProject results
+    // because Topic.Project is many-to-many. We must not double-count it
+    // and must not double-merge it.
+    const canonical = topicPage("t-canonical", {
+      name: "Shared Topic",
+      projectIds: ["proj-a", "proj-b"],
+    })
+    const after = topicPage("t-canonical", {
+      name: "Shared Topic",
+      projectIds: ["proj-a", "proj-b"],
+    })
+    const client = probeClient({
+      findByNameEmpty: true,
+      projectScans: [[canonical], [canonical]],
+      canonicalAfterExtend: after,
+    })
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate("Shared Topics", ["proj-a", "proj-b"])
+
+    // Both projects already linked → no update fires.
+    expect(client.pages.update).not.toHaveBeenCalled()
+    expect(topic.id).toBe("t-canonical")
+  })
+
+  it("creates a fresh topic when the probe finds no normalized or trigram match", async () => {
+    const sibling = topicPage("t-other", {
+      name: "Auth Service",
+      projectIds: ["proj-a"],
+    })
+    const created = topicPage("t-new", {
+      name: "Billing Pipeline",
+      projectIds: ["proj-a"],
+    })
+    const client = probeClient({
+      findByNameEmpty: true,
+      projectScans: [[sibling]],
+    })
+    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      created
+    )
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate("Billing Pipeline", ["proj-a"])
+
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    expect(topic.id).toBe("t-new")
+  })
+
+  it("skips the probe when projectIds is empty (nothing to scope to)", async () => {
+    const created = topicPage("t-new", {
+      name: "Vault-wide Topic",
+      projectIds: [],
+    })
+    const client = createMockClient({ queryResults: [], createReturn: created })
+    const service = new TopicService(client, DB)
+
+    await service.getOrCreate("Vault-wide Topic", [])
+
+    // Only the findByName query — no listByProject.
+    expect(client.dataSources.query).toHaveBeenCalledTimes(1)
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("TopicService.getOrCreate — trigram-similar reject (issue #109)", () => {
+  it("throws SimilarTopicError when a project sibling is trigram-similar but normalizes apart", async () => {
+    // Casing-only twin survives normalization (both decompose to the same
+    // tokens) — actually wait, that would normalize-collapse. Need a pair
+    // that LOOKS the same to trigram but normalizes differently. A
+    // single-character typo at the boundary works.
+    const sibling = topicPage("t-existing", {
+      name: "GraphQL Federation",
+      projectIds: ["proj-a"],
+    })
+    const client = createMockClient()
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock.mockReset()
+    queryMock
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+      .mockResolvedValueOnce({
+        results: [sibling],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TopicService(client, DB)
+
+    await expect(
+      service.getOrCreate("GraphQLL Federation", ["proj-a"])
+    ).rejects.toBeInstanceOf(SimilarTopicError)
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("structured error carries the candidate list for the MCP tool to render", async () => {
+    const sibling = topicPage("t-existing", {
+      name: "GraphQL Federation",
+      projectIds: ["proj-a"],
+    })
+    const client = createMockClient()
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock.mockReset()
+    queryMock
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+      .mockResolvedValueOnce({
+        results: [sibling],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TopicService(client, DB)
+
+    let captured: SimilarTopicError | null = null
+    try {
+      await service.getOrCreate("GraphQLL Federation", ["proj-a"])
+    } catch (err) {
+      captured = err as SimilarTopicError
+    }
+    expect(captured).toBeInstanceOf(SimilarTopicError)
+    expect(captured?.attempted).toBe("GraphQLL Federation")
+    expect(captured?.candidates).toHaveLength(1)
+    expect(captured?.candidates[0].name).toBe("GraphQL Federation")
+    expect(captured?.candidates[0].id).toBe("t-existing")
+    // Score is reported so an operator triaging false-positives can read
+    // the margin.
+    expect(captured?.candidates[0].similarity).toBeGreaterThanOrEqual(0.85)
+  })
+
+  it("forceNew bypasses the trigram reject and creates a fresh row", async () => {
+    // No sibling-mock needed: forceNew skips the probe entirely, so the
+    // listByProject call for the candidate pool never fires. We only need
+    // the empty findByName result + a created return value.
+    const created = topicPage("t-new", {
+      name: "GraphQLL Federation",
+      projectIds: ["proj-a"],
+    })
+    const client = createMockClient()
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock.mockReset()
+    queryMock.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      created
+    )
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate(
+      "GraphQLL Federation",
+      ["proj-a"],
+      { forceNew: true }
+    )
+
+    expect(topic.id).toBe("t-new")
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    // forceNew skips the probe entirely — listByProject never fires.
+    expect(queryMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("genuinely-different names below the trigram threshold create cleanly", async () => {
+    // `Evals & Quality` vs `Evals & Testing` — same prefix, different
+    // head noun. Trigram similarity is well below 0.85. Pre-fix, both
+    // would have been created without comment; post-fix, both are still
+    // created without comment. No regression on truly-distinct sibs.
+    const sibling = topicPage("t-existing", {
+      name: "Evals & Testing",
+      projectIds: ["proj-a"],
+    })
+    const created = topicPage("t-new", {
+      name: "Evals & Quality",
+      projectIds: ["proj-a"],
+    })
+    const client = createMockClient()
+    const queryMock = client.dataSources.query as ReturnType<typeof vi.fn>
+    queryMock.mockReset()
+    queryMock
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+      .mockResolvedValueOnce({
+        results: [sibling],
+        has_more: false,
+        next_cursor: null,
+      })
+    ;(client.pages.create as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      created
+    )
+    const service = new TopicService(client, DB)
+
+    const topic = await service.getOrCreate("Evals & Quality", ["proj-a"])
+    expect(topic.id).toBe("t-new")
   })
 })
 

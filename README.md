@@ -196,7 +196,7 @@ The whole tool family is itself deprecated — prefer `lore-memory` with
 | `lore status`                  | Show vault status, database counts, and active projects          |
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
-| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, etc.) |
+| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, `--merge-similar-topics`, etc.) |
 
 ## Hooks
 

@@ -154,6 +154,7 @@ interface CreateArgs {
   projectName?: string
   projectNames?: string[]
   topicName?: string
+  forceNewTopic?: boolean
   confidence?: (typeof CONFIDENCES)[number]
   tags?: string[]
   keywords?: string
@@ -185,7 +186,9 @@ async function handleCreate(
     let topicId: string | undefined
     let topicLabel = "none"
     if (args.topicName && resolved.ids.length > 0) {
-      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids)
+      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids, {
+        forceNew: args.forceNewTopic,
+      })
       topicId = topic.id
       topicLabel = topic.name
     }
@@ -507,6 +510,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),
+    forceNewTopic: z.boolean().optional(),
     confidence: z.enum(CONFIDENCES).optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
@@ -645,7 +649,14 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .string()
           .optional()
           .describe(
-            "(action='create') Topic name within the project. Created automatically if it doesn't exist.",
+            "(action='create') Topic name within the project. Created automatically if it doesn't exist. " +
+              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical row.",
+          ),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row.",
           ),
         confidence: z
           .enum(CONFIDENCES)
@@ -765,7 +776,14 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         topicName: z
           .string()
           .optional()
-          .describe("Topic name within the project. Created automatically if it doesn't exist."),
+          .describe(
+            "Topic name within the project. Created automatically if it doesn't exist. " +
+              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical.",
+          ),
+        forceNewTopic: z
+          .boolean()
+          .optional()
+          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
         confidence: z
           .enum(CONFIDENCES)
           .optional()

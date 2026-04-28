@@ -35,6 +35,10 @@ export const migrateCommand = new Command("migrate")
     "Merge duplicate-name topic rows into one canonical topic (union projects, re-point memories, archive losers). Required when the vault has legacy duplicate topics before the schema upgrade."
   )
   .option(
+    "--merge-similar-topics",
+    "Collapse normalized-equivalent topic groups (issue #109): rows with different stored names that match after lowercase + decode + `&`↔`and` + plural-strip + punctuation-strip. Each group's oldest row wins; siblings are archived and their memories re-pointed onto the canonical. Plan-only by default — re-run with `--yes` to apply."
+  )
+  .option(
     "--fix-topic-encoding",
     "Decode HTML entities (`&amp;`, `&lt;`, …) in topic names so rows like `Build &amp;amp; Tooling` become `Build & Tooling`. Runs before duplicate detection, so pair with `--merge-duplicate-topics` to collapse cross-encoding duplicates."
   )
@@ -84,13 +88,14 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--migrate-tracking-to-tasks`, `--normalize-agents`, or `--build-entities`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--migrate-tracking-to-tasks`, `--normalize-agents`, `--build-entities`, or `--merge-similar-topics`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
       dryRun?: boolean
       upgradeDecisionTags?: boolean
       mergeDuplicateTopics?: boolean
+      mergeSimilarTopics?: boolean
       fixTopicEncoding?: boolean
       fixFactEncoding?: boolean
       fixMemoryEncoding?: boolean
@@ -122,10 +127,11 @@ export const migrateCommand = new Command("migrate")
           !opts.fixMemoryEncoding &&
           !opts.migrateTrackingToTasks &&
           !opts.normalizeAgents &&
-          !opts.buildEntities
+          !opts.buildEntities &&
+          !opts.mergeSimilarTopics
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --migrate-tracking-to-tasks, --normalize-agents, or --build-entities."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --migrate-tracking-to-tasks, --normalize-agents, --build-entities, or --merge-similar-topics."
           )
           process.exit(1)
         }
@@ -401,6 +407,13 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.mergeSimilarTopics) {
+          await runSimilarTopicsMigration(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: opts.dryRun,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -457,7 +470,8 @@ export const migrateCommand = new Command("migrate")
             opts.fixMemoryEncoding ||
             opts.migrateTrackingToTasks ||
             opts.normalizeAgents ||
-            opts.buildEntities
+            opts.buildEntities ||
+            opts.mergeSimilarTopics
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -1420,4 +1434,62 @@ export async function runBuildEntitiesMigration(
   }
 
   return result
+}
+
+/**
+ * Issue #109 — collapse normalized-equivalent topic groups whose stored
+ * names differ but normalize to the same key. Plan-only by default; the
+ * apply pass rewrites memory→topic relations onto the canonical and
+ * archives the sibling rows. Idempotent.
+ */
+export async function runSimilarTopicsMigration(
+  services: LoreServices,
+  options: { apply: boolean; dryRun?: boolean }
+): Promise<void> {
+  const planOnly = !options.apply
+  const { groups, mergeResults } = await services.vault.migrateSimilarTopics({
+    dryRun: planOnly || options.dryRun === true,
+  })
+
+  if (groups.length === 0) {
+    console.log(
+      "\nNo normalized-equivalent topic groups found — every distinct stored " +
+        "name has its own normalized key."
+    )
+    return
+  }
+
+  const verb = planOnly ? "Would merge" : "Merged"
+  const totalSiblings = groups.reduce((n, g) => n + g.siblingIds.length, 0)
+  console.log(
+    `\n${verb} ${groups.length} normalized-equivalent topic group${groups.length === 1 ? "" : "s"} ` +
+      `(${totalSiblings} sibling row${totalSiblings === 1 ? "" : "s"} would ${planOnly ? "be" : "have been"} archived):`
+  )
+
+  // 10 groups inline keeps wide vaults readable; the rest summarized.
+  const PREVIEW_LIMIT = 10
+  const sourceForReassign = new Map(
+    mergeResults.map((r) => [r.canonicalId, r] as const)
+  )
+  for (const group of groups.slice(0, PREVIEW_LIMIT)) {
+    const reassignment = sourceForReassign.get(group.canonicalId)
+    const memCount = reassignment?.reassignedMemoryIds.length ?? 0
+    const aliasNames = group.siblings
+      .map((s) => `"${s.name}"`)
+      .join(", ")
+    console.log(
+      `  "${group.canonicalName}" ← ${aliasNames} ` +
+        `(${planOnly ? "would re-point" : "re-pointed"} ${memCount} memor${memCount === 1 ? "y" : "ies"})`
+    )
+  }
+  if (groups.length > PREVIEW_LIMIT) {
+    console.log(`  … and ${groups.length - PREVIEW_LIMIT} more groups.`)
+  }
+
+  if (planOnly) {
+    console.log(
+      "\nPlan only — no changes written. Re-run with `--yes` to archive the sibling rows " +
+        "and re-point their memories onto each canonical."
+    )
+  }
 }
