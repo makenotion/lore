@@ -20,6 +20,7 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     agent: "",
     tags: [],
     keywords: "",
+    synopsis: "",
     session: "",
     content: "",
     taskState: null,

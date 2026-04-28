@@ -25,6 +25,7 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     agent: "",
     tags: [],
     keywords: "",
+    synopsis: "",
     session: "",
     content: "",
     taskState: null,

@@ -24,6 +24,7 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     agent: "",
     tags: [],
     keywords: "",
+    synopsis: "",
     session: "",
     content: "",
     taskState: null,

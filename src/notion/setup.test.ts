@@ -557,6 +557,22 @@ describe("migrateVaultSchema parallel retrieves", () => {
     ])
   })
 
+  it("reports Synopsis as a missing property on a pre-0.7.0 Memories DB", async () => {
+    // A vault upgraded from <0.7.0 has no Synopsis column on Memories.
+    // The drift detector must surface the column by name so an operator
+    // running `lore status` / `lore migrate` sees the nudge — and a
+    // future contributor can't silently rename or drop the property
+    // without this fixture failing first.
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff?.missing).toContain("Synopsis")
+  })
+
   it("omits the Entities entry when the vault has no entities database", async () => {
     const { client, maxInFlight, dataSourcesRetrieveCalls } = makeStartupStub({
       childDatabases: [],

@@ -70,6 +70,19 @@ export const TAG_VOCABULARY = [
 
 export type Tag = (typeof TAG_VOCABULARY)[number]
 
+/**
+ * Soft cap on the Synopsis property at the MCP boundary. The Notion
+ * rich_text per-block ceiling is 2000; 500 is the value tools enforce
+ * via Zod and the value tests pin. Bump only with a coordinated
+ * design-doc update — agents that have learned to write 500-char
+ * synopses would silently see truncation without one.
+ *
+ * Lives in `src/types.ts` because the cap is structural to the
+ * property, not specific to any one consumer. The write-side Zod, the
+ * renderer, and the backfill synthesizer all import it.
+ */
+export const SYNOPSIS_MAX = 500
+
 // ---------------------------------------------------------------------------
 // Vault
 // ---------------------------------------------------------------------------
@@ -258,6 +271,13 @@ export interface Memory {
    * `lore-query action='search'` finds them, but kept out of the tag index.
    */
   keywords: string
+  /**
+   * Short 1–2 sentence synopsis of the memory. Surfaces on title-tier
+   * rendering (recall, search, wake-up) so listings give the agent a
+   * one-line gist without a body fetch. Soft-capped at 500 chars at the
+   * MCP boundary; empty string when not set.
+   */
+  synopsis: string
   session: string
   content: string
   createdAt: string
@@ -308,6 +328,12 @@ export interface CreateMemoryInput {
    */
   tags?: string[]
   keywords?: string
+  /**
+   * 1–2 sentence synopsis. Soft-capped at 500 chars by Zod at the MCP
+   * boundary; the service layer accepts any string for legacy data and
+   * internal migrations.
+   */
+  synopsis?: string
   session?: string
   /** Task-specific. Defaults to `"open"` when `kind === "task"`. */
   taskState?: TaskState
@@ -324,6 +350,7 @@ export interface UpdateMemoryInput {
   topicId?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
   kind?: MemoryKind
   status?: MemoryStatus
   confidence?: MemoryConfidence

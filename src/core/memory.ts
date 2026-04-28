@@ -238,6 +238,7 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
   author: string | undefined
   agent: string | undefined
   keywords: string | undefined
+  synopsis: string | undefined
   session: string | undefined
   blockedBy: string | undefined
   entity: string | undefined
@@ -252,6 +253,8 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
     author: input.author !== undefined ? decodeTextEntities(input.author) : undefined,
     agent: input.agent !== undefined ? decodeTextEntities(input.agent) : undefined,
     keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+    synopsis:
+      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
     session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
     blockedBy:
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
@@ -277,6 +280,7 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
   alternatives: string | undefined
   consequences: string | undefined
   keywords: string | undefined
+  synopsis: string | undefined
   blockedBy: string | undefined
   entity: string | undefined
 } {
@@ -288,6 +292,8 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
     consequences:
       input.consequences !== undefined ? decodeTextEntities(input.consequences) : undefined,
     keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+    synopsis:
+      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
     blockedBy:
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined,
     entity: input.entity !== undefined ? decodeTextEntities(input.entity) : undefined,
@@ -401,6 +407,7 @@ export class MemoryService {
         agent: decoded.agent,
         tags: input.tags,
         keywords: decoded.keywords,
+        synopsis: decoded.synopsis,
         session: decoded.session,
         taskState: input.taskState,
         blockedBy: decoded.blockedBy,
@@ -549,6 +556,11 @@ export class MemoryService {
     if (decoded.keywords !== undefined) {
       props["Keywords"] = {
         rich_text: [{ text: { content: decoded.keywords } }],
+      }
+    }
+    if (decoded.synopsis !== undefined) {
+      props["Synopsis"] = {
+        rich_text: [{ text: { content: decoded.synopsis } }],
       }
     }
     if (input.kind) {
@@ -1389,6 +1401,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     agent: extractRichText(props["Agent"]),
     tags: extractMultiSelect(props["Tags"]),
     keywords: extractRichText(props["Keywords"]),
+    synopsis: extractRichText(props["Synopsis"]),
     session: extractRichText(props["Session"]),
     content: content ?? "",
     createdAt: page.created_time,

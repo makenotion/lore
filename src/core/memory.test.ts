@@ -59,6 +59,7 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.affectsIds).toEqual([])
     expect(memory.alternatives).toBe("")
     expect(memory.consequences).toBe("")
+    expect(memory.synopsis).toBe("")
     expect(memory.content).toBe("body content")
   })
 
@@ -116,6 +117,10 @@ describe("pageToMemory — fully populated decision page", () => {
         type: "rich_text",
         rich_text: [{ plain_text: "pr-25701 MailboxViewStore.swift" }],
       },
+      Synopsis: {
+        type: "rich_text",
+        rich_text: [{ plain_text: "Adopt DecisionService for the rationale chain." }],
+      },
       Session: { type: "rich_text", rich_text: [{ plain_text: "sess-42" }] },
     })
 
@@ -138,8 +143,52 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.agent).toBe("claude")
     expect(memory.tags).toEqual(["architecture", "core"])
     expect(memory.keywords).toBe("pr-25701 MailboxViewStore.swift")
+    expect(memory.synopsis).toBe("Adopt DecisionService for the rationale chain.")
     expect(memory.session).toBe("sess-42")
     expect(memory.content).toBe("Rationale prose.")
+  })
+})
+
+describe("Synopsis property round-trip", () => {
+  it("round-trips a Synopsis string through buildMemoryProps + pageToMemory", () => {
+    const synopsis = "Adopt DecisionService so rationale chains stay traversable."
+    const built = buildMemoryProps({ title: "x", synopsis }) as Record<
+      string,
+      { rich_text: Array<{ text: { content: string } }> }
+    >
+
+    const richTextProp = built["Synopsis"]
+    expect(richTextProp).toBeDefined()
+    expect(richTextProp.rich_text[0].text.content).toBe(synopsis)
+
+    const liveShape = {
+      type: "rich_text" as const,
+      rich_text: richTextProp.rich_text.map((segment) => ({
+        plain_text: segment.text.content,
+      })),
+    }
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      Synopsis: liveShape,
+    })
+    expect(pageToMemory(page).synopsis).toBe(synopsis)
+  })
+
+  it("omits the Synopsis property when the input is undefined (unchanged semantic)", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Synopsis" in built).toBe(false)
+  })
+
+  it("emits a Synopsis property when explicitly set to empty (clears the field)", () => {
+    const built = buildMemoryProps({ title: "x", synopsis: "" }) as Record<string, unknown>
+    expect("Synopsis" in built).toBe(true)
+  })
+
+  it("returns empty string on a pre-migration page with no Synopsis column", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Old" }] },
+    })
+    expect(pageToMemory(page).synopsis).toBe("")
   })
 })
 
@@ -2386,6 +2435,7 @@ describe("MemoryService.create — HTML entity decode at write", () => {
         Author: { rich_text: Array<{ text: { content: string } }> }
         Agent: { rich_text: Array<{ text: { content: string } }> }
         Keywords: { rich_text: Array<{ text: { content: string } }> }
+        Synopsis: { rich_text: Array<{ text: { content: string } }> }
         Session: { rich_text: Array<{ text: { content: string } }> }
       }
     }
@@ -2406,6 +2456,7 @@ describe("MemoryService.create — HTML entity decode at write", () => {
       author: "name &amp; co",
       agent: "tool &amp; script",
       keywords: "PR &amp; branch",
+      synopsis: "Foo &amp;amp; Bar",
       session: "sess-&amp;-123",
     })
 
@@ -2416,6 +2467,7 @@ describe("MemoryService.create — HTML entity decode at write", () => {
     expect(p.Author.rich_text[0].text.content).toBe("name & co")
     expect(p.Agent.rich_text[0].text.content).toBe("tool & script")
     expect(p.Keywords.rich_text[0].text.content).toBe("PR & branch")
+    expect(p.Synopsis.rich_text[0].text.content).toBe("Foo & Bar")
     expect(p.Session.rich_text[0].text.content).toBe("sess-&-123")
   })
 })
@@ -2434,6 +2486,7 @@ describe("MemoryService.update — HTML entity decode at write", () => {
         Alternatives?: { rich_text: Array<{ text: { content: string } }> }
         Consequences?: { rich_text: Array<{ text: { content: string } }> }
         Keywords?: { rich_text: Array<{ text: { content: string } }> }
+        Synopsis?: { rich_text: Array<{ text: { content: string } }> }
       }
     }
     const updateSpy = vi.fn(async (_args: FullUpdateArgs) => ({}))
@@ -2468,6 +2521,7 @@ describe("MemoryService.update — HTML entity decode at write", () => {
       alternatives: "Alt &amp; Alt",
       consequences: "Cons &amp; cons",
       keywords: "PR &amp; branch",
+      synopsis: "Synopsis &amp; cause",
     })
 
     const props = updateSpy.mock.calls[0][0].properties
@@ -2475,9 +2529,51 @@ describe("MemoryService.update — HTML entity decode at write", () => {
     expect(props.Alternatives?.rich_text[0].text.content).toBe("Alt & Alt")
     expect(props.Consequences?.rich_text[0].text.content).toBe("Cons & cons")
     expect(props.Keywords?.rich_text[0].text.content).toBe("PR & branch")
+    expect(props.Synopsis?.rich_text[0].text.content).toBe("Synopsis & cause")
 
     const mdArgs = updateMarkdownSpy.mock.calls[0][0]
     expect(mdArgs.replace_content.new_str).toBe("Body & body")
+  })
+
+  it("emits an empty Synopsis when explicitly cleared, omits when undefined", async () => {
+    type SynopsisOnlyUpdateArgs = {
+      properties: {
+        Synopsis?: { rich_text: Array<{ text: { content: string } }> }
+      }
+    }
+    const updateSpy = vi.fn(async (_args: SynopsisOnlyUpdateArgs) => ({}))
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "T" }] },
+          Project: { type: "relation", relation: [] },
+          Topic: { type: "relation", relation: [] },
+          Source: { type: "select", select: { name: "manual" } },
+        },
+        { id: "mem-1" },
+      ),
+    )
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        update: updateSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+
+    const service = new MemoryService(client, db)
+
+    // Empty string clears the property — `undefined` would skip emission.
+    await service.update("mem-1", { synopsis: "" })
+    const cleared = updateSpy.mock.calls[0][0].properties
+    expect(cleared.Synopsis).toBeDefined()
+    expect(cleared.Synopsis?.rich_text[0].text.content).toBe("")
+
+    // No synopsis arg → no Synopsis key in the update properties.
+    await service.update("mem-1", { keywords: "leave synopsis alone" })
+    const untouched = updateSpy.mock.calls[1][0].properties
+    expect("Synopsis" in untouched).toBe(false)
   })
 })
 

@@ -175,6 +175,12 @@ export function memoriesProperties(
     // or function names — anything too point-in-time to belong in the closed
     // tag vocabulary. Indexed by Notion's text search.
     Keywords: { rich_text: {} },
+    // Free-form 1–2 sentence synopsis surfaced inline on title-tier
+    // rendering (recall, search, wake-up). Lives in page properties so
+    // listings return synopses without a per-row retrieveMarkdown call.
+    // Soft-capped at 500 chars at the MCP boundary; Notion rich_text
+    // caps at 2000 per block which is the hard ceiling.
+    Synopsis: { rich_text: {} },
     Session: { rich_text: {} },
   }
 
@@ -466,6 +472,7 @@ export function buildMemoryProps(input: {
   agent?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
   session?: string
   taskState?: string
   blockedBy?: string
@@ -524,6 +531,9 @@ export function buildMemoryProps(input: {
   }
   if (input.keywords !== undefined) {
     props["Keywords"] = { rich_text: [{ text: { content: input.keywords } }] }
+  }
+  if (input.synopsis !== undefined) {
+    props["Synopsis"] = { rich_text: [{ text: { content: input.synopsis } }] }
   }
   if (input.session) {
     props["Session"] = { rich_text: [{ text: { content: input.session } }] }

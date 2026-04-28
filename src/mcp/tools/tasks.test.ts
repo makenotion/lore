@@ -24,6 +24,7 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     agent: "",
     tags: [],
     keywords: "",
+    synopsis: "",
     session: "",
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
