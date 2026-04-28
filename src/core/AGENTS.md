@@ -170,10 +170,29 @@ both settle:
   semantic call is discarded — wasted bandwidth, but no wall-clock cost
   since `Promise.allSettled` resolves at `max(contains_latency, semantic_latency)`,
   which is the same as a pre-PR semantic-only call.
-- **Under-shooting case**: contains rows come first, then unique semantic
-  rows are concatenated until `limit` is filled. Dedup is by page id;
-  contains wins ties because precision-ranked hits should beat workspace
-  ranking when both surface the same row.
+- **Under-shooting case (RRF)**: when contains under-shoots the
+  threshold, the merge runs Reciprocal Rank Fusion over both branches
+  rather than concat-with-dedup. Each row's score is
+  `Σ 1 / (RRF_K + rank + 1)` summed across the branches it appears in;
+  `RRF_K = 60` (Cormack 2009 / qmd default). Cross-branch agreement is
+  the signal RRF surfaces — a row ranked #1 in both branches scores
+  `2/61` and beats a row ranked #1 in only one branch (`1/61`). The
+  earlier concat-then-fill heuristic discarded that signal.
+
+  **Tie-break order** (deterministic, fixture-pinned): score → best-rank
+  → contains-presence → page id ascending. `bestRank = min(containsRank
+  ?? Infinity, semanticRank ?? Infinity)`. The contains-presence rule
+  preserves the "contains is precision" intuition the prior heuristic
+  encoded — a contains-present row beats a semantic-only row when score
+  AND best-rank are tied. A future contributor tempted to "make
+  tie-break symmetric" would silently shift this case; the test fixture
+  pins it via an adversarial alphabetic ordering on the semantic-only id.
+
+  **Saturation cutoff is preserved verbatim above the RRF block.** RRF
+  only runs when contains under-shoots — the precision case where
+  contains nails it (file names, PR numbers, function names) skips RRF
+  entirely and returns contains rows in their original order. The
+  saturation gate is the first decision; RRF is the second.
 - **Single-branch failure (PF3-03).** A rejected branch degrades to an
   empty result; the surviving branch's rows pass through unchanged. A
   transient `429`/`5xx` from `client.search` no longer takes down a
@@ -231,6 +250,56 @@ name, or function) skips merging with semantic. If the threshold ever
 needs tuning, change the `HYBRID_FALLBACK_THRESHOLD` constant in
 `memory.ts` — it's exported so callers can reference it in their own
 diagnostics.
+
+### Diagnostic trace via `searchWithExplain`
+
+`MemoryService.search` returns `Promise<Memory[]>` for every existing
+caller; the contract is byte-stable. A sibling method
+`searchWithExplain(input)` runs the same pipeline, returns the same row
+order, and additionally surfaces per-row diagnostics aligned by index
+(`explain[i]` describes `memories[i]`).
+
+The two-method shape is deliberate. TypeScript overload signatures would
+force every existing call site (including `loadWakeUpData`) to disambiguate
+at the boundary, paying a typing tax for a feature 99% of callers don't
+need. Two methods keep the contract clean and put the cost only on opt-in
+callers.
+
+The explain shape (`SearchExplain` in `src/types.ts`) carries:
+
+- `memoryId` — the row's Notion page id.
+- `containsRank` / `semanticRank` — 0-based rank within each branch, or
+  `null` when that branch did not run, was discarded, or did not surface
+  the row.
+- `rrfScore` — populated only on the `"rrf"` branch.
+- `branch` — the canonical signal: `"contains-only"`, `"semantic-only"`,
+  `"contains-saturated"`, or `"rrf"`. Reflects the **resolved** mode (after
+  `LORE_FORCE_SEMANTIC_SEARCH=1` is applied), not the caller's request.
+
+**Branch-field rules** (pinned by tests):
+
+| Resolved mode | `branch` | `containsRank` | `semanticRank` | `rrfScore` |
+|---|---|---|---|---|
+| `"contains"` | `contains-only` | row position in contains | `null` | `null` |
+| `"semantic"` (incl. kill-switch) | `semantic-only` | `null` | row position in semantic | `null` |
+| `"hybrid"`, saturated | `contains-saturated` | row position in contains | **always `null`** | `null` |
+| `"hybrid"`, RRF | `rrf` | actual rank or `null` | actual rank or `null` | fused score |
+
+The "saturated → semanticRank null" rule is load-bearing: the semantic
+branch ran in parallel and may have returned the same id, but the
+saturation cutoff discarded its output. Surfacing its rank in the trace
+would imply influence on ordering that did not happen.
+
+The explain trace is also surfaced through `lore-query
+action='search'` via the optional `explain: boolean` field, rendered as a
+`## Score trace` footer (one row per result). Agents that don't pass
+`explain` pay zero output-token cost.
+
+Field names (`containsRank`, `semanticRank`, `rrfScore`, `branch`) are
+canonical to lore and a test pins them. qmd uses `lexRank` for the
+contains lane; we keep `containsRank` because the underlying Notion
+query is a `contains` filter, not a lexical index. A future contributor
+chasing qmd's vocabulary would silently break the contract.
 
 ### Materialization is a single pass
 

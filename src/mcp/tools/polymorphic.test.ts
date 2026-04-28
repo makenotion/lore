@@ -144,6 +144,7 @@ interface StubOpts {
   memoriesUpdate?: ReturnType<typeof vi.fn>
   memoriesCreate?: ReturnType<typeof vi.fn>
   memoriesSearch?: ReturnType<typeof vi.fn>
+  memoriesSearchWithExplain?: ReturnType<typeof vi.fn>
   factsCreate?: ReturnType<typeof vi.fn>
   factsCreateWithDedup?: ReturnType<typeof vi.fn>
   factsInvalidate?: ReturnType<typeof vi.fn>
@@ -179,6 +180,9 @@ function makeServices(opts: StubOpts = {}): unknown {
       update: opts.memoriesUpdate ?? vi.fn(),
       create: opts.memoriesCreate ?? vi.fn(),
       search: opts.memoriesSearch ?? vi.fn(async () => []),
+      searchWithExplain:
+        opts.memoriesSearchWithExplain ??
+        vi.fn(async () => ({ memories: [], explain: [] })),
       getTitleById: vi.fn(),
     },
     facts: {
@@ -419,6 +423,105 @@ describe("lore-query polymorphic dispatcher", () => {
     registerQueryTools(mock.server, makeServices() as never)
     const result = await mock.get("lore-query")({ action: "search" } as never)
     expect(isError(result)).toBe(true)
+  })
+
+  it("dispatches action='search' with explain:true through searchWithExplain", async () => {
+    // The dispatcher must route to searchWithExplain (not search) when
+    // explain is set, so callers that opt in get the trace.
+    const memoriesSearch = vi.fn(async () => [])
+    const memoriesSearchWithExplain = vi.fn(async () => ({
+      memories: [],
+      explain: [],
+    }))
+    const mock = createMockServer()
+    registerQueryTools(
+      mock.server,
+      makeServices({ memoriesSearch, memoriesSearchWithExplain }) as never,
+    )
+    await mock.get("lore-query")({
+      action: "search",
+      query: "auth",
+      explain: true,
+    } as never)
+    expect(memoriesSearchWithExplain).toHaveBeenCalled()
+    expect(memoriesSearch).not.toHaveBeenCalled()
+  })
+
+  it("renders ## Score trace footer when explain:true and results exist", async () => {
+    // Confirm the explain trace surfaces in the response text. The
+    // format is the canonical contract: per-row branch + ranks + rrf.
+    const memoriesSearchWithExplain = vi.fn(async () => ({
+      memories: [
+        {
+          id: "mem-1",
+          title: "First",
+          projectIds: [],
+          topicId: null,
+          source: "manual",
+          kind: "note",
+          status: "informational",
+          confidence: "certain",
+          reviewBy: null,
+          decidedAt: null,
+          supersedesIds: [],
+          affectsIds: [],
+          alternatives: "",
+          consequences: "",
+          author: "",
+          agent: "",
+          tags: [],
+          keywords: "",
+          session: "",
+          content: "",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          taskState: null,
+        },
+      ],
+      explain: [
+        {
+          memoryId: "mem-1",
+          containsRank: 0,
+          semanticRank: 1,
+          rrfScore: 0.0322,
+          branch: "rrf",
+        },
+      ],
+    }))
+    const mock = createMockServer()
+    registerQueryTools(
+      mock.server,
+      makeServices({ memoriesSearchWithExplain }) as never,
+    )
+    const result = await mock.get("lore-query")({
+      action: "search",
+      query: "auth",
+      explain: true,
+    } as never)
+    const text = extractText(result)
+    expect(text).toContain("## Score trace")
+    expect(text).toContain("mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200")
+  })
+
+  it("omits ## Score trace footer when explain is not set", async () => {
+    // Default path stays terse — no score trace pollution. The
+    // dispatcher must route through plain `search`, not `searchWithExplain`.
+    const memoriesSearch = vi.fn(async () => [])
+    const memoriesSearchWithExplain = vi.fn(async () => ({
+      memories: [],
+      explain: [],
+    }))
+    const mock = createMockServer()
+    registerQueryTools(
+      mock.server,
+      makeServices({ memoriesSearch, memoriesSearchWithExplain }) as never,
+    )
+    const result = await mock.get("lore-query")({
+      action: "search",
+      query: "auth",
+    } as never)
+    expect(extractText(result)).not.toContain("## Score trace")
+    expect(memoriesSearchWithExplain).not.toHaveBeenCalled()
   })
 
   it("rejects action='ask' without entity", async () => {

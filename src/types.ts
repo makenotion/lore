@@ -344,13 +344,15 @@ export interface UpdateMemoryInput {
  *   the same workspace ahead of real hits when the query is niche. Best for
  *   phrase-shaped or conceptual queries where body matches matter.
  * - `"hybrid"` (default) — fires `contains` and `semantic` in parallel via
- *   `Promise.all`. If contains saturates (`>= HYBRID_FALLBACK_THRESHOLD`
- *   hits), the contains rows are used alone and the parallel semantic
- *   result is discarded; otherwise unique semantic rows are concatenated
- *   after the contains rows. Speculative parallelism keeps the worst-case
- *   wall-clock at one round-trip (≈ `client.search` latency) regardless
- *   of which leg saturates — the cheap-path waste is one discarded Notion
- *   call governed by the shared rate limiter.
+ *   `Promise.allSettled`. If contains saturates
+ *   (`>= HYBRID_FALLBACK_THRESHOLD` hits), the contains rows are used
+ *   alone and the parallel semantic result is discarded; otherwise the
+ *   two ranked lists are merged via Reciprocal Rank Fusion (RRF) with
+ *   a deterministic tie-break (`score → best-rank → contains-presence
+ *   → page id`). Speculative parallelism keeps the worst-case wall-clock
+ *   at one round-trip (≈ `client.search` latency) regardless of which
+ *   leg saturates — the cheap-path waste is one discarded Notion call
+ *   governed by the shared rate limiter.
  */
 export type SearchMode = "contains" | "semantic" | "hybrid"
 
@@ -385,6 +387,46 @@ export interface SearchMemoriesInput {
    * tradeoffs between scope precision and ranking quality.
    */
   mode?: SearchMode
+}
+
+/**
+ * Per-row diagnostic for `MemoryService.searchWithExplain`. One entry per
+ * memory in the result list, aligned by index (`explain[i]` describes
+ * `memories[i]`).
+ *
+ * The `branch` field carries the resolved-mode information explicitly so
+ * a reader doesn't have to infer it from null patterns. Branch-field
+ * semantics are pinned:
+ *
+ * - `"contains-only"` — `mode: "contains"`. `semanticRank` is always
+ *   `null`; `rrfScore` is `null`.
+ * - `"semantic-only"` — `mode: "semantic"` (including the
+ *   `LORE_FORCE_SEMANTIC_SEARCH=1` kill-switch case). `containsRank`
+ *   is always `null`; `rrfScore` is `null`.
+ * - `"contains-saturated"` — `mode: "hybrid"` and the saturation cutoff
+ *   fired. `containsRank` reflects the row's position in the contains
+ *   list; `semanticRank` is **always `null`** because the semantic
+ *   branch's output was discarded — surfacing its rank would imply
+ *   influence on ordering that did not happen. `rrfScore` is `null`.
+ * - `"rrf"` — `mode: "hybrid"` and the under-saturation merge ran.
+ *   Both ranks reflect actual branch presence (one may be `null` when
+ *   only one branch surfaced the row); `rrfScore` is the fused score
+ *   used for ordering.
+ *
+ * Field names are canonical to lore (qmd uses `lexRank` for the contains
+ * lane; we keep `containsRank` because the underlying Notion query is
+ * a `contains` filter, not a lexical index). A test pins the names so
+ * they don't drift toward qmd vocabulary in a future refactor.
+ */
+export interface SearchExplain {
+  memoryId: string
+  /** 0-based; null when contains did not run or did not surface this row. */
+  containsRank: number | null
+  /** 0-based; null when semantic did not run, was discarded, or did not surface this row. */
+  semanticRank: number | null
+  /** Populated only on the `"rrf"` branch; null on every other branch. */
+  rrfScore: number | null
+  branch: "contains-only" | "semantic-only" | "contains-saturated" | "rrf"
 }
 
 // ---------------------------------------------------------------------------

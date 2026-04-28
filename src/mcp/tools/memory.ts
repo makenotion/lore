@@ -15,6 +15,7 @@ import type {
   MemoryStatus,
   MemoryConfidence,
   SearchMode,
+  SearchExplain,
 } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
@@ -462,6 +463,7 @@ interface SearchArgs {
   limit?: number
   includeContent?: boolean
   mode?: SearchMode
+  explain?: boolean
 }
 
 export async function handleSearch(
@@ -502,12 +504,13 @@ export async function handleSearch(
 
     const withContent = args.includeContent === true
     const resolvedMode: SearchMode = args.mode ?? "hybrid"
+    const wantExplain = args.explain === true
 
     // Over-fetch slightly only when post-filters are still active — i.e.
     // semantic mode, which can't apply kind/status server-side. Contains
     // and hybrid push kind/status/tags/topicName into the Notion query, so
     // the requested limit is already authoritative there.
-    const searchResults = await services.memories.search({
+    const searchInput = {
       query: args.query,
       projectId,
       topicId,
@@ -520,13 +523,25 @@ export async function handleSearch(
           : (args.limit ?? 10),
       includeContent: withContent,
       mode: resolvedMode,
-    })
+    }
+
+    let searchResults: Memory[]
+    let explain: SearchExplain[] = []
+    if (wantExplain) {
+      const out = await services.memories.searchWithExplain(searchInput)
+      searchResults = out.memories
+      explain = out.explain
+    } else {
+      searchResults = await services.memories.search(searchInput)
+    }
 
     // The service applies kind/status server-side in contains/hybrid and
     // post-filter in semantic, so the result set is already correctly
     // narrowed by mode. The final slice protects against the semantic
     // over-fetch above leaking extra rows past the caller's limit.
-    const results = searchResults.slice(0, args.limit ?? 10)
+    const finalLimit = args.limit ?? 10
+    const results = searchResults.slice(0, finalLimit)
+    const explainSlice = explain.slice(0, finalLimit)
 
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
@@ -553,21 +568,51 @@ export async function handleSearch(
       })
       .join("\n\n---\n\n")
 
-    const footer = withContent
+    const bodiesFooter = withContent
       ? ""
       : `\n\n_Bodies omitted — re-call with \`includeContent: true\` to fetch them._`
+
+    const explainFooter = wantExplain ? formatScoreTrace(explainSlice) : ""
 
     return {
       content: [
         {
           type: "text",
-          text: `Found ${results.length} memories for "${args.query}":\n\n${text}${footer}${warn}`,
+          text: `Found ${results.length} memories for "${args.query}":\n\n${text}${bodiesFooter}${explainFooter}${warn}`,
         },
       ],
     }
   } catch (err) {
     return toolError(err)
   }
+}
+
+/**
+ * Render a `## Score trace` footer for `lore-query action='search'` when
+ * the caller passes `explain: true`. One row per result; null fields
+ * render as `—` (em dash) uniformly so the format is grep-friendly across
+ * branches.
+ *
+ * The `branch` field is the canonical signal; `containsRank` /
+ * `semanticRank` / `rrfScore` carry rank/score detail when applicable.
+ * Agents that don't pass `explain` pay zero output-token cost.
+ */
+function formatScoreTrace(explain: SearchExplain[]): string {
+  if (explain.length === 0) return ""
+  const lines = explain.map((e) => {
+    const contains = e.containsRank === null ? "—" : String(e.containsRank)
+    const semantic = e.semanticRank === null ? "—" : String(e.semanticRank)
+    // Six decimals (rather than four) keeps the rendered score
+    // information-bearing across the plausible RRF_K range. With the
+    // current RRF_K=60, scores are in the 0.01–0.04 range and four
+    // decimals would suffice. A future env knob (`LORE_HYBRID_RRF_K`)
+    // pushing RRF_K toward 1000+ would crush scores below the four-
+    // decimal threshold and silently render them as `0.0000`. Six
+    // decimals covers RRF_K up to ~100000 without information loss.
+    const rrf = e.rrfScore === null ? "—" : e.rrfScore.toFixed(6)
+    return `${e.memoryId} branch=${e.branch} contains=${contains} semantic=${semantic} rrf=${rrf}`
+  })
+  return `\n\n## Score trace\n\n${lines.join("\n")}`
 }
 
 const memoryDispatchSchema = z.discriminatedUnion("action", [

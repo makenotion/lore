@@ -22,6 +22,7 @@ import type {
   UpdateMemoryInput,
   SearchMemoriesInput,
   SearchMode,
+  SearchExplain,
   MemorySource,
   MemoryKind,
   MemoryStatus,
@@ -69,6 +70,81 @@ const TITLE_CACHE_TTL_MS = 60_000
  * the second Notion round-trip.
  */
 export const HYBRID_FALLBACK_THRESHOLD = 3
+
+/**
+ * Reciprocal Rank Fusion damping constant. Score for a row at 0-based
+ * `rank` in a branch is `1 / (RRF_K + rank + 1)`. Across both branches
+ * the scores sum: a row that ranked #1 in both branches scores
+ * `2 / (60 + 1) ≈ 0.0328`; a row that ranked #1 in only one branch
+ * scores `1 / 61 ≈ 0.0164`. Cross-branch agreement is the signal RRF
+ * surfaces that the prior concat-then-fill heuristic threw away.
+ *
+ * `60` matches qmd's choice and the Cormack 2009 paper. A per-call
+ * `rrfK` knob is rejected outright — this is operator-tuning, not
+ * caller-tuning. If real-query ordering looks wrong post-rollout, an
+ * env knob (`LORE_HYBRID_RRF_K`, mirroring `HYBRID_FALLBACK_THRESHOLD`'s
+ * posture) is the future option, but it is intentionally NOT in scope
+ * here; the constant is fine to start.
+ */
+const RRF_K = 60
+
+/**
+ * Per-row scoring entry built during the RRF merge. Carries the rank
+ * each branch assigned this page (or `null` when the branch did not
+ * surface it) plus the running fused score. Captured outside the merge
+ * loop so the deterministic tie-break (see `tieBreakingRrfCompare`) and
+ * the explain trace both read off the same authoritative state.
+ */
+export type RrfEntry = {
+  page: PageObjectResponse
+  score: number
+  containsRank: number | null
+  semanticRank: number | null
+}
+
+/**
+ * Per-row diagnostic captured by the hybrid path and consumed by
+ * `searchWithExplain`. Mirrors the rank/score fields of `SearchExplain`
+ * but omits `memoryId` (the map key) and `branch` (uniform across the
+ * result, not per-row).
+ */
+type HybridTraceEntry = {
+  containsRank: number | null
+  semanticRank: number | null
+  rrfScore: number | null
+}
+
+/**
+ * Deterministic comparator for RRF-fused entries. Ties on `score` are
+ * common when both branches return rows at identical ranks — without an
+ * explicit tie-break, ordering would leak from `Map` insertion order and
+ * test fixtures could not pin a stable result. Tie-break levels:
+ *
+ * 1. Higher `score` wins (primary).
+ * 2. Lower best-rank wins. `bestRank = min(containsRank ?? Infinity,
+ *    semanticRank ?? Infinity)`. A row that ranked #1 anywhere beats a
+ *    row whose best rank is #2 even when their fused scores match — the
+ *    score equality is a coincidence of the formula, the rank gap is
+ *    the real signal.
+ * 3. Contains-presence wins. A row with `containsRank !== null` beats a
+ *    row with `containsRank === null` at equal score AND best-rank.
+ *    This preserves the "contains is precision" intuition the prior
+ *    concat-first heuristic encoded; a future contributor tempted to
+ *    "make tie-break symmetric" would silently shift ordering on this
+ *    edge case, which the test fixtures pin.
+ * 4. Page id ascending. Final deterministic fallback so test fixtures
+ *    pin a stable order regardless of `Map` iteration.
+ */
+export function tieBreakingRrfCompare(a: RrfEntry, b: RrfEntry): number {
+  if (a.score !== b.score) return b.score - a.score
+  const aBestRank = Math.min(a.containsRank ?? Infinity, a.semanticRank ?? Infinity)
+  const bBestRank = Math.min(b.containsRank ?? Infinity, b.semanticRank ?? Infinity)
+  if (aBestRank !== bBestRank) return aBestRank - bBestRank
+  const aHasContains = a.containsRank !== null
+  const bHasContains = b.containsRank !== null
+  if (aHasContains !== bHasContains) return aHasContains ? -1 : 1
+  return a.page.id < b.page.id ? -1 : a.page.id > b.page.id ? 1 : 0
+}
 
 // eslint-disable-next-line no-control-regex -- coercing to a single log line is the point
 const HYBRID_LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
@@ -756,8 +832,9 @@ export class MemoryService {
    * - `"hybrid"` (default) — fire contains and semantic in parallel; if
    *   contains saturates (`>= HYBRID_FALLBACK_THRESHOLD` hits), use the
    *   contains rows alone and discard the parallel semantic result.
-   *   Otherwise concatenate the unique semantic rows after the contains
-   *   rows. Speculative parallelism keeps wall-clock at one round-trip
+   *   Otherwise merge the two ranked lists via Reciprocal Rank Fusion
+   *   (RRF) with a deterministic tie-break — see `searchByHybridPages`.
+   *   Speculative parallelism keeps wall-clock at one round-trip
    *   (≈ `client.search` latency) regardless of which leg saturates —
    *   the cheap-path waste is one discarded Notion call, governed by the
    *   shared rate limiter.
@@ -777,21 +854,96 @@ export class MemoryService {
    * substring matches against post-decode queries) — see P2-10.
    */
   async search(input: SearchMemoriesInput): Promise<Memory[]> {
+    const { memories } = await this.runSearch(input)
+    return memories
+  }
+
+  /**
+   * Same pipeline as `search`, plus a per-row diagnostic trace aligned by
+   * index (`explain[i]` describes `memories[i]`). Two methods rather than
+   * one overloaded return type because every existing caller of `search`
+   * — including `loadWakeUpData` — assumes a `Memory[]` shape structurally;
+   * forcing union-narrowing on every call site to support an opt-in trace
+   * is an outsized typing tax for a feature most callers don't ask for.
+   *
+   * Branch-field semantics follow the spec in `SearchExplain`. The
+   * resolved mode (after `LORE_FORCE_SEMANTIC_SEARCH=1` is applied)
+   * drives the value: `"contains-only"`, `"semantic-only"`,
+   * `"contains-saturated"`, or `"rrf"`. On the saturation branch
+   * `semanticRank` is forced to `null` even when the semantic call
+   * returned the row — surfacing its rank would imply influence on
+   * ordering that did not happen, since the saturation cutoff discards
+   * the semantic branch's output entirely.
+   */
+  async searchWithExplain(input: SearchMemoriesInput): Promise<{
+    memories: Memory[]
+    explain: SearchExplain[]
+  }> {
+    return this.runSearch(input)
+  }
+
+  /**
+   * Shared execution path. Resolves the mode, dispatches to the per-mode
+   * helper, slices to `limit`, materializes markdown, and builds the
+   * explain trace. Both `search` and `searchWithExplain` go through this
+   * one method so the row order is identical between the two surfaces.
+   */
+  private async runSearch(
+    input: SearchMemoriesInput,
+  ): Promise<{ memories: Memory[]; explain: SearchExplain[] }> {
     const requested: SearchMode = input.mode ?? "hybrid"
     const mode: SearchMode =
       process.env["LORE_FORCE_SEMANTIC_SEARCH"] === "1" ? "semantic" : requested
     const limit = input.limit ?? 10
 
     let pages: PageObjectResponse[]
+    let explainBranch: SearchExplain["branch"]
+    let hybridTrace: Map<string, HybridTraceEntry> | null = null
+
     if (mode === "contains") {
       pages = await this.searchByContainsPages(input)
+      explainBranch = "contains-only"
     } else if (mode === "semantic") {
       pages = await this.searchBySemanticPages(input)
+      explainBranch = "semantic-only"
     } else {
-      pages = await this.searchByHybridPages(input, limit)
+      const hybrid = await this.searchByHybridPages(input, limit)
+      pages = hybrid.pages
+      explainBranch = hybrid.branch
+      hybridTrace = hybrid.trace
     }
 
-    return this.materializeMemories(pages.slice(0, limit), input.includeContent)
+    const capped = pages.slice(0, limit)
+    const memories = await this.materializeMemories(capped, input.includeContent)
+    const explain = capped.map((page, i): SearchExplain => {
+      if (explainBranch === "contains-only") {
+        return {
+          memoryId: page.id,
+          containsRank: i,
+          semanticRank: null,
+          rrfScore: null,
+          branch: "contains-only",
+        }
+      }
+      if (explainBranch === "semantic-only") {
+        return {
+          memoryId: page.id,
+          containsRank: null,
+          semanticRank: i,
+          rrfScore: null,
+          branch: "semantic-only",
+        }
+      }
+      const trace = hybridTrace?.get(page.id)
+      return {
+        memoryId: page.id,
+        containsRank: trace?.containsRank ?? null,
+        semanticRank: trace?.semanticRank ?? null,
+        rrfScore: trace?.rrfScore ?? null,
+        branch: explainBranch,
+      }
+    })
+    return { memories, explain }
   }
 
   /**
@@ -979,10 +1131,14 @@ export class MemoryService {
    *   uses contains rows alone, ignoring the parallel semantic call.
    *   Wasted one Notion call but no wall-clock cost. The shared rate
    *   limiter (see `notion/rate-limit.ts`) bounds the cost.
-   * - **Under-shooting case**: concatenates unique semantic rows after the
-   *   contains rows, dedup'd by id, capped at `limit`. Contains rows
-   *   sort first because precision-ranked hits beat workspace ranking
-   *   when both surface the same row.
+   * - **Under-shooting case (RRF)**: merges the two ranked lists via
+   *   Reciprocal Rank Fusion. Each row's score is `Σ 1 / (RRF_K + rank +
+   *   1)` summed across the branches it appears in (`RRF_K = 60`,
+   *   Cormack 2009). Cross-branch agreement scores higher than
+   *   single-branch presence — a row ranked #1 in both branches scores
+   *   `2/61` and beats a row ranked #1 in only one branch (`1/61`).
+   *   Tie-break order is `score → best-rank → contains-presence → page
+   *   id ascending` (see `tieBreakingRrfCompare`). Capped at `limit`.
    *
    * The earlier sequential design paid `containsLatency + semanticLatency`
    * on under-shoot — strictly worse than the pre-PR single-call wall-clock
@@ -1012,7 +1168,11 @@ export class MemoryService {
   private async searchByHybridPages(
     input: SearchMemoriesInput,
     limit: number,
-  ): Promise<PageObjectResponse[]> {
+  ): Promise<{
+    pages: PageObjectResponse[]
+    branch: "contains-saturated" | "rrf"
+    trace: Map<string, HybridTraceEntry>
+  }> {
     const [containsResult, semanticResult] = await Promise.allSettled([
       this.searchByContainsPages(input),
       this.searchBySemanticPages(input),
@@ -1050,19 +1210,73 @@ export class MemoryService {
       debugLogHybridBranchFailure("semantic", semanticResult.reason)
     }
 
+    // Saturation cutoff: contains alone is the answer. Semantic ran in
+    // parallel but its output is discarded — the trace must report
+    // `semanticRank: null` for every row even when semantic returned the
+    // same id, because surfacing that rank would imply influence on
+    // ordering that did not happen.
     if (containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
-      return containsPages
+      const trace = new Map<string, HybridTraceEntry>()
+      containsPages.forEach((page, rank) => {
+        trace.set(page.id, {
+          containsRank: rank,
+          semanticRank: null,
+          rrfScore: null,
+        })
+      })
+      return { pages: containsPages, branch: "contains-saturated", trace }
     }
 
-    const seen = new Set(containsPages.map((p) => p.id))
-    const merged: PageObjectResponse[] = [...containsPages]
-    for (const page of semanticPages) {
-      if (seen.has(page.id)) continue
-      seen.add(page.id)
-      merged.push(page)
-      if (merged.length >= limit) break
+    // Under-saturation: RRF over both branches. Cross-branch agreement
+    // is the signal the prior concat-then-fill heuristic threw away — a
+    // row ranked #2 in both branches should beat a row ranked #1 in only
+    // one. The deterministic tie-break (see `tieBreakingRrfCompare`) pins
+    // the order on score collisions so test fixtures don't drift on
+    // `Map` iteration.
+    const scored = new Map<string, RrfEntry>()
+    const accumulate = (
+      branchPages: PageObjectResponse[],
+      branchKind: "contains" | "semantic",
+      weight = 1,
+    ) => {
+      branchPages.forEach((page, rank) => {
+        const score = (1 / (RRF_K + rank + 1)) * weight
+        const prev = scored.get(page.id)
+        if (prev) {
+          prev.score += score
+          if (branchKind === "contains") prev.containsRank = rank
+          else prev.semanticRank = rank
+        } else {
+          scored.set(page.id, {
+            page,
+            score,
+            containsRank: branchKind === "contains" ? rank : null,
+            semanticRank: branchKind === "semantic" ? rank : null,
+          })
+        }
+      })
     }
-    return merged
+    // The `weight` argument on `accumulate` defaults to `1` and is the
+    // hookup point for #17's intent-aware up-weighting. Both calls use
+    // the default here; #17 will up-weight the contains lane to `2`
+    // when intent is set.
+    accumulate(containsPages, "contains")
+    accumulate(semanticPages, "semantic")
+
+    // Slice before building the trace so the map carries entries only for
+    // the rows that survive into the response — `runSearch`'s explain
+    // loop reads `trace.get(page.id)` on the capped page list, so trace
+    // entries past `limit` would be unreachable allocations.
+    const ranked = [...scored.values()].sort(tieBreakingRrfCompare).slice(0, limit)
+    const trace = new Map<string, HybridTraceEntry>()
+    for (const entry of ranked) {
+      trace.set(entry.page.id, {
+        containsRank: entry.containsRank,
+        semanticRank: entry.semanticRank,
+        rrfScore: entry.score,
+      })
+    }
+    return { pages: ranked.map((entry) => entry.page), branch: "rrf", trace }
   }
 
   /**

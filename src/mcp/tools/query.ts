@@ -64,6 +64,7 @@ const queryDispatchSchema = z.discriminatedUnion("action", [
     limit: z.number().int().min(1).max(50).optional(),
     includeContent: z.boolean().optional(),
     mode: z.enum(["contains", "semantic", "hybrid"]).optional(),
+    explain: z.boolean().optional(),
   }),
   z.object({
     action: z.literal("ask"),
@@ -177,7 +178,14 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
             "(action='search') Search mode (default `hybrid`). `contains` for DS-scoped substring " +
               "matching with server-side property filters; `semantic` for workspace-wide vector " +
               "relevance over titles AND bodies; `hybrid` fires both in parallel and uses contains " +
-              "alone when it saturates (≥ 3 hits) or merges in semantic rows when it doesn't.",
+              "alone when it saturates (≥ 3 hits) or RRF-fuses both branches when it doesn't.",
+          ),
+        // search only
+        explain: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did.",
           ),
         // shared (recall | search | ask | open-loops)
         limit: z

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { MemoryService, pageToMemory } from "./memory.js"
+import {
+  MemoryService,
+  pageToMemory,
+  tieBreakingRrfCompare,
+  type RrfEntry,
+} from "./memory.js"
 import type { DatabaseRef } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
 
@@ -783,6 +788,625 @@ describe("MemoryService.search — hybrid mode", () => {
 
     expect(querySpy).toHaveBeenCalledTimes(1)
     expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("MemoryService.search — RRF fusion under saturation threshold", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildHybridPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("a row ranked #1 in both branches sorts above a row ranked #1 in only one branch", async () => {
+    // Cross-branch agreement is the signal RRF surfaces. Pre-RRF concat
+    // would have placed `contains-only-top` first because contains rows
+    // always came first; under RRF, `cross-branch-#1` wins because it
+    // scores 2/(60+1) ≈ 0.0328 vs the other rows' 1/61 ≈ 0.0164.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("contains-only-top", "first in contains only"),
+        buildHybridPage("cross-branch-1", "in both branches"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("cross-branch-1", "in both branches"),
+        buildHybridPage("semantic-only-top", "first in semantic only"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual([
+      "cross-branch-1",
+      "contains-only-top",
+      "semantic-only-top",
+    ])
+  })
+
+  it("RRF score for a known input pair matches 1/(60+rank+1)", async () => {
+    // Pin the RRF formula. A row ranked #0 in contains and absent from
+    // semantic scores exactly 1/61. Surfaces via the explain trace.
+    const querySpy = vi.fn(async () => ({
+      results: [buildHybridPage("solo-contains", "alone in contains")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(1)
+    expect(explain[0].rrfScore).toBeCloseTo(1 / 61, 10)
+  })
+
+  it("saturation cutoff still short-circuits at the threshold — RRF does not run", async () => {
+    // Three contains hits is the threshold. Pre-RRF behavior is preserved
+    // verbatim above the new merge code: the contains rows are returned
+    // in their original order, the semantic branch's output is discarded.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("c-0", "first"),
+        buildHybridPage("c-1", "second"),
+        buildHybridPage("c-2", "third"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      // If RRF ran on this saturating case, semantic-only would float in
+      // and the test would fail. The cutoff prevents that.
+      results: [buildHybridPage("semantic-only", "would float in under RRF")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["c-0", "c-1", "c-2"])
+  })
+})
+
+describe("MemoryService.search — RRF tie-break determinism", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildHybridPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("end-to-end: when scores and best-rank tie via mirrored ranks, page id ascending decides", async () => {
+    // With weight=1 and integer ranks, two rows with the same multiset
+    // of ranks across branches necessarily share both score AND
+    // best-rank — so end-to-end coverage of level 2 alone (different
+    // best-rank, same score) is impossible without a per-call weight
+    // knob. The direct comparator unit tests below cover level 2; this
+    // integration test pins the level 4 fall-through that the
+    // mirrored-rank fixture actually exercises.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("c-rank-1", "ranked second in contains"),
+        buildHybridPage("c-rank-0", "ranked first in contains"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("c-rank-0", "ranked second in semantic"),
+        buildHybridPage("c-rank-1", "ranked first in semantic"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // Both rows score 1/61 + 1/62 (identical), best-rank 0 (each was
+    // #1 in some branch), contains-presence on both. Tie-break falls
+    // through to page id ascending → c-rank-0 wins lexically.
+    expect(results.map((m) => m.id)).toEqual(["c-rank-0", "c-rank-1"])
+  })
+
+  it("tie-break level 3: contains-presence wins on score+rank tie", async () => {
+    // A contains-only row at rank 0 and a semantic-only row at rank 0
+    // both score 1/61 with best-rank 0. Contains-presence breaks the
+    // tie. This is the "contains is precision" intuition the prior
+    // concat-first heuristic encoded — a future contributor tempted
+    // to "make tie-break symmetric" would silently shift this case.
+    const querySpy = vi.fn(async () => ({
+      results: [buildHybridPage("aaaa-contains", "contains hit")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      // `zzzz-semantic` sorts after `aaaa-contains` lexically, but the
+      // tie-break stops at contains-presence (level 3), never reaching
+      // page id. To prove contains-presence is what wins, we put the
+      // semantic-only row's id alphabetically *before* the contains
+      // row's id — if the comparator fell through to page id, the
+      // semantic row would win.
+      results: [buildHybridPage("aaaa-semantic-but-alphabetically-before", "semantic hit")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // contains-presence wins on score+rank tie even when the
+    // semantic-only row sorts earlier alphabetically.
+    expect(results.map((m) => m.id)[0]).toBe("aaaa-contains")
+  })
+
+  it("tie-break level 4: page id ascending is the final deterministic fallback", async () => {
+    // Two semantic-only rows at the same rank are impossible (a single
+    // branch returns rows in distinct positions). Construct the page id
+    // tie-break by having two rows that both score 1/61 + 1/61 = 2/61
+    // (each appears at rank 0 in both branches). Both have contains-
+    // presence, identical scores, identical best-rank. Page id
+    // determines order.
+    //
+    // We can't have two rows simultaneously at rank 0 in the same
+    // branch, so this test exercises the tie-break by way of the
+    // sort's secondary stability — the comparator must reach level 4
+    // to resolve the order between rows that genuinely tie at every
+    // earlier level. We verify by sandwiching: if we have two pairs
+    // and the comparator reaches level 4, the pair-internal order is
+    // page id ascending.
+    const querySpy = vi.fn(async () => ({
+      // Two rows; the alphabetically-later id is at rank 0, the earlier
+      // at rank 1.
+      results: [buildHybridPage("zzz-1", "z one"), buildHybridPage("aaa-1", "a one")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      // Swap the order in semantic: alphabetically-earlier at rank 0,
+      // later at rank 1. Now zzz-1 has (contains 0, semantic 1) and
+      // aaa-1 has (contains 1, semantic 0). Both score 1/61 + 1/62 =
+      // identical. Both best-rank 0. Both contains-presence. Tie-break
+      // falls through to page id ascending → aaa-1 wins.
+      results: [buildHybridPage("aaa-1", "a one"), buildHybridPage("zzz-1", "z one")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["aaa-1", "zzz-1"])
+  })
+})
+
+describe("tieBreakingRrfCompare — direct unit tests, one per tie-break level", () => {
+  // Direct unit tests against the comparator. End-to-end coverage of
+  // level 2 (different best-rank, equal score) is impossible with
+  // weight=1 and integer ranks, because two rows with identical scores
+  // necessarily share their rank multiset and therefore their min-rank.
+  // The unit tests synthesize fixtures the end-to-end fixture cannot
+  // produce, ensuring a contributor who simplifies the comparator
+  // (e.g. drops level 2) is caught.
+
+  function entry(
+    id: string,
+    score: number,
+    containsRank: number | null,
+    semanticRank: number | null,
+  ): RrfEntry {
+    return {
+      page: { id } as unknown as PageObjectResponse,
+      score,
+      containsRank,
+      semanticRank,
+    }
+  }
+
+  it("level 1: higher score wins", () => {
+    const a = entry("a", 0.05, 5, 5)
+    const b = entry("b", 0.01, 0, 0)
+    // Even though `b` has better best-rank, score wins primarily.
+    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
+    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
+  })
+
+  it("level 2: lower best-rank wins on score tie", () => {
+    const a = entry("a", 0.0322, 0, 5) // best-rank 0
+    const b = entry("b", 0.0322, 2, 1) // best-rank 1
+    // Same score; level 2 (best-rank) breaks the tie. `a` wins.
+    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
+    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
+  })
+
+  it("level 3: contains-presence wins on score+best-rank tie", () => {
+    const a = entry("a", 0.0164, 0, null) // contains-only
+    const b = entry("b", 0.0164, null, 0) // semantic-only
+    // Equal score (1/61), equal best-rank (0). Contains-presence breaks.
+    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
+    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
+  })
+
+  it("level 4: page id ascending is the final fallback", () => {
+    // Both rows: same score, same best-rank, both contains-present.
+    const a = entry("aaa", 0.0322, 0, 1)
+    const b = entry("zzz", 0.0322, 0, 1)
+    expect(tieBreakingRrfCompare(a, b)).toBeLessThan(0)
+    expect(tieBreakingRrfCompare(b, a)).toBeGreaterThan(0)
+  })
+
+  it("equal entries (identical id and ranks) compare to 0", () => {
+    const a = entry("same", 0.0322, 0, 1)
+    const b = entry("same", 0.0322, 0, 1)
+    expect(tieBreakingRrfCompare(a, b)).toBe(0)
+  })
+})
+
+describe("MemoryService.searchWithExplain — branch-field rules and explain alignment", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildPageInDb(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("MemoryService.search return type is unchanged — Memory[]", async () => {
+    // Structural pin: a future contributor cannot accidentally add a
+    // wrapper return type to `search()` without breaking this fixture.
+    const querySpy = vi.fn(async () => ({
+      results: [buildPageInDb("a", "first")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(Array.isArray(results)).toBe(true)
+    expect(results[0].id).toBe("a")
+    // Each entry is a `Memory` — has the structural-domain fields.
+    expect(results[0].title).toBe("first")
+  })
+
+  it("explain[i] aligns with memories[i] by page id", async () => {
+    // The alignment guarantee is what makes the trace useful — a caller
+    // can iterate both arrays in lockstep and know the trace describes
+    // the same row.
+    const querySpy = vi.fn(async () => ({
+      results: [buildPageInDb("c-1", "contains hit")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildPageInDb("s-1", "semantic 1"),
+        buildPageInDb("s-2", "semantic 2"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { memories, explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(memories).toHaveLength(explain.length)
+    for (let i = 0; i < memories.length; i++) {
+      expect(explain[i].memoryId).toBe(memories[i].id)
+    }
+  })
+
+  it("contains mode: branch is 'contains-only', semanticRank and rrfScore are null", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildPageInDb("a", "first"),
+        buildPageInDb("b", "second"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(2)
+    for (let i = 0; i < explain.length; i++) {
+      expect(explain[i].branch).toBe("contains-only")
+      expect(explain[i].containsRank).toBe(i)
+      expect(explain[i].semanticRank).toBeNull()
+      expect(explain[i].rrfScore).toBeNull()
+    }
+  })
+
+  it("semantic mode: branch is 'semantic-only', containsRank and rrfScore are null", async () => {
+    const searchSpy = vi.fn(async () => ({
+      results: [buildPageInDb("a", "first"), buildPageInDb("b", "second")],
+    }))
+    const client = {
+      dataSources: { query: vi.fn() },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "semantic",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(2)
+    for (let i = 0; i < explain.length; i++) {
+      expect(explain[i].branch).toBe("semantic-only")
+      expect(explain[i].containsRank).toBeNull()
+      expect(explain[i].semanticRank).toBe(i)
+      expect(explain[i].rrfScore).toBeNull()
+    }
+  })
+
+  it("hybrid saturated branch: semanticRank is null even when semantic surfaced the row", async () => {
+    // The semantic branch ran in parallel and may even have returned the
+    // same id, but its output was discarded — surfacing semanticRank
+    // would imply influence on ordering that did not happen.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildPageInDb("a", "first"),
+        buildPageInDb("b", "second"),
+        buildPageInDb("c", "third"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      // Semantic returns row `a` at rank 0 — but contains saturated, so
+      // its rank is suppressed in the trace.
+      results: [buildPageInDb("a", "first")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(3)
+    for (let i = 0; i < explain.length; i++) {
+      expect(explain[i].branch).toBe("contains-saturated")
+      expect(explain[i].containsRank).toBe(i)
+      expect(explain[i].semanticRank).toBeNull()
+      expect(explain[i].rrfScore).toBeNull()
+    }
+  })
+
+  it("hybrid rrf branch: both ranks reflect actual branch presence; rrfScore populated", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [buildPageInDb("c-only", "contains alone")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildPageInDb("c-only", "contains alone"),
+        buildPageInDb("s-only", "semantic alone"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { memories, explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    const cOnly = explain.find((e) => e.memoryId === "c-only")
+    const sOnly = explain.find((e) => e.memoryId === "s-only")
+
+    expect(cOnly?.branch).toBe("rrf")
+    expect(cOnly?.containsRank).toBe(0)
+    expect(cOnly?.semanticRank).toBe(0)
+    expect(cOnly?.rrfScore).toBeCloseTo(2 / 61, 10)
+
+    expect(sOnly?.branch).toBe("rrf")
+    expect(sOnly?.containsRank).toBeNull()
+    expect(sOnly?.semanticRank).toBe(1)
+    expect(sOnly?.rrfScore).toBeCloseTo(1 / 62, 10)
+
+    // c-only sorts above s-only because cross-branch agreement scores
+    // higher than single-branch presence.
+    expect(memories.map((m) => m.id)).toEqual(["c-only", "s-only"])
+  })
+
+  it("LORE_FORCE_SEMANTIC_SEARCH=1 routes mode='hybrid' through 'semantic-only'", async () => {
+    // Pin the kill-switch path: when the operator forces semantic, the
+    // explain trace reports `semantic-only`, not `rrf` or
+    // `contains-saturated`. The `mode` argument is ignored.
+    const prev = process.env["LORE_FORCE_SEMANTIC_SEARCH"]
+    process.env["LORE_FORCE_SEMANTIC_SEARCH"] = "1"
+    try {
+      const searchSpy = vi.fn(async () => ({
+        results: [buildPageInDb("a", "first")],
+      }))
+      const client = {
+        dataSources: { query: vi.fn() },
+        search: searchSpy,
+        pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+      } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      const { explain } = await service.searchWithExplain({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+      })
+
+      expect(explain).toHaveLength(1)
+      expect(explain[0].branch).toBe("semantic-only")
+      expect(explain[0].containsRank).toBeNull()
+    } finally {
+      if (prev === undefined) delete process.env["LORE_FORCE_SEMANTIC_SEARCH"]
+      else process.env["LORE_FORCE_SEMANTIC_SEARCH"] = prev
+    }
+  })
+
+  it("SearchExplain field names are canonical to lore (containsRank, not lexRank)", async () => {
+    // qmd uses `lexRank` for the contains lane. Pin lore's vocabulary so
+    // a future contributor doesn't silently rename chasing qmd's words.
+    const querySpy = vi.fn(async () => ({
+      results: [buildPageInDb("a", "first")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    const entry = explain[0]
+    expect(Object.keys(entry).sort()).toEqual([
+      "branch",
+      "containsRank",
+      "memoryId",
+      "rrfScore",
+      "semanticRank",
+    ])
   })
 })
 

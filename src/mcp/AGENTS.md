@@ -420,7 +420,7 @@ the per-mode filter composition.
 |------|----------------|-------|------------------|----------------|
 | `contains` | `dataSources.query` | Memories DS only | Server-side | No (titles + keywords only) |
 | `semantic` | `client.search` | Workspace-wide | Post-filter | Yes |
-| `hybrid` (default) | Both, in parallel | Best-of-both | Server-side on the contains leg, post-filter on the merged tail | When contains under-shoots |
+| `hybrid` (default) | Both, in parallel | Best-of-both | Server-side on the contains leg, post-filter on the RRF-fused tail | When contains under-shoots |
 
 Why default to hybrid:
 
@@ -468,6 +468,17 @@ workspace-wide path regardless of the caller's `mode`. Use as a
 defensive escape hatch — same posture as
 `LORE_DISABLE_NEAR_DUPLICATE_PROBE`. See `src/core/AGENTS.md` for the
 encoding-migration scenario it's designed to handle.
+
+**Diagnostic trace via `explain: true`.** `lore-query action='search'`
+accepts an optional `explain: boolean` parameter. When set, the
+response gains a `## Score trace` footer with one row per result
+showing the resolved branch (`contains-only` / `semantic-only` /
+`contains-saturated` / `rrf`), the per-branch rank, and the RRF
+score (`rrf` branch only). Null fields render as `—` (em dash)
+uniformly. The handler routes through `MemoryService.searchWithExplain`
+when `explain` is set, leaving the default-path return shape unchanged
+for callers that don't opt in. See `src/core/AGENTS.md` for the
+branch-field rules and `SearchExplain` shape.
 
 #### `recall` → `expand` pattern
 
