@@ -267,6 +267,16 @@ hooks:
 Token resolution order: `auth.token` in `.lore.yaml`, then `LORE_NOTION_TOKEN`
 environment variable, then OAuth credentials at `~/.lore/credentials.json`.
 
+### Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `LORE_NOTION_TOKEN` | Notion integration token (used when `auth.token` is absent from `.lore.yaml`) |
+| `LORE_AGENT_NAME` | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`) |
+| `LORE_AUTO_DIGEST=false` | Suppress the session-end auto-digest scheduler (CLI `lore digest` still works) |
+| `LORE_NO_HYPERLINKS=1` | Skip OSC 8 clickable hyperlinks in `lore search` and `lore status` output, even under TTY. Same fallback as the non-TTY path. `=0`, `=false`, and empty string are treated as not set |
+| `NO_COLOR=1` | Honored alongside `LORE_NO_HYPERLINKS` to skip OSC 8 emission |
+
 ## Monorepo Support
 
 Projects map directories to named scopes using the `projects` array in

@@ -1,5 +1,6 @@
 import { Command } from "commander"
 import { initServices } from "../../services.js"
+import { notionPageUrl, terminalLink } from "../output.js"
 
 export const searchCommand = new Command("search")
   .description("Semantic search across memories")
@@ -37,7 +38,9 @@ export const searchCommand = new Command("search")
 
         for (const mem of results) {
           const tags = mem.tags.length > 0 ? ` [${mem.tags.join(", ")}]` : ""
-          console.log(`  ${mem.title}${tags}`)
+          const linkedTitle = terminalLink(mem.title, notionPageUrl(mem.id))
+          console.log(`  ${linkedTitle}${tags}`)
+          // Page ID stays plain text — operators copy it into other tools.
           console.log(`  ${mem.source} | ${mem.updatedAt.split("T")[0]} | ${mem.id}`)
           if (mem.content) {
             const preview = mem.content.slice(0, 120).replace(/\n/g, " ")

@@ -10,6 +10,7 @@ import {
   DRIFT_DEBOUNCE_DAYS,
   driftMarkerAgeDays,
 } from "../../hooks/drift-marker.js"
+import { notionPageUrl, terminalLink } from "../output.js"
 
 /**
  * Raw Notion `Predicate` select values for the legacy tracking-predicate
@@ -54,9 +55,10 @@ export const statusCommand = new Command("status")
       console.log("Lore Vault Status")
       console.log("─".repeat(40))
       console.log(`  Vault page: ${services.context.vault.pageId}`)
-      console.log(
-        `  Current project: ${project ? `${project.name} (${project.path || "root"})` : "none"}`
-      )
+      const projectLabel = project
+        ? `${terminalLink(project.name, notionPageUrl(project.id))} (${project.path || "root"})`
+        : "none"
+      console.log(`  Current project: ${projectLabel}`)
       console.log()
       console.log("Database counts:")
       console.log(`  Projects: ${stats.projects}`)
@@ -71,7 +73,8 @@ export const statusCommand = new Command("status")
         console.log("Active projects:")
         for (const p of projects) {
           const path = p.path ? ` (${p.path})` : ""
-          console.log(`  - ${p.name}${path} [${p.type}]`)
+          const linkedName = terminalLink(p.name, notionPageUrl(p.id))
+          console.log(`  - ${linkedName}${path} [${p.type}]`)
         }
       }
 

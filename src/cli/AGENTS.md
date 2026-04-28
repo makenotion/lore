@@ -91,6 +91,26 @@ try {
 - Memory search results show: title, tags, source, date, ID, and a 120-character
   content preview.
 
+### OSC 8 hyperlinks
+
+Memory titles and project names rendered by `lore search` and `lore status`
+flow through `terminalLink` in `output.ts`, which wraps them in OSC 8 escape
+sequences pointing at the page's Notion URL. The helper falls back to plain
+text on non-TTY stdout, when `NO_COLOR` or `LORE_NO_HYPERLINKS` is set, or
+when the URL fails the Notion safelist. Page IDs stay plain text — operators
+copy them into other tools.
+
+`maybeTerminalLink` is the pure helper (takes injected `{ isTTY, env }` so
+tests don't mutate process globals); `terminalLink` is the production wrapper
+that binds those values from the live process. Build link targets via
+`notionPageUrl(id)` rather than constructing the `https://notion.so/<id>`
+string inline — every call site routes through that single helper.
+
+Subcommand listings (`lore status projects`, `lore status topics`) stay
+plain to keep names selectable for copy-paste; only the top-level `lore
+status` and `lore search` surfaces wrap titles. `lore mine` has nothing
+title-shaped to link.
+
 ## Command Reference
 
 | Command | Arguments | Key Options | Description |
