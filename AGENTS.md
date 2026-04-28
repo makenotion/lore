@@ -226,7 +226,7 @@ When working in this project, you have access to `lore-*` MCP tools. Use them:
 - **When an entity is about to be edited**: call `lore-decision-context` with the entity name to surface governing decisions first.
 - **When saving general knowledge** (not a formal decision): call `lore-remember` for gotchas, workarounds, debugging insights.
 - **When learning facts**: call `lore-learn` to record entity relationships (e.g., "MemoryService uses dataSources.query")
-- **At session end**: call `lore-journal` to summarize what was accomplished
+- **At session end**: the SessionEnd autosave hook fires a background save automatically — no manual call required
 
 ### Scheduled digest synthesis
 

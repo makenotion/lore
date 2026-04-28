@@ -6,11 +6,16 @@
 
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
-exposes eight polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
-`lore-fact`, `lore-decision`, `lore-journal`, `lore-project`, `lore-task`. The
-24 P3-01 single-purpose tool names and the four PF3-06 task aliases were
+exposes seven polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
+`lore-fact`, `lore-decision`, `lore-project`, `lore-task`. The 24 P3-01
+single-purpose tool names and the four PF3-06 task aliases — redundant names
+for actions already reachable under the polymorphic dispatchers — were
 preserved as deprecated registrations through the `0.5.0` line and were
-removed in the `0.6.0` deprecation purge (see "Deprecation timeline" below).
+removed in the `0.6.0` deprecation purge. `lore-journal` was a polymorphic
+tool in its own right (not an alias) whose actions migrated to
+`lore-memory action='save'` with `kind: 'note'` and `lore-decision
+action='create'`; it carried a deprecation banner across the same window
+and came out in the same purge. See "Deprecation timeline" below.
 
 ## Files
 
@@ -23,13 +28,12 @@ removed in the `0.6.0` deprecation purge (see "Deprecation timeline" below).
 | `tools/query.ts` | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts) |
 | `tools/project.ts` | `lore-project` polymorphic dispatcher (`list` / `get`) |
 | `tools/knowledge.ts` | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `audit` handlers exported for `lore-query` |
-| `tools/journal.ts` | `lore-journal` polymorphic dispatcher (defaults action='write' for legacy call shape) |
 | `tools/decisions.ts` | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`) |
 | `tools/tasks.ts` | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list`) (P3-02 + PF3-06) |
 
 ## Polymorphic dispatch pattern (P3-01 + PF3-06)
 
-The eight `lore-*` tools above multiplex multiple actions behind one MCP
+The seven `lore-*` tools above multiplex multiple actions behind one MCP
 registration to keep per-session prompt overhead low. Each tool follows the
 same shape:
 
@@ -105,12 +109,16 @@ that collapsed into `lore-context action='status'`).
 
 ### Deprecation timeline (historical)
 
-The 28 deprecated single-purpose aliases that were registered alongside
-the eight polymorphic dispatchers (24 from P3-01 + 4 from PF3-06) were
-**removed in the `0.6.0` deprecation purge.** The polymorphic surface
-is now the only registered MCP tool surface; `polymorphic.test.ts`
-pins the surface at exactly 8 names and fails loudly if a new alias
-re-enters the registration list.
+The 28 deprecated single-purpose aliases (24 from P3-01 + 4 from
+PF3-06) plus the `lore-journal` polymorphic tool were **removed in
+the `0.6.0` deprecation purge.** Diary-style memories now go through
+`lore-memory action='save'` with `kind: 'note'`, architectural
+decisions through `lore-decision action='create'`, and historical
+`agent_diary` memories remain readable via `lore-query action='recall'`
+with `source: "agent_diary"`. The seven remaining polymorphic
+dispatchers are the only registered MCP tool surface;
+`polymorphic.test.ts` pins the surface at exactly 7 names and fails
+loudly if a new alias re-enters the registration list.
 
 The deprecation window existed because every alias's schema was
 rendered into the agent-visible config string and therefore consumed
@@ -541,20 +549,6 @@ cap), unlike the pre-P3-02 tracking-predicate facts whose 187-char-average
 Object field was a Jira-ticket-shaped paragraph in a graph slot meant for
 atomic relationship objects. Tracking predicates were dropped from
 `FactPredicate` in 0.6.0; tracked work no longer flows through `lore-fact`.
-
-### `lore-journal` — agent diary (deprecated tool family)
-
-| Action | Purpose | Read-only |
-|--------|---------|-----------|
-| `write` (default) | Save an agent diary entry (memory with `source: 'agent_diary'`). Calling `lore-journal` without an `action` defaults to `write` so the legacy write-only call shape continues to work. | No |
-| `read` | List recent diary entries, optionally filtered by agent | Yes |
-
-The whole tool family is itself deprecated in favor of `lore-memory` with
-`kind: 'note'` for durable knowledge or `lore-decision` for architectural
-decisions. The polymorphic registration consolidates the legacy two-tool
-surface so the overall surface count stays at the planned ~8. A
-once-per-process stderr deprecation notice fires on the legacy `write`
-call shape; see `journal.ts:36`.
 
 ### `lore-decision` — decision lifecycle
 

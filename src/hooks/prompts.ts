@@ -100,10 +100,12 @@ function buildSourceLinkGuidance(): string {
  * `buildSourceLinkGuidance` so P1-09 can strengthen it without touching
  * this string.
  *
- * P3-01 collapsed the 24-tool surface into seven polymorphic dispatchers;
+ * P3-01 collapsed the 24-tool surface into polymorphic dispatchers;
  * PF3-06 added `lore-task` to subsume the standalone task tools landed by
- * P3-02. This prompt teaches the action-dispatch surface so background
- * subagents we drive learn the canonical names.
+ * P3-02; the 0.6.0 deprecation purge removed the legacy journal
+ * dispatcher, leaving seven polymorphic dispatchers. This prompt teaches
+ * the action-dispatch surface so background subagents we drive learn
+ * the canonical names.
  *
  * Tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`)
  * are now rejected on `lore-fact` action='create'; open work goes through

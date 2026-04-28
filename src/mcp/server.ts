@@ -14,7 +14,6 @@ import { registerContextTools } from "./tools/context.js"
 import { registerMemoryTools } from "./tools/memory.js"
 import { registerProjectTools } from "./tools/project.js"
 import { registerKnowledgeTools } from "./tools/knowledge.js"
-import { registerJournalTools } from "./tools/journal.js"
 import { registerDecisionTools } from "./tools/decisions.js"
 import { registerQueryTools } from "./tools/query.js"
 import { registerTaskTools } from "./tools/tasks.js"
@@ -68,16 +67,17 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  // Register all tools. P3-01 collapsed the surface to seven polymorphic
-  // tools (lore-context / lore-memory / lore-query / lore-fact /
-  // lore-decision / lore-journal / lore-project) with the prior 24 tool
-  // names retained as deprecated aliases. See src/mcp/AGENTS.md.
+  // Register all tools. The polymorphic surface is seven dispatchers:
+  // lore-context / lore-memory / lore-query / lore-fact / lore-decision /
+  // lore-project / lore-task. P3-01 introduced the dispatch pattern,
+  // PF3-06 added lore-task, and the 0.6.0 deprecation purge removed the
+  // legacy journal dispatcher alongside the 28 single-purpose aliases.
+  // See src/mcp/AGENTS.md.
   registerContextTools(server, services)
   registerMemoryTools(server, services)
   registerQueryTools(server, services)
   registerProjectTools(server, services)
   registerKnowledgeTools(server, services)
-  registerJournalTools(server, services)
   registerDecisionTools(server, services)
   registerTaskTools(server, services)
 

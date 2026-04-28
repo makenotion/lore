@@ -166,16 +166,6 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 | `supersede` | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact |
 | `review`    | Mark a decision as reviewed, push `Review By` forward |
 
-### `lore-journal` — agent diary (deprecated tool family)
-
-| Action  | Description |
-| ------- | ----------- |
-| `write` | Save an agent diary entry (default action; legacy `lore-journal({title, content})` call shape preserved) |
-| `read`  | Read recent journal entries |
-
-The whole tool family is itself deprecated — prefer `lore-memory` with
-`kind: 'note'` for durable knowledge or `lore-decision` for decisions.
-
 ### `lore-project` — project read paths
 
 | Action | Description |

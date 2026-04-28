@@ -158,6 +158,17 @@ export interface CreateTopicInput {
 // Memory
 // ---------------------------------------------------------------------------
 
+/**
+ * Where a memory originated. Note the asymmetry: `agent_diary` is no
+ * longer writeable from the live tool surface. Its only writer was the
+ * legacy journal dispatcher, which the 0.6.0 deprecation purge removed;
+ * production vaults still carry historical `agent_diary` rows, so the
+ * value stays in the union to keep recall paths (`lore-query
+ * action='recall'` with `source: "agent_diary"`, the digest grouping
+ * in `core/digest.ts`, and the Notion `Source` select option) working
+ * over legacy data. New memories should pick from the four live
+ * sources — `conversation`, `file`, `manual`, `digest`.
+ */
 export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | "digest"
 
 /**

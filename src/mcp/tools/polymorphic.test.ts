@@ -1,16 +1,17 @@
 /**
- * Polymorphic dispatcher tests for the eight `lore-*` tools — the seven
+ * Polymorphic dispatcher tests for the seven `lore-*` tools — six
  * introduced in P3-01 (`lore-context`, `lore-memory`, `lore-query`,
- * `lore-fact`, `lore-decision`, `lore-journal`, `lore-project`) plus
- * `lore-task` added in PF3-06 to subsume the standalone task tools
- * landed by P3-02.
+ * `lore-fact`, `lore-decision`, `lore-project`) plus `lore-task` added
+ * in PF3-06 to subsume the standalone task tools landed by P3-02.
+ * `lore-journal` was removed in the 0.6.0 deprecation purge alongside
+ * the single-purpose aliases.
  *
  * These tests verify the contract:
  * 1. Each polymorphic tool is registered.
  * 2. Each declared `action` value reaches the right underlying handler.
  * 3. Invalid `action` values produce a clean discriminated-union error.
  * 4. Missing required-per-action params produce a clean error.
- * 5. The MCP tool surface is exactly the 8 polymorphic dispatchers — no
+ * 5. The MCP tool surface is exactly the 7 polymorphic dispatchers — no
  *    deprecated aliases remain after the 0.6.0 deprecation purge.
  *
  * Per-handler behavior is exercised by the existing per-file test suites
@@ -26,7 +27,6 @@ import { registerMemoryTools } from "./memory.js"
 import { queryDispatchSchema, registerQueryTools } from "./query.js"
 import { registerKnowledgeTools } from "./knowledge.js"
 import { registerDecisionTools } from "./decisions.js"
-import { registerJournalTools } from "./journal.js"
 import { registerProjectTools } from "./project.js"
 import { registerTaskTools } from "./tasks.js"
 
@@ -389,6 +389,25 @@ describe("lore-query polymorphic dispatcher", () => {
     registerQueryTools(mock.server, makeServices({ memoriesList }) as never)
     await mock.get("lore-query")({ action: "recall" } as never)
     expect(memoriesList).toHaveBeenCalled()
+  })
+
+  it("threads source='agent_diary' through action='recall' (legacy read path)", async () => {
+    // The 0.6.0 deprecation purge removed the legacy journal tool, but
+    // production vaults still carry historical `agent_diary` memories.
+    // This test pins the documented escape hatch from `MemorySource`'s
+    // JSDoc: callers can still recall those rows via lore-query with an
+    // explicit source filter. Regression-pin so the recall path can't
+    // silently regress when the source-filter list is touched.
+    const memoriesList = vi.fn(async () => ({ items: [], nextCursor: undefined }))
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices({ memoriesList }) as never)
+    await mock.get("lore-query")({
+      action: "recall",
+      source: "agent_diary",
+    } as never)
+    expect(memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "agent_diary" }),
+    )
   })
 
   it("dispatches action='search' with required query", async () => {
@@ -792,70 +811,6 @@ describe("lore-context polymorphic dispatcher", () => {
 })
 
 // -------------------------------------------------------------------------
-// lore-journal
-// -------------------------------------------------------------------------
-
-describe("lore-journal polymorphic dispatcher", () => {
-  it("registers lore-journal", () => {
-    const mock = createMockServer()
-    registerJournalTools(mock.server, makeServices() as never)
-    expect(mock.has("lore-journal")).toBe(true)
-  })
-
-  it("defaults missing action to 'write' AND emits the once-per-process deprecation notice on stderr", async () => {
-    // The wrap-up consequence of preserving the legacy write call shape
-    // is that callers get no signal to migrate. The dispatcher writes a
-    // one-shot deprecation notice to stderr so a human operator running
-    // the MCP process sees it. The notice flag is module-scoped, so this
-    // test must be the FIRST write triggered against `journal.ts` in
-    // this file — co-locating the legacy-call-shape assertion with the
-    // stderr assertion guarantees that ordering and prevents either
-    // surface from regressing without the other being noticed.
-    const memoriesCreate = vi.fn(async () => ({
-      id: "j1",
-      title: "J",
-      projectIds: [],
-    }))
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
-    try {
-      const mock = createMockServer()
-      registerJournalTools(
-        mock.server,
-        makeServices({ memoriesCreate }) as never,
-      )
-      // Legacy call shape — no `action` field, just title + content.
-      const result = await mock.get("lore-journal")({
-        title: "J",
-        content: "Body",
-      } as never)
-      expect(memoriesCreate).toHaveBeenCalled()
-      expect(extractText(result)).toContain("Journal entry saved")
-      const wrote = stderrSpy.mock.calls.flat().join("")
-      expect(wrote).toContain("lore-journal is deprecated")
-      // Notice points at the polymorphic surface, not the legacy aliases.
-      expect(wrote).toContain("lore-memory")
-    } finally {
-      stderrSpy.mockRestore()
-    }
-  })
-
-  it("dispatches action='read' to memories.list with source='agent_diary'", async () => {
-    const memoriesList = vi.fn(async () => ({ items: [], nextCursor: undefined }))
-    const mock = createMockServer()
-    registerJournalTools(
-      mock.server,
-      makeServices({ memoriesList }) as never,
-    )
-    await mock.get("lore-journal")({ action: "read" } as never)
-    expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ source: "agent_diary" }),
-    )
-  })
-})
-
-// -------------------------------------------------------------------------
 // lore-task (PF3-06)
 // -------------------------------------------------------------------------
 
@@ -1027,17 +982,17 @@ describe("lore-task polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("MCP tool surface", () => {
-  it("registers exactly the 8 polymorphic tools — zero aliases", () => {
+  it("registers exactly the 7 polymorphic tools — zero aliases", () => {
     // The 0.6.0 deprecation purge removed the 28 single-purpose aliases
-    // (24 from P3-01 + 4 from PF3-06). This assertion is the
-    // load-bearing guard against re-introduction. The rationale lives
-    // in `src/mcp/AGENTS.md` "Deprecation timeline (historical)":
-    // every alias's schema rendered into the agent-visible MCP
-    // capabilities config on every reconnecting session, so adding a
-    // new alias under any cover (e.g. "just for one transition") would
-    // re-introduce the prompt-budget drift this purge corrected. A
-    // legitimate new tool family should update the expected list here
-    // rather than route around the assertion.
+    // (24 from P3-01 + 4 from PF3-06) and the `lore-journal` polymorphic
+    // tool itself. This assertion is the load-bearing guard against
+    // re-introduction. The rationale lives in `src/mcp/AGENTS.md`
+    // "Deprecation timeline (historical)": every alias's schema rendered
+    // into the agent-visible MCP capabilities config on every reconnecting
+    // session, so adding a new alias under any cover (e.g. "just for one
+    // transition") would re-introduce the prompt-budget drift this purge
+    // corrected. A legitimate new tool family should update the expected
+    // list here rather than route around the assertion.
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -1045,7 +1000,6 @@ describe("MCP tool surface", () => {
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
-    registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
@@ -1055,7 +1009,6 @@ describe("MCP tool surface", () => {
       "lore-query",
       "lore-fact",
       "lore-decision",
-      "lore-journal",
       "lore-project",
       "lore-task",
     ]
@@ -1065,7 +1018,7 @@ describe("MCP tool surface", () => {
   // -----------------------------------------------------------------------
   // Polymorphic-tool prompt-economy budgets.
   //
-  // The eight polymorphic tools are now the only registered surface, so
+  // The seven polymorphic tools are now the only registered surface, so
   // these ceilings guard against a future PR quietly appending an
   // action's worth of bullets to a description and re-inflating every
   // reconnecting session's prompt — the same pressure that motivated
@@ -1084,7 +1037,6 @@ describe("MCP tool surface", () => {
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
-    registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
@@ -1098,7 +1050,6 @@ describe("MCP tool surface", () => {
       "lore-query",
       "lore-fact",
       "lore-decision",
-      "lore-journal",
       "lore-project",
       "lore-task",
     ]
@@ -1111,7 +1062,7 @@ describe("MCP tool surface", () => {
     }
   })
 
-  it("the eight polymorphic tools' descriptions sum stays within the combined budget", () => {
+  it("the seven polymorphic tools' descriptions sum stays within the combined budget", () => {
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -1119,14 +1070,13 @@ describe("MCP tool surface", () => {
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
-    registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
-    // Combined ceiling. Polymorphic descriptions previously totalled
-    // ~4600 chars across seven tools; PF3-06 adds `lore-task`, so the
-    // budget grows roughly proportionally while still preventing a
-    // surface-doubling regression.
+    // Combined ceiling. The surface has moved 7 → 8 → 7 across P3-01,
+    // PF3-06, and the 0.6.0 purge; the budget covers the high-water
+    // mark plus comfortable headroom so a future action lands without
+    // inviting a surface-doubling regression.
     const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7000
     const polymorphic = [
       "lore-context",
@@ -1134,7 +1084,6 @@ describe("MCP tool surface", () => {
       "lore-query",
       "lore-fact",
       "lore-decision",
-      "lore-journal",
       "lore-project",
       "lore-task",
     ]
@@ -1161,7 +1110,6 @@ describe("MCP tool surface", () => {
     registerQueryTools(mock.server, services)
     registerKnowledgeTools(mock.server, services)
     registerDecisionTools(mock.server, services)
-    registerJournalTools(mock.server, services)
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
@@ -1176,7 +1124,6 @@ describe("MCP tool surface", () => {
       "lore-query",
       "lore-fact",
       "lore-decision",
-      "lore-journal",
       "lore-project",
       "lore-task",
     ]
