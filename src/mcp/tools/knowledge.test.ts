@@ -459,15 +459,9 @@ describe("lore-ask grouped display (P2-06)", () => {
     return (result as { content: Array<{ text: string }> }).content[0].text
   }
 
-  it("renders three bucket headings with counts when all classes are present", async () => {
+  it("renders bucket headings with counts when classes are present", async () => {
     const facts: Fact[] = [
       makeFact("struct-1", { predicate: "uses", object: "JWT" }),
-      makeFact("track-1", {
-        predicate: "needs_action",
-        object: "Audit",
-        // Review not past today — active, not overdue.
-        reviewBy: "2099-01-01",
-      }),
       makeFact("gov-1", {
         predicate: "supersedes_decision",
         subject: "AuthService",
@@ -475,10 +469,9 @@ describe("lore-ask grouped display (P2-06)", () => {
       }),
     ]
     const text = await invokeAsk(facts)
-    expect(text).toContain('3 facts about "AuthService"')
+    expect(text).toContain('2 facts about "AuthService"')
     expect(text).toMatch(/### Governance \(1\)/)
     expect(text).toMatch(/### Structure \(1\)/)
-    expect(text).toMatch(/### Tracking \(0 overdue, 1 active\)/)
   })
 
   it("omits bucket headings for empty classes", async () => {
@@ -487,7 +480,6 @@ describe("lore-ask grouped display (P2-06)", () => {
     ])
     expect(text).toContain("### Structure")
     expect(text).not.toContain("### Governance")
-    expect(text).not.toContain("### Tracking")
   })
 
   it("caps each bucket at 5 by default and surfaces a per-bucket hidden count", async () => {
@@ -529,66 +521,6 @@ describe("lore-ask grouped display (P2-06)", () => {
     }
   })
 
-  it("surfaces overdue tracking facts first with ⚠ marker and days-overdue text", async () => {
-    // Today is fixed via the fact's review date math below; we just need
-    // today ≥ reviewBy for overdue, < reviewBy for active.
-    const today = new Date().toISOString().split("T")[0]
-    const twentyDaysAgo = new Date(Date.now() - 20 * 86_400_000)
-      .toISOString()
-      .split("T")[0]
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().split("T")[0]
-
-    const facts: Fact[] = [
-      makeFact("active", {
-        predicate: "waiting_on",
-        object: "Vendor response",
-        reviewBy: tomorrow,
-      }),
-      makeFact("overdue", {
-        predicate: "needs_action",
-        object: "Rotate keys",
-        reviewBy: twentyDaysAgo,
-      }),
-    ]
-    const text = await invokeAsk(facts)
-
-    // Heading reflects the split.
-    expect(text).toMatch(/### Tracking \(1 overdue, 1 active\)/)
-    // Overdue row carries the ⚠ marker and a days-overdue annotation.
-    expect(text).toMatch(/⚠ \*\*AuthService\*\* needs action \*\*Rotate keys\*\*/)
-    expect(text).toMatch(/20 days overdue/)
-    // Overdue must appear before the active row in the rendered output.
-    expect(text.indexOf("Rotate keys")).toBeLessThan(text.indexOf("Vendor response"))
-    // Active row does NOT get the ⚠ marker.
-    expect(text).not.toMatch(/⚠ \*\*AuthService\*\* waiting on/)
-    // Today's date is the implicit anchor — sanity that we didn't flip
-    // overdue/active by looking at the wrong side.
-    expect(today >= twentyDaysAgo).toBe(true)
-  })
-
-  it("renders a due-today tracking row as 'due today' instead of '0 days overdue'", async () => {
-    // The overdue gate is `reviewBy <= today` (matches core/fact.ts and
-    // lore-audit), so a row whose `reviewBy` is today still fires the ⚠
-    // prefix. But the text "0 days overdue" would read as a bug — so the
-    // day-zero branch emits "due today" instead.
-    const today = new Date().toISOString().split("T")[0]
-    const facts: Fact[] = [
-      makeFact("due-today", {
-        predicate: "needs_action",
-        object: "Rotate keys",
-        reviewBy: today,
-      }),
-    ]
-    const text = await invokeAsk(facts)
-
-    expect(text).toContain("⚠ **AuthService** needs action **Rotate keys**")
-    expect(text).toContain("due today")
-    expect(text).not.toMatch(/0 days? overdue/)
-    // Overdue count still includes this row — the gating did not change,
-    // only the display text for the day-zero branch.
-    expect(text).toMatch(/### Tracking \(1 overdue, 0 active\)/)
-  })
-
   it("resolves UUID-shaped objects to titles via the memory loader", async () => {
     // A `supersedes_decision` fact where both sides are UUIDs — the P1-05
     // title resolver should substitute them without forcing the caller to
@@ -619,21 +551,6 @@ describe("lore-ask grouped display (P2-06)", () => {
     // Raw UUIDs must not leak into the rendered triple.
     expect(text).not.toContain(DECISION_A)
     expect(text).not.toContain(DECISION_B)
-  })
-
-  it("annotates the Tracking heading with a hidden count when rows overflow", async () => {
-    const reviewPast = "2026-01-01"
-    const facts: Fact[] = Array.from({ length: 7 }, (_, i) =>
-      makeFact(`t-${i}`, {
-        predicate: "needs_action",
-        object: `Task${i}`,
-        reviewBy: reviewPast,
-      }),
-    )
-    const text = await invokeAsk(facts)
-    // All seven are overdue; cap to 5 so 2 are hidden and surface in the
-    // heading inside a single parenthesized suffix.
-    expect(text).toMatch(/### Tracking \(7 overdue, 0 active, 2 hidden\)/)
   })
 
   it("does not emit an overflow hint when the caller already passed a limit", async () => {
@@ -684,6 +601,55 @@ describe("lore-ask projectName resolution", () => {
       expect.objectContaining({ projectId: "proj-ambient" }),
     )
   })
+})
+
+describe("lore-fact action='create' — tracking-predicate Zod rejection", () => {
+  // Acceptance criterion (#23, line 452-455): the contracted
+  // `FactPredicate` union drives the Zod enum at the dispatcher
+  // boundary, so each tracking predicate string fails at parse time
+  // rather than via the deleted `trackingPredicateRedirect` helper.
+  // Pin all three values so widening `PREDICATE_VALUES` (intentionally
+  // or by paste) shows up as failing tests.
+  function makeServices() {
+    const createWithDedup = vi.fn()
+    return {
+      services: {
+        projects: { findByName: vi.fn() },
+        facts: {
+          createWithDedup,
+          create: vi.fn(),
+          queryByEntity: vi.fn(),
+          queryByObject: vi.fn(),
+        },
+        decisions: { getById: vi.fn() },
+        context: { project: null },
+        sessionMemories: { record: vi.fn(), get: vi.fn() },
+      },
+      createWithDedup,
+    }
+  }
+
+  for (const predicate of ["needs_action", "waiting_on", "blocked_by"] as const) {
+    it(`rejects predicate='${predicate}' at the dispatcher with a parse error`, async () => {
+      const mockServer = createMockServer()
+      const { services, createWithDedup } = makeServices()
+      registerKnowledgeTools(mockServer.server, services as never)
+      const loreFactCreate = mockServer.getActionHandler("lore-fact", "create")
+
+      const result = await loreFactCreate({
+        subject: "PR #25700",
+        predicate,
+        object: "Engineering",
+      } as never)
+
+      const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+      expect(payload.isError).toBe(true)
+      expect(payload.content[0].text).toContain("predicate")
+      // The handler must NOT have been reached — Zod's enum check
+      // fires before dispatch, so no service call is issued.
+      expect(createWithDedup).not.toHaveBeenCalled()
+    })
+  }
 })
 
 describe("lore-learn sourceMemoryId discipline", () => {
@@ -974,293 +940,6 @@ describe("lore-learn sourceMemoryId discipline", () => {
   })
 })
 
-describe("lore-open-loops", () => {
-  // Compute dates relative to the test-runner's "today" so the tool's
-  // `Date.now()`-driven bucketing is stable across clocks. Hardcoding
-  // `2026-04-24` would rot the moment the system clock advanced.
-  const today = new Date()
-  const dateNDaysFromToday = (days: number): string => {
-    const d = new Date(today)
-    d.setUTCDate(d.getUTCDate() + days)
-    return d.toISOString().split("T")[0]
-  }
-
-  function makeLoop(id: string, overrides: Partial<Fact> = {}): Fact {
-    return {
-      id,
-      subject: `subject-${id}`,
-      predicate: "needs_action",
-      object: `object-${id}`,
-      projectIds: [],
-      validFrom: dateNDaysFromToday(-30),
-      validUntil: null,
-      reviewBy: null,
-      sourceMemoryId: null,
-      confidence: "certain",
-      subjectEntityId: null,
-      objectEntityId: null,
-      ...overrides,
-    }
-  }
-
-  function servicesWith(loops: Fact[], hasMore = false) {
-    return {
-      projects: { findByName: vi.fn().mockResolvedValue(null) },
-      facts: {
-        listTracking: vi
-          .fn()
-          .mockResolvedValue({ items: loops, hasMore }),
-      },
-      context: { project: { id: "proj", name: "proj" } },
-    }
-  }
-
-  it("defaults to a 10-row cap per section and emits the overflow hint when truncated", async () => {
-    // The cap is the core P2-07 UX win. 271 loops in the Mail vault
-    // flooded agent context; 10+10 gives the urgency spread without the
-    // noise, and the hint teaches agents how to escape it.
-    const mockServer = createMockServer()
-    const overdueRows = Array.from({ length: 15 }, (_, i) =>
-      makeLoop(`o-${i}`, { reviewBy: dateNDaysFromToday(-(i + 1)) }),
-    )
-    const activeRows = Array.from({ length: 15 }, (_, i) =>
-      makeLoop(`a-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
-    )
-    const services = servicesWith([...overdueRows, ...activeRows])
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("### Overdue (10 shown of 15, hiding 5)")
-    expect(text).toContain("### Active (10 shown of 15, hiding 5)")
-    expect(text).toContain("Pass `{all: true}` to see everything")
-  })
-
-  it("truncates both sections independently and shows the hint once when both overflow", async () => {
-    // Pinned: the hint fires from EITHER section being truncated. Previous
-    // tests only exercise one section being truncated at a time, so this
-    // catches a regression where `anyTruncated` accidentally became
-    // `overdue && active` (AND) instead of `overdue || active` (OR).
-    const mockServer = createMockServer()
-    const overdueRows = Array.from({ length: 12 }, (_, i) =>
-      makeLoop(`overdue-${i}`, { reviewBy: dateNDaysFromToday(-(i + 1)) }),
-    )
-    const activeRows = Array.from({ length: 12 }, (_, i) =>
-      makeLoop(`active-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
-    )
-    const services = servicesWith([...overdueRows, ...activeRows])
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({ limit: 5 } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("### Overdue (5 shown of 12, hiding 7)")
-    expect(text).toContain("### Active (5 shown of 12, hiding 7)")
-    // The hint appears exactly once, not once per truncated section.
-    const hintMatches = text.match(/Pass `\{all: true\}`/g) ?? []
-    expect(hintMatches).toHaveLength(1)
-  })
-
-  it("all: true bypasses the cap and omits the overflow hint", async () => {
-    const mockServer = createMockServer()
-    const loops = Array.from({ length: 15 }, (_, i) =>
-      makeLoop(`a-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
-    )
-    const services = servicesWith(loops)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({ all: true } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("### Active (15)")
-    expect(text).not.toContain("shown of")
-    expect(text).not.toContain("Pass `{all: true}`")
-  })
-
-  it("explicit limit overrides the default", async () => {
-    const mockServer = createMockServer()
-    const loops = Array.from({ length: 10 }, (_, i) =>
-      makeLoop(`a-${i}`, { reviewBy: dateNDaysFromToday(i + 1) }),
-    )
-    const services = servicesWith(loops)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({ limit: 3 } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("### Active (3 shown of 10, hiding 7)")
-  })
-
-  it("passes the entity filter through to FactService.listTracking", async () => {
-    // Server-side filter is the scalability lever — capping client-side
-    // on 271 rows wastes a request's worth of payload every time.
-    const mockServer = createMockServer()
-    const services = servicesWith([])
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    await handler({ entity: "PR #25751" } as never)
-
-    expect(services.facts.listTracking).toHaveBeenCalledWith(
-      expect.objectContaining({ entity: "PR #25751" }),
-    )
-  })
-
-  it("annotates the total line with the entity filter and handles the empty case", async () => {
-    const mockServer = createMockServer()
-    const services = servicesWith([])
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({ entity: "ghost-entity" } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain('No open loops found matching "ghost-entity"')
-  })
-
-  it("marks ⚠⚠ for >=14 days overdue, ⚠ for >=1 day, and ranks most-overdue first", async () => {
-    // Urgency thresholds are pinned because agents parse them — flipping
-    // `>=14` to `>14` silently downgrades a two-week-overdue blocker.
-    // IDs chosen so none is a prefix of another (avoids `indexOf` false
-    // matches when one row embeds a shorter row's id in its subject).
-    const mockServer = createMockServer()
-    const loops = [
-      makeLoop("mild3d", { reviewBy: dateNDaysFromToday(-3) }),
-      makeLoop("severe20d", { reviewBy: dateNDaysFromToday(-20) }),
-      makeLoop("edge14d", { reviewBy: dateNDaysFromToday(-14) }),
-      makeLoop("edge1d", { reviewBy: dateNDaysFromToday(-1) }),
-    ]
-    const services = servicesWith(loops)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    // Order: 20-day > 14-day > 3-day > 1-day (most-overdue first).
-    const idx20 = text.indexOf("severe20d")
-    const idx14 = text.indexOf("edge14d")
-    const idx3 = text.indexOf("mild3d")
-    const idx1 = text.indexOf("edge1d")
-    expect(idx20).toBeGreaterThanOrEqual(0)
-    expect(idx20).toBeLessThan(idx14)
-    expect(idx14).toBeLessThan(idx3)
-    expect(idx3).toBeLessThan(idx1)
-
-    // Marker boundaries.
-    expect(text).toMatch(/⚠⚠ 20 days overdue:.*severe20d/)
-    expect(text).toMatch(/⚠⚠ 14 days overdue:.*edge14d/)
-    expect(text).toMatch(/⚠ 3 days overdue:.*mild3d/)
-    expect(text).toMatch(/⚠ 1 day overdue:.*edge1d/)
-  })
-
-  it("breaks ties via id lex when days-overdue and validFrom both match", async () => {
-    // Deterministic ultimate tiebreaker. Without it, two same-day
-    // assertions of identical triples rely on Notion's result-page order,
-    // which is implementation-defined and could silently flip under a
-    // future Notion API change. id-lex is cheap and test-pinnable.
-    const mockServer = createMockServer()
-    const sameReview = dateNDaysFromToday(-5)
-    const sameValidFrom = dateNDaysFromToday(-10)
-    const loops = [
-      makeLoop("loop-zeta", { reviewBy: sameReview, validFrom: sameValidFrom }),
-      makeLoop("loop-alpha", { reviewBy: sameReview, validFrom: sameValidFrom }),
-      makeLoop("loop-mu", { reviewBy: sameReview, validFrom: sameValidFrom }),
-    ]
-    const services = servicesWith(loops)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    const idxAlpha = text.indexOf("loop-alpha")
-    const idxMu = text.indexOf("loop-mu")
-    const idxZeta = text.indexOf("loop-zeta")
-    expect(idxAlpha).toBeLessThan(idxMu)
-    expect(idxMu).toBeLessThan(idxZeta)
-  })
-
-  it("rejects limit: 0 at the dispatcher's discriminated union", async () => {
-    // The polymorphic `lore-query` action='open-loops' branch carries
-    // `limit: number().int().min(1).max(200)`, so `limit: 0` never
-    // reaches the handler. Zero-cap output is a nonsense state (every
-    // section rendered as `0 shown of N, hiding N`); callers wanting
-    // full output use `{all: true}`, callers wanting the default omit
-    // `limit`. Drive the rejection through the handler so a refactor
-    // that moved the cap onto a runtime guard would still trip this.
-    const mockServer = createMockServer()
-    const services = servicesWith([makeLoop("a-1", { reviewBy: dateNDaysFromToday(1) })])
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const rejected = (await handler({ limit: 0 } as never)) as {
-      isError?: boolean
-    }
-    expect(rejected.isError).toBe(true)
-
-    // Sanity: `all: true` remains a valid escape hatch.
-    const okResult = await handler({ all: true } as never)
-    expect((okResult as { content: Array<{ text: string }> }).content[0].text).toContain(
-      "### Active",
-    )
-  })
-
-  it("ranks Active by soonest review date, with no-review rows sinking to the bottom", async () => {
-    const mockServer = createMockServer()
-    const loops = [
-      makeLoop("a-far", { reviewBy: dateNDaysFromToday(30) }),
-      makeLoop("a-no-review", { reviewBy: null }),
-      makeLoop("a-soon", { reviewBy: dateNDaysFromToday(2) }),
-    ]
-    const services = servicesWith(loops)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({ all: true } as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    const idxSoon = text.indexOf("a-soon")
-    const idxFar = text.indexOf("a-far")
-    const idxNone = text.indexOf("a-no-review")
-    expect(idxSoon).toBeLessThan(idxFar)
-    expect(idxFar).toBeLessThan(idxNone)
-    expect(text).toContain("— no review date")
-  })
-
-  it("surfaces the service-layer safety-cap clip as a warning", async () => {
-    // Defense in depth: if the service paginator ever hits its safety
-    // valve (bug, adversarial filter), the tool layer must tell the
-    // agent the result set is incomplete — not silently return a
-    // clipped list.
-    const mockServer = createMockServer()
-    const services = servicesWith([makeLoop("x")], true)
-    registerKnowledgeTools(mockServer.server, services as never)
-    registerQueryTools(mockServer.server, services as never)
-    const handler = mockServer.getActionHandler("lore-query", "open-loops")
-
-    const result = await handler({} as never)
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-
-    expect(text).toContain("Warnings:")
-    expect(text).toContain("safety cap")
-  })
-})
 
 describe("lore-audit projectName resolution", () => {
   it("returns an explicit error when projectName does not resolve", async () => {
@@ -1429,50 +1108,6 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
   })
 })
 
-describe("lore-learn — P3-02 tracking predicate rejection", () => {
-  function makeServices() {
-    return {
-      projects: { findByName: vi.fn() },
-      facts: { create: vi.fn(), createWithDedup: vi.fn() },
-      sessionMemories: {
-        record: vi.fn(),
-        get: vi.fn().mockReturnValue(undefined),
-      },
-      context: { project: null, isCatchAllFallback: false },
-    }
-  }
-
-  it.each(["needs_action", "waiting_on", "blocked_by"])(
-    "rejects %s with a redirect to the polymorphic lore-task action='create'",
-    async (predicate) => {
-      const mockServer = createMockServer()
-      const services = makeServices()
-      registerKnowledgeTools(mockServer.server, services as never)
-      registerQueryTools(mockServer.server, services as never)
-      const loreLearn = mockServer.getActionHandler("lore-fact", "create")
-
-      const result = await loreLearn({
-        subject: "AuthService",
-        predicate,
-        object: "Audit secret rotation",
-      } as never)
-
-      const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-      expect(payload.isError).toBe(true)
-      // The error message names the polymorphic surface (PF3-06) — not the
-      // deprecated `lore-task-create` alias. The rejection is the
-      // moment-of-mistake nudge, so it must teach the surface that's not
-      // itself deprecated.
-      expect(payload.content[0].text).toContain("lore-task")
-      expect(payload.content[0].text).toContain("action: 'create'")
-      expect(payload.content[0].text).not.toMatch(/`lore-task-create`/)
-      expect(payload.content[0].text).toContain("subject")
-      expect(payload.content[0].text).toContain("description")
-      // Crucially: no fact was written.
-      expect(services.facts.createWithDedup).not.toHaveBeenCalled()
-    }
-  )
-})
 
 describe("lore-ask — P3-02 Tasks bucket", () => {
   function makeAskServices(overrides: Record<string, unknown> = {}) {

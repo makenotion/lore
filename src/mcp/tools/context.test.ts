@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
-import type { Fact, Memory } from "../../types.js"
+import type { Fact, Memory, TaskSummary } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
   return {
@@ -52,6 +52,36 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
   }
 }
 
+function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
+  const base: TaskSummary = {
+    id: overrides.id,
+    title: overrides.title ?? `Task ${overrides.id}`,
+    projectIds: [],
+    topicId: null,
+    source: "manual",
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
+    reviewBy: null,
+    decidedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    session: "",
+    taskState: "open",
+    blockedBy: "",
+    entity: overrides.entity ?? "",
+    createdAt: "2026-04-20T00:00:00Z",
+    updatedAt: "2026-04-20T00:00:00Z",
+  }
+  return { ...base, ...overrides }
+}
+
 function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
@@ -89,12 +119,13 @@ interface WakeServicesOverrides {
   /**
    * Memories returned when the search query equals `taskQuery`. Lets
    * P3-05 tests distinguish the user-query-seeded task search from the
-   * open-loop-entity-seeded related search at the MCP layer (same shape
+   * task-entity-seeded related search at the MCP layer (same shape
    * as the data-layer stub in `wakeup.test.ts`).
    */
   taskQuery?: string
   taskMemories?: Memory[]
   facts?: Fact[]
+  tasks?: TaskSummary[]
 }
 
 function makeWakeServices(overrides: WakeServicesOverrides = {}) {
@@ -115,32 +146,9 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     return overrides.relatedMemories ?? []
   })
   const getTitleById = vi.fn(async () => null)
-  // Mirror the tracking-partition contract: filter to tracking predicates
-  // and bias the surviving rows toward most-overdue under any cap. Tests
-  // that pin specific cap behavior arrange fixture order to match the
-  // urgency-biased ordering the real `listTracking` produces.
-  const trackingPredicates = new Set(["needs_action", "waiting_on", "blocked_by"])
-  const factsListTracking = vi.fn(
-    async (opts: { projectId?: string; limit?: number } = {}) => {
-      const tracking = (overrides.facts ?? []).filter((f) =>
-        trackingPredicates.has(f.predicate),
-      )
-      const sorted = [...tracking].sort((a, b) => {
-        if (a.reviewBy === b.reviewBy) return 0
-        if (a.reviewBy === null) return 1
-        if (b.reviewBy === null) return -1
-        return a.reviewBy < b.reviewBy ? -1 : 1
-      })
-      const total = sorted.length
-      const items =
-        opts.limit !== undefined ? sorted.slice(0, opts.limit) : sorted
-      return { items, hasMore: items.length < total }
-    },
-  )
   const factsListRecent = vi.fn(
-    async (opts: { excludePredicates?: string[]; limit?: number }) => {
-      const excluded = new Set(opts.excludePredicates ?? [])
-      const all = (overrides.facts ?? []).filter((f) => !excluded.has(f.predicate))
+    async (opts: { limit?: number } = {}) => {
+      const all = overrides.facts ?? []
       return { items: all.slice(0, opts.limit), hasMore: false }
     },
   )
@@ -153,7 +161,6 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       getTitleById,
     },
     facts: {
-      listTracking: factsListTracking,
       listRecent: factsListRecent,
     },
     decisions: {
@@ -161,7 +168,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       queryOverdue: vi.fn(async () => []),
     },
     tasks: {
-      list: vi.fn(async () => ({ items: [] })),
+      list: vi.fn(async () => ({ items: overrides.tasks ?? [] })),
     },
     context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
     config: { projects: [] },
@@ -169,7 +176,6 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     _calls: {
       memoriesList,
       memoriesSearch,
-      factsListTracking,
       factsListRecent,
     },
   }
@@ -304,19 +310,7 @@ describe("lore-wake-up — Part C: UUID → title resolution", () => {
 })
 
 describe("lore-wake-up — Part D: per-section limits", () => {
-  it("forwards openLoopLimit to the tracking-predicate query", async () => {
-    const mockServer = createMockServer()
-    const services = makeWakeServices({ facts: [] })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    await wake({ openLoopLimit: 7 } as never)
-
-    const [opts] = services._calls.factsListTracking.mock.calls[0]
-    expect(opts?.limit).toBe(7)
-  })
-
-  it("forwards knowledgeFactLimit to the non-tracking listRecent query", async () => {
+  it("forwards knowledgeFactLimit to the listRecent query", async () => {
     const mockServer = createMockServer()
     const services = makeWakeServices({ facts: [] })
 
@@ -327,43 +321,6 @@ describe("lore-wake-up — Part D: per-section limits", () => {
     expect(services._calls.factsListRecent).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 3 }),
     )
-  })
-
-  it("skips the open-loops section when openLoopLimit is 0", async () => {
-    // Pairs with the wakeup.ts short-circuit: 0 means "don't fetch",
-    // which also means "don't render".
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      facts: [makeFact({ id: "f1", predicate: "needs_action" })],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({ openLoopLimit: 0 } as never)
-
-    const text = extractText(result)
-    expect(text).not.toContain("## Open Loops")
-    expect(services._calls.factsListTracking).not.toHaveBeenCalled()
-  })
-
-  it("openLoopLimit: 0 cascades to skip the related-memory search", async () => {
-    // Related memories are seeded from open-loop entities, so with zero
-    // open loops there's nothing to seed from. The memories.search fan-out
-    // must not fire — otherwise we pay for a wide relevance search with
-    // an empty query.
-    const mockServer = createMockServer()
-    const services = makeWakeServices({
-      facts: [makeFact({ id: "f1", predicate: "needs_action" })],
-      relatedMemories: [makeMemory("r1", { title: "should not surface" })],
-    })
-
-    registerContextTools(mockServer.server, services as never)
-    const wake = mockServer.getActionHandler("lore-context", "wake-up")
-    const result = await wake({ openLoopLimit: 0 } as never)
-
-    const text = extractText(result)
-    expect(text).not.toContain("Related to Open Loops")
-    expect(services._calls.memoriesSearch).not.toHaveBeenCalled()
   })
 })
 
@@ -407,19 +364,18 @@ describe("lore-wake-up — expand interacts with collapse", () => {
   })
 
   it("renders Related Memories at h3 so the markdown tree stays balanced", async () => {
-    // Related to Open Loops has no date-bucket sub-head, so entries sit
-    // directly under the `## Related to Open Loops` h2 — h3 is the right
+    // Related Memories has no date-bucket sub-head, so entries sit
+    // directly under the `## Related Memories` h2 — h3 is the right
     // depth. Recent Memories entries sit under `### Today/Yesterday/Earlier`
     // and must stay at h4.
     const mockServer = createMockServer()
     const services = makeWakeServices({
       memories: [makeMemory("m1", { title: "Recent entry" })],
-      facts: [
-        makeFact({
-          id: "f1",
-          predicate: "needs_action",
-          subject: "Router migration",
-          object: "OIDC",
+      tasks: [
+        makeTask({
+          id: "t1",
+          title: "Router migration",
+          entity: "Router migration",
         }),
       ],
       relatedMemories: [makeMemory("r1", { title: "Related entry" })],
@@ -489,8 +445,8 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
   })
 
   it("omits the task section when taskMemoryLimit: 0 even with a userQuery", async () => {
-    // Explicit 0 is the "skip this section" knob; mirrors how
-    // openLoopLimit: 0 short-circuits the open-loops section.
+    // Explicit 0 is the "skip this section" knob — the search isn't
+    // fired and the section isn't rendered.
     const mockServer = createMockServer()
     const services = makeWakeServices({
       taskQuery: "fix auth",
@@ -517,9 +473,9 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
   // claim "rendering is the only divergence" only holds if the row counts
   // line up across both surfaces.
 
-  it("applies RANKED_WAKEUP_LIMITS to the open-loop and knowledge-fact sections when userQuery is set", async () => {
+  it("applies RANKED_WAKEUP_LIMITS to the knowledge-fact section when userQuery is set", async () => {
     // The data-layer caps for sections that don't run through topical
-    // collapse (open loops + knowledge facts) should flow straight from
+    // collapse (knowledge facts) should flow straight from
     // RANKED_WAKEUP_LIMITS into the underlying service calls.
     const mockServer = createMockServer()
     const services = makeWakeServices({
@@ -531,9 +487,6 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     const wake = mockServer.getActionHandler("lore-context", "wake-up")
     await wake({ userQuery: "fix auth" } as never)
 
-    expect(services._calls.factsListTracking).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: RANKED_WAKEUP_LIMITS.openLoopLimit }),
-    )
     expect(services._calls.factsListRecent).toHaveBeenCalledWith(
       expect.objectContaining({ limit: RANKED_WAKEUP_LIMITS.knowledgeFactLimit }),
     )
@@ -570,13 +523,9 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     const wake = mockServer.getActionHandler("lore-context", "wake-up")
     await wake({
       userQuery: "fix auth",
-      openLoopLimit: 42,
       knowledgeFactLimit: 47,
     } as never)
 
-    expect(services._calls.factsListTracking).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 42 }),
-    )
     expect(services._calls.factsListRecent).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 47 }),
     )

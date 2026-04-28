@@ -4,17 +4,16 @@
  * command, and the session-end background synthesizer.
  *
  * Produces a project-scoped, markdown-formatted snapshot of recent activity
- * (memories grouped by source, tracking facts as open loops, and the
- * previous digest's title + date). The synthesizer agent consumes the
- * `raw` string as untrusted content and writes a distilled `source: digest`
- * memory back to the vault.
+ * (memories grouped by source, active task subjects under "Open Work",
+ * and the previous digest's title + date). The synthesizer agent consumes
+ * the `raw` string as untrusted content and writes a distilled
+ * `source: digest` memory back to the vault.
  *
  * Kept pure (no process state, no spawn) so it can be tested against
  * service stubs and reused in any interface.
  */
 
-import type { Memory, Fact } from "../types.js"
-import { TRACKING_PREDICATES } from "../types.js"
+import type { Memory, TaskSummary } from "../types.js"
 
 /**
  * Default staleness window matching `DEFAULT_DIGEST_FRESHNESS_DAYS` in
@@ -45,17 +44,25 @@ export interface DigestServices {
       sortBy?: "created_time" | "last_edited_time"
     }): Promise<{ items: Memory[] }>
   }
-  facts: {
-    queryBySubject(
-      subject: string,
-      opts?: {
-        projectId?: string
-        predicates?: readonly string[]
-        limit?: number
-      },
-    ): Promise<Fact[]>
+  tasks: {
+    list(opts?: {
+      projectId?: string
+      states?: import("../types.js").TaskState[]
+      limit?: number
+    }): Promise<{ items: TaskSummary[]; nextCursor?: string }>
   }
 }
+
+/**
+ * Cap on the "Open Work" tasks section so prompt-budget impact stays
+ * roughly neutral against the pre-#23 tracking-fact section. The fetch
+ * issues `limit: MAX_OPEN_WORK_TASKS + 1` so the renderer can detect
+ * truncation locally; if Notion still reports `nextCursor` after that
+ * fetch (i.e. the open-work population exceeds the local probe), the
+ * heading and footer indicate "many more" rather than under-counting
+ * a vault with 100+ open tasks as "+1 more".
+ */
+const MAX_OPEN_WORK_TASKS = 25
 
 export interface GatherDigestOpts {
   /** Project to scope the digest to. `null` / omitted = vault-wide. */
@@ -123,29 +130,41 @@ export async function gatherDigestData(
   const now = opts.now ? opts.now() : new Date()
   const { start: windowStart, end: windowEnd } = computeWindow(opts, now)
 
-  const [{ items: recentMemories }, { items: lastDigestList }, openLoops] =
-    await Promise.all([
-      services.memories.list({
-        projectId: opts.projectId ?? undefined,
-        since: windowStart,
-        until: windowEnd,
-        limit: MAX_RECENT_MEMORIES,
-      }),
-      // Sort by creation so freshness aligns with "latest created digest":
-      // an edit to an older digest must not mask a newer one. Mirrors the
-      // same guard in `core/wakeup.ts` — keeping the two lookups consistent
-      // is load-bearing for the wake-up fast path.
-      services.memories.list({
-        projectId: opts.projectId ?? undefined,
-        source: "digest",
-        limit: 1,
-        sortBy: "created_time",
-      }),
-      services.facts.queryBySubject("", {
-        projectId: opts.projectId ?? undefined,
-        predicates: TRACKING_PREDICATES,
-      }),
-    ])
+  const [
+    { items: recentMemories },
+    { items: lastDigestList },
+    { items: openTasks, nextCursor: openTasksNextCursor },
+  ] = await Promise.all([
+    services.memories.list({
+      projectId: opts.projectId ?? undefined,
+      since: windowStart,
+      until: windowEnd,
+      limit: MAX_RECENT_MEMORIES,
+    }),
+    // Sort by creation so freshness aligns with "latest created digest":
+    // an edit to an older digest must not mask a newer one. Mirrors the
+    // same guard in `core/wakeup.ts` — keeping the two lookups consistent
+    // is load-bearing for the wake-up fast path.
+    services.memories.list({
+      projectId: opts.projectId ?? undefined,
+      source: "digest",
+      limit: 1,
+      sortBy: "created_time",
+    }),
+    // Open Work signal: active tasks (open + blocked). The synthesizer
+    // prompt depends on a "what's open" cue, so this section is the
+    // committed replacement for the pre-#23 tracking-fact open-loops
+    // grouping. Fetch one beyond the display cap so the renderer can
+    // distinguish "exactly 25 visible, none truncated" from "25 visible
+    // plus more behind the cap" — and trust Notion's `nextCursor` /
+    // `has_more` signal for vaults whose open-task population exceeds
+    // the local probe size.
+    services.tasks.list({
+      projectId: opts.projectId ?? undefined,
+      states: ["open", "blocked"],
+      limit: MAX_OPEN_WORK_TASKS + 1,
+    }),
+  ])
 
   const lastDigest = lastDigestList[0] ?? null
   const lastDigestDate = lastDigest ? isoDate(lastDigest.createdAt) : null
@@ -192,15 +211,44 @@ export async function gatherDigestData(
     sections.push("## Activity\nNo memories found in this window.\n")
   }
 
-  if (openLoops.length > 0) {
+  if (openTasks.length > 0) {
     const today = isoDate(now)
-    sections.push(`## Open Loops (${openLoops.length})`)
-    for (const fact of openLoops) {
-      const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
-      const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
+    const visible = openTasks.slice(0, MAX_OPEN_WORK_TASKS)
+    // Two truncation signals: a local one (more rows fetched than
+    // displayed) and Notion's `nextCursor` / `has_more` (the
+    // open-task population exceeds the local probe of
+    // `MAX_OPEN_WORK_TASKS + 1`). When the latter fires, the exact
+    // hidden count is unknown without paginating, so render
+    // "many more" rather than under-counting against the local probe
+    // — a vault with hundreds of open tasks would otherwise be
+    // reported to the synthesizer as "+1 more".
+    const localHidden = openTasks.length - visible.length
+    const trulyTruncated = Boolean(openTasksNextCursor)
+    const heading = trulyTruncated
+      ? `## Open Work (${visible.length} shown; many more open beyond the cap)`
+      : localHidden > 0
+        ? `## Open Work (${visible.length} shown of ${openTasks.length})`
+        : `## Open Work (${openTasks.length})`
+    sections.push(heading)
+    for (const task of visible) {
+      const stateLabel = task.taskState ?? "open"
+      const blocker = task.blockedBy ? `, blocked by ${task.blockedBy}` : ""
+      const entityHint = task.entity && task.entity !== task.title ? ` — ${task.entity}` : ""
+      const due = task.reviewBy
+        ? task.reviewBy <= today
+          ? ` (due ${task.reviewBy} **OVERDUE**)`
+          : ` (due ${task.reviewBy})`
+        : ""
       sections.push(
-        `- **${fact.subject}** → ${fact.predicate.replace(/_/g, " ")} → **${fact.object}** [${fact.confidence}]${since}${overdue}`,
+        `- **${task.title}**${entityHint} [${stateLabel}${blocker}]${due}`,
       )
+    }
+    if (trulyTruncated) {
+      sections.push(
+        `- … and many more open tasks not shown (call \`lore-task action='list'\` for the full picture).`,
+      )
+    } else if (localHidden > 0) {
+      sections.push(`- … and ${localHidden} more.`)
     }
     sections.push("")
   }

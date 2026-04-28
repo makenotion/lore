@@ -18,12 +18,11 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories                 |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
-| `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue. P3-02 successor to tracking-predicate facts. |
-| `task-migration.ts` | `migrateTrackingFactsToTasks()` | One-shot conversion from tracking facts → task memories. Plan-then-execute via `lore migrate --migrate-tracking-to-tasks --yes`. |
+| `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue. Canonical surface for tracked work (P3-02). |
 | `entity.ts`   | `EntityService`    | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases. Optional service — `null` on legacy vaults that pre-date the Entities DB. `merge` was scoped out of PF3-01 because it requires a `FactService.repointEntity` helper that hasn't landed yet. |
 | `entity-migration.ts` | `buildEntities()` | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`. |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
-| `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + open-loop-related memories for wake-up surfaces (MCP tool + shell hook) |
+| `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + active-task-related memories for wake-up surfaces (MCP tool + shell hook) |
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
 | `fact-encoding.ts`   | `fixFactEncoding()`   | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions |
 | `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |
@@ -331,7 +330,7 @@ The `list()` method uses `dataSources.query()` with property filters and is
 suited for browsing recent memories by project/topic/source. It has no
 substring-title filter — use `search()` for anything that needs relevance
 ranking or body-text matching (e.g. `loadWakeUpData`'s related-memories pass,
-which seeds a single query from open-loop fact subjects and objects).
+which seeds a single query from active-task subjects).
 
 ## Fact Invalidation
 
@@ -383,7 +382,7 @@ and not a general clamp utility.
 
 | Method                          | Behavior                                                                       |
 | ------------------------------- | ------------------------------------------------------------------------------ |
-| `listRecent(opts)`              | Single-page, server-filtered `created_time desc`. Returns `{ items, hasMore }` so callers can detect truncation without a second round-trip. Accepts `excludePredicates` for partitioning reads (see below). |
+| `listRecent(opts)`              | Single-page, server-filtered `created_time desc`. Returns `{ items, hasMore }` so callers can detect truncation without a second round-trip. |
 
 ### Writes on existing facts
 
@@ -393,36 +392,36 @@ and not a general clamp utility.
 | `invalidate(id)`                 | Mark no-longer-true (sets `Valid Until` = today)   |
 | `setSource(id, sourceMemoryId)`  | Overwrite the `Source` relation with one memory    |
 
-### Two-path pattern for partitioned reads
+### Recent knowledge facts on the wake-up hot path
 
-When a caller needs to split facts into disjoint buckets (e.g. wake-up
-separating `TRACKING_PREDICATES` from knowledge facts), fire **two targeted
-queries in parallel** rather than one full-scan followed by a client-side
-partition:
+`loadWakeUpData` calls `listRecent({ projectId, limit: knowledgeLimit })` to
+populate the Active Facts section. The query is single-page and server-side
+filtered by project scope + `Valid Until is_empty`, so wake-up never paginates
+on session start.
 
-- Tracking side: `listTracking({ projectId, limit: 100 })`
-- Knowledge side: `listRecent({ projectId, excludePredicates: TRACKING_PREDICATES, limit: N })`
+Tracked work — open / blocked / done lifecycle — is served by `lore-task
+action='list'` against the Memories DB rather than by a fact partition.
+Pre-#23 (0.6.0) wake-up additionally split tracking-predicate facts off
+into an Open Loops section; that surface is gone, the `FactPredicate` union
+no longer carries those values, and `pageToFact` filters historical rows
+in Notion so they cannot resurface as live `Fact` objects on read paths.
 
-Both queries run server-side against Notion's `select` filter (the knowledge
-side uses `AND (Predicate does_not_equal ...)` per tracking predicate). This
-replaced the earlier `queryBySubject("")` full-scan in `loadWakeUpData`,
-which paginated the entire project fact table on every hook fire just to
-populate two bounded sections.
+### `pageToFact` filters historical tracking-predicate rows
 
-**Use `listTracking`, not `queryBySubject("")`, for the tracking side.**
-Both methods can produce the tracking partition, but the sort order under
-the cap diverges in a way that quietly breaks recall:
+`pageToFact` returns `Fact | null`. It returns `null` when the row's raw
+`Predicate` select value is one of the historical tracking strings
+(`needs_action` / `waiting_on` / `blocked_by`). Notion's schema is
+additive-only (`src/notion/setup.ts`), so those select options stay
+registered and historical rows still exist for vaults that skipped the
+`--migrate-tracking-to-tasks` migration before upgrading to 0.6.0.
+Filtering at the deserialization boundary keeps the pre-#23 read shape
+intact (`FactService.queryBySubject` etc. return `Fact[]`, not
+`Fact | null[]`) — every caller narrows via `.filter(isFact)`.
 
-| Method | Sort order | Under-cap behaviour |
-|--------|-----------|---------------------|
-| `queryBySubject("", { predicates: TRACKING_PREDICATES, limit: N })` | `created_time desc` | Drops the rows whose `Review By` is furthest in the past — the rows wake-up exists to surface. |
-| `listTracking({ limit: N })` | `Review By asc`, then `created_time desc` | Drops the soonest-due / no-due-date tail. The most-overdue rows survive. |
-
-`listTracking` also returns `{ items, hasMore }`, so callers can hint at
-the follow-up surface (`lore-task action='list'`) when truncation
-happens rather than silently capping. Do not regress this back to
-`queryBySubject("")` for an open-loops surface — see the 0.6.0 review,
-issue 04.
+`FactService.countByPredicateRaw` deliberately bypasses this filter and
+walks `response.results.length` directly so the `lore status` preflight
+keeps counting the orphan rows after the typed-union contraction. See
+its docstring for the double-back-door rationale.
 
 ## Entity Resolution and the SubjectKey / SubjectEntity coexistence (PF3-01)
 
@@ -430,7 +429,7 @@ The Facts DB carries two parallel canonicalization columns by design:
 
 | Column | Type | Role |
 |---|---|---|
-| `SubjectKey` | rich_text | Lowercased + NFC + whitespace-collapsed + trailing-punct-stripped form of `Subject`. Populated by `FactService.create` and the `--dedup-keys` migration. Backs the substring-fallback path in `queryBySubject` / `listTracking` for vaults that haven't run `--build-entities`. |
+| `SubjectKey` | rich_text | Lowercased + NFC + whitespace-collapsed + trailing-punct-stripped form of `Subject`. Populated by `FactService.create` and the `--dedup-keys` migration. Backs the substring-fallback path in `queryBySubject` for vaults that haven't run `--build-entities`. |
 | `SubjectEntity` / `ObjectEntity` | relation → Entities | Canonical entity row IDs. Populated by `lore-fact action='create'` after `EntityService.resolveOrCreateEntity` and by the `--build-entities` migration. Backs `queryByEntityId` for vaults that have. |
 
 Why both columns coexist for one release cycle:

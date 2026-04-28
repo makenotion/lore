@@ -1,11 +1,10 @@
 /**
  * Task tools (P3-02 + PF3-06).
  *
- * Tasks supersede the legacy tracking-predicate facts (`needs_action`,
- * `waiting_on`, `blocked_by`). The polymorphic `lore-task` dispatcher
- * is action-routed across `create` / `update` / `close` / `list` —
- * matching the rest of the P3-01 polymorphic family (`lore-memory`,
- * `lore-decision`, etc.).
+ * Tasks are the canonical surface for tracked work. The polymorphic
+ * `lore-task` dispatcher is action-routed across
+ * `create` / `update` / `close` / `list` — matching the rest of the
+ * P3-01 polymorphic family (`lore-memory`, `lore-decision`, etc.).
  *
  * Each handler is a thin orchestration layer over `services.tasks`
  * (`TaskService`) plus project-name resolution; the heavy lifting —
@@ -36,10 +35,9 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
- * Default cap for `lore-task action='list'` listings. Matches
- * `lore-query action='open-loops'`' default so the agent UX is
- * consistent. Per-section, not total — mirrors how
- * `lore-query action='open-loops'` splits Overdue + Active.
+ * Default cap for `lore-task action='list'` listings. Per-section,
+ * not total — Overdue and Active render independently so a vault with
+ * many overdue tasks still surfaces some active ones above the cap.
  */
 const DEFAULT_TASKS_LIMIT = 10
 
@@ -495,10 +493,10 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
     {
       title: "Task operations",
       description:
-        "Create, update, close, or list tasks. Tasks supersede the legacy " +
-        "tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by` " +
-        "on `lore-fact`); the description lives in the page body (no 2000-char " +
-        "rich_text limit) and the subject is structurally indexed. Action-dispatched:\n\n" +
+        "Create, update, close, or list tasks. Tasks are the canonical " +
+        "surface for tracked work; the description lives in the page body " +
+        "(no 2000-char rich_text limit) and the subject is structurally " +
+        "indexed. Action-dispatched:\n\n" +
         "- `action: 'create'` — open a new task. Use `entity` when the task is about " +
         "a specific subject other facts/decisions also reference; `lore-query` " +
         "action='ask' surfaces it in the Tasks bucket.\n" +

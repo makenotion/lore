@@ -13,7 +13,6 @@
  * to 25+ body fetches just to read a Title property.
  */
 
-import { TRACKING_PREDICATES } from "../types.js"
 import type { Fact, FactPredicate, Memory } from "../types.js"
 
 /**
@@ -101,10 +100,9 @@ export async function resolveReferencedTitles(
  * can attach confidence, validity window, review hints, or a multi-line
  * ID footer without re-implementing the subject/object substitution.
  *
- * `prefix` is inserted between the leading `- ` bullet and the subject.
- * Used by `lore-query action='ask'`'s grouped display (P2-06) to
- * surface a `⚠ ` marker on overdue tracking facts without
- * reimplementing the triple rendering.
+ * `prefix` is inserted between the leading `- ` bullet and the subject
+ * — kept for callers that want to attach a marker (e.g. `⚠ `) without
+ * re-implementing the triple rendering.
  */
 export interface RenderFactOptions {
   titleMap: Map<string, string>
@@ -142,7 +140,7 @@ export function displayId(
  * UUID-aware value rendering: looks up a UUID through the title map
  * (with unresolved-hint fallback) and returns plain strings verbatim.
  * Shared by `renderFact` and call sites that need per-side substitution
- * inside a non-standard line format (e.g., wake-up's Open Loops arrows).
+ * inside a non-standard line format.
  */
 export function displayValue(
   value: string,
@@ -170,46 +168,33 @@ function unresolvedHint(id: string): string {
  *
  * - `governance` — decision-graph edges (`decided_by`, `supersedes_decision`)
  *   that answer "what decisions govern this?"
- * - `tracking` — open loops (`needs_action`, `waiting_on`, `blocked_by`)
- *   that answer "what is pending on this?"
  * - `structure` — everything else (type, composition, causation, dependency,
  *   ownership) — the default bucket.
  *
  * Unknown predicates fall through to `structure` so a predicate added
  * server-side still renders in *some* bucket instead of disappearing.
- * Kept in `render.ts` so other read tools (future wake-up top-k sections,
- * P2-07 ranked open-loops) can reuse the same taxonomy without
- * duplicating predicate lists.
+ * Kept in `render.ts` so other read tools can reuse the same taxonomy
+ * without duplicating predicate lists.
  */
-export type FactClass = "governance" | "structure" | "tracking"
+export type FactClass = "governance" | "structure"
 
 const GOVERNANCE_PREDICATES: ReadonlySet<FactPredicate> = new Set<FactPredicate>([
   "decided_by",
   "supersedes_decision",
 ])
 
-// Derived from the canonical `TRACKING_PREDICATES` export so a new tracking
-// predicate added to the `FactPredicate` union flows through here without a
-// second-copy update. `TRACKING_PREDICATES` already has several consumers
-// (`core/fact.ts`, `core/wakeup.ts`, `mcp/tools/digest.ts`, etc.) — keep this
-// set in lockstep with the rest of the codebase rather than maintaining a
-// local literal.
-const TRACKING_PREDICATE_SET: ReadonlySet<FactPredicate> = new Set(TRACKING_PREDICATES)
-
 export function factClass(predicate: FactPredicate): FactClass {
   if (GOVERNANCE_PREDICATES.has(predicate)) return "governance"
-  if (TRACKING_PREDICATE_SET.has(predicate)) return "tracking"
   return "structure"
 }
 
 export interface GroupedFacts {
   governance: Fact[]
   structure: Fact[]
-  tracking: Fact[]
 }
 
 /**
- * Group facts into the three `FactClass` buckets and sort each one
+ * Group facts into `FactClass` buckets and sort each one
  * most-recent-first by `validFrom`. Facts without a `validFrom` sink to
  * the end so newer rows surface above legacy entries that predate the
  * column.
@@ -220,7 +205,7 @@ export interface GroupedFacts {
  * `resolveCanonicalDecisionLinks` dedupes) deterministic.
  */
 export function groupFactsByClass(facts: readonly Fact[]): GroupedFacts {
-  const groups: GroupedFacts = { governance: [], structure: [], tracking: [] }
+  const groups: GroupedFacts = { governance: [], structure: [] }
   for (const fact of facts) {
     groups[factClass(fact.predicate)].push(fact)
   }
@@ -232,7 +217,6 @@ export function groupFactsByClass(facts: readonly Fact[]): GroupedFacts {
   }
   groups.governance.sort(compare)
   groups.structure.sort(compare)
-  groups.tracking.sort(compare)
   return groups
 }
 

@@ -108,7 +108,7 @@ export async function initServicesFromConfig(
   // index-tier listings without body fetch).
   const decisions = new DecisionService(client, db.memories)
   // Tasks (P3-02) are likewise Memories-DB backed via the `Kind = task`
-  // discriminator. They supersede tracking-predicate facts.
+  // discriminator. Tasks are the canonical surface for tracked work.
   const tasks = new TaskService(client, db.memories)
   // PF3-01 — Entities DB is optional on legacy vaults. Wire up the
   // service only when the database exists; downstream code paths

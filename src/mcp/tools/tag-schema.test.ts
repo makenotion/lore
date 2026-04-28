@@ -86,27 +86,4 @@ describe("keywordsSchema", () => {
     const result = keywordsSchema.safeParse("x".repeat(2000))
     expect(result.success).toBe(true)
   })
-
-  it("rejects forged migration markers — reserved for tracking-fact → task tooling", () => {
-    // PF3-07 trust-boundary defense: the migration uses
-    // `migrated-from-fact <factId>` keywords as its idempotency hinge
-    // in `findMigratedFactIds`. A user-supplied keyword shadowing the
-    // marker could (theoretically) cause the migration to skip a
-    // genuine fact. The migration writer goes through the core
-    // service, not the MCP boundary, so legitimate marker writes are
-    // transparent to this rejection.
-    const result = keywordsSchema.safeParse("pr-25701 migrated-from-fact abc123")
-    expect(result.success).toBe(false)
-    if (result.success) return
-    expect(result.error.issues[0].message).toContain("migrated-from-fact")
-    expect(result.error.issues[0].message).toContain("reserved")
-  })
-
-  it("accepts the literal token `migrated-from-fact` without a following value (not a marker)", () => {
-    // The reserved-pattern regex requires whitespace + non-empty
-    // token after the keyword. Standalone occurrences (in prose,
-    // discussion, etc.) are not markers and don't shadow anything.
-    const result = keywordsSchema.safeParse("discussion-of-migrated-from-fact-as-a-concept")
-    expect(result.success).toBe(true)
-  })
 })

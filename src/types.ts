@@ -165,11 +165,10 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
  * tools like `lore-decision action='list'` can filter without post-processing.
  *
  * `task` memories carry tracking-style state (open / blocked / done) and
- * supersede the legacy tracking-predicate facts (`needs_action` /
- * `waiting_on` / `blocked_by`). The Memories DB hosts them so the title
- * is a structured subject and the body holds the full description —
- * compare to facts where the Object field is a 2000-char rich_text and
- * structural queries fall apart on prose.
+ * are the canonical surface for tracked work. The Memories DB hosts them
+ * so the title is a structured subject and the body holds the full
+ * description — compare to facts where the Object field is a 2000-char
+ * rich_text and structural queries fall apart on prose.
  */
 export type MemoryKind =
   | "note"
@@ -181,15 +180,13 @@ export type MemoryKind =
   | "task"
 
 /**
- * Lifecycle state for `Kind = task` memories. Mirrors the predicates the
- * legacy tracking facts encoded:
+ * Lifecycle state for `Kind = task` memories.
  *
  * - `open` — needs action; no one yet picking it up. Default for fresh
- *   tasks and for migrated `needs_action` / `waiting_on` facts.
+ *   tasks.
  * - `in-progress` — actively being worked.
  * - `blocked` — waiting on an external dependency. Pair with `Blocked By`
- *   to name the blocker (PR number, person, service). Migrated
- *   `blocked_by` facts land here.
+ *   to name the blocker (PR number, person, service).
  * - `done` — closed successfully. `lore-task action='close'` writes this.
  * - `cancelled` — dropped without completion. Distinct from `done` so
  *   metrics distinguish "shipped" from "abandoned".
@@ -687,21 +684,11 @@ export type FactPredicate =
   | "replaces"
   | "extends"
   | "conflicts_with"
-  | "needs_action"
-  | "waiting_on"
-  | "blocked_by"
   // Decision-graph predicates — created exclusively by DecisionService.
   // Not exposed through `lore-fact` to keep the decision graph consistent.
   | "decided_by"
   | "supersedes_decision"
   | "informs"
-
-/** Predicates that represent open loops / tracked items. */
-export const TRACKING_PREDICATES: FactPredicate[] = [
-  "needs_action",
-  "waiting_on",
-  "blocked_by",
-]
 
 export type FactConfidence = "certain" | "likely" | "speculative"
 

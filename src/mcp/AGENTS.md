@@ -22,7 +22,7 @@ removed in the `0.6.0` deprecation purge (see "Deprecation timeline" below).
 | `tools/memory.ts` | `lore-memory` polymorphic dispatcher (`save` / `update` / `archive` / `expand`) |
 | `tools/query.ts` | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts) |
 | `tools/project.ts` | `lore-project` polymorphic dispatcher (`list` / `get`) |
-| `tools/knowledge.ts` | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `open-loops` / `audit` handlers exported for `lore-query` |
+| `tools/knowledge.ts` | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `audit` handlers exported for `lore-query` |
 | `tools/journal.ts` | `lore-journal` polymorphic dispatcher (defaults action='write' for legacy call shape) |
 | `tools/decisions.ts` | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`) |
 | `tools/tasks.ts` | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list`) (P3-02 + PF3-06) |
@@ -216,13 +216,13 @@ export function registerFooTools(
 | Action | Purpose | Read-only |
 |--------|---------|-----------|
 | `status` | Vault page id, database counts, active project, configured projects | Yes |
-| `wake-up` | Load digest + recent memories + open loops + active facts + decisions requiring attention | Yes |
+| `wake-up` | Load digest + recent memories + active tasks + active facts + decisions requiring attention | Yes |
 | `digest` | Gather raw activity data for synthesis into a `source: digest` memory | Yes |
 
 #### Two-tier default for `lore-context action='wake-up'`
 
 `lore-context action='wake-up'` defaults to **title-tier rows** (title +
-metadata, no body) across Recent Memories and Related to Open Loops. This
+metadata, no body) across Recent Memories and Related to Active Tasks. This
 is the same content-off discipline as `lore-query action='recall'` /
 `lore-query action='search'` (below), extended to the session-priming tool
 where the pre-P2-01 default used to fan out one `pages.retrieveMarkdown`
@@ -230,17 +230,15 @@ per memory on every call.
 
 - **Default path.** Agents get heading + `source | tags | date` per
   memory. Bodies are omitted; the section size reduction is measured at
-  ~60% against the Mail production vault (10 recent + 10 open loops +
+  ~60% against the Mail production vault (10 recent + 10 active tasks +
   15 knowledge facts, no digest).
 - **Opt in.** Pass `expand: true` to restore the pre-P2-01 body-inclusive
   output. The digest memory (`source: digest`) always renders with its
   body regardless — the digest IS the content.
-- **Per-section caps.** `limit` (memories), `openLoopLimit`,
+- **Per-section caps.** `limit` (memories), `taskLimit`,
   `knowledgeFactLimit` are independent knobs so callers can bound one
-  section without truncating others. `openLoopLimit: 0` short-circuits
-  the tracking-predicate Notion query AND the related-memory search
-  that seeds off it — zero open loops means zero seeds, so skipping
-  both saves two round-trips for one knob.
+  section without truncating others. `taskLimit: 0` short-circuits the
+  Tasks Notion query.
 - **`limit` counts clusters, not rows.** Topical collapse runs on the
   display side: wake-up over-fetches the memory sections by
   `COLLAPSE_OVERFETCH_MULTIPLIER` (`src/mcp/tools/context.ts`), groups
@@ -275,7 +273,7 @@ hook ships on first prompt.
   visible-cluster count for the task section. `taskMemoryLimit: 0`
   short-circuits the Notion search AND the section render.
 - **Cross-section dedupe.** A memory rendered in the digest, Recent
-  Memories, or Related to Open Loops never re-renders under For Your
+  Memories, or Related to Active Tasks never re-renders under For Your
   Current Task. Dedupe is by Notion ID; topical-overlap dedupe is not
   done deliberately (a memory adjacent in the vector neighborhood but
   with a different ID may still render in two sections — relevance
@@ -292,7 +290,7 @@ hook ships on first prompt.
   set and the caller hasn't overridden a section, the MCP tool falls
   back to the same `RANKED_WAKEUP_LIMITS` constant that the hook
   applies — exported from `src/core/wakeup.ts` so the surfaces share
-  one source of truth. Caller-supplied `limit`, `openLoopLimit`,
+  one source of truth. Caller-supplied `limit`, `taskLimit`,
   `knowledgeFactLimit`, and `taskMemoryLimit` still win; the ranked
   caps are defaults, not ceilings. The MCP layer then over-fetches by
   `COLLAPSE_OVERFETCH_MULTIPLIER` for the memory sections that go
@@ -303,8 +301,7 @@ hook ships on first prompt.
   |---------|------------------------------|----------------------------------|
   | Recent Memories (no digest) | 3 | 10 |
   | Recent Memories (with digest) | 3 | 3 |
-  | Related to Open Loops | 2 | 5 |
-  | Open Loops | 5 | 100 |
+  | Related to Active Tasks | 2 | 5 |
   | Active Facts | 10 | 25 |
   | For Your Current Task | 3 | n/a (section omitted) |
 
@@ -317,7 +314,7 @@ hook ships on first prompt.
   without explicit per-section args sees fewer rows post-PF3-04 than
   pre-PF3-04. That is the entire point — the prior behavior diverged
   from the hook's ranked output. Callers that want the looser caps
-  back can pass them explicitly (`limit: 10, openLoopLimit: 100`,
+  back can pass them explicitly (`limit: 10, knowledgeFactLimit: 25`,
   etc.) and the explicit args win over the ranked defaults. The MCP
   server version is bumped (`0.4.0 → 0.5.0`) so reconnecting clients
   observe the change.
@@ -340,9 +337,14 @@ structural overlap with the rest of the read-path surface.
 |--------|---------|-----------|
 | `recall` | List recent memories with server-side filters; cursor-paginated | Yes |
 | `search` | Memory search — DS-scoped contains, workspace-wide semantic, or parallel hybrid (default). `mode` selects; see "`lore-query action='search'` mode parameter (P3-04)" below | Yes |
-| `ask` | Query facts about an entity, grouped into Governance / Structure / Tracking buckets | Yes |
-| `open-loops` | List active tracking-predicate facts; capped at 10 per section unless `{all: true}` | Yes |
+| `ask` | Query facts and tasks about an entity, grouped into Governance / Structure / Tasks buckets | Yes |
 | `audit` | List facts and decisions past their review-by date | Yes |
+
+For tracked work (open / blocked / done), use `lore-task action='list'`
+rather than `lore-query`. The pre-#23 `open-loops` action and the
+underlying `FactService.listTracking` paginating helper were removed
+in 0.6.0 — tracking predicates were dropped from `FactPredicate` and
+the canonical surface for tracked work is the Tasks Memories DB.
 
 #### Near-duplicate probe on `lore-memory action='save'` and `lore-decision action='create'`
 
@@ -439,7 +441,7 @@ Callers can opt out of hybrid:
   literal substring (PR numbers, file names, function names).
 - Pass `mode: "semantic"` to force the workspace-wide ranked path
   (e.g. `loadWakeUpData`'s related-memory pass relies on Notion's
-  vector ranking against open-loop entity names).
+  vector ranking against active-task entity names).
 
 `HYBRID_FALLBACK_THRESHOLD` is exported from `core/memory.ts` so test
 fixtures and diagnostics can reference the same constant.
@@ -499,17 +501,14 @@ designed to remove.
 
 | Action | Purpose | Read-only |
 |--------|---------|-----------|
-| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are rejected post-P3-02 with a directive redirect to `lore-task` action='create'. | No |
+| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates were dropped from `FactPredicate` in 0.6.0 — the Zod-derived schema rejects them at the MCP boundary. | No |
 | `invalidate` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) |
 | `extend` | Push back a fact's review-by date | No |
 
-Read-side fact paths (`ask`, `open-loops`, `audit`) live on `lore-query` —
-see the table above. After P3-02 the `ask` action also surfaces tasks
-touching the entity in a fourth bucket so post-migration vaults still
-get the open-loops view at `lore-query action='ask'` time. The
-`open-loops` action is deprecated in favour of `lore-task action='list'`
-— it remains available so un-migrated vaults can still surface their
-legacy tracking facts during the transition window.
+Read-side fact paths (`ask`, `audit`) live on `lore-query` — see the
+table above. The `ask` action surfaces tasks touching the entity
+alongside Governance and Structure buckets so callers see tracked work
+inline with the rest of the entity's facts.
 
 ### `lore-task` — task lifecycle (PF3-06)
 
@@ -529,60 +528,19 @@ removed in the `0.6.0` deprecation purge alongside the 24 P3-01 aliases.
 polymorphic surface (`lore-memory`, `lore-fact`, `lore-decision`,
 `lore-task`).
 
-#### P3-02 task model
+#### Task model
 
-Tasks supersede the legacy tracking-predicate facts. Three new properties on the Memories DB:
+Tasks are the canonical surface for tracked work. Three properties on the
+Memories DB carry the lifecycle:
 - `Task State` — `open` / `in-progress` / `blocked` / `done` / `cancelled`
 - `Blocked By` — free-form blocker label (PR number, person, service)
 - `Entity` — normalized subject the task is about; defaults to title
 
-The body of a task page carries the full description (no rich_text length cap), unlike the old tracking facts whose 187-char-average Object field was a Jira-ticket-shaped paragraph in a graph slot meant for atomic relationship objects.
-
-`lore-fact action='create'` rejects tracking predicates with a redirect to `lore-task action='create'`. Existing tracking facts can be ported via `lore migrate --migrate-tracking-to-tasks --yes`. The migration carries the source memory forward as the task's `Affects` relation so `lore-query action='ask'` retracing still works.
-
-#### Open loops ranking contract
-
-`lore-query action='open-loops'` caps its output at **10 rows per section**
-(Overdue + Active) by default. The Mail vault has 271 open loops; an
-unbounded dump floods agent context and drowns the signal. Three knobs
-override the default:
-
-- **`{entity: "..."}`** — substring filter matched server-side against
-  `Subject` (title) and `Object` (rich_text) via an OR. Use this to
-  scope to a PR, service, or other entity. Cheap even on vaults with
-  hundreds of loops.
-- **`{limit: N}`** — override the per-section cap. `N` must be >= 1
-  (zero is rejected at the schema boundary; use `{all: true}` for full
-  output). Capped at 200.
-- **`{all: true}`** — bypass the cap entirely. Paginates through every
-  matching row via `FactService.listTracking`. Noisy on large vaults;
-  use for triage sweeps.
-
-**Ranking contract** (pinned by tests in `knowledge.test.ts`):
-
-- **Overdue**: most-overdue-first. Tiebreakers: `validFrom` desc, then
-  `id` lex. Urgency markers are rendered as `⚠⚠` at `>= 14` days
-  overdue (`OVERDUE_SEVERE_DAYS`) and `⚠` at `>= 1` day
-  (`OVERDUE_MILD_DAYS`); zero-day rows are overdue but unmarked.
-- **Active**: soonest-`reviewBy`-first. Null `reviewBy` sinks to the
-  bottom via an explicit-null comparator (not a sentinel string — see
-  `rankActive` in `tools/knowledge.ts`). Tiebreakers: `validFrom`
-  desc, then `id` lex.
-
-The sort comparators live in `tools/knowledge.ts` as `rankOverdue` /
-`rankActive` with full JSDoc. The two named constants
-`OVERDUE_SEVERE_DAYS` and `OVERDUE_MILD_DAYS` are the source of truth
-for the urgency thresholds. Changing any of this is observable to
-agents and requires a coordinated spec revision plus a server-version
-bump (the `0.2.0 → 0.3.0` bump landed with this contract).
-
-**Pagination caveat.** `FactService.listTracking` paginates to
-fulfil the request, unlike `listRecent` which is single-page. This
-honours the P1-02 `hasMore` caveat: Notion's `page_size` saturates at
-100, so `{all: true}` on a 228-`needs_action` vault cannot safely
-use a single-page helper. A 100-page safety valve (`LIST_TRACKING_MAX_PAGES`)
-clips runaway walks; the resulting `hasMore: true` surfaces to the
-agent as a "safety cap" warning.
+The body of a task page carries the full description (no rich_text length
+cap), unlike the pre-P3-02 tracking-predicate facts whose 187-char-average
+Object field was a Jira-ticket-shaped paragraph in a graph slot meant for
+atomic relationship objects. Tracking predicates were dropped from
+`FactPredicate` in 0.6.0; tracked work no longer flows through `lore-fact`.
 
 ### `lore-journal` — agent diary (deprecated tool family)
 

@@ -79,9 +79,9 @@ input-shape regression.
 ### Ranked output sections
 
 When a user query is present the hook tightens per-section caps via
-`RANKED_WAKEUP_LIMITS` (memory: 3, related: 2, openLoops: 5,
-knowledge: 10, taskMemories: 3) and adds a top-of-output **For Your
-Current Task** section seeded by `MemoryService.search(userQuery)`.
+`RANKED_WAKEUP_LIMITS` (memory: 3, related: 2, knowledge: 10,
+taskMemories: 3) and adds a top-of-output **For Your Current Task**
+section seeded by `MemoryService.search(userQuery)`.
 The section is omitted entirely on the fallback path so unranked
 output stays identical to the pre-P3-05 shape.
 
@@ -104,7 +104,7 @@ blow Notion's query budget or drown relevance.
 line in `src/mcp/AGENTS.md`. Two variants:
 
 ```
-[lore] wakeup: ranked=true queryLen=42 memory=3 related=2 openLoops=5 knowledge=10 taskMemories=3
+[lore] wakeup: ranked=true queryLen=42 memory=3 related=2 knowledge=10 taskMemories=3
 [lore] wakeup: ranked=false reason=no-user-query
 ```
 

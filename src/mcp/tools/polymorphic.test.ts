@@ -203,7 +203,6 @@ function makeServices(opts: StubOpts = {}): unknown {
         })),
       invalidate: opts.factsInvalidate ?? vi.fn(async () => undefined),
       extendReview: opts.factsExtendReview ?? vi.fn(async () => undefined),
-      listTracking: vi.fn(async () => ({ items: [], hasMore: false })),
       queryByEntity: vi.fn(async () => []),
       queryBySubject: vi.fn(async () => []),
       queryOverdue: vi.fn(async () => []),

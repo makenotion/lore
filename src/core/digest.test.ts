@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { gatherDigestData, daysSince } from "./digest.js"
-import type { Memory, Fact } from "../types.js"
+import type { Memory, TaskState, TaskSummary } from "../types.js"
 
 function makeMemory(overrides: Partial<Memory>): Memory {
   return {
@@ -33,20 +33,32 @@ function makeMemory(overrides: Partial<Memory>): Memory {
   }
 }
 
-function makeFact(overrides: Partial<Fact>): Fact {
+function makeTask(overrides: Partial<TaskSummary>): TaskSummary {
   return {
-    id: "f-" + Math.random().toString(36).slice(2),
-    subject: "subject",
-    predicate: "needs_action",
-    object: "object",
+    id: "t-" + Math.random().toString(36).slice(2),
+    title: "Task subject",
     projectIds: [],
-    validFrom: null,
-    validUntil: null,
+    topicId: null,
+    source: "manual",
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
     reviewBy: null,
-    sourceMemoryId: null,
-    confidence: "likely",
-    subjectEntityId: null,
-    objectEntityId: null,
+    decidedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    session: "",
+    taskState: "open",
+    blockedBy: "",
+    entity: "",
+    createdAt: "2026-04-20T10:00:00.000Z",
+    updatedAt: "2026-04-20T10:00:00.000Z",
     ...overrides,
   }
 }
@@ -60,14 +72,29 @@ interface ListedCall {
   sortBy?: "created_time" | "last_edited_time"
 }
 
+interface ListTasksCall {
+  projectId?: string
+  states?: TaskState[]
+  limit?: number
+}
+
 function stubServices(opts: {
   memories?: Memory[]
   digestMemory?: Memory | null
-  facts?: Fact[]
+  tasks?: TaskSummary[]
+  /**
+   * When set, the tasks stub returns this string as `nextCursor` so the
+   * caller's truncation-detection branch fires (mirrors Notion's
+   * `has_more: true` signal on a `limit: N` query that found more
+   * than N rows).
+   */
+  tasksNextCursor?: string
 }) {
   const calls: ListedCall[] = []
+  const taskCalls: ListTasksCall[] = []
   return {
     calls,
+    taskCalls,
     memories: {
       async list(args: ListedCall): Promise<{ items: Memory[] }> {
         calls.push(args)
@@ -77,9 +104,15 @@ function stubServices(opts: {
         return { items: opts.memories ?? [] }
       },
     },
-    facts: {
-      async queryBySubject(): Promise<Fact[]> {
-        return opts.facts ?? []
+    tasks: {
+      async list(
+        args: ListTasksCall = {},
+      ): Promise<{ items: TaskSummary[]; nextCursor?: string }> {
+        taskCalls.push(args)
+        return {
+          items: opts.tasks ?? [],
+          nextCursor: opts.tasksNextCursor,
+        }
       },
     },
   }
@@ -136,11 +169,11 @@ describe("gatherDigestData", () => {
   it("accepts an injected clock for deterministic window + overdue computation", async () => {
     const fixed = new Date("2026-04-24T12:00:00.000Z")
     const services = stubServices({
-      facts: [
-        makeFact({
-          subject: "Alice",
-          predicate: "needs_action",
-          object: "ship",
+      tasks: [
+        makeTask({
+          title: "ship",
+          entity: "Alice",
+          taskState: "open",
           reviewBy: "2026-04-24",
         }),
       ],
@@ -152,7 +185,7 @@ describe("gatherDigestData", () => {
     })
     const call = services.calls.find((c) => c.source !== "digest")
     expect(call?.since).toBe("2026-04-23T12:00:00.000Z")
-    expect(result.raw).toContain("**(OVERDUE)**")
+    expect(result.raw).toContain("OVERDUE")
   })
 
   it("groups memories by source in the Activity section", async () => {
@@ -170,21 +203,21 @@ describe("gatherDigestData", () => {
     expect(result.raw).toContain("diary-1")
   })
 
-  it("flags overdue tracking facts", async () => {
+  it("flags overdue tasks under Open Work", async () => {
     const today = new Date().toISOString().split("T")[0]!
     const services = stubServices({
-      facts: [
-        makeFact({
-          subject: "Alice",
-          predicate: "needs_action",
-          object: "reply to RFC",
+      tasks: [
+        makeTask({
+          title: "reply to RFC",
+          entity: "Alice",
+          taskState: "open",
           reviewBy: today, // today counts as overdue
         }),
       ],
     })
     const result = await gatherDigestData(services, { projectLabel: "Mail" })
-    expect(result.raw).toContain("Open Loops (1)")
-    expect(result.raw).toContain("**(OVERDUE)**")
+    expect(result.raw).toContain("## Open Work (1)")
+    expect(result.raw).toContain("OVERDUE")
   })
 
   it("applies a day window when period is 'day'", async () => {
@@ -206,6 +239,49 @@ describe("gatherDigestData", () => {
     const call = services.calls.find((c) => c.source !== "digest")
     expect(call?.since).toBe("2026-04-01T00:00:00.000Z")
     expect(call?.until).toBe("2026-04-15T00:00:00.000Z")
+  })
+
+  it("renders 'many more' for Open Work when Notion reports nextCursor", async () => {
+    // Regression: pre-fix the digest reported `+ N more` based on local
+    // fetch size only. On a vault with 100+ open tasks, fetching with
+    // `limit: 26` returns 26 rows and tells the synthesizer "+ 1 more"
+    // when 75+ are hidden. Notion's `nextCursor` (mirrored as
+    // `has_more`) is the canonical truncation signal — test asserts
+    // that branch wins over the local count.
+    const overflowTasks = Array.from({ length: 26 }, (_, i) =>
+      makeTask({
+        title: `task ${i}`,
+        entity: `entity-${i}`,
+        taskState: "open",
+      }),
+    )
+    const services = stubServices({
+      tasks: overflowTasks,
+      tasksNextCursor: "more-rows-exist",
+    })
+    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    expect(result.raw).toContain(
+      "## Open Work (25 shown; many more open beyond the cap)",
+    )
+    expect(result.raw).toContain("many more open tasks not shown")
+    // The bullet body never tries to enumerate the unknown tail count.
+    expect(result.raw).not.toContain("and 1 more.")
+  })
+
+  it("renders an exact hidden count when truncation lands inside the local probe", async () => {
+    // The other truncation case: 26 rows fit in the +1 probe, no
+    // nextCursor, so we know exactly one task is hidden.
+    const tasks = Array.from({ length: 26 }, (_, i) =>
+      makeTask({
+        title: `task ${i}`,
+        entity: `entity-${i}`,
+        taskState: "open",
+      }),
+    )
+    const services = stubServices({ tasks, tasksNextCursor: undefined })
+    const result = await gatherDigestData(services, { projectLabel: "Mail" })
+    expect(result.raw).toContain("## Open Work (25 shown of 26)")
+    expect(result.raw).toContain("and 1 more.")
   })
 })
 

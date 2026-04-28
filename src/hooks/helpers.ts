@@ -32,7 +32,6 @@ import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildSessionEndPrompt } from "./prompts.js"
 import {
   RANKED_WAKEUP_LIMITS,
-  WAKEUP_OPEN_LOOPS_TRUNCATED_HINT,
   dateBucket,
   loadWakeUpData,
 } from "../core/wakeup.js"
@@ -522,7 +521,7 @@ async function wakeup(): Promise<void> {
     // single grep against `[lore] ` parses uniformly across operator logs.
     if (userQuery) {
       process.stderr.write(
-        `[lore] wakeup: ranked=true queryLen=${userQuery.length} memory=${RANKED_WAKEUP_LIMITS.memoryLimit} related=${RANKED_WAKEUP_LIMITS.relatedMemoryLimit} openLoops=${RANKED_WAKEUP_LIMITS.openLoopLimit} knowledge=${RANKED_WAKEUP_LIMITS.knowledgeFactLimit} taskMemories=${RANKED_WAKEUP_LIMITS.taskMemoryLimit}\n`,
+        `[lore] wakeup: ranked=true queryLen=${userQuery.length} memory=${RANKED_WAKEUP_LIMITS.memoryLimit} related=${RANKED_WAKEUP_LIMITS.relatedMemoryLimit} knowledge=${RANKED_WAKEUP_LIMITS.knowledgeFactLimit} taskMemories=${RANKED_WAKEUP_LIMITS.taskMemoryLimit}\n`,
       )
     } else {
       process.stderr.write(
@@ -534,8 +533,7 @@ async function wakeup(): Promise<void> {
 
   let digest,
     memories,
-    openLoops,
-    openLoopsHasMore,
+    tasks,
     knowledgeFacts,
     relatedMemories,
     taskMemories
@@ -543,8 +541,7 @@ async function wakeup(): Promise<void> {
     ;({
       digest,
       memories,
-      openLoops,
-      openLoopsHasMore,
+      tasks,
       knowledgeFacts,
       relatedMemories,
       taskMemories,
@@ -584,7 +581,7 @@ async function wakeup(): Promise<void> {
   // P3-05: relevance hits seeded by the user's first message. Surfaced
   // directly under the digest because it's the densest single signal
   // about what the user is actually asking about — denser than
-  // timestamp-ordered recents or open-loop seeds. Section is omitted
+  // timestamp-ordered recents or active-task seeds. Section is omitted
   // entirely when no userQuery was available so the output stays
   // identical to the pre-P3-05 shape on the fallback path.
   if (taskMemories && taskMemories.length > 0) {
@@ -615,43 +612,25 @@ async function wakeup(): Promise<void> {
     }
   }
 
-  if (openLoops.length > 0) {
+  if (tasks.length > 0) {
     const today = new Date().toISOString().split("T")[0]
-    const overdue = openLoops.filter((f) => f.reviewBy && f.reviewBy <= today)
-    const active = openLoops.filter((f) => !f.reviewBy || f.reviewBy > today)
-
-    if (overdue.length > 0) {
-      sections.push("\n## Overdue")
-      for (const fact of overdue) {
-        const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
-        sections.push(
-          `- ${fact.subject} → ${fact.predicate.replace(/_/g, " ")} → ${fact.object} (${fact.confidence}${since}, review by ${fact.reviewBy})`
-        )
-      }
-    }
-
-    if (active.length > 0) {
-      sections.push("\n## Open Loops")
-      for (const fact of active) {
-        const since = fact.validFrom ? `, since ${fact.validFrom}` : ""
-        const review = fact.reviewBy ? `, review by ${fact.reviewBy}` : ""
-        sections.push(
-          `- ${fact.subject} → ${fact.predicate.replace(/_/g, " ")} → ${fact.object} (${fact.confidence}${since}${review})`
-        )
-      }
-    }
-
-    // The tracking-partition fetch capped at `openLoopLimit`. Surface the
-    // truncation so the agent knows the displayed slice is biased toward
-    // most-overdue (urgency-ranked under the cap) rather than exhaustive,
-    // and points at the surface that paginates to exhaustion.
-    if (openLoopsHasMore) {
-      sections.push(WAKEUP_OPEN_LOOPS_TRUNCATED_HINT)
+    sections.push("\n## Tasks")
+    for (const task of tasks) {
+      const stateLabel = task.taskState ?? "open"
+      const blocker = task.blockedBy ? `, blocked by ${task.blockedBy}` : ""
+      const due = task.reviewBy
+        ? task.reviewBy <= today
+          ? `, review by ${task.reviewBy} OVERDUE`
+          : `, review by ${task.reviewBy}`
+        : ""
+      sections.push(
+        `- ${task.title} [${stateLabel}${blocker}${due}]`,
+      )
     }
   }
 
   if (relatedMemories.length > 0) {
-    sections.push("\n## Related to Open Loops")
+    sections.push("\n## Related to Active Tasks")
     for (const mem of relatedMemories) {
       sections.push(`- **${mem.title}** (${mem.source}, ${mem.updatedAt.split("T")[0]})`)
     }

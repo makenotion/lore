@@ -18,7 +18,6 @@ import type {
   FactConfidence,
   DatabaseRef,
 } from "../types.js"
-import { TRACKING_PREDICATES } from "../types.js"
 import { buildFactProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
@@ -55,45 +54,9 @@ type QueryFactsOpts = {
 type ListRecentOpts = {
   projectId?: string
   /**
-   * Predicates to exclude server-side via `AND (Predicate does_not_equal ...)`.
-   * Callers partitioning the knowledge graph (e.g. wake-up splitting open
-   * loops from recent knowledge facts) pass `TRACKING_PREDICATES` here so the
-   * filter runs in Notion, not after the page is loaded.
-   */
-  excludePredicates?: FactPredicate[]
-  /**
    * Maximum rows returned. The query is single-page by design — callers on
    * the hot path (`loadWakeUpData`) cannot afford pagination loops. Clamped
    * to Notion's 100-row ceiling.
-   */
-  limit?: number
-  includeInvalidated?: boolean
-}
-
-type ListTrackingOpts = {
-  projectId?: string
-  /**
-   * Substring matched against both `Subject` (title) and `Object` (rich_text)
-   * via `or: [{contains}, {contains}]`. Scoping the filter server-side keeps
-   * entity-filtered `lore-query action='open-loops'` cheap on vaults where tracking facts
-   * outnumber the caller's interest (the Mail vault has 271 open loops; a
-   * PR-specific slice typically touches under 20).
-   */
-  entity?: string
-  /**
-   * Pre-resolved canonical Entity ID. When supplied, the entity filter
-   * additionally OR-s a relation match against `SubjectEntity` /
-   * `ObjectEntity` so post-PF3-01 rows that share the canonical entity
-   * surface even when their Subject/Object text wouldn't substring-
-   * match the caller's input. The substring branch still runs in the
-   * same OR for un-migrated rows. PR #88 closeout.
-   */
-  entityId?: string
-  /**
-   * Cap total rows fetched across pages. `undefined` means "fetch all" and
-   * paginates until the cursor is exhausted — unlike `listRecent`, which is
-   * single-page by design for the wake-up hot path. Callers wanting every
-   * tracking row (e.g. `lore-query action='open-loops'` with `all: true`) pass `undefined`.
    */
   limit?: number
   includeInvalidated?: boolean
@@ -167,14 +130,6 @@ function isMissingPropertyError(err: unknown): boolean {
   // similar — match either spelling defensively.
   return /property/i.test(message) && /(not found|could not find|does not exist)/i.test(message)
 }
-
-/**
- * Safety cap on `listTracking` pagination: at 100 rows per page this caps at
- * 10 000 rows, which is ~35× the Mail vault's worst-case open-loop count. A
- * runaway cursor (bug or adversarial filter) cannot turn one tool call into
- * an unbounded Notion scan.
- */
-const LIST_TRACKING_MAX_PAGES = 100
 
 /**
  * Build the server-side `Predicate` filter clause for a list of predicates.
@@ -359,7 +314,7 @@ export class FactService {
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToFact(p))
+    return results.map((p) => this.pageToFact(p)).filter(isFact)
   }
 
   /**
@@ -406,12 +361,7 @@ export class FactService {
       object: decodeTextEntities(input.object),
     }
 
-    let reviewBy = decodedInput.reviewBy
-    if (!reviewBy && TRACKING_PREDICATES.includes(decodedInput.predicate)) {
-      const d = new Date()
-      d.setDate(d.getDate() + 7)
-      reviewBy = d.toISOString().split("T")[0]
-    }
+    const reviewBy = decodedInput.reviewBy
 
     const dedupKey = computeFactDedupKey({
       subject: decodedInput.subject,
@@ -459,8 +409,10 @@ export class FactService {
       }),
     })
 
+    // We just created the row with a typed `FactPredicate` value, so
+    // `pageToFact`'s historical-tracking filter cannot reject it.
     return {
-      fact: this.pageToFact(page as PageObjectResponse),
+      fact: this.pageToFact(page as PageObjectResponse)!,
       deduped: false,
       enriched: [],
     }
@@ -564,6 +516,16 @@ export class FactService {
    * same key are deliberately ignored so history stays intact and the
    * caller writes a fresh live row when a triple is re-asserted after
    * correction.
+   *
+   * `pageToFact` returns `Fact | null` and filters historical
+   * tracking-predicate rows (`needs_action` / `waiting_on` /
+   * `blocked_by`). A dedup-key collision against a tracking row is
+   * structurally impossible because the new write's predicate is
+   * `FactPredicate`-typed (the contracted union excludes those values),
+   * and the dedup hash incorporates the predicate — so a tracking row's
+   * key cannot match a fresh `lore-fact action='create'` write. The
+   * `null` branch from `pageToFact` here only fires if a future
+   * deserialization-filter rule lands; today it's effectively dead.
    */
   private async findLiveByDedupKey(dedupKey: string): Promise<Fact | null> {
     const response = await this.client.dataSources.query({
@@ -676,7 +638,7 @@ export class FactService {
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToFact(p))
+    return results.map((p) => this.pageToFact(p)).filter(isFact)
   }
 
   async queryByObject(
@@ -749,7 +711,7 @@ export class FactService {
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToFact(p))
+    return results.map((p) => this.pageToFact(p)).filter(isFact)
   }
 
   async queryBySourceMemory(
@@ -812,7 +774,7 @@ export class FactService {
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToFact(p))
+    return results.map((p) => this.pageToFact(p)).filter(isFact)
   }
 
   /**
@@ -842,18 +804,6 @@ export class FactService {
       })
     }
 
-    if (opts.excludePredicates?.length) {
-      // AND-of-does_not_equal is simpler than OR-of-equals over the complement
-      // set and sidesteps Notion's compound-filter ceiling when the knowledge
-      // vocabulary grows.
-      for (const p of opts.excludePredicates) {
-        filters.push({
-          property: "Predicate",
-          select: { does_not_equal: p },
-        })
-      }
-    }
-
     const filter =
       filters.length > 1
         ? { and: filters }
@@ -872,164 +822,9 @@ export class FactService {
 
     const pages = response.results.filter(isFullPage) as PageObjectResponse[]
     return {
-      items: pages.map((p) => this.pageToFact(p)),
+      items: pages.map((p) => this.pageToFact(p)).filter(isFact),
       hasMore: response.has_more ?? false,
     }
-  }
-
-  /**
-   * Paginate through every live tracking-predicate fact (needs_action,
-   * waiting_on, blocked_by) in scope, optionally filtered by an entity
-   * substring that must match either `Subject` or `Object`.
-   *
-   * Unlike `listRecent` — which is single-page for the wake-up hot path —
-   * this helper paginates. `lore-query action='open-loops'` needs to bucket results into
-   * Overdue vs Active and rank each bucket independently, so a single
-   * Notion page ordered by `Review By` asc would under-fill Active on
-   * vaults dominated by overdue rows. Fetching the full slice up-front
-   * lets the tool-layer ranker slice each bucket to its cap.
-   *
-   * `limit: undefined` fetches everything (bounded by
-   * `LIST_TRACKING_MAX_PAGES` as a runaway safety valve). A numeric limit
-   * stops pagination as soon as the requested count is reached and reports
-   * `hasMore: true` if the last Notion page still signalled additional
-   * rows. This is the contract P2-07 needs: the tool asks for "enough to
-   * rank," the service tells it whether more exist beyond that window.
-   *
-   * Sort order: `Review By` ascending, `created_time` descending. The
-   * tool layer always re-ranks inside each bucket, so on the happy path
-   * (full result set fits in one `lore-query action='open-loops'` call) this order is
-   * discarded. Its purpose is purely a safety-cap bias: if the 100-page
-   * safety valve ever clips a pathological walk, the truncation lands
-   * on rows with no review date rather than on the most-overdue ones
-   * agents care about. Changing this sort is safe as long as that
-   * invariant holds.
-   */
-  async listTracking(
-    opts: ListTrackingOpts = {},
-  ): Promise<{ items: Fact[]; hasMore: boolean }> {
-    const filters: Array<Record<string, unknown>> = []
-
-    if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
-    }
-
-    if (!opts.includeInvalidated) {
-      filters.push({
-        property: "Valid Until",
-        date: { is_empty: true },
-      })
-    }
-
-    // Tracking predicates are fixed at three today, which fits well under
-    // Notion's compound-filter ceiling. OR-of-equals is the cleanest way to
-    // say "predicate is one of these".
-    filters.push({
-      or: TRACKING_PREDICATES.map((p) => ({
-        property: "Predicate",
-        select: { equals: p },
-      })),
-    })
-
-    if (opts.entity || opts.entityId) {
-      // Subject is a `title` column; Object is `rich_text`. Notion's typed
-      // filter param requires the right slot on each side — a `title` filter
-      // with `rich_text.contains` is a runtime 400.
-      //
-      // Three branches OR'd into one server-side clause:
-      // 1. PF3-01 relation match: when `entityId` is supplied, OR a
-      //    `SubjectEntity contains entityId` and `ObjectEntity contains
-      //    entityId` so post-migration rows surface by exact relation
-      //    regardless of the raw Subject/Object text.
-      // 2. SubjectKey case-fold (P3-03 Part A): rides on the Subject
-      //    side so case-variant entity inputs resolve against the
-      //    canonicalized column; suppressed when normalize collapses
-      //    to empty (punctuation/whitespace-only input).
-      // 3. Raw Subject + Object substring: preserves pre-P3-03
-      //    semantics and covers un-migrated rows whose SubjectKey is
-      //    blank.
-      const orClauses: Array<Record<string, unknown>> = []
-      if (opts.entityId) {
-        orClauses.push(
-          { property: "SubjectEntity", relation: { contains: opts.entityId } },
-          { property: "ObjectEntity", relation: { contains: opts.entityId } },
-        )
-      }
-      if (opts.entity) {
-        const entityKey = computeSubjectKey(opts.entity)
-        if (entityKey) {
-          orClauses.push({
-            property: "SubjectKey",
-            rich_text: { contains: entityKey },
-          })
-        }
-        orClauses.push(
-          { property: "Subject", title: { contains: opts.entity } },
-          { property: "Object", rich_text: { contains: opts.entity } },
-        )
-      }
-      filters.push({ or: orClauses })
-    }
-
-    const filter =
-      filters.length > 1
-        ? { and: filters }
-        : filters.length === 1
-          ? filters[0]
-          : undefined
-
-    const limit = opts.limit
-    const items: Fact[] = []
-    let cursor: string | undefined = undefined
-    let pagesFetched = 0
-    let hasMore: boolean
-
-    while (true) {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: filter as QueryDataSourceParameters["filter"],
-        sorts: [
-          { property: "Review By", direction: "ascending" },
-          { timestamp: "created_time", direction: "descending" },
-        ],
-        page_size: NOTION_MAX_PAGE_SIZE,
-        start_cursor: cursor,
-      })
-      pagesFetched += 1
-      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-      const nextCursor = response.has_more ? response.next_cursor ?? undefined : undefined
-
-      let appended = 0
-      for (const page of pages) {
-        items.push(this.pageToFact(page))
-        appended += 1
-        if (limit !== undefined && items.length >= limit) break
-      }
-
-      if (limit !== undefined && items.length >= limit) {
-        // Stopped because the cap was hit. More rows exist if we cut the
-        // current page short or if Notion signalled another page beyond it.
-        hasMore = appended < pages.length || Boolean(nextCursor)
-        break
-      }
-
-      if (!nextCursor) {
-        // Walked to exhaustion — `items` is the full set.
-        hasMore = false
-        break
-      }
-
-      if (pagesFetched >= LIST_TRACKING_MAX_PAGES) {
-        // Safety valve fired with rows still unread. Surface this so the
-        // caller can distinguish an exhaustive walk from a clipped one.
-        hasMore = true
-        break
-      }
-
-      cursor = nextCursor
-    }
-
-    return { items, hasMore }
   }
 
   /**
@@ -1189,7 +984,7 @@ export class FactService {
         if (limit !== undefined && results.length >= limit) break
         cursor = response.has_more ? response.next_cursor ?? undefined : undefined
       } while (cursor)
-      return results.map((p) => this.pageToFact(p))
+      return results.map((p) => this.pageToFact(p)).filter(isFact)
     } catch (err) {
       // Narrow swallow: only the "relation column doesn't exist on the
       // schema yet" case (a legacy vault that hasn't run schema
@@ -1240,7 +1035,7 @@ export class FactService {
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToFact(p))
+    return results.map((p) => this.pageToFact(p)).filter(isFact)
   }
 
   async queryOverdue(opts?: {
@@ -1273,7 +1068,9 @@ export class FactService {
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        items.push(this.pageToFact(page))
+        const fact = this.pageToFact(page)
+        if (fact === null) continue
+        items.push(fact)
         if (limit !== undefined && items.length >= limit) break
       }
       if (limit !== undefined && items.length >= limit) break
@@ -1425,7 +1222,17 @@ export class FactService {
   }
 
   /**
-   * Map a Notion page to the `Fact` domain type.
+   * Map a Notion page to the `Fact` domain type, or `null` for rows
+   * whose raw `Predicate` select value is one of the historical
+   * tracking strings (`needs_action` / `waiting_on` / `blocked_by`).
+   *
+   * Tracking predicates were removed from `FactPredicate` in 0.6.0
+   * (`lore-task` is the canonical surface for tracked work). Historical
+   * Notion rows still carry those select values — the schema is
+   * additive-only — so the deserialization boundary filters them so
+   * no live read path surfaces them as a `Fact`. `countByPredicateRaw`
+   * deliberately bypasses this filter so the `lore status` preflight
+   * keeps counting the rows.
    *
    * `SubjectKey` and `DedupKey` are deliberately *not* projected onto
    * `Fact` — they're query-only indexes derived from the canonical
@@ -1438,8 +1245,12 @@ export class FactService {
    * waived for these two columns; the next contributor should not
    * "fix" the asymmetry by exposing them.
    */
-  private pageToFact(page: PageObjectResponse): Fact {
+  private pageToFact(page: PageObjectResponse): Fact | null {
     const props = page.properties
+    const rawPredicate = extractSelect(props["Predicate"], "related_to")
+    if (HISTORICAL_TRACKING_PREDICATE_VALUES.has(rawPredicate)) {
+      return null
+    }
     const sourceIds = extractRelationIds(props["Source"])
     // PF3-01 — relation columns return `[]` on un-migrated rows
     // because Notion responds with an empty list when the column
@@ -1452,7 +1263,7 @@ export class FactService {
     return {
       id: page.id,
       subject: extractTitle(props["Subject"]),
-      predicate: extractSelect(props["Predicate"], "related_to") as FactPredicate,
+      predicate: rawPredicate as FactPredicate,
       object: extractRichText(props["Object"]),
       projectIds: extractRelationIds(props["Project"]),
       validFrom: extractDate(props["Valid From"]),
@@ -1464,4 +1275,28 @@ export class FactService {
       objectEntityId: objectEntityIds[0] ?? null,
     }
   }
+}
+
+/**
+ * Raw Notion `Predicate` select values that the 0.6.0 deprecation purge
+ * removed from `FactPredicate`. Notion rows still exist for vaults that
+ * skipped the `--migrate-tracking-to-tasks` migration (the schema is
+ * additive-only — see `src/notion/setup.ts`), so `pageToFact` filters
+ * them at the deserialization boundary. Inlined as a plain set rather
+ * than re-exported from `types.ts` because the `FactPredicate` union
+ * itself no longer includes these values.
+ */
+const HISTORICAL_TRACKING_PREDICATE_VALUES: ReadonlySet<string> = new Set([
+  "needs_action",
+  "waiting_on",
+  "blocked_by",
+])
+
+/**
+ * Type guard that narrows `Fact | null` to `Fact`. Used by `pageToFact`
+ * call sites to drop historical tracking-predicate rows from the
+ * result list while preserving TypeScript's narrowing.
+ */
+function isFact(fact: Fact | null): fact is Fact {
+  return fact !== null
 }

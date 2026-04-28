@@ -6,8 +6,7 @@ import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
 
-import type { Decision, Fact, FactPredicate, TaskSummary } from "../../types.js"
-import { TRACKING_PREDICATES } from "../../types.js"
+import type { Decision, Fact, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { expandEntityQueryVariants } from "../../core/entity.js"
 
@@ -35,65 +34,14 @@ const DEFAULT_ASK_BUCKET_CAP = 5
 const SUGGESTED_OVERFLOW_LIMIT = 20
 
 /**
- * Default per-bucket cap for `lore-query action='open-loops'`. The Mail
- * vault has 271 open loops; returning all of them on every ambient call
- * floods the agent context. Ten per bucket matches how humans scan a
- * triage list — enough to see the urgency spread, short enough to act on.
- */
-export const DEFAULT_OPEN_LOOPS_LIMIT = 10
-
-/** Days-overdue threshold for the `⚠⚠` marker. */
-const OVERDUE_SEVERE_DAYS = 14
-
-/** Days-overdue threshold for the `⚠` marker. */
-const OVERDUE_MILD_DAYS = 1
-
-/**
- * Ranking contract for `lore-query action='open-loops'`.
- *
- * **Overdue** (`rankOverdue`): sort by days-overdue **descending**.
- * Tiebreakers: `validFrom` desc, then `id` lex asc.
- *
- * **Active** (`rankActive`): sort by `reviewBy` ascending. Null reviewBy
- * sinks to the bottom via explicit-null comparator. Tiebreakers:
- * `validFrom` desc, then `id` lex asc.
- *
- * Markers (`rankOverdue` only): `⚠⚠` at >= `OVERDUE_SEVERE_DAYS`,
- * `⚠` at >= `OVERDUE_MILD_DAYS`, empty below.
- *
- * Pinned by tests in `knowledge.test.ts`. Changes are observable to
- * agents and require a coordinated spec revision.
- */
-function rankOverdue(a: Fact, b: Fact, daysOverdue: (f: Fact) => number): number {
-  const byDays = daysOverdue(b) - daysOverdue(a)
-  if (byDays !== 0) return byDays
-  const byValidFrom = (b.validFrom ?? "").localeCompare(a.validFrom ?? "")
-  if (byValidFrom !== 0) return byValidFrom
-  return a.id.localeCompare(b.id)
-}
-
-function rankActive(a: Fact, b: Fact): number {
-  if (a.reviewBy === null && b.reviewBy !== null) return 1
-  if (a.reviewBy !== null && b.reviewBy === null) return -1
-  if (a.reviewBy !== null && b.reviewBy !== null) {
-    const byReview = a.reviewBy.localeCompare(b.reviewBy)
-    if (byReview !== 0) return byReview
-  }
-  const byValidFrom = (b.validFrom ?? "").localeCompare(a.validFrom ?? "")
-  if (byValidFrom !== 0) return byValidFrom
-  return a.id.localeCompare(b.id)
-}
-
-/**
- * Predicates accepted on `lore-fact action='create'`. The tracking
- * predicates (`needs_action`, `waiting_on`, `blocked_by`) are
- * deliberately absent after P3-02 — those workflows live on `lore-task`
- * action='create' now. Keeping them in the union but rejecting at the
- * validation layer is what gives us the "type one" -> directive error UX.
+ * Predicates accepted on `lore-fact action='create'`. Tracked work lives
+ * on `lore-task action='create'`; the tracking predicates that the Tasks
+ * surface superseded (`needs_action` / `waiting_on` / `blocked_by`) are
+ * not part of the `FactPredicate` union and are not accepted here.
  *
  * Decision-graph predicates (`decided_by`, `supersedes_decision`,
  * `informs`) stay internal-only — created by `DecisionService` and
- * never via `lore-fact` regardless of P3-02.
+ * never via `lore-fact`.
  */
 const PREDICATE_VALUES = [
   "is_a",
@@ -106,46 +54,11 @@ const PREDICATE_VALUES = [
   "replaces",
   "extends",
   "conflicts_with",
-  "needs_action",
-  "waiting_on",
-  "blocked_by",
 ] as const
 
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
-
-/**
- * Build the redirect message agents see when they call `lore-fact`
- * action='create' with a tracking predicate. The wording tells them the
- * right tool to call, names the closest equivalent task state, and shows
- * the field mapping — `Subject → subject`, `Object → description` — so
- * the agent doesn't have to guess at how to translate.
- *
- * Names the polymorphic `lore-task` surface — the rejection message is
- * the moment-of-mistake nudge, so it must teach the canonical surface.
- */
-function trackingPredicateRedirect(predicate: FactPredicate): string {
-  const stateHint =
-    predicate === "blocked_by"
-      ? "blocked"
-      : "open"
-  const blockerLine =
-    predicate === "blocked_by" || predicate === "waiting_on"
-      ? "\n  • blockedBy: (the Object you'd have used)"
-      : ""
-  return (
-    `Tracking predicate \`${predicate}\` is no longer accepted by lore-fact. ` +
-    `Tracked work lives on tasks now (P3-02): the description goes in the page body, the subject is structurally indexed, ` +
-    `and lore-task action='list' queries by entity / state / due date.\n\n` +
-    `Use \`lore-task\` with \`action: 'create'\` instead:\n` +
-    `  • subject: (the Subject you'd have used)\n` +
-    `  • description: (the Object — full prose, no 2000-char limit)${blockerLine}\n` +
-    `  • state: "${stateHint}"\n` +
-    `  • entity: (defaults to subject — set explicitly if other facts/tasks reference a different name)\n\n` +
-    `Existing tracking facts can be ported in bulk via \`lore migrate --migrate-tracking-to-tasks\`.`
-  )
-}
 
 /**
  * Return true when the auto-link candidate's project scope is compatible
@@ -185,25 +98,6 @@ function renderGenericTrailing(fact: Fact, today: string): string {
   return `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
 }
 
-function renderTrackingTrailing(fact: Fact, overdueDays: number | null): string {
-  const validity = fact.validFrom ? ` (since ${fact.validFrom})` : ""
-  if (overdueDays !== null && fact.reviewBy) {
-    const marker =
-      overdueDays === 0
-        ? "due today"
-        : `${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue`
-    return `[${fact.confidence}]${validity} **(${marker} — review by ${fact.reviewBy})**\n  ID: ${fact.id}`
-  }
-  const review = fact.reviewBy ? ` (review by ${fact.reviewBy})` : ""
-  return `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
-}
-
-function daysOverdueOf(reviewBy: string | null, today: string): number | null {
-  if (!reviewBy || reviewBy > today) return null
-  const diff = new Date(today).getTime() - new Date(reviewBy).getTime()
-  return Math.floor(diff / 86_400_000)
-}
-
 function compareSortKeyDesc(
   a: { sortKey: string | null },
   b: { sortKey: string | null },
@@ -217,8 +111,7 @@ function compareSortKeyDesc(
 // -------------------------------------------------------------------------
 // Handlers — one per fact action. Write-side actions (`create`,
 // `invalidate`, `extend`) route via `lore-fact`'s discriminated union;
-// read-side actions (`ask`, `open-loops`, `audit`) are exported for
-// reuse by `lore-query`.
+// read-side actions (`ask`, `audit`) are exported for reuse by `lore-query`.
 // -------------------------------------------------------------------------
 
 interface LearnArgs {
@@ -239,13 +132,6 @@ export async function handleLearn(
   args: LearnArgs,
 ): Promise<ToolResult> {
   try {
-    // P3-02: tracking predicates are no longer first-class facts. Reject
-    // them with a directive error instead of writing the row; the
-    // migration command ports any pre-existing tracking facts over to
-    // the task model in bulk.
-    if ((TRACKING_PREDICATES as FactPredicate[]).includes(args.predicate)) {
-      return toolError(new Error(trackingPredicateRedirect(args.predicate)))
-    }
     const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
     const factProjectIds = resolved.ids
 
@@ -577,7 +463,7 @@ export async function handleAsk(
 
     const today = new Date().toISOString().split("T")[0]
     const cap = args.limit ?? DEFAULT_ASK_BUCKET_CAP
-    const { governance, structure, tracking } = groupFactsByClass(facts)
+    const { governance, structure } = groupFactsByClass(facts)
 
     const decidedByFacts = governance.filter((fact) => fact.predicate === "decided_by")
     const supersedesFacts = governance.filter(
@@ -606,10 +492,7 @@ export async function handleAsk(
       titleMap,
     ] = await Promise.all([
       resolveCanonicalDecisionLinks(services, decidedByFacts, { projectId }),
-      resolveReferencedTitles(
-        [...supersedesFacts, ...structure, ...tracking],
-        services,
-      ),
+      resolveReferencedTitles([...supersedesFacts, ...structure], services),
     ])
 
     if (decisionFailures.length > 0) {
@@ -643,27 +526,6 @@ export async function handleAsk(
       }),
     )
 
-    type Tracked = { overdueDays: number | null; sortKey: string | null; line: string }
-    const trackingItems: Tracked[] = tracking.map((fact) => {
-      const overdueDays = daysOverdueOf(fact.reviewBy, today)
-      return {
-        overdueDays,
-        sortKey: fact.validFrom,
-        line: renderFact(fact, {
-          titleMap,
-          prefix: overdueDays !== null ? "⚠ " : undefined,
-          trailing: renderTrackingTrailing(fact, overdueDays),
-        }),
-      }
-    })
-    const overdueItems = trackingItems
-      .filter((item) => item.overdueDays !== null)
-      .sort((a, b) => (b.overdueDays ?? 0) - (a.overdueDays ?? 0))
-    const activeItems = trackingItems
-      .filter((item) => item.overdueDays === null)
-      .sort((a, b) => compareSortKeyDesc(a, b))
-    const trackingOrdered = [...overdueItems, ...activeItems]
-
     const sections: string[] = []
     let anyOverflow = false
 
@@ -689,22 +551,10 @@ export async function handleAsk(
       )
     }
 
-    if (trackingOrdered.length > 0) {
-      const visible = trackingOrdered.slice(0, cap)
-      const hidden = trackingOrdered.length - visible.length
-      if (hidden > 0) anyOverflow = true
-      const hiddenSuffix = hidden > 0 ? `, ${hidden} hidden` : ""
-      sections.push(
-        `### Tracking (${overdueItems.length} overdue, ${activeItems.length} active${hiddenSuffix})\n${visible
-          .map((item) => item.line)
-          .join("\n")}`,
-      )
-    }
-
-    // Tasks bucket — surfaces tracked work touching the entity. Sourced
-    // separately from facts so post-P3-02 vaults (where tracking
-    // predicates aren't first-class facts anymore) still get the open
-    // loops view at `lore-query action='ask'` time.
+    // Tasks bucket — surfaces tracked work touching the entity. The
+    // pre-#23 open-loops view was a fact partition; tasks are the
+    // canonical surface now and this section is what
+    // `lore-query action='ask'` callers see in its place.
     type Tasked = { sortKey: string | null; line: string }
     const taskItems: Tasked[] = tasks.map((t) => {
       const overdueDays = taskDaysOverdue(t, today)
@@ -761,7 +611,6 @@ export async function handleAsk(
     const totalFacts =
       governanceItems.length +
       structureItems.length +
-      trackingOrdered.length +
       taskItems.length
     const overflowHint =
       anyOverflow && args.limit === undefined
@@ -778,178 +627,6 @@ export async function handleAsk(
         {
           type: "text",
           text: `${totalFacts} ${noun} about "${args.entity}":\n\n${sections.join("\n\n")}${overflowHint}${formatWarnings()}`,
-        },
-      ],
-    }
-  } catch (err) {
-    return toolError(err)
-  }
-}
-
-interface OpenLoopsArgs {
-  projectName?: string
-  entity?: string
-  limit?: number
-  all?: boolean
-}
-
-export async function handleOpenLoops(
-  services: LoreServices,
-  args: OpenLoopsArgs,
-): Promise<ToolResult> {
-  try {
-    let projectId: string | undefined
-    const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
-        )
-      }
-    }
-    if (!projectId && services.context.project) {
-      projectId = services.context.project.id
-    }
-
-    const perSectionCap = args.all
-      ? undefined
-      : args.limit !== undefined
-        ? args.limit
-        : DEFAULT_OPEN_LOOPS_LIMIT
-
-    // PF3-01 — resolve `entity` to a canonical Entity ID so the
-    // server-side filter can OR a relation match alongside the
-    // substring branches. Strict (no auto-create) and rejection-safe;
-    // a failed resolve falls through to substring-only filtering with
-    // a warning. Mirrors the resilience contract `handleAsk` uses.
-    let entityId: string | undefined
-    if (args.entity && services.entities) {
-      const resolution = await services.entities
-        .resolveOrCreateEntity(args.entity, { autoCreate: false })
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err)
-          warnings.push(`Entity lookup failed: ${message}`)
-          return null
-        })
-      if (resolution?.ambiguous) {
-        const labels = resolution.candidates
-          .map((c) => `"${c.name}" (${c.id})`)
-          .join(", ")
-        warnings.push(
-          `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring filter. Disambiguate by passing one of: ${labels}.`,
-        )
-      } else if (resolution?.entity) {
-        entityId = resolution.entity.id
-      }
-    }
-
-    const { items: loops, hasMore: serviceClipped } = await services.facts.listTracking({
-      projectId,
-      entity: args.entity,
-      entityId,
-    })
-
-    if (serviceClipped) {
-      warnings.push(
-        "Result set was clipped by the service-layer safety cap. Narrow the query with " +
-          "`entity` or `projectName` to see the remainder.",
-      )
-    }
-
-    if (loops.length === 0) {
-      const filterHint = args.entity ? ` matching "${args.entity}"` : ""
-      const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
-      return {
-        content: [{ type: "text", text: `No open loops found${filterHint}.${warn}` }],
-      }
-    }
-
-    const today = new Date().toISOString().split("T")[0]
-    const todayMs = new Date(today).getTime()
-
-    const daysOverdue = (f: Fact): number => {
-      if (!f.reviewBy || f.reviewBy > today) return 0
-      return Math.floor((todayMs - new Date(f.reviewBy).getTime()) / 86_400_000)
-    }
-
-    const overdueAll = loops
-      .filter((f) => f.reviewBy !== null && f.reviewBy <= today)
-      .sort((a, b) => rankOverdue(a, b, daysOverdue))
-
-    const activeAll = loops.filter((f) => !f.reviewBy || f.reviewBy > today).sort(rankActive)
-
-    const overdue =
-      perSectionCap === undefined ? overdueAll : overdueAll.slice(0, perSectionCap)
-    const active = perSectionCap === undefined ? activeAll : activeAll.slice(0, perSectionCap)
-
-    const urgencyMarker = (days: number): string => {
-      if (days >= OVERDUE_SEVERE_DAYS) return "⚠⚠ "
-      if (days >= OVERDUE_MILD_DAYS) return "⚠ "
-      return ""
-    }
-
-    const formatOverdue = (f: Fact): string => {
-      const days = daysOverdue(f)
-      const marker = urgencyMarker(days)
-      const daysLabel = days === 1 ? "1 day overdue" : `${days} days overdue`
-      const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-      return (
-        `- ${marker}${daysLabel}: **${f.subject}** → ${f.predicate.replace(/_/g, " ")} ` +
-        `→ **${f.object}** [${f.confidence}]${since}\n  ID: ${f.id}`
-      )
-    }
-
-    const formatActive = (f: Fact): string => {
-      const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-      const review = f.reviewBy ? ` — review by ${f.reviewBy}` : " — no review date"
-      return (
-        `- **${f.subject}** → ${f.predicate.replace(/_/g, " ")} → ` +
-        `**${f.object}** [${f.confidence}]${since}${review}\n  ID: ${f.id}`
-      )
-    }
-
-    const buildHeader = (label: string, shown: number, total: number): string => {
-      if (perSectionCap === undefined || shown >= total) return `### ${label} (${total})`
-      const hidden = total - shown
-      return `### ${label} (${shown} shown of ${total}, hiding ${hidden})`
-    }
-
-    const sections: string[] = []
-    if (overdueAll.length > 0) {
-      sections.push(
-        `${buildHeader("Overdue", overdue.length, overdueAll.length)}\n\n` +
-          overdue.map(formatOverdue).join("\n"),
-      )
-    }
-    if (activeAll.length > 0) {
-      sections.push(
-        `${buildHeader("Active", active.length, activeAll.length)}\n\n` +
-          active.map(formatActive).join("\n"),
-      )
-    }
-
-    const anyTruncated =
-      overdue.length < overdueAll.length || active.length < activeAll.length
-    if (anyTruncated) {
-      sections.push(
-        "Pass `{all: true}` to see everything, `{limit: N}` for a different cap, " +
-          "or `{entity: \"...\"}` to narrow further.",
-      )
-    }
-
-    const total = loops.length
-    const filterSuffix = args.entity ? ` touching "${args.entity}"` : ""
-    const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: `${total} open loop${total === 1 ? "" : "s"}${filterSuffix}:\n\n${sections.join("\n\n")}${warn}`,
         },
       ],
     }

@@ -572,12 +572,13 @@ export async function loadTrackingPreflight(
  * length check — same contract shape as `formatDigestStatus` /
  * `formatDriftStatus`.
  *
- * Warning text intentionally names both the remediation command
- * (`lore migrate --migrate-tracking-to-tasks --yes`) and the
- * consequence of skipping it ("rows become invisible to lore"). #23
- * (0.6.0) updates the prose when the migration command is removed —
- * see the post-removal copy in #23's `Files affected`. The structural
- * preflight stays put across both releases.
+ * Post-#23 (0.6.0) prose: the tracking predicates are removed from
+ * `FactPredicate`, the read paths filter historical rows at
+ * `pageToFact`, and the migration command (`lore migrate
+ * --migrate-tracking-to-tasks`) has been deleted. Operators who still
+ * see this warning are looking at rows that lore can no longer surface;
+ * the only remediation paths left are restoring the migration code from
+ * git history or hand-editing the Notion rows.
  *
  * Pure function: deterministic in `report`, no I/O.
  */
@@ -589,11 +590,13 @@ export function formatTrackingPreflight(
   const noun = report.count === 1 ? "row" : "rows"
   return [
     `⚠ Tracking-predicate facts detected: ${report.count} live ${noun}.`,
-    "  These predicates (`needs_action`, `waiting_on`, `blocked_by`) are",
-    "  scheduled for removal in the next minor lore release.",
-    "  Run `lore migrate --migrate-tracking-to-tasks --yes` BEFORE",
-    "  upgrading. After the next release, these rows become invisible",
-    "  to lore — Notion still stores them, but no read path surfaces",
-    "  them and the migration command will have been removed.",
+    "  These predicates (`needs_action`, `waiting_on`, `blocked_by`)",
+    "  were removed from lore in version 0.6.0.",
+    "  The migration command (`lore migrate --migrate-tracking-to-tasks`)",
+    "  is no longer available. Remediation options:",
+    "  (a) restore the migration code from git history and run it",
+    "      manually against your vault, or",
+    "  (b) hand-edit the Notion rows to convert them to tasks.",
+    "  Until remediated, these rows are invisible to lore.",
   ]
 }

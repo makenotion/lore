@@ -598,27 +598,26 @@ describe("formatTrackingPreflight (issue 0.6.0/24)", () => {
     expect(lines[0]).toContain("14")
   })
 
-  it("names the migration command as the remediation path", () => {
-    // Acceptance criterion: warning text names
-    // `lore migrate --migrate-tracking-to-tasks --yes` so an operator
-    // seeing the warning has a copy-pasteable command, not just a "go
-    // figure it out" nudge.
+  it("names the historical migration command so operators recognize the deleted path", () => {
+    // The warning surfaces the (now-deleted) migration command name so an
+    // operator who runs `lore status` after upgrading sees the same
+    // command they may have read about previously, alongside the
+    // explanation that it's gone.
     const report: TrackingPreflightReport = { count: 1 }
     const text = formatTrackingPreflight(report).join("\n")
-    expect(text).toContain("lore migrate --migrate-tracking-to-tasks --yes")
+    expect(text).toContain("lore migrate --migrate-tracking-to-tasks")
   })
 
   it("names the consequence of skipping the migration", () => {
     // Acceptance criterion: warning text names the consequence so the
-    // operator understands the urgency. "Become invisible to lore" is
-    // the load-bearing phrase — the rows still exist in Notion, but
-    // no read path will surface them post-removal.
+    // operator understands the urgency. "Invisible to lore" is the
+    // load-bearing phrase — the rows still exist in Notion, but no
+    // read path will surface them post-removal.
     const report: TrackingPreflightReport = { count: 1 }
     // Collapse whitespace so the assertion ignores hard line wrapping in
-    // the rendered block — "become invisible\n  to lore" is a render
-    // artifact, not a contract change.
+    // the rendered block — render artifact, not a contract change.
     const text = formatTrackingPreflight(report).join(" ").replace(/\s+/g, " ")
-    expect(text).toMatch(/become invisible to lore/i)
+    expect(text).toMatch(/invisible to lore/i)
   })
 
   it("names all three historical predicates so an operator can grep their vault", () => {

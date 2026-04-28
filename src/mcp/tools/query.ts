@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { formatDispatchError, toolError } from "../helpers.js"
 import { handleRecall, handleSearch } from "./memory.js"
-import { handleAsk, handleOpenLoops, handleAudit } from "./knowledge.js"
+import { handleAsk, handleAudit } from "./knowledge.js"
 import { tagsSchema } from "./tag-schema.js"
 
 const KINDS = [
@@ -71,13 +71,6 @@ const queryDispatchSchema = z.discriminatedUnion("action", [
     limit: z.number().int().min(1).optional(),
   }),
   z.object({
-    action: z.literal("open-loops"),
-    projectName: z.string().optional(),
-    entity: z.string().optional(),
-    limit: z.number().int().min(1).max(200).optional(),
-    all: z.boolean().optional(),
-  }),
-  z.object({
     action: z.literal("audit"),
     projectName: z.string().optional(),
   }),
@@ -97,36 +90,33 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
     {
       title: "Vault read paths",
       description:
-        "Read the vault: list memories, search memories, query the fact graph, list open loops, or audit overdue items. Action-dispatched:\n\n" +
+        "Read the vault: list memories, search memories, query the fact graph, or audit overdue items. Action-dispatched:\n\n" +
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows by default; `includeContent: true` to fetch bodies. Cursor-paginated.\n" +
         "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `hybrid`). `contains` is DS-scoped substring with server-side filters; `semantic` is workspace-wide vector ranking over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
-        "- `action: 'ask'` — query facts about an entity. Returns Governance/Structure/Tracking buckets capped at 5 each (raise via `limit`).\n" +
-        "- `action: 'open-loops'` — list active tracking-predicate facts (needs_action / waiting_on / blocked_by). Capped at 10 per section unless `{all: true}`.\n" +
-        "- `action: 'audit'` — list facts and decisions past their review-by date.",
+        "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`).\n" +
+        "- `action: 'audit'` — list facts and decisions past their review-by date.\n\n" +
+        "For tracked work (open / blocked / done), use `lore-task action='list'` rather than `lore-query`.",
       inputSchema: {
         action: z
-          .enum(["recall", "search", "ask", "open-loops", "audit"])
+          .enum(["recall", "search", "ask", "audit"])
           .describe(
-            "Operation: recall (list recent), search (semantic), ask (entity facts), open-loops, audit.",
+            "Operation: recall (list recent), search (semantic), ask (entity facts), audit.",
           ),
         // search only
         query: z
           .string()
           .optional()
           .describe("(action='search') Required. Natural language search query."),
-        // ask | open-loops
+        // ask
         entity: z
           .string()
           .optional()
-          .describe(
-            "(action='ask') Required: entity to query (subject or object). " +
-              "(action='open-loops') Optional substring filter matched against Subject OR Object.",
-          ),
+          .describe("(action='ask') Required: entity to query (subject or object)."),
         // shared scope
         projectName: z
           .string()
           .optional()
-          .describe("Scope to a project (recall, search, ask, open-loops, audit)."),
+          .describe("Scope to a project (recall, search, ask, audit)."),
         // recall | search
         topicName: z
           .string()
@@ -185,7 +175,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .describe(
             "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did.",
           ),
-        // shared (recall | search | ask | open-loops)
+        // shared (recall | search | ask)
         limit: z
           .number()
           .int()
@@ -193,7 +183,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .max(200)
           .optional()
           .describe(
-            "Max results. Defaults: recall 10, search 10, ask 5/bucket, open-loops 10/section.",
+            "Max results. Defaults: recall 10, search 10, ask 5/bucket.",
           ),
         // recall only
         startCursor: z
@@ -207,13 +197,6 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(recall | search) Include each memory's markdown body (default false). One extra Notion round-trip per row.",
-          ),
-        // open-loops only
-        all: z
-          .boolean()
-          .optional()
-          .describe(
-            "(action='open-loops') Bypass the per-section cap and return every matching loop.",
           ),
       },
       annotations: { readOnlyHint: true },
@@ -232,8 +215,6 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           return handleSearch(services, parsed.data)
         case "ask":
           return handleAsk(services, parsed.data, "lore-query")
-        case "open-loops":
-          return handleOpenLoops(services, parsed.data)
         case "audit":
           return handleAudit(services, parsed.data)
       }

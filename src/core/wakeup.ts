@@ -8,11 +8,11 @@
  * is a denser starting point than N individual memory entries.
  *
  * Wake-up also pulls "related memories": memories that match the entities
- * already surfaced as open loops, via a single relevance-ranked semantic
- * search. Seed phrases come from open-loop fact subjects and objects —
- * signal the user wrote with intent — joined into one query so Notion's
- * vector index scores memory titles AND bodies against the union. This
- * handles the realistic case where facts read like phrases (e.g. "PR
+ * already surfaced as active tasks, via a single relevance-ranked semantic
+ * search. Seed phrases come from active task subjects — signal the user
+ * wrote with intent — joined into one query so Notion's vector index
+ * scores memory titles AND bodies against the union. This handles the
+ * realistic case where task subjects read like phrases (e.g. "PR
  * #25650 label.applied classifier") that do not appear verbatim in memory
  * titles but are semantically adjacent to the explaining memory.
  *
@@ -21,20 +21,18 @@
  * fires an additional relevance search seeded by that message. The hits
  * surface as `taskMemories`, deduped against digest + recent + related,
  * so the most-relevant-to-the-current-task memories aren't buried under
- * timestamp-ordered or open-loop-seeded sections.
+ * timestamp-ordered or task-seeded sections.
  */
 
 import type {
   DecisionSummary,
   Fact,
-  FactPredicate,
   ListDecisionsOpts,
   ListTasksOpts,
   Memory,
   MemorySource,
   TaskSummary,
 } from "../types.js"
-import { TRACKING_PREDICATES } from "../types.js"
 
 export const MS_PER_DAY = 86_400_000
 
@@ -104,7 +102,6 @@ export const RANKED_WAKEUP_LIMITS = {
   memoryLimit: 3,
   memoryLimitWithDigest: 3,
   relatedMemoryLimit: 2,
-  openLoopLimit: 5,
   knowledgeFactLimit: 10,
   taskMemoryLimit: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
 } as const
@@ -125,24 +122,6 @@ const MAX_USER_QUERY_LENGTH = 1000
  * formula self-documenting.
  */
 const NOTION_PAGE_SIZE = 100
-/**
- * Default open-loops cap. Matches `NOTION_PAGE_SIZE` so a single bounded
- * Notion page covers the tracking-predicate partition without paginating.
- * Surface callers can dial this lower via `openLoopLimit` to bound prompt
- * size per section independently of the recent-memory cap.
- */
-export const DEFAULT_WAKEUP_OPEN_LOOP_LIMIT = NOTION_PAGE_SIZE
-/**
- * Hint rendered under the Open Loops section when `listTracking` reports
- * `hasMore: true` — i.e. the cap clipped the eligible set and the agent
- * should fall through to the paginating surface for the full picture.
- * Shared by both wake-up renderers (MCP `lore-context action='wake-up'`
- * and the shell hook) so the directive stays in lockstep across surfaces.
- * Names `lore-task action='list'` since P3-02 made tasks the canonical
- * surface for tracked work.
- */
-export const WAKEUP_OPEN_LOOPS_TRUNCATED_HINT =
-  "_Additional tracking facts not shown — call `lore-task action='list'` for the full list._"
 /** Upper bound on entity-name seeds passed into the `titleAny` filter. */
 const MAX_ENTITY_CANDIDATES = 10
 /** Skip entity strings shorter than this — too noisy to match on. */
@@ -172,20 +151,8 @@ export interface WakeUpServices {
     }): Promise<Memory[]>
   }
   facts: {
-    /**
-     * Tracking-predicate partition for the open-loops section. Sorts
-     * `Review By asc` with `created_time desc` as the tiebreaker, so when
-     * the cap clips, the rows that survive are biased toward most-overdue
-     * — the inverse of `queryBySubject("")`'s `created_time desc` sort,
-     * which would silently drop the rows wake-up exists to surface.
-     */
-    listTracking(opts?: {
-      projectId?: string
-      limit?: number
-    }): Promise<{ items: Fact[]; hasMore: boolean }>
     listRecent(opts: {
       projectId?: string
-      excludePredicates?: FactPredicate[]
       limit?: number
     }): Promise<{ items: Fact[]; hasMore: boolean }>
   }
@@ -209,23 +176,14 @@ export interface WakeUpOptions {
   memoryLimitWithDigest?: number
   /** Max age in days for a digest to still count as "fresh". */
   digestFreshnessDays?: number
-  /** Max rendered knowledge facts (non-tracking predicates). */
+  /** Max rendered knowledge facts. */
   knowledgeFactLimit?: number
-  /**
-   * Max open-loop facts fetched from the tracking-predicate partition.
-   * Defaults to Notion's per-page ceiling so one bounded page covers the
-   * section. Surfaces the per-section knob that P2-01 exposes to callers
-   * alongside `knowledgeFactLimit`.
-   */
-  openLoopLimit?: number
   /** Max related memories. */
   relatedMemoryLimit?: number
   /**
    * Max active tasks (Kind = task) surfaced in the Tasks section.
-   * Mirrors `openLoopLimit` — `0` skips the Notion query entirely.
-   * After P3-02 migration, this section is the canonical replacement
-   * for Open Loops; pre-migration vaults still see Open Loops alongside
-   * any natively-created tasks.
+   * `0` skips the Notion query entirely. Tasks are the canonical
+   * surface for tracked work.
    */
   taskLimit?: number
   /**
@@ -237,9 +195,9 @@ export interface WakeUpOptions {
    * index focused.
    *
    * P3-05: when this is provided, the hook caller should also tighten
-   * the per-section caps (recent: 3, related: 2, openLoops: 5, knowledge:
-   * 10) — relevance-ranked top hits carry more weight than timestamp
-   * ordering, so a smaller bundle yields better wake-up signal density.
+   * the per-section caps (recent: 3, related: 2, knowledge: 10) —
+   * relevance-ranked top hits carry more weight than timestamp ordering,
+   * so a smaller bundle yields better wake-up signal density.
    */
   userQuery?: string
   /**
@@ -269,27 +227,18 @@ export interface WakeUpData {
   digest: Memory | null
   /** Non-digest memories to surface underneath the digest. */
   memories: Memory[]
-  /** Facts with tracking predicates (needs_action, waiting_on, blocked_by). */
-  openLoops: Fact[]
-  /**
-   * `true` when `listTracking` reported additional rows beyond
-   * `openLoopLimit`. Surfaces in rendered output so an agent knows to
-   * fall through to `lore-task action='list'` for the full picture
-   * rather than treating the capped slice as exhaustive.
-   */
-  openLoopsHasMore: boolean
-  /** All other facts, capped at `knowledgeFactLimit`. */
+  /** Knowledge facts, capped at `knowledgeFactLimit`. */
   knowledgeFacts: Fact[]
   /** Proposed decisions awaiting resolution (project-scoped). */
   proposedDecisions: DecisionSummary[]
   /** Active decisions past their review-by date (project-scoped). */
   overdueDecisions: DecisionSummary[]
   /**
-   * Memories relevance-matched against the entities surfaced in open loops
-   * via one semantic search (Notion's vector index scores both titles and
-   * page bodies against the seed query). Deduped against `digest` and
-   * `memories` so the same page never renders twice. Empty when there are
-   * no open loops to seed from.
+   * Memories relevance-matched against the entities surfaced in active
+   * tasks via one semantic search (Notion's vector index scores both
+   * titles and page bodies against the seed query). Deduped against
+   * `digest` and `memories` so the same page never renders twice. Empty
+   * when there are no active tasks to seed from.
    */
   relatedMemories: Memory[]
   /**
@@ -317,16 +266,6 @@ export async function loadWakeUpData(
     opts.memoryLimitWithDigest ?? DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST
   const freshnessDays = opts.digestFreshnessDays ?? DEFAULT_DIGEST_FRESHNESS_DAYS
   const knowledgeLimit = opts.knowledgeFactLimit ?? DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT
-  // Defense-in-depth clamp. The MCP tool schema rejects
-  // `openLoopLimit > 50`, so this branch never fires from the MCP
-  // surface today — but `loadWakeUpData` is also consumed by the
-  // shell wake-up hook and any future library caller, which bypass
-  // Zod validation. Clamping here means no caller can accidentally
-  // paginate the tracking-partition query on the hot path.
-  const openLoopLimit = Math.min(
-    opts.openLoopLimit ?? DEFAULT_WAKEUP_OPEN_LOOP_LIMIT,
-    NOTION_PAGE_SIZE,
-  )
   const relatedLimit = opts.relatedMemoryLimit ?? DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT
   const taskLimit = opts.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
   const taskMemoryLimit = opts.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
@@ -338,22 +277,9 @@ export async function loadWakeUpData(
   // Request one extra memory so we can drop a digest entry without running
   // short after filtering.
   //
-  // Facts load as two targeted queries, not one full-scan: the old
-  // `queryBySubject("")` paginated the whole project and partitioned
-  // client-side, which on every hook fire cost 3–6 Notion pages of I/O for
-  // a bounded output. Server-side predicate filters collapse that to one
-  // page per section.
-  //
-  // Tracking side uses `listTracking`, not `queryBySubject("",
-  // { predicates: TRACKING_PREDICATES, ... })`. Both partition the same
-  // rows, but `queryBySubject` sorts by `created_time desc`, which under
-  // a cap drops the rows whose `Review By` is furthest in the past —
-  // exactly the rows wake-up exists to surface. `listTracking` sorts by
-  // `Review By asc` with `created_time desc` as the tiebreaker, so when
-  // the cap clips the truncation lands on the soonest-due / no-due rows
-  // rather than on the most-overdue tail. The eligible-set sort also
-  // exposes `hasMore` so we can hint at the follow-up surface
-  // (`lore-task action='list'`) rather than silently truncate.
+  // Knowledge facts load as one targeted single-page query bounded by
+  // `knowledgeLimit`. Server-side filters collapse that to one Notion
+  // page per session start.
   //
   // The task-memories search runs in the same `Promise.all` as the other
   // queries so its latency overlaps with the existing wake-up fan-out
@@ -394,7 +320,6 @@ export async function loadWakeUpData(
   const [
     { items: rawMemories },
     { items: latestDigestList },
-    { items: openLoops, hasMore: openLoopsHasMore },
     { items: knowledgeFacts },
     { items: proposedDecisions },
     overdueDecisions,
@@ -403,7 +328,6 @@ export async function loadWakeUpData(
   ]: [
     { items: Memory[] },
     { items: Memory[] },
-    { items: Fact[]; hasMore: boolean },
     { items: Fact[]; hasMore: boolean },
     { items: DecisionSummary[] },
     DecisionSummary[],
@@ -426,16 +350,9 @@ export async function loadWakeUpData(
           sortBy: "created_time",
         })
       : Promise.resolve({ items: [] as Memory[] }),
-    projectId && openLoopLimit > 0
-      ? services.facts.listTracking({
-          projectId,
-          limit: openLoopLimit,
-        })
-      : Promise.resolve({ items: [] as Fact[], hasMore: false }),
     projectId
       ? services.facts.listRecent({
           projectId,
-          excludePredicates: TRACKING_PREDICATES,
           limit: knowledgeLimit,
         })
       : Promise.resolve({ items: [] as Fact[], hasMore: false }),
@@ -474,17 +391,17 @@ export async function loadWakeUpData(
   const effectiveLimit = digest ? memoryLimitWithDigest : memoryLimit
   const memories = nonDigestMemories.slice(0, effectiveLimit)
 
-  // Related memories: seed from open-loop entities, dedupe against the
+  // Related memories: seed from active task entities, dedupe against the
   // memories + digest we already plan to render. Skip the round-trip when
-  // there are no open loops or no project scope — there's nothing to seed
+  // there are no active tasks or no project scope — there's nothing to seed
   // from and wake-up runs every session.
   const alreadySurfaced = new Set<string>()
   if (digest) alreadySurfaced.add(digest.id)
   for (const mem of memories) alreadySurfaced.add(mem.id)
 
   let relatedMemories: Memory[] = []
-  if (projectId && openLoops.length > 0 && relatedLimit > 0) {
-    const entities = extractEntities(openLoops)
+  if (projectId && tasks.length > 0 && relatedLimit > 0) {
+    const entities = extractTaskEntities(tasks)
     if (entities.length > 0) {
       // Scale the candidate pool so dedupe doesn't starve the section: at
       // worst every hit collides with an already-surfaced memory (digest +
@@ -497,7 +414,7 @@ export async function loadWakeUpData(
       )
       // Join entities into a single relevance query so Notion's vector
       // index scores memory titles AND bodies against the union. This is
-      // strictly more permissive than substring title matching — fact
+      // strictly more permissive than substring title matching — task
       // subjects like "PR #25650 outlook label.applied classifier" are
       // phrase-shaped, not bare entity names, and only relevance ranking
       // finds the "PR #25650 label.applied classifier: false positives…"
@@ -557,8 +474,6 @@ export async function loadWakeUpData(
   return {
     digest,
     memories,
-    openLoops,
-    openLoopsHasMore,
     knowledgeFacts,
     proposedDecisions,
     overdueDecisions,
@@ -593,24 +508,25 @@ function sanitizeUserQuery(raw: string | undefined): string | undefined {
 }
 
 /**
- * Pull deduped entity-name candidates from a set of open-loop facts. Both
- * `subject` and `object` are considered — in a knowledge graph both
- * positions can name real entities (e.g. `autolabel blocked_by OOM_issue`).
+ * Pull deduped entity-name candidates from a set of active tasks. The
+ * task `entity` field carries the normalized subject (PR number, file,
+ * service); `title` is the human-friendly version. Prefer `entity`
+ * when populated — it's the structurally-indexed handle that
+ * `lore-task action='list'` filters against — and fall back to `title`
+ * for tasks created before the `entity` column was filled.
  * Case-insensitive dedupe; short fragments dropped as too noisy.
  */
-function extractEntities(openLoops: Fact[]): string[] {
+function extractTaskEntities(tasks: TaskSummary[]): string[] {
   const seen = new Set<string>()
   const entities: string[] = []
-  for (const loop of openLoops) {
-    for (const raw of [loop.subject, loop.object]) {
-      const entity = raw.trim()
-      if (entity.length < MIN_ENTITY_LENGTH) continue
-      const key = entity.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
-      entities.push(entity)
-      if (entities.length >= MAX_ENTITY_CANDIDATES) return entities
-    }
+  for (const task of tasks) {
+    const raw = (task.entity || task.title).trim()
+    if (raw.length < MIN_ENTITY_LENGTH) continue
+    const key = raw.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    entities.push(raw)
+    if (entities.length >= MAX_ENTITY_CANDIDATES) return entities
   }
   return entities
 }

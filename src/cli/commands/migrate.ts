@@ -12,10 +12,6 @@ import type {
   TopicAliasMergeResult,
 } from "../../core/topic-merge.js"
 import type { Fact, Memory } from "../../types.js"
-import {
-  migrateTrackingFactsToTasks,
-  type TrackingFactMigrationResult,
-} from "../../core/task-migration.js"
 import type { NormalizableAgentRow } from "../../core/agent-normalization.js"
 import {
   buildEntities,
@@ -79,16 +75,12 @@ export const migrateCommand = new Command("migrate")
     "Group every fact's Subject and Object strings by their normalized key, propose one canonical Entity row per group with the remaining raw forms as aliases, and re-point each fact's SubjectEntity/ObjectEntity relation. Plan-only by default — re-run with --yes to apply. Run on a quiet vault (no concurrent autosaves writing facts): the migration has no lock, so two concurrent `--yes` runs can produce duplicate Entity rows for groups that didn't previously exist. PF3-01."
   )
   .option(
-    "--migrate-tracking-to-tasks",
-    "Convert every live tracking-predicate fact (needs_action / waiting_on / blocked_by) into a `Kind: task` memory and invalidate the source fact. The fact's Subject becomes the task title; its Object becomes the task body (full prose, no rich_text length cap); its Source memory carries forward as the task's Affects relation. Plan-only by default — re-run with `--yes` to apply. Idempotent (invalidated facts are skipped on the next pass)."
-  )
-  .option(
     "--normalize-agents",
     "Collapse free-form `Agent` strings on every memory onto their canonical form. The seven Claude variants observed in the PF3-02 Mail-vault audit (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`, `claude-code-opus-4-7`) plus the bare-version cousin (`Claude Opus 4.7`) all rewrite to `Claude Code`; explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through unchanged. Plan-only by default — re-run with `--yes` to apply. Idempotent."
   )
   .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--migrate-tracking-to-tasks`, `--normalize-agents`, `--build-entities`, or `--merge-similar-topics`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, or `--merge-similar-topics`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -106,7 +98,6 @@ export const migrateCommand = new Command("migrate")
       dedupKeys?: boolean
       merge?: boolean
       yes?: boolean
-      migrateTrackingToTasks?: boolean
       normalizeAgents?: boolean
       buildEntities?: boolean
     }) => {
@@ -125,13 +116,12 @@ export const migrateCommand = new Command("migrate")
           !opts.merge &&
           !opts.fixFactEncoding &&
           !opts.fixMemoryEncoding &&
-          !opts.migrateTrackingToTasks &&
           !opts.normalizeAgents &&
           !opts.buildEntities &&
           !opts.mergeSimilarTopics
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --migrate-tracking-to-tasks, --normalize-agents, --build-entities, or --merge-similar-topics."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, or --merge-similar-topics."
           )
           process.exit(1)
         }
@@ -386,13 +376,6 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
-        if (opts.migrateTrackingToTasks) {
-          await runTrackingToTasksMigration(services, {
-            apply: Boolean(opts.yes) && !opts.dryRun,
-            dryRun: opts.dryRun,
-          })
-        }
-
         if (opts.normalizeAgents) {
           await runAgentNormalization(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
@@ -459,16 +442,14 @@ export const migrateCommand = new Command("migrate")
           if (duplicateTopics.length > 0 && !opts.mergeDuplicateTopics) {
             flagHints.push("`--merge-duplicate-topics`")
           }
-          // Fact / memory encoding, the tracking-to-tasks migration, and
-          // the agent-identity normalizer are all plan-then-execute:
-          // `--yes` applies, not "re-run without --dry-run". Suppress the
-          // generic footer when the user explicitly asked for one of those
-          // flags — the dispatcher's own output already tells them how to
-          // apply.
+          // Fact / memory encoding and the agent-identity normalizer are
+          // all plan-then-execute: `--yes` applies, not "re-run without
+          // --dry-run". Suppress the generic footer when the user
+          // explicitly asked for one of those flags — the dispatcher's
+          // own output already tells them how to apply.
           const encodingFlagUsed =
             opts.fixFactEncoding ||
             opts.fixMemoryEncoding ||
-            opts.migrateTrackingToTasks ||
             opts.normalizeAgents ||
             opts.buildEntities ||
             opts.mergeSimilarTopics
@@ -1143,104 +1124,6 @@ export function printAliasMergeResults(
       console.log(`  "${noop.canonical}"${extra}`)
     }
   }
-}
-
-/**
- * Drive the tracking-fact → task migration and render the report.
- * Plan-only by default; `--yes` flips to apply mode. Mirrors the
- * report shape `runFactEncodingFix` / `runMemoryEncodingFix` use.
- */
-export async function runTrackingToTasksMigration(
-  services: LoreServices,
-  options: { apply: boolean; dryRun?: boolean }
-): Promise<TrackingFactMigrationResult> {
-  const planOnly = !options.apply
-  const result = await migrateTrackingFactsToTasks(
-    services.facts,
-    services.tasks,
-    {
-      apply: options.apply,
-      dryRun: options.dryRun,
-      // No project filter on bulk migration — vault-wide is the
-      // expected one-shot. Operators who really want a single-project
-      // pass can run the same migration twice (no-op on the already-
-      // invalidated rows from the first pass).
-    }
-  )
-
-  if (result.plans.length === 0) {
-    console.log(
-      "\nNo tracking-predicate facts found — nothing to migrate."
-    )
-    return result
-  }
-
-  const verb = planOnly ? "Would migrate" : "Migrated"
-  // Distinguish fresh vs. already-migrated rows so a rerun of a
-  // partially-failed prior pass reads as "0 new, N healed" rather than
-  // "N migrated" — which would be misleading when no fresh tasks land.
-  const freshCount = result.plans.length - result.alreadyMigrated
-  console.log(
-    `\n${verb} ${freshCount} tracking fact${freshCount === 1 ? "" : "s"} → task memor${freshCount === 1 ? "y" : "ies"}.`
-  )
-  if (result.alreadyMigrated > 0) {
-    // Mirror the apply path's "skipped + retried" framing in plan
-    // mode so the preview tells the operator exactly what `--yes`
-    // will do — the heal path retries the invalidate, not just the
-    // create. Telling them only half the story trains them to ignore
-    // the preview when they re-run with `--yes`.
-    const action = planOnly
-      ? "would skip task creation and would retry invalidation of source facts that were left active"
-      : "skipped task creation and re-attempted invalidation of any source facts that were left active"
-    console.log(
-      `Found ${result.alreadyMigrated} fact${result.alreadyMigrated === 1 ? "" : "s"} already migrated by a prior run — ${action}.`
-    )
-  }
-  if (!planOnly) {
-    console.log(
-      `Invalidated ${result.invalidated} source fact${result.invalidated === 1 ? "" : "s"}.`
-    )
-  }
-
-  // Capped preview — the Mail vault has ~270 tracking facts, and
-  // dumping them all on every run is hostile.
-  const PREVIEW_LIMIT = 10
-  const preview = result.plans.slice(0, PREVIEW_LIMIT)
-  for (const row of preview) {
-    const idHint = row.alreadyMigrated
-      ? ` → existing task ${row.taskId} (already migrated)`
-      : row.taskId
-        ? ` → task ${row.taskId}`
-        : planOnly
-          ? ""
-          : " (failed)"
-    console.log(
-      `  "${row.task.subject}" [${row.task.state}]${idHint}`
-    )
-  }
-  if (result.plans.length > PREVIEW_LIMIT) {
-    console.log(`  … and ${result.plans.length - PREVIEW_LIMIT} more.`)
-  }
-
-  if (result.errors.length > 0) {
-    console.log(
-      `\nFailed on ${result.errors.length} row${result.errors.length === 1 ? "" : "s"}:`
-    )
-    for (const e of result.errors.slice(0, PREVIEW_LIMIT)) {
-      console.log(`  fact ${e.factId}: ${e.message}`)
-    }
-    if (result.errors.length > PREVIEW_LIMIT) {
-      console.log(`  … and ${result.errors.length - PREVIEW_LIMIT} more failures.`)
-    }
-  }
-
-  if (planOnly) {
-    console.log(
-      "\nPlan only — no changes written. Re-run with `--yes` to migrate facts → tasks and invalidate the source rows."
-    )
-  }
-
-  return result
 }
 
 /**

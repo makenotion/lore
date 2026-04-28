@@ -12,14 +12,12 @@ import {
 import type {
   DecisionSummary,
   Fact,
-  FactPredicate,
   ListDecisionsOpts,
   ListTasksOpts,
   Memory,
   MemorySource,
   TaskSummary,
 } from "../types.js"
-import { TRACKING_PREDICATES } from "../types.js"
 
 const NOW = new Date("2026-04-20T12:00:00Z").getTime()
 
@@ -73,6 +71,36 @@ function buildFact(overrides: Partial<Fact>): Fact {
   }
 }
 
+function buildTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
+  const base: TaskSummary = {
+    id: overrides.id,
+    title: overrides.title ?? `Task ${overrides.id}`,
+    projectIds: [],
+    topicId: null,
+    source: "manual",
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
+    reviewBy: null,
+    decidedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    session: "",
+    taskState: "open",
+    blockedBy: "",
+    entity: overrides.entity ?? "",
+    createdAt: "2026-04-01T00:00:00Z",
+    updatedAt: "2026-04-01T00:00:00Z",
+  }
+  return { ...base, ...overrides }
+}
+
 type ListCall = {
   projectId?: string
   source?: MemorySource
@@ -90,17 +118,14 @@ type SearchCall = {
   mode?: "contains" | "semantic" | "hybrid"
 }
 
-type ListTrackingCall = { projectId?: string; limit?: number }
 type ListRecentCall = {
   projectId?: string
-  excludePredicates?: FactPredicate[]
   limit?: number
 }
 
 interface StubServices extends WakeUpServices {
   memoriesCalls: ListCall[]
   memoriesSearchCalls: SearchCall[]
-  factsTrackingCalls: ListTrackingCall[]
   factsListRecentCalls: ListRecentCall[]
   decisionsListCalls: ListDecisionsOpts[]
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
@@ -114,7 +139,7 @@ function stubServices(opts: {
   /**
    * Memories returned when the search query equals `taskQuery`. Lets
    * P3-05 tests distinguish the user-query-seeded task search from the
-   * open-loop-entity-seeded related search — both go through the same
+   * task-entity-seeded related search — both go through the same
    * `MemoryService.search` method but feed different output sections.
    */
   taskQuery?: string
@@ -126,13 +151,11 @@ function stubServices(opts: {
 }): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
-  const factsTrackingCalls: ListTrackingCall[] = []
   const factsListRecentCalls: ListRecentCall[] = []
   const decisionsListCalls: ListDecisionsOpts[] = []
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const tasksListCalls: ListTasksOpts[] = []
   const factsResult = opts.facts ?? []
-  const trackingPredicateSet = new Set<FactPredicate>(TRACKING_PREDICATES)
 
   return {
     memories: {
@@ -156,43 +179,14 @@ function stubServices(opts: {
       }),
     },
     facts: {
-      // `listTracking` partitions to tracking predicates server-side and
-      // sorts `Review By asc` (with `created_time desc` as the tiebreaker)
-      // so the urgency-biased eligible set survives any cap. The stub
-      // mimics that ordering so cap-clip tests can pin which rows are
-      // expected to remain after the slice.
-      listTracking: vi.fn(async (listOpts: ListTrackingCall = {}) => {
-        factsTrackingCalls.push(listOpts)
-        const tracking = factsResult.filter((f) =>
-          trackingPredicateSet.has(f.predicate),
-        )
-        // Stable sort: rows with no `reviewBy` sink last (the real service
-        // sorts `Review By asc`, where Notion treats null as "after"
-        // populated dates). Tiebreaker is fixture order, which the tests
-        // arrange to match `created_time desc`.
-        const sorted = [...tracking].sort((a, b) => {
-          if (a.reviewBy === b.reviewBy) return 0
-          if (a.reviewBy === null) return 1
-          if (b.reviewBy === null) return -1
-          return a.reviewBy < b.reviewBy ? -1 : 1
-        })
-        const total = sorted.length
-        const items =
-          listOpts.limit !== undefined ? sorted.slice(0, listOpts.limit) : sorted
-        return { items, hasMore: items.length < total }
-      }),
       listRecent: vi.fn(async (listOpts: ListRecentCall) => {
         factsListRecentCalls.push(listOpts)
-        let filtered = factsResult
-        if (listOpts.excludePredicates?.length) {
-          const excluded = new Set<FactPredicate>(listOpts.excludePredicates)
-          filtered = filtered.filter((f) => !excluded.has(f.predicate))
-        }
-        const total = filtered.length
-        if (listOpts.limit !== undefined) {
-          filtered = filtered.slice(0, listOpts.limit)
-        }
-        return { items: filtered, hasMore: filtered.length < total }
+        const total = factsResult.length
+        const items =
+          listOpts.limit !== undefined
+            ? factsResult.slice(0, listOpts.limit)
+            : factsResult
+        return { items, hasMore: items.length < total }
       }),
     },
     decisions: {
@@ -213,7 +207,6 @@ function stubServices(opts: {
     },
     memoriesCalls,
     memoriesSearchCalls,
-    factsTrackingCalls,
     factsListRecentCalls,
     decisionsListCalls,
     decisionsOverdueCalls,
@@ -346,24 +339,22 @@ describe("loadWakeUpData", () => {
     expect(digestCall?.includeContent).toBeUndefined()
   })
 
-  it("partitions facts into open loops and knowledge facts", async () => {
+  it("returns recent facts as knowledge facts", async () => {
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
       facts: [
         buildFact({ id: "f1", predicate: "uses" }),
-        buildFact({ id: "f2", predicate: "needs_action" }),
-        buildFact({ id: "f3", predicate: "waiting_on" }),
+        buildFact({ id: "f2", predicate: "depends_on" }),
       ],
     })
 
     const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
-    expect(data.openLoops.map((f) => f.id).sort()).toEqual(["f2", "f3"])
-    expect(data.knowledgeFacts.map((f) => f.id)).toEqual(["f1"])
+    expect(data.knowledgeFacts.map((f) => f.id)).toEqual(["f1", "f2"])
   })
 
-  it("caps knowledge facts at knowledgeFactLimit (default 25)", async () => {
+  it("caps knowledge facts at knowledgeFactLimit (default)", async () => {
     const facts = Array.from({ length: DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT + 10 }, (_, i) =>
       buildFact({ id: `k${i}`, predicate: "uses" }),
     )
@@ -372,35 +363,18 @@ describe("loadWakeUpData", () => {
     const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
     expect(data.knowledgeFacts).toHaveLength(DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
-    // Open loops unaffected.
-    expect(data.openLoops).toHaveLength(0)
   })
 
-  it("issues targeted fact queries with server-side predicate filters and bounded page size", async () => {
-    // Wake-up runs on every hook fire — the old full-scan paginated the
-    // entire project fact table. The new shape must push partitioning to
-    // Notion: one bounded page for open loops (tracking predicates) and
-    // one bounded page for knowledge facts (everything else).
+  it("issues a single bounded listRecent query for knowledge facts", async () => {
+    // Wake-up runs on every hook fire; the facts query must be a bounded
+    // single-page read.
     const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
 
     await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
-    // Tracking partition rides on `listTracking` (urgency-biased sort)
-    // rather than `queryBySubject("")` (creation-time sort). The two
-    // partition the same rows, but `listTracking`'s `Review By asc`
-    // ordering is what makes the cap drop the *least* overdue rows
-    // rather than the *most* overdue ones — see issue #04 (0.6.0).
-    expect(services.factsTrackingCalls).toHaveLength(1)
-    const openLoopCall = services.factsTrackingCalls[0]
-    expect(openLoopCall.projectId).toBe("p1")
-    // Bounded by Notion's per-page ceiling so wake-up never paginates.
-    expect(openLoopCall.limit).toBeDefined()
-    expect(openLoopCall.limit).toBeLessThanOrEqual(100)
-
     expect(services.factsListRecentCalls).toHaveLength(1)
     const knowledgeCall = services.factsListRecentCalls[0]
     expect(knowledgeCall.projectId).toBe("p1")
-    expect(knowledgeCall.excludePredicates).toEqual(TRACKING_PREDICATES)
     expect(knowledgeCall.limit).toBe(DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
   })
 
@@ -418,131 +392,18 @@ describe("loadWakeUpData", () => {
     expect(services.factsListRecentCalls[0]?.limit).toBe(7)
   })
 
-  it("forwards a caller-supplied openLoopLimit into the tracking-predicate query", async () => {
-    // P2-01 exposes per-section caps so callers can bound prompt size.
-    // openLoopLimit must reach the tracking-partition query or the cap
-    // becomes advisory — wake-up is a hot path and we can't afford to
-    // over-fetch just because the renderer truncates later.
-    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
-
-    await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 4, now: NOW })
-
-    expect(services.factsTrackingCalls[0]?.limit).toBe(4)
-  })
-
-  it("clamps openLoopLimit to Notion's per-page ceiling", async () => {
-    // Schema validation caps inputs at 50, but defense-in-depth: if a
-    // caller (or a future schema loosening) feeds us 500, we still must
-    // not paginate. The service layer caps at 100 too — asserting here
-    // pins the wake-up-side contract.
-    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
-
-    await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 500, now: NOW })
-
-    expect(services.factsTrackingCalls[0]?.limit).toBeLessThanOrEqual(100)
-  })
-
-  it("skips the tracking-predicate query when openLoopLimit is 0", async () => {
-    // Setting openLoopLimit: 0 is the explicit "skip this section" knob.
-    // It must short-circuit the Notion round-trip — pre-P2-01 wake-up
-    // always paid for tracking-partition I/O.
-    const services = stubServices({ rawMemories: [], digestMemories: [], facts: [] })
-
-    const data = await loadWakeUpData(services, { projectId: "p1", openLoopLimit: 0, now: NOW })
-
-    expect(data.openLoops).toEqual([])
-    expect(data.openLoopsHasMore).toBe(false)
-    expect(services.facts.listTracking).not.toHaveBeenCalled()
-  })
-
-  it("biases the eligible open-loop set toward most-overdue when the cap clips", async () => {
-    // The whole point of using `listTracking` over `queryBySubject("")`:
-    // when more tracking facts exist than `openLoopLimit`, the rows that
-    // survive the cap must be the most-overdue ones (Review By asc), not
-    // the most-recently-created ones (created_time desc, the old shape).
-    // The Mail vault has 271 open loops vs. a default cap of 100 — under
-    // the old shape ~171 of the most-overdue rows were silently dropped.
-    const overdueOldest = buildFact({
-      id: "f-overdue-old",
-      predicate: "needs_action",
-      reviewBy: "2025-09-01",
-    })
-    const overdueRecent = buildFact({
-      id: "f-overdue-recent",
-      predicate: "blocked_by",
-      reviewBy: "2026-01-15",
-    })
-    const futureReview = buildFact({
-      id: "f-future",
-      predicate: "waiting_on",
-      reviewBy: "2026-08-01",
-    })
-    const noReview = buildFact({
-      id: "f-no-review",
-      predicate: "needs_action",
-      reviewBy: null,
-    })
-    const services = stubServices({
-      rawMemories: [],
-      digestMemories: [],
-      facts: [futureReview, noReview, overdueOldest, overdueRecent],
-    })
-
-    const data = await loadWakeUpData(services, {
-      projectId: "p1",
-      openLoopLimit: 2,
-      now: NOW,
-    })
-
-    // Cap = 2. The two most-overdue (oldest `Review By`) survive; the
-    // future-dated and no-review-date rows fall off the tail. Prior
-    // behaviour would have surfaced whichever two were created most
-    // recently regardless of urgency.
-    expect(data.openLoops.map((f) => f.id)).toEqual([
-      "f-overdue-old",
-      "f-overdue-recent",
-    ])
-    // Service-layer truncation propagates so renderers can hint at
-    // `lore-task action='list'` for the full slice.
-    expect(data.openLoopsHasMore).toBe(true)
-  })
-
-  it("propagates hasMore: false when the eligible set fits under the cap", async () => {
-    // Mirror of the cap-clip case. With two rows and a generous limit,
-    // there is no truncation and renderers shouldn't hint at follow-up.
-    const services = stubServices({
-      rawMemories: [],
-      digestMemories: [],
-      facts: [
-        buildFact({ id: "f1", predicate: "needs_action", reviewBy: "2025-09-01" }),
-        buildFact({ id: "f2", predicate: "waiting_on", reviewBy: "2026-01-15" }),
-      ],
-    })
-
-    const data = await loadWakeUpData(services, {
-      projectId: "p1",
-      openLoopLimit: 50,
-      now: NOW,
-    })
-
-    expect(data.openLoops).toHaveLength(2)
-    expect(data.openLoopsHasMore).toBe(false)
-  })
-
   it("skips digest, fact, decision, and related-memory lookup when no project is resolved", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
     const data = await loadWakeUpData(services, { now: NOW })
 
     expect(data.digest).toBeNull()
-    expect(data.openLoops).toEqual([])
     expect(data.knowledgeFacts).toEqual([])
     expect(data.proposedDecisions).toEqual([])
     expect(data.overdueDecisions).toEqual([])
     expect(data.relatedMemories).toEqual([])
     expect(services.memoriesCalls.some((c) => c.source === "digest")).toBe(false)
     expect(services.memoriesSearchCalls).toEqual([])
-    expect(services.facts.listTracking).not.toHaveBeenCalled()
     expect(services.facts.listRecent).not.toHaveBeenCalled()
     expect(services.decisions.list).not.toHaveBeenCalled()
     expect(services.decisions.queryOverdue).not.toHaveBeenCalled()
@@ -637,12 +498,11 @@ describe("loadWakeUpData", () => {
     expect(services.decisions.queryOverdue).not.toHaveBeenCalled()
   })
 
-  it("surfaces related memories seeded by open-loop entities", async () => {
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "blocked_by",
-      subject: "Historic autolabel",
-      object: "OOM issue",
+  it("surfaces related memories seeded by active task entities", async () => {
+    const task = buildTask({
+      id: "t-1",
+      title: "Historic autolabel pipeline",
+      entity: "Historic autolabel",
     })
     const related = buildMemory({
       id: "rel-1",
@@ -653,7 +513,7 @@ describe("loadWakeUpData", () => {
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: [related],
     })
 
@@ -663,10 +523,7 @@ describe("loadWakeUpData", () => {
     expect(services.memoriesSearchCalls).toHaveLength(1)
     const relatedCall = services.memoriesSearchCalls[0]
     expect(relatedCall.projectId).toBe("p1")
-    // Entities are joined into a single relevance query so Notion's vector
-    // index scores titles AND bodies against the union.
     expect(relatedCall.query).toContain("Historic autolabel")
-    expect(relatedCall.query).toContain("OOM issue")
   })
 
   it("dedupes related memories against the digest and recent memories", async () => {
@@ -681,11 +538,10 @@ describe("loadWakeUpData", () => {
       title: "autolabel post-digest update",
       createdAt: "2026-04-20T00:00:00Z",
     })
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "blocked_by",
-      subject: "autolabel",
-      object: "OOM",
+    const task = buildTask({
+      id: "t-1",
+      title: "autolabel",
+      entity: "autolabel",
     })
     // Related set includes the digest id, the recent id, and a fresh third one.
     // Only the third one should survive.
@@ -698,7 +554,7 @@ describe("loadWakeUpData", () => {
     const services = stubServices({
       rawMemories: [recent],
       digestMemories: [fresh],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: related,
     })
 
@@ -717,16 +573,15 @@ describe("loadWakeUpData", () => {
       createdAt: "2026-04-19T00:00:00Z",
     })
     const recent = buildMemory({ id: "m0", createdAt: "2026-04-20T00:00:00Z" })
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "needs_action",
-      subject: "Router migration",
-      object: "OIDC",
+    const task = buildTask({
+      id: "t-1",
+      title: "Router migration",
+      entity: "Router migration",
     })
     const services = stubServices({
       rawMemories: [recent],
       digestMemories: [fresh],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: [],
     })
 
@@ -753,11 +608,10 @@ describe("loadWakeUpData", () => {
     const recents = Array.from({ length: 3 }, (_, i) =>
       buildMemory({ id: `m${i}`, createdAt: "2026-04-20T00:00:00Z" }),
     )
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "needs_action",
-      subject: "Router",
-      object: "OIDC",
+    const task = buildTask({
+      id: "t-1",
+      title: "Router",
+      entity: "Router",
     })
     const candidates = [
       buildMemory({ id: "d1", title: "dupe digest", createdAt: "2026-04-01T00:00:00Z" }),
@@ -771,7 +625,7 @@ describe("loadWakeUpData", () => {
     const services = stubServices({
       rawMemories: recents,
       digestMemories: [fresh],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: candidates,
     })
 
@@ -785,11 +639,10 @@ describe("loadWakeUpData", () => {
   })
 
   it("caps related memories at relatedMemoryLimit", async () => {
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "needs_action",
-      subject: "Router",
-      object: "migrate",
+    const task = buildTask({
+      id: "t-1",
+      title: "Router",
+      entity: "Router migration",
     })
     const related = Array.from({ length: DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT + 3 }, (_, i) =>
       buildMemory({
@@ -802,7 +655,7 @@ describe("loadWakeUpData", () => {
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: related,
     })
 
@@ -811,11 +664,11 @@ describe("loadWakeUpData", () => {
     expect(data.relatedMemories).toHaveLength(DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT)
   })
 
-  it("does not issue a related-memories query when there are no open loops", async () => {
+  it("does not issue a related-memories query when there are no active tasks", async () => {
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
-      facts: [buildFact({ id: "k1", predicate: "uses" })], // no tracking predicates
+      tasks: [],
       relatedMemories: [
         buildMemory({ id: "should-not-surface", title: "noise", createdAt: "2026-02-10T00:00:00Z" }),
       ],
@@ -828,38 +681,46 @@ describe("loadWakeUpData", () => {
   })
 
   it("drops very short entity fragments from the related-memories seed", async () => {
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "needs_action",
-      subject: "ok",
-      object: "Router migration",
+    // A task whose entity (and title) are both shorter than the
+    // 3-char minimum produces no seed at all, so no search fires.
+    // A task with a long-enough fallback title still seeds the search.
+    const shortTask = buildTask({
+      id: "t-short",
+      title: "ok",
+      entity: "ok",
+    })
+    const longTask = buildTask({
+      id: "t-long",
+      title: "Router migration",
+      entity: "Router migration",
     })
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
-      facts: [openLoop],
+      tasks: [shortTask, longTask],
       relatedMemories: [],
     })
 
     await loadWakeUpData(services, { projectId: "p1", now: NOW })
 
     const relatedCall = services.memoriesSearchCalls[0]
+    // The short task's entity is dropped; only the long task's entity
+    // appears in the seed.
     expect(relatedCall?.query).toBe("Router migration")
   })
 
   it("forwards includeMemoryContent to the related-memory search", async () => {
     // The hook wake-up path passes `includeMemoryContent: false` to skip
     // N+1 markdown fetches on every session start. Search must honor it.
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "needs_action",
-      subject: "Router migration",
-      object: "OIDC",
+    const task = buildTask({
+      id: "t-1",
+      title: "Router migration",
+      entity: "Router migration",
     })
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: [],
     })
 
@@ -874,21 +735,20 @@ describe("loadWakeUpData", () => {
   })
 
   it("requests semantic mode for the related-memory search (P3-04)", async () => {
-    // Phrase-shaped fact subjects don't substring-match titles, so the
+    // Phrase-shaped task subjects don't substring-match titles, so the
     // contains leg of hybrid would mostly miss and force the same semantic
     // round-trip after a wasted contains pass. Wake-up explicitly opts
     // into `mode: "semantic"` to skip that wasted round-trip and lock in
     // the relevance-ranked behavior the surrounding logic depends on.
-    const openLoop = buildFact({
-      id: "f-loop",
-      predicate: "needs_action",
-      subject: "Router migration",
-      object: "OIDC",
+    const task = buildTask({
+      id: "t-1",
+      title: "Router migration",
+      entity: "Router migration",
     })
     const services = stubServices({
       rawMemories: [],
       digestMemories: [],
-      facts: [openLoop],
+      tasks: [task],
       relatedMemories: [],
     })
 
@@ -902,7 +762,7 @@ describe("loadWakeUpData", () => {
     it("fires an extra search seeded by userQuery and surfaces the hits", async () => {
       // P3-05: when wake-up has the user's first message, the most
       // relevant section is "what does the vault have on the thing the
-      // user is asking about" — not generic recents or open-loop seeds.
+      // user is asking about" — not generic recents or task seeds.
       const taskHit = buildMemory({
         id: "task-hit",
         title: "Auth bug post-mortem",
@@ -948,7 +808,7 @@ describe("loadWakeUpData", () => {
       expect(data.taskMemories).toEqual([])
       // No search call was issued for any task-shaped query — the only
       // possible search is the related-memories one, which would only
-      // fire if there were open loops.
+      // fire if there were active tasks.
       expect(services.memoriesSearchCalls).toEqual([])
     })
 
@@ -976,11 +836,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("trims surrounding whitespace before searching", async () => {
-      // A user prompt like "  fix auth\n  " should hit the same vector-
-      // index neighborhood as "fix auth" — Notion's relevance ranker
-      // doesn't penalize trailing whitespace, but emitting a surplus-
-      // whitespace query muddies test fixtures and other observers
-      // (e.g. log lines) for no benefit.
       const services = stubServices({
         rawMemories: [],
         digestMemories: [],
@@ -1002,10 +857,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("truncates very long userQuery to 1000 chars before search", async () => {
-      // Spec: "If userQuery is very long (user pastes a log), truncate
-      // to first 1K chars before embedding/search." A 5000-char paste
-      // would otherwise blow Notion's query-string budget AND drown the
-      // relevance signal in noise.
       const longQuery = "auth ".repeat(1000) // 5000 chars
       const truncated = longQuery.slice(0, 1000)
 
@@ -1031,12 +882,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("dedupes taskMemories against digest, recent, and related", async () => {
-      // The cross-section dedupe contract: a memory rendered in the
-      // digest, recents, or related-to-open-loops sections must NOT
-      // appear again as a task-memory hit, even if Notion's relevance
-      // ranker promotes it. Without this guard, an actively-edited memory
-      // (which is naturally both recent AND topically relevant) would
-      // render in multiple sections and triple-charge the prompt budget.
       const fresh = buildMemory({
         id: "d1",
         title: "Fresh digest",
@@ -1048,11 +893,10 @@ describe("loadWakeUpData", () => {
         title: "auth refactor in progress",
         createdAt: "2026-04-20T00:00:00Z",
       })
-      const openLoop = buildFact({
-        id: "f-loop",
-        predicate: "needs_action",
-        subject: "auth",
-        object: "OIDC migration",
+      const task = buildTask({
+        id: "t-1",
+        title: "auth",
+        entity: "OIDC migration",
       })
       const relatedHit = buildMemory({
         id: "rel-hit",
@@ -1078,7 +922,7 @@ describe("loadWakeUpData", () => {
         relatedMemories: [relatedHit],
         taskQuery: "auth bug",
         taskMemories: taskCandidates,
-        facts: [openLoop],
+        tasks: [task],
       })
 
       const data = await loadWakeUpData(services, {
@@ -1094,8 +938,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("caps taskMemories at taskMemoryLimit (default 3)", async () => {
-      // The default keeps the section dense — even three top-relevance
-      // hits is more focused signal than ten timestamp-ordered recents.
       const candidates = Array.from({ length: DEFAULT_WAKEUP_TASK_MEMORY_LIMIT + 5 }, (_, i) =>
         buildMemory({
           id: `task-${i}`,
@@ -1120,9 +962,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("skips the task search when taskMemoryLimit: 0 even with a userQuery", async () => {
-      // Explicit "skip section" knob: passing 0 must short-circuit the
-      // Notion round-trip, not just filter the results to nothing. Pairs
-      // with the MCP tool's `taskMemoryLimit: 0` schema option.
       const services = stubServices({
         rawMemories: [],
         digestMemories: [],
@@ -1169,9 +1008,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("does not starve taskMemories when candidates are mostly duplicates", async () => {
-      // Pathological case: the fetch slack must scale with digest +
-      // memoryLimit + relatedLimit so dedupe can't shrink taskMemories
-      // below taskLimit when candidates mostly collide with surfaced rows.
       const fresh = buildMemory({
         id: "d1",
         source: "digest",
@@ -1207,9 +1043,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("forwards includeMemoryContent to the task-memory search", async () => {
-      // Hooks pass `includeMemoryContent: false`; the title-tier default
-      // must reach the task search too or each hit costs an extra
-      // `pages.retrieveMarkdown` round-trip.
       const services = stubServices({
         rawMemories: [],
         digestMemories: [],
@@ -1229,8 +1062,6 @@ describe("loadWakeUpData", () => {
     })
 
     it("skips task-search when no project is resolved", async () => {
-      // Without a project scope the hits would come from arbitrary
-      // workspace pages — wake-up's contract is project-scoped context.
       const services = stubServices({
         rawMemories: [],
         digestMemories: [],
@@ -1250,15 +1081,10 @@ describe("loadWakeUpData", () => {
     })
 
     it("runs both task and related searches in the same wake-up", async () => {
-      // The two searches feed different sections (For your current task
-      // vs Related to Open Loops) and must both fire when user query AND
-      // open loops are present. They use different seed strings, so
-      // dedupe across both is independent.
-      const openLoop = buildFact({
-        id: "f-loop",
-        predicate: "needs_action",
-        subject: "Outlook sync",
-        object: "calendar",
+      const task = buildTask({
+        id: "t-1",
+        title: "Outlook sync",
+        entity: "Outlook sync",
       })
       const relatedHit = buildMemory({
         id: "rel-1",
@@ -1276,7 +1102,7 @@ describe("loadWakeUpData", () => {
         relatedMemories: [relatedHit],
         taskQuery: "fix the auth bug",
         taskMemories: [taskHit],
-        facts: [openLoop],
+        tasks: [task],
       })
 
       const data = await loadWakeUpData(services, {
@@ -1287,30 +1113,16 @@ describe("loadWakeUpData", () => {
 
       expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-1"])
       expect(data.taskMemories.map((m) => m.id)).toEqual(["task-1"])
-      // Two searches fired: one for the user-query, one for the open-
-      // loop-entity seed. Order isn't load-bearing — just both present.
       const queries = services.memoriesSearchCalls.map((c) => c.query)
       expect(queries).toContain("fix the auth bug")
       expect(queries.some((q) => q.includes("Outlook sync"))).toBe(true)
     })
 
-    it("still runs both searches when userQuery topically overlaps an open loop", async () => {
-      // Open loops describe active work; first prompts often ask about
-      // active work. The two seeds (user query and open-loop entities)
-      // will land in adjacent vector neighborhoods. We deliberately do
-      // NOT short-circuit the related-memories search when the user
-      // query overlaps — the user can ask about anything (a side
-      // question, an unrelated bug they noticed) and the related
-      // section keeps active-work context visible regardless.
-      //
-      // This pins the current behavior so a future "skip related when
-      // taskMemories is dense" optimization can't quietly degrade
-      // unrelated-question wake-ups.
-      const openLoop = buildFact({
-        id: "f-loop",
-        predicate: "needs_action",
-        subject: "auth bug fix",
-        object: "OIDC integration",
+    it("still runs both searches when userQuery topically overlaps a task", async () => {
+      const task = buildTask({
+        id: "t-1",
+        title: "auth bug fix",
+        entity: "OIDC integration",
       })
       const relatedHit = buildMemory({
         id: "rel-overlap",
@@ -1328,7 +1140,7 @@ describe("loadWakeUpData", () => {
         relatedMemories: [relatedHit],
         taskQuery: "auth bug fix",
         taskMemories: [taskHit],
-        facts: [openLoop],
+        tasks: [task],
       })
 
       const data = await loadWakeUpData(services, {
@@ -1337,11 +1149,8 @@ describe("loadWakeUpData", () => {
         now: NOW,
       })
 
-      // Both sections populate independently — distinct memory IDs
-      // survive even though the seed phrasings overlap.
       expect(data.taskMemories.map((m) => m.id)).toEqual(["task-overlap"])
       expect(data.relatedMemories.map((m) => m.id)).toEqual(["rel-overlap"])
-      // Both searches were issued — no early exit.
       expect(services.memoriesSearchCalls).toHaveLength(2)
     })
 
@@ -1351,14 +1160,6 @@ describe("loadWakeUpData", () => {
     ])(
       "%s — never produces a lone high surrogate after truncation",
       async (_label, padding) => {
-        // A 1000-char paste with non-BMP characters at the boundary would
-        // otherwise yield an invalid UTF-16 string (lone surrogate).
-        // Notion's API tolerates it but the query is no longer a prefix
-        // of the user's input — confusing for log inspection and a
-        // potential silent bug in any downstream that round-trips through
-        // a strict UTF-8 layer.
-        // 1000 is the spec's truncation length — pinned at the boundary
-        // so the test fails loudly if the cap drifts.
         const TRUNCATION_LENGTH = 1000
         const paddingLen = padding.length
         const filler = "x".repeat(TRUNCATION_LENGTH - paddingLen + 1)
@@ -1378,8 +1179,6 @@ describe("loadWakeUpData", () => {
 
         const taskCall = services.memoriesSearchCalls[0]
         expect(taskCall).toBeDefined()
-        // The truncated query must not end on a high-surrogate code unit
-        // (UTF-16 0xD800-0xDBFF). A clean low-surrogate or BMP char is fine.
         const last = taskCall!.query.charCodeAt(taskCall!.query.length - 1)
         expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
       },

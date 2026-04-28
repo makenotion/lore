@@ -175,7 +175,7 @@ wild.
 synthesizer that saves a distilled `source: digest` memory back to the vault.
 The digest is what `lore-wake-up`'s fast path surfaces at session start, so
 the goal is signal density (non-obvious findings, decisions landed, top-5
-open loops, emerging themes) — not a chronological session log.
+active tasks, emerging themes) — not a chronological session log.
 
 Mechanics:
 

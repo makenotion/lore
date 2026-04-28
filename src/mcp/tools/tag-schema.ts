@@ -21,26 +21,6 @@ const VOCAB_CSV = TAG_VOCABULARY.join(", ")
 const KEYWORDS_MAX_LEN = 2000
 
 /**
- * Reserved tokens that downstream tooling treats as structural — not
- * arbitrary user metadata. The Zod boundary rejects writes containing
- * these so a caller can't accidentally (or deliberately) shadow a
- * tooling marker via the public `keywords` field.
- *
- * `migrated-from-fact <factId>` is the tracking-fact → task migration
- * marker (`src/core/task.ts:buildMigrationKeyword`). The migration
- * writes it via the core `TaskService.create` path, not through the
- * MCP boundary, so this rejection is transparent to legitimate usage.
- */
-const RESERVED_KEYWORD_PATTERNS: Array<{ regex: RegExp; reason: string }> = [
-  {
-    regex: /\bmigrated-from-fact\s+\S/,
-    reason:
-      "`migrated-from-fact <token>` is reserved for the tracking-fact → task migration tooling. " +
-      "Pick a different keyword to avoid shadowing migration markers in `findMigratedFactIds`.",
-  },
-]
-
-/**
  * Validator that emits a directive error when an out-of-vocab tag arrives:
  * names the bad values, lists the accepted vocabulary, and points at the
  * `keywords` field for free-form labels.
@@ -76,11 +56,6 @@ export const tagsSchema = tagArraySchema.describe(
  * Zod schema for the free-form `keywords` field — space-separated tokens
  * indexed by Notion's text search. Capped at 2000 chars to fail fast at
  * the Zod boundary instead of surfacing a generic Notion 400.
- *
- * Rejects writes containing reserved tooling markers (see
- * `RESERVED_KEYWORD_PATTERNS`). The migration writer goes through the
- * core service layer rather than the MCP boundary, so legitimate
- * marker writes are unaffected — only caller-forged markers fail.
  */
 export const keywordsSchema = z
   .string()
@@ -88,14 +63,6 @@ export const keywordsSchema = z
     KEYWORDS_MAX_LEN,
     `keywords must be ${KEYWORDS_MAX_LEN} characters or fewer (Notion rich_text segment cap).`
   )
-  .superRefine((value, ctx) => {
-    for (const { regex, reason } of RESERVED_KEYWORD_PATTERNS) {
-      if (regex.test(value)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: reason })
-        return
-      }
-    }
-  })
   .describe(
     "Free-form space-separated tokens (PR numbers, ticket IDs, file paths, class/function names). " +
       "Indexed by Notion text search. Prefer this over `tags` for anything not in the closed vocabulary. " +

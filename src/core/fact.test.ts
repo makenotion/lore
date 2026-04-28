@@ -11,7 +11,6 @@ import {
   computeSubjectKey,
 } from "../notion/normalize.js"
 import {
-  TRACKING_PREDICATES,
   type DatabaseRef,
   type FactPredicate,
 } from "../types.js"
@@ -203,35 +202,6 @@ describe("FactService.listRecent", () => {
     expect(hasMore).toBe(false)
   })
 
-  it("emits an AND-of-does_not_equal filter per excluded predicate", async () => {
-    const { client, calls } = createClient([{ results: [] }])
-    const service = new FactService(client, db)
-
-    await service.listRecent({
-      projectId: "p1",
-      excludePredicates: TRACKING_PREDICATES,
-      limit: 25,
-    })
-
-    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
-    expect(filter).toHaveProperty("and")
-    // Expect one does_not_equal clause per tracking predicate.
-    const predicateClauses = filter.and.filter(
-      (c) => (c as { property?: string }).property === "Predicate",
-    )
-    expect(predicateClauses).toHaveLength(TRACKING_PREDICATES.length)
-    for (const clause of predicateClauses) {
-      expect(clause).toMatchObject({
-        property: "Predicate",
-        select: { does_not_equal: expect.any(String) },
-      })
-    }
-    const excludedValues = predicateClauses.map(
-      (c) => (c as { select: { does_not_equal: string } }).select.does_not_equal,
-    )
-    expect(excludedValues.sort()).toEqual([...TRACKING_PREDICATES].sort())
-  })
-
   it("clamps page_size to Notion's 100-row ceiling", async () => {
     const { client, calls } = createClient([{ results: [] }])
     const service = new FactService(client, db)
@@ -287,291 +257,6 @@ describe("FactService.listRecent", () => {
   })
 })
 
-describe("FactService.listTracking", () => {
-  it("filters by the tracking-predicate set and Valid Until is_empty", async () => {
-    // Every tracking predicate must land in the OR clause; skipping one
-    // would silently exclude `blocked_by` (or whichever) facts from
-    // `lore-open-loops` output.
-    const { client, calls } = createClient([{ results: [] }])
-    const service = new FactService(client, db)
-
-    await service.listTracking({ projectId: "p1" })
-
-    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
-    expect(filter).toHaveProperty("and")
-
-    // Multiple OR groups coexist inside the compound AND: the project-
-    // scope filter, the predicate filter, and (when set) the entity
-    // filter. Pick the one whose children are select-equals on Predicate.
-    const predicateGroup = filter.and.find((c) => {
-      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
-      if (!Array.isArray(maybeOr)) return false
-      return maybeOr.every(
-        (clause) => (clause as { property?: string }).property === "Predicate",
-      )
-    }) as { or: Array<{ property: string; select: { equals: string } }> }
-    expect(predicateGroup).toBeDefined()
-    const predicates = predicateGroup.or.map((c) => c.select.equals).sort()
-    expect(predicates).toEqual([...TRACKING_PREDICATES].sort())
-
-    const validUntilClause = filter.and.find(
-      (c) => (c as { property?: string }).property === "Valid Until",
-    )
-    expect(validUntilClause).toMatchObject({
-      property: "Valid Until",
-      date: { is_empty: true },
-    })
-  })
-
-  it("adds an OR(SubjectKey, Subject, Object contains) clause when entity is set", async () => {
-    // Entity filter must match both sides — PR slugs commonly appear as
-    // the Object of a `waiting_on` fact, while service names are
-    // Subjects. Losing either side silently halves recall.
-    //
-    // The Subject side gets the SubjectKey case-folded variant alongside
-    // the raw Subject so case-variant entity names resolve correctly
-    // (P3-03 Part A); the Object side stays raw because Part A doesn't
-    // add an ObjectKey column (Part B work).
-    const { client, calls } = createClient([{ results: [] }])
-    const service = new FactService(client, db)
-
-    await service.listTracking({ projectId: "p1", entity: "PR #25751" })
-
-    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
-    const entityGroup = filter.and.find((c) => {
-      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
-      if (!Array.isArray(maybeOr)) return false
-      const props = maybeOr.map((clause) => (clause as { property?: string }).property)
-      return props.includes("Subject") && props.includes("Object")
-    }) as { or: Array<Record<string, unknown>> }
-    expect(entityGroup).toBeDefined()
-
-    const subjectKey = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "SubjectKey",
-    ) as { property: string; rich_text: { contains: string } }
-    const subject = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "Subject",
-    ) as { property: string; title: { contains: string } }
-    const object = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "Object",
-    ) as { property: string; rich_text: { contains: string } }
-    expect(subjectKey).toMatchObject({
-      property: "SubjectKey",
-      rich_text: { contains: computeSubjectKey("PR #25751") },
-    })
-    expect(subject).toMatchObject({
-      property: "Subject",
-      title: { contains: "PR #25751" },
-    })
-    expect(object).toMatchObject({
-      property: "Object",
-      rich_text: { contains: "PR #25751" },
-    })
-  })
-
-  it("OR-s SubjectEntity/ObjectEntity relation clauses when entityId is set (PF3-01)", async () => {
-    // Post-PF3-01 callers (handleOpenLoops resolving via EntityService)
-    // pass an entityId alongside the substring entity. The server-side
-    // filter must include both relation clauses AND the substring
-    // clauses so post-migration rows surface by exact relation while
-    // un-migrated rows still surface via substring.
-    const { client, calls } = createClient([{ results: [] }])
-    const service = new FactService(client, db)
-
-    await service.listTracking({
-      projectId: "p1",
-      entity: "PR #25751",
-      entityId: "ent-pr-25751",
-    })
-
-    // Find the entity OR group — distinguished from the predicate OR
-    // group by the presence of Subject/Object/SubjectEntity clauses.
-    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
-    const entityGroup = filter.and.find((c) => {
-      const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
-      if (!Array.isArray(maybeOr)) return false
-      const props = maybeOr.map((clause) => (clause as { property?: string }).property)
-      return props.includes("Subject") || props.includes("SubjectEntity")
-    }) as { or: Array<Record<string, unknown>> }
-    expect(entityGroup).toBeDefined()
-
-    const subjectEntity = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "SubjectEntity",
-    ) as { property: string; relation: { contains: string } }
-    const objectEntity = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "ObjectEntity",
-    ) as { property: string; relation: { contains: string } }
-    expect(subjectEntity).toMatchObject({
-      property: "SubjectEntity",
-      relation: { contains: "ent-pr-25751" },
-    })
-    expect(objectEntity).toMatchObject({
-      property: "ObjectEntity",
-      relation: { contains: "ent-pr-25751" },
-    })
-
-    // The substring branches still ride along — un-migrated rows
-    // remain reachable.
-    const subjectSubstring = entityGroup.or.find(
-      (c) => (c as { property?: string }).property === "Subject",
-    )
-    expect(subjectSubstring).toBeDefined()
-  })
-
-  it("sorts by Review By ascending, then created_time descending", async () => {
-    // Pinned: the service-side sort biases early pages toward high-signal
-    // rows (soonest review first) so capped callers see the important
-    // stuff even if they never paginate past page 1.
-    const { client, calls } = createClient([{ results: [] }])
-    const service = new FactService(client, db)
-
-    await service.listTracking({ projectId: "p1" })
-
-    expect(calls[0].sorts).toEqual([
-      { property: "Review By", direction: "ascending" },
-      { timestamp: "created_time", direction: "descending" },
-    ])
-  })
-
-  it("paginates across multiple Notion pages when limit is undefined", async () => {
-    // `all: true` in the tool layer translates to limit=undefined here.
-    // The worst-case Mail vault has ~271 open loops, which spans three
-    // 100-row pages. A single-page walk would undercount by ~63%.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f1-${i}` }),
-    )
-    const page2 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f2-${i}` }),
-    )
-    const page3 = Array.from({ length: 71 }, (_, i) =>
-      buildFactPage({ id: `f3-${i}` }),
-    )
-    const { client, querySpy } = createClient([
-      { results: page1, has_more: true, next_cursor: "c1" },
-      { results: page2, has_more: true, next_cursor: "c2" },
-      { results: page3, has_more: false, next_cursor: null },
-    ])
-    const service = new FactService(client, db)
-
-    const { items, hasMore } = await service.listTracking({ projectId: "p1" })
-
-    expect(querySpy).toHaveBeenCalledTimes(3)
-    expect(items).toHaveLength(271)
-    expect(hasMore).toBe(false)
-    // Second call must thread the cursor from page 1.
-    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
-    expect(querySpy.mock.calls[2][0]).toMatchObject({ start_cursor: "c2" })
-  })
-
-  it("stops paginating once the limit is reached and reports hasMore=true", async () => {
-    // Limit-reached-mid-page is the interesting case: Notion may still
-    // have rows in the response after we hit the cap. `hasMore` must
-    // reflect that so the tool layer can surface a "+N more" hint.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f-${i}` }),
-    )
-    const { client, querySpy } = createClient([
-      { results: page1, has_more: true, next_cursor: "c1" },
-    ])
-    const service = new FactService(client, db)
-
-    const { items, hasMore } = await service.listTracking({ projectId: "p1", limit: 10 })
-
-    expect(querySpy).toHaveBeenCalledTimes(1)
-    expect(items).toHaveLength(10)
-    expect(hasMore).toBe(true)
-  })
-
-  it("reports hasMore=false when the full result set fits under the limit", async () => {
-    // Corollary to the previous test: if a scoped vault has 3 open loops
-    // and the caller asks for 10, `hasMore` must be false so the tool
-    // doesn't emit a misleading "+N hidden" hint.
-    const { client } = createClient([
-      { results: [buildFactPage({ id: "f1" })], has_more: false },
-    ])
-    const service = new FactService(client, db)
-
-    const { items, hasMore } = await service.listTracking({ projectId: "p1", limit: 10 })
-
-    expect(items).toHaveLength(1)
-    expect(hasMore).toBe(false)
-  })
-
-  it("reports hasMore=false when limit exactly matches the last page size", async () => {
-    // Boundary case the other two tests miss: the caller asked for 100,
-    // the page returned exactly 100 rows, and Notion signalled no more
-    // pages. `items.length >= limit` IS true so we enter the limit-hit
-    // branch, but `appended === pages.length` and `nextCursor` is
-    // undefined — expect hasMore=false. Pinning this stops a future
-    // refactor that accidentally sets `hasMore = true` whenever the
-    // limit-branch fires.
-    const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildFactPage({ id: `f-${i}` }),
-    )
-    const { client } = createClient([
-      { results: page1, has_more: false, next_cursor: null },
-    ])
-    const service = new FactService(client, db)
-
-    const { items, hasMore } = await service.listTracking({
-      projectId: "p1",
-      limit: 100,
-    })
-
-    expect(items).toHaveLength(100)
-    expect(hasMore).toBe(false)
-  })
-
-  it("suppresses the SubjectKey OR branch when entity normalizes to empty", async () => {
-    // Same broadening trap as `queryBySubject` — `lore-open-loops` with
-    // an entity input of `"."` or `"   "` would otherwise silently match
-    // every populated-SubjectKey row in the vault. The Subject + Object
-    // raw-contains branches still run, preserving the pre-P3-03
-    // substring semantics for these edge inputs.
-    for (const entity of [".", "   ", "!!!"]) {
-      const { client, calls } = createClient([{ results: [] }])
-      await new FactService(client, db).listTracking({
-        projectId: "p1",
-        entity,
-      })
-
-      expect(computeSubjectKey(entity)).toBe("")
-
-      const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
-      const entityGroup = filter.and.find((c) => {
-        const maybeOr = (c as { or?: Array<Record<string, unknown>> }).or
-        if (!Array.isArray(maybeOr)) return false
-        const props = maybeOr.map(
-          (clause) => (clause as { property?: string }).property,
-        )
-        return props.includes("Subject") && props.includes("Object")
-      }) as { or: Array<Record<string, unknown>> }
-      expect(entityGroup).toBeDefined()
-
-      const properties = entityGroup.or.map(
-        (c) => (c as { property?: string }).property,
-      )
-      expect(properties).not.toContain("SubjectKey")
-      expect(properties).toEqual(expect.arrayContaining(["Subject", "Object"]))
-    }
-  })
-
-  it("drops the Valid Until filter when includeInvalidated is true", async () => {
-    const { client, calls } = createClient([{ results: [] }])
-    const service = new FactService(client, db)
-
-    await service.listTracking({ projectId: "p1", includeInvalidated: true })
-
-    const filter = calls[0].filter as Record<string, unknown>
-    const clauses: Array<Record<string, unknown>> = Array.isArray(filter.and)
-      ? (filter.and as Array<Record<string, unknown>>)
-      : [filter]
-    const hasValidUntil = clauses.some(
-      (c) => (c as { property?: string }).property === "Valid Until",
-    )
-    expect(hasValidUntil).toBe(false)
-  })
-})
 
 describe("normalize", () => {
   it("collapses case, whitespace, and trailing punctuation", () => {
@@ -955,27 +640,6 @@ describe("FactService.createWithDedup", () => {
     // stderr on every autosave.
     expect(errSpy).toHaveBeenCalledTimes(1)
     errSpy.mockRestore()
-  })
-
-  it("applies default 7-day review window for tracking predicates on miss", async () => {
-    client.dataSources.query.mockResolvedValueOnce({
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    })
-    client.pages.create.mockResolvedValueOnce(
-      factPage({ id: "new-fact", predicate: "needs_action" })
-    )
-
-    await service.createWithDedup({
-      subject: "Foo",
-      predicate: "needs_action",
-      object: "Handle edge case",
-    })
-
-    const createCall = client.pages.create.mock.calls[0][0]
-    const reviewByProp = createCall.properties["Review By"]
-    expect(reviewByProp.date.start).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
   it("queries with an equals filter on DedupKey and is_empty on Valid Until", async () => {
@@ -1452,6 +1116,79 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
   })
 })
 
+describe("FactService.pageToFact — historical tracking-predicate filter", () => {
+  // Helper: fact page with raw `Predicate` select set to one of the
+  // historical tracking values. Bypasses the typed `FactPredicate`
+  // constraint that `factPage`'s helper API enforces.
+  const trackingPageWith = (id: string, raw: string) => {
+    const row = factPage({ id })
+    ;(row.properties.Predicate as unknown as {
+      select: { name: string }
+    }).select.name = raw
+    return row
+  }
+
+  it("filters rows whose raw Predicate value is needs_action / waiting_on / blocked_by", async () => {
+    // Tracking predicates were removed from `FactPredicate` in 0.6.0
+    // (`lore-task` is the canonical surface for tracked work). Notion
+    // rows still carry those select values on legacy vaults — the
+    // schema is additive-only — so the deserialization boundary
+    // filters them so no live read path surfaces them as a `Fact`.
+    const trackingRow = trackingPageWith("tracking-fact", "needs_action")
+    const knowledgeRow = factPage({ id: "knowledge-fact", predicate: "uses" })
+
+    const { client } = createClient([
+      { results: [trackingRow, knowledgeRow], has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    const results = await service.queryBySubject("", { projectId: "p1" })
+
+    expect(results.map((f) => f.id)).toEqual(["knowledge-fact"])
+  })
+
+  it("filters tracking rows from listRecent (wake-up Active Facts)", async () => {
+    // wake-up's Active Facts section reads through `listRecent`. A
+    // historical tracking row in the response window must not surface
+    // as live data — even though the typed-union argument would never
+    // produce one, a vault that skipped the migration still has
+    // them in Notion.
+    const trackingRow = trackingPageWith("tracking-fact", "waiting_on")
+    const knowledgeRow = factPage({ id: "knowledge-fact", predicate: "uses" })
+
+    const { client } = createClient([
+      { results: [trackingRow, knowledgeRow], has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    const { items } = await service.listRecent({ projectId: "p1", limit: 10 })
+
+    expect(items.map((f) => f.id)).toEqual(["knowledge-fact"])
+  })
+
+  it("filters tracking rows from queryByEntity (lore-query action='ask')", async () => {
+    // `handleAsk` (`lore-query action='ask'`) routes through
+    // `queryByEntity`, which fans out to `queryBySubject` +
+    // `queryByObject` on the pre-PF3-01 fallback path. A tracking-
+    // predicate row pointing at the queried entity must not appear in
+    // the Governance / Structure / Tasks output.
+    const trackingRow = trackingPageWith("tracking-fact", "blocked_by")
+    const knowledgeRow = factPage({ id: "knowledge-fact", predicate: "uses" })
+
+    const { client } = createClient([
+      // queryBySubject branch: tracking + knowledge.
+      { results: [trackingRow, knowledgeRow], has_more: false },
+      // queryByObject branch: empty.
+      { results: [], has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    const results = await service.queryByEntity("AuthService", { projectId: "p1" })
+
+    expect(results.map((f) => f.id)).toEqual(["knowledge-fact"])
+  })
+})
+
 describe("clampNotionPageSize", () => {
   // Direct unit tests for the shared helper (issue 0.6.0/15). The
   // call-shape tests below still pin every retrieval method's wire
@@ -1485,8 +1222,7 @@ describe("clampNotionPageSize", () => {
 })
 
 describe("FactService — page_size clamping on retrieval queries", () => {
-  // Hot-path callers like `loadWakeUpData` (openLoopLimit forwarded into
-  // `queryBySubject`) and `resolveCurrentDecisions` (limit: 25 forwarded
+  // Hot-path callers like `resolveCurrentDecisions` (limit: 25 forwarded
   // into `queryByObject`) ask for a handful of rows but used to issue
   // `page_size: 100` regardless. Clamping `page_size` to the requested
   // limit cuts transfer budget and rate-limiter dwell on those paths

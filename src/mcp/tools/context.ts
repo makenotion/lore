@@ -5,12 +5,10 @@ import { formatDispatchError, toolError } from "../helpers.js"
 import {
   DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
-  DEFAULT_WAKEUP_OPEN_LOOP_LIMIT,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   DEFAULT_WAKEUP_TASK_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
   RANKED_WAKEUP_LIMITS,
-  WAKEUP_OPEN_LOOPS_TRUNCATED_HINT,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
@@ -20,7 +18,6 @@ import type { Memory } from "../../types.js"
 import {
   type CollapsedMemoryGroup,
   collapseOverlappingMemories,
-  displayValue,
   renderFact,
   resolveReferencedTitles,
 } from "../render.js"
@@ -131,7 +128,6 @@ async function handleWakeUp(
     projectName?: string
     expand?: boolean
     limit?: number
-    openLoopLimit?: number
     knowledgeFactLimit?: number
     taskLimit?: number
     userQuery?: string
@@ -184,27 +180,22 @@ async function handleWakeUp(
       args.taskMemoryLimit ??
       (ranked ? RANKED_WAKEUP_LIMITS.taskMemoryLimit : DEFAULT_WAKEUP_TASK_MEMORY_LIMIT)
     const taskOverfetch = taskCap * COLLAPSE_OVERFETCH_MULTIPLIER
-    // Open-loop and knowledge-fact sections don't run through topical
-    // collapse, so the ranked defaults flow straight through to the data
-    // layer without an over-fetch step. Caller-supplied values win as
-    // before; absent values fall to the ranked cap when `userQuery` is
-    // set, otherwise to the data-layer constants resolved here at the
-    // call site rather than relying on `loadWakeUpData`'s internal `??`
+    // The knowledge-fact section doesn't run through topical collapse,
+    // so the ranked default flows straight through to the data layer
+    // without an over-fetch step. Caller-supplied values win as before;
+    // absent values fall to the ranked cap when `userQuery` is set,
+    // otherwise to the data-layer constants resolved here at the call
+    // site rather than relying on `loadWakeUpData`'s internal `??`
     // defaulting. Self-contained resolution keeps the MCP call's policy
     // visible in this file — a future change to the data-layer defaulting
     // discipline (e.g. switching to required params) can't silently shift
     // the MCP path.
-    const openLoopLimit =
-      args.openLoopLimit ??
-      (ranked ? RANKED_WAKEUP_LIMITS.openLoopLimit : DEFAULT_WAKEUP_OPEN_LOOP_LIMIT)
     const knowledgeFactLimit =
       args.knowledgeFactLimit ??
       (ranked ? RANKED_WAKEUP_LIMITS.knowledgeFactLimit : DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
     const {
       digest,
       memories,
-      openLoops,
-      openLoopsHasMore,
       knowledgeFacts,
       proposedDecisions,
       overdueDecisions,
@@ -216,7 +207,6 @@ async function handleWakeUp(
       memoryLimit: recentOverfetch,
       memoryLimitWithDigest: recentOverfetch,
       relatedMemoryLimit: relatedOverfetch,
-      openLoopLimit,
       knowledgeFactLimit,
       taskLimit: args.taskLimit,
       userQuery: args.userQuery,
@@ -289,9 +279,9 @@ async function handleWakeUp(
     }
 
     if (relatedMemories.length > 0) {
-      sections.push("## Related to Open Loops\n")
+      sections.push("## Related to Active Tasks\n")
       sections.push(
-        "*Memories surfaced by a relevance query seeded from your open-loop entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n",
+        "*Memories surfaced by a relevance query seeded from your active task entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n",
       )
       const groups = collapseOverlappingMemories(relatedMemories).slice(0, relatedCap)
       for (const group of groups) {
@@ -328,10 +318,7 @@ async function handleWakeUp(
       }
     }
 
-    const factTitleMap = await resolveReferencedTitles(
-      [...openLoops, ...knowledgeFacts],
-      services,
-    )
+    const factTitleMap = await resolveReferencedTitles(knowledgeFacts, services)
 
     if (tasks.length > 0) {
       const today = new Date().toISOString().split("T")[0]
@@ -352,37 +339,6 @@ async function handleWakeUp(
         sections.push(
           `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due} | ID: ${task.id}`,
         )
-      }
-      sections.push("")
-    }
-
-    if (openLoops.length > 0) {
-      const today = new Date().toISOString().split("T")[0]
-      // Tracking facts are deprecated in favour of tasks; a vault
-      // mid-migration may still surface them here. Header makes the
-      // transitional status clear so an agent reading two sections
-      // (Tasks + Open Loops) understands the relationship.
-      sections.push(
-        tasks.length > 0
-          ? "## Open Loops (legacy facts — migrate via `lore migrate --migrate-tracking-to-tasks --yes`)\n"
-          : "## Open Loops\n",
-      )
-      for (const fact of openLoops) {
-        const since = fact.validFrom ? ` (since ${fact.validFrom})` : ""
-        const overdue = fact.reviewBy && fact.reviewBy <= today ? " **(OVERDUE)**" : ""
-        const subject = displayValue(fact.subject, factTitleMap)
-        const object = displayValue(fact.object, factTitleMap)
-        sections.push(
-          `- **${subject}** → ${fact.predicate.replace(/_/g, " ")} → **${object}** [${fact.confidence}]${since}${overdue}`,
-        )
-      }
-      // The tracking-partition fetch is urgency-biased under the cap
-      // (`Review By asc`), so the displayed slice survives the rows the
-      // pre-PR `created_time desc` shape would have dropped. When more
-      // exist beyond the cap, point the agent at the paginating surface
-      // rather than implying the slice is exhaustive.
-      if (openLoopsHasMore) {
-        sections.push(WAKEUP_OPEN_LOOPS_TRUNCATED_HINT)
       }
       sections.push("")
     }
@@ -464,7 +420,6 @@ const contextDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     expand: z.boolean().optional(),
     limit: z.number().int().min(1).max(50).optional(),
-    openLoopLimit: z.number().int().min(0).max(50).optional(),
     knowledgeFactLimit: z.number().int().min(0).max(50).optional(),
     taskLimit: z.number().int().min(0).max(50).optional(),
     userQuery: z.string().optional(),
@@ -490,7 +445,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
         "- `action: 'status'` — vault page id, database counts, active project, configured projects.\n" +
-        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + open loops (legacy tracking facts) + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question.\n" +
+        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {
         action: z
@@ -516,15 +471,6 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .optional()
           .describe(
             "(action='wake-up') Max distinct clusters per memory section after topical collapse.",
-          ),
-        openLoopLimit: z
-          .number()
-          .int()
-          .min(0)
-          .max(50)
-          .optional()
-          .describe(
-            "(action='wake-up') Max open-loop facts. 0 skips the section (and the related-memory seed).",
           ),
         knowledgeFactLimit: z
           .number()

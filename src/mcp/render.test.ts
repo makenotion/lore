@@ -266,15 +266,15 @@ describe("renderFact", () => {
 
 describe("renderFact prefix option", () => {
   it("inserts the prefix between the bullet and **Subject**", () => {
-    // P2-06 uses the prefix slot to surface a `⚠ ` marker on overdue
-    // tracking rows without forking the triple renderer. Pins the exact
-    // placement so a future refactor can't silently shift the marker.
+    // The prefix slot lets callers add a marker (e.g. urgency indicator)
+    // without forking the triple renderer. Pins the exact placement so a
+    // future refactor can't silently shift the marker.
     const titleMap = new Map<string, string>()
     const line = renderFact(
-      makeFact("f1", { subject: "AuthService", predicate: "needs_action", object: "JWT" }),
+      makeFact("f1", { subject: "AuthService", predicate: "uses", object: "JWT" }),
       { titleMap, prefix: "⚠ ", trailing: "[certain]" },
     )
-    expect(line).toBe("- ⚠ **AuthService** needs action **JWT** [certain]")
+    expect(line).toBe("- ⚠ **AuthService** uses **JWT** [certain]")
   })
 
   it("emits the same output as omitting prefix when prefix is empty", () => {
@@ -297,12 +297,6 @@ describe("factClass", () => {
     expect(factClass("supersedes_decision")).toBe("governance")
   })
 
-  it("maps tracking predicates to tracking", () => {
-    expect(factClass("needs_action")).toBe("tracking")
-    expect(factClass("waiting_on")).toBe("tracking")
-    expect(factClass("blocked_by")).toBe("tracking")
-  })
-
   it("defaults unrecognized or structural predicates to structure", () => {
     // All listed-in-spec structural predicates.
     expect(factClass("is_a")).toBe("structure")
@@ -323,19 +317,17 @@ describe("factClass", () => {
 })
 
 describe("groupFactsByClass", () => {
-  it("splits facts into three buckets and keeps input order on validFrom ties", () => {
-    // Same validFrom across all three → sort is stable; bucket assignment
+  it("splits facts into governance and structure buckets and keeps input order on validFrom ties", () => {
+    // Same validFrom across all → sort is stable; bucket assignment
     // is what's being pinned here.
     const facts: Fact[] = [
       makeFact("s1", { predicate: "uses", validFrom: "2026-04-20" }),
-      makeFact("t1", { predicate: "needs_action", validFrom: "2026-04-20" }),
       makeFact("g1", { predicate: "decided_by", validFrom: "2026-04-20" }),
       makeFact("s2", { predicate: "depends_on", validFrom: "2026-04-20" }),
     ]
     const groups = groupFactsByClass(facts)
     expect(groups.governance.map((f) => f.id)).toEqual(["g1"])
     expect(groups.structure.map((f) => f.id)).toEqual(["s1", "s2"])
-    expect(groups.tracking.map((f) => f.id)).toEqual(["t1"])
   })
 
   it("sorts each bucket most-recent-first by validFrom and sinks nulls to the end", () => {
@@ -358,7 +350,6 @@ describe("groupFactsByClass", () => {
     const facts = [makeFact("s1", { predicate: "uses" })]
     const groups = groupFactsByClass(facts)
     expect(groups.governance).toEqual([])
-    expect(groups.tracking).toEqual([])
     expect(groups.structure).toHaveLength(1)
   })
 })
