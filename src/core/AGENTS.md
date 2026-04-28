@@ -23,6 +23,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `entity-migration.ts` | `buildEntities()` | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`. |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
 | `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + active-task-related memories for wake-up surfaces (MCP tool + shell hook) |
+| `project-context.ts` | `composeProjectContext()` / `renderProjectContextLines()` | Renders the per-project framing block (name + description + siblings + catch-all warning) for `lore-context action='wake-up'`, `lore-query action='ask'`, and the shell wake-up hook. Synchronous; takes an already-resolved `Project` so no Notion call. (Issue 0.6.0/18.) |
 | `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
 | `fact-encoding.ts`   | `fixFactEncoding()`   | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions |
 | `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |

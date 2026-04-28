@@ -40,6 +40,10 @@ import {
   dateBucket,
   loadWakeUpData,
 } from "../core/wakeup.js"
+import {
+  composeProjectContext,
+  renderProjectContextLines,
+} from "../core/project-context.js"
 import { spawnBackgroundSave } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
 import { getStateDir } from "./lock.js"
@@ -495,7 +499,7 @@ export function parseUserQueryFromEvent(raw: string | undefined): string | undef
   return trimmed
 }
 
-async function wakeup(): Promise<void> {
+export async function wakeup(): Promise<void> {
   // Config opt-out: hooks.wakeUp: false suppresses context injection.
   // Check before service initialization so we avoid the Notion round-trip when disabled.
   const hookState = await loadHookState()
@@ -589,8 +593,19 @@ async function wakeup(): Promise<void> {
 
   const sections: string[] = []
 
-  if (project) {
-    sections.push(`Project: ${project.name} (${project.path || "root"})`)
+  // Issue 0.6.0/18: prepend the same project framing block as the MCP
+  // `lore-context action='wake-up'` surface. The shell hook always reads
+  // `services.context.project` and `services.context.isCatchAllFallback`
+  // — there is no explicit-projectName override on this path (Fix 2).
+  const projectContextLines = renderProjectContextLines(
+    composeProjectContext(
+      project,
+      hookState.config,
+      services.context.isCatchAllFallback,
+    ),
+  )
+  if (projectContextLines.length > 0) {
+    sections.push(projectContextLines.join("\n"))
   }
 
   if (digest) {

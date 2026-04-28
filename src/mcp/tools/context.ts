@@ -13,6 +13,10 @@ import {
   loadWakeUpData,
 } from "../../core/wakeup.js"
 import { gatherDigestData } from "../../core/digest.js"
+import {
+  composeProjectContext,
+  renderProjectContextLines,
+} from "../../core/project-context.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import type { Memory } from "../../types.js"
 import {
@@ -136,12 +140,21 @@ async function handleWakeUp(
 ): Promise<ToolResult> {
   try {
     let projectId = services.context.project?.id
+    // The framing block (Fix 2 in issue 0.6.0/18) describes whichever
+    // project the rest of the wake-up output is filtered to. When the
+    // caller passes an explicit `projectName`, that branch is NOT a
+    // catch-all fallback — explicit picks win over auto-detection. When
+    // `projectName` is unset, mirror `services.context` directly.
+    let resolvedProject = services.context.project
+    let resolvedCatchAllFallback = services.context.isCatchAllFallback
     const warnings: string[] = []
 
     if (args.projectName) {
       const found = await services.projects.findByName(args.projectName)
       if (found) {
         projectId = found.id
+        resolvedProject = found
+        resolvedCatchAllFallback = false
       } else {
         warnings.push(
           `Project "${args.projectName}" not found — falling back to auto-detected project.`,
@@ -216,10 +229,14 @@ async function handleWakeUp(
 
     const sections: string[] = []
 
-    if (services.context.project) {
-      sections.push(
-        `Project: ${services.context.project.name} (${services.context.project.path || "root"})\n`,
-      )
+    const projectContext = composeProjectContext(
+      resolvedProject,
+      services.config,
+      resolvedCatchAllFallback,
+    )
+    const projectLines = renderProjectContextLines(projectContext)
+    if (projectLines.length > 0) {
+      sections.push(`${projectLines.join("\n")}\n`)
     }
 
     if (warnings.length > 0) {

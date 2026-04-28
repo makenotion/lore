@@ -40,6 +40,28 @@ export function catchAllProjectName(config: LoreConfig): string | null {
 }
 
 /**
+ * Shared lead-in for the catch-all-scope warning, used by every surface
+ * that needs to tell an operator "you're scoped to the catch-all because
+ * no sub-project prefix matched, here are the alternatives." The save
+ * tools (`src/mcp/resolve.ts`) and the read tools' framing block
+ * (`src/core/project-context.ts`) call this so the wording and the
+ * sub-project list stay byte-identical across surfaces — operators see
+ * one consistent message regardless of which path triggered it.
+ *
+ * Per-surface call-to-action tails (save: "pass projectName or
+ * projectNames on future calls"; read: "pass projectName to scope to a
+ * specific sub-project") are appended by the caller because the read
+ * tools don't accept `projectNames`. The shared template stops at the
+ * sentence break so the divergent CTAs read as natural continuations.
+ */
+export function formatCatchAllScopeSummary(name: string, candidates: string[]): string {
+  return (
+    `Scoped to catch-all "${name}" (monorepo-wide). ` +
+    `Sub-projects available: ${candidates.join(", ")}.`
+  )
+}
+
+/**
  * Pure-filesystem variant of `resolveProject` that returns the configured
  * project *entry* (name + path) a cwd would resolve to, without the Notion
  * round-trip. Used by hot-path hooks that want to scope a cheap per-project

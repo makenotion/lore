@@ -6,9 +6,13 @@ import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
 
-import type { Decision, Fact, TaskSummary } from "../../types.js"
+import type { Decision, Fact, Project, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { expandEntityQueryVariants } from "../../core/entity.js"
+import {
+  composeProjectContext,
+  renderProjectContextLines,
+} from "../../core/project-context.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -336,6 +340,7 @@ interface AskArgs {
   entity: string
   projectName?: string
   limit?: number
+  includeContext?: boolean
 }
 
 export async function handleAsk(
@@ -345,12 +350,24 @@ export async function handleAsk(
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
+    // Mirrors `handleWakeUp`'s explicit-projectName rule (issue 0.6.0/18,
+    // Fix 2): the framing block describes the project the rest of the
+    // response is filtered to. Explicit picks are never catch-all fallbacks.
+    let resolvedProject: Project | null = null
+    let resolvedCatchAllFallback = false
     const warnings: string[] = []
 
     if (args.projectName) {
       const found = await services.projects.findByName(args.projectName)
       if (found) {
         projectId = found.id
+        resolvedProject = found
+        // Symmetry with `handleWakeUp`: write the flag explicitly even
+        // though it's already false from the declaration. Reading the
+        // two branches side-by-side then describes the rule directly
+        // ("explicit pick → false; auto-detected → mirror context")
+        // rather than asking the reader to verify initialization order.
+        resolvedCatchAllFallback = false
       } else {
         warnings.push(
           `Project "${args.projectName}" not found — falling back to auto-detected project.`,
@@ -359,6 +376,8 @@ export async function handleAsk(
     }
     if (!projectId && services.context.project) {
       projectId = services.context.project.id
+      resolvedProject = services.context.project
+      resolvedCatchAllFallback = services.context.isCatchAllFallback
     }
 
     // PF3-01 — resolve the entity name to a canonical row first so the
@@ -447,6 +466,24 @@ export async function handleAsk(
     ])
     const tasks = taskListing.items
 
+    // Single-paragraph framing block (issue 0.6.0/18, Fix 4). Defaults
+    // to `includeContext !== false` so cold-start agents and monorepo
+    // hops see project + siblings + catch-all warnings without a
+    // separate `lore-context action='wake-up'` round-trip. Agents with
+    // system-prompt framing pass `includeContext: false` to suppress.
+    const includeContextBlock = args.includeContext !== false
+    const projectContextLines = includeContextBlock
+      ? renderProjectContextLines(
+          composeProjectContext(
+            resolvedProject,
+            services.config,
+            resolvedCatchAllFallback,
+          ),
+        )
+      : []
+    const framingPrefix =
+      projectContextLines.length > 0 ? `${projectContextLines.join("\n")}\n\n` : ""
+
     const formatWarnings = () =>
       warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
@@ -455,7 +492,7 @@ export async function handleAsk(
         content: [
           {
             type: "text",
-            text: `No facts or tasks found about "${args.entity}".${formatWarnings()}`,
+            text: `${framingPrefix}No facts or tasks found about "${args.entity}".${formatWarnings()}`,
           },
         ],
       }
@@ -602,7 +639,7 @@ export async function handleAsk(
         content: [
           {
             type: "text",
-            text: `No current facts or tasks found about "${args.entity}".${formatWarnings()}`,
+            text: `${framingPrefix}No current facts or tasks found about "${args.entity}".${formatWarnings()}`,
           },
         ],
       }
@@ -626,7 +663,7 @@ export async function handleAsk(
       content: [
         {
           type: "text",
-          text: `${totalFacts} ${noun} about "${args.entity}":\n\n${sections.join("\n\n")}${overflowHint}${formatWarnings()}`,
+          text: `${framingPrefix}${totalFacts} ${noun} about "${args.entity}":\n\n${sections.join("\n\n")}${overflowHint}${formatWarnings()}`,
         },
       ],
     }

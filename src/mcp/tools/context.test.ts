@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
-import type { Fact, Memory, TaskSummary } from "../../types.js"
+import type { Fact, Memory, Project, TaskSummary } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
   return {
@@ -126,6 +126,23 @@ interface WakeServicesOverrides {
   taskMemories?: Memory[]
   facts?: Fact[]
   tasks?: TaskSummary[]
+  /**
+   * Override the auto-detected project on `services.context.project`.
+   * Defaults to a minimal Mail project with no description and `path:
+   * "/mail"` to match the pre-issue-18 fixture exactly.
+   */
+  contextProject?: {
+    id: string
+    name: string
+    path: string
+    description?: string
+  } | null
+  /** Override `services.context.isCatchAllFallback`. Defaults to false. */
+  isCatchAllFallback?: boolean
+  /** Override `services.config.projects`. Defaults to []. */
+  configProjects?: Array<{ name: string; path: string }>
+  /** Override `services.projects.findByName`. Used by explicit-projectName tests. */
+  findByName?: (name: string) => Promise<unknown>
 }
 
 function makeWakeServices(overrides: WakeServicesOverrides = {}) {
@@ -153,8 +170,20 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     },
   )
 
+  // Default to the same minimal Mail project the pre-issue-18 fixture
+  // used. Tests that rely on the project framing block override
+  // `contextProject` (e.g. to add a description) and `configProjects`
+  // (to populate siblings).
+  const defaultProject = { id: "proj-1", name: "Mail", path: "/mail", description: "" }
+  const contextProject =
+    overrides.contextProject === undefined
+      ? defaultProject
+      : overrides.contextProject
+  const findByName = overrides.findByName
+    ? vi.fn(overrides.findByName)
+    : vi.fn(async () => null)
   return {
-    projects: { findByName: vi.fn() },
+    projects: { findByName },
     memories: {
       list: memoriesList,
       search: memoriesSearch,
@@ -170,13 +199,17 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     tasks: {
       list: vi.fn(async () => ({ items: overrides.tasks ?? [] })),
     },
-    context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
-    config: { projects: [] },
+    context: {
+      project: contextProject,
+      isCatchAllFallback: overrides.isCatchAllFallback ?? false,
+    },
+    config: { vault: { pageId: "vault-1" }, projects: overrides.configProjects ?? [] },
     vault: { pageId: "vault-1", stats: vi.fn() },
     _calls: {
       memoriesList,
       memoriesSearch,
       factsListRecent,
+      findByName,
     },
   }
 }
@@ -636,5 +669,198 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
     // Current Task — count matches stay at 1.
     const matches = text.match(/Both recent and relevant/g) ?? []
     expect(matches.length).toBe(1)
+  })
+})
+
+// Issue 0.6.0/18: project framing block on wake-up.
+describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () => {
+  it("renders description and siblings under the Project header", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [makeMemory("m1", { title: "Recent memory" })],
+      contextProject: {
+        id: "proj-1",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Notion-backed mail client.",
+      },
+      configProjects: [
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+        { name: "Desktop", path: "apps/desktop" },
+      ],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // Header line still leads — preserves the prior "Project: ..." anchor
+    // every existing wake-up test relies on.
+    expect(text).toContain("Project: Mail (apps/mail)")
+    // Description and siblings sit under the header, indented for grouping.
+    expect(text).toContain("  Notion-backed mail client.")
+    // Siblings names *peers* — Mail is excluded as the resolved project.
+    expect(text).toContain("  Siblings: Web, Desktop.")
+    expect(text).not.toContain("Siblings: Mail")
+  })
+
+  it("omits the description line when Project.description is empty", async () => {
+    // Spec rule: empty Project.description after trim → no synthetic
+    // filler. Block degrades to header + Siblings.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-1",
+        name: "Mail",
+        path: "apps/mail",
+        description: "",
+      },
+      configProjects: [
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+      ],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Project: Mail (apps/mail)")
+    // Siblings names peers; Mail is excluded as the resolved project.
+    expect(text).toContain("  Siblings: Web.")
+    // No description line of any kind — no `(no description)` filler etc.
+    expect(text).not.toMatch(/^ {2}Notion-backed/m)
+  })
+
+  it("omits the Siblings line when no sub-projects are configured", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-1",
+        name: "Solo",
+        path: "",
+        description: "Single-project vault.",
+      },
+      configProjects: [],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // No path suffix when Project.path is empty.
+    expect(text).toMatch(/^Project: Solo$/m)
+    expect(text).toContain("  Single-project vault.")
+    expect(text).not.toContain("Siblings:")
+  })
+
+  it("prepends a catch-all warning when isCatchAllFallback is true", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-mono",
+        name: "Monorepo",
+        path: ".",
+        description: "Whole repo.",
+      },
+      isCatchAllFallback: true,
+      configProjects: [
+        { name: "Monorepo", path: "." },
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+      ],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // Lead-in mirrors the save-side warning byte-for-byte (shared via
+    // `formatCatchAllScopeSummary` in `src/core/context.ts`); only the
+    // call-to-action tail diverges (read tools take `projectName` only).
+    expect(text).toContain(
+      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Mail, Web. Pass projectName to scope to a specific sub-project.',
+    )
+    // Warning sits ABOVE the Project header — block-level warning first.
+    const warnIdx = text.indexOf("> Scoped to catch-all")
+    const headerIdx = text.indexOf("Project: Monorepo")
+    expect(warnIdx).toBeGreaterThan(-1)
+    expect(headerIdx).toBeGreaterThan(warnIdx)
+  })
+
+  it("describes the explicitly-resolved project when projectName is passed (Fix 2)", async () => {
+    // Pinned by issue 0.6.0/18: an agent that passes projectName: "Web"
+    // while cwd resolves to apps/mail must see the Web project's context,
+    // not Mail's. The framing describes whichever project the rest of
+    // the wake-up output is filtered to.
+    const webProject: Project = {
+      id: "proj-web",
+      name: "Web",
+      type: "project",
+      path: "apps/web",
+      status: "active",
+      description: "Marketing site.",
+    }
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Notion-backed mail client.",
+      },
+      configProjects: [
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+      ],
+      findByName: async (name) => (name === "Web" ? webProject : null),
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ projectName: "Web" } as never)
+
+    const text = extractText(result)
+    // Header describes the EXPLICIT pick, not the auto-detected project.
+    expect(text).toContain("Project: Web (apps/web)")
+    expect(text).toContain("  Marketing site.")
+    // Mail's description must NOT appear — explicit pick wins.
+    expect(text).not.toContain("Notion-backed mail client.")
+  })
+
+  it("explicit projectName forces isCatchAllFallback off even when context was a catch-all", async () => {
+    // Auto-detected context could be a catch-all fallback, but if the
+    // agent explicitly named a project, we trust the pick — no warning.
+    const subProject: Project = {
+      id: "proj-mail",
+      name: "Mail",
+      type: "project",
+      path: "apps/mail",
+      status: "active",
+      description: "Mail.",
+    }
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-mono",
+        name: "Monorepo",
+        path: ".",
+        description: "Whole repo.",
+      },
+      isCatchAllFallback: true,
+      configProjects: [
+        { name: "Monorepo", path: "." },
+        { name: "Mail", path: "apps/mail" },
+      ],
+      findByName: async (name) => (name === "Mail" ? subProject : null),
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ projectName: "Mail" } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Project: Mail (apps/mail)")
+    // No catch-all warning on the explicit-pick path.
+    expect(text).not.toContain('> Scoped to catch-all')
   })
 })

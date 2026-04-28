@@ -3,7 +3,7 @@
  */
 
 import type { LoreServices } from "../services.js"
-import { subProjectNames } from "../core/context.js"
+import { formatCatchAllScopeSummary, subProjectNames } from "../core/context.js"
 
 export interface ResolvedProjects {
   ids: string[]
@@ -52,8 +52,7 @@ export async function resolveProjectIds(
     const candidates = subProjectNames(services.config)
     if (candidates.length > 0) {
       warnings.push(
-        `Scoped to catch-all "${project.name}" (monorepo-wide). ` +
-          `Sub-projects available: ${candidates.join(", ")}. ` +
+        `${formatCatchAllScopeSummary(project.name, candidates)} ` +
           `If this belongs to a specific sub-project, pass projectName or projectNames on future calls.`,
       )
     }

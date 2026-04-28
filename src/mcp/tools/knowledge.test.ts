@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerKnowledgeTools } from "./knowledge.js"
 import { registerQueryTools } from "./query.js"
-import type { Decision, Fact } from "../../types.js"
+import type { Decision, Fact, Project } from "../../types.js"
 
 function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
   return {
@@ -582,7 +582,16 @@ describe("lore-ask projectName resolution", () => {
       decisions: { getById: vi.fn() },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
-      context: { project: { id: "proj-ambient", name: "Ambient" } },
+      context: {
+        project: {
+          id: "proj-ambient",
+          name: "Ambient",
+          path: "",
+          description: "",
+        },
+        isCatchAllFallback: false,
+      },
+      config: { vault: { pageId: "v1" }, projects: [] },
     }
 
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1402,5 +1411,228 @@ describe("lore-ask — task recall honors canonical entity aliases", () => {
     expect(text).toContain("Auth-Alias-9")
     const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(callArgs.entities).toHaveLength(10)
+  })
+})
+
+// Issue 0.6.0/18: project framing block on lore-query action='ask'.
+describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
+  function makeServices(opts: {
+    project?: {
+      id: string
+      name: string
+      path: string
+      description: string
+    } | null
+    isCatchAllFallback?: boolean
+    configProjects?: Array<{ name: string; path: string }>
+    findByName?: (name: string) => Promise<unknown>
+  } = {}) {
+    return {
+      projects: { findByName: vi.fn(opts.findByName ?? (async () => null)) },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      decisions: { getById: vi.fn() },
+      memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: {
+        project: opts.project === undefined
+          ? {
+              id: "proj-mail",
+              name: "Mail",
+              path: "apps/mail",
+              description: "Notion-backed mail client.",
+            }
+          : opts.project,
+        isCatchAllFallback: opts.isCatchAllFallback ?? false,
+      },
+      config: { vault: { pageId: "v1" }, projects: opts.configProjects ?? [] },
+    }
+  }
+
+  it("prepends a project framing block by default (includeContext omitted)", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Notion-backed mail client.",
+      },
+      configProjects: [
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+      ],
+    })
+    services.facts.queryByEntity = vi
+      .fn()
+      .mockResolvedValue([
+        {
+          id: "fact-1",
+          subject: "AuthService",
+          predicate: "uses",
+          object: "OIDC",
+          projectIds: [],
+          validFrom: "2026-04-20",
+          validUntil: null,
+          reviewBy: null,
+          sourceMemoryId: null,
+          confidence: "certain",
+          subjectEntityId: null,
+          objectEntityId: null,
+        },
+      ])
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Framing block sits ABOVE the count line.
+    const projectIdx = text.indexOf("Project: Mail (apps/mail)")
+    const countIdx = text.indexOf('1 facts about "AuthService"')
+    expect(projectIdx).toBeGreaterThan(-1)
+    expect(countIdx).toBeGreaterThan(projectIdx)
+    expect(text).toContain("  Notion-backed mail client.")
+    // Siblings names *peers* — Mail is excluded as the resolved project.
+    expect(text).toContain("  Siblings: Web.")
+    expect(text).not.toContain("Siblings: Mail")
+  })
+
+  it("suppresses the framing block when includeContext: false", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Should not appear.",
+      },
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({
+      entity: "AuthService",
+      includeContext: false,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("Project: Mail")
+    expect(text).not.toContain("Should not appear.")
+    expect(text).not.toContain("Siblings:")
+  })
+
+  it("includes the framing block on the empty-results path so cold-start agents still see scope", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Notion-backed mail client.",
+      },
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({ entity: "Unknown" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Project: Mail (apps/mail)")
+    expect(text).toContain('No facts or tasks found about "Unknown"')
+  })
+
+  it("renders a catch-all warning that mirrors the save-side voice", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({
+      project: {
+        id: "proj-mono",
+        name: "Monorepo",
+        path: ".",
+        description: "Whole repo.",
+      },
+      isCatchAllFallback: true,
+      configProjects: [
+        { name: "Monorepo", path: "." },
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+      ],
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Lead-in mirrors the save-side warning byte-for-byte (shared via
+    // `formatCatchAllScopeSummary` in `src/core/context.ts`); only the
+    // call-to-action tail diverges (read tools take `projectName` only).
+    expect(text).toContain(
+      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Mail, Web. Pass projectName to scope to a specific sub-project.',
+    )
+  })
+
+  it("describes the explicitly-resolved project when projectName is passed (Fix 2)", async () => {
+    const mockServer = createMockServer()
+    // Type-annotated as `Project` so the fixture validates against the
+    // production shape — if `Project` ever grows a required field, this
+    // test fails alongside the prod call site instead of silently passing.
+    const webProject: Project = {
+      id: "proj-web",
+      name: "Web",
+      type: "project",
+      path: "apps/web",
+      status: "active",
+      description: "Marketing site.",
+    }
+    const services = makeServices({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Mail client.",
+      },
+      configProjects: [
+        { name: "Mail", path: "apps/mail" },
+        { name: "Web", path: "apps/web" },
+      ],
+      findByName: async (name) => (name === "Web" ? webProject : null),
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({
+      entity: "AuthService",
+      projectName: "Web",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Project: Web (apps/web)")
+    expect(text).toContain("  Marketing site.")
+    // The auto-detected Mail project's description must NOT leak through.
+    expect(text).not.toContain("Mail client.")
+  })
+
+  it("renders no framing block when no project resolved (vault-wide scope)", async () => {
+    const mockServer = createMockServer()
+    const services = makeServices({ project: null, configProjects: [] })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("Project:")
+    expect(text).not.toContain("Siblings:")
   })
 })
