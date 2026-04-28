@@ -1,6 +1,7 @@
 import { Command } from "commander"
 import { initServices } from "../../services.js"
 import type { LoreServices } from "../../services.js"
+import type { FactService } from "../../core/fact.js"
 import type { Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
@@ -9,6 +10,23 @@ import {
   DRIFT_DEBOUNCE_DAYS,
   driftMarkerAgeDays,
 } from "../../hooks/drift-marker.js"
+
+/**
+ * Raw Notion `Predicate` select values for the legacy tracking-predicate
+ * facts that #23 (the 0.6.0 deprecation purge) will hide from `pageToFact`
+ * and remove from the `FactPredicate` typed union.
+ *
+ * Inlined as raw strings rather than imported from `TRACKING_PREDICATES`
+ * because #23 will mutate that exported list — depending on it would make
+ * the preflight silently match a shrinking set after #23 ships. The
+ * preflight needs to keep matching the historical Notion select values
+ * regardless of what the typed union looks like in any given release.
+ */
+const TRACKING_PREDICATE_PREFLIGHT_VALUES: string[] = [
+  "needs_action",
+  "waiting_on",
+  "blocked_by",
+]
 
 export const statusCommand = new Command("status")
   .description("Show vault status and project list")
@@ -19,6 +37,19 @@ export const statusCommand = new Command("status")
       const services = await initServices(undefined, { driftCheck: true })
       const stats = await services.vault.stats()
       const project = services.context.project
+
+      // Tracking-predicate preflight (#24, ships in 0.5.x patch). Renders
+      // a warning when the vault still carries facts whose predicate is
+      // one of the historical tracking values (`needs_action`,
+      // `waiting_on`, `blocked_by`). Informational only — the rest of
+      // status output runs unconditionally so operators can still
+      // diagnose other vault state.
+      const preflight = await loadTrackingPreflight(services)
+      const preflightLines = formatTrackingPreflight(preflight)
+      if (preflightLines.length > 0) {
+        for (const line of preflightLines) console.log(line)
+        console.log()
+      }
 
       console.log("Lore Vault Status")
       console.log("─".repeat(40))
@@ -479,4 +510,87 @@ export function formatDriftStatus(report: DriftStatusReport): string[] {
     lines.push(`  marker ${ageDays}d old · next fire ~${Math.ceil(remaining)}d`)
   }
   return lines
+}
+
+// ---------------------------------------------------------------------------
+// Tracking-predicate preflight (#24)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single-row report on whether the vault still carries facts whose
+ * `Predicate` Notion select value is one of the historical tracking
+ * predicates (`needs_action`, `waiting_on`, `blocked_by`).
+ *
+ * `count` is the integer number of live (`Valid Until is_empty`) rows.
+ * The renderer treats `0` as the silent path (no warning, byte-identical
+ * pre-issue status output) and any non-zero value as the warning path.
+ */
+export interface TrackingPreflightReport {
+  count: number
+}
+
+export interface TrackingPreflightDeps {
+  /**
+   * Predicate-count probe. Defaults to the real
+   * `FactService.countByPredicateRaw`; tests inject a fake to drive the
+   * count deterministically without standing up a Notion mock.
+   */
+  countByPredicateRaw?: (strings: string[]) => Promise<number>
+}
+
+/**
+ * Subset of `LoreServices` the preflight loader actually reads. Lets
+ * tests pass a one-method fake instead of the full services object.
+ */
+export type TrackingPreflightServices = {
+  facts: Pick<FactService, "countByPredicateRaw">
+}
+
+/**
+ * Count live tracking-predicate facts to drive the `lore status`
+ * preflight warning. One additional vault-wide Notion query beyond the
+ * existing status output — paginated server-side via the predicate
+ * probe — and zero `pageToFact` round-trips.
+ */
+export async function loadTrackingPreflight(
+  services: TrackingPreflightServices,
+  deps: TrackingPreflightDeps = {},
+): Promise<TrackingPreflightReport> {
+  const probe =
+    deps.countByPredicateRaw ??
+    services.facts.countByPredicateRaw.bind(services.facts)
+  const count = await probe(TRACKING_PREDICATE_PREFLIGHT_VALUES)
+  return { count }
+}
+
+/**
+ * Render the preflight warning. Returns an empty array when `count` is
+ * zero so the caller can suppress the entire block with a single
+ * length check — same contract shape as `formatDigestStatus` /
+ * `formatDriftStatus`.
+ *
+ * Warning text intentionally names both the remediation command
+ * (`lore migrate --migrate-tracking-to-tasks --yes`) and the
+ * consequence of skipping it ("rows become invisible to lore"). #23
+ * (0.6.0) updates the prose when the migration command is removed —
+ * see the post-removal copy in #23's `Files affected`. The structural
+ * preflight stays put across both releases.
+ *
+ * Pure function: deterministic in `report`, no I/O.
+ */
+export function formatTrackingPreflight(
+  report: TrackingPreflightReport,
+): string[] {
+  if (report.count <= 0) return []
+
+  const noun = report.count === 1 ? "row" : "rows"
+  return [
+    `⚠ Tracking-predicate facts detected: ${report.count} live ${noun}.`,
+    "  These predicates (`needs_action`, `waiting_on`, `blocked_by`) are",
+    "  scheduled for removal in the next minor lore release.",
+    "  Run `lore migrate --migrate-tracking-to-tasks --yes` BEFORE",
+    "  upgrading. After the next release, these rows become invisible",
+    "  to lore — Notion still stores them, but no read path surfaces",
+    "  them and the migration command will have been removed.",
+  ]
 }

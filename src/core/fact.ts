@@ -1356,6 +1356,75 @@ export class FactService {
   }
 
   /**
+   * Count live facts (`Valid Until is_empty`) whose Notion `Predicate`
+   * select value matches one of the given raw select-value strings.
+   *
+   * **Deliberate double back door** — do not refactor either asymmetry:
+   *
+   * 1. `string[]` over `FactPredicate[]`. The 0.6.0 deprecation purge
+   *    (#23) contracts the `FactPredicate` union to drop
+   *    `needs_action` / `waiting_on` / `blocked_by`. A typed-predicate
+   *    signature would refuse to compile against those literals once
+   *    they leave the union, breaking the preflight that exists
+   *    precisely to detect them. Raw strings let the `lore status`
+   *    preflight keep recognizing historical Notion `Predicate` values
+   *    after the type contraction.
+   *
+   * 2. `Promise<number>` over `Promise<Fact[]>`. The same #23 PR adds a
+   *    filter inside `pageToFact` that returns `null` for rows whose
+   *    predicate is no longer in the typed union, so a `Fact[]`-shape
+   *    method would silently drop every historical tracking row from
+   *    its result set on 0.6.0 — and the preflight count would regress
+   *    to zero even when the vault still carries the rows in Notion.
+   *    Walking `response.results.length` directly never instantiates
+   *    `Fact` objects, so the count remains correct across the
+   *    `pageToFact` filter change.
+   *
+   * Routing this through `pageToFact`, or wrapping a `queryBy*`
+   * accessor and converting back to a count, silently breaks the
+   * preflight on the next release. The `Raw` suffix marks the
+   * intentional bypass — same convention as the `raw` paths under
+   * `src/notion/`.
+   *
+   * Empty input returns 0 without issuing a query.
+   */
+  async countByPredicateRaw(strings: string[]): Promise<number> {
+    if (strings.length === 0) return 0
+
+    const predicateClause: Record<string, unknown> =
+      strings.length === 1
+        ? { property: "Predicate", select: { equals: strings[0] } }
+        : {
+            or: strings.map((p) => ({
+              property: "Predicate",
+              select: { equals: p },
+            })),
+          }
+
+    const filter = {
+      and: [
+        { property: "Valid Until", date: { is_empty: true } },
+        predicateClause,
+      ],
+    }
+
+    let count = 0
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        page_size: NOTION_MAX_PAGE_SIZE,
+        start_cursor: cursor,
+      })
+      count += response.results.length
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return count
+  }
+
+  /**
    * Map a Notion page to the `Fact` domain type.
    *
    * `SubjectKey` and `DedupKey` are deliberately *not* projected onto

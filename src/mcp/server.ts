@@ -35,8 +35,13 @@ async function main(): Promise<void> {
   // the looser `DEFAULT_WAKEUP_*` caps for ranked calls now see fewer
   // rows — observable shape change with no schema delta — so the server
   // version bumps 0.4.0 → 0.5.0.
+  //
+  // 0.5.1 (issue 0.6.0/24) adds the `lore status` tracking-predicate
+  // preflight ahead of the 0.6.0 deprecation purge. No MCP surface
+  // change — patch bump per the version-literal-must-move-together
+  // contract documented in `src/mcp/AGENTS.md`.
   const server = new McpServer(
-    { name: "lore", version: "0.5.0" },
+    { name: "lore", version: "0.5.1" },
     {
       capabilities: {
         tools: {},

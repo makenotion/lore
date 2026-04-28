@@ -2,11 +2,15 @@ import { describe, expect, it, vi } from "vitest"
 import {
   formatDigestStatus,
   formatDriftStatus,
+  formatTrackingPreflight,
   groupLatestDigestByProject,
   loadDigestStatus,
   loadDriftStatus,
+  loadTrackingPreflight,
   type DigestStatusReport,
   type DriftStatusReport,
+  type TrackingPreflightReport,
+  type TrackingPreflightServices,
 } from "./status.js"
 import { DRIFT_DEBOUNCE_DAYS } from "../../hooks/drift-marker.js"
 import type { LoreServices } from "../../services.js"
@@ -574,5 +578,134 @@ describe("loadDriftStatus", () => {
     const probe = vi.fn(async () => 0)
     await loadDriftStatus("/some/repo", { markerAge: probe })
     expect(probe).toHaveBeenCalledWith("/some/repo")
+  })
+})
+
+describe("formatTrackingPreflight (issue 0.6.0/24)", () => {
+  it("renders no lines when count is zero so the warning block is suppressed", () => {
+    // Acceptance criterion: when the vault has zero tracking-predicate
+    // facts, status output is byte-identical to pre-issue behavior.
+    // Empty array → caller's length-check drops the entire block.
+    const report: TrackingPreflightReport = { count: 0 }
+    expect(formatTrackingPreflight(report)).toEqual([])
+  })
+
+  it("renders the warning block when count is greater than zero", () => {
+    const report: TrackingPreflightReport = { count: 14 }
+    const lines = formatTrackingPreflight(report)
+    expect(lines.length).toBeGreaterThan(0)
+    expect(lines[0]).toContain("Tracking-predicate facts detected")
+    expect(lines[0]).toContain("14")
+  })
+
+  it("names the migration command as the remediation path", () => {
+    // Acceptance criterion: warning text names
+    // `lore migrate --migrate-tracking-to-tasks --yes` so an operator
+    // seeing the warning has a copy-pasteable command, not just a "go
+    // figure it out" nudge.
+    const report: TrackingPreflightReport = { count: 1 }
+    const text = formatTrackingPreflight(report).join("\n")
+    expect(text).toContain("lore migrate --migrate-tracking-to-tasks --yes")
+  })
+
+  it("names the consequence of skipping the migration", () => {
+    // Acceptance criterion: warning text names the consequence so the
+    // operator understands the urgency. "Become invisible to lore" is
+    // the load-bearing phrase — the rows still exist in Notion, but
+    // no read path will surface them post-removal.
+    const report: TrackingPreflightReport = { count: 1 }
+    // Collapse whitespace so the assertion ignores hard line wrapping in
+    // the rendered block — "become invisible\n  to lore" is a render
+    // artifact, not a contract change.
+    const text = formatTrackingPreflight(report).join(" ").replace(/\s+/g, " ")
+    expect(text).toMatch(/become invisible to lore/i)
+  })
+
+  it("names all three historical predicates so an operator can grep their vault", () => {
+    // Pin the predicate names so a future copy edit doesn't accidentally
+    // drop one — operators reading the warning may want to filter their
+    // Notion view by these exact strings before running the migration.
+    const report: TrackingPreflightReport = { count: 3 }
+    const text = formatTrackingPreflight(report).join("\n")
+    expect(text).toContain("needs_action")
+    expect(text).toContain("waiting_on")
+    expect(text).toContain("blocked_by")
+  })
+
+  it("uses singular noun when count is exactly 1", () => {
+    const report: TrackingPreflightReport = { count: 1 }
+    const [header] = formatTrackingPreflight(report)
+    expect(header).toContain("1 live row.")
+  })
+
+  it("uses plural noun when count is greater than 1", () => {
+    const report: TrackingPreflightReport = { count: 7 }
+    const [header] = formatTrackingPreflight(report)
+    expect(header).toContain("7 live rows.")
+  })
+
+  it("treats negative counts as the suppressed branch (defense-in-depth)", () => {
+    // Defensive: the loader can only return non-negative integers, but
+    // a future caller constructing a `TrackingPreflightReport` directly
+    // mustn't be able to render "-1 live rows" if they pass a stale
+    // count from another subsystem. The renderer collapses any
+    // non-positive count to the empty branch.
+    for (const negative of [-1, -42]) {
+      const report: TrackingPreflightReport = { count: negative }
+      expect(formatTrackingPreflight(report)).toEqual([])
+    }
+  })
+})
+
+describe("loadTrackingPreflight (issue 0.6.0/24)", () => {
+  function makePreflightServices(
+    countByPredicateRaw: (strings: string[]) => Promise<number>,
+  ): TrackingPreflightServices {
+    return {
+      facts: { countByPredicateRaw },
+    }
+  }
+
+  it("returns the count from the predicate probe", async () => {
+    const probe = vi.fn(async () => 42)
+    const report = await loadTrackingPreflight(makePreflightServices(probe))
+    expect(report).toEqual({ count: 42 })
+  })
+
+  it("queries the three historical tracking predicates as raw strings", async () => {
+    // The probe MUST be called with the raw Notion select values
+    // (`needs_action`, `waiting_on`, `blocked_by`). #23 will remove
+    // these from the `FactPredicate` typed union, so the loader
+    // intentionally passes raw strings — a typed-predicate path
+    // would either fail to compile or silently match a shrinking
+    // set after #23 ships.
+    const probe = vi.fn(async (_strings: string[]) => 0)
+    await loadTrackingPreflight(makePreflightServices(probe))
+    expect(probe).toHaveBeenCalledTimes(1)
+    const args = probe.mock.calls[0]![0]
+    expect([...args].sort()).toEqual(
+      ["blocked_by", "needs_action", "waiting_on"],
+    )
+  })
+
+  it("prefers the injected probe over the services.facts method (test seam)", async () => {
+    const serviceProbe = vi.fn(async () => 99)
+    const injected = vi.fn(async () => 5)
+    const report = await loadTrackingPreflight(
+      makePreflightServices(serviceProbe),
+      { countByPredicateRaw: injected },
+    )
+    expect(injected).toHaveBeenCalledTimes(1)
+    expect(serviceProbe).not.toHaveBeenCalled()
+    expect(report.count).toBe(5)
+  })
+
+  it("falls back to services.facts.countByPredicateRaw when no override is provided", async () => {
+    const serviceProbe = vi.fn(async () => 12)
+    const report = await loadTrackingPreflight(
+      makePreflightServices(serviceProbe),
+    )
+    expect(serviceProbe).toHaveBeenCalledTimes(1)
+    expect(report.count).toBe(12)
   })
 })

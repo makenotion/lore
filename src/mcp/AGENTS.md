@@ -782,6 +782,7 @@ Historical bumps and what they signalled:
 | `0.3.0` | Open loops ranking contract (`OVERDUE_SEVERE_DAYS` / `OVERDUE_MILD_DAYS`) |
 | `0.4.0` | P3-01 polymorphic tool surface (24 → 7 dispatchers + deprecated aliases) |
 | `0.5.0` | PF3-04 ranked-mode default caps for MCP `lore-context action='wake-up'` (parity with shell wake-up); also the deprecated-`lore-task-*`-aliases removal target |
+| `0.5.1` | `lore status` tracking-predicate preflight (issue 0.6.0/24) — counts live `needs_action` / `waiting_on` / `blocked_by` facts and warns operators to run `lore migrate --migrate-tracking-to-tasks --yes` before the 0.6.0 deprecation purge removes the read path. CLI / operator UX only; no MCP tool surface change, but the four version literals move together so the patch ships as one atomic bump |
 
 ## Server Startup
 

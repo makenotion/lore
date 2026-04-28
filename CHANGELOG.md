@@ -33,5 +33,25 @@ heading below per Keep a Changelog v1.1.0 convention, e.g.
   [PR #96](https://github.com/makenotion/lore/pull/96) for the underlying
   fix.
 
+## [0.5.1]
+
+### Added
+
+- **`lore status` tracking-predicate preflight.** When the vault still
+  carries facts whose Notion `Predicate` select value is one of the
+  legacy tracking predicates (`needs_action`, `waiting_on`,
+  `blocked_by`), `lore status` now prints a warning at the top of its
+  output naming the count and recommending
+  `lore migrate --migrate-tracking-to-tasks --yes` as remediation.
+  When the count is zero the warning is suppressed and status output
+  is byte-identical to the previous behavior. The preflight is
+  informational — `lore status` does not refuse to run on non-zero
+  count, so operators can still diagnose other vault state. This
+  ships ahead of the 0.6.0 deprecation purge so an operator on the
+  old line sees the warning while
+  `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
+  the prose updates to reflect the migration command's removal.
+
 [Unreleased]: https://github.com/makenotion/lore/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/makenotion/lore/releases/tag/v0.6.0
+[0.6.0]: https://github.com/makenotion/lore/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/makenotion/lore/releases/tag/v0.5.1

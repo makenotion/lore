@@ -2023,3 +2023,204 @@ describe("FactService.queryByEntity — predicates option (issue 0.6.0/05)", () 
     }
   })
 })
+
+describe("FactService.countByPredicateRaw (issue 0.6.0/24)", () => {
+  // Pre-issue: `lore status` had no signal that a vault still carried
+  // the legacy tracking-predicate facts (`needs_action`, `waiting_on`,
+  // `blocked_by`) that #23 will hide from the read path. The preflight
+  // probe must keep counting those rows accurately AFTER #23 ships, so
+  // its design intentionally bypasses the typed `FactPredicate` union
+  // (raw `string[]` input) AND `pageToFact` (returns `Promise<number>`
+  // and never instantiates `Fact` objects).
+  it("returns 0 without issuing a query when given an empty array", async () => {
+    // Empty input is an early-return path so we never burn a Notion call
+    // on a tautologically-empty filter (Notion's API would happily
+    // return every row in the DS for `Predicate is one of: []` semantics).
+    const { client, querySpy } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    const count = await service.countByPredicateRaw([])
+
+    expect(count).toBe(0)
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("returns the integer count from a single-page response", async () => {
+    const { client } = createClient([
+      {
+        results: [
+          buildFactPage({ id: "f1" }),
+          buildFactPage({ id: "f2" }),
+          buildFactPage({ id: "f3" }),
+        ],
+        has_more: false,
+      },
+    ])
+    const service = new FactService(client, db)
+
+    const count = await service.countByPredicateRaw(["needs_action"])
+
+    expect(count).toBe(3)
+  })
+
+  it("paginates across multiple Notion pages and sums the totals", async () => {
+    // The Mail vault carries 271 open loops in production, which spans
+    // three 100-row pages. A single-shot count would silently undercount
+    // by ~63%; the preflight is supposed to be the alarm, not the leak.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f1-${i}` }),
+    )
+    const page2 = Array.from({ length: 100 }, (_, i) =>
+      buildFactPage({ id: `f2-${i}` }),
+    )
+    const page3 = Array.from({ length: 71 }, (_, i) =>
+      buildFactPage({ id: `f3-${i}` }),
+    )
+    const { client, querySpy } = createClient([
+      { results: page1, has_more: true, next_cursor: "c1" },
+      { results: page2, has_more: true, next_cursor: "c2" },
+      { results: page3, has_more: false, next_cursor: null },
+    ])
+    const service = new FactService(client, db)
+
+    const count = await service.countByPredicateRaw([
+      "needs_action",
+      "waiting_on",
+      "blocked_by",
+    ])
+
+    expect(count).toBe(271)
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    // Cursor must thread across pages — without it the second call
+    // re-fetches page 1 forever.
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
+    expect(querySpy.mock.calls[2][0]).toMatchObject({ start_cursor: "c2" })
+  })
+
+  it("collapses single-string input to a flat select.equals filter", async () => {
+    // The OR-of-equals shape is unnecessary when only one predicate
+    // value needs matching. Notion accepts both, but the flat form is
+    // what `predicateFilterClause` produces elsewhere on this service
+    // for parity.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.countByPredicateRaw(["needs_action"])
+
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    const predicateClause = filter.and.find(
+      (c) => (c as { property?: string }).property === "Predicate",
+    )
+    expect(predicateClause).toMatchObject({
+      property: "Predicate",
+      select: { equals: "needs_action" },
+    })
+  })
+
+  it("OR-s multiple raw predicate values as select.equals clauses", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.countByPredicateRaw([
+      "needs_action",
+      "waiting_on",
+      "blocked_by",
+    ])
+
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    const orClause = filter.and.find((c) => "or" in c) as
+      | { or: Array<{ property: string; select: { equals: string } }> }
+      | undefined
+    expect(orClause).toBeDefined()
+    const values = orClause!.or.map((c) => c.select.equals).sort()
+    expect(values).toEqual(["blocked_by", "needs_action", "waiting_on"])
+    for (const clause of orClause!.or) {
+      expect(clause).toMatchObject({
+        property: "Predicate",
+        select: { equals: expect.any(String) },
+      })
+    }
+  })
+
+  it("filters by Valid Until is_empty so invalidated rows never inflate the count", async () => {
+    // The preflight fires when the vault carries LIVE tracking facts.
+    // Counting historical/invalidated rows would re-warn an operator
+    // who already migrated, defeating the silence-after-migration UX
+    // the preflight is supposed to deliver.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.countByPredicateRaw(["needs_action"])
+
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    const validUntilClause = filter.and.find(
+      (c) => (c as { property?: string }).property === "Valid Until",
+    )
+    expect(validUntilClause).toMatchObject({
+      property: "Valid Until",
+      date: { is_empty: true },
+    })
+  })
+
+  it("uses Notion's max page_size for the count walk", async () => {
+    // Counting is purely about totalling rows — no caller needs a
+    // per-page slice. Pinning page_size at 100 minimizes the number of
+    // round-trips against Notion's rate limiter for the common case.
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.countByPredicateRaw(["needs_action"])
+
+    expect(calls[0].page_size).toBe(100)
+  })
+
+  it("never instantiates Fact domain objects (bypasses pageToFact)", async () => {
+    // Load-bearing for the 0.6.0 contract: #23 adds a `pageToFact`
+    // filter that returns null for tracking-predicate rows. A method
+    // that walks `pageToFact` and counts the non-nulls would silently
+    // regress to zero on real vaults. Pin that contract by feeding the
+    // method pages that lack the columns `pageToFact` reads — if the
+    // count works regardless, we know the conversion never ran.
+    const malformedPages = [
+      // No `properties` block at all — `pageToFact` would throw on
+      // `extractTitle(props["Subject"])` because props is undefined.
+      { object: "page", id: "broken-1" },
+      { object: "page", id: "broken-2" },
+    ] as unknown as PageObjectResponse[]
+    const { client } = createClient([
+      { results: malformedPages, has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    const count = await service.countByPredicateRaw(["needs_action"])
+
+    expect(count).toBe(2)
+  })
+
+  it("survives raw input strings the FactPredicate union does not name", async () => {
+    // The `Raw` suffix's reason for existing: a future #23 follow-up
+    // could remove `needs_action` from the typed union entirely. The
+    // method must keep matching that raw select value because
+    // historical Notion rows still carry it. A typed-predicate
+    // signature would refuse to compile against a removed literal,
+    // breaking the preflight at exactly the moment it matters.
+    const { client, calls } = createClient([
+      { results: [buildFactPage({ id: "legacy-1" })], has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    // String not in `FactPredicate` today — the call still type-checks
+    // because the parameter is `string[]`, not `FactPredicate[]`.
+    const count = await service.countByPredicateRaw(["some_future_legacy_value"])
+
+    expect(count).toBe(1)
+    const filter = calls[0].filter as { and: Array<Record<string, unknown>> }
+    const predicateClause = filter.and.find(
+      (c) => (c as { property?: string }).property === "Predicate",
+    )
+    expect(predicateClause).toMatchObject({
+      property: "Predicate",
+      select: { equals: "some_future_legacy_value" },
+    })
+  })
+})
