@@ -20,7 +20,7 @@ import {
   extractRelationIds,
 } from "../notion/extractors.js"
 import { buildTopicProps } from "../notion/schema.js"
-import { decodeTopicHtmlEntities } from "./topic.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import { normalizeTopicNameForLookup } from "./topic-normalize.js"
 
 /** One duplicate-name group detected in the Topics DB. */
@@ -126,7 +126,7 @@ async function scanTopicNames(
       snapshot.push({
         id: page.id,
         rawName,
-        decodedName: decodeTopicHtmlEntities(rawName),
+        decodedName: decodeTextEntities(rawName),
       })
     }
     cursor = response.has_more ? response.next_cursor ?? undefined : undefined
@@ -775,8 +775,8 @@ export async function mergeTopicsByAliasPlans(
   options: { dryRun?: boolean } = {}
 ): Promise<TopicAliasMergeResult[]> {
   const normalized = plans.map((p) => ({
-    canonical: decodeTopicHtmlEntities(p.canonical),
-    aliases: p.aliases.map((a) => decodeTopicHtmlEntities(a)),
+    canonical: decodeTextEntities(p.canonical),
+    aliases: p.aliases.map((a) => decodeTextEntities(a)),
   }))
   validateTopicAliasMergePlans(normalized)
 

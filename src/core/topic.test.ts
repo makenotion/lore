@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import {
-  SimilarTopicError,
-  TopicService,
-  decodeTopicHtmlEntities,
-} from "./topic.js"
+import { SimilarTopicError, TopicService } from "./topic.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import type { DatabaseRef } from "../types.js"
 
 type MockablePage = Partial<PageObjectResponse> & { id: string }
@@ -86,34 +83,34 @@ const DB: DatabaseRef = {
   dataSourceId: "topics-ds-id",
 }
 
-describe("decodeTopicHtmlEntities", () => {
+describe("decodeTextEntities", () => {
   it("is a no-op on clean input", () => {
-    expect(decodeTopicHtmlEntities("Build & Tooling")).toBe("Build & Tooling")
-    expect(decodeTopicHtmlEntities("R&D roadmap")).toBe("R&D roadmap")
-    expect(decodeTopicHtmlEntities("")).toBe("")
+    expect(decodeTextEntities("Build & Tooling")).toBe("Build & Tooling")
+    expect(decodeTextEntities("R&D roadmap")).toBe("R&D roadmap")
+    expect(decodeTextEntities("")).toBe("")
   })
 
   it("decodes a single-escape entity", () => {
-    expect(decodeTopicHtmlEntities("Build &amp; Tooling")).toBe("Build & Tooling")
-    expect(decodeTopicHtmlEntities("a &lt; b")).toBe("a < b")
-    expect(decodeTopicHtmlEntities("a &gt; b")).toBe("a > b")
-    expect(decodeTopicHtmlEntities("&quot;quoted&quot;")).toBe('"quoted"')
-    expect(decodeTopicHtmlEntities("it&#39;s")).toBe("it's")
+    expect(decodeTextEntities("Build &amp; Tooling")).toBe("Build & Tooling")
+    expect(decodeTextEntities("a &lt; b")).toBe("a < b")
+    expect(decodeTextEntities("a &gt; b")).toBe("a > b")
+    expect(decodeTextEntities("&quot;quoted&quot;")).toBe('"quoted"')
+    expect(decodeTextEntities("it&#39;s")).toBe("it's")
   })
 
   it("decodes double-escape `&amp;amp;` all the way to `&`", () => {
-    expect(decodeTopicHtmlEntities("Build &amp;amp; Tooling")).toBe(
+    expect(decodeTextEntities("Build &amp;amp; Tooling")).toBe(
       "Build & Tooling"
     )
   })
 
   it("decodes triple-escape without stopping early", () => {
-    expect(decodeTopicHtmlEntities("A &amp;amp;amp; B")).toBe("A & B")
+    expect(decodeTextEntities("A &amp;amp;amp; B")).toBe("A & B")
   })
 
   it("is idempotent", () => {
-    const clean = decodeTopicHtmlEntities("Build &amp;amp; Tooling")
-    expect(decodeTopicHtmlEntities(clean)).toBe(clean)
+    const clean = decodeTextEntities("Build &amp;amp; Tooling")
+    expect(decodeTextEntities(clean)).toBe(clean)
   })
 
   it("handles deeply-nested encoding without leaving residue", () => {
@@ -125,32 +122,32 @@ describe("decodeTopicHtmlEntities", () => {
       input = input.replace(/&/g, "&amp;")
     }
     input = `A ${input} B`
-    expect(decodeTopicHtmlEntities(input)).toBe("A & B")
+    expect(decodeTextEntities(input)).toBe("A & B")
   })
 
   it("decodes `&apos;` to a straight apostrophe", () => {
-    expect(decodeTopicHtmlEntities("it&apos;s")).toBe("it's")
+    expect(decodeTextEntities("it&apos;s")).toBe("it's")
   })
 
   it("collapses `&#38;amp;` via the fixed-point loop", () => {
-    expect(decodeTopicHtmlEntities("&#38;amp; tooling")).toBe("& tooling")
+    expect(decodeTextEntities("&#38;amp; tooling")).toBe("& tooling")
   })
 
   it("decodes entities beyond the hand-rolled five (`&nbsp;`, `&rsquo;`)", () => {
     // Coverage for the long-tail of HTML5 named entities that a hand-rolled
     // table would miss. Real-world upstream producers (markdown renderers,
     // rich-text editors) emit these routinely.
-    expect(decodeTopicHtmlEntities("Build &nbsp; Tooling")).toBe(
+    expect(decodeTextEntities("Build &nbsp; Tooling")).toBe(
       "Build   Tooling"
     )
-    expect(decodeTopicHtmlEntities("today&rsquo;s work")).toBe(
+    expect(decodeTextEntities("today&rsquo;s work")).toBe(
       "today’s work"
     )
   })
 
   it("decodes numeric character references in any radix", () => {
-    expect(decodeTopicHtmlEntities("it&#8217;s")).toBe("it’s")
-    expect(decodeTopicHtmlEntities("it&#x2019;s")).toBe("it’s")
+    expect(decodeTextEntities("it&#8217;s")).toBe("it’s")
+    expect(decodeTextEntities("it&#x2019;s")).toBe("it’s")
   })
 })
 

@@ -91,24 +91,6 @@ export class SimilarTopicError extends Error {
   }
 }
 
-/**
- * Backwards-compatible alias for the shared `decodeTextEntities` helper.
- * The decoder originally lived here as `decodeTopicHtmlEntities`, but the
- * same pathology affects memory titles, fact subject/object text, and any
- * other plain-text field that flows through the autosave path. The
- * implementation now lives in `src/notion/html-entities.ts` so every write
- * site can import it without pulling in the whole topic service.
- *
- * Re-exported under the old name so the topic-merge migration and existing
- * tests don't have to rename in the same PR as the decoder hoist.
- *
- * @deprecated Import `decodeTextEntities` from `src/notion/html-entities.ts`
- * instead. This alias will be removed the next time `topic.ts` or
- * `topic-merge.ts` is touched — there is no feature it enables, only a
- * naming bridge from the pre-hoist world.
- */
-export const decodeTopicHtmlEntities = decodeTextEntities
-
 /** Topic name → Topic cache. Covers only global (unscoped) lookups — the
  *  scoped variant is a rarely-used safety valve and is not cached. The
  *  cap is generous because topics are numerous but not unbounded in a
@@ -129,7 +111,7 @@ export class TopicService {
   ) {}
 
   async create(input: CreateTopicInput): Promise<Topic> {
-    const name = decodeTopicHtmlEntities(input.name)
+    const name = decodeTextEntities(input.name)
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildTopicProps({
@@ -213,7 +195,7 @@ export class TopicService {
    * Callers that know they need scoped behaviour can pass `projectId`.
    */
   async findByName(name: string, projectId?: string): Promise<Topic | null> {
-    const decoded = decodeTopicHtmlEntities(name)
+    const decoded = decodeTextEntities(name)
 
     // Only the global (unscoped) lookup is cached: it's the hot path used
     // by `getOrCreate` and every MCP tool that accepts `topicName`. The
@@ -286,7 +268,7 @@ export class TopicService {
     projectIds: string[],
     opts: { forceNew?: boolean } = {}
   ): Promise<Topic> {
-    const decoded = decodeTopicHtmlEntities(name)
+    const decoded = decodeTextEntities(name)
 
     // Writeback uses `existing.projectIds` as the merge base, so a stale
     // cached value would let us clobber relations added by another
