@@ -9,9 +9,8 @@ type ToolResult = {
 }
 
 // -------------------------------------------------------------------------
-// Handlers — extracted so both the polymorphic `lore-project` tool and the
-// deprecated `lore-list-projects` / `lore-get-project` aliases can share
-// implementations.
+// Handlers — one per `lore-project` action (list | get). Routed by the
+// polymorphic dispatcher's discriminated union.
 // -------------------------------------------------------------------------
 
 async function handleList(
@@ -163,43 +162,5 @@ export function registerProjectTools(server: McpServer, services: LoreServices):
           return handleGet(services, parsed.data)
       }
     },
-  )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md.
-  //
-  // Deprecated aliases — preserved through the 0.5.0 transition window
-  // mandated by the stability rule in src/mcp/AGENTS.md. Schemas are kept
-  // intact so existing callers do not break; descriptions are shortened
-  // to redirect agents to the polymorphic tool.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-list-projects",
-    {
-      title: "List projects",
-      description: "Deprecated alias — prefer `lore-project` with `action: 'list'`.",
-      inputSchema: {
-        status: z
-          .enum(["active", "archived"])
-          .optional()
-          .describe("Filter by status (default: all)"),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async ({ status }) => handleList(services, { status }),
-  )
-
-  server.registerTool(
-    "lore-get-project",
-    {
-      title: "Get project details",
-      description: "Deprecated alias — prefer `lore-project` with `action: 'get'`.",
-      inputSchema: {
-        name: z.string().describe("Project name"),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async ({ name }) => handleGet(services, { name }),
   )
 }

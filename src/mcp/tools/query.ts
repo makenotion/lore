@@ -55,9 +55,7 @@ const queryDispatchSchema = z.discriminatedUnion("action", [
     // Closed-vocab tags here too: the inner discriminated union is the
     // dispatcher's runtime contract, and the architecture in
     // src/mcp/AGENTS.md says it must mirror the closed-vocab guarantee
-    // declared at the MCP boundary. The legacy `lore-search` alias
-    // intentionally stays loose (it pre-dates the tag taxonomy) — agents
-    // moving to `lore-query` opt into the stricter validation.
+    // declared at the MCP boundary.
     tags: tagsSchema.optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),

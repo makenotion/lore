@@ -11,15 +11,15 @@
  * `(Subject, Predicate, Object)` triples — `AuthService uses JWT`. In
  * practice, ~half the facts in the Mail vault were tracking-predicate
  * rows whose Object field was a 187-char-average ticket description.
- * Structural queries don't work on prose; `lore-ask` flooded with
- * paragraphs; the knowledge graph couldn't be queried as a graph. Tasks
- * pull this prose out of Facts and into the right shape.
+ * Structural queries don't work on prose; `lore-query action='ask'`
+ * flooded with paragraphs; the knowledge graph couldn't be queried as a
+ * graph. Tasks pull this prose out of Facts and into the right shape.
  *
  * Service mirrors `DecisionService`: shares the Memories DB with
  * `MemoryService`, sets the `Kind` discriminator on every create, and
  * exposes index-tier listings that skip the `retrieveMarkdown` body
- * fetch. Cross-service orchestration (e.g. `lore-ask` running fact +
- * task queries together) lives at the MCP tool layer.
+ * fetch. Cross-service orchestration (e.g. `lore-query action='ask'`
+ * running fact + task queries together) lives at the MCP tool layer.
  */
 
 import type { Client } from "@notionhq/client"
@@ -95,15 +95,17 @@ export const TASK_MIGRATION_KEYWORD = "migrated-from-fact"
  * format alignment.
  *
  * **Trust boundary.** The marker lives in the public `Keywords`
- * column, which `lore-task-create` and `lore-task-update` both
- * accept free-form input for. A caller who writes
+ * column, which `lore-task action='create'` and
+ * `lore-task action='update'` both accept free-form input for. A
+ * caller who writes
  * `migrated-from-fact <token>` themselves can shadow a fact id in
  * `findMigratedFactIds`'s map. The risk is theoretical (fact ids are
  * Notion UUIDs and a caller would need to predict an existing one to
  * cause a real skip), and the alternative — a hidden migration-only
  * column — would be a schema change for defence-in-depth against a
- * non-credible attack. `lore-task-update` *does* protect the marker
- * structurally via `preserveMigrationMarkers`, since updating a
+ * non-credible attack. `lore-task action='update'` *does* protect
+ * the marker structurally via `preserveMigrationMarkers`, since
+ * updating a
  * migrated row's keywords is a routine operator action that would
  * otherwise re-introduce the duplicate-on-rerun bug through a side
  * door.
@@ -147,8 +149,9 @@ export class TaskService {
   /**
    * Create a `Kind = task` memory. `subject` becomes the page title,
    * `description` the page body. The `Entity` column defaults to the
-   * subject so `lore-ask(entity)` lookups always have a column to match
-   * against — the migration relies on this when porting fact subjects.
+   * subject so `lore-query action='ask'` lookups always have a column
+   * to match against — the migration relies on this when porting fact
+   * subjects.
    *
    * Decodes plain-text fields at the write boundary so doubly-encoded
    * autosave input lands clean — same posture `MemoryService.create`
@@ -187,8 +190,8 @@ export class TaskService {
         kind: "task",
         confidence,
         // `Review By` doubles as the task's due date — same column,
-        // same overdue semantics so `lore-audit` and the wake-up
-        // overdue branches keep working without new logic.
+        // same overdue semantics so `lore-query action='audit'` and
+        // the wake-up overdue branches keep working without new logic.
         reviewBy: input.dueDate,
         affectsIds: input.affectsIds,
         alternatives: input.alternatives,
@@ -267,8 +270,9 @@ export class TaskService {
     }
     if (opts?.entities && opts.entities.length > 0) {
       // Server-side OR over `Entity rich_text contains` so alias-aware
-      // recall in `lore-ask` produces the same task set whether the
-      // user typed the canonical name or any registered alias. A
+      // recall in `lore-query action='ask'` produces the same task set
+      // whether the user typed the canonical name or any registered
+      // alias. A
       // single variant collapses to a flat clause so legacy
       // single-entity callers keep producing the same Notion filter
       // shape they did pre-PF4.
@@ -299,8 +303,9 @@ export class TaskService {
       data_source_id: this.db.dataSourceId,
       filter: filter as QueryDataSourceParameters["filter"],
       // Sort by `Review By` ascending so most-overdue / soonest-due rows
-      // float to the top — same default `lore-audit` and
-      // `lore-open-loops` use, and the right answer for a triage list.
+      // float to the top — same default `lore-query action='audit'`
+      // and `lore-query action='open-loops'` use, and the right answer
+      // for a triage list.
       sorts: [
         { property: "Review By", direction: "ascending" },
         { timestamp: "created_time", direction: "descending" },
@@ -328,8 +333,8 @@ export class TaskService {
    * Decodes plain-text fields at the write boundary so doubly-encoded
    * autosave input (`&amp;amp;`) resolves to plain text — same posture
    * `MemoryService.update` takes (PF1-06). `Blocked By` and `Entity`
-   * are agent-boundary fields that downstream `lore-ask(entity)` and
-   * future similarity surfaces will read; idempotent on clean values.
+   * are agent-boundary fields that downstream `lore-query action='ask'`
+   * and future similarity surfaces will read; idempotent on clean values.
    */
   async update(id: string, input: UpdateTaskInput): Promise<Task> {
     const props: Record<string, unknown> = {}
@@ -466,7 +471,8 @@ export class TaskService {
    * warning. Acceptable because closing work is the terminal step in the
    * lifecycle — overwriting an `in-progress` mid-flight only happens when
    * agents disagree about whether work is done, and in that case
-   * downstream `lore-tasks state: "done"` queries surface the closed row
+   * downstream `lore-task action='list'` queries with `state: "done"`
+   * surface the closed row
    * for re-triage. If we ever need stricter semantics, the model would
    * be `expectedCurrentState` à la decision supersession's read-then-write
    * discipline.
@@ -550,8 +556,8 @@ export class TaskService {
 
   /**
    * Active tasks past their due date. Mirrors
-   * `DecisionService.queryOverdue` so wake-up / `lore-audit` can
-   * compose all three sources without per-service branching.
+   * `DecisionService.queryOverdue` so wake-up / `lore-query action='audit'`
+   * can compose all three sources without per-service branching.
    */
   async queryOverdue(opts?: { projectId?: string }): Promise<TaskSummary[]> {
     const today = new Date().toISOString().split("T")[0]

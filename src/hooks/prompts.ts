@@ -103,12 +103,7 @@ function buildSourceLinkGuidance(): string {
  * P3-01 collapsed the 24-tool surface into seven polymorphic dispatchers;
  * PF3-06 added `lore-task` to subsume the standalone task tools landed by
  * P3-02. This prompt teaches the action-dispatch surface so background
- * subagents we drive learn the canonical names rather than the deprecated
- * aliases. The legacy names (`lore-remember`, `lore-learn`, `lore-decide`,
- * `lore-task-create`) remain in the allowlist (see
- * `background.ts:DEFAULT_SAVE_ALLOWLIST`) so any previously-spawned
- * process with an older prompt baked in continues to work during the
- * transition.
+ * subagents we drive learn the canonical names.
  *
  * Tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`)
  * are now rejected on `lore-fact` action='create'; open work goes through
@@ -174,10 +169,11 @@ If nothing worth saving, respond with "No Lore context to save." and stop. Other
 
 /**
  * Content-discipline filter for the background digest synthesizer. The digest
- * output is what `lore-wake-up`'s fast path surfaces at session start, so it
+ * output is what `lore-context action='wake-up'`'s fast path surfaces at session start, so it
  * must be signal-dense, not a chronological log.
  *
- * Mail-vault evidence: 0 digest memories exist because `lore-digest` is manual.
+ * Mail-vault evidence: 0 digest memories exist because
+ * `lore-context action='digest'` is manual.
  * When we wire up scheduled synthesis, the prompt must refuse the obvious
  * failure mode — session-by-session narration — just as `buildExtractionFilter`
  * does for the per-session autosave.
@@ -205,7 +201,8 @@ If the raw data has no durable signal (e.g., a quiet week with only routine work
  * and saves the distilled summary via `lore-memory` action='save' with
  * `source: "digest"`.
  *
- * The title format is fixed so `lore-wake-up`'s freshness window can find the
+ * The title format is fixed so `lore-context action='wake-up'`'s
+ * freshness window can find the
  * latest digest without ambiguity. Pass today's date in YYYY-MM-DD form.
  */
 export function buildDigestPrompt(

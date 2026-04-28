@@ -2,24 +2,14 @@
  * Task tools (P3-02 + PF3-06).
  *
  * Tasks supersede the legacy tracking-predicate facts (`needs_action`,
- * `waiting_on`, `blocked_by`). The surface is exposed two ways during the
- * deprecation window:
+ * `waiting_on`, `blocked_by`). The polymorphic `lore-task` dispatcher
+ * is action-routed across `create` / `update` / `close` / `list` —
+ * matching the rest of the P3-01 polymorphic family (`lore-memory`,
+ * `lore-decision`, etc.).
  *
- * 1. `lore-task` — polymorphic dispatcher (PF3-06), action-routed across
- *    `create` / `update` / `close` / `list`. This is the canonical surface
- *    that matches the rest of the P3-01 polymorphic family
- *    (`lore-memory`, `lore-decision`, etc.).
- * 2. `lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks`
- *    — the standalone names introduced by PR #81 (P3-02). Preserved as
- *    deprecated aliases so any caller already wired to them continues to
- *    work.
- *
- * Each tool is a thin orchestration layer over `services.tasks`
+ * Each handler is a thin orchestration layer over `services.tasks`
  * (`TaskService`) plus project-name resolution; the heavy lifting —
- * schema, defaults, Notion calls — lives in `src/core/task.ts`. The
- * polymorphic dispatcher and each alias share the same `handle*` helpers
- * so behavior cannot drift between the two surfaces during the
- * deprecation window.
+ * schema, defaults, Notion calls — lives in `src/core/task.ts`.
  */
 
 import { z } from "zod"
@@ -46,57 +36,10 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
- * Zod schema for an optional task field that follows the
- * "empty string == absence" rule. `""` is allowed (the caller wants
- * the field cleared / left absent); whitespace-only strings are
- * rejected so a stray `"  "` doesn't slip past the empty-string check
- * and land as literal whitespace in a Notion `rich_text` column.
- *
- * Apply consistently to every empty-able optional task field
- * (`blockedBy`, `entity`, `description`, `subject` on update,
- * `dueDate`). For fields with extra validation (e.g. `dueDate`'s
- * YYYY-MM-DD format), compose the additional `.refine()` directly on
- * the returned schema so the MCP boundary rejects malformed input
- * up-front instead of relying on a duplicate runtime check in the
- * handler.
- */
-function optionalAbsenceString() {
-  return z
-    .string()
-    .refine((s) => s === "" || s.trim().length > 0, {
-      message:
-        'Whitespace-only strings are not allowed. Pass "" (empty string) to clear the field, ' +
-        "or non-whitespace text to set it.",
-    })
-    .optional()
-}
-
-/**
- * Zod schema for the `dueDate` field. Composed from
- * `optionalAbsenceString` (whitespace rejection + empty-string
- * absence) plus the YYYY-MM-DD regex applied only to non-empty
- * values, so the Zod boundary alone enforces every legal shape:
- * `undefined` (leave untouched), `""` (clear), or a valid YMD date.
- *
- * Folding the YMD check into the schema lets the handler drop its
- * runtime regex check + string error throw — the value reaching the
- * handler is already proven to be one of those three shapes.
- */
-function dueDateSchema() {
-  return optionalAbsenceString().refine(
-    (s) => s === undefined || s === "" || YMD_REGEX.test(s),
-    {
-      message:
-        'dueDate must be empty string ("") to clear, or YYYY-MM-DD format (e.g. "2026-05-01").',
-    }
-  )
-}
-
-/**
- * Default cap for `lore-tasks` listings. Matches `lore-open-loops`'
- * default so the agent UX is consistent across the deprecation period.
- * Per-section, not total — mirrors how `lore-open-loops` splits Overdue
- * + Active.
+ * Default cap for `lore-task action='list'` listings. Matches
+ * `lore-query action='open-loops'`' default so the agent UX is
+ * consistent. Per-section, not total — mirrors how
+ * `lore-query action='open-loops'` splits Overdue + Active.
  */
 const DEFAULT_TASKS_LIMIT = 10
 
@@ -136,11 +79,8 @@ function formatTaskRow(t: TaskSummary, today: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Handlers — extracted so the polymorphic `lore-task` dispatcher and the
-// deprecated `lore-task-create` / `lore-task-update` / `lore-task-close` /
-// `lore-tasks` aliases share single implementations. Behavior cannot drift
-// between the two surfaces during the deprecation window because both call
-// the same helper.
+// Handlers — one per `lore-task` action (create | update | close | list).
+// Routed by the polymorphic dispatcher's discriminated union.
 // ---------------------------------------------------------------------------
 
 interface CreateArgs {
@@ -210,8 +150,8 @@ async function handleCreate(
       session: args.session,
     })
 
-    // Record for `lore-fact` (or its `lore-learn` alias) session
-    // auto-link, mirroring how `lore-memory` action='save' and
+    // Record for `lore-fact action='create'` session auto-link,
+    // mirroring how `lore-memory` action='save' and
     // `lore-decision` action='create' plant a session pointer so a
     // later fact can auto-link this task as its source.
     services.sessionMemories.record(
@@ -400,13 +340,13 @@ async function handleList(
       : ACTIVE_TASK_STATES
 
     // `TaskService.list` consumes a multi-variant `entities` filter so
-    // alias-aware callers (`lore-ask`) can OR over canonical + aliases
-    // server-side. `lore-task` action='list' deliberately keeps a
-    // singular user-facing `entity` input — the agent typed one
-    // string, the tool surfaces tasks containing exactly that string.
-    // Canonicalization here would change the user's filter shape
-    // without their knowledge; canonical-aware recall is `lore-ask`'s
-    // job.
+    // alias-aware callers (`lore-query action='ask'`) can OR over
+    // canonical + aliases server-side. `lore-task action='list'`
+    // deliberately keeps a singular user-facing `entity` input — the
+    // agent typed one string, the tool surfaces tasks containing
+    // exactly that string. Canonicalization here would change the
+    // user's filter shape without their knowledge; canonical-aware
+    // recall is `lore-query action='ask'`'s job.
     const { items: tasks } = await services.tasks.list({
       projectId,
       entities: args.entity ? [args.entity] : undefined,
@@ -710,192 +650,5 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           return handleList(services, parsed.data)
       }
     },
-  )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md. The four registrations below ride the same
-  // removal sweep as the 24 P3-01 aliases when the MCP server version
-  // bumps to 0.5.0.
-  //
-  // Deprecated aliases — preserved through the 0.5.0 transition window
-  // mandated by the stability rule in src/mcp/AGENTS.md. Schemas are kept
-  // intact so existing callers do not break; descriptions are shortened
-  // to redirect agents to the polymorphic tool. PF3-06 mirrors PR #80's
-  // alias pattern for the rest of the polymorphic family.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-task-create",
-    {
-      title: "Create a task",
-      description: "Deprecated alias — prefer `lore-task` with `action: 'create'`.",
-      inputSchema: {
-        subject: z
-          .string()
-          .min(1)
-          .refine((s) => s.trim().length > 0, {
-            message: "subject must contain non-whitespace text.",
-          })
-          .describe("One-line task subject. Becomes the page title."),
-        description: optionalAbsenceString().describe(
-          'Free-form description / context. Becomes the page body (markdown supported). Empty string ("") leaves the body empty.'
-        ),
-        entity: optionalAbsenceString().describe(
-          "Normalized entity name the task is about (PR number, service, person). " +
-            "Defaults to the subject. `lore-ask(entity)` filters tasks by this column."
-        ),
-        state: z
-          .enum(TASK_STATES)
-          .optional()
-          .describe(
-            "Initial state (default `open`). Use `blocked` only when an external dependency exists; " +
-              "pair with `blockedBy` to name the blocker.",
-          ),
-        blockedBy: optionalAbsenceString().describe(
-          "Free-form blocker label (PR number, person, external service). " +
-            "Only meaningful when `state` is `blocked`."
-        ),
-        dueDate: dueDateSchema().describe(
-          "Due date (YYYY-MM-DD). Maps to the Review By column."
-        ),
-        affectsIds: z
-          .array(z.string())
-          .optional()
-          .describe(
-            "Memory IDs this task is sourced from / affects. Migrated tasks " +
-              "carry their original fact's `sourceMemoryId` here so provenance survives.",
-          ),
-        projectName: z
-          .string()
-          .optional()
-          .describe("Project name. Defaults to auto-detected project from cwd."),
-        projectNames: z
-          .array(z.string())
-          .optional()
-          .describe("Multiple project names for cross-project tasks."),
-        topicName: z
-          .string()
-          .optional()
-          .describe(
-            "Topic name within the project. Created automatically if it doesn't exist. " +
-              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical.",
-          ),
-        forceNewTopic: z
-          .boolean()
-          .optional()
-          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
-        confidence: z
-          .enum(CONFIDENCES)
-          .optional()
-          .describe("Confidence in the task's framing (default `certain`)."),
-        tags: tagsSchema.optional(),
-        keywords: keywordsSchema.optional(),
-        agent: z.string().optional().describe("Name of the AI agent creating this task"),
-        session: z.string().optional().describe("Session ID to group related saves"),
-      },
-    },
-    async (args) => handleCreate(services, args),
-  )
-
-  server.registerTool(
-    "lore-task-update",
-    {
-      title: "Update a task",
-      description: "Deprecated alias — prefer `lore-task` with `action: 'update'`.",
-      inputSchema: {
-        taskId: z.string().describe("The task ID to update"),
-        state: z
-          .enum(TASK_STATES)
-          .optional()
-          .describe(
-            "New state. Use `lore-task` with `action: 'close'` if you only need to mark a task done.",
-          ),
-        blockedBy: optionalAbsenceString().describe(
-          'New blocker label. Pass "" (empty string) to clear. Only meaningful when `state` is `blocked`.'
-        ),
-        entity: optionalAbsenceString().describe(
-          'New normalized entity name. Pass "" to clear.'
-        ),
-        dueDate: dueDateSchema().describe(
-          'New due date (YYYY-MM-DD). Pass "" to clear the date entirely. ' +
-            "Validated at the Zod boundary; non-empty values must match YYYY-MM-DD."
-        ),
-        subject: z
-          .string()
-          .refine((s) => s.trim().length > 0, {
-            message: "subject must contain non-whitespace text.",
-          })
-          .optional()
-          .describe("New subject (page title)."),
-        description: optionalAbsenceString().describe(
-          'New description (replaces page body). Pass "" to clear.'
-        ),
-        tags: tagsSchema.optional(),
-        keywords: keywordsSchema.optional(),
-      },
-    },
-    async (args) => handleUpdate(services, args),
-  )
-
-  server.registerTool(
-    "lore-task-close",
-    {
-      title: "Close a task",
-      description: "Deprecated alias — prefer `lore-task` with `action: 'close'`.",
-      inputSchema: {
-        taskId: z.string().describe("The task ID to close"),
-        state: z
-          .enum(CLOSE_STATES)
-          .optional()
-          .describe(
-            "Closing state — `done` (shipped, default) or `cancelled` (dropped without completion). " +
-              "Distinguished so metrics can separate the two.",
-          ),
-      },
-      annotations: { destructiveHint: true },
-    },
-    async ({ taskId, state }) => handleClose(services, { taskId, state }),
-  )
-
-  server.registerTool(
-    "lore-tasks",
-    {
-      title: "List tasks",
-      description: "Deprecated alias — prefer `lore-task` with `action: 'list'`.",
-      inputSchema: {
-        projectName: z
-          .string()
-          .optional()
-          .describe("Override the auto-detected project."),
-        entity: z
-          .string()
-          .optional()
-          .describe(
-            "Substring filter matched server-side against the Entity column. " +
-              "Use this to scope to a PR, service, or other subject.",
-          ),
-        state: z
-          .enum(TASK_STATES)
-          .optional()
-          .describe(
-            "Filter to a single state. Omit to see all active states (open, in-progress, blocked); " +
-              "pass `done` or `cancelled` for closed work.",
-          ),
-        dueBefore: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Only return tasks with a Review By date on or before this YYYY-MM-DD."),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .optional()
-          .describe(`Per-section cap (default ${DEFAULT_TASKS_LIMIT}). Capped at 200.`),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleList(services, args),
   )
 }

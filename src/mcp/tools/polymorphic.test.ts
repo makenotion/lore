@@ -10,8 +10,8 @@
  * 2. Each declared `action` value reaches the right underlying handler.
  * 3. Invalid `action` values produce a clean discriminated-union error.
  * 4. Missing required-per-action params produce a clean error.
- * 5. The old single-purpose tool names remain registered (deprecation
- *    aliases per the stability rule) and exhibit unchanged behavior.
+ * 5. The MCP tool surface is exactly the 8 polymorphic dispatchers — no
+ *    deprecated aliases remain after the 0.6.0 deprecation purge.
  *
  * Per-handler behavior is exercised by the existing per-file test suites
  * (`memory.test.ts`, `decisions.test.ts`, `knowledge.test.ts`,
@@ -227,15 +227,10 @@ function makeServices(opts: StubOpts = {}): unknown {
 // -------------------------------------------------------------------------
 
 describe("lore-project polymorphic dispatcher", () => {
-  it("registers the polymorphic tool plus both deprecated aliases", () => {
+  it("registers the polymorphic tool", () => {
     const mock = createMockServer()
     registerProjectTools(mock.server, makeServices() as never)
     expect(mock.has("lore-project")).toBe(true)
-    expect(mock.has("lore-list-projects")).toBe(true)
-    expect(mock.has("lore-get-project")).toBe(true)
-    // Deprecation pointer is in each old alias's description.
-    expect(mock.description("lore-list-projects").toLowerCase()).toContain("deprecated")
-    expect(mock.description("lore-get-project").toLowerCase()).toContain("deprecated")
   })
 
   it("dispatches action='list' to the list handler", async () => {
@@ -294,21 +289,10 @@ describe("lore-project polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("lore-memory polymorphic dispatcher", () => {
-  it("registers the polymorphic tool plus deprecated aliases", () => {
+  it("registers the polymorphic tool", () => {
     const mock = createMockServer()
     registerMemoryTools(mock.server, makeServices() as never)
     expect(mock.has("lore-memory")).toBe(true)
-    for (const alias of [
-      "lore-remember",
-      "lore-update",
-      "lore-forget",
-      "lore-expand",
-      "lore-recall",
-      "lore-search",
-    ]) {
-      expect(mock.has(alias)).toBe(true)
-      expect(mock.description(alias).toLowerCase()).toContain("deprecated")
-    }
   })
 
   it("dispatches action='archive' to the archive handler", async () => {
@@ -367,7 +351,7 @@ describe("lore-memory polymorphic dispatcher", () => {
     expect(extractText(result)).toContain("lore-memory")
   })
 
-  it("dispatches action='save' to the same handler as legacy lore-remember", async () => {
+  it("dispatches action='save' to memories.create", async () => {
     const memoriesCreate = vi.fn(async () => ({
       id: "m1",
       title: "T",
@@ -442,14 +426,10 @@ describe("lore-query polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("lore-fact polymorphic dispatcher", () => {
-  it("registers lore-fact plus deprecated learn/correct/extend aliases", () => {
+  it("registers lore-fact", () => {
     const mock = createMockServer()
     registerKnowledgeTools(mock.server, makeServices() as never)
     expect(mock.has("lore-fact")).toBe(true)
-    for (const alias of ["lore-learn", "lore-correct", "lore-extend"]) {
-      expect(mock.has(alias)).toBe(true)
-      expect(mock.description(alias).toLowerCase()).toContain("deprecated")
-    }
   })
 
   it("dispatches action='invalidate' to facts.invalidate", async () => {
@@ -522,21 +502,10 @@ describe("lore-fact polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("lore-decision polymorphic dispatcher", () => {
-  it("registers lore-decision plus all six deprecated aliases", () => {
+  it("registers lore-decision", () => {
     const mock = createMockServer()
     registerDecisionTools(mock.server, makeServices() as never)
     expect(mock.has("lore-decision")).toBe(true)
-    for (const alias of [
-      "lore-decide",
-      "lore-list-decisions",
-      "lore-get-decision",
-      "lore-decision-context",
-      "lore-supersede",
-      "lore-review-decision",
-    ]) {
-      expect(mock.has(alias)).toBe(true)
-      expect(mock.description(alias).toLowerCase()).toContain("deprecated")
-    }
   })
 
   it("dispatches action='supersede' atomically", async () => {
@@ -624,14 +593,10 @@ describe("lore-decision polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("lore-context polymorphic dispatcher", () => {
-  it("registers lore-context plus deprecated status/wake-up/digest aliases", () => {
+  it("registers lore-context", () => {
     const mock = createMockServer()
     registerContextTools(mock.server, makeServices() as never)
     expect(mock.has("lore-context")).toBe(true)
-    for (const alias of ["lore-status", "lore-wake-up", "lore-digest"]) {
-      expect(mock.has(alias)).toBe(true)
-      expect(mock.description(alias).toLowerCase()).toContain("deprecated")
-    }
   })
 
   it("dispatches action='status' to vault.stats", async () => {
@@ -662,12 +627,10 @@ describe("lore-context polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("lore-journal polymorphic dispatcher", () => {
-  it("registers lore-journal and the read-journal alias", () => {
+  it("registers lore-journal", () => {
     const mock = createMockServer()
     registerJournalTools(mock.server, makeServices() as never)
     expect(mock.has("lore-journal")).toBe(true)
-    expect(mock.has("lore-read-journal")).toBe(true)
-    expect(mock.description("lore-read-journal").toLowerCase()).toContain("deprecated")
   })
 
   it("defaults missing action to 'write' AND emits the once-per-process deprecation notice on stderr", async () => {
@@ -728,19 +691,10 @@ describe("lore-journal polymorphic dispatcher", () => {
 // -------------------------------------------------------------------------
 
 describe("lore-task polymorphic dispatcher", () => {
-  it("registers lore-task plus all four deprecated aliases", () => {
+  it("registers lore-task", () => {
     const mock = createMockServer()
     registerTaskTools(mock.server, makeServices() as never)
     expect(mock.has("lore-task")).toBe(true)
-    for (const alias of [
-      "lore-task-create",
-      "lore-task-update",
-      "lore-task-close",
-      "lore-tasks",
-    ]) {
-      expect(mock.has(alias)).toBe(true)
-      expect(mock.description(alias).toLowerCase()).toContain("deprecated")
-    }
   })
 
   it("dispatches action='create' to tasks.create with subject threading through", async () => {
@@ -900,11 +854,21 @@ describe("lore-task polymorphic dispatcher", () => {
 })
 
 // -------------------------------------------------------------------------
-// Tool surface count — the P3-01 + PF3-06 acceptance criterion
+// Tool surface count — the post-purge invariant
 // -------------------------------------------------------------------------
 
-describe("P3-01 tool surface", () => {
-  it("registers 8 polymorphic tools and 28 deprecated aliases", () => {
+describe("MCP tool surface", () => {
+  it("registers exactly the 8 polymorphic tools — zero aliases", () => {
+    // The 0.6.0 deprecation purge removed the 28 single-purpose aliases
+    // (24 from P3-01 + 4 from PF3-06). This assertion is the
+    // load-bearing guard against re-introduction. The rationale lives
+    // in `src/mcp/AGENTS.md` "Deprecation timeline (historical)":
+    // every alias's schema rendered into the agent-visible MCP
+    // capabilities config on every reconnecting session, so adding a
+    // new alias under any cover (e.g. "just for one transition") would
+    // re-introduce the prompt-budget drift this purge corrected. A
+    // legitimate new tool family should update the expected list here
+    // rather than route around the assertion.
     const mock = createMockServer()
     const services = makeServices() as never
     registerContextTools(mock.server, services)
@@ -916,10 +880,6 @@ describe("P3-01 tool surface", () => {
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
-    const allNames = mock.names()
-
-    // The eight polymorphic tools — seven from P3-01 plus `lore-task`
-    // added in PF3-06 to subsume the standalone task tools.
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -930,121 +890,17 @@ describe("P3-01 tool surface", () => {
       "lore-project",
       "lore-task",
     ]
-    for (const name of polymorphic) {
-      expect(allNames).toContain(name)
-    }
-    expect(polymorphic.length).toBe(8)
-
-    // The legacy aliases that must still be reachable per the stability
-    // rule. Note `lore-journal` is BOTH the new polymorphic name AND the
-    // legacy write-only name; it is counted once under the polymorphic set
-    // (the `action: 'write'` default preserves the legacy call shape).
-    const legacyAliases = [
-      "lore-status",
-      "lore-wake-up",
-      "lore-digest",
-      "lore-remember",
-      "lore-update",
-      "lore-forget",
-      "lore-expand",
-      "lore-recall",
-      "lore-search",
-      "lore-learn",
-      "lore-correct",
-      "lore-extend",
-      "lore-ask",
-      "lore-open-loops",
-      "lore-audit",
-      "lore-decide",
-      "lore-list-decisions",
-      "lore-get-decision",
-      "lore-decision-context",
-      "lore-supersede",
-      "lore-review-decision",
-      "lore-read-journal",
-      "lore-list-projects",
-      "lore-get-project",
-      // PF3-06 task-family aliases — the P3-02 standalone names kept for
-      // the deprecation window.
-      "lore-task-create",
-      "lore-task-update",
-      "lore-task-close",
-      "lore-tasks",
-    ]
-    for (const name of legacyAliases) {
-      expect(allNames).toContain(name)
-    }
-
-    // No overlap of polymorphic names and legacy aliases except `lore-journal`
-    // which is both the new dispatcher and the legacy write-only name.
-    const polymorphicSet = new Set(polymorphic)
-    for (const alias of legacyAliases) {
-      expect(polymorphicSet.has(alias)).toBe(false)
-    }
-  })
-
-  it("legacy aliases share descriptions short enough to measurably reduce per-session prompt overhead", () => {
-    const mock = createMockServer()
-    const services = makeServices() as never
-    registerContextTools(mock.server, services)
-    registerMemoryTools(mock.server, services)
-    registerQueryTools(mock.server, services)
-    registerKnowledgeTools(mock.server, services)
-    registerDecisionTools(mock.server, services)
-    registerJournalTools(mock.server, services)
-    registerProjectTools(mock.server, services)
-    registerTaskTools(mock.server, services)
-
-    // Every legacy alias's description must be a one-liner deprecation
-    // pointer. We assert a tight upper bound so a future PR cannot
-    // silently re-inflate them.
-    const legacyAliases = [
-      "lore-status",
-      "lore-wake-up",
-      "lore-digest",
-      "lore-remember",
-      "lore-update",
-      "lore-forget",
-      "lore-expand",
-      "lore-recall",
-      "lore-search",
-      "lore-learn",
-      "lore-correct",
-      "lore-extend",
-      "lore-ask",
-      "lore-open-loops",
-      "lore-audit",
-      "lore-decide",
-      "lore-list-decisions",
-      "lore-get-decision",
-      "lore-decision-context",
-      "lore-supersede",
-      "lore-review-decision",
-      "lore-read-journal",
-      "lore-list-projects",
-      "lore-get-project",
-      "lore-task-create",
-      "lore-task-update",
-      "lore-task-close",
-      "lore-tasks",
-    ]
-    const SHORT_DESCRIPTION_LIMIT = 120
-    for (const alias of legacyAliases) {
-      const desc = mock.description(alias)
-      expect(desc.length).toBeLessThanOrEqual(SHORT_DESCRIPTION_LIMIT)
-      expect(desc.toLowerCase()).toContain("deprecated")
-    }
+    expect(mock.names().sort()).toEqual([...polymorphic].sort())
   })
 
   // -----------------------------------------------------------------------
   // Polymorphic-tool prompt-economy budgets.
   //
-  // The phase's stated goal is "lower prompt tax for AI agents." The
-  // legacy-alias bound above guards the deprecated 24-tool half. These
-  // tests guard the polymorphic seven, which are the surface that
-  // actually sticks around. Without a ceiling, a future PR could quietly
-  // append an action's worth of bullets to a description and inflate
-  // every reconnecting session's prompt.
+  // The eight polymorphic tools are now the only registered surface, so
+  // these ceilings guard against a future PR quietly appending an
+  // action's worth of bullets to a description and re-inflating every
+  // reconnecting session's prompt — the same pressure that motivated
+  // the alias purge in the first place.
   //
   // Numbers are tuned to current usage with comfortable headroom:
   // ~25% above what's currently registered, so a real new action can

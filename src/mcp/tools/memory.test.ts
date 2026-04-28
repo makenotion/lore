@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
+import { registerQueryTools } from "./query.js"
 import type { Memory, Topic } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
@@ -68,6 +69,18 @@ function createMockServer() {
       if (!handler) throw new Error(`missing handler ${name}`)
       return handler
     },
+    /**
+     * Wrap a polymorphic dispatcher in a one-action shim so individual
+     * tests can call it with action-specific args alone. Equivalent to
+     * the prior alias-handler shape — the polymorphic dispatcher's
+     * discriminated union still validates the per-action schema.
+     */
+    getActionHandler(toolName: string, action: string) {
+      const handler = handlers.get(toolName)
+      if (!handler) throw new Error(`missing handler ${toolName}`)
+      return (args: Record<string, unknown>) =>
+        handler({ ...args, action } as never)
+    },
     getInputSchema(name: string): z.ZodObject<z.ZodRawShape> {
       const config = configs.get(name)
       if (!config?.inputSchema) throw new Error(`missing inputSchema for ${name}`)
@@ -98,7 +111,8 @@ describe("lore-remember session recording", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     await remember({
       title: "Saved",
@@ -131,7 +145,8 @@ describe("lore-remember session recording", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     await remember({ title: "No session", content: "body" } as never)
 
@@ -163,7 +178,8 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     await remember({
       title: "Wakeup hook crash diagnosis",
@@ -199,7 +215,8 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
       title: "Eval testing rollout",
@@ -233,7 +250,8 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
       title: "irrelevant",
@@ -282,7 +300,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
       title: "Wakeup hook swallows errors silently",
@@ -346,7 +365,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
       title: "Wakeup hook swallows errors silently",
@@ -399,7 +419,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
       title: "Replace auth middleware",
@@ -437,7 +458,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({
       title: "Wakeup hook swallows errors silently",
@@ -472,7 +494,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     await remember({ title: "Vault-wide note", content: "body" } as never)
 
@@ -506,7 +529,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({ title: "Same title", content: "body" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -532,7 +556,8 @@ describe("lore-remember near-duplicate probe", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const remember = mockServer.getHandler("lore-remember")
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
 
     const result = await remember({ title: "Some title", content: "body" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -561,7 +586,8 @@ describe("lore-recall topicName resolution", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     await recall({ topicName: "OAuth" } as never)
 
@@ -588,7 +614,8 @@ describe("lore-recall topicName resolution", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({ topicName: "NonExistent" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -611,7 +638,8 @@ describe("lore-recall topicName resolution", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     await recall({} as never)
 
@@ -639,7 +667,8 @@ describe("lore-recall projectName resolution", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({ projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -662,7 +691,8 @@ describe("lore-recall projectName resolution", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({
       projectName: "Typo",
@@ -694,7 +724,8 @@ describe("lore-recall cursor pagination", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({} as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -716,7 +747,8 @@ describe("lore-recall cursor pagination", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({} as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -737,7 +769,8 @@ describe("lore-recall cursor pagination", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     await recall({ startCursor: "resume-here" } as never)
 
@@ -764,7 +797,8 @@ describe("lore-recall cursor pagination", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({} as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -790,7 +824,8 @@ describe("lore-search projectName resolution", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     const result = await search({ query: "anything", projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -823,7 +858,8 @@ describe("lore-recall content-off default", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     await recall({ limit: 10 } as never)
 
@@ -849,7 +885,8 @@ describe("lore-recall content-off default", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({} as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -874,7 +911,8 @@ describe("lore-recall content-off default", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({ includeContent: true } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -910,7 +948,8 @@ describe("lore-recall tag rendering", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({} as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -934,7 +973,8 @@ describe("lore-recall tag rendering", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const recall = mockServer.getHandler("lore-recall")
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
 
     const result = await recall({} as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -958,16 +998,18 @@ describe("lore-recall tag rendering", () => {
     })
 
     const recallServer = createMockServer()
-    registerMemoryTools(recallServer.server, {
+    const recallServices = {
       topics: { findByName: vi.fn() },
       memories: { list: vi.fn().mockResolvedValue({ items: [tagged] }) },
       projects: { findByName: vi.fn() },
       context: { project: null },
-    } as never)
-    const recall = recallServer.getHandler("lore-recall")
+    }
+    registerMemoryTools(recallServer.server, recallServices as never)
+    registerQueryTools(recallServer.server, recallServices as never)
+    const recall = recallServer.getActionHandler("lore-query", "recall")
 
     const searchServer = createMockServer()
-    registerMemoryTools(searchServer.server, {
+    const searchServices = {
       projects: { findByName: vi.fn() },
       topics: { findByName: vi.fn() },
       memories: {
@@ -975,8 +1017,10 @@ describe("lore-recall tag rendering", () => {
         list: vi.fn(),
       },
       context: { project: null },
-    } as never)
-    const search = searchServer.getHandler("lore-search")
+    }
+    registerMemoryTools(searchServer.server, searchServices as never)
+    registerQueryTools(searchServer.server, searchServices as never)
+    const search = searchServer.getActionHandler("lore-query", "search")
 
     const recallResult = await recall({} as never)
     const searchResult = await search({ query: "anything" } as never)
@@ -1009,7 +1053,8 @@ describe("lore-search content-off default", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     await search({ query: "anything" } as never)
 
@@ -1032,7 +1077,8 @@ describe("lore-search content-off default", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     const result = await search({ query: "anything" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1056,7 +1102,8 @@ describe("lore-search content-off default", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     const result = await search({ query: "anything", includeContent: true } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1087,7 +1134,8 @@ describe("lore-search mode parameter", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     await search({ query: "q" } as never)
 
@@ -1111,7 +1159,8 @@ describe("lore-search mode parameter", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     await search({
       query: "PR-25650",
@@ -1146,7 +1195,8 @@ describe("lore-search mode parameter", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     await search({ query: "q", limit: 5, mode: "semantic" } as never)
     expect(memoriesSearch).toHaveBeenLastCalledWith(
@@ -1176,7 +1226,8 @@ describe("lore-search mode parameter", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     await search({ query: "q", topicName: "GraphQL" } as never)
 
@@ -1198,7 +1249,8 @@ describe("lore-search mode parameter", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const search = mockServer.getHandler("lore-search")
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
 
     const result = await search({ query: "q", topicName: "Nope" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1239,7 +1291,8 @@ describe("lore-expand", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const expand = mockServer.getHandler("lore-expand")
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
 
     const result = await expand({ ids: [ID_A, ID_B, ID_C] } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1254,18 +1307,24 @@ describe("lore-expand", () => {
     expect(getById).toHaveBeenCalledTimes(3)
   })
 
-  it("enforces the 20-ID cap at the schema layer", async () => {
+  it("enforces the 20-ID cap at the dispatcher's discriminated union", async () => {
+    // Validation lives in the polymorphic `lore-memory` dispatcher's
+    // discriminated union (`ids: array(uuid()).min(1).max(20)` on the
+    // `expand` branch). Drive the handler so the test follows the same
+    // path production callers do — schema-only `safeParse` would miss
+    // a refactor that moved the cap onto a runtime guard.
     const mockServer = createMockServer()
     const services = {
       projects: { findByName: vi.fn() },
       topics: { findByName: vi.fn() },
-      memories: { getById: vi.fn() },
+      memories: { getById: vi.fn().mockResolvedValue(makeMemory("m")) },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const schema = mockServer.getInputSchema("lore-expand")
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
 
     // Build 21 distinct valid v4 UUIDs to push past the cap. Format follows
     // Zod's UUID regex: 8-4-4-4-12 with version 4 and variant 8–b.
@@ -1275,20 +1334,23 @@ describe("lore-expand", () => {
       return `${hex}${hex}-${hex}-4${tail3}-8${tail3}-${hex}${hex}${hex}`
     })
 
-    const oversized = schema.safeParse({ ids: tooMany })
-    expect(oversized.success).toBe(false)
+    const isErr = (r: unknown): boolean =>
+      (r as { isError?: boolean }).isError === true
 
-    // Empty input is also rejected — min(1) guards against no-op calls.
-    const empty = schema.safeParse({ ids: [] })
-    expect(empty.success).toBe(false)
+    const oversized = await expand({ ids: tooMany })
+    expect(isErr(oversized)).toBe(true)
 
-    // Boundary: exactly 20 IDs parses cleanly.
-    const justRight = schema.safeParse({ ids: tooMany.slice(0, 20) })
-    expect(justRight.success).toBe(true)
+    // Empty input is rejected — min(1) guards against no-op calls.
+    const empty = await expand({ ids: [] })
+    expect(isErr(empty)).toBe(true)
+
+    // Boundary: exactly 20 IDs round-trips.
+    const justRight = await expand({ ids: tooMany.slice(0, 20) })
+    expect(isErr(justRight)).toBe(false)
 
     // Non-UUID strings fail the per-element z.string().uuid() guard.
-    const badShape = schema.safeParse({ ids: ["not-a-uuid"] })
-    expect(badShape.success).toBe(false)
+    const badShape = await expand({ ids: ["not-a-uuid"] })
+    expect(isErr(badShape)).toBe(true)
   })
 
   it("parallel-dispatches getById — every fetch starts before any returns", async () => {
@@ -1318,7 +1380,8 @@ describe("lore-expand", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const expand = mockServer.getHandler("lore-expand")
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
 
     const pending = expand({ ids: [ID_A, ID_B, ID_C] } as never)
     // Let the microtask queue flush so any already-kicked-off fetches land
@@ -1358,7 +1421,8 @@ describe("lore-expand", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const expand = mockServer.getHandler("lore-expand")
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
 
     const result = await expand({ ids: [ID_A, ID_B, ID_C] } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1390,7 +1454,8 @@ describe("lore-expand", () => {
     }
 
     registerMemoryTools(mockServer.server, services as never)
-    const expand = mockServer.getHandler("lore-expand")
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
 
     const result = await expand({ ids: [ID_A, ID_A, ID_B] } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text

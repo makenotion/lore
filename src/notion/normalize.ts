@@ -92,7 +92,7 @@ export function computeFactDedupKey(input: FactTripleInput): string {
  * dedup-key fold and reintroduce the very fragmentation P3-03 closes. A
  * future Part B (Entities DB) replaces this with a relation-based join,
  * but the rich_text key is sufficient for the substring-contains queries
- * `lore-ask` and `queryByEntity` issue today.
+ * `lore-query action='ask'` and `queryByEntity` issue today.
  *
  * Stored values are bounded by `Subject` itself (Notion title cells cap
  * around 2000 chars), so we don't hash here — the column needs to support

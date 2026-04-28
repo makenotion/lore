@@ -27,7 +27,7 @@ type ToolResult = {
 }
 
 /**
- * Trigram threshold for the `lore-decide` near-duplicate probe. Lower
+ * Trigram threshold for the `lore-decision action='create'` near-duplicate probe. Lower
  * than the memory threshold because decisions carry more ceremony and
  * redundant decisions are more costly than redundant notes.
  */
@@ -161,7 +161,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
           threshold: DECISION_NEAR_DUPLICATE_THRESHOLD,
           limit: DECISION_POOL_LIMIT,
           onError: (err) =>
-            debugLogPartialFailures("lore-decide", [
+            debugLogPartialFailures("lore-decision", [
               { rootId: "near-duplicate-probe", error: err },
             ]),
         })
@@ -445,8 +445,8 @@ async function handleContext(
 
     // PF3-01 — resolve the entity name to a canonical row first so the
     // fact lookup can ride the relation join. This brings
-    // `lore-decision-context` to parity with `lore-ask` (issue 0.6.0/03):
-    // both surfaces should agree on which decisions govern a given
+    // `lore-decision action='context'` to parity with `lore-query action='ask'`
+    // (issue 0.6.0/03): both surfaces should agree on which decisions govern a given
     // canonical entity, regardless of whether the caller typed the name
     // or an alias. Strict mode (no auto-create): the read path must not
     // mint canonical rows just by looking up an unknown entity.
@@ -857,180 +857,5 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           return handleReview(services, parsed.data)
       }
     },
-  )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md.
-  //
-  // Deprecated aliases — preserved through the 0.5.0 transition window.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-decide",
-    {
-      title: "Record a decision",
-      description: "Deprecated alias — prefer `lore-decision` with `action: 'create'`.",
-      inputSchema: {
-        decision: z.string().describe("One-line decision statement (becomes the title)"),
-        rationale: z.string().describe("Prose explaining the reasoning (becomes the page body)"),
-        projectName: z
-          .string()
-          .optional()
-          .describe("Project name. Defaults to auto-detected project from cwd."),
-        projectNames: z
-          .array(z.string())
-          .optional()
-          .describe("Multiple project names for cross-project decisions"),
-        topicName: z
-          .string()
-          .optional()
-          .describe(
-            "Topic name within the project (auto-created if it doesn't exist). Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical.",
-          ),
-        forceNewTopic: z
-          .boolean()
-          .optional()
-          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
-        status: z
-          .enum(DECISION_STATUSES)
-          .optional()
-          .describe("Lifecycle state (default: accepted)"),
-        confidence: z
-          .enum(CONFIDENCES)
-          .optional()
-          .describe("Confidence in the decision (default: certain)"),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Review-by date YYYY-MM-DD."),
-        decidedAt: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Canonical decision date YYYY-MM-DD."),
-        supersedesIds: z
-          .array(z.string())
-          .optional()
-          .describe("Decision IDs this decision replaces."),
-        affects: z
-          .array(z.string())
-          .optional()
-          .describe("Entity names affected — auto-creates `decided_by` facts."),
-        alternatives: z
-          .string()
-          .optional()
-          .describe("Alternatives considered (≤2000 char)"),
-        consequences: z
-          .string()
-          .optional()
-          .describe("Consequences accepted (≤2000 char)"),
-        tags: tagsSchema.optional(),
-        keywords: keywordsSchema.optional(),
-        agent: z.string().optional().describe("Name of the AI agent recording this decision"),
-        session: z.string().optional().describe("Session ID to group related records"),
-      },
-    },
-    async (args) => handleCreate(services, args),
-  )
-
-  server.registerTool(
-    "lore-list-decisions",
-    {
-      title: "List decisions",
-      description: "Deprecated alias — prefer `lore-decision` with `action: 'list'`.",
-      inputSchema: {
-        projectName: z.string().optional().describe("Scope to a project"),
-        status: z.enum(DECISION_STATUSES).optional().describe("Filter by lifecycle state"),
-        reviewBefore: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Only return decisions with `Review By` on or before this date"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(100)
-          .optional()
-          .describe("Max results per page (default 20, max 100)"),
-        startCursor: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("Opaque cursor from a previous response's `nextCursor`."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleList(services, args),
-  )
-
-  server.registerTool(
-    "lore-get-decision",
-    {
-      title: "Get a decision",
-      description: "Deprecated alias — prefer `lore-decision` with `action: 'get'`.",
-      inputSchema: {
-        decisionId: z.string().describe("The decision's page ID"),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async ({ decisionId }) => handleGet(services, { decisionId }),
-  )
-
-  const decisionContextLegacyName = "lore-decision-context"
-  server.registerTool(
-    decisionContextLegacyName,
-    {
-      title: "Find decisions governing an entity",
-      description: "Deprecated alias — prefer `lore-decision` with `action: 'context'`.",
-      inputSchema: {
-        entity: z
-          .string()
-          .describe(
-            "The entity to look up. Resolves through canonical entity registry (aliases + case-insensitive name) when available; matches `decided_by` facts whose Subject (preferred, via canonical relation) or Object text contains the input. The Object-side text clause is structurally always present — for `decided_by` facts the Object stores a decision UUID, so it rarely returns extra hits in practice.",
-          ),
-        projectName: z.string().optional().describe("Scope to a project"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(50)
-          .optional()
-          .describe("Max decisions to return (default 10)"),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleContext(services, args, decisionContextLegacyName),
-  )
-
-  server.registerTool(
-    "lore-supersede",
-    {
-      title: "Supersede a decision",
-      description: "Deprecated alias — prefer `lore-decision` with `action: 'supersede'`.",
-      inputSchema: {
-        newDecisionId: z.string().describe("ID of the new decision that takes precedence"),
-        oldDecisionId: z.string().describe("ID of the old decision being replaced"),
-      },
-    },
-    async (args) => handleSupersede(services, args),
-  )
-
-  server.registerTool(
-    "lore-review-decision",
-    {
-      title: "Mark a decision reviewed",
-      description: "Deprecated alias — prefer `lore-decision` with `action: 'review'`.",
-      inputSchema: {
-        decisionId: z.string().describe("The decision's page ID"),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("New review date (YYYY-MM-DD). Default: +90 days from today."),
-      },
-    },
-    async (args) => handleReview(services, args),
   )
 }

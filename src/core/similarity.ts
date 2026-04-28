@@ -2,8 +2,9 @@
  * Text-and-tag similarity helpers for the near-duplicate probe.
  *
  * Pure functions, no Notion knowledge. Used by the write paths in
- * `lore-remember` and `lore-decide` to surface candidate duplicates
- * alongside freshly-saved rows — the probe is advisory, not blocking.
+ * `lore-memory action='save'` and `lore-decision action='create'` to
+ * surface candidate duplicates alongside freshly-saved rows — the
+ * probe is advisory, not blocking.
  *
  * The design premise: cheap trigram Jaccard on the normalized title is
  * enough signal to flag duplicates that differ only in wording

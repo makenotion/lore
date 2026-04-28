@@ -75,7 +75,7 @@ type ListTrackingOpts = {
   /**
    * Substring matched against both `Subject` (title) and `Object` (rich_text)
    * via `or: [{contains}, {contains}]`. Scoping the filter server-side keeps
-   * entity-filtered `lore-open-loops` cheap on vaults where tracking facts
+   * entity-filtered `lore-query action='open-loops'` cheap on vaults where tracking facts
    * outnumber the caller's interest (the Mail vault has 271 open loops; a
    * PR-specific slice typically touches under 20).
    */
@@ -93,7 +93,7 @@ type ListTrackingOpts = {
    * Cap total rows fetched across pages. `undefined` means "fetch all" and
    * paginates until the cursor is exhausted — unlike `listRecent`, which is
    * single-page by design for the wake-up hot path. Callers wanting every
-   * tracking row (e.g. `lore-open-loops` with `all: true`) pass `undefined`.
+   * tracking row (e.g. `lore-query action='open-loops'` with `all: true`) pass `undefined`.
    */
   limit?: number
   includeInvalidated?: boolean
@@ -214,8 +214,8 @@ function predicateFilterClause(
  * `enriched` lists the metadata fields that were merged onto the existing row
  * on dedup hit — projects union'd, source memory linked, review extended.
  * Empty when the probe missed (fresh row) or hit with nothing new to add.
- * Exposed so `lore-learn` can tell the agent "this wasn't a no-op, we
- * attached your session to the pre-existing fact."
+ * Exposed so `lore-fact action='create'` can tell the agent "this
+ * wasn't a no-op, we attached your session to the pre-existing fact."
  */
 export interface CreateFactResult {
   fact: Fact
@@ -224,7 +224,7 @@ export interface CreateFactResult {
 }
 
 /**
- * On a pre-migration vault every `lore-learn` probe fails with the same
+ * On a pre-migration vault every `lore-fact action='create'` probe fails with the same
  * "DedupKey column missing" error. Autosave fires every 5 messages, so
  * logging per-probe turns the MCP server's stderr into a firehose. The
  * fix is guaranteed by `lore migrate`, so we warn once per process and
@@ -377,14 +377,14 @@ export class FactService {
    *   orphaned (first-writer-wins — preserves the "no orphan facts"
    *   contract without clobbering an earlier provenance link).
    *
-   * The set of mutations is returned in `enriched` so `lore-learn` can
-   * surface them; "deduped" without enrichment means "matched, nothing new
-   * to merge."
+   * The set of mutations is returned in `enriched` so
+   * `lore-fact action='create'` can surface them; "deduped" without
+   * enrichment means "matched, nothing new to merge."
    *
    * On miss — or on probe failure — falls through to a plain create with
    * the dedup key attached. Cost: one extra `dataSources.query` per write
-   * on cold miss, which is cheaper than the eventual `lore-ask` /
-   * wake-up tax from duplicates.
+   * on cold miss, which is cheaper than the eventual
+   * `lore-query action='ask'` / wake-up tax from duplicates.
    *
    * Concurrency: Notion has no unique-index or conditional-write primitive,
    * so two concurrent writers with the same triple can both see an empty
@@ -883,7 +883,7 @@ export class FactService {
    * substring that must match either `Subject` or `Object`.
    *
    * Unlike `listRecent` — which is single-page for the wake-up hot path —
-   * this helper paginates. `lore-open-loops` needs to bucket results into
+   * this helper paginates. `lore-query action='open-loops'` needs to bucket results into
    * Overdue vs Active and rank each bucket independently, so a single
    * Notion page ordered by `Review By` asc would under-fill Active on
    * vaults dominated by overdue rows. Fetching the full slice up-front
@@ -898,7 +898,7 @@ export class FactService {
    *
    * Sort order: `Review By` ascending, `created_time` descending. The
    * tool layer always re-ranks inside each bucket, so on the happy path
-   * (full result set fits in one `lore-open-loops` call) this order is
+   * (full result set fits in one `lore-query action='open-loops'` call) this order is
    * discarded. Its purpose is purely a safety-cap bias: if the 100-page
    * safety valve ever clips a pathological walk, the truncation lands
    * on rows with no review date rather than on the most-overdue ones
@@ -1086,7 +1086,7 @@ export class FactService {
       // Hot-path: relation hits + un-backfilled substring hits, run in
       // parallel so wall-clock is one round-trip, not two. Predicate
       // filter applies server-side on both branches so callers like
-      // `lore-decision-context` (predicates: ["decided_by"]) don't
+      // `lore-decision action='context'` (predicates: ["decided_by"]) don't
       // over-fetch unrelated facts touching the same entity. The limit
       // is forwarded into both branches so each underlying query clamps
       // its `page_size` and stops after `limit` rows; the post-dedup

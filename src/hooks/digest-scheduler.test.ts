@@ -254,11 +254,10 @@ describe("fireDigestIfStale", () => {
     const args = calls.spawn.mock.calls[0]!
     const options = args[3] as { logLabel?: string; allowedTools?: string }
     expect(options.logLabel).toBe("digest")
-    // P3-01: the digest allowlist now includes both the polymorphic
-    // `lore-memory` and the legacy `lore-remember` alias for the
-    // deprecation window. The single-memory write the digest synthesizer
-    // performs can land via either name; both share the same handler.
-    expect(options.allowedTools).toBe("mcp__lore__lore-memory,mcp__lore__lore-remember")
+    // After the 0.6.0 alias purge the digest allowlist contains only
+    // the polymorphic `lore-memory` — the synthesizer prompt teaches
+    // `lore-memory action='save'` and the legacy alias is gone.
+    expect(options.allowedTools).toBe("mcp__lore__lore-memory")
   })
 
   it("passes a digest-prefixed lock key so global cap respects per-project debounce without colliding with real session ids", async () => {

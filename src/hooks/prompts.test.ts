@@ -73,7 +73,7 @@ describe("buildSessionEndPrompt", () => {
 
   it("redirects open-loop work from lore-fact tracking predicates to lore-task", () => {
     // P3-02 made `lore-fact` reject `needs_action` / `waiting_on` /
-    // `blocked_by` predicates with a redirect to `lore-task-create`.
+    // `blocked_by` predicates with a redirect to `lore-task action='create'`.
     // PF3-06 brings the polymorphic surface in line, so the autosave
     // prompt teaches `lore-task action='create'` for open work and
     // names that the legacy tracking predicates are no longer accepted
@@ -145,9 +145,8 @@ describe("buildDigestPrompt", () => {
   it('enforces source: "digest" on the lore-memory action=save call', () => {
     const prompt = buildDigestPrompt(rawData, "Mail", "2026-04-24", null)
     expect(prompt).toContain(`source: "digest"`)
-    // P3-01: prompt teaches the polymorphic surface; the digest synthesizer
-    // is told to call `lore-memory` action='save', not the deprecated
-    // `lore-remember` alias.
+    // The digest synthesizer is told to call `lore-memory action='save'`
+    // — the canonical polymorphic surface.
     expect(prompt).toContain("lore-memory")
   })
 
@@ -183,9 +182,6 @@ describe("buildDigestPrompt", () => {
 
   it("forbids fanning out to lore-fact / lore-decision — the digest is one memory", () => {
     const prompt = buildDigestPrompt(rawData, "Mail", "2026-04-24", null)
-    // P3-01: ban-list updated to the polymorphic names that the prompt
-    // teaches; the legacy `lore-learn` / `lore-decide` aliases continue
-    // to work via the shared handlers but are not the surface taught here.
     expect(prompt).toContain("Do not call `lore-fact` or `lore-decision`")
   })
 

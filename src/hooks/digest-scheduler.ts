@@ -158,7 +158,7 @@ export async function fireDigestIfStale(
     // Trade-off: a project with sustained-low-volume activity (e.g. 1–2
     // routine memories per week, all below the digest-worthy bar) can drift
     // here every session-end without ever producing a `source: "digest"`
-    // memory, leaving `lore-wake-up`'s fast path dark for that project.
+    // memory, leaving `lore-context action='wake-up'`'s fast path dark for that project.
     // The explicit escape is `lore digest --since YYYY-MM-DD`, which
     // widens the window past the per-project 7-day debounce.
     await touch(state.configRoot, project.name)

@@ -1,6 +1,7 @@
 /**
- * Digest data gathering — shared between the `lore-digest` MCP tool, the
- * `lore digest` CLI command, and the session-end background synthesizer.
+ * Digest data gathering — shared between the
+ * `lore-context action='digest'` MCP tool, the `lore digest` CLI
+ * command, and the session-end background synthesizer.
  *
  * Produces a project-scoped, markdown-formatted snapshot of recent activity
  * (memories grouped by source, tracking facts as open loops, and the
@@ -17,8 +18,9 @@ import { TRACKING_PREDICATES } from "../types.js"
 
 /**
  * Default staleness window matching `DEFAULT_DIGEST_FRESHNESS_DAYS` in
- * `wakeup.ts`: once a digest ages past this many days, `lore-wake-up` stops
- * surfacing it on the fast path. The session-end auto-digest reuses the same
+ * `wakeup.ts`: once a digest ages past this many days,
+ * `lore-context action='wake-up'` stops surfacing it on the fast path.
+ * The session-end auto-digest reuses the same
  * threshold — re-synthesize just in time for the next wake-up to pick it up.
  */
 export const DIGEST_STALE_DAYS = 7

@@ -28,10 +28,10 @@ type ToolResult = {
 }
 
 /**
- * Trigram threshold for the `lore-remember` near-duplicate probe. Matches
- * the P2-03 spec's initial guess — tune after rollout if we see false
- * positives flooding the response footer on legitimately-distinct
- * memories sharing boilerplate title wording.
+ * Trigram threshold for the `lore-memory action='save'` near-duplicate
+ * probe. Matches the P2-03 spec's initial guess — tune after rollout if
+ * we see false positives flooding the response footer on legitimately-
+ * distinct memories sharing boilerplate title wording.
  */
 const MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7
 
@@ -88,9 +88,8 @@ const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 const EXPAND_MAX_IDS = 20
 
 // -------------------------------------------------------------------------
-// Handlers — extracted so the polymorphic `lore-memory` tool and the
-// deprecated `lore-remember` / `lore-update` / `lore-forget` / `lore-expand`
-// aliases share single implementations.
+// Handlers — one per `lore-memory` action (save | update | archive |
+// expand). Routed by the polymorphic dispatcher's discriminated union.
 // -------------------------------------------------------------------------
 
 interface SaveArgs {
@@ -140,7 +139,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           threshold: MEMORY_NEAR_DUPLICATE_THRESHOLD,
           limit: NEAR_DUPLICATE_POOL_LIMIT,
           onError: (err) =>
-            debugLogPartialFailures("lore-remember", [
+            debugLogPartialFailures("lore-memory", [
               { rootId: "near-duplicate-probe", error: err },
             ]),
         })
@@ -321,7 +320,7 @@ export async function handleExpand(
     )
     if (failures.length > 0) {
       debugLogPartialFailures(
-        "lore-expand",
+        "lore-memory",
         failures.map(({ key, error }) => ({ rootId: key, error })),
       )
     }
@@ -766,252 +765,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       }
     },
   )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md.
-  //
-  // Deprecated aliases — preserved through the 0.5.0 transition window.
-  // Schemas are kept intact so existing callers do not break; descriptions
-  // shrink to redirect agents to the polymorphic tool. Recall/search live
-  // under `lore-query` per the P3-01 plan, but legacy `lore-recall` /
-  // `lore-search` aliases are kept here alongside the rest of the memory
-  // family to mirror the prior file layout.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-remember",
-    {
-      title: "Save a memory",
-      description: "Deprecated alias — prefer `lore-memory` with `action: 'save'`.",
-      inputSchema: {
-        title: z.string().describe("A short descriptive title for this memory"),
-        content: z.string().describe("The full content to remember (markdown supported)"),
-        projectName: z
-          .string()
-          .optional()
-          .describe("Project name. Defaults to auto-detected project from cwd."),
-        projectNames: z
-          .array(z.string())
-          .optional()
-          .describe("Multiple project names for cross-project memories."),
-        topicName: z
-          .string()
-          .optional()
-          .describe("Topic name within the project. Created automatically if it doesn't exist. Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical."),
-        forceNewTopic: z
-          .boolean()
-          .optional()
-          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
-        source: z
-          .enum(SOURCES)
-          .optional()
-          .describe("How this memory was captured (default: conversation)"),
-        kind: z
-          .enum(KINDS)
-          .optional()
-          .describe("Memory kind (default: note). Use `lore-decision` for decisions."),
-        status: z.enum(STATUSES).optional().describe("Lifecycle state (default: informational)."),
-        confidence: z.enum(CONFIDENCES).optional().describe("Confidence level (default: certain)"),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Review-by date YYYY-MM-DD."),
-        decidedAt: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Canonical date this content was decided/captured (YYYY-MM-DD)."),
-        tags: tagsSchema.optional(),
-        keywords: keywordsSchema.optional(),
-        agent: z.string().optional().describe("Name of the AI agent saving this memory"),
-        session: z.string().optional().describe("Session ID to group related memories"),
-      },
-    },
-    async (args) => handleSave(services, args),
-  )
-
-  server.registerTool(
-    "lore-update",
-    {
-      title: "Update a memory",
-      description: "Deprecated alias — prefer `lore-memory` with `action: 'update'`.",
-      inputSchema: {
-        memoryId: z.string().describe("The memory ID to update"),
-        title: z.string().optional().describe("New title"),
-        content: z.string().optional().describe("New content (replaces existing)"),
-        tags: tagsSchema.optional(),
-        keywords: keywordsSchema.optional(),
-        projectName: z.string().optional().describe("Move to a different project"),
-        projectNames: z
-          .array(z.string())
-          .optional()
-          .describe("Set multiple project associations"),
-        topicName: z
-          .string()
-          .optional()
-          .describe(
-            "Move to a different topic. Normalized-equivalent variants collapse onto the existing canonical.",
-          ),
-        forceNewTopic: z
-          .boolean()
-          .optional()
-          .describe("Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."),
-        kind: z.enum(KINDS).optional().describe("New memory kind"),
-        status: z.enum(STATUSES).optional().describe("New lifecycle status"),
-        confidence: z.enum(CONFIDENCES).optional().describe("New confidence level"),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("New review-by date YYYY-MM-DD."),
-        decidedAt: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("New canonical decision date YYYY-MM-DD."),
-        supersedesIds: z
-          .array(z.string())
-          .optional()
-          .describe("Replace the Supersedes relation with these decision IDs"),
-        affectsIds: z
-          .array(z.string())
-          .optional()
-          .describe("Replace the Affects relation with these memory IDs"),
-        alternatives: z.string().optional().describe("Alternatives text (replaces existing)"),
-        consequences: z.string().optional().describe("Consequences text (replaces existing)"),
-      },
-    },
-    async (args) => handleUpdate(services, args),
-  )
-
-  server.registerTool(
-    "lore-forget",
-    {
-      title: "Archive a memory",
-      description: "Deprecated alias — prefer `lore-memory` with `action: 'archive'`.",
-      inputSchema: {
-        memoryId: z.string().describe("The memory ID to archive"),
-      },
-      annotations: { destructiveHint: true },
-    },
-    async ({ memoryId }) => handleArchive(services, { memoryId }),
-  )
-
-  server.registerTool(
-    "lore-expand",
-    {
-      title: "Fetch memory bodies by ID",
-      description: "Deprecated alias — prefer `lore-memory` with `action: 'expand'`.",
-      inputSchema: {
-        ids: z
-          .array(z.string().uuid())
-          .min(1)
-          .max(EXPAND_MAX_IDS)
-          .describe(
-            `Memory page IDs to hydrate (1-${EXPAND_MAX_IDS}). UUIDs as returned by recall/search/wake-up.`,
-          ),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async ({ ids }) => handleExpand(services, { ids }),
-  )
-
-  server.registerTool(
-    "lore-recall",
-    {
-      title: "Recall recent memories",
-      description: "Deprecated alias — prefer `lore-query` with `action: 'recall'`.",
-      inputSchema: {
-        projectName: z.string().optional().describe("Filter by project name"),
-        topicName: z.string().optional().describe("Filter by topic name"),
-        source: z.enum(SOURCES).optional().describe("Filter by source type"),
-        kind: z.enum(KINDS).optional().describe("Filter by memory kind"),
-        status: z.enum(STATUSES).optional().describe("Filter by lifecycle status"),
-        reviewBefore: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Only return memories with `Review By` on or before this date"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(100)
-          .optional()
-          .describe("Max results per page (default 10, max 100)"),
-        startCursor: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("Opaque cursor from a previous response's `nextCursor`."),
-        includeContent: z
-          .boolean()
-          .optional()
-          .describe("Include each memory's markdown body (default false)."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleRecall(services, args),
-  )
-
-  server.registerTool(
-    "lore-search",
-    {
-      title: "Search memories",
-      description: "Deprecated alias — prefer `lore-query` with `action: 'search'`.",
-      inputSchema: {
-        query: z.string().describe("Natural language or substring search query"),
-        projectName: z.string().optional().describe("Scope search to a specific project"),
-        topicName: z
-          .string()
-          .optional()
-          .describe(
-            "Scope to a topic. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
-          ),
-        tags: z.array(z.string()).optional().describe("Filter by tags (matches any)"),
-        kind: z
-          .enum(KINDS)
-          .optional()
-          .describe(
-            "Filter by memory kind. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
-          ),
-        status: z
-          .enum(STATUSES)
-          .optional()
-          .describe(
-            "Filter by lifecycle status. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
-          ),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(50)
-          .optional()
-          .describe("Max results (default 10)"),
-        mode: z
-          .enum(["contains", "semantic", "hybrid"])
-          .optional()
-          .describe(
-            "Search mode (default `hybrid`). `contains` for DS-scoped substring matching with " +
-              "server-side property filters; `semantic` for workspace-wide vector relevance over titles AND bodies; " +
-              "`hybrid` fires both in parallel and uses contains alone when it saturates (≥ 3 hits) " +
-              "or merges in the semantic rows when it doesn't.",
-          ),
-        includeContent: z
-          .boolean()
-          .optional()
-          .describe("Include each memory's markdown body (default false)."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleSearch(services, args),
-  )
 }
 
 /**
- * Render one hydrated memory for `lore-expand` output. Mirrors the meta-line
- * shape used by `lore-recall` / `lore-search` so agents scanning across
+ * Render one hydrated memory for `lore-memory action='expand'` output.
+ * Mirrors the meta-line shape used by `lore-query action='recall'` /
+ * `lore-query action='search'` so agents scanning across
  * triage listings and expanded bodies see a uniform header line. Empty
  * `content` still renders the header (the memory exists; the body is just
  * blank) rather than collapsing the row.

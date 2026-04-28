@@ -4,10 +4,11 @@
  * Walks every live tracking-predicate fact (`needs_action`, `waiting_on`,
  * `blocked_by`), creates a task memory whose Title is the fact Subject
  * and whose body is the fact Object, then invalidates the source fact so
- * it stops surfacing in `lore-open-loops` / `lore-ask`'s Tracking bucket.
+ * it stops surfacing in `lore-query action='open-loops'` /
+ * `lore-query action='ask'`'s Tracking bucket.
  *
  * Preserves provenance: the original fact's `sourceMemoryId` becomes the
- * task's `affectsIds` so `lore-ask(entity)` on the task surfaces the
+ * task's `affectsIds` so `lore-query action='ask'` on the task surfaces the
  * memory that motivated it. The original fact's `Valid From` becomes the
  * task's `decidedAt` (the canonical capture date) and the fact's
  * `Review By` becomes the task's `dueDate` so overdue rows stay overdue
@@ -46,8 +47,8 @@
  * migration to a vault with hundreds of tracking facts, exercise the
  * heal path end-to-end on a low-stakes project once:
  *
- *   1. Pick a project with ≤ 5 tracking facts (use `lore-open-loops`
- *      to count).
+ *   1. Pick a project with ≤ 5 tracking facts (use
+ *      `lore-query action='open-loops'` to count).
  *   2. Run `lore migrate --migrate-tracking-to-tasks` (plan-only) to
  *      capture a baseline plan. Verify the row count matches step 1.
  *   3. Run `lore migrate --migrate-tracking-to-tasks --yes`. Note
@@ -201,11 +202,12 @@ export function planTaskFromFact(fact: Fact): TrackingFactMigrationPlan {
       subject: fact.subject,
       state,
       blockedBy,
-      // Entity defaults to subject so `lore-ask(subject)` and the
-      // `lore-tasks` entity filter both find migrated rows.
+      // Entity defaults to subject so `lore-query action='ask'` and the
+      // `lore-task action='list'` entity filter both find migrated rows.
       entity: fact.subject,
       dueDate: fact.reviewBy ?? undefined,
-      // Provenance: carry the source memory forward so `lore-ask` can
+      // Provenance: carry the source memory forward so
+      // `lore-query action='ask'` can
       // still retrace the reasoning. Empty array when the fact is
       // orphan (one of the orphan-fact backlog items in the Mail vault).
       affectsIds: fact.sourceMemoryId ? [fact.sourceMemoryId] : [],
@@ -337,7 +339,8 @@ export async function migrateTrackingFactsToTasks(
       })
 
       // Invalidate the source fact so it stops surfacing in
-      // `lore-open-loops` / `lore-ask` Tracking. Soft-deletes it; the
+      // `lore-query action='open-loops'` / `lore-query action='ask'`
+      // Tracking. Soft-deletes it; the
       // history is preserved. If this throws, the next migration pass
       // catches the orphaned task via `findMigratedFactIds` and retries
       // the invalidate — no duplicate task lands.

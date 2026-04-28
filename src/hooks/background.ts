@@ -39,32 +39,14 @@ import {
  * Tool allowlist for the catch-all session save agent. Broad on purpose —
  * the session-end worker may fan out across save / fact-create /
  * decision-create / task-create depending on what the session produced.
- *
- * Lists both the new polymorphic names (`lore-memory`, `lore-fact`,
- * `lore-decision`, `lore-task`) AND the legacy aliases (`lore-remember`,
- * `lore-learn`, `lore-decide`, `lore-task-create`). The save prompt
- * teaches the polymorphic surface, so the spawned subagent normally
- * calls the new names; the legacy entries keep working as a
- * deprecation-window safety net for any previously-spawned process that
- * still has an old prompt baked in.
- *
- * TODO(0.5.0): remove the four legacy alias entries in the second half
- * of this list — they ride the same removal sweep as the deprecated
- * tool registrations themselves (see "Deprecation timeline" in
- * src/mcp/AGENTS.md).
+ * The save prompt teaches the polymorphic surface, so the spawned subagent
+ * calls these names directly.
  */
 export const DEFAULT_SAVE_ALLOWLIST = [
-  // P3-01 + PF3-06 polymorphic surface — what the prompt now teaches.
   "mcp__lore__lore-memory",
   "mcp__lore__lore-fact",
   "mcp__lore__lore-decision",
   "mcp__lore__lore-task",
-  // TODO(0.5.0): remove — legacy aliases preserved through the 0.5.0
-  // transition window (see src/mcp/AGENTS.md "Deprecation timeline").
-  "mcp__lore__lore-remember",
-  "mcp__lore__lore-learn",
-  "mcp__lore__lore-decide",
-  "mcp__lore__lore-task-create",
 ].join(",")
 
 /**
@@ -74,9 +56,7 @@ export const DEFAULT_SAVE_ALLOWLIST = [
  * extra write. The prompt at `prompts.ts:buildDigestPrompt` already
  * instructs this; the allowlist is defense in depth.
  */
-export const DIGEST_ALLOWLIST = ["mcp__lore__lore-memory", "mcp__lore__lore-remember"].join(
-  ",",
-)
+export const DIGEST_ALLOWLIST = ["mcp__lore__lore-memory"].join(",")
 
 export function findClaudeBinary(): string | null {
   try {
@@ -99,7 +79,7 @@ export interface SpawnBackgroundSaveOptions {
   /**
    * Tool allowlist for the spawned `claude -p`. Defaults to
    * `DEFAULT_SAVE_ALLOWLIST`. Pass `DIGEST_ALLOWLIST` for the digest path
-   * so a synthesizer that violates the prompt's "single lore-remember"
+   * so a synthesizer that violates the prompt's "single lore-memory action='save'"
    * rule gets a tool-call error rather than a silent stray write.
    */
   allowedTools?: string

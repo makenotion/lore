@@ -328,8 +328,9 @@ export function factsProperties(
           { name: "needs_action", color: "red" },
           { name: "waiting_on", color: "orange" },
           { name: "blocked_by", color: "red" },
-          // Decision-graph predicates. Created exclusively by DecisionService
-          // / `lore-decide` — not exposed through `lore-learn`.
+          // Decision-graph predicates. Created exclusively by
+          // DecisionService / `lore-decision action='create'` — not
+          // exposed through `lore-fact action='create'`.
           { name: "decided_by", color: "blue" },
           { name: "supersedes_decision", color: "gray" },
           { name: "informs", color: "pink" },

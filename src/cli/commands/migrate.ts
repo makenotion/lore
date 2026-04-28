@@ -60,7 +60,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--backfill-fact-sources",
-    "Find facts with empty Source relations, propose supporting memories via conservative title-word-boundary match. Prints a report; add --apply to write. A wrong Source distorts `lore-ask` outputs for the lifetime of the fact, so matching is deliberately narrow — unmatched orphans stay orphan until an operator reviews."
+    "Find facts with empty Source relations, propose supporting memories via conservative title-word-boundary match. Prints a report; add --apply to write. A wrong Source distorts `lore-query action='ask'` outputs for the lifetime of the fact, so matching is deliberately narrow — unmatched orphans stay orphan until an operator reviews."
   )
   .option(
     "--apply",
@@ -669,7 +669,7 @@ export interface FactMatchCandidate {
  *
  * This is best-effort triage for the orphan backlog surfaced in the Mail
  * vault audit — not a substitute for the write-side `sourceMemoryId`
- * discipline now enforced on `lore-learn`.
+ * discipline now enforced on `lore-fact action='create'`.
  */
 export async function backfillFactSources(
   services: LoreServices,
@@ -743,8 +743,8 @@ export async function backfillFactSources(
  *
  * Returns `null` memory when no candidate survives the title-match check.
  * False positives are more damaging than false negatives here — an orphan
- * fact is recoverable; a mis-linked Source distorts `lore-ask` outputs for
- * the lifetime of the fact.
+ * fact is recoverable; a mis-linked Source distorts
+ * `lore-query action='ask'` outputs for the lifetime of the fact.
  *
  * Assumes autosave is not creating facts concurrently. `setSource` at the
  * call site in `backfillFactSources` overwrites without re-checking, which

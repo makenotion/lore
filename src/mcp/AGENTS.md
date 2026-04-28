@@ -7,13 +7,10 @@
 This directory implements Lore's MCP (Model Context Protocol) server. It is the
 primary interface for AI assistants. The server runs as a stdio process and
 exposes eight polymorphic tools — `lore-context`, `lore-memory`, `lore-query`,
-`lore-fact`, `lore-decision`, `lore-journal`, `lore-project`, `lore-task` —
-plus the prior single-purpose tool names registered as deprecated aliases
-through the `0.5.0` removal target (see "Deprecation timeline" below).
-PF3-06 brought the P3-02 tasks family (`lore-task-create`, `lore-task-update`,
-`lore-task-close`, `lore-tasks`) under the same polymorphic shape; those
-standalone names remain as deprecated aliases on the same `0.5.0` removal
-sweep.
+`lore-fact`, `lore-decision`, `lore-journal`, `lore-project`, `lore-task`. The
+24 P3-01 single-purpose tool names and the four PF3-06 task aliases were
+preserved as deprecated registrations through the `0.5.0` line and were
+removed in the `0.6.0` deprecation purge (see "Deprecation timeline" below).
 
 ## Files
 
@@ -21,14 +18,14 @@ sweep.
 |------|---------------|
 | `server.ts` | Server entry point: init services, register tools, start stdio transport |
 | `helpers.ts` | `toolError()`, `paginationFooter()`, `debugLogPartialFailures()`, `formatDispatchError()` |
-| `tools/context.ts` | `lore-context` polymorphic + legacy `lore-status`, `lore-wake-up`, `lore-digest` aliases |
-| `tools/memory.ts` | `lore-memory` polymorphic + legacy `lore-remember`, `lore-update`, `lore-forget`, `lore-expand`, `lore-recall`, `lore-search` aliases |
+| `tools/context.ts` | `lore-context` polymorphic dispatcher (`status` / `wake-up` / `digest`) |
+| `tools/memory.ts` | `lore-memory` polymorphic dispatcher (`save` / `update` / `archive` / `expand`) |
 | `tools/query.ts` | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts) |
-| `tools/project.ts` | `lore-project` polymorphic + legacy `lore-list-projects`, `lore-get-project` aliases |
-| `tools/knowledge.ts` | `lore-fact` polymorphic + legacy `lore-learn`, `lore-ask`, `lore-correct`, `lore-open-loops`, `lore-audit`, `lore-extend` aliases |
-| `tools/journal.ts` | `lore-journal` polymorphic (defaults action='write' for legacy call shape) + legacy `lore-read-journal` alias |
-| `tools/decisions.ts` | `lore-decision` polymorphic + legacy `lore-decide`, `lore-list-decisions`, `lore-get-decision`, `lore-decision-context`, `lore-supersede`, `lore-review-decision` aliases |
-| `tools/tasks.ts` | `lore-task` polymorphic + legacy `lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks` aliases (P3-02 + PF3-06) |
+| `tools/project.ts` | `lore-project` polymorphic dispatcher (`list` / `get`) |
+| `tools/knowledge.ts` | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `open-loops` / `audit` handlers exported for `lore-query` |
+| `tools/journal.ts` | `lore-journal` polymorphic dispatcher (defaults action='write' for legacy call shape) |
+| `tools/decisions.ts` | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`) |
+| `tools/tasks.ts` | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list`) (P3-02 + PF3-06) |
 
 ## Polymorphic dispatch pattern (P3-01 + PF3-06)
 
@@ -49,11 +46,10 @@ same shape:
    handler. Failed parses route through `formatDispatchError()` so the agent
    gets a single-line `tool: field: message` error instead of a stack trace.
 
-3. **One handler per action, shared with the legacy alias.** Handlers
-   are local async functions named `handle<Action>` taking `(services, args)
-   → Promise<ToolResult>`. The polymorphic dispatcher and the legacy alias
-   both call the same handler so behavior cannot drift between the two
-   surfaces during the deprecation window.
+3. **One handler per action.** Handlers are local async functions named
+   `handle<Action>` taking `(services, args) → Promise<ToolResult>`. The
+   polymorphic dispatcher routes to the right handler via the discriminated
+   union's `action` discriminator.
 
 Skeleton:
 
@@ -87,13 +83,6 @@ server.registerTool("lore-memory", {
     ...
   }
 })
-
-// Deprecated alias — preserved for the transition window.
-server.registerTool("lore-remember", {
-  title: "Save a memory",
-  description: "Deprecated alias — prefer `lore-memory` with `action: 'save'`.",
-  inputSchema: { /* original lore-remember schema, unchanged */ },
-}, async (args) => handleSave(services, args))
 ```
 
 ### Adding a new action to a polymorphic tool
@@ -114,40 +103,33 @@ introduced when the surface really is one action (e.g. `lore-status` made
 sense pre-P3-01 because it never grew beyond "show vault stats" — but even
 that collapsed into `lore-context action='status'`).
 
-### Deprecation timeline
+### Deprecation timeline (historical)
 
-The 28 deprecated single-purpose aliases registered alongside the eight
-polymorphic dispatchers (24 from P3-01 + 4 from PF3-06) are slated for
-**removal in MCP server `0.5.0`** — the next minor after the current
-`0.4.0` line that this Phase-3-Followups closeout series shipped on. This
-matches the PF3-06 spec's "before the next major release" guidance and
-applies uniformly to every alias family, not just the new task family.
+The 28 deprecated single-purpose aliases that were registered alongside
+the eight polymorphic dispatchers (24 from P3-01 + 4 from PF3-06) were
+**removed in the `0.6.0` deprecation purge.** The polymorphic surface
+is now the only registered MCP tool surface; `polymorphic.test.ts`
+pins the surface at exactly 8 names and fails loudly if a new alias
+re-enters the registration list.
 
-Implementation markers:
+The deprecation window existed because every alias's schema was
+rendered into the agent-visible config string and therefore consumed
+prompt budget on every reconnecting session for as long as the alias
+existed. The original target was MCP server `0.5.0`; the actual
+removal slipped one minor (`0.6.0`) but the rationale is unchanged.
 
-- Each tool file's deprecated-alias block carries a single
-  `// TODO(0.5.0): remove deprecated aliases — see "Deprecation
-  timeline" in src/mcp/AGENTS.md` sentinel above the block. A
-  `grep -rn "TODO(0.5.0)" src/mcp/tools/` finds the entire removal
-  surface atomically — there is no per-alias marker because the
-  block-level comment delimits the contiguous registration block in
-  every file.
-- The `0.5.0` server version bump in `src/mcp/server.ts` is the
-  trigger event: when the version line moves, every block under a
-  `TODO(0.5.0)` marker is removed in the same commit, the
-  `DEFAULT_SAVE_ALLOWLIST` in `src/hooks/background.ts` drops its
-  legacy entries, and the `polymorphic.test.ts` surface count
-  assertion drops to "8 polymorphic, 0 aliases."
-- Until the bump lands, **do not remove or weaken any alias** — the
-  per-alias deprecation-window safety net is what makes a long-running
-  `claude -p` background process with an old prompt baked in continue
-  to work.
+Pattern for future deprecation cycles:
 
-This is a hard timeline rather than a soft one because every alias's
-schema is rendered into the agent-visible config string and therefore
-consumes prompt budget on every reconnecting session for as long as the
-alias exists. The `0.5.0` cap prevents that overhead from drifting to
-forever.
+- Add a `TODO(<target-version>)` sentinel to each contiguous removal
+  block so `grep -rn "TODO(<version>)" src/` finds the entire surface
+  atomically.
+- Land the deprecation purge as one PR that removes the registrations,
+  drops the corresponding entries from `DEFAULT_SAVE_ALLOWLIST` in
+  `src/hooks/background.ts`, and tightens the `polymorphic.test.ts`
+  surface count assertion.
+- Treat the rename of "deprecation timeline (current)" → "deprecation
+  timeline (historical)" as part of the purge so future contributors
+  inspecting the file can tell the work is done.
 
 ## Tool Registration Pattern
 
@@ -227,26 +209,24 @@ export function registerFooTools(
 
 ## Tool Reference
 
-> Each polymorphic tool is documented as a single row with its action set;
-> the "alias" column lists the legacy single-purpose tool name kept for the
-> deprecation window. Behavior of the polymorphic action and its alias is
-> identical because both call the same handler.
+> Each polymorphic tool is documented as a single row with its action set.
 
 ### `lore-context` — vault context operations
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `status` | Vault page id, database counts, active project, configured projects | Yes | `lore-status` |
-| `wake-up` | Load digest + recent memories + open loops + active facts + decisions requiring attention | Yes | `lore-wake-up` |
-| `digest` | Gather raw activity data for synthesis into a `source: digest` memory | Yes | `lore-digest` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `status` | Vault page id, database counts, active project, configured projects | Yes |
+| `wake-up` | Load digest + recent memories + open loops + active facts + decisions requiring attention | Yes |
+| `digest` | Gather raw activity data for synthesis into a `source: digest` memory | Yes |
 
-#### Two-tier default for `lore-wake-up`
+#### Two-tier default for `lore-context action='wake-up'`
 
-`lore-wake-up` defaults to **title-tier rows** (title + metadata, no body)
-across Recent Memories and Related to Open Loops. This is the same
-content-off discipline as `lore-recall` / `lore-search` (below), extended
-to the session-priming tool where the pre-P2-01 default used to fan out
-one `pages.retrieveMarkdown` per memory on every call.
+`lore-context action='wake-up'` defaults to **title-tier rows** (title +
+metadata, no body) across Recent Memories and Related to Open Loops. This
+is the same content-off discipline as `lore-query action='recall'` /
+`lore-query action='search'` (below), extended to the session-priming tool
+where the pre-P2-01 default used to fan out one `pages.retrieveMarkdown`
+per memory on every call.
 
 - **Default path.** Agents get heading + `source | tags | date` per
   memory. Bodies are omitted; the section size reduction is measured at
@@ -268,24 +248,25 @@ one `pages.retrieveMarkdown` per memory on every call.
   ≥ 0.5), then slices by cluster count so the agent sees a stable
   number of distinct topics. Collapsed peers render on the representative
   as `(related: <uuid>, <uuid>)` — **full Notion UUIDs**, so an agent
-  can call `lore-recall` / `lore-get-decision` with the trailer ID to
-  fetch the peer's body. Even when `expand: true`, only the
-  representative's body is rendered; collapsed peers stay suppressed.
+  can call `lore-query action='recall'` / `lore-decision action='get'`
+  with the trailer ID to fetch the peer's body. Even when `expand: true`,
+  only the representative's body is rendered; collapsed peers stay
+  suppressed.
 
-This joins `lore-recall` / `lore-search` under the `0.2.0` server
-version. MCP clients that relied on the previous eager-body default
-will observe the change on reconnect.
+This joins `lore-query action='recall'` / `lore-query action='search'`
+under the `0.2.0` server version. MCP clients that relied on the previous
+eager-body default will observe the change on reconnect.
 
 #### Ranked output via `userQuery` (P3-05)
 
-`lore-context action='wake-up'` (and the deprecated `lore-wake-up`
-alias) accepts an optional `userQuery` parameter. When set, it
-fires an additional relevance search seeded by that text and surfaces
-the hits as a **For Your Current Task** section directly under the
-digest, above Recent Memories. This mirrors the shell hook's P3-05
-ranked path so MCP-direct callers (an agent calling wake-up
-explicitly after `/clear`, or to refresh context after a session
-pivot) see the same query-aware output the hook ships on first prompt.
+`lore-context action='wake-up'` accepts an optional `userQuery`
+parameter. When set, it fires an additional relevance search seeded
+by that text and surfaces the hits as a **For Your Current Task**
+section directly under the digest, above Recent Memories. This
+mirrors the shell hook's P3-05 ranked path so MCP-direct callers (an
+agent calling wake-up explicitly after `/clear`, or to refresh
+context after a session pivot) see the same query-aware output the
+hook ships on first prompt.
 
 - **No userQuery → unchanged output.** The section is omitted entirely
   on the no-query path, so legacy callers see byte-identical pre-P3-05
@@ -343,39 +324,38 @@ pivot) see the same query-aware output the hook ships on first prompt.
 
 ### `lore-memory` — memory mutations + batch hydration
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `save` | Create a new memory (with parallel near-duplicate probe) | No | `lore-remember` |
-| `update` | Mutate title / body / tags / kind / status / relations on an existing memory | No | `lore-update` |
-| `archive` | Soft-delete a memory by ID | No (destructive) | `lore-forget` |
-| `expand` | Batch-fetch full markdown bodies for up to 20 IDs (parallelized) | Yes | `lore-expand` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `save` | Create a new memory (with parallel near-duplicate probe) | No |
+| `update` | Mutate title / body / tags / kind / status / relations on an existing memory | No |
+| `archive` | Soft-delete a memory by ID | No (destructive) |
+| `expand` | Batch-fetch full markdown bodies for up to 20 IDs (parallelized) | Yes |
 
 Read-side `recall` and `search` live on `lore-query` since they share
-structural overlap with the rest of the read-path surface. Their legacy
-`lore-recall` and `lore-search` aliases are kept registered alongside the
-memory family to mirror the prior file layout.
+structural overlap with the rest of the read-path surface.
 
 ### `lore-query` — vault read paths
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `recall` | List recent memories with server-side filters; cursor-paginated | Yes | `lore-recall` |
-| `search` | Memory search — DS-scoped contains, workspace-wide semantic, or parallel hybrid (default). `mode` selects; see "lore-search mode parameter (P3-04)" below | Yes | `lore-search` |
-| `ask` | Query facts about an entity, grouped into Governance / Structure / Tracking buckets | Yes | `lore-ask` |
-| `open-loops` | List active tracking-predicate facts; capped at 10 per section unless `{all: true}` | Yes | `lore-open-loops` |
-| `audit` | List facts and decisions past their review-by date | Yes | `lore-audit` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `recall` | List recent memories with server-side filters; cursor-paginated | Yes |
+| `search` | Memory search — DS-scoped contains, workspace-wide semantic, or parallel hybrid (default). `mode` selects; see "`lore-query action='search'` mode parameter (P3-04)" below | Yes |
+| `ask` | Query facts about an entity, grouped into Governance / Structure / Tracking buckets | Yes |
+| `open-loops` | List active tracking-predicate facts; capped at 10 per section unless `{all: true}` | Yes |
+| `audit` | List facts and decisions past their review-by date | Yes |
 
-#### Near-duplicate probe on `lore-remember` and `lore-decide`
+#### Near-duplicate probe on `lore-memory action='save'` and `lore-decision action='create'`
 
 Both write tools run `findNearDuplicates()` (see `src/core/near-duplicate.ts`)
 in parallel with the create. When the probe finds rows whose title
 trigram similarity meets threshold (0.7 for memories, 0.6 for decisions),
 the response adds a trailing `Warning:` block listing the candidates.
 
-- `lore-remember` recommends `lore-update` or `lore-decide` with
-  `supersedesIds`.
-- `lore-decide` emits a ready-to-copy `lore-supersede({ ... })` line per
-  candidate, scoped to same-project + same-topic + active status.
+- `lore-memory action='save'` recommends `lore-memory action='update'` or
+  `lore-decision action='create'` with `supersedesIds`.
+- `lore-decision action='create'` emits a ready-to-copy
+  `lore-decision({ action: 'supersede', ... })` line per candidate,
+  scoped to same-project + same-topic + active status.
 
 The probe is advisory only — it never blocks the save, and a probe
 failure returns silently (no trailing warning, save succeeds as normal).
@@ -389,15 +369,17 @@ for the full scoping rules and the implementation-side rationale.
 
 #### Content-off default for list/search tools
 
-`lore-recall` and `lore-search` both default to **`includeContent: false`**.
-Each returns index-tier rows — title, metadata, timestamps — without fetching
-the markdown body for each page. Fetching bodies costs one extra
-`pages.retrieveMarkdown` round-trip per row, and most triage paths only need
-a handful of bodies for the rows the agent actually cares about.
+`lore-query action='recall'` and `lore-query action='search'` both default
+to **`includeContent: false`**. Each returns index-tier rows — title,
+metadata, timestamps — without fetching the markdown body for each page.
+Fetching bodies costs one extra `pages.retrieveMarkdown` round-trip per
+row, and most triage paths only need a handful of bodies for the rows the
+agent actually cares about.
 
 - **Default path.** Agents scan the index tier, decide which rows are
-  relevant, then fetch bodies in one shot via `lore-expand({ids: [...]})`.
-  For decisions specifically, `lore-get-decision` also renders the
+  relevant, then fetch bodies in one shot via
+  `lore-memory action='expand'` with `ids: [...]`. For decisions
+  specifically, `lore-decision action='get'` also renders the
   structured rationale (alternatives, consequences, supersession
   chain). The response footer reminds callers that bodies were omitted.
 - **Opt in.** Pass `includeContent: true` when the caller genuinely needs
@@ -409,12 +391,12 @@ Changing this default is a breaking change for agents that relied on eager
 bodies; the server version is bumped to `0.2.0` in `server.ts` so MCP
 clients see the shift immediately.
 
-#### `lore-search` mode parameter (P3-04)
+#### `lore-query action='search'` mode parameter (P3-04)
 
-`lore-search` exposes three execution modes via a `mode` parameter
-(default `"hybrid"`). The MCP tool surfaces the mode but the actual
-switching lives in `MemoryService.search` — see `src/core/AGENTS.md` for
-the per-mode filter composition.
+`lore-query action='search'` exposes three execution modes via a `mode`
+parameter (default `"hybrid"`). The MCP tool surfaces the mode but the
+actual switching lives in `MemoryService.search` — see
+`src/core/AGENTS.md` for the per-mode filter composition.
 
 | Mode | Notion endpoint | Scope | Property filters | Body relevance |
 |------|----------------|-------|------------------|----------------|
@@ -425,7 +407,7 @@ the per-mode filter composition.
 Why default to hybrid:
 
 - **No more workspace leakage on the saturating case.** Pre-P3-04, every
-  `lore-search` paid for `client.search`'s 100-row workspace-wide page
+  search call paid for `client.search`'s 100-row workspace-wide page
   even when 99 of the 100 results were unrelated pages from the user's
   personal Notion. Hybrid uses contains rows alone when contains
   saturates (`>= HYBRID_FALLBACK_THRESHOLD`, default 3), so the result
@@ -473,18 +455,18 @@ encoding-migration scenario it's designed to handle.
 
 Canonical triage flow once bodies are content-off by default:
 
-1. `lore-recall` or `lore-search` returns title + metadata rows (one
-   Notion round-trip).
+1. `lore-query action='recall'` or `lore-query action='search'` returns
+   title + metadata rows (one Notion round-trip).
 2. Agent picks the handful of rows whose bodies it actually needs.
-3. `lore-expand({ids: [...]})` hydrates those bodies in one tool call,
-   parallelized server-side so wall-clock is roughly one
-   `pages.retrieveMarkdown` latency, not N.
+3. `lore-memory action='expand'` with `ids: [...]` hydrates those bodies
+   in one tool call, parallelized server-side so wall-clock is roughly
+   one `pages.retrieveMarkdown` latency, not N.
 
-`lore-expand` caps at 20 IDs per call and dispatches via `settleAll`, so a
-single failing ID does not collapse the whole response — the failed row
-renders as `### (unresolved: <id>)` with the error inline. Partial
-failures also route through `debugLogPartialFailures` so operators
-running with `LORE_DEBUG=1` see them on stderr.
+`lore-memory action='expand'` caps at 20 IDs per call and dispatches via
+`settleAll`, so a single failing ID does not collapse the whole response
+— the failed row renders as `### (unresolved: <id>)` with the error
+inline. Partial failures also route through `debugLogPartialFailures` so
+operators running with `LORE_DEBUG=1` see them on stderr.
 
 The cap deliberately exists one layer below the user: it is enforced by
 the Zod schema on `ids`, not by runtime guards, so oversized calls fail
@@ -497,49 +479,44 @@ designed to remove.
 
 ### `lore-project` — project read paths
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `list` | List all projects in the vault | Yes | `lore-list-projects` |
-| `get` | Get project details including topics and recent activity | Yes | `lore-get-project` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `list` | List all projects in the vault | Yes |
+| `get` | Get project details including topics and recent activity | Yes |
 
 ### `lore-fact` — knowledge graph mutations
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are rejected post-P3-02 with a directive redirect to `lore-task` action='create'. | No | `lore-learn` |
-| `invalidate` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) | `lore-correct` |
-| `extend` | Push back a fact's review-by date | No | `lore-extend` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `create` | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are rejected post-P3-02 with a directive redirect to `lore-task` action='create'. | No |
+| `invalidate` | Invalidate a fact (sets Valid Until, does not delete) | No (destructive) |
+| `extend` | Push back a fact's review-by date | No |
 
 Read-side fact paths (`ask`, `open-loops`, `audit`) live on `lore-query` —
 see the table above. After P3-02 the `ask` action also surfaces tasks
 touching the entity in a fourth bucket so post-migration vaults still
-get the open-loops view at `lore-ask` time. The `open-loops` action is
-deprecated in favour of `lore-task` action='list' — it remains available
-so un-migrated vaults can still surface their legacy tracking facts
-during the transition window.
+get the open-loops view at `lore-query action='ask'` time. The
+`open-loops` action is deprecated in favour of `lore-task action='list'`
+— it remains available so un-migrated vaults can still surface their
+legacy tracking facts during the transition window.
 
 ### `lore-task` — task lifecycle (PF3-06)
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `create` | Create a `Kind = task` memory with description in the page body | No | `lore-task-create` |
-| `update` | Change state, blocker, due date, subject, or description | No | `lore-task-update` |
-| `close` | Mark done (or cancelled — distinguished for metrics) | No (destructive) | `lore-task-close` |
-| `list` | List tasks with Overdue/Active sections; filters by state, entity, due | Yes | `lore-tasks` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `create` | Create a `Kind = task` memory with description in the page body | No |
+| `update` | Change state, blocker, due date, subject, or description | No |
+| `close` | Mark done (or cancelled — distinguished for metrics) | No (destructive) |
+| `list` | List tasks with Overdue/Active sections; filters by state, entity, due | Yes |
 
-PF3-06 brought the P3-02 standalone task family under the same polymorphic
-dispatcher pattern as the rest of P3-01. The standalone names
-(`lore-task-create`, `lore-task-update`, `lore-task-close`, `lore-tasks`)
-remain registered as deprecated aliases sharing the same handlers, so
-callers wired to the standalone names continue to work until removal.
-The same dual-list rule applies as in PR #80: do not remove the
-standalone names, only mark them deprecated. `DEFAULT_SAVE_ALLOWLIST` in
-`src/hooks/background.ts` lists both `lore-task` and `lore-task-create` so
-spawned subagents reach the surface either way during the transition.
-
-**Removal target: MCP server `0.5.0`** — see "Deprecation timeline"
-above. The four task aliases ride the same removal sweep as the 24 P3-01
-aliases.
+PF3-06 brought the P3-02 standalone task family under the same
+polymorphic dispatcher pattern as the rest of P3-01. The four standalone
+names (`lore-task-create`, `lore-task-update`, `lore-task-close`,
+`lore-tasks`) shipped as deprecated aliases on the `0.5.0` line and were
+removed in the `0.6.0` deprecation purge alongside the 24 P3-01 aliases.
+`DEFAULT_SAVE_ALLOWLIST` in `src/hooks/background.ts` now lists only the
+polymorphic surface (`lore-memory`, `lore-fact`, `lore-decision`,
+`lore-task`).
 
 #### P3-02 task model
 
@@ -550,14 +527,14 @@ Tasks supersede the legacy tracking-predicate facts. Three new properties on the
 
 The body of a task page carries the full description (no rich_text length cap), unlike the old tracking facts whose 187-char-average Object field was a Jira-ticket-shaped paragraph in a graph slot meant for atomic relationship objects.
 
-`lore-fact` action='create' (and its `lore-learn` alias) rejects tracking predicates with a redirect to `lore-task` action='create'. Existing tracking facts can be ported via `lore migrate --migrate-tracking-to-tasks --yes`. The migration carries the source memory forward as the task's `Affects` relation so `lore-ask(entity)` retracing still works.
+`lore-fact action='create'` rejects tracking predicates with a redirect to `lore-task action='create'`. Existing tracking facts can be ported via `lore migrate --migrate-tracking-to-tasks --yes`. The migration carries the source memory forward as the task's `Affects` relation so `lore-query action='ask'` retracing still works.
 
 #### Open loops ranking contract
 
-`lore-open-loops` caps its output at **10 rows per section** (Overdue +
-Active) by default. The Mail vault has 271 open loops; an unbounded
-dump floods agent context and drowns the signal. Three knobs override
-the default:
+`lore-query action='open-loops'` caps its output at **10 rows per section**
+(Overdue + Active) by default. The Mail vault has 271 open loops; an
+unbounded dump floods agent context and drowns the signal. Three knobs
+override the default:
 
 - **`{entity: "..."}`** — substring filter matched server-side against
   `Subject` (title) and `Object` (rich_text) via an OR. Use this to
@@ -598,45 +575,48 @@ agent as a "safety cap" warning.
 
 ### `lore-journal` — agent diary (deprecated tool family)
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `write` (default) | Save an agent diary entry (memory with `source: 'agent_diary'`) | No | `lore-journal` itself (legacy write-only call shape preserved by defaulting `action` to `write`) |
-| `read` | List recent diary entries, optionally filtered by agent | Yes | `lore-read-journal` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `write` (default) | Save an agent diary entry (memory with `source: 'agent_diary'`). Calling `lore-journal` without an `action` defaults to `write` so the legacy write-only call shape continues to work. | No |
+| `read` | List recent diary entries, optionally filtered by agent | Yes |
 
 The whole tool family is itself deprecated in favor of `lore-memory` with
 `kind: 'note'` for durable knowledge or `lore-decision` for architectural
 decisions. The polymorphic registration consolidates the legacy two-tool
-surface so the overall surface count stays at the planned ~8.
+surface so the overall surface count stays at the planned ~8. A
+once-per-process stderr deprecation notice fires on the legacy `write`
+call shape; see `journal.ts:36`.
 
 ### `lore-decision` — decision lifecycle
 
-| Action | Purpose | Read-only | Legacy alias |
-|--------|---------|-----------|--------------|
-| `create` | Save a decision; auto-creates `decided_by` facts per `affects` entry and `supersedes_decision` facts if superseding | No | `lore-decide` |
-| `list` | Index-tier listing of decisions (properties only, no body fetch) | Yes | `lore-list-decisions` |
-| `get` | Load full rationale + metadata for one decision | Yes | `lore-get-decision` |
-| `context` | Graph walk: every active decision governing an entity (via `decided_by` facts) | Yes | `lore-decision-context` |
-| `supersede` | Mark old decision as superseded by new; atomic + creates `supersedes_decision` fact | No | `lore-supersede` |
-| `review` | Mark a decision as reviewed, push `Review By` forward (default +90 days) | No | `lore-review-decision` |
+| Action | Purpose | Read-only |
+|--------|---------|-----------|
+| `create` | Save a decision; auto-creates `decided_by` facts per `affects` entry and `supersedes_decision` facts if superseding | No |
+| `list` | Index-tier listing of decisions (properties only, no body fetch) | Yes |
+| `get` | Load full rationale + metadata for one decision | Yes |
+| `context` | Graph walk: every active decision governing an entity (via `decided_by` facts) | Yes |
+| `supersede` | Mark old decision as superseded by new; atomic + creates `supersedes_decision` fact | No |
+| `review` | Mark a decision as reviewed, push `Review By` forward (default +90 days) | No |
 
 **Decision predicates are internal-only.** `decided_by`, `supersedes_decision`,
 and `informs` are in the `FactPredicate` union and the Notion `Predicate`
 select options, but they are NOT in `PREDICATE_VALUES` in `tools/knowledge.ts`.
-This prevents users from creating inconsistent decision edges via `lore-fact`
-(or its legacy `lore-learn` alias) — only `DecisionService` and the decision
-tools create these facts.
+This prevents users from creating inconsistent decision edges via
+`lore-fact` — only `DecisionService` and the decision tools create
+these facts.
 
-**`lore-learn` expects `sourceMemoryId` (soft-phase).** Every fact
-should link back to a supporting memory so `lore-ask` can retrace the
-reasoning. The tool resolves the source in this order:
+**`lore-fact action='create'` expects `sourceMemoryId` (soft-phase).**
+Every fact should link back to a supporting memory so
+`lore-query action='ask'` can retrace the reasoning. The tool resolves
+the source in this order:
 
 1. Explicit `sourceMemoryId` argument — always wins.
 2. Session auto-link: if the caller passes `agent`+`session` and a
-   `lore-remember`/`lore-decide` call earlier in this process recorded
-   a memory under the same composite key, that memory becomes the
-   source **only if** its project scope intersects the fact's (or
-   either side is vault-wide). The response shows
-   "auto-linked from session" so the caller can retract on mis-match.
+   `lore-memory action='save'` / `lore-decision action='create'` call
+   earlier in this process recorded a memory under the same composite
+   key, that memory becomes the source **only if** its project scope
+   intersects the fact's (or either side is vault-wide). The response
+   shows "auto-linked from session" so the caller can retract on mis-match.
 3. Neither available → fact is created **with a prominent warning** in
    the response. This soft-phase window lets deployed callers adopt
    `sourceMemoryId` before we flip to a hard error in a future minor.
@@ -651,12 +631,12 @@ When we flip to hard error, also tighten the Zod schema to a
 `superRefine` requiring either `sourceMemoryId` or `session`.
 
 The session mapping lives on `services.sessionMemories` (a per-process
-`SessionMemoryTracker`). `lore-remember` and `lore-decide` write into
-it with the memory's `projectIds` so the auto-link project check has
-real data. The tracker is keyed on a composite of `agent`+`session`
-so two agents connected to the same MCP process cannot collide on a
-shared session string. Capped at 256 entries with LRU eviction — no
-cross-process persistence.
+`SessionMemoryTracker`). `lore-memory action='save'` and
+`lore-decision action='create'` write into it with the memory's
+`projectIds` so the auto-link project check has real data. The tracker
+is keyed on a composite of `agent`+`session` so two agents connected to
+the same MCP process cannot collide on a shared session string. Capped
+at 256 entries with LRU eviction — no cross-process persistence.
 
 ## Adding a New Tool
 
@@ -778,10 +758,10 @@ Historical bumps and what they signalled:
 
 | Version | Signal |
 |---------|--------|
-| `0.2.0` | Content-off default for `lore-recall` / `lore-search` (and later `lore-wake-up`) |
+| `0.2.0` | Content-off default for `lore-query` action='recall' / action='search' (and later `lore-context` action='wake-up') |
 | `0.3.0` | Open loops ranking contract (`OVERDUE_SEVERE_DAYS` / `OVERDUE_MILD_DAYS`) |
 | `0.4.0` | P3-01 polymorphic tool surface (24 → 7 dispatchers + deprecated aliases) |
-| `0.5.0` | PF3-04 ranked-mode default caps for MCP `lore-context action='wake-up'` (parity with shell wake-up); also the deprecated-`lore-task-*`-aliases removal target |
+| `0.5.0` | PF3-04 ranked-mode default caps for MCP `lore-context action='wake-up'` (parity with shell wake-up) |
 | `0.5.1` | `lore status` tracking-predicate preflight (issue 0.6.0/24) — counts live `needs_action` / `waiting_on` / `blocked_by` facts and warns operators to run `lore migrate --migrate-tracking-to-tasks --yes` before the 0.6.0 deprecation purge removes the read path. CLI / operator UX only; no MCP tool surface change, but the four version literals move together so the patch ships as one atomic bump |
 
 ## Server Startup

@@ -1,6 +1,6 @@
 /**
- * Wake-up data loading — shared by the MCP `lore-wake-up` tool and the
- * shell wake-up hook.
+ * Wake-up data loading — shared by the MCP
+ * `lore-context action='wake-up'` tool and the shell wake-up hook.
  *
  * When a project has a recently saved digest (source = "digest"), wake-up
  * surfaces that digest as the primary context and trims the raw-memory
@@ -55,8 +55,8 @@ export const DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT = 25
 export const DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT = 5
 /**
  * Cap on tasks rendered in wake-up's Tasks section. Mirrors the spec's
- * "Tasks section capped at 10" guidance and the `lore-tasks` per-section
- * default — a triage list, not an inventory.
+ * "Tasks section capped at 10" guidance and the `lore-task action='list'`
+ * per-section default — a triage list, not an inventory.
  */
 export const DEFAULT_WAKEUP_TASK_LIMIT = 10
 /**
@@ -136,10 +136,10 @@ export const DEFAULT_WAKEUP_OPEN_LOOP_LIMIT = NOTION_PAGE_SIZE
  * Hint rendered under the Open Loops section when `listTracking` reports
  * `hasMore: true` — i.e. the cap clipped the eligible set and the agent
  * should fall through to the paginating surface for the full picture.
- * Shared by both wake-up renderers (MCP `lore-wake-up` and the shell
- * hook) so the directive stays in lockstep across surfaces. Names
- * `lore-task action='list'` rather than the deprecated `lore-open-loops`
- * alias since P3-02 made the polymorphic surface the canonical one.
+ * Shared by both wake-up renderers (MCP `lore-context action='wake-up'`
+ * and the shell hook) so the directive stays in lockstep across surfaces.
+ * Names `lore-task action='list'` since P3-02 made tasks the canonical
+ * surface for tracked work.
  */
 export const WAKEUP_OPEN_LOOPS_TRUNCATED_HINT =
   "_Additional tracking facts not shown — call `lore-task action='list'` for the full list._"
@@ -274,9 +274,8 @@ export interface WakeUpData {
   /**
    * `true` when `listTracking` reported additional rows beyond
    * `openLoopLimit`. Surfaces in rendered output so an agent knows to
-   * fall through to `lore-task action='list'` (or the deprecated
-   * `lore-open-loops`) for the full picture rather than treating the
-   * capped slice as exhaustive.
+   * fall through to `lore-task action='list'` for the full picture
+   * rather than treating the capped slice as exhaustive.
    */
   openLoopsHasMore: boolean
   /** All other facts, capped at `knowledgeFactLimit`. */

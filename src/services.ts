@@ -73,8 +73,9 @@ export interface LoreServices {
   configRoot: string
   /**
    * Per-process map of session_id → last-created memory id. MCP save tools
-   * record into it; `lore-learn` reads it to auto-link `sourceMemoryId` when
-   * the caller omits it. Empty (and unused) in one-shot CLI/hook contexts.
+   * record into it; `lore-fact action='create'` reads it to auto-link
+   * `sourceMemoryId` when the caller omits it. Empty (and unused) in
+   * one-shot CLI/hook contexts.
    */
   sessionMemories: SessionMemoryTracker
 }

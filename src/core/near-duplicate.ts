@@ -1,5 +1,6 @@
 /**
- * Near-duplicate probe used by `lore-remember` and `lore-decide`.
+ * Near-duplicate probe used by `lore-memory action='save'` and
+ * `lore-decision action='create'`.
  *
  * The probe is advisory, not blocking: the write always proceeds, but the
  * tool response surfaces any existing row whose title looks similar enough
@@ -67,14 +68,18 @@ export interface FindNearDuplicatesOpts {
    * rule). Leave undefined for the memory path.
    */
   topicId?: string
-  /** `decision` for the `lore-decide` path, undefined for `lore-remember`. */
+  /**
+   * `decision` for the `lore-decision action='create'` path, undefined
+   * for the `lore-memory action='save'` path.
+   */
   kind?: MemoryKind
   /**
    * Kinds to post-filter out of the candidate pool. Notion's
    * `dataSources.query` has no "kind ≠ X" primitive, so the filter
-   * runs client-side. `lore-remember` uses `["decision"]` so a
-   * freshly-saved note doesn't light up every governing decision
-   * record — decisions are the `lore-decide` probe's domain.
+   * runs client-side. The `lore-memory action='save'` path uses
+   * `["decision"]` so a freshly-saved note doesn't light up every
+   * governing decision record — decisions are the
+   * `lore-decision action='create'` probe's domain.
    */
   excludeKinds?: MemoryKind[]
   /**
@@ -90,10 +95,11 @@ export interface FindNearDuplicatesOpts {
   limit?: number
   /**
    * Optional observer for list-query failures. Invoked with the raw
-   * error before the probe returns `[]`. `lore-remember` /
-   * `lore-decide` route this through `debugLogPartialFailures` so
-   * probe failures show up under `LORE_DEBUG=1` like every other
-   * read-path partial failure, instead of degrading silently.
+   * error before the probe returns `[]`. `lore-memory action='save'`
+   * and `lore-decision action='create'` route this through
+   * `debugLogPartialFailures` so probe failures show up under
+   * `LORE_DEBUG=1` like every other read-path partial failure,
+   * instead of degrading silently.
    */
   onError?: (err: unknown) => void
 }
@@ -115,8 +121,8 @@ export async function findNearDuplicates(
   // messages, and test fixtures that spin up 50+ memories all pay a
   // `dataSources.query` per save otherwise. Setting the env var to `1`
   // short-circuits the probe entirely without touching the call sites.
-  // Bypass lives here (not per-tool) so both `lore-remember` and
-  // `lore-decide` honor it automatically.
+  // Bypass lives here (not per-tool) so both `lore-memory action='save'`
+  // and `lore-decision action='create'` honor it automatically.
   if (process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1") return []
   if (opts.title.trim() === "") return []
   if (!opts.projectId) return []

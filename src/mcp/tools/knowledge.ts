@@ -17,7 +17,7 @@ type ToolResult = {
 }
 
 /**
- * Default per-bucket cap for `lore-ask`'s grouped display (P2-06).
+ * Default per-bucket cap for `lore-query action='ask'`'s grouped display (P2-06).
  * A well-connected entity with 20+ facts compresses down to 15 visible
  * rows at this cap (5 × 3 buckets). Callers can raise via the `limit`
  * param when they really do need the full list.
@@ -35,10 +35,10 @@ const DEFAULT_ASK_BUCKET_CAP = 5
 const SUGGESTED_OVERFLOW_LIMIT = 20
 
 /**
- * Default per-bucket cap for `lore-open-loops`. The Mail vault has 271 open
- * loops; returning all of them on every ambient call floods the agent
- * context. Ten per bucket matches how humans scan a triage list — enough
- * to see the urgency spread, short enough to act on.
+ * Default per-bucket cap for `lore-query action='open-loops'`. The Mail
+ * vault has 271 open loops; returning all of them on every ambient call
+ * floods the agent context. Ten per bucket matches how humans scan a
+ * triage list — enough to see the urgency spread, short enough to act on.
  */
 export const DEFAULT_OPEN_LOOPS_LIMIT = 10
 
@@ -49,7 +49,7 @@ const OVERDUE_SEVERE_DAYS = 14
 const OVERDUE_MILD_DAYS = 1
 
 /**
- * Ranking contract for `lore-open-loops`.
+ * Ranking contract for `lore-query action='open-loops'`.
  *
  * **Overdue** (`rankOverdue`): sort by days-overdue **descending**.
  * Tiebreakers: `validFrom` desc, then `id` lex asc.
@@ -85,8 +85,8 @@ function rankActive(a: Fact, b: Fact): number {
 }
 
 /**
- * Predicates accepted on `lore-fact` (and the `lore-learn` alias). The
- * tracking predicates (`needs_action`, `waiting_on`, `blocked_by`) are
+ * Predicates accepted on `lore-fact action='create'`. The tracking
+ * predicates (`needs_action`, `waiting_on`, `blocked_by`) are
  * deliberately absent after P3-02 — those workflows live on `lore-task`
  * action='create' now. Keeping them in the union but rejecting at the
  * validation layer is what gives us the "type one" -> directive error UX.
@@ -117,16 +117,13 @@ const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
  * Build the redirect message agents see when they call `lore-fact`
- * action='create' (or its `lore-learn` alias) with a tracking predicate.
- * The wording tells them the right tool to call, names the closest
- * equivalent task state, and shows the field mapping — `Subject →
- * subject`, `Object → description` — so the agent doesn't have to
- * guess at how to translate.
+ * action='create' with a tracking predicate. The wording tells them the
+ * right tool to call, names the closest equivalent task state, and shows
+ * the field mapping — `Subject → subject`, `Object → description` — so
+ * the agent doesn't have to guess at how to translate.
  *
- * Names the polymorphic surface (`lore-task` action='create' / 'list')
- * rather than the deprecated `lore-task-create` / `lore-tasks` aliases
- * after PF3-06 — the rejection message is the moment-of-mistake nudge,
- * so it must teach the surface that's not itself deprecated.
+ * Names the polymorphic `lore-task` surface — the rejection message is
+ * the moment-of-mistake nudge, so it must teach the canonical surface.
  */
 function trackingPredicateRedirect(predicate: FactPredicate): string {
   const stateHint =
@@ -218,10 +215,10 @@ function compareSortKeyDesc(
 }
 
 // -------------------------------------------------------------------------
-// Handlers — extracted so the polymorphic `lore-fact` and `lore-query`
-// tools and the deprecated `lore-learn` / `lore-correct` / `lore-extend` /
-// `lore-ask` / `lore-open-loops` / `lore-audit` aliases share single
-// implementations.
+// Handlers — one per fact action. Write-side actions (`create`,
+// `invalidate`, `extend`) route via `lore-fact`'s discriminated union;
+// read-side actions (`ask`, `open-loops`, `audit`) are exported for
+// reuse by `lore-query`.
 // -------------------------------------------------------------------------
 
 interface LearnArgs {
@@ -245,9 +242,7 @@ export async function handleLearn(
     // P3-02: tracking predicates are no longer first-class facts. Reject
     // them with a directive error instead of writing the row; the
     // migration command ports any pre-existing tracking facts over to
-    // the task model in bulk. The rejection lives in the shared handler
-    // so both `lore-fact action='create'` and the `lore-learn` alias
-    // refuse identically.
+    // the task model in bulk.
     if ((TRACKING_PREDICATES as FactPredicate[]).includes(args.predicate)) {
       return toolError(new Error(trackingPredicateRedirect(args.predicate)))
     }
@@ -277,8 +272,8 @@ export async function handleLearn(
       // path in `queryByEntity` still finds the row later.
       //
       // Caught by review on PR #88. Mirrors the resilience posture
-      // `lore-ask`'s tasks lookup (further down in this file) already
-      // uses for the same reason.
+      // `lore-query action='ask'`'s tasks lookup (further down in this
+      // file) already uses for the same reason.
       const entityServices = services.entities
       const [subjectResolution, objectResolution] = await Promise.all([
         entityServices
@@ -330,11 +325,11 @@ export async function handleLearn(
     // with the entity relation OMITTED on the ambiguous side. This
     // protects two contracts that would otherwise conflict:
     //
-    // 1. Autosave-driven `lore-learn` calls have no human in the loop
-    //    to disambiguate. Refusing to write would silently drop the
-    //    fact from the autosave stream — worse than a half-canonical
-    //    fact, which the substring-fallback `queryByEntity` path can
-    //    still surface.
+    // 1. Autosave-driven `lore-fact action='create'` calls have no human
+    //    in the loop to disambiguate. Refusing to write would silently
+    //    drop the fact from the autosave stream — worse than a
+    //    half-canonical fact, which the substring-fallback
+    //    `queryByEntity` path can still surface.
     //
     // 2. We must not guess and bind the fact to the wrong canonical
     //    row. Omitting the relation lets the operator (or a future
@@ -460,7 +455,7 @@ interface AskArgs {
 export async function handleAsk(
   services: LoreServices,
   args: AskArgs,
-  toolName = "lore-ask",
+  toolName: string,
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
@@ -541,7 +536,8 @@ export async function handleAsk(
     }
 
     // Fetch facts and tasks in parallel — they're independent queries
-    // and `lore-ask` is on the agent hot path. Failures on the tasks side
+    // and `lore-query action='ask'` is on the agent hot path. Failures
+    // on the tasks side
     // surface as a warning rather than collapsing the call so a transient
     // 5xx on the tasks query does not nuke the facts response.
     //
@@ -594,7 +590,7 @@ export async function handleAsk(
     // Notion client, so concurrency here cuts wall-clock to the slower
     // of the two without raising peak Notion load. Sequential awaits
     // here used to add `T(decisionLinks) + T(titleMap)` to every
-    // `lore-ask` call.
+    // `lore-query action='ask'` call.
     //
     // Failure-semantics note: `Promise.all` short-circuits on the first
     // rejection, which would lose `debugLogPartialFailures` observability
@@ -708,7 +704,7 @@ export async function handleAsk(
     // Tasks bucket — surfaces tracked work touching the entity. Sourced
     // separately from facts so post-P3-02 vaults (where tracking
     // predicates aren't first-class facts anymore) still get the open
-    // loops view at `lore-ask` time.
+    // loops view at `lore-query action='ask'` time.
     type Tasked = { sortKey: string | null; line: string }
     const taskItems: Tasked[] = tasks.map((t) => {
       const overdueDays = taskDaysOverdue(t, today)
@@ -1168,139 +1164,5 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           return handleExtendFact(services, parsed.data)
       }
     },
-  )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md.
-  //
-  // Deprecated aliases — preserved through the 0.5.0 transition window.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-learn",
-    {
-      title: "Add a fact",
-      description: "Deprecated alias — prefer `lore-fact` with `action: 'create'`.",
-      inputSchema: {
-        subject: z.string().describe("The entity this fact is about"),
-        predicate: z.enum(PREDICATE_VALUES).describe("The relationship type"),
-        object: z.string().describe("The related entity or value"),
-        projectName: z.string().optional().describe("Scope to a project."),
-        projectNames: z
-          .array(z.string())
-          .optional()
-          .describe("Multiple project names for cross-project facts."),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .optional()
-          .describe("Date (YYYY-MM-DD) by which this fact should be reviewed."),
-        confidence: z
-          .enum(CONFIDENCES)
-          .optional()
-          .describe("How confident is this fact (default: certain)"),
-        sourceMemoryId: z
-          .string()
-          .optional()
-          .describe("ID of the memory that supports this fact"),
-        session: z.string().optional().describe("Session ID for auto-link."),
-        agent: z.string().optional().describe("Agent name. Part of the composite session key."),
-      },
-    },
-    async (args) => handleLearn(services, args),
-  )
-
-  server.registerTool(
-    "lore-correct",
-    {
-      title: "Invalidate a fact",
-      description: "Deprecated alias — prefer `lore-fact` with `action: 'invalidate'`.",
-      inputSchema: {
-        factId: z.string().describe("The fact ID to invalidate"),
-      },
-      annotations: { destructiveHint: true },
-    },
-    async ({ factId }) => handleInvalidate(services, { factId }),
-  )
-
-  server.registerTool(
-    "lore-extend",
-    {
-      title: "Extend a fact's review date",
-      description: "Deprecated alias — prefer `lore-fact` with `action: 'extend'`.",
-      inputSchema: {
-        factId: z.string().describe("The fact ID to extend"),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .describe("New review-by date (YYYY-MM-DD)"),
-      },
-    },
-    async ({ factId, reviewBy }) => handleExtendFact(services, { factId, reviewBy }),
-  )
-
-  server.registerTool(
-    "lore-ask",
-    {
-      title: "Query facts",
-      description: "Deprecated alias — prefer `lore-query` with `action: 'ask'`.",
-      inputSchema: {
-        entity: z
-          .string()
-          .describe("The entity to query (searched as both subject and object)"),
-        projectName: z.string().optional().describe("Scope to a project"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .optional()
-          .describe("Per-bucket cap on the number of facts rendered."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleAsk(services, args, "lore-ask"),
-  )
-
-  server.registerTool(
-    "lore-open-loops",
-    {
-      title: "List open loops",
-      description:
-        "Deprecated alias — prefer `lore-query` with `action: 'open-loops'`. " +
-        "Post-P3-02 tracked work: `lore-task` action='list'.",
-      inputSchema: {
-        projectName: z.string().optional().describe("Override the auto-detected project."),
-        entity: z
-          .string()
-          .optional()
-          .describe("Substring filter matched against Subject OR Object."),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .optional()
-          .describe("Max rows per section. Default 10."),
-        all: z
-          .boolean()
-          .optional()
-          .describe("Bypass the per-section cap and return every matching loop."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleOpenLoops(services, args),
-  )
-
-  server.registerTool(
-    "lore-audit",
-    {
-      title: "Audit overdue facts",
-      description: "Deprecated alias — prefer `lore-query` with `action: 'audit'`.",
-      inputSchema: {
-        projectName: z.string().optional().describe("Override the auto-detected project."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleAudit(services, args),
   )
 }

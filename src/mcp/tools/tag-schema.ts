@@ -4,9 +4,8 @@ import { TAG_VOCABULARY } from "../../types.js"
 /**
  * Shared Zod schemas for the closed `tags` vocabulary and free-form
  * `keywords` field. Used by every memory-writing tool — `lore-memory`
- * (save | update), `lore-decision` (create), `lore-journal` (write), and
- * the legacy `lore-remember` / `lore-update` / `lore-decide` aliases — so
- * agents get a consistent error message when they try to invent an
+ * (save | update), `lore-decision` (create), and `lore-journal` (write)
+ * — so agents get a consistent error message when they try to invent an
  * out-of-vocab tag.
  *
  * Tool-parameter descriptions stay short so the 40-term vocabulary doesn't

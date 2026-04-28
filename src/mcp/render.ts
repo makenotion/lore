@@ -102,8 +102,9 @@ export async function resolveReferencedTitles(
  * ID footer without re-implementing the subject/object substitution.
  *
  * `prefix` is inserted between the leading `- ` bullet and the subject.
- * Used by `lore-ask`'s grouped display (P2-06) to surface a `⚠ ` marker
- * on overdue tracking facts without reimplementing the triple rendering.
+ * Used by `lore-query action='ask'`'s grouped display (P2-06) to
+ * surface a `⚠ ` marker on overdue tracking facts without
+ * reimplementing the triple rendering.
  */
 export interface RenderFactOptions {
   titleMap: Map<string, string>
@@ -126,7 +127,7 @@ export function renderFact(fact: Fact, options: RenderFactOptions): string {
  * Format a single ID as its resolved title (when known) or a short
  * unresolved-hint that preserves enough of the UUID to trace back
  * without dumping the whole string inline. Exposed so callers rendering
- * non-fact structures (e.g., `lore-get-decision`'s Supersedes section)
+ * non-fact structures (e.g., `lore-decision action='get'`'s Supersedes section)
  * share the same lookup discipline as `renderFact`.
  */
 export function displayId(
@@ -165,7 +166,7 @@ function unresolvedHint(id: string): string {
 
 /**
  * Predicate classification for the grouped-display taxonomy used by
- * `lore-ask` (P2-06):
+ * `lore-query action='ask'` (P2-06):
  *
  * - `governance` — decision-graph edges (`decided_by`, `supersedes_decision`)
  *   that answer "what decisions govern this?"
@@ -285,7 +286,7 @@ export interface CollapsedMemoryGroup {
  *
  * The spec errs toward showing — thresholds are high enough that
  * distinct memories rarely collapse, and a hidden nuance can still be
- * fetched via `lore-expand` / `lore-recall`.
+ * fetched via `lore-memory action='expand'` / `lore-query action='recall'`.
  *
  * **Input-size budget: N ≤ 50.** The cluster-comparison loop is
  * O(N · K) with K = cluster count, and in the degenerate case where

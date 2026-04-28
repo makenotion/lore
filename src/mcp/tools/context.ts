@@ -58,10 +58,10 @@ const COLLAPSE_OVERFETCH_MULTIPLIER = 3
  * was captured over when it was last re-edited.
  *
  * The collapse trailer emits full Notion page UUIDs so an agent can
- * `lore-recall` / `lore-get-decision` the collapsed peers directly —
- * the spec treats the representative as "enough signal" but an agent
- * that wants the peer's body must have an actionable ID, not a
- * truncated hint.
+ * `lore-query action='recall'` / `lore-decision action='get'` the
+ * collapsed peers directly — the spec treats the representative as
+ * "enough signal" but an agent that wants the peer's body must have an
+ * actionable ID, not a truncated hint.
  */
 function renderMemoryEntry(
   mem: Memory,
@@ -83,8 +83,8 @@ function renderMemoryEntry(
   // the metadata + collapse trailer so the trailer reads as a header
   // annotation rather than a body footnote. Collapsed peers' bodies
   // stay suppressed even in expand mode — the representative is the
-  // signal; agents that want a peer's body call `lore-recall` with
-  // its ID from the trailer.
+  // signal; agents that want a peer's body call `lore-query
+  // action='recall'` with its ID from the trailer.
   if (expand && mem.content) {
     lines.push(mem.content, "")
   }
@@ -92,9 +92,8 @@ function renderMemoryEntry(
 }
 
 // -------------------------------------------------------------------------
-// Handlers — extracted so both the polymorphic `lore-context` tool and the
-// legacy `lore-status` / `lore-wake-up` / `lore-digest` aliases share one
-// implementation per action.
+// Handlers — one per `lore-context` action (status | wake-up | digest).
+// Routed by the polymorphic dispatcher's discriminated union.
 // -------------------------------------------------------------------------
 
 async function handleStatus(services: LoreServices): Promise<ToolResult> {
@@ -403,7 +402,7 @@ async function handleWakeUp(
     return { content: [{ type: "text", text: sections.join("\n") }] }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    return toolError(new Error(`lore-wake-up failed to load context: ${message}`))
+    return toolError(new Error(`lore-context action='wake-up' failed to load context: ${message}`))
   }
 }
 
@@ -449,8 +448,7 @@ async function handleDigest(
     parts.push(
       "---\n" +
         "To save this digest, synthesize the above into a concise summary and call " +
-        '`lore-memory` with `action: "save"` and `source: "digest"` (or the deprecated ' +
-        "`lore-remember` alias).",
+        '`lore-memory` with `action: "save"` and `source: "digest"`.',
     )
 
     return { content: [{ type: "text", text: parts.join("\n") }] }
@@ -595,113 +593,5 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           return handleDigest(services, parsed.data)
       }
     },
-  )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated aliases — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md.
-  //
-  // Deprecated aliases — preserved through the 0.5.0 transition window
-  // mandated by the stability rule in src/mcp/AGENTS.md. Schemas are
-  // preserved so existing callers do not break; descriptions shrink to
-  // redirect agents to the polymorphic tool.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-status",
-    {
-      title: "Vault status",
-      description: "Deprecated alias — prefer `lore-context` with `action: 'status'`.",
-      annotations: { readOnlyHint: true },
-    },
-    async () => handleStatus(services),
-  )
-
-  server.registerTool(
-    "lore-wake-up",
-    {
-      title: "Load session context",
-      description: "Deprecated alias — prefer `lore-context` with `action: 'wake-up'`.",
-      inputSchema: {
-        projectName: z
-          .string()
-          .optional()
-          .describe("Override the auto-detected project. Use a project name."),
-        expand: z
-          .boolean()
-          .optional()
-          .describe("Include each memory's markdown body inline (default false)."),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(50)
-          .optional()
-          .describe(
-            "Max distinct clusters per memory section after topical collapse.",
-          ),
-        openLoopLimit: z
-          .number()
-          .int()
-          .min(0)
-          .max(50)
-          .optional()
-          .describe("Max open-loop facts; 0 skips the section."),
-        knowledgeFactLimit: z
-          .number()
-          .int()
-          .min(0)
-          .max(50)
-          .optional()
-          .describe("Max active-facts rendered (default 25)."),
-        taskLimit: z
-          .number()
-          .int()
-          .min(0)
-          .max(50)
-          .optional()
-          .describe(
-            `Max tasks rendered in the Tasks section (default ${DEFAULT_WAKEUP_TASK_LIMIT}). 0 skips the section.`,
-          ),
-        userQuery: z
-          .string()
-          .optional()
-          .describe(
-            "Optional short description of the user's current task. When set, fires an additional relevance search seeded by this text and surfaces the hits as a 'For Your Current Task' section above Recent Memories. Truncated to 1000 chars before search. Mirrors the shell hook's P3-05 ranked path, so MCP-direct callers (e.g. after `/clear` or a session pivot) get the same query-aware output.",
-          ),
-        taskMemoryLimit: z
-          .number()
-          .int()
-          .min(0)
-          .max(20)
-          .optional()
-          .describe(
-            "Max memories surfaced for the user's current task (default 3). Honored only when `userQuery` is non-empty. Set 0 to skip the section entirely even when a query is provided.",
-          ),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleWakeUp(services, args),
-  )
-
-  server.registerTool(
-    "lore-digest",
-    {
-      title: "Gather project digest data",
-      description: "Deprecated alias — prefer `lore-context` with `action: 'digest'`.",
-      inputSchema: {
-        period: z
-          .enum(["day", "week"])
-          .optional()
-          .describe("Time window: day or week (ignored if since/until provided)."),
-        since: z.string().optional().describe("Custom start (ISO datetime)."),
-        until: z.string().optional().describe("Custom end (ISO datetime). Defaults to now."),
-        projectName: z
-          .string()
-          .optional()
-          .describe("Override the auto-detected project."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleDigest(services, args),
   )
 }

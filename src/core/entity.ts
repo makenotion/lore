@@ -3,8 +3,8 @@
  *
  * The Entities DB (PF3-01) is the canonical-handle registry that
  * `FactService` joins against via `SubjectEntity` / `ObjectEntity`
- * relations. `lore-fact action='create'`, `lore-ask`, and the
- * `--build-entities` migration all funnel through `resolveOrCreateEntity`
+ * relations. `lore-fact action='create'`, `lore-query action='ask'`,
+ * and the `--build-entities` migration all funnel through `resolveOrCreateEntity`
  * so a single string input maps to one Entity row regardless of case
  * variants or richer-vs-bare handle suffixes.
  *
@@ -161,9 +161,10 @@ export interface EntityQueryVariants {
  * Variant ownership lives on `EntityService` rather than the call
  * site so a future extension (e.g. include normalized synonyms, drop
  * the raw input on a guaranteed-canonical caller) is one helper edit
- * — not a sweep across every caller of `lore-task` action='list'
- * that does its own ad-hoc string composition. The `lore-ask` task
- * recall path is the canonical caller; future surfaces should reuse
+ * — not a sweep across every caller of `lore-task action='list'`
+ * that does its own ad-hoc string composition. The
+ * `lore-query action='ask'` task recall path is the canonical caller;
+ * future surfaces should reuse
  * this helper or accept that they will re-derive the same logic
  * incorrectly.
  *
@@ -557,8 +558,9 @@ export class EntityService {
   // row. The follow-up issue tracking the operator-driven entity
   // consolidation surface will land both pieces together. For now,
   // operators can manually merge by editing the canonical's `Aliases`
-  // in Notion and archiving the loser; downstream `lore-ask` calls
-  // resolve via `findByName` / `findByAlias` against the canonical.
+  // in Notion and archiving the loser; downstream
+  // `lore-query action='ask'` calls resolve via `findByName` /
+  // `findByAlias` against the canonical.
   // Removed per PR #88 review.
   /** Reset the in-process name/alias cache. Used by tests. */
   clearNameCache(): void {

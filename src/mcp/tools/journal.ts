@@ -173,8 +173,8 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
   // lore-journal — polymorphic dispatcher (P3-01)
   //
   // Note: the entire journal tool surface is itself deprecated in favor of
-  // `lore-memory` with `kind: 'note'` / `lore-decide` (see the prior
-  // single-tool deprecation message on `lore-journal`). We still
+  // `lore-memory` with `kind: 'note'` / `lore-decision action='create'` (see
+  // the prior single-tool deprecation message on `lore-journal`). We still
   // consolidate write+read under a single polymorphic registration so the
   // overall tool count stays at the planned ~8.
   // -------------------------------------------------------------------------
@@ -270,44 +270,5 @@ export function registerJournalTools(server: McpServer, services: LoreServices):
           return handleRead(services, parsed.data)
       }
     },
-  )
-
-  // -------------------------------------------------------------------------
-  // TODO(0.5.0): remove deprecated alias — see "Deprecation timeline"
-  // in src/mcp/AGENTS.md.
-  //
-  // Deprecated alias — the legacy `lore-read-journal` tool. The legacy
-  // `lore-journal` *write* tool is collapsed directly into the polymorphic
-  // tool above (action: 'write' is the default mental model for the
-  // existing name), so no separate write-only alias is necessary.
-  //
-  // Existing callers of `lore-read-journal` continue to work through the
-  // 0.5.0 transition window; their schema is preserved so calls do not
-  // break.
-  // -------------------------------------------------------------------------
-  server.registerTool(
-    "lore-read-journal",
-    {
-      title: "Read journal entries",
-      description: "Deprecated alias — prefer `lore-journal` with `action: 'read'`.",
-      inputSchema: {
-        agent: z.string().optional().describe("Filter by agent name"),
-        projectName: z.string().optional().describe("Filter by project name"),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(100)
-          .optional()
-          .describe("Max entries per page (default 10, max 100)"),
-        startCursor: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("Opaque cursor from a previous response's `nextCursor`."),
-      },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => handleRead(services, args),
   )
 }

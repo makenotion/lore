@@ -221,7 +221,7 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
 export class MemoryService {
   /**
    * `getTitleById` is the hot path for UUID→title resolution in
-   * `render.ts:resolveTitles` and `lore-wake-up`. A 25-UUID wake-up without
+   * `render.ts:resolveTitles` and `lore-context action='wake-up'`. A 25-UUID wake-up without
    * this cache pays 25 Notion `pages.retrieve` calls even if the same IDs
    * were just resolved a few seconds earlier. The cache is keyed on the
    * memory id so `Kind = decision` pages (which also live in Memories DB)
@@ -861,7 +861,7 @@ export class MemoryService {
     // No filters AND empty query → `filter: undefined` returns every row in
     // the DS sorted by recency, capped at `limit`. Intentional, not a
     // degenerate-input bug: callers passing only `mode: "contains"` with
-    // no scope and no query get the equivalent of `lore-recall` minus
+    // no scope and no query get the equivalent of `lore-query action='recall'` minus
     // cursor pagination. A future reader: do not add a guard here.
     const filter =
       filters.length > 1

@@ -202,16 +202,23 @@ describe("handleStop", () => {
     const [bin, args] = spawnMock.mock.calls[0] as [string, string[]]
     expect(typeof bin).toBe("string")
     expect(args).toContain("-p")
-    // Background saves allowlist the three non-deprecated lore write tools.
+    // Background saves allowlist the four polymorphic lore write tools
+    // — the legacy aliases were removed in the 0.6.0 deprecation purge.
     const allowedIdx = args.indexOf("--allowedTools")
     expect(allowedIdx).toBeGreaterThan(-1)
     const allowed = args[allowedIdx + 1]
-    expect(allowed).toContain("lore-remember")
-    expect(allowed).toContain("lore-learn")
-    expect(allowed).toContain("lore-decide")
+    expect(allowed).toContain("lore-memory")
+    expect(allowed).toContain("lore-fact")
+    expect(allowed).toContain("lore-decision")
+    expect(allowed).toContain("lore-task")
     // lore-journal is soft-deprecated and no longer invited from the prompt;
     // drop it from the allowlist too so implementation and prompt agree.
     expect(allowed).not.toContain("lore-journal")
+    // Legacy single-purpose aliases should not appear after the purge.
+    expect(allowed).not.toContain("lore-remember")
+    expect(allowed).not.toContain("lore-learn")
+    expect(allowed).not.toContain("lore-decide")
+    expect(allowed).not.toContain("lore-task-create")
   })
 
   it("does not spawn when the interval has not been reached", async () => {
@@ -427,7 +434,7 @@ describe("handleSessionEnd", () => {
     expect(args).toContain("-p")
     const allowedIdx = args.indexOf("--allowedTools")
     const allowed = args[allowedIdx + 1]
-    expect(allowed).toContain("lore-remember")
+    expect(allowed).toContain("lore-memory")
     expect(allowed).not.toContain("lore-journal")
   })
 

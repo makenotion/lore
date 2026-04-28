@@ -162,7 +162,7 @@ export type MemorySource = "conversation" | "file" | "manual" | "agent_diary" | 
 
 /**
  * What kind of memory this is. Used as a server-side discriminator so
- * tools like `lore-list-decisions` can filter without post-processing.
+ * tools like `lore-decision action='list'` can filter without post-processing.
  *
  * `task` memories carry tracking-style state (open / blocked / done) and
  * supersede the legacy tracking-predicate facts (`needs_action` /
@@ -190,7 +190,7 @@ export type MemoryKind =
  * - `blocked` — waiting on an external dependency. Pair with `Blocked By`
  *   to name the blocker (PR number, person, service). Migrated
  *   `blocked_by` facts land here.
- * - `done` — closed successfully. `lore-task-close` writes this.
+ * - `done` — closed successfully. `lore-task action='close'` writes this.
  * - `cancelled` — dropped without completion. Distinct from `done` so
  *   metrics distinguish "shipped" from "abandoned".
  *
@@ -205,7 +205,7 @@ export type TaskState =
   | "cancelled"
 
 /** Task states that count as "still owing work" — surfaced by
- *  `lore-tasks` and the wake-up Tasks section by default. */
+ *  `lore-task action='list'` and the wake-up Tasks section by default. */
 export const ACTIVE_TASK_STATES: TaskState[] = ["open", "in-progress", "blocked"]
 
 /**
@@ -247,7 +247,7 @@ export interface Memory {
    * Free-form space-separated tokens for things that don't belong in the
    * closed `Tags` vocabulary — PR numbers, ticket IDs, file paths, class or
    * function names, session identifiers. Indexed by Notion's text search so
-   * `lore-search` finds them, but kept out of the tag index.
+   * `lore-query action='search'` finds them, but kept out of the tag index.
    */
   keywords: string
   session: string
@@ -269,7 +269,8 @@ export interface Memory {
   /**
    * Normalized subject the task is about. Matches the legacy fact
    * Subject field for migrated tasks. Empty string when not set;
-   * `lore-ask` and `lore-tasks` filter against this column server-side.
+   * `lore-query action='ask'` and `lore-task action='list'` filter
+   * against this column server-side.
    */
   entity: string
 }
@@ -480,9 +481,9 @@ export type Task = Memory & {
 
 /**
  * Lightweight task summary — no markdown body. Returned by
- * `TaskService.list()` for the index-tier triage paths (`lore-tasks`,
- * wake-up Tasks section) so they don't pay an N+1 `retrieveMarkdown`
- * cost.
+ * `TaskService.list()` for the index-tier triage paths
+ * (`lore-task action='list'`, wake-up Tasks section) so they don't
+ * pay an N+1 `retrieveMarkdown` cost.
  */
 export type TaskSummary = Omit<Task, "content">
 
@@ -499,7 +500,7 @@ export interface CreateTaskInput {
   blockedBy?: string
   /**
    * Normalized entity name the task is about. Defaults to `subject` when
-   * omitted so `lore-ask(entity)` always has something to match.
+   * omitted so `lore-query action='ask'` always has something to match.
    */
   entity?: string
   /** Due date / next review. Maps to the `Review By` column. */
@@ -541,11 +542,12 @@ export interface ListTasksOpts {
    * recall the same task set. Deduplicated and trimmed by the caller —
    * `TaskService.list` lifts an empty list to "no entity filter."
    *
-   * Singular-input call sites (`lore-task` action='list') wrap their
+   * Singular-input call sites (`lore-task action='list'`) wrap their
    * one user-facing string into a one-element array; alias-expanding
-   * call sites (`lore-ask`) hand in the canonical name plus aliases
-   * from `EntityService`. Caps live at the boundary that owns the
-   * expansion (see `expandEntityQueryVariants` in `core/entity.ts`).
+   * call sites (`lore-query action='ask'`) hand in the canonical name
+   * plus aliases from `EntityService`. Caps live at the boundary that
+   * owns the expansion (see `expandEntityQueryVariants` in
+   * `core/entity.ts`).
    */
   entities?: string[]
   /** Filter by state. Omit to use `ACTIVE_TASK_STATES`. */
@@ -647,7 +649,7 @@ export type FactPredicate =
   | "waiting_on"
   | "blocked_by"
   // Decision-graph predicates — created exclusively by DecisionService.
-  // Not exposed through `lore-learn` to keep the decision graph consistent.
+  // Not exposed through `lore-fact` to keep the decision graph consistent.
   | "decided_by"
   | "supersedes_decision"
   | "informs"

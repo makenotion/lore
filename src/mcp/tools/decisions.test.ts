@@ -66,6 +66,17 @@ function createMockServer() {
       if (!handler) throw new Error(`missing handler ${name}`)
       return handler
     },
+    /**
+     * Wrap a polymorphic dispatcher in a one-action shim so individual
+     * tests can call it with action-specific args alone. The dispatcher's
+     * discriminated union still validates the per-action schema.
+     */
+    getActionHandler(toolName: string, action: string) {
+      const handler = handlers.get(toolName)
+      if (!handler) throw new Error(`missing handler ${toolName}`)
+      return (args: Record<string, unknown>) =>
+        handler({ ...args, action } as never)
+    },
   }
 }
 
@@ -109,7 +120,7 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const loreDecide = mockServer.getHandler("lore-decide")
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
     await loreDecide({
       decision: "New decision",
@@ -179,7 +190,7 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const loreDecide = mockServer.getHandler("lore-decide")
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
     const result = await loreDecide({
       decision: "Replace auth middleware",
@@ -246,7 +257,7 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const loreDecide = mockServer.getHandler("lore-decide")
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
     const result = await loreDecide({
       decision: "Replace auth middleware",
@@ -297,7 +308,7 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const loreDecide = mockServer.getHandler("lore-decide")
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
     await loreDecide({
       decision: "Replace auth middleware",
@@ -354,7 +365,7 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const loreDecide = mockServer.getHandler("lore-decide")
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
     const result = await loreDecide({
       decision: "Replace auth middleware",
@@ -398,7 +409,7 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const loreDecide = mockServer.getHandler("lore-decide")
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
     await loreDecide({
       decision: "New decision",
@@ -427,7 +438,7 @@ describe("lore-list-decisions projectName resolution", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-list-decisions")
+    const handler = mockServer.getActionHandler("lore-decision", "list")
 
     const result = await handler({ projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -450,7 +461,7 @@ describe("lore-decision-context projectName resolution", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     const result = await handler({ entity: "AuthService", projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -496,7 +507,7 @@ describe("lore-decision-context — partial decision resolution", () => {
     const services = servicesWithPartialFailure()
 
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     const result = await handler({ entity: "AuthService" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -516,7 +527,7 @@ describe("lore-decision-context — partial decision resolution", () => {
     const mockServer = createMockServer()
     const services = servicesWithPartialFailure()
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     vi.stubEnv("LORE_DEBUG", "1")
 
@@ -525,13 +536,13 @@ describe("lore-decision-context — partial decision resolution", () => {
 
       expect(stderr).toHaveBeenCalledTimes(1)
       const logged = String(stderr.mock.calls[0][0])
-      // Same exact-format pin as `lore-ask`: ensures both tools emit the
-      // identical canonical line so ops filters work uniformly. A field
-      // reorder in one call site without the other would break
-      // cross-tool correlation silently; pinning the full line here
-      // catches the drift.
+      // Same exact-format pin as `lore-query action='ask'`: ensures both
+      // tools emit the identical canonical line so ops filters work
+      // uniformly. A field reorder in one call site without the other
+      // would break cross-tool correlation silently; pinning the full
+      // line here catches the drift.
       expect(logged).toBe(
-        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-decision-context\n",
+        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-decision\n",
       )
     } finally {
       vi.unstubAllEnvs()
@@ -543,7 +554,7 @@ describe("lore-decision-context — partial decision resolution", () => {
     const mockServer = createMockServer()
     const services = servicesWithPartialFailure()
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     vi.stubEnv("LORE_DEBUG", "")
 
@@ -630,7 +641,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       },
     })
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     await handler({ entity: "AuthSvc" } as never)
 
@@ -665,7 +676,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       },
     })
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     const result = await handler({ entity: "User" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -695,7 +706,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
     const mockServer = createMockServer()
     const services = makeServicesWithEntities({ skipEntities: true })
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     await handler({ entity: "AuthService" } as never)
 
@@ -730,7 +741,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       facts: [],
     })
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     const result = await handler({ entity: "User" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -751,7 +762,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       .fn()
       .mockRejectedValue(new Error("notion 429"))
     registerDecisionTools(mockServer.server, services as never)
-    const handler = mockServer.getHandler("lore-decision-context")
+    const handler = mockServer.getActionHandler("lore-decision", "context")
 
     const result = await handler({ entity: "AuthService" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text

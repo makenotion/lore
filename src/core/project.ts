@@ -107,8 +107,9 @@ export class ProjectService {
    * same project pays one Notion round-trip, not one per tool call.
    *
    * Uses `getOrLoad` so N concurrent cold-start callers — an MCP batch
-   * that fans out `lore-remember` + `lore-learn` + `lore-ask` against the
-   * same project in a single tick — share a single `dataSources.query`.
+   * that fans out `lore-memory` + `lore-fact` + `lore-query` action='ask'
+   * against the same project in a single tick — share a single
+   * `dataSources.query`.
    *
    * Negative lookups are not cached — a `create` followed by a
    * `findByName` in the same session must see the new page.

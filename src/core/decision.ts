@@ -9,7 +9,8 @@
  * The service writes only to the Memories DB — it never creates facts or
  * touches other databases. Graph coordination (auto-creating `decided_by` /
  * `supersedes_decision` facts) happens in the MCP tool layer, consistent with
- * how `lore-remember` orchestrates topics + memories in `src/mcp/tools/memory.ts`.
+ * how `lore-memory action='save'` orchestrates topics + memories in
+ * `src/mcp/tools/memory.ts`.
  */
 
 import type { Client } from "@notionhq/client"
@@ -37,8 +38,8 @@ const DEFAULT_REVIEW_EXTENSION_DAYS = 90
 /** Decision id → Decision cache. Shorter TTL than the project/topic
  *  name caches because decisions mutate (supersession, review-completion)
  *  more than project metadata. Cap is generous — decisions are numerous
- *  but access patterns are bursty around `lore-wake-up` and
- *  `lore-decision-context`. */
+ *  but access patterns are bursty around `lore-context action='wake-up'`
+ *  and `lore-decision action='context'`. */
 const DECISION_CACHE_TTL_MS = 30_000
 const DECISION_CACHE_MAX = 500
 
@@ -132,8 +133,9 @@ export class DecisionService {
   /**
    * List decisions matching the given filters. Returns summaries with no
    * markdown body — O(1) Notion API calls regardless of result count. This is
-   * the index tier that decision-path tools (`lore-list-decisions`,
-   * `lore-wake-up`'s decisions section, `lore-audit`'s overdue decisions)
+   * the index tier that decision-path tools
+   * (`lore-decision action='list'`, `lore-context action='wake-up'`'s
+   * decisions section, `lore-query action='audit'`'s overdue decisions)
    * rely on for agent-ingestion performance.
    */
   async list(
@@ -278,8 +280,8 @@ export class DecisionService {
    * with more than 100 overdue decisions, the rows beyond the first page
    * never come back. Sort order is `Review By asc`, so truncation drops
    * the *least* overdue tail — but the gap is real: an operator who runs
-   * `lore-audit` and counts the rendered rows would believe that is the
-   * complete set.
+   * `lore-query action='audit'` and counts the rendered rows would
+   * believe that is the complete set.
    */
   async queryOverdue(opts?: {
     projectId?: string

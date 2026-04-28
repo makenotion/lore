@@ -3,8 +3,9 @@
  *
  * The MCP server is a long-lived stdio process: a single conversation may
  * resolve the same project or topic name many times across
- * `lore-remember`, `lore-learn`, `lore-ask`, and `lore-wake-up`. Without a
- * cache each resolution is a Notion query; with one, the second and
+ * `lore-memory action='save'`, `lore-fact action='create'`,
+ * `lore-query action='ask'`, and `lore-context action='wake-up'`. Without
+ * a cache each resolution is a Notion query; with one, the second and
  * subsequent lookups inside the TTL window are free.
  *
  * **Stampede-safe via `getOrLoad`.** Concurrent cold-start misses on the
