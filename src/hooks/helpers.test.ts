@@ -1,15 +1,23 @@
 /**
- * Tests for the Stop hook's non-blocking save path.
+ * Tests for the Stop hook's non-blocking save path, the auto-digest helper
+ * action it schedules, and the SessionEnd compatibility shim.
  *
  * The Stop hook used to emit `{"decision": "block"}` and force an extra
  * agent turn; P2-05 replaced that with a detached background spawn that
- * never blocks the main agent. These tests pin that contract:
+ * never blocks the main agent. 0.6.0 also moved auto-digest scheduling
+ * onto Stop (via a separate detached node child) and dropped active
+ * SessionEnd registration. These tests pin that contract:
  *   - Stop stdout never contains `"decision": "block"`
- *   - A spawn fires at the interval
- *   - The per-session lock prevents an overlapping second spawn
+ *   - A save spawn fires at the interval
+ *   - The per-session lock prevents an overlapping second save spawn
+ *   - Stop schedules the detached auto-digest helper on every accepted event
+ *   - The SessionEnd shim is a strict no-op
+ *   - The auto-digest helper threads config and env-var overrides into
+ *     `fireDigestIfStale` correctly
  *
  * `helpers.ts` is now import-safe: its entry-point guard skips `main()`
- * when invoked from a test runner, so we can exercise `handleStop` directly.
+ * when invoked from a test runner, so we can exercise `handleStop`,
+ * `handleSessionEnd`, and `handleAutoDigest` directly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
@@ -37,12 +45,22 @@ vi.hoisted(() => {
 // the rest of the hook runs as if `claude` were installed.
 //
 // `fireDigestIfStaleMock` stands in for the digest scheduler so the
-// session-end integration tests can assert wiring (was the call made? with
+// auto-digest integration tests can assert wiring (was the call made? with
 // what shape?) without firing real Notion or `claude -p` work.
-const { spawnMock, execFileSyncMock, fireDigestIfStaleMock } = vi.hoisted(() => ({
+//
+// `scheduleAutoDigestSpawnMock` stands in for the detached node fork the
+// Stop hook now schedules — tests assert it was called with the right cwd
+// without actually forking a child process.
+const {
+  spawnMock,
+  execFileSyncMock,
+  fireDigestIfStaleMock,
+  scheduleAutoDigestSpawnMock,
+} = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileSyncMock: vi.fn(() => "/mock/bin/claude\n"),
   fireDigestIfStaleMock: vi.fn(async () => "no-project" as const),
+  scheduleAutoDigestSpawnMock: vi.fn<(cwd: string) => void>(),
 }))
 
 vi.mock("node:child_process", async () => {
@@ -54,7 +72,11 @@ vi.mock("node:child_process", async () => {
 vi.mock("./digest-scheduler.js", async () => {
   const actual =
     await vi.importActual<typeof import("./digest-scheduler.js")>("./digest-scheduler.js")
-  return { ...actual, fireDigestIfStale: fireDigestIfStaleMock }
+  return {
+    ...actual,
+    fireDigestIfStale: fireDigestIfStaleMock,
+    scheduleAutoDigestSpawn: scheduleAutoDigestSpawnMock,
+  }
 })
 
 import type { HookConfig } from "./config.js"
@@ -66,6 +88,7 @@ import {
 } from "./lock.js"
 import {
   deriveAgentName,
+  handleAutoDigest,
   handleStop,
   handleSessionEnd,
   parseUserQueryFromEvent,
@@ -157,6 +180,7 @@ describe("handleStop", () => {
 
     spawnMock.mockReset()
     spawnMock.mockImplementation(() => fakeLiveChild())
+    scheduleAutoDigestSpawnMock.mockReset()
   })
 
   afterEach(() => {
@@ -306,8 +330,8 @@ describe("handleStop", () => {
     // PF2-03 invariant: handleStop only advances the save counter on
     // `result.kind === "spawned"`. When `spawnBackgroundSave` returns
     // `lock-held` (because a peer is still in flight), the counter must
-    // stay where it is so the next Stop or the SessionEnd recovery path
-    // can retry. A regression here would re-introduce the bug PR #66 fixed.
+    // stay where it is so the next Stop hook retries. A regression here
+    // would re-introduce the bug PR #66 fixed.
     writeTranscript(transcriptPath, 5)
     const sessionId = "sess-counter-invariant"
 
@@ -327,8 +351,8 @@ describe("handleStop", () => {
     // returns before child_process.spawn is invoked.
     expect(spawnMock).not.toHaveBeenCalled()
 
-    // Counter must remain at 0 — proving the SessionEnd recovery path will
-    // see currentCount > lastSaveCount and re-fire on session close.
+    // Counter must remain at 0 — proving the next Stop hook will see
+    // currentCount > lastSaveCount and re-fire the save on its turn.
     const { readFileSync, existsSync } = await import("node:fs")
     const counterPath = join(getStateDir(), `${sessionId}.count`)
     if (existsSync(counterPath)) {
@@ -353,184 +377,152 @@ describe("handleStop", () => {
     const lockContent = readFileSync(lockPath(sessionId), "utf-8").trim()
     expect(lockContent).toBe(process.pid.toString())
   })
+
+  it("schedules the detached auto-digest helper with the event cwd", async () => {
+    // 0.6.0: auto-digest moved off SessionEnd to a detached node child
+    // spawned from Stop. The parent process must NOT init Notion or gather
+    // digest data — the scheduling call is the parent's only contribution.
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-auto-digest",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig()
+    )
+
+    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
+    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledWith(tmpDir)
+  })
+
+  it("schedules auto-digest even when the save threshold is not reached", async () => {
+    // The save counter and the digest marker debounce independently —
+    // a quiet session that doesn't trigger autosave should still get a
+    // chance to refresh a stale digest. The marker debounce inside the
+    // helper is the only guard against repeated firings.
+    writeTranscript(transcriptPath, 1)
+    await handleStop(
+      {
+        session_id: "sess-quiet",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ saveInterval: 5 })
+    )
+
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("schedules auto-digest with process.cwd() when the event has no cwd", async () => {
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-no-cwd",
+        transcript_path: transcriptPath,
+      },
+      defaultConfig()
+    )
+
+    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
+    expect(scheduleAutoDigestSpawnMock.mock.calls[0]![0]).toBe(process.cwd())
+  })
+
+  it("schedules auto-digest even when the transcript is missing or unreadable", async () => {
+    // Stop hook must always emit `{}` and always give the digest path a
+    // chance to run, regardless of whether the transcript was readable.
+    await handleStop(
+      {
+        session_id: "sess-no-transcript",
+        // No transcript_path, so readTranscriptForSave returns null and
+        // handleStop's early-return branch fires. That branch must still
+        // schedule the digest helper.
+        cwd: tmpDir,
+      },
+      defaultConfig()
+    )
+
+    expect(spawnMock).not.toHaveBeenCalled()
+    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
+    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledWith(tmpDir)
+  })
 })
 
-describe("handleSessionEnd", () => {
-  let tmpDir: string
-  let transcriptPath: string
+describe("handleSessionEnd compatibility shim", () => {
+  // 0.6.0 removed active SessionEnd registration. `handleSessionEnd` is
+  // kept as a one-release exit-0 no-op so stale Claude Code settings
+  // pointing at `node dist/hooks/helpers.js session-end` keep exiting
+  // cleanly until operators reinstall.
+
+  const savedEnv = { ...process.env }
   let stdoutSpy: { mockRestore: () => void }
   let stderrSpy: { mockRestore: () => void }
-  const savedEnv = { ...process.env }
+  let stderrWrites: string[]
 
   beforeEach(() => {
-    try {
-      rmSync(getStateDir(), { recursive: true, force: true })
-    } catch {
-      // Nothing to clean.
-    }
-    tmpDir = mkdtempSync(join(tmpdir(), "lore-session-end-test-"))
-    transcriptPath = join(tmpDir, "transcript.jsonl")
-
     stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
-    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
-
+    stderrWrites = []
+    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      stderrWrites.push(String(chunk))
+      return true
+    })
     spawnMock.mockReset()
-    spawnMock.mockImplementation(() => ({
-      pid: process.pid,
-      unref: () => {},
-      kill: () => true,
-    }))
+    spawnMock.mockImplementation(() => fakeLiveChild())
+    fireDigestIfStaleMock.mockReset()
+    scheduleAutoDigestSpawnMock.mockReset()
   })
 
   afterEach(() => {
     stdoutSpy.mockRestore()
     stderrSpy.mockRestore()
-    rmSync(tmpDir, { recursive: true, force: true })
-    try {
-      rmSync(getStateDir(), { recursive: true, force: true })
-    } catch {
-      // Nothing to clean.
-    }
-    // Restore env vars our tests mutated.
     process.env = { ...savedEnv }
   })
 
-  function writeTranscriptAt(path: string, userMessages: number): void {
-    const lines: string[] = []
-    for (let i = 0; i < userMessages; i++) {
-      lines.push(
-        JSON.stringify({
-          type: "user",
-          message: { role: "user", content: [{ type: "text", text: `user ${i}` }] },
-        })
-      )
-      lines.push(
-        JSON.stringify({
-          type: "assistant",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: `assistant ${i}` }],
-          },
-        })
-      )
-    }
-    writeFileSync(path, lines.join("\n"))
-  }
-
-  it("spawns a background save with the session-end prompt allowlist", async () => {
-    writeTranscriptAt(transcriptPath, 3)
+  it("resolves without spawning a save even when ambient env vars are populated", async () => {
+    // Pre-0.6.0 Claude Code shells forwarded the event JSON to the helper
+    // via `LORE_SESSION_END_CONTENT`. A stale settings.json invocation
+    // can still set that env var, so we explicitly assert the shim
+    // ignores it — the compatibility handler is a strict no-op, not a
+    // soft-deprecated path that re-activates when input is present.
     process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-end",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
+      session_id: "sess-stale",
+      transcript_path: "/nonexistent/transcript.jsonl",
+      cwd: "/tmp",
     })
     delete process.env["LORE_AUTOSAVE"]
 
-    await handleSessionEnd()
-
-    expect(spawnMock).toHaveBeenCalledTimes(1)
-    const [bin, args] = spawnMock.mock.calls[0] as [string, string[]]
-    expect(typeof bin).toBe("string")
-    expect(args).toContain("-p")
-    const allowedIdx = args.indexOf("--allowedTools")
-    const allowed = args[allowedIdx + 1]
-    expect(allowed).toContain("lore-memory")
-    expect(allowed).not.toContain("lore-journal")
-  })
-
-  it("skips when fewer than two user messages are present", async () => {
-    writeTranscriptAt(transcriptPath, 1)
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-tiny",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
-    delete process.env["LORE_AUTOSAVE"]
-
-    await handleSessionEnd()
+    await expect(handleSessionEnd()).resolves.toBeUndefined()
 
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
-  it("respects LORE_AUTOSAVE=false and returns immediately", async () => {
-    writeTranscriptAt(transcriptPath, 10)
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-disabled",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
-    process.env["LORE_AUTOSAVE"] = "false"
-
+  it("does not call fireDigestIfStale or schedule the auto-digest helper", async () => {
+    // Auto-digest scheduling moved to Stop entirely. The stale shim must
+    // not double-fire the scheduler from a SessionEnd path.
     await handleSessionEnd()
 
-    expect(spawnMock).not.toHaveBeenCalled()
+    expect(fireDigestIfStaleMock).not.toHaveBeenCalled()
+    expect(scheduleAutoDigestSpawnMock).not.toHaveBeenCalled()
   })
 
-  // End-to-end pin of acceptance criterion (d) "no regression in session-end
-  // save reliability". Three pieces of code conspire to make recovery work
-  // after a mid-session spawn rejection: spawnBackgroundSave returning a
-  // non-`spawned` SpawnResult, handleStop conditionally bumping the counter
-  // only when `result.kind === "spawned"`, and handleSessionEnd's
-  // currentCount > lastSaveCount guard. A future refactor could quietly
-  // break any one of them — this test fails loudly if it does.
-  it("recovers a rejected mid-session spawn via the SessionEnd path", async () => {
-    writeTranscriptAt(transcriptPath, 3)
-    const sessionId = "sess-recovery"
-
-    // Pre-acquire the lock with a known-alive PID (this process), so the
-    // first handleStop sees an in-flight save and rejects before spawn.
-    const heldLock = tryAcquireSessionLock(sessionId, process.pid)
-    expect(heldLock).not.toBeNull()
-
-    await handleStop(
-      { session_id: sessionId, transcript_path: transcriptPath, cwd: tmpDir },
-      // 2-message threshold matches the helpers default; the transcript has
-      // 3 user messages so the threshold is reached on this call.
-      {
-        saveInterval: 2,
-        autoSave: true,
-        wakeUp: true,
-        autoDigest: true,
-        catchAllName: null,
-        subProjects: [],
-      }
-    )
-
-    // Stop's spawn was blocked by the held lock — counter must NOT have
-    // advanced, otherwise SessionEnd's recovery guard would skip.
-    expect(spawnMock).not.toHaveBeenCalled()
-
-    // Clear the artificial block so SessionEnd's own spawn can land.
-    releaseSessionLock(heldLock!)
-
-    // Now drive SessionEnd. With the save counter still at 0 and the
-    // transcript holding 3 user messages, currentCount - lastSaveCount = 3
-    // > 0, so the recovery path fires.
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: sessionId,
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
-    delete process.env["LORE_AUTOSAVE"]
-
+  it("emits no stderr by default — a stale hook must be invisible to the operator", async () => {
     await handleSessionEnd()
 
-    expect(spawnMock).toHaveBeenCalledTimes(1)
+    expect(stderrWrites.join("")).toBe("")
   })
 })
 
-describe("handleSessionEnd → fireDigestIfStale wiring", () => {
+describe("handleAutoDigest", () => {
   let tmpDir: string
-  let transcriptPath: string
   let stdoutSpy: { mockRestore: () => void }
   let stderrSpy: { mockRestore: () => void }
   const savedEnv = { ...process.env }
   const originalCwd = process.cwd()
 
-  // Minimal `.lore.yaml` so `loadHookState` returns a populated `config` +
-  // `configRoot`. Without these fields the digest block in `handleSessionEnd`
-  // is gated off (`if (state.config && state.configRoot)`) — the wired path
-  // would never run and the test would be vacuously green.
+  // Minimal `.lore.yaml` so `loadHookState` returns a populated `config`
+  // + `configRoot`. Without these fields the auto-digest helper short-
+  // circuits before reaching `fireDigestIfStale`.
   const FIXTURE_YAML = `vault:
   pageId: vault-fixture-id
 projects:
@@ -541,10 +533,8 @@ hooks:
 `
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "lore-session-end-digest-"))
+    tmpDir = mkdtempSync(join(tmpdir(), "lore-auto-digest-"))
     writeFileSync(join(tmpDir, ".lore.yaml"), FIXTURE_YAML)
-    transcriptPath = join(tmpDir, "transcript.jsonl")
-    writeTranscript(transcriptPath, 3)
 
     stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
     stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
@@ -555,14 +545,13 @@ hooks:
     fireDigestIfStaleMock.mockReset()
     fireDigestIfStaleMock.mockResolvedValue("no-project")
 
-    // chdir so `findConfigFile(process.cwd())` finds the fixture. The hook
-    // event's `cwd` field is what `fireDigestIfStale` ultimately sees, but
-    // `loadHookState` reads `process.cwd()` to find the config.
+    // chdir so the helper's `findConfigFile(process.cwd())` finds the
+    // fixture. The detached child the Stop hook spawns gets `cwd`
+    // baked in by `child_process.spawn`, so production reads the same
+    // value via `process.cwd()`.
     process.chdir(tmpDir)
 
-    // Default: enable digest path. Individual tests override.
     delete process.env["LORE_AUTO_DIGEST"]
-    delete process.env["LORE_AUTOSAVE"]
   })
 
   afterEach(() => {
@@ -578,21 +567,15 @@ hooks:
     process.env = { ...savedEnv }
   })
 
-  it("calls fireDigestIfStale with the event cwd, loaded config, and autoDigest=true", async () => {
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-digest",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
-
-    await handleSessionEnd()
+  it("calls fireDigestIfStale with process.cwd(), loaded config, and autoDigest=true", async () => {
+    await handleAutoDigest()
 
     expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
     const [cwdArg, stateArg] = fireDigestIfStaleMock.mock.calls[0] as unknown as [
       string,
       { config: { vault: { pageId: string } }; configRoot: string; autoDigest: boolean },
     ]
-    expect(cwdArg).toBe(tmpDir)
+    expect(cwdArg).toBe(process.cwd())
     // findConfigFile canonicalizes via real-path resolution (`/var → /private/var`
     // on macOS), so compare canonical to canonical instead of the raw mkdtemp.
     expect(stateArg.configRoot).toBe(realpathSync(tmpDir))
@@ -602,16 +585,9 @@ hooks:
 
   it("threads autoDigest=false through to the scheduler when LORE_AUTO_DIGEST=false", async () => {
     process.env["LORE_AUTO_DIGEST"] = "false"
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-env-disabled",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
 
-    await handleSessionEnd()
+    await handleAutoDigest()
 
-    // The scheduler IS still called — it owns the disabled-short-circuit so
-    // observability stays consistent. But it must see autoDigest=false.
     expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
     const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
     expect(stateArg.autoDigest).toBe(false)
@@ -620,74 +596,41 @@ hooks:
   it("threads autoDigest=false when hooks.autoDigest is false in .lore.yaml", async () => {
     writeFileSync(
       join(tmpDir, ".lore.yaml"),
-      FIXTURE_YAML.replace("autoDigest: true", "autoDigest: false")
+      FIXTURE_YAML.replace("autoDigest: true", "autoDigest: false"),
     )
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-config-disabled",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
 
-    await handleSessionEnd()
+    await handleAutoDigest()
 
     expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
     const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
     expect(stateArg.autoDigest).toBe(false)
   })
 
-  it("env override wins even when hooks.autoDigest is true (LORE_AUTO_DIGEST=false trumps config)", async () => {
-    // FIXTURE_YAML has autoDigest: true; env override should still flip it.
+  it("env override wins over `hooks.autoDigest: true` in config", async () => {
     process.env["LORE_AUTO_DIGEST"] = "false"
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-env-overrides-config",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
 
-    await handleSessionEnd()
+    await handleAutoDigest()
 
     const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
     expect(stateArg.autoDigest).toBe(false)
   })
 
-  it("swallows scheduler throws so session exit stays clean (fail-open contract)", async () => {
+  it("swallows scheduler throws so the detached child still exits cleanly", async () => {
+    // The detached helper has no parent to propagate failures to; an
+    // uncaught throw would only end up in `child.stderr` and confuse
+    // operators inspecting hook state. The handler must trap the throw.
     fireDigestIfStaleMock.mockRejectedValueOnce(new Error("notion exploded"))
-    process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-      session_id: "sess-throws",
-      transcript_path: transcriptPath,
-      cwd: tmpDir,
-    })
 
-    // Must not throw — the inline try/catch around fireDigestIfStale at
-    // helpers.ts:540-550 contains the error so session exit stays clean.
-    await expect(handleSessionEnd()).resolves.toBeUndefined()
+    await expect(handleAutoDigest()).resolves.toBeUndefined()
     expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
   })
 
-  it("does not call fireDigestIfStale when no .lore.yaml is found in any ancestor of cwd", async () => {
-    // The principal review on PR #68 named "drop the
-    // `state.config && state.configRoot` guard" as a regression mode the
-    // wiring tests must catch. The other cases all run with a populated
-    // .lore.yaml so the guard is always satisfied; this case runs from a
-    // directory whose ancestor chain has no .lore.yaml so loadHookState
-    // returns { config: null, configRoot: null }. A regression that
-    // dropped the guard would crash inside the un-mocked scheduler with
-    // resolveProjectPathFromCwd(cwd, null, null).
-    //
-    // os.tmpdir() resolves to /var/folders/... on macOS and /tmp on Linux;
-    // walking upward from a fresh subdirectory there hits / without
-    // crossing any project's .lore.yaml on the runners we use.
-    const noConfigDir = mkdtempSync(join(tmpdir(), "lore-no-config-"))
+  it("returns early without calling fireDigestIfStale when no .lore.yaml is found", async () => {
+    const noConfigDir = mkdtempSync(join(tmpdir(), "lore-no-config-auto-digest-"))
     try {
       process.chdir(noConfigDir)
-      writeTranscript(join(noConfigDir, "transcript.jsonl"), 3)
-      process.env["LORE_SESSION_END_CONTENT"] = JSON.stringify({
-        session_id: "sess-no-config",
-        transcript_path: join(noConfigDir, "transcript.jsonl"),
-        cwd: noConfigDir,
-      })
 
-      await handleSessionEnd()
+      await handleAutoDigest()
 
       expect(fireDigestIfStaleMock).not.toHaveBeenCalled()
     } finally {

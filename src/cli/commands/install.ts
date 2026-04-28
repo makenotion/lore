@@ -276,7 +276,7 @@ function mergeClaudeHookEntries(
   return filtered
 }
 
-function removeClaudeScriptEntries(
+export function removeClaudeScriptEntries(
   entries: ClaudeHookEntry[] | undefined,
   scriptName: string,
 ): ClaudeHookEntry[] | undefined {
@@ -288,6 +288,50 @@ function removeClaudeScriptEntries(
       ),
   )
   return filtered.length > 0 ? filtered : undefined
+}
+
+/**
+ * Plan the SessionEnd cleanup that `lore install --client claude` applies on
+ * reinstall. Pure function: takes the existing `hooks.SessionEnd` array,
+ * returns the post-cleanup array (or `undefined` when every entry was
+ * Lore-owned and the caller should `delete settings.hooks.SessionEnd`)
+ * along with flags describing what was removed for status / "will remove"
+ * messaging.
+ *
+ * 0.6.0 dropped active SessionEnd registration. Two historical Lore-owned
+ * shapes need to be stripped: the post-P2-04 `session-end.sh` registration
+ * and the older `autosave.sh`-on-SessionEnd legacy form. Unrelated user
+ * hooks on `SessionEnd` are preserved entry-by-entry.
+ *
+ * Note: cleanup runs at the `ClaudeHookEntry` granularity. A hand-edited
+ * settings.json that mixes a Lore-owned and a user-owned hook command in
+ * a single `entry.hooks[]` array would lose the sibling on cleanup —
+ * Lore's writer never produces that shape, but it's a sharp edge worth
+ * being aware of.
+ */
+export function stripLoreOwnedSessionEndEntries(
+  entries: ClaudeHookEntry[] | undefined,
+): {
+  /** Post-cleanup entries, or `undefined` when every entry was Lore-owned. */
+  result: ClaudeHookEntry[] | undefined
+  /** True when a `session-end.sh` registration was removed. */
+  removedShim: boolean
+  /** True when a legacy `autosave.sh`-on-SessionEnd registration was removed. */
+  removedLegacyAutosave: boolean
+} {
+  const removedShim = detectClaudeHook(entries, "session-end.sh", "") !== "missing"
+  const removedLegacyAutosave =
+    detectClaudeHook(entries, "autosave.sh", "") !== "missing"
+
+  let next = entries
+  if (removedShim) next = removeClaudeScriptEntries(next, "session-end.sh")
+  if (removedLegacyAutosave) next = removeClaudeScriptEntries(next, "autosave.sh")
+
+  return {
+    result: next && next.length > 0 ? next : undefined,
+    removedShim,
+    removedLegacyAutosave,
+  }
 }
 
 interface CodexHookCommand {
@@ -541,7 +585,6 @@ interface InstallContext {
   pkgRoot: string
   autosavePath: string
   wakeupPath: string
-  sessionEndPath: string
   mcpJsPath: string
   skipPrompts: boolean
   /**
@@ -590,21 +633,18 @@ async function prepareInstallContext(
 
   const autosavePath = join(pkgRoot, "hooks", "autosave.sh")
   const wakeupPath = join(pkgRoot, "hooks", "wakeup.sh")
-  const sessionEndPath = join(pkgRoot, "hooks", "session-end.sh")
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
-  const [hasAutosave, hasWakeup, hasSessionEnd, hasMcpJs] = await Promise.all([
+  const [hasAutosave, hasWakeup, hasMcpJs] = await Promise.all([
     fileExists(autosavePath),
     fileExists(wakeupPath),
-    fileExists(sessionEndPath),
     fileExists(mcpJsPath),
   ])
 
-  if (!hasAutosave || !hasWakeup || !hasSessionEnd || !hasMcpJs) {
+  if (!hasAutosave || !hasWakeup || !hasMcpJs) {
     const missing: string[] = []
     if (!hasAutosave) missing.push("  hooks/autosave.sh")
     if (!hasWakeup) missing.push("  hooks/wakeup.sh")
-    if (!hasSessionEnd) missing.push("  hooks/session-end.sh")
     if (!hasMcpJs) missing.push("  dist/mcp.js")
     console.error("Required files not found:")
     for (const path of missing) console.error(path)
@@ -616,7 +656,6 @@ async function prepareInstallContext(
   await Promise.all([
     chmod(autosavePath, 0o755),
     chmod(wakeupPath, 0o755),
-    chmod(sessionEndPath, 0o755),
   ])
 
   const wakeUpConfig = await readWakeUpConfig(projectDir)
@@ -626,7 +665,6 @@ async function prepareInstallContext(
     pkgRoot,
     autosavePath,
     wakeupPath,
-    sessionEndPath,
     mcpJsPath,
     skipPrompts,
     wakeUpConfig,
@@ -683,18 +721,18 @@ async function runClaudeInstall(
     "wakeup.sh",
     context.wakeupPath,
   )
-  const sessionEndStatus = detectClaudeHook(
-    hooks["SessionEnd"],
-    "session-end.sh",
-    context.sessionEndPath,
-  )
 
+  // Active SessionEnd registration was removed in 0.6.0. The cleanup planner
+  // returns the post-cleanup array (or undefined when every entry was
+  // Lore-owned and the SessionEnd key should be deleted) along with flags
+  // describing what was removed for the status output below.
+  const sessionEndCleanup = stripLoreOwnedSessionEndEntries(hooks["SessionEnd"])
+  const hasSessionEndShim = sessionEndCleanup.removedShim
+  const hasLegacySessionEndAutosave = sessionEndCleanup.removedLegacyAutosave
   const hasLegacyAutosave =
     detectClaudeHook(hooks["PostToolUse"], "autosave.sh", "") !== "missing"
   const hasLegacyWakeup =
     detectClaudeHook(hooks["PreToolUse"], "wakeup.sh", "") !== "missing"
-  const hasLegacySessionEnd =
-    detectClaudeHook(hooks["SessionEnd"], "autosave.sh", "") !== "missing"
   const hasLegacyPreCompact =
     detectClaudeHook(hooks["PreCompact"], "autosave.sh", "") !== "missing"
   const hasLegacyMcp = Boolean(
@@ -718,21 +756,22 @@ async function runClaudeInstall(
   console.log(
     `  Wakeup hook:       ${statusLabel(wakeupStatus)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
   )
-  console.log(`  Session-end hook:  ${statusLabel(sessionEndStatus)}`)
+  if (hasSessionEndShim) console.log("  Session-end hook:  will remove")
   if (hasLegacyAutosave) console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
   if (hasLegacyWakeup) console.log("  Legacy hook:       PreToolUse/Task -> will migrate")
-  if (hasLegacySessionEnd) console.log("  Legacy hook:       SessionEnd -> will remove")
+  if (hasLegacySessionEndAutosave)
+    console.log("  Legacy hook:       SessionEnd/autosave.sh -> will remove")
   if (hasLegacyPreCompact) console.log("  Legacy hook:       PreCompact -> will remove")
   if (hasLegacyMcp) console.log("  Legacy MCP:        settings.json -> will migrate to .mcp.json")
 
   const allCurrent =
     autosaveStatus === "current" &&
     wakeupStatus === "current" &&
-    sessionEndStatus === "current" &&
+    !hasSessionEndShim &&
     mcpStatus === "current" &&
     !hasLegacyAutosave &&
     !hasLegacyWakeup &&
-    !hasLegacySessionEnd &&
+    !hasLegacySessionEndAutosave &&
     !hasLegacyPreCompact &&
     !hasLegacyMcp
 
@@ -781,17 +820,16 @@ async function runClaudeInstall(
     mergedHooks["PreToolUse"] = removeClaudeScriptEntries(hooks["PreToolUse"], "wakeup.sh")
     if (!mergedHooks["PreToolUse"]) delete mergedHooks["PreToolUse"]
   }
-  if (hasLegacySessionEnd) {
-    mergedHooks["SessionEnd"] = removeClaudeScriptEntries(hooks["SessionEnd"], "autosave.sh")
-    if (!mergedHooks["SessionEnd"]) delete mergedHooks["SessionEnd"]
-  }
-  if (sessionEndStatus !== "current") {
-    mergedHooks["SessionEnd"] = mergeClaudeHookEntries(
-      mergedHooks["SessionEnd"] as ClaudeHookEntry[] | undefined,
-      "session-end.sh",
-      context.sessionEndPath,
-      { matcher: "" },
-    )
+  // 0.6.0: Lore no longer registers a SessionEnd hook. The pre-computed
+  // cleanup result strips Lore-owned entries (both the `session-end.sh`
+  // shim path and the older `autosave.sh`-on-SessionEnd legacy path) while
+  // preserving unrelated user hooks on the same event.
+  if (hasSessionEndShim || hasLegacySessionEndAutosave) {
+    if (sessionEndCleanup.result) {
+      mergedHooks["SessionEnd"] = sessionEndCleanup.result
+    } else {
+      delete mergedHooks["SessionEnd"]
+    }
   }
   if (hasLegacyPreCompact) {
     mergedHooks["PreCompact"] = removeClaudeScriptEntries(hooks["PreCompact"], "autosave.sh")
@@ -840,7 +878,8 @@ async function runClaudeInstall(
   if (mcpStatus !== "current") console.log("  MCP server:        installed (.mcp.json)")
   if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
   if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
-  if (sessionEndStatus !== "current") console.log("  Session-end hook:  installed")
+  if (hasSessionEndShim || hasLegacySessionEndAutosave)
+    console.log("  Session-end hook:  removed (autosave covers Stop only)")
   if (hasLegacyMcp) console.log("  Legacy MCP:        removed from settings.json")
   console.log("  Restart Claude Code for changes to take effect.")
 }

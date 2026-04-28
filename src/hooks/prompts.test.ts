@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   buildDigestPrompt,
   buildProjectSelectionGuidance,
-  buildSessionEndPrompt,
+  buildBackgroundSavePrompt,
 } from "./prompts.js"
 
 describe("buildProjectSelectionGuidance", () => {
@@ -43,26 +43,25 @@ describe("buildProjectSelectionGuidance", () => {
   })
 })
 
-describe("buildSessionEndPrompt", () => {
-  it("opens with the session-end marker and labels the transcript untrusted", () => {
-    const prompt = buildSessionEndPrompt([], null, "Session content")
-    expect(prompt.startsWith("[Lore session-end save]")).toBe(true)
+describe("buildBackgroundSavePrompt", () => {
+  it("opens with the autosave marker and labels the transcript untrusted", () => {
+    const prompt = buildBackgroundSavePrompt([], null, "Session content")
+    expect(prompt.startsWith("[Lore autosave]")).toBe(true)
     expect(prompt).toContain("untrusted session data")
   })
 
   it("indents the transcript content to visually separate it from instructions", () => {
-    const prompt = buildSessionEndPrompt([], null, "line one\nline two")
+    const prompt = buildBackgroundSavePrompt([], null, "line one\nline two")
     expect(prompt).toContain("    line one")
     expect(prompt).toContain("    line two")
   })
 
-  it("lists only tools the session-end sub-agent is actually allowed to call", () => {
+  it("lists only tools the autosave sub-agent is actually allowed to call", () => {
     // spawnBackgroundSave allows the polymorphic surface (lore-memory,
-    // lore-fact, lore-decision, lore-task) plus the legacy aliases as a
-    // transition-window safety net. The prompt itself teaches the
-    // polymorphic surface so subagents we drive learn the canonical
+    // lore-fact, lore-decision, lore-task). The prompt itself teaches
+    // the polymorphic surface so subagents we drive learn the canonical
     // names.
-    const prompt = buildSessionEndPrompt([], null, "")
+    const prompt = buildBackgroundSavePrompt([], null, "")
     expect(prompt).toContain("lore-memory")
     expect(prompt).toContain("lore-fact")
     expect(prompt).toContain("lore-decision")
@@ -80,25 +79,25 @@ describe("buildSessionEndPrompt", () => {
     // on `lore-fact`. Without this redirect, subagents trained on the
     // pre-P3-02 prompt fan their open-loop work back into a path the
     // server now rejects.
-    const prompt = buildSessionEndPrompt([], null, "")
+    const prompt = buildBackgroundSavePrompt([], null, "")
     expect(prompt).toContain("lore-task action='create'")
     expect(prompt).toMatch(/needs_action.*lore-task/s)
   })
 
   it("injects project guidance when sub-projects exist", () => {
-    const prompt = buildSessionEndPrompt(["Mail Backend"], "Mail", "...")
+    const prompt = buildBackgroundSavePrompt(["Mail Backend"], "Mail", "...")
     expect(prompt).toContain("Mail Backend")
     expect(prompt).toContain(`"Mail"`)
   })
 
   it("forbids session narration explicitly", () => {
-    const prompt = buildSessionEndPrompt([], null, "")
+    const prompt = buildBackgroundSavePrompt([], null, "")
     expect(prompt).toContain("not logging the session")
     expect(prompt).toContain("Do not paraphrase the session")
   })
 
   it("renders the session id and agent name when supplied", () => {
-    const prompt = buildSessionEndPrompt([], null, "transcript", "sess-xyz", "Codex")
+    const prompt = buildBackgroundSavePrompt([], null, "transcript", "sess-xyz", "Codex")
     expect(prompt).toContain("Session ID: sess-xyz")
     expect(prompt).toContain("Agent: Codex")
     expect(prompt).toContain(`session: "sess-xyz"`)
@@ -106,13 +105,13 @@ describe("buildSessionEndPrompt", () => {
   })
 
   it("omits the identity block when no session/agent are supplied", () => {
-    const prompt = buildSessionEndPrompt([], null, "transcript")
+    const prompt = buildBackgroundSavePrompt([], null, "transcript")
     expect(prompt).not.toContain("Session ID:")
     expect(prompt).not.toContain("Agent:")
   })
 
   it("places the identity block before the extraction filter", () => {
-    const prompt = buildSessionEndPrompt([], null, "transcript", "sess-xyz", "Codex")
+    const prompt = buildBackgroundSavePrompt([], null, "transcript", "sess-xyz", "Codex")
     const identityIdx = prompt.indexOf("Session ID:")
     const filterIdx = prompt.indexOf("You are not logging")
     expect(identityIdx).toBeGreaterThan(-1)

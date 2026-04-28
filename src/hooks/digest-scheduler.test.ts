@@ -1,6 +1,25 @@
 import { describe, expect, it, vi } from "vitest"
+
+// Hoisted mock for `node:child_process.spawn` so the
+// `scheduleAutoDigestSpawn` tests can capture the args + options the
+// helper passes to the platform spawn primitive without actually forking
+// a node process. Hoisting via `vi.hoisted` is required because ES
+// modules evaluate imports before top-level statements; without it, the
+// `digest-scheduler.js` import below would resolve `node:child_process`
+// to its real export before the mock is registered.
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+}))
+
+vi.mock("node:child_process", async () => {
+  const actual =
+    await vi.importActual<typeof import("node:child_process")>("node:child_process")
+  return { ...actual, spawn: spawnMock }
+})
+
 import {
   fireDigestIfStale,
+  scheduleAutoDigestSpawn,
   type DigestSchedulerDeps,
   type DigestSchedulerState,
 } from "./digest-scheduler.js"
@@ -265,5 +284,105 @@ describe("fireDigestIfStale", () => {
     await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     const lockKey = calls.spawn.mock.calls[0]![2]
     expect(lockKey).toBe("digest-Mail_Backend")
+  })
+})
+
+describe("scheduleAutoDigestSpawn", () => {
+  // The Stop hot-path contract is load-bearing: the parent must never
+  // gather digest data or initialize Notion clients inline. That contract
+  // rests entirely on the spawn options passed to `child_process.spawn`
+  // — `detached: true`, `stdio: "ignore"`, plus the post-spawn `unref()`
+  // call. A regression that flips any of those would let stderr from the
+  // digest child leak into Stop's response (Claude Code interprets that
+  // as a hook error message) or pin the parent's stdout to the child's
+  // lifetime. None of those would surface in a unit test that just
+  // mocks the function. Pin the spawn-options shape directly here.
+
+  function fakeChild(): { unref: ReturnType<typeof vi.fn> } {
+    return { unref: vi.fn() }
+  }
+
+  it("forks node with the auto-digest action and the supplied cwd", () => {
+    spawnMock.mockReset()
+    const child = fakeChild()
+    spawnMock.mockReturnValue(child)
+
+    scheduleAutoDigestSpawn("/some/project")
+
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [bin, args, options] = spawnMock.mock.calls[0]! as [
+      string,
+      string[],
+      { cwd: string; detached: boolean; stdio: string },
+    ]
+    expect(bin).toBe(process.execPath)
+    expect(args[args.length - 1]).toBe("auto-digest")
+    expect(options.cwd).toBe("/some/project")
+  })
+
+  it("spawns detached with stdio:ignore so the child never blocks the Stop hook", () => {
+    // Three properties make the digest helper safe to launch from the
+    // hot path:
+    //   - `detached: true` lets Node release the child to the OS so the
+    //     parent's event loop can exit while the child keeps running.
+    //   - `stdio: "ignore"` keeps the child's stderr out of Stop's
+    //     stdout response (Claude Code parses that response as JSON
+    //     and treats stderr leakage as a hook-error signal).
+    //   - The returned child must be `unref()`'d so a long-lived child
+    //     doesn't pin the parent process alive past Stop's natural exit.
+    spawnMock.mockReset()
+    const child = fakeChild()
+    spawnMock.mockReturnValue(child)
+
+    scheduleAutoDigestSpawn("/proj")
+
+    const options = spawnMock.mock.calls[0]![2] as {
+      detached: boolean
+      stdio: unknown
+    }
+    expect(options.detached).toBe(true)
+    expect(options.stdio).toBe("ignore")
+    expect(child.unref).toHaveBeenCalledTimes(1)
+  })
+
+  it("targets the sibling helpers.js file so the bundled and source layouts both resolve", () => {
+    // The spawn target is built via `new URL("./helpers.js", import.meta.url)`
+    // so the script path always resolves relative to the digest-scheduler
+    // module — `dist/hooks/digest-scheduler.js` → `dist/hooks/helpers.js`
+    // in production, `src/hooks/digest-scheduler.ts` → `src/hooks/helpers.js`
+    // (post-build) in tests. Either way the path ends in `/hooks/helpers.js`.
+    spawnMock.mockReset()
+    spawnMock.mockReturnValue(fakeChild())
+
+    scheduleAutoDigestSpawn("/proj")
+
+    const args = spawnMock.mock.calls[0]![1] as string[]
+    const helperPath = args[0]
+    expect(typeof helperPath).toBe("string")
+    expect(helperPath!.endsWith("/hooks/helpers.js")).toBe(true)
+  })
+
+  it("swallows spawn failures and writes a [lore] stderr line so the Stop hook stays fail-open", () => {
+    // The Stop hook contract requires `{}\n` to be emitted regardless of
+    // what auto-digest scheduling does. A throw out of `child_process.spawn`
+    // (no fork available, EAGAIN, etc.) must not propagate into the Stop
+    // path; the helper must trap it and log instead.
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => {
+      throw new Error("EAGAIN")
+    })
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(String(chunk))
+        return true
+      })
+
+    expect(() => scheduleAutoDigestSpawn("/proj")).not.toThrow()
+    expect(stderrChunks.join("")).toContain("[lore] auto-digest scheduler: spawn failed")
+    expect(stderrChunks.join("")).toContain("EAGAIN")
+
+    stderrSpy.mockRestore()
   })
 })

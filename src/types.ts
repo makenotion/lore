@@ -792,8 +792,8 @@ export interface LoreConfig {
     autoSave?: boolean
     wakeUp?: boolean
     /**
-     * Background digest synthesizer scheduled by the session-end hook. Fires
-     * at most once per project per 7 days via a filesystem marker. Default:
+     * Background digest synthesizer scheduled by the Stop hook. Fires at
+     * most once per project per 7 days via a filesystem marker. Default:
      * true. Honors `LORE_AUTO_DIGEST=false` env override as well — either
      * disables the auto-spawn without affecting the manual `lore digest` CLI.
      */

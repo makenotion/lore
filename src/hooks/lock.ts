@@ -1,11 +1,11 @@
 /**
  * Background-save concurrency guard.
  *
- * The Stop hook and the SessionEnd hook both `spawnBackgroundSave` a detached
- * `claude -p` process. Two overlapping saves for the same session would race
- * on the same transcript and create duplicate memories, so each session owns
- * at most one in-flight save at a time. A global cap prevents runaway token
- * spend if many sessions fire saves simultaneously.
+ * The Stop hook fires `spawnBackgroundSave` for autosave, and the auto-digest
+ * helper fires `spawnBackgroundSave` for digest synthesis. Two overlapping
+ * saves keyed on the same id would race and create duplicate memories, so
+ * each lock key owns at most one in-flight save at a time. A global cap
+ * prevents runaway token spend if many sessions fire saves simultaneously.
  *
  * The spawned child is `claude` — we can't attach a cleanup hook to it, so
  * the lock is owned by the child's PID and released implicitly when that PID

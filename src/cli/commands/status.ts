@@ -196,9 +196,9 @@ export interface DigestRow {
   lastDigest: { date: string; daysAgo: number } | null
   /**
    * Marker mtime age in days. `null` when no marker file exists — i.e., the
-   * session-end auto-digest has never fired (or was cleared by a spawn-failed
-   * rollback). Distinguished from `Infinity` so the renderer can show
-   * "marker missing" rather than treating it as just very stale.
+   * Stop-triggered auto-digest has never fired (or was cleared by a
+   * spawn-failed rollback). Distinguished from `Infinity` so the renderer
+   * can show "marker missing" rather than treating it as just very stale.
    */
   markerAgeDays: number | null
 }
@@ -404,13 +404,13 @@ function formatDigestRow(row: DigestRow, longestName: number): string {
 
   if (row.markerAgeDays === null) {
     parts.push("marker missing")
-    parts.push("next fire on next session-end")
+    parts.push("next fire on next Stop hook")
   } else {
     const ageDays = Math.floor(row.markerAgeDays)
     parts.push(`marker ${ageDays}d old`)
     const remaining = DIGEST_STALE_DAYS - row.markerAgeDays
     if (remaining <= 0) {
-      parts.push("next fire on next session-end")
+      parts.push("next fire on next Stop hook")
     } else {
       parts.push(`next fire ~${Math.ceil(remaining)}d`)
     }

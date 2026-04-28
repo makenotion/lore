@@ -1,12 +1,12 @@
 /**
  * Background `claude -p` spawn primitive.
  *
- * Both the Stop / SessionEnd autosave paths and the digest scheduler call
- * into here, so the helper carries the post-#66 concurrency machinery
- * (per-session lock, global cap, per-session stderr log) plus the digest
- * extensions: a configurable allowlist (so the digest can run against a
- * narrower tool surface than the catch-all save) and a configurable log
- * label (so [lore] stderr lines tell a session-end failure apart from a
+ * Both the Stop autosave path and the digest scheduler call into here, so
+ * the helper carries the post-#66 concurrency machinery (per-session lock,
+ * global cap, per-session stderr log) plus the digest extensions: a
+ * configurable allowlist (so the digest can run against a narrower tool
+ * surface than the catch-all save) and a configurable log label (so
+ * `[lore]` stderr lines tell a background-save failure apart from a
  * digest failure without having to grep the PID).
  *
  * Lives in its own module because `helpers.ts` runs `main()` when the file
@@ -36,8 +36,8 @@ import {
 } from "./lock.js"
 
 /**
- * Tool allowlist for the catch-all session save agent. Broad on purpose —
- * the session-end worker may fan out across save / fact-create /
+ * Tool allowlist for the catch-all background save agent. Broad on purpose
+ * — the background save worker may fan out across save / fact-create /
  * decision-create / task-create depending on what the session produced.
  * The save prompt teaches the polymorphic surface, so the spawned subagent
  * calls these names directly.
@@ -50,10 +50,10 @@ export const DEFAULT_SAVE_ALLOWLIST = [
 ].join(",")
 
 /**
- * Tool allowlist for the digest synthesizer. Narrower than the session-end
- * allowlist so a bad synthesizer prompt violation (e.g. trying to call
- * `lore-fact` action='create') becomes a tool-call error, not a silent
- * extra write. The prompt at `prompts.ts:buildDigestPrompt` already
+ * Tool allowlist for the digest synthesizer. Narrower than the background
+ * save allowlist so a bad synthesizer prompt violation (e.g. trying to
+ * call `lore-fact` action='create') becomes a tool-call error, not a
+ * silent extra write. The prompt at `prompts.ts:buildDigestPrompt` already
  * instructs this; the allowlist is defense in depth.
  */
 export const DIGEST_ALLOWLIST = ["mcp__lore__lore-memory"].join(",")
@@ -84,7 +84,7 @@ export interface SpawnBackgroundSaveOptions {
    */
   allowedTools?: string
   /**
-   * Prefix for `[lore]` stderr lines — `"session-end"`, `"digest"`, etc.
+   * Prefix for `[lore]` stderr lines — `"background save"`, `"digest"`, etc.
    * Lets operators distinguish failures across paths without grepping PIDs.
    */
   logLabel?: string

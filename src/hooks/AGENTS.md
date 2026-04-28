@@ -7,18 +7,22 @@
 This directory implements Lore's hook runner. Shell hooks (Claude Code and
 Codex) invoke `node dist/hooks/helpers.js <action>` at defined lifecycle
 events; the helper reads the hook event from env vars, loads `.lore.yaml`,
-and either injects context (`wakeup`) or spawns a background save (`autosave`
-/ `session-end`).
+and either injects context (`wakeup`) or spawns a background save
+(`autosave`). The Stop hook also spawns a detached `auto-digest` helper
+that owns digest synthesis off the hot path. The `session-end` action is
+an exit-0 compatibility shim for stale Claude Code settings written before
+0.6.0 dropped active SessionEnd registration.
 
 ## Files
 
 | File              | Responsibility                                                                                         |
 | ----------------- | ------------------------------------------------------------------------------------------------------ |
-| `helpers.ts`      | Entry point: routes to `autosave` / `wakeup` / `session-end` handlers                                  |
+| `helpers.ts`      | Entry point: routes to `autosave` / `wakeup` / `auto-digest` / `session-end` handlers                  |
 | `prompts.ts`      | Pure prompt builders for background-save sub-agents                                                    |
 | `transcript.ts`   | Parse Claude Code / Codex transcript formats into messages                                             |
 | `lock.ts`         | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir |
 | `config.ts`       | `.lore.yaml` `hooks` section defaults + merge                                                          |
+| `digest-scheduler.ts` | `fireDigestIfStale` (in-child digest logic) + `scheduleAutoDigestSpawn` (parent-side detached fork off Stop) |
 | `digest-marker.ts`| Per-config-root debounce marker for the auto-digest scheduler                                          |
 | `drift-marker.ts` | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)          |
 | `marker-key.ts`   | Shared `configKey()` and `safeProjectName()` helpers for every filesystem marker in this dir           |
@@ -35,22 +39,56 @@ handlers can be unit-tested directly.
 
 ## Autosave flow
 
-Autosave fires on two events and both paths spawn a detached `claude -p`
-sub-agent that writes structured content via lore-\* MCP tools. The main
-agent is **never** blocked.
+Autosave fires on `Stop` only and spawns a detached `claude -p` sub-agent
+that writes structured content via lore-\* MCP tools. The main agent is
+**never** blocked.
 
-| Hook              | Trigger                                                                         | Prompt builder          |
-| ----------------- | ------------------------------------------------------------------------------- | ----------------------- |
-| `Stop` (autosave) | `userMessages - lastSavedAt >= saveInterval` (first save: min(saveInterval, 2)) | `buildSessionEndPrompt` |
-| `SessionEnd`      | `userMessages >= 2 && userMessages > lastSavedAt`                               | `buildSessionEndPrompt` |
+| Hook              | Trigger                                                                         | Prompt builder            |
+| ----------------- | ------------------------------------------------------------------------------- | ------------------------- |
+| `Stop` (autosave) | `userMessages - lastSavedAt >= saveInterval` (first save: min(saveInterval, 2)) | `buildBackgroundSavePrompt` |
 
 Before P2-05 the `Stop` path injected `{"decision": "block"}` and forced an
 extra agent turn. That pattern is gone: `Stop` now always emits `{}\n` and
 offloads save work to a background process. The hook returns in
 milliseconds and the user's next turn starts immediately.
 
-Both paths share the same prompt because the spawned sub-agent has no prior
-context and must receive the transcript inline.
+The spawned sub-agent has no prior context and receives the transcript
+inline through the prompt.
+
+### Auto-digest (Stop-triggered, detached)
+
+After every accepted `Stop` event the hook also spawns a separate detached
+node child to run the `auto-digest` helper action. The child loads
+`.lore.yaml`, honors `hooks.autoDigest: false` and `LORE_AUTO_DIGEST=false`,
+and delegates to `fireDigestIfStale`. The marker debounce in
+`digest-marker.ts` guarantees ≤ 1 digest per project per 7 days even if
+`Stop` fires every minute.
+
+Two-process split is load-bearing:
+
+- The parent `Stop` hook never gathers digest data, never initializes a
+  Notion client. Stop's `{}` emission stays in-the-millisecond regardless
+  of how stale the digest marker is.
+- The child runs the heavy work asynchronously. Any failure inside the
+  child is logged to `[lore]` stderr and swallowed — the parent has
+  already exited.
+
+`scheduleAutoDigestSpawn` (in `digest-scheduler.ts`) is the parent-side
+fork helper; `handleAutoDigest` (in `helpers.ts`) is the child-side
+handler.
+
+### SessionEnd compatibility shim
+
+Active SessionEnd registration was removed in 0.6.0 (issue 26). Stale
+`~/.claude/.../settings.json` entries pointing at
+`hooks/session-end.sh` keep firing `node dist/hooks/helpers.js
+session-end` for one release cycle; the action resolves with no work,
+no transcript parse, no save spawn, no stderr noise. `lore install
+--client claude` strips Lore-owned SessionEnd entries on reinstall.
+
+A future release may delete both `hooks/session-end.sh` and the
+`session-end` switch case once operators have had a release cycle to
+refresh their installs.
 
 ## Wake-up flow
 
@@ -119,9 +157,9 @@ log would flood stderr on every Codex session.
 
 ## Concurrency guard
 
-Two hooks firing for the same session (e.g. a Stop hook fires while the
-SessionEnd save for the same session is still running) would race on the
-same transcript and create duplicate memories. `lock.ts` prevents this:
+Two `Stop` hooks firing for the same session in quick succession would race
+on the same transcript and create duplicate memories. `lock.ts` prevents
+this:
 
 - One lock file per session: `$TMPDIR/lore-hook-state/<sessionId>.lock`
 - The file contains the PID of the owning detached `claude -p` child
@@ -132,7 +170,7 @@ same transcript and create duplicate memories. `lock.ts` prevents this:
 - Global cap: `MAX_CONCURRENT_SAVES = 5`. Beyond that, new spawns are
   skipped rather than queued — missed saves are recovered by the next
   `Stop` (only if the prior spawn was rejected — the save counter does
-  not advance on rejection) or by `SessionEnd`.
+  not advance on rejection).
 
 `spawnBackgroundSave` spawns the child first, then calls
 `tryAcquireSessionLock` with the child's PID. If the O_EXCL write fails

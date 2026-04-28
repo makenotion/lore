@@ -146,9 +146,9 @@ export const digestCommand = new Command("digest")
           process.exit(1)
         }
 
-        // Touch the shared marker so the session-end auto-digest path debounces
-        // around a freshly-run manual digest — don't re-synthesize at the end
-        // of the next session in the same week.
+        // Touch the shared marker so the Stop-triggered auto-digest path
+        // debounces around a freshly-run manual digest — don't
+        // re-synthesize on the next Stop hook in the same week.
         await touchDigestMarker(services.configRoot, projectLabel)
 
         console.log(

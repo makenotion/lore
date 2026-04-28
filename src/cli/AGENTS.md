@@ -183,7 +183,7 @@ Mechanics:
   `src/core/digest.ts` (`gatherDigestData`).
 - The synthesizer prompt lives in `src/hooks/prompts.ts`
   (`buildDigestPrompt`) and uses the same untrusted-content framing as
-  `buildSessionEndPrompt`.
+  `buildBackgroundSavePrompt`.
 - Background spawn reuses `spawnBackgroundSave` from
   `src/hooks/background.ts` with `logLabel: "digest"` so stderr
   attributions stay distinct.
@@ -194,19 +194,21 @@ Mechanics:
 - `--since YYYY-MM-DD` (paired with optional `--until`) widens the window
   past the auto-scheduler's `period: "week"` default. Use this for
   projects that hover below the digest-worthy bar week-over-week — the
-  session-end scheduler's quiet-week branch keeps touching the marker
+  Stop-triggered scheduler's quiet-week branch keeps touching the marker
   for those, so no `source: "digest"` memory ever lands and
   `lore-wake-up`'s fast path stays dark. The CLI re-touches the same
-  marker after spawning, so a manual run debounces the next
-  session-end's auto-path correctly.
+  marker after spawning, so a manual run debounces the next Stop
+  hook's auto-path correctly.
 
 Operators invoke `lore digest --project Mail` (or any configured
-sub-project). It's the explicit path; the session-end hook fires it
-implicitly once per project per 7 days when the cwd resolves to a single
-sub-project. Both paths touch a per-project marker file under the hook
-state directory (`$TMPDIR/lore-hook-state/digest.<project>.last`) so the
-session-end path respects the debounce. The CLI also touches the marker
-so a manual run won't be immediately overridden by the next session-end.
+sub-project). It's the explicit path; the Stop hook fires it implicitly
+once per project per 7 days when the cwd resolves to a single sub-project,
+via a detached `auto-digest` helper child (so the parent Stop hook never
+pays Notion init / digest gather cost inline). Both paths touch a
+per-project marker file under the hook state directory
+(`$TMPDIR/lore-hook-state/digest.<project>.last`) so the auto path
+respects the debounce. The CLI also touches the marker so a manual run
+won't be immediately overridden by the next Stop hook.
 
 ## The status Command
 
@@ -239,9 +241,9 @@ A symmetric **Drift check** section (`formatDriftStatus` /
 `loadDriftStatus`) follows Digests. Three points only that aren't
 obvious from the rendered output:
 
-- Wording is "next fire on next *debounced session*", not "session-end"
+- Wording is "next fire on next *debounced session*", not "Stop hook"
   like digest, because drift fires on every debounced caller (MCP
-  server, shell hooks, digest scheduler) — not just session-end.
+  server, shell hooks, digest scheduler) — not just Stop.
 - `lore status` itself runs with `driftCheck: true`, so
   `resolveDriftCheck` touches the marker *before* the loader reads it.
   The section therefore reflects what debounced callers will see on

@@ -43,8 +43,8 @@ export function catchAllProjectName(config: LoreConfig): string | null {
  * Pure-filesystem variant of `resolveProject` that returns the configured
  * project *entry* (name + path) a cwd would resolve to, without the Notion
  * round-trip. Used by hot-path hooks that want to scope a cheap per-project
- * side effect (e.g., the session-end digest debounce marker) before paying
- * for full service initialization.
+ * side effect (e.g., the Stop-triggered digest debounce marker) before
+ * paying for full service initialization.
  *
  * Returns `null` when the cwd sits outside the config root, no projects are
  * configured, or only a catch-all would match — the caller then skips rather

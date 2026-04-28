@@ -1,7 +1,7 @@
 /**
  * Shared filesystem debounce marker for digest synthesis. Both the
- * session-end hook and the `lore digest` CLI write this marker so the
- * "≤ 1 digest per project per 7 days" session-end guarantee is respected
+ * Stop-triggered auto-digest helper and the `lore digest` CLI write this
+ * marker so the "≤ 1 digest per project per 7 days" guarantee is respected
  * even when an operator runs the CLI explicitly mid-week.
  *
  * Keyed on a short hash of the config root *plus* the project name so two

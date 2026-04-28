@@ -162,7 +162,7 @@ describe("formatDigestStatus", () => {
     )
   })
 
-  it("renders a missing-marker row as 'next fire on next session-end'", () => {
+  it("renders a missing-marker row as 'next fire on next Stop hook'", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
@@ -171,7 +171,7 @@ describe("formatDigestStatus", () => {
     const [, row] = formatDigestStatus(report)
     expect(row).toContain("no digest yet")
     expect(row).toContain("marker missing")
-    expect(row).toContain("next fire on next session-end")
+    expect(row).toContain("next fire on next Stop hook")
   })
 
   it("computes a fresh marker's remaining time as ceil(stale_days - age)", () => {
@@ -192,7 +192,7 @@ describe("formatDigestStatus", () => {
     expect(row).toContain("next fire ~2d")
   })
 
-  it("treats markers older than the freshness window as 'next fire on next session-end'", () => {
+  it("treats markers older than the freshness window as 'next fire on next Stop hook'", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
@@ -206,13 +206,13 @@ describe("formatDigestStatus", () => {
     }
     const [, row] = formatDigestStatus(report)
     expect(row).toContain("marker 9d old")
-    expect(row).toContain("next fire on next session-end")
+    expect(row).toContain("next fire on next Stop hook")
   })
 
-  it("treats a marker exactly at the freshness boundary as 'fire on next session-end'", () => {
+  it("treats a marker exactly at the freshness boundary as 'fire on next Stop hook'", () => {
     // markerAgeDays === DIGEST_STALE_DAYS (7) puts `remaining` at 0, which
     // matches the scheduler's `markerAge >= DIGEST_STALE_DAYS` semantic —
-    // the next session-end re-fires synthesis.
+    // the next Stop hook re-fires synthesis.
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
@@ -222,7 +222,7 @@ describe("formatDigestStatus", () => {
     }
     const [, row] = formatDigestStatus(report)
     expect(row).toContain("marker 7d old")
-    expect(row).toContain("next fire on next session-end")
+    expect(row).toContain("next fire on next Stop hook")
   })
 
   it("appends a truncation footer when the digest list query saturated", () => {
@@ -469,8 +469,8 @@ describe("formatDriftStatus", () => {
 
   it("renders a missing-marker row with the debounced-session phrasing", () => {
     // The wording differs from the digest section's "next fire on next
-    // session-end" because drift fires on every debounced caller (MCP
-    // server, shell hooks, digest scheduler) — not only on session-end.
+    // Stop hook" because drift fires on every debounced caller (MCP
+    // server, shell hooks, digest scheduler) — not only on Stop.
     const report: DriftStatusReport = {
       configured: true,
       markerAgeDays: null,

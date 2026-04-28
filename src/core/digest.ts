@@ -1,7 +1,7 @@
 /**
  * Digest data gathering — shared between the
  * `lore-context action='digest'` MCP tool, the `lore digest` CLI
- * command, and the session-end background synthesizer.
+ * command, and the Stop-triggered background synthesizer.
  *
  * Produces a project-scoped, markdown-formatted snapshot of recent activity
  * (memories grouped by source, tracking facts as open loops, and the
@@ -20,8 +20,8 @@ import { TRACKING_PREDICATES } from "../types.js"
  * Default staleness window matching `DEFAULT_DIGEST_FRESHNESS_DAYS` in
  * `wakeup.ts`: once a digest ages past this many days,
  * `lore-context action='wake-up'` stops surfacing it on the fast path.
- * The session-end auto-digest reuses the same
- * threshold — re-synthesize just in time for the next wake-up to pick it up.
+ * The Stop-triggered auto-digest reuses the same threshold — re-synthesize
+ * just in time for the next wake-up to pick it up.
  */
 export const DIGEST_STALE_DAYS = 7
 
@@ -108,8 +108,8 @@ export function isoDate(input: string | Date): string {
 }
 
 /**
- * Days between an ISO date and now, floor'd. Used by the session-end
- * scheduler to decide whether to re-fire synthesis.
+ * Days between an ISO date and now, floor'd. Used by the Stop-triggered
+ * auto-digest scheduler to decide whether to re-fire synthesis.
  */
 export function daysSince(iso: string, now: Date = new Date()): number {
   const then = new Date(iso).getTime()

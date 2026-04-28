@@ -204,7 +204,9 @@ Shell hooks for automated integration with AI coding assistants:
 
 - **Auto-save** (`hooks/autosave.sh`): Runs on the assistant `Stop` hook and
   continues the session with a Lore save prompt after enough user messages.
-  Works in both Claude Code and Codex.
+  Works in both Claude Code and Codex. The Stop hook also schedules a
+  detached auto-digest helper (off the hot path) so a stale weekly project
+  digest is regenerated without blocking the user's next turn.
 
 - **Wake-up** (`hooks/wakeup.sh`): Loads the latest project digest (if one was
   saved in the last 7 days), plus recent memories, active facts, and any
@@ -216,12 +218,13 @@ Shell hooks for automated integration with AI coding assistants:
   injection for both assistants. If `.lore.yaml` fails to parse, the hook falls
   back to the default (on) and writes a `[lore]` warning to stderr.
 
-- **Session-end** (`hooks/session-end.sh`): Claude Code only. Runs a
-  background fallback save when the stop hook did not already capture the
-  session.
-
 These hooks require `LORE_NOTION_TOKEN` to be set. They silently exit if the
 variable is absent.
+
+`hooks/session-end.sh` is kept as an exit-0 compatibility shim for Claude
+Code settings written before 0.6.0; new installs no longer register a
+SessionEnd hook. Re-running `lore install --client claude` strips any stale
+Lore-owned SessionEnd entries from `~/.claude/.../settings.json`.
 
 Codex also requires the project to be trusted before it will load
 project-scoped `.codex/*` files.
@@ -273,7 +276,7 @@ environment variable, then OAuth credentials at `~/.lore/credentials.json`.
 |----------|--------|
 | `LORE_NOTION_TOKEN` | Notion integration token (used when `auth.token` is absent from `.lore.yaml`) |
 | `LORE_AGENT_NAME` | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`) |
-| `LORE_AUTO_DIGEST=false` | Suppress the session-end auto-digest scheduler (CLI `lore digest` still works) |
+| `LORE_AUTO_DIGEST=false` | Suppress the Stop-triggered auto-digest scheduler (CLI `lore digest` still works) |
 | `LORE_NO_HYPERLINKS=1` | Skip OSC 8 clickable hyperlinks in `lore search` and `lore status` output, even under TTY. Same fallback as the non-TTY path. `=0`, `=false`, and empty string are treated as not set |
 | `NO_COLOR=1` | Honored alongside `LORE_NO_HYPERLINKS` to skip OSC 8 emission |
 

@@ -6,14 +6,19 @@
  * relevant context passed via environment variables.
  *
  * Autosave flow:
- *   - Stop hook (mid-session): count-based trigger → spawns a detached
- *     `claude -p` sub-agent in the background that writes structured content
- *     via lore-* MCP tools. The main agent is never blocked.
- *   - SessionEnd hook: same spawn machinery for one last save after the
- *     session window closes.
+ *   - Stop hook: count-based trigger → spawns a detached `claude -p`
+ *     sub-agent in the background that writes structured content via lore-*
+ *     MCP tools. The main agent is never blocked.
+ *   - Stop also schedules an auto-digest helper as a separate detached node
+ *     child (see `auto-digest` action below) so digest synthesis never runs
+ *     inline on the Stop hot path.
  *
  * A per-session lock (see `lock.ts`) ensures at most one background save is
  * in flight per session, and a global cap bounds total concurrent spawns.
+ *
+ * The `session-end` action exists only as a one-release exit-0 compatibility
+ * shim for stale Claude Code settings written before 0.6.0; new installs no
+ * longer register a SessionEnd hook (see `cli/commands/install.ts`).
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
@@ -29,7 +34,7 @@ import {
 import { initServicesFromConfig } from "../services.js"
 import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
-import { buildSessionEndPrompt } from "./prompts.js"
+import { buildBackgroundSavePrompt } from "./prompts.js"
 import {
   RANKED_WAKEUP_LIMITS,
   WAKEUP_OPEN_LOOPS_TRUNCATED_HINT,
@@ -37,7 +42,7 @@ import {
   loadWakeUpData,
 } from "../core/wakeup.js"
 import { spawnBackgroundSave } from "./background.js"
-import { fireDigestIfStale } from "./digest-scheduler.js"
+import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
 import { getStateDir } from "./lock.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
 
@@ -221,7 +226,15 @@ async function main(): Promise<void> {
     case "wakeup":
       await wakeup()
       break
+    case "auto-digest":
+      await handleAutoDigest()
+      break
     case "session-end":
+      // 0.6.0: kept as an exit-0 compatibility action for stale Claude Code
+      // settings.json registrations written before active SessionEnd was
+      // removed. `lore install --client claude` strips the registration on
+      // reinstall; this case lets stale settings fail silently in the
+      // meantime. A future release may remove it.
       await handleSessionEnd()
       break
     default:
@@ -290,11 +303,9 @@ interface TranscriptForSave {
 }
 
 /**
- * Read and inspect the transcript for an autosave event. Used by both the
- * mid-session Stop path and the SessionEnd path — they want the same parsing
- * and the same malformed-line diagnostics. Returns null when the event has no
- * transcript path or the file can't be read; callers should treat that as
- * "skip this save".
+ * Read and inspect the transcript for an autosave event. Returns null when
+ * the event has no transcript path or the file can't be read; callers
+ * should treat that as "skip this save".
  */
 async function readTranscriptForSave(
   event: HookEvent,
@@ -332,13 +343,16 @@ async function readTranscriptForSave(
  * hook always emits `{}` so the user's next turn starts immediately.
  *
  * Save work is gated by a per-session lock so two overlapping hook fires
- * can't race on the same transcript.
+ * can't race on the same transcript. Auto-digest synthesis is offloaded to
+ * a separate detached node child via `scheduleAutoDigestSpawn` so the Stop
+ * path never gathers digest data or initializes Notion clients inline.
  */
 export async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
   try {
     const read = await readTranscriptForSave(event, "Stop hook")
     if (!read) {
       process.stdout.write("{}\n")
+      scheduleAutoDigestSpawn(event.cwd ?? process.cwd())
       return
     }
     const { transcript, userMessageCount: currentCount } = read
@@ -353,7 +367,7 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
     if (sinceLast >= threshold) {
       const sessionContent = formatTranscriptSessionContent(transcript.messages)
       if (sessionContent) {
-        const prompt = buildSessionEndPrompt(
+        const prompt = buildBackgroundSavePrompt(
           config.subProjects,
           config.catchAllName,
           sessionContent,
@@ -367,7 +381,7 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
         // where it is. For benign races, the peer's spawn will produce a
         // memory and the next Stop catches up against the new count. For
         // genuine failures, leaving the counter unchanged lets the next
-        // Stop or the SessionEnd recovery path retry. (See PR #66.)
+        // Stop hook retry. (See PR #66.)
         const result = spawnBackgroundSave(
           event.cwd ?? process.cwd(),
           prompt,
@@ -379,8 +393,17 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
       }
     }
     process.stdout.write("{}\n")
+    // Auto-digest scheduling runs in a detached child so the parent Stop
+    // hook never pays the cost of `.lore.yaml` parse + Notion init + digest
+    // gather. The marker debounce inside the helper guarantees ≤ 1 digest
+    // per project per 7 days regardless of how often Stop fires.
+    scheduleAutoDigestSpawn(event.cwd ?? process.cwd())
   } catch (err) {
-    // Fail open: let the AI stop
+    // Fail open: let the AI stop. We intentionally do NOT schedule the
+    // auto-digest helper from this branch — an unexpected throw inside
+    // the Stop path means we don't know what state we're in (transcript
+    // corruption, lock-state inconsistency, fs errors), and the marker
+    // debounce will let the next clean Stop hook fire the digest anyway.
     process.stderr.write(
       `[lore] Stop hook error: ${err instanceof Error ? err.message : err}\n`
     )
@@ -673,7 +696,9 @@ async function wakeup(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// SessionEnd — background claude -p for structured saves
+// Auto-digest — detached helper invoked by Stop, runs digest synthesis
+// off the hot path so Notion init / digest data gathering never block the
+// Stop hook itself.
 // ---------------------------------------------------------------------------
 
 /**
@@ -685,73 +710,56 @@ function autoDigestEnvDisabled(): boolean {
 }
 
 /**
- * SessionEnd handler: spawns a background `claude -p` process to do
- * structured saves when the Stop hook didn't fire or left unsaved messages.
+ * Auto-digest action handler. Runs in the detached node child spawned by
+ * the Stop hook (see `scheduleAutoDigestSpawn` in `digest-scheduler.ts`).
  *
- * The background process inherits MCP config from the project's settings.json
- * and uses lore-* tools for journal, memory, and fact saves.
+ * Loads `.lore.yaml`, honors `hooks.autoDigest: false` plus
+ * `LORE_AUTO_DIGEST=false`, then delegates to `fireDigestIfStale` whose
+ * marker debounce guarantees ≤ 1 digest per project per 7 days regardless
+ * of how often the Stop hook fires.
  *
- * Completely non-blocking — never prevents session exit.
+ * Fail-open: any unexpected throw is logged and swallowed so the parent
+ * Stop hook (which has already exited by the time this child runs) is never
+ * affected.
  */
-export async function handleSessionEnd(): Promise<void> {
-  if (process.env["LORE_AUTOSAVE"] === "false") return
-
-  const raw = process.env["LORE_SESSION_END_CONTENT"]
-  if (!raw) return
-
+export async function handleAutoDigest(): Promise<void> {
   const state = await loadHookState()
-  if (!state.hookConfig.autoSave) return
+  if (!state.config || !state.configRoot) return
 
-  let event: HookEvent
   try {
-    event = JSON.parse(raw) as HookEvent
+    await fireDigestIfStale(process.cwd(), {
+      config: state.config,
+      configRoot: state.configRoot,
+      autoDigest: state.hookConfig.autoDigest && !autoDigestEnvDisabled(),
+    })
   } catch (err) {
     process.stderr.write(
-      `[lore] session-end: failed to parse event JSON: ${err instanceof Error ? err.message : err}\n`
+      `[lore] digest scheduler: unexpected failure — ${err instanceof Error ? err.message : err}\n`,
     )
-    return
   }
+}
 
-  const read = await readTranscriptForSave(event, "session-end")
-  if (read && read.userMessageCount >= 2) {
-    const lastSaveCount = await readSaveCount(event.session_id)
-    if (read.userMessageCount - lastSaveCount >= 1) {
-      const sessionContent = formatTranscriptSessionContent(read.transcript.messages)
-      if (sessionContent) {
-        const prompt = buildSessionEndPrompt(
-          state.hookConfig.subProjects,
-          state.hookConfig.catchAllName,
-          sessionContent,
-          event.session_id,
-          deriveAgentName(event)
-        )
-        // SessionEnd has no save counter to advance and no marker to roll
-        // back, so the SpawnResult is intentionally discarded. The helper's
-        // own per-session stderr log is the only postmortem on this path.
-        void spawnBackgroundSave(event.cwd ?? process.cwd(), prompt, event.session_id)
-      }
-    }
-  }
+// ---------------------------------------------------------------------------
+// SessionEnd — exit-0 compatibility shim for Claude Code settings written
+// before 0.6.0 dropped active SessionEnd registration. Kept for one release
+// cycle so stale `node dist/hooks/helpers.js session-end` invocations in
+// `~/.claude/.../settings.json` exit cleanly. A future release may delete
+// this and the matching `hooks/session-end.sh` shim.
+// ---------------------------------------------------------------------------
 
-  // Digest scheduling is independent of the save spawn — a quiet session
-  // with no new user messages shouldn't block a stale project's digest.
-  // Any failure here is swallowed: the scheduler's internal branches log +
-  // return one of the `SchedulerOutcome` values, and this outer guard
-  // catches unexpected throws (e.g. tmp-dir write failures) so session
-  // exit stays clean.
-  if (state.config && state.configRoot) {
-    try {
-      await fireDigestIfStale(event.cwd ?? process.cwd(), {
-        config: state.config,
-        configRoot: state.configRoot,
-        autoDigest: state.hookConfig.autoDigest && !autoDigestEnvDisabled(),
-      })
-    } catch (err) {
-      process.stderr.write(
-        `[lore] digest scheduler: unexpected failure — ${err instanceof Error ? err.message : err}\n`
-      )
-    }
-  }
+/**
+ * SessionEnd compatibility no-op. New installs no longer register a
+ * SessionEnd hook; this handler is intentionally inert so stale Claude
+ * Code settings written before 0.6.0 keep exiting `0` until operators
+ * reinstall.
+ *
+ * Resolves with `undefined`, never reads any environment, never spawns,
+ * never logs. A stale invocation must be invisible to the operator.
+ * Auto-digest scheduling lives on the Stop lifecycle (`handleAutoDigest`)
+ * — a stale SessionEnd invocation here must not double-fire it.
+ */
+export async function handleSessionEnd(): Promise<void> {
+  // Intentionally empty.
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +776,10 @@ if (isEntryPoint()) {
       process.stdout.write("{}\n")
       process.exit(0)
     }
-    process.exit(action === "session-end" ? 0 : 1)
+    // `session-end` is a stale-compatibility shim that must always exit 0;
+    // `auto-digest` runs detached off Stop and any failure is already
+    // logged — exiting non-zero would only confuse operators inspecting
+    // child process exit codes.
+    process.exit(action === "session-end" || action === "auto-digest" ? 0 : 1)
   })
 }

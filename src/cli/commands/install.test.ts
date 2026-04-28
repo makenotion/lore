@@ -7,8 +7,11 @@ import {
   detectClaudeHook,
   detectCodexHook,
   parseInstallClient,
+  removeClaudeScriptEntries,
+  stripLoreOwnedSessionEndEntries,
   stripShellEnvPrefix,
   toPortablePath,
+  type ClaudeHookEntry,
 } from "./install.js"
 
 describe("install helpers", () => {
@@ -95,6 +98,223 @@ describe("install helpers", () => {
     expect(containsTomlArrayOfTables("# [[comment]]\n[features]\ncodex_hooks = true\n")).toBe(
       false,
     )
+  })
+})
+
+describe("SessionEnd cleanup (issue 0.6.0/26)", () => {
+  // 0.6.0 stops registering a Claude Code SessionEnd hook. `lore install`
+  // must strip Lore-owned SessionEnd entries on reinstall while preserving
+  // any unrelated user hooks installed on the same event.
+
+  function loreSessionEndEntry(): ClaudeHookEntry {
+    return {
+      matcher: "",
+      hooks: [{ type: "command", command: "/tmp/lore/hooks/session-end.sh" }],
+    }
+  }
+
+  function legacyAutosaveOnSessionEndEntry(): ClaudeHookEntry {
+    // Pre-P2-04 install shape: the older `autosave.sh`-on-SessionEnd
+    // registration that Lore replaced with `session-end.sh`. `lore install`
+    // still needs to clean it up if it's been sitting in a stale settings
+    // file across multiple upgrades.
+    return {
+      matcher: "",
+      hooks: [{ type: "command", command: "/tmp/lore/hooks/autosave.sh" }],
+    }
+  }
+
+  function userOwnedSessionEndEntry(): ClaudeHookEntry {
+    return {
+      matcher: "",
+      hooks: [{ type: "command", command: "/Users/operator/scripts/notify.sh" }],
+    }
+  }
+
+  it("removes Lore-owned session-end.sh entries", () => {
+    const entries = [loreSessionEndEntry()]
+    expect(removeClaudeScriptEntries(entries, "session-end.sh")).toBeUndefined()
+  })
+
+  it("removes legacy SessionEnd -> autosave.sh entries", () => {
+    const entries = [legacyAutosaveOnSessionEndEntry()]
+    expect(removeClaudeScriptEntries(entries, "autosave.sh")).toBeUndefined()
+  })
+
+  it("preserves unrelated user hooks when stripping the Lore-owned shim", () => {
+    // Acceptance criterion: unrelated user hooks in Claude settings are
+    // preserved across reinstalls. Strip the Lore-owned entry and check
+    // the user-owned one survives untouched.
+    const entries = [loreSessionEndEntry(), userOwnedSessionEndEntry()]
+    const result = removeClaudeScriptEntries(entries, "session-end.sh")
+    expect(result).toBeDefined()
+    expect(result).toHaveLength(1)
+    expect(result![0]!.hooks[0]!.command).toBe("/Users/operator/scripts/notify.sh")
+  })
+
+  it("preserves unrelated user hooks when stripping the legacy autosave registration", () => {
+    const entries = [legacyAutosaveOnSessionEndEntry(), userOwnedSessionEndEntry()]
+    const result = removeClaudeScriptEntries(entries, "autosave.sh")
+    expect(result).toBeDefined()
+    expect(result).toHaveLength(1)
+    expect(result![0]!.hooks[0]!.command).toBe("/Users/operator/scripts/notify.sh")
+  })
+
+  it("returns undefined for an empty entry list so callers can `delete settings.hooks.SessionEnd`", () => {
+    // The install path checks `if (!mergedHooks["SessionEnd"]) delete ...`
+    // — `removeClaudeScriptEntries` returning undefined is what triggers
+    // the delete, leaving no `SessionEnd` key behind on a vault whose
+    // only entry was Lore-owned. A regression that returned an empty
+    // array here would leave `"SessionEnd": []` in settings.json,
+    // which is harmless but visible.
+    expect(removeClaudeScriptEntries([loreSessionEndEntry()], "session-end.sh")).toBeUndefined()
+    expect(removeClaudeScriptEntries(undefined, "session-end.sh")).toBeUndefined()
+  })
+
+  it("detects the Lore-owned shim entry against any path so reinstalls match across moved installs", () => {
+    // Acceptance criterion: `lore install --client claude` removes existing
+    // Lore-owned `session-end.sh` entries — even when the install moved
+    // (the recorded path no longer matches the current install's hook
+    // directory). `detectClaudeHook` matches by script-name suffix, so a
+    // stale entry pointing at `/old/path/hooks/session-end.sh` still
+    // classifies as present and is eligible for cleanup.
+    const entries: ClaudeHookEntry[] = [
+      {
+        matcher: "",
+        hooks: [{ type: "command", command: "/old/path/hooks/session-end.sh" }],
+      },
+    ]
+    // Empty expected path: we only care that the script name matches,
+    // not whether the path is "current".
+    expect(detectClaudeHook(entries, "session-end.sh", "")).not.toBe("missing")
+  })
+})
+
+describe("stripLoreOwnedSessionEndEntries (integration plan)", () => {
+  // The pure planner that drives `runClaudeInstall`'s SessionEnd cleanup.
+  // Test cases here mirror the real settings.json shapes the install path
+  // sees on reinstall — the helper-level filter coverage is upstream in
+  // `removeClaudeScriptEntries`'s unit tests; this suite proves the
+  // integration assembled on top of it preserves user hooks end-to-end.
+
+  function loreSessionEndEntry(): ClaudeHookEntry {
+    return {
+      matcher: "",
+      hooks: [{ type: "command", command: "/lore/hooks/session-end.sh", timeout: 10000 }],
+    }
+  }
+
+  function legacyAutosaveOnSessionEndEntry(): ClaudeHookEntry {
+    return {
+      matcher: "",
+      hooks: [{ type: "command", command: "/lore/hooks/autosave.sh" }],
+    }
+  }
+
+  function userOwnedSessionEndEntry(): ClaudeHookEntry {
+    return {
+      matcher: "*",
+      hooks: [
+        { type: "command", command: "/Users/operator/scripts/notify.sh", timeout: 30000 },
+      ],
+    }
+  }
+
+  it("returns no removals and the input untouched when no Lore-owned entries exist", () => {
+    // Acceptance criterion: byte-identical reinstall on a vault that's
+    // already SessionEnd-clean.
+    const entries = [userOwnedSessionEndEntry()]
+    const plan = stripLoreOwnedSessionEndEntries(entries)
+    expect(plan.removedShim).toBe(false)
+    expect(plan.removedLegacyAutosave).toBe(false)
+    // The result still contains the user entry. The reference may be the
+    // same array (helper short-circuits when nothing changed) or a copy —
+    // assert on shape, not identity.
+    expect(plan.result).toEqual([userOwnedSessionEndEntry()])
+  })
+
+  it("returns undefined when only a Lore-owned shim entry was registered", () => {
+    // Acceptance criterion: caller deletes the SessionEnd key entirely
+    // rather than leaving `"SessionEnd": []` in settings.json.
+    const plan = stripLoreOwnedSessionEndEntries([loreSessionEndEntry()])
+    expect(plan.removedShim).toBe(true)
+    expect(plan.removedLegacyAutosave).toBe(false)
+    expect(plan.result).toBeUndefined()
+  })
+
+  it("returns undefined when only a legacy autosave-on-SessionEnd entry was registered", () => {
+    const plan = stripLoreOwnedSessionEndEntries([legacyAutosaveOnSessionEndEntry()])
+    expect(plan.removedShim).toBe(false)
+    expect(plan.removedLegacyAutosave).toBe(true)
+    expect(plan.result).toBeUndefined()
+  })
+
+  it("strips both Lore-owned shapes when they coexist in the same SessionEnd array", () => {
+    // Some operators upgrade across multiple Lore versions and accumulate
+    // both registration shapes simultaneously; cleanup must remove both
+    // and leave SessionEnd empty.
+    const plan = stripLoreOwnedSessionEndEntries([
+      loreSessionEndEntry(),
+      legacyAutosaveOnSessionEndEntry(),
+    ])
+    expect(plan.removedShim).toBe(true)
+    expect(plan.removedLegacyAutosave).toBe(true)
+    expect(plan.result).toBeUndefined()
+  })
+
+  it("preserves an unrelated user hook entry on SessionEnd when stripping the Lore shim", () => {
+    // Issue 0.6.0/26 acceptance criterion: "Unrelated user hooks in Claude
+    // settings are preserved." This is the integration-level proof — the
+    // post-cleanup array still has the user entry verbatim.
+    const userEntry = userOwnedSessionEndEntry()
+    const plan = stripLoreOwnedSessionEndEntries([loreSessionEndEntry(), userEntry])
+    expect(plan.removedShim).toBe(true)
+    expect(plan.result).toBeDefined()
+    expect(plan.result).toHaveLength(1)
+    // Matcher and command must round-trip intact, not be reset to defaults.
+    expect(plan.result![0]).toEqual(userEntry)
+  })
+
+  it("preserves an unrelated user hook entry on SessionEnd when stripping the legacy autosave registration", () => {
+    const userEntry = userOwnedSessionEndEntry()
+    const plan = stripLoreOwnedSessionEndEntries([
+      legacyAutosaveOnSessionEndEntry(),
+      userEntry,
+    ])
+    expect(plan.removedLegacyAutosave).toBe(true)
+    expect(plan.result).toEqual([userEntry])
+  })
+
+  it("preserves multiple unrelated user hook entries when both Lore-owned shapes are stripped", () => {
+    // Multi-user-hook fixture: two different user-owned entries on
+    // SessionEnd, plus both Lore-owned shapes in between. Post-cleanup
+    // SessionEnd must contain exactly the two user entries in order.
+    const userA: ClaudeHookEntry = {
+      matcher: "git",
+      hooks: [{ type: "command", command: "/scripts/audit.sh" }],
+    }
+    const userB: ClaudeHookEntry = {
+      matcher: "*",
+      hooks: [{ type: "command", command: "/scripts/notify.sh" }],
+    }
+    const plan = stripLoreOwnedSessionEndEntries([
+      userA,
+      loreSessionEndEntry(),
+      userB,
+      legacyAutosaveOnSessionEndEntry(),
+    ])
+    expect(plan.removedShim).toBe(true)
+    expect(plan.removedLegacyAutosave).toBe(true)
+    expect(plan.result).toEqual([userA, userB])
+  })
+
+  it("returns no removals when the SessionEnd key is absent (undefined input)", () => {
+    // Vaults that never had SessionEnd registered at all (fresh install
+    // direct from 0.6.0 onward) should produce a no-op plan.
+    const plan = stripLoreOwnedSessionEndEntries(undefined)
+    expect(plan.removedShim).toBe(false)
+    expect(plan.removedLegacyAutosave).toBe(false)
+    expect(plan.result).toBeUndefined()
   })
 })
 

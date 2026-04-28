@@ -16,11 +16,11 @@ export interface HookConfig {
   autoSave: boolean
   wakeUp: boolean
   /**
-   * Whether the session-end hook may schedule a background digest
-   * synthesizer. Orthogonal to `autoSave` so an operator can keep per-session
-   * saves while pausing auto-digest (e.g. to audit synthesizer output
-   * quality). The CLI `lore digest` path ignores this flag — manual runs are
-   * always honored.
+   * Whether the Stop hook may schedule a background digest synthesizer.
+   * Orthogonal to `autoSave` so an operator can keep per-session saves
+   * while pausing auto-digest (e.g. to audit synthesizer output quality).
+   * The CLI `lore digest` path ignores this flag — manual runs are always
+   * honored.
    */
   autoDigest: boolean
   /**
