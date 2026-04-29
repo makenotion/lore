@@ -380,11 +380,12 @@ export interface UpdateMemoryInput {
  * Search execution mode. Trades off scope precision against ranking quality:
  *
  * - `"contains"` — `dataSources.query` against the Memories DB with
- *   `Title contains` / `Keywords contains` filters. Strictly DS-scoped (no
- *   workspace leakage), supports server-side property filters
- *   (`kind` / `status` / `tags`), but loses Notion's vector relevance ranking
- *   over page bodies. Best for substring/exact-phrase queries on titles and
- *   keyword tokens (PR numbers, ticket IDs, function names).
+ *   `Title contains` / `Keywords contains` / `Synopsis contains` filters.
+ *   Strictly DS-scoped (no workspace leakage), supports server-side property
+ *   filters (`kind` / `status` / `tags`), but loses Notion's vector relevance
+ *   ranking over page bodies. Best for substring/exact-phrase queries on
+ *   titles, keyword tokens (PR numbers, ticket IDs, function names), and the
+ *   short curated synopsis written at save time.
  * - `"semantic"` — workspace-wide `client.search` ranked by Notion's vector
  *   index over titles AND bodies. Preserves relevance ranking, but cannot
  *   apply server-side property filters and may rank non-Memory pages from

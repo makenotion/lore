@@ -477,7 +477,7 @@ describe("MemoryService.search — contains mode", () => {
     expect(args["data_source_id"]).toBe(db.dataSourceId)
   })
 
-  it("filters by Title OR Keywords contains for non-empty queries", async () => {
+  it("filters by Title OR Keywords OR Synopsis contains for non-empty queries", async () => {
     const { client, querySpy } = makeQueryClient([])
     const service = new MemoryService(client, db)
 
@@ -487,12 +487,15 @@ describe("MemoryService.search — contains mode", () => {
       | { or?: Array<Record<string, unknown>>; and?: Array<Record<string, unknown>> }
       | undefined
     // Only the text filter is set — no project/topic/tags/kind/status, so
-    // the wrapper isn't an `and`. The single filter is the OR of Title and
-    // Keywords contains.
+    // the wrapper isn't an `and`. The single filter is the OR of Title,
+    // Keywords, and Synopsis contains. Synopsis joins the precision lane as
+    // of issue 0.7.0/04 so an agent-curated short summary that doesn't
+    // appear verbatim in a title or keyword string still surfaces.
     expect(filter?.or).toBeDefined()
     expect(filter?.or).toEqual([
       { property: "Title", title: { contains: "PR-25650" } },
       { property: "Keywords", rich_text: { contains: "PR-25650" } },
+      { property: "Synopsis", rich_text: { contains: "PR-25650" } },
     ])
   })
 
@@ -603,6 +606,39 @@ describe("MemoryService.search — contains mode", () => {
     expect(results).toHaveLength(1)
     expect(results[0].content).toBe("")
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("text-clause OR composes with surrounding kind/tags filters under `and`", async () => {
+    // Pins the structural shape: when surrounding server-side filters
+    // (kind / tags) are present, the text-clause OR sits inside the `and`
+    // alongside them, untouched. End-to-end superset / parity / eviction
+    // invariants — the spec's fixture-vault acceptance — are pinned in
+    // `memory-search.integration.test.ts` against a stateful filter
+    // evaluator that mirrors Notion's `contains` predicate.
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "DecisionService",
+      mode: "contains",
+      kind: "decision",
+      tags: ["architecture"],
+    })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        {
+          or: [
+            { property: "Title", title: { contains: "DecisionService" } },
+            { property: "Keywords", rich_text: { contains: "DecisionService" } },
+            { property: "Synopsis", rich_text: { contains: "DecisionService" } },
+          ],
+        },
+      ]),
+    )
   })
 })
 
@@ -1741,6 +1777,95 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
       expect(explain[i].containsRank).toBe(i)
       expect(explain[i].semanticRank).toBeNull()
       expect(explain[i].rrfScore).toBeNull()
+    }
+  })
+
+  it("hybrid saturation: 3 contains hits land on contains-saturated regardless of which property each row matched on", async () => {
+    // Structural pin for the saturation-cutoff. Synopsis hits count
+    // toward HYBRID_FALLBACK_THRESHOLD the same way Title/Keywords hits
+    // do — three rows in the contains result list saturate, the parallel
+    // semantic call's output is discarded, and every row carries
+    // `contains-saturated`. The actual pre-#04→post-#04 threshold
+    // *crossing* (where adding Synopsis takes the hit count from 2 to
+    // 3) is demonstrated end-to-end in
+    // `memory-search.integration.test.ts` against a fixture vault that
+    // evaluates the contains predicate. Here we pin only the post-#04
+    // outcome at the threshold boundary.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildPageInDb("title-hit", "PR-25650 row"),
+        buildPageInDb("keywords-hit", "Other row"),
+        buildPageInDb("synopsis-hit", "Yet another row"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [buildPageInDb("semantic-only", "would float in under RRF")],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { memories, explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // Three contains hits hit the saturation threshold — semantic
+    // result is discarded and every row carries `contains-saturated`.
+    expect(memories.map((m) => m.id)).toEqual([
+      "title-hit",
+      "keywords-hit",
+      "synopsis-hit",
+    ])
+    for (const e of explain) {
+      expect(e.branch).toBe("contains-saturated")
+      expect(e.semanticRank).toBeNull()
+      expect(e.rrfScore).toBeNull()
+    }
+  })
+
+  it("hybrid stable branch: zero contains hits stays on rrf regardless of Synopsis OR branch", async () => {
+    // Companion to the threshold-crossing test: when the post-#04
+    // contains count stays on the same side of the threshold as
+    // pre-#04 (here, 0 → 0), the resolved branch is unchanged. Pins
+    // the "stable-branch fixture" half of issue 0.7.0/04's
+    // branch-stability acceptance.
+    const querySpy = vi.fn(async () => ({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildPageInDb("s-1", "semantic 1"),
+        buildPageInDb("s-2", "semantic 2"),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // Zero contains hits → RRF runs (the saturation gate doesn't fire).
+    // Every row sits on `rrf`, semantic-only.
+    for (const e of explain) {
+      expect(e.branch).toBe("rrf")
+      expect(e.containsRank).toBeNull()
+      expect(e.semanticRank).not.toBeNull()
     }
   })
 

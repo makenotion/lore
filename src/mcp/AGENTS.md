@@ -410,7 +410,7 @@ actual switching lives in `MemoryService.search` — see
 
 | Mode | Notion endpoint | Scope | Property filters | Body relevance |
 |------|----------------|-------|------------------|----------------|
-| `contains` | `dataSources.query` | Memories DS only | Server-side | No (titles + keywords only) |
+| `contains` | `dataSources.query` | Memories DS only | Server-side | No (server-side `contains` on Title, Keywords, and Synopsis) |
 | `semantic` | `client.search` | Workspace-wide | Post-filter | Yes |
 | `hybrid` (default) | Both, in parallel | Best-of-both | Server-side on the contains leg, post-filter on the RRF-fused tail | When contains under-shoots |
 

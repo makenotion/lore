@@ -1032,6 +1032,7 @@ export class MemoryService {
         or: [
           { property: "Title", title: { contains: trimmed } },
           { property: "Keywords", rich_text: { contains: trimmed } },
+          { property: "Synopsis", rich_text: { contains: trimmed } },
         ],
       })
     }

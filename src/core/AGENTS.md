@@ -124,7 +124,12 @@ Issues a `dataSources.query` against the Memories DS only — never touches
 - Tags: any-match `OR` across tag values (single value collapses to a flat
   `multi_select.contains`).
 - Kind / Status: server-side `select.equals`.
-- Text clause: `(Title contains query) OR (Keywords contains query)`.
+- Text clause: `(Title contains query) OR (Keywords contains query) OR
+  (Synopsis contains query)`. Synopsis joins the precision lane (issue
+  0.7.0/01–02) because it's agent-curated, short, and high-signal — a
+  phrase absent from title and keywords but present in a synopsis would
+  otherwise miss the contains lane entirely. All three branches share
+  Notion's case-insensitive `contains` semantics on `rich_text`/`title`.
 
 **Empty / whitespace-only queries skip the text clause** — `contains: ""`
 matches every row in Notion, which would degenerate the query into "every
