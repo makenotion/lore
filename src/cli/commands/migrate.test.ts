@@ -11,7 +11,9 @@ import {
   parseSynopsisBackend,
   parseSynopsisBatchSize,
   printAliasMergeResults,
+  printDiscoveryBreadcrumb,
   proposeSourceMemory,
+  runAgentNormalization,
   runBuildEntitiesMigration,
   runFactEncodingFix,
   runMemoryEncodingFix,
@@ -643,6 +645,122 @@ describe("runMemoryEncodingFix", () => {
     // next to the 100 KB cap instead of a six-digit byte count.
     expect(logs.some((l) => l.includes("244.1 KB"))).toBe(true)
   })
+
+  it("emits the discovery breadcrumb on stderr before the (potentially long-blocking) fixEncoding call", async () => {
+    // Same hang risk as runSynopsisBackfill: `findEncodedMemories`
+    // paginates `dataSources.query` with no per-page output, and the
+    // Notion SDK absorbs 429s with multi-second `Retry-After` sleeps
+    // inside a single `await`. The ordering pin (stderr seen BEFORE
+    // services.memories.fixEncoding resolves) is the load-bearing
+    // assertion — a future contributor moving the breadcrumb after
+    // the await would silently restore the silent-hang UX.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+        )
+        return true
+      })
+    let stderrSeenBeforeDiscovery = false
+    const services = {
+      memories: {
+        fixEncoding: vi.fn().mockImplementation(async () => {
+          stderrSeenBeforeDiscovery = stderrChunks.length > 0
+          return {
+            encoded: [],
+            oversizedSkipped: [],
+            contentFetchFailures: [],
+            fixes: [],
+          }
+        }),
+      },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runMemoryEncodingFix(services as never, { apply: false })
+    log.mockRestore()
+    stderrSpy.mockRestore()
+
+    expect(stderrSeenBeforeDiscovery).toBe(true)
+    const all = stderrChunks.join("")
+    expect(all).toMatch(/Discovering/)
+    expect(all).toMatch(/HTML-encoded/)
+    expect(all).toMatch(/LORE_DEBUG=1/)
+  })
+})
+
+describe("runAgentNormalization", () => {
+  it("emits the discovery breadcrumb on stderr before the (potentially long-blocking) normalizeAgents call", async () => {
+    // Same hang risk as the synopsis and memory-encoding paths:
+    // `findNormalizableAgents` paginates the Memories DS without
+    // per-page output. The ordering pin matches the runSynopsisBackfill
+    // and runMemoryEncodingFix tests so a future regression here is
+    // caught at exactly the same shape.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+        )
+        return true
+      })
+    let stderrSeenBeforeDiscovery = false
+    const services = {
+      memories: {
+        normalizeAgents: vi.fn().mockImplementation(async () => {
+          stderrSeenBeforeDiscovery = stderrChunks.length > 0
+          return { encoded: [], fixes: [], errors: [] }
+        }),
+      },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runAgentNormalization(services as never, { apply: false })
+    log.mockRestore()
+    stderrSpy.mockRestore()
+
+    expect(stderrSeenBeforeDiscovery).toBe(true)
+    const all = stderrChunks.join("")
+    expect(all).toMatch(/Discovering/)
+    expect(all).toMatch(/Agent/)
+    expect(all).toMatch(/LORE_DEBUG=1/)
+  })
+})
+
+describe("printDiscoveryBreadcrumb", () => {
+  it("renders Discovering <label> with the LORE_DEBUG=1 pointer on stderr", () => {
+    // One canonical line shape across every paginating discovery
+    // surface — operators only have to learn `LORE_DEBUG=1` once,
+    // and a single grep (`Discovering`) catches every migration's
+    // up-front breadcrumb.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+        )
+        return true
+      })
+
+    printDiscoveryBreadcrumb("memories with empty Synopsis")
+    stderrSpy.mockRestore()
+
+    expect(stderrChunks).toHaveLength(1)
+    const line = stderrChunks[0]!
+    expect(line).toBe(
+      "Discovering memories with empty Synopsis (paginating Notion; set LORE_DEBUG=1 to trace retries)...\n",
+    )
+  })
 })
 
 describe("loadTopicAliasMerges", () => {
@@ -1232,5 +1350,56 @@ describe("runSynopsisBackfill", () => {
     })
     expect(logs.some((l) => l.includes("Would backfill"))).toBe(true)
     expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
+  })
+
+  it("emits a stderr breadcrumb before discovery so a quiet pagination doesn't look like a hang", async () => {
+    // The discovery phase has no per-page logging, and the Notion SDK
+    // absorbs 429 retries with multi-second `Retry-After` sleeps inside
+    // a single `await`. Without an up-front breadcrumb the operator
+    // stares at zero output for tens of seconds and concludes the
+    // migration is hung — that's the bug this test pins.
+    const report = emptyBackfillReport()
+    report.totalCandidates = 0
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+        )
+        return true
+      })
+    let stderrSeenBeforeDiscovery = false
+    const services = {
+      memories: {
+        backfillSynopses: vi.fn().mockImplementation(async () => {
+          stderrSeenBeforeDiscovery = stderrChunks.length > 0
+          return report
+        }),
+      },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runSynopsisBackfill(services as never, {
+      apply: false,
+      backend: "claude",
+    })
+    log.mockRestore()
+    stderrSpy.mockRestore()
+
+    // Order is the load-bearing assertion: the breadcrumb must land
+    // BEFORE the (potentially long-blocking) discovery call, not after.
+    expect(stderrSeenBeforeDiscovery).toBe(true)
+    // Pin the load-bearing fragments only — the surrounding sentence
+    // wording is allowed to drift, but `Discovering` (so an operator
+    // greps for it), `Synopsis` (so it's distinguishable from other
+    // migrations), and `LORE_DEBUG=1` (so the retry-trace escape hatch
+    // surfaces in the same line) are pinned.
+    const all = stderrChunks.join("")
+    expect(all).toMatch(/Discovering/)
+    expect(all).toMatch(/Synopsis/)
+    expect(all).toMatch(/LORE_DEBUG=1/)
   })
 })

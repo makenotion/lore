@@ -850,6 +850,29 @@ function formatBytes(bytes: number): string {
 }
 
 /**
+ * Stderr breadcrumb fired before a paginating discovery call so the
+ * operator sees activity before the first (potentially long-blocking)
+ * Notion query lands. The Notion SDK absorbs 429s with `Retry-After`-
+ * driven sleeps capped at `DEFAULT_MAX_RETRY_DELAY_MS` (60s), and the
+ * sleep happens inside a single `await` — without this breadcrumb, a
+ * stalled discovery is indistinguishable from a hang.
+ *
+ * `label` is the noun phrase describing the rows being discovered
+ * ("memories with empty Synopsis"). The helper appends a fixed
+ * `LORE_DEBUG=1` pointer so every discovery surface points at the
+ * same retry-trace switch — operators only have to remember the one
+ * env var.
+ *
+ * Exported so the migrate-dispatcher tests can pin the breadcrumb
+ * fragments without going through commander.
+ */
+export function printDiscoveryBreadcrumb(label: string): void {
+  process.stderr.write(
+    `Discovering ${label} (paginating Notion; set LORE_DEBUG=1 to trace retries)...\n`
+  )
+}
+
+/**
  * Scan the Facts DB for rows carrying HTML-encoded Subject/Object payloads,
  * print a plan-then-apply report, and — when not a dry run and no collisions
  * block the row — rewrite Subject/Object/DedupKey in one atomic
@@ -940,6 +963,7 @@ export async function runMemoryEncodingFix(
   options: { apply: boolean; dryRun?: boolean }
 ): Promise<void> {
   const planOnly = !options.apply
+  printDiscoveryBreadcrumb("memories with HTML-encoded Title or body")
   const report = await services.memories.fixEncoding({ dryRun: planOnly })
 
   if (report.encoded.length === 0) {
@@ -1178,6 +1202,7 @@ export async function runAgentNormalization(
   options: { apply: boolean; dryRun?: boolean }
 ): Promise<void> {
   const planOnly = !options.apply
+  printDiscoveryBreadcrumb("memories with non-canonical Agent strings")
   const report = await services.memories.normalizeAgents({ dryRun: planOnly })
 
   if (report.encoded.length === 0) {
@@ -1474,6 +1499,7 @@ export async function runSynopsisBackfill(
   }
 ): Promise<BackfillReport> {
   const planOnly = !options.apply || options.dryRun === true
+  printDiscoveryBreadcrumb("memories with empty Synopsis")
   const report = await services.memories.backfillSynopses({
     apply: options.apply,
     dryRun: options.dryRun,
