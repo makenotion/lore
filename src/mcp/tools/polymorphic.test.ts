@@ -183,6 +183,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       searchWithExplain:
         opts.memoriesSearchWithExplain ??
         vi.fn(async () => ({ memories: [], explain: [] })),
+      materializeContent: vi.fn(async (m) => m),
       getTitleById: vi.fn(),
     },
     facts: {
@@ -987,6 +988,157 @@ describe("lore-task polymorphic dispatcher", () => {
     expect(tasksUpdate).not.toHaveBeenCalled()
     expect(isError(result)).toBe(true)
   })
+
+  // -----------------------------------------------------------------------
+  // lore-task action='reconcile' (issue 0.7.0/14)
+  //
+  // The action must reach the orchestrator (positive dispatch) and the
+  // discriminated-union must enforce the bounds on `minScore` (0–1) and
+  // `limit` (1–100). The orchestrator's behavior is exercised in
+  // `core/task-reconcile.test.ts`; this block covers the dispatch
+  // contract.
+  // -----------------------------------------------------------------------
+
+  it("dispatches action='reconcile' to the reconcile handler with no optional params", async () => {
+    const tasksList = vi.fn(async () => ({ items: [] }))
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices({ tasksList }) as never)
+    const result = await mock.get("lore-task")({
+      action: "reconcile",
+    } as never)
+    expect(tasksList).toHaveBeenCalled()
+    expect(extractText(result)).toContain("0 candidate closures")
+  })
+
+  it("dispatches action='reconcile' with projectName, minScore, and limit options", async () => {
+    const tasksList = vi.fn(async () => ({ items: [] }))
+    const projectsFindByName = vi.fn(async () => ({
+      id: "p1",
+      name: "Mail",
+      path: "mail",
+      type: "codebase",
+      status: "active",
+      description: "",
+    }))
+    const mock = createMockServer()
+    registerTaskTools(
+      mock.server,
+      makeServices({ tasksList, projectsFindByName }) as never,
+    )
+    const result = await mock.get("lore-task")({
+      action: "reconcile",
+      projectName: "Mail",
+      minScore: 0.7,
+      limit: 50,
+    } as never)
+    expect(projectsFindByName).toHaveBeenCalledWith("Mail")
+    expect(extractText(result)).toContain("0 candidate closures")
+  })
+
+  it("rejects action='reconcile' with minScore < 0", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({
+      action: "reconcile",
+      minScore: -0.1,
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("minScore")
+  })
+
+  it("rejects action='reconcile' with minScore > 1", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({
+      action: "reconcile",
+      minScore: 1.1,
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("minScore")
+  })
+
+  it("rejects action='reconcile' with limit < 1", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({
+      action: "reconcile",
+      limit: 0,
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("limit")
+  })
+
+  it("rejects action='reconcile' with limit > 100", async () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-task")({
+      action: "reconcile",
+      limit: 101,
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("limit")
+  })
+
+  it("the registered action enum lists 'reconcile'", () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const cfg = mock.config("lore-task")
+    const schema = cfg.inputSchema as Record<string, unknown>
+    // Pull the `action` field's enum values via Zod internals. The mock
+    // captures the raw schema map, not a finalized JSON Schema; this
+    // mirrors the helper at top of file.
+    const actionField = schema["action"] as
+      | { _def?: { values?: readonly string[] } }
+      | undefined
+    expect(actionField).toBeDefined()
+    expect(actionField?._def?.values).toContain("reconcile")
+  })
+
+  it("describes the reconcile action in the top-level description", () => {
+    const mock = createMockServer()
+    registerTaskTools(mock.server, makeServices() as never)
+    const desc = mock.description("lore-task")
+    expect(desc).toContain("'reconcile'")
+    expect(desc).toContain("never auto-closes")
+  })
+
+  it("the reconcile action is read-only by behavior — no write-shaped Notion calls land", async () => {
+    // The `lore-task` tool's annotations cannot set `readOnlyHint: true`
+    // (the same registration also serves create/update/close), so the
+    // read-only contract is enforced by handler implementation. Pin
+    // that the reconcile dispatch path issues no write-shaped service
+    // call (`tasks.create`, `tasks.update`, `tasks.close`,
+    // `memories.create`, `memories.update`, `memories.archive`).
+    const tasksCreate = vi.fn()
+    const tasksUpdate = vi.fn()
+    const tasksClose = vi.fn()
+    const memoriesCreate = vi.fn()
+    const memoriesUpdate = vi.fn()
+    const memoriesArchive = vi.fn()
+    const tasksList = vi.fn(async () => ({ items: [] }))
+    const memoriesSearch = vi.fn(async () => [])
+    const mock = createMockServer()
+    registerTaskTools(
+      mock.server,
+      makeServices({
+        tasksCreate,
+        tasksUpdate,
+        tasksClose,
+        memoriesCreate,
+        memoriesUpdate,
+        memoriesArchive,
+        tasksList,
+        memoriesSearch,
+      }) as never,
+    )
+    await mock.get("lore-task")({ action: "reconcile" } as never)
+    expect(tasksCreate).not.toHaveBeenCalled()
+    expect(tasksUpdate).not.toHaveBeenCalled()
+    expect(tasksClose).not.toHaveBeenCalled()
+    expect(memoriesCreate).not.toHaveBeenCalled()
+    expect(memoriesUpdate).not.toHaveBeenCalled()
+    expect(memoriesArchive).not.toHaveBeenCalled()
+  })
 })
 
 // -------------------------------------------------------------------------
@@ -1055,7 +1207,18 @@ describe("MCP tool surface", () => {
     // Per-tool description ceiling. Generous to current values — a real
     // new action can land within this budget. The intent is to catch
     // a paragraph-of-narration regression, not to police phrasing.
-    const PER_TOOL_DESCRIPTION_LIMIT = 1100
+    //
+    // Bumped from 1100 → 1750 in 0.7.0/14: the previous ceiling left
+    // ~22 chars of headroom on `lore-task` (1078 chars at 4 actions),
+    // and adding the 5th action (`reconcile`) plus its bullet pushed
+    // past the boundary. Per the original comment the budget should
+    // sit ~25% above current registration; the post-#14 lore-task
+    // description is ~1383 chars, so 1750 (≈ 1.265 × 1383) restores
+    // the original ~25% headroom posture and leaves room for one more
+    // action without inviting a paragraph of narration. The earlier
+    // 1400 number left only ~17 chars of headroom — the next action
+    // would have tripped this on the same day it landed.
+    const PER_TOOL_DESCRIPTION_LIMIT = 1750
     const polymorphic = [
       "lore-context",
       "lore-memory",

@@ -526,6 +526,7 @@ inline with the rest of the entity's facts.
 | `update` | Change state, blocker, due date, subject, or description | No |
 | `close` | Mark done (or cancelled — distinguished for metrics) | No (destructive) |
 | `list` | List tasks with Overdue/Active sections; filters by state, entity, due | Yes |
+| `reconcile` | Operator-pulled batch pass: scan active tasks for resolution-shaped memory matches and surface ranked candidate closures with inline close incantations | Yes (read-only by handler implementation; tool-level `readOnlyHint` cannot be set because the same tool also serves write actions) |
 
 PF3-06 brought the P3-02 standalone task family under the same
 polymorphic dispatcher pattern as the rest of P3-01. The four standalone

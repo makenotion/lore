@@ -441,6 +441,33 @@ export class MemoryService {
   }
 
   /**
+   * Hydrate the markdown body for a memory whose properties are already
+   * known. Sibling of `getById` that skips the `pages.retrieve` call —
+   * issued exclusively for callers that just received the row from a
+   * `MemoryService.search` / `MemoryService.list` pass with
+   * `includeContent: false` and need the body without re-fetching the
+   * page properties Notion already returned.
+   *
+   * Call-count math, motivated by `lore-task action='reconcile'`'s Mail
+   * vault budget: routing reconcile's per-candidate hydration through
+   * `getById` would issue `271 * 5 * 2 = 2710` Notion calls (half of
+   * them re-fetching properties already returned by the index-tier
+   * search). `materializeContent` issues exactly one
+   * `pages.retrieveMarkdown` per call, bounding the budget to
+   * `271 * 5 = 1355` calls.
+   *
+   * Propagates the underlying `pages.retrieveMarkdown` error on failure.
+   * Callers that want graceful degradation to empty content (transient
+   * 5xx, archived page, etc.) wrap the call in `.catch(() => ({ ...m,
+   * content: "" }))`. Failure-handling lives at the caller because
+   * different callers want different fallback shapes.
+   */
+  async materializeContent(memory: Memory): Promise<Memory> {
+    const md = await this.client.pages.retrieveMarkdown({ page_id: memory.id })
+    return { ...memory, content: md.markdown }
+  }
+
+  /**
    * Read a memory's `Title` property without fetching its markdown body.
    * Single `pages.retrieve` round-trip on a cold cache; hot-path hits
    * return synchronously from the in-process title cache. Used by

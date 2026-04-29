@@ -1196,3 +1196,147 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
     expect(synopsisLine).not.toContain("…")
   })
 })
+
+/**
+ * Issue 0.7.0/14 — `lore-task action='reconcile'` integration. The
+ * algorithm itself is exercised in `src/core/task-reconcile.test.ts`;
+ * this block pins the wire-up (handler renders the algorithm's output,
+ * resolves project context, surfaces project-not-found warnings, and
+ * the response shape matches the spec).
+ */
+describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
+  it("renders the empty-set form when there are no active tasks", async () => {
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "reconcile" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## 0 candidate closures (out of 0 active tasks scanned)")
+  })
+
+  it("renders the empty-set form with N when active tasks exist but no candidates clear threshold", async () => {
+    const svc = services({
+      memories: {
+        search: vi.fn().mockResolvedValue([]),
+        materializeContent: vi.fn(async (m: unknown) => m),
+      },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t1", { entity: "PR-25750", taskState: "in-progress" }),
+        makeTask("t2", { entity: "PR-25751", taskState: "open" }),
+      ],
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "reconcile" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## 0 candidate closures (out of 2 active tasks scanned)")
+  })
+
+  it("renders ranked candidates with id, title, score, cue snippet, and close incantation", async () => {
+    const today = new Date().toISOString().split("T")[0]!
+    const recentDate = new Date().toISOString()
+    const memory = {
+      id: "m-good",
+      title: "Merged PR-25750",
+      projectIds: [],
+      topicId: null,
+      source: "manual",
+      kind: "note",
+      status: "informational",
+      confidence: "certain",
+      reviewBy: null,
+      doneAt: null,
+      decidedAt: null,
+      supersedesIds: [],
+      affectsIds: [],
+      alternatives: "",
+      consequences: "",
+      author: "",
+      agent: "",
+      tags: [],
+      keywords: "",
+      synopsis: "",
+      session: "",
+      content: "We merged PR-25750 today — outlook label.applied classifier shipped.",
+      createdAt: recentDate,
+      updatedAt: recentDate,
+      taskState: null,
+      blockedBy: "",
+      entity: "",
+    }
+    const svc = services({
+      memories: {
+        search: vi.fn().mockResolvedValue([memory]),
+        materializeContent: vi.fn(async () => memory),
+      },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-abc", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          taskState: "in-progress",
+        }),
+      ],
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "reconcile" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## 1 candidate closure (out of 1 active task scanned)")
+    expect(text).toContain('### 1. Task t-abc — "Track PR-25750 review" [in-progress')
+    expect(text).toContain("Best match: memory m-good")
+    expect(text).toContain("Cue: ")
+    expect(text).toContain("Close: lore-task({ action: 'close', taskId: 't-abc' })")
+    // Today should land in the line.
+    void today
+  })
+
+  it("surfaces a 'project not found' warning when projectName resolves nothing", async () => {
+    const svc = services()
+    svc.projects.findByName = vi.fn().mockResolvedValue(null)
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "reconcile",
+      projectName: "Nonexistent",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.projects.findByName).toHaveBeenCalledWith("Nonexistent")
+    expect(text).toContain('Project "Nonexistent" not found')
+  })
+
+  it("scopes the reconcile pass to the resolved project id", async () => {
+    const svc = services({
+      context: { project: { id: "ctx-proj", name: "AutoDetected", path: "." } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    await handler({ action: "reconcile" } as never)
+
+    // The first call to tasks.list inside reconcileActiveTasks should
+    // receive the auto-detected project id.
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "ctx-proj" }),
+    )
+  })
+})

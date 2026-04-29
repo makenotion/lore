@@ -24,6 +24,13 @@ import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { findDuplicateActiveTasks } from "../../core/near-duplicate.js"
 import { truncateSynopsis } from "../render.js"
+import {
+  reconcileActiveTasks,
+  formatReconcileOutput,
+  DEFAULT_RECONCILE_LIMIT,
+  DEFAULT_RECONCILE_MIN_SCORE,
+  MAX_RECONCILE_LIMIT,
+} from "../../core/task-reconcile.js"
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { TaskState, TaskSummary } from "../../types.js"
 
@@ -537,6 +544,56 @@ async function handleList(
   }
 }
 
+interface ReconcileArgs {
+  projectName?: string
+  minScore?: number
+  limit?: number
+}
+
+async function handleReconcile(
+  services: LoreServices,
+  args: ReconcileArgs,
+): Promise<ToolResult> {
+  try {
+    let projectId: string | undefined
+    const warnings: string[] = []
+
+    if (args.projectName) {
+      const found = await services.projects.findByName(args.projectName)
+      if (found) {
+        projectId = found.id
+      } else {
+        warnings.push(
+          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
+        )
+      }
+    }
+    if (!projectId && services.context.project) {
+      projectId = services.context.project.id
+    }
+
+    const today = new Date().toISOString().split("T")[0]!
+    const { candidates, activeTasksScanned } = await reconcileActiveTasks(
+      services,
+      {
+        projectId,
+        minScore: args.minScore,
+        limit: args.limit,
+        today,
+      },
+    )
+
+    const body = formatReconcileOutput(candidates, activeTasksScanned, today)
+    const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
+    return {
+      content: [{ type: "text", text: body + warn }],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
 /**
  * Discriminated union for runtime validation of `lore-task` dispatch.
  * The MCP-level `inputSchema` is declared flat (every action's params
@@ -595,6 +652,12 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     limit: z.number().int().min(1).max(200).optional(),
     includeSynopsis: z.boolean().optional(),
   }),
+  z.object({
+    action: z.literal("reconcile"),
+    projectName: z.string().optional(),
+    minScore: z.number().min(0).max(1).optional(),
+    limit: z.number().int().min(1).max(MAX_RECONCILE_LIMIT).optional(),
+  }),
 ])
 
 export function registerTaskTools(server: McpServer, services: LoreServices): void {
@@ -625,12 +688,20 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "`dueDate: \"\"` to clear the due date.\n" +
         "- `action: 'close'` — mark done (or cancelled — distinguished for metrics).\n" +
         "- `action: 'list'` — list tasks (`Kind = task` memories) with Overdue " +
-        "and Active sections.",
+        "and Active sections.\n" +
+        "- `action: 'reconcile'` — operator-pulled batch reconciliation. " +
+        "Scans active tasks, searches recent memories for resolution-shaped " +
+        "matches against task entity / title / synopsis, scores candidates, " +
+        "and returns a ranked candidate-closure list with inline close " +
+        "incantations. Read-only; never auto-closes.",
       inputSchema: {
         action: z
-          .enum(["create", "update", "close", "list"])
+          .enum(["create", "update", "close", "list", "reconcile"])
           .describe(
-            "Operation: create (open a task), update (mutate fields), close (mark done/cancelled), or list (triage view).",
+            "Operation: create (open a task), update (mutate fields), " +
+              "close (mark done/cancelled), list (triage view), or reconcile " +
+              "(scan active tasks for resolution-shaped memory matches and " +
+              "surface candidate closures).",
           ),
         // create
         subject: z
@@ -697,7 +768,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .string()
           .optional()
           .describe(
-            "(action='create' | 'list') Project name. Defaults to auto-detected project from cwd.",
+            "(action='create' | 'list' | 'reconcile') Project name. Defaults to auto-detected project from cwd.",
           ),
         projectNames: z
           .array(z.string())
@@ -756,7 +827,21 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .int()
           .optional()
           .describe(
-            `(action='list') Per-section cap (default ${DEFAULT_TASKS_LIMIT}). Capped at 200.`,
+            `(action='list') Per-section cap (default ${DEFAULT_TASKS_LIMIT}). Capped at 200. ` +
+              `(action='reconcile') Maximum candidate closures to surface ` +
+              `(default ${DEFAULT_RECONCILE_LIMIT}). Capped at ${MAX_RECONCILE_LIMIT}.`,
+          ),
+        minScore: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(
+            `(action='reconcile') Minimum candidate score (0–1) to surface. ` +
+              `Default ${DEFAULT_RECONCILE_MIN_SCORE}. Candidates without a ` +
+              "resolution-shaped cue (`merged`, `shipped`, `resolved`, `fixed`, " +
+              "`closed`, etc.) are filtered out BEFORE scoring — entity-only " +
+              "mentions never reach the threshold.",
           ),
         includeSynopsis: z
           .boolean()
@@ -786,6 +871,8 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           return handleClose(services, parsed.data)
         case "list":
           return handleList(services, parsed.data)
+        case "reconcile":
+          return handleReconcile(services, parsed.data)
       }
     },
   )

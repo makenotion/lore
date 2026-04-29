@@ -21,6 +21,7 @@ debugging, manual search).
 | `commands/install.ts` | `lore install` -- install Lore assistant hooks and MCP config into a project (both assistants by default) |
 | `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
 | `commands/digest.ts` | `lore digest` -- gather digest data + spawn background synthesizer |
+| `commands/tasks.ts` | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`) |
 
 ## Commander Patterns
 
@@ -125,6 +126,7 @@ title-shaped to link.
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
+| `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
 
 ## The migrate Command
 

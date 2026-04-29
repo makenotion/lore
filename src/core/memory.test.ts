@@ -3100,3 +3100,92 @@ describe("MemoryService.getTitleById — title cache", () => {
     expect(titleCache.get("mem-1")).toBe("Newest")
   })
 })
+
+describe("MemoryService.materializeContent", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeIndexTierMemory(id: string) {
+    return {
+      id,
+      title: "Some memory",
+      projectIds: [],
+      topicId: null,
+      source: "manual" as const,
+      kind: "note" as const,
+      status: "informational" as const,
+      confidence: "certain" as const,
+      reviewBy: null,
+      doneAt: null,
+      decidedAt: null,
+      supersedesIds: [],
+      affectsIds: [],
+      alternatives: "",
+      consequences: "",
+      author: "",
+      agent: "",
+      tags: [],
+      keywords: "",
+      synopsis: "Short synopsis",
+      session: "",
+      content: "",
+      createdAt: "2026-04-20T00:00:00.000Z",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      taskState: null,
+      blockedBy: "",
+      entity: "",
+    }
+  }
+
+  it("issues exactly one pages.retrieveMarkdown call and zero pages.retrieve calls", async () => {
+    const retrieveSpy = vi.fn()
+    const retrieveMarkdownSpy = vi.fn(async () => ({
+      markdown: "# Body\n\nlong content",
+    }))
+    const client = {
+      pages: { retrieve: retrieveSpy, retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memory = makeIndexTierMemory("mem-1")
+    const hydrated = await service.materializeContent(memory)
+
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(retrieveMarkdownSpy).toHaveBeenCalledWith({ page_id: "mem-1" })
+    expect(retrieveSpy).not.toHaveBeenCalled()
+    expect(hydrated.content).toBe("# Body\n\nlong content")
+  })
+
+  it("preserves all non-content fields from the input row", async () => {
+    const client = {
+      pages: {
+        retrieve: vi.fn(),
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memory = makeIndexTierMemory("mem-1")
+    const hydrated = await service.materializeContent(memory)
+
+    expect(hydrated.id).toBe(memory.id)
+    expect(hydrated.title).toBe(memory.title)
+    expect(hydrated.synopsis).toBe(memory.synopsis)
+    expect(hydrated.kind).toBe(memory.kind)
+    expect(hydrated.createdAt).toBe(memory.createdAt)
+  })
+
+  it("propagates pages.retrieveMarkdown failures (caller catches and degrades)", async () => {
+    const client = {
+      pages: {
+        retrieve: vi.fn(),
+        retrieveMarkdown: vi.fn(async () => {
+          throw new Error("notion 503")
+        }),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memory = makeIndexTierMemory("mem-1")
+    await expect(service.materializeContent(memory)).rejects.toThrow("notion 503")
+  })
+})
