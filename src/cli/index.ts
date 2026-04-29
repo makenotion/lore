@@ -11,7 +11,7 @@ import { tasksCommand } from "./commands/tasks.js"
 
 const program = new Command()
 
-program.name("lore").description("AI memory system backed by Notion").version("0.6.0")
+program.name("lore").description("AI memory system backed by Notion").version("0.7.0")
 
 program.addCommand(initCommand)
 program.addCommand(authCommand)

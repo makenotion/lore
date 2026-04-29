@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   // change — patch bump per the version-literal-must-move-together
   // contract documented in `src/mcp/AGENTS.md`.
   const server = new McpServer(
-    { name: "lore", version: "0.6.0" },
+    { name: "lore", version: "0.7.0" },
     {
       capabilities: {
         tools: {},
