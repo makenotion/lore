@@ -19,7 +19,11 @@ import type {
   Memory,
   MemorySource,
 } from "../types.js"
-import { SYNOPSIS_MAX } from "../types.js"
+import {
+  CONFIDENCE_DISPLAY_THRESHOLD,
+  SYNOPSIS_MAX,
+  formatTrustLabel,
+} from "../types.js"
 
 function buildMemory(overrides: Partial<Memory> & { id: string; title: string }): Memory {
   return {
@@ -671,5 +675,219 @@ describe("formatMemoryListItem — defensive truncation", () => {
     })
     const out = formatMemoryListItem(memory, { meta: () => null })
     expect(out).toBe("### Short synopsis\nShort and sweet.")
+  })
+})
+
+describe("formatTrustLabel (issue 0.8.0/09)", () => {
+  // The label function is exported (#10 will consume it for the stale-
+  // confidence subsection). Pinning its return contract directly so a
+  // forgetful caller that drops the surrounding threshold gate cannot
+  // accidentally print "moderate confidence" next to a 0.95 row.
+
+  it("returns the label string for in-range scores", () => {
+    expect(formatTrustLabel(0.0)).toBe("very low confidence")
+    expect(formatTrustLabel(0.15)).toBe("very low confidence")
+    expect(formatTrustLabel(0.2)).toBe("low confidence")
+    expect(formatTrustLabel(0.3)).toBe("low confidence")
+    expect(formatTrustLabel(0.4)).toBe("moderate confidence")
+    expect(formatTrustLabel(0.45)).toBe("moderate confidence")
+  })
+
+  it("returns null at or above CONFIDENCE_DISPLAY_THRESHOLD (self-protective gate)", () => {
+    // The function IS the gate — callers can pass any score and trust
+    // null to mean "do not render." Pinned at exactly the threshold
+    // (0.5) and well above it (0.95).
+    expect(formatTrustLabel(CONFIDENCE_DISPLAY_THRESHOLD)).toBeNull()
+    expect(formatTrustLabel(0.5)).toBeNull()
+    expect(formatTrustLabel(0.95)).toBeNull()
+    expect(formatTrustLabel(1.0)).toBeNull()
+  })
+})
+
+describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
+  // The trust line renders strictly between heading and synopsis when
+  // `confidenceScore !== null && confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD`.
+  // Above the threshold, OR `null`, the row renders byte-identically to
+  // pre-0.8.0 (modulo synopsis from 0.7.0/03). Three buckets — very-low,
+  // low, moderate — pinned by `formatTrustLabel` in `src/types.ts`.
+
+  it("renders nothing when confidenceScore is null (pre-migration / unscored row)", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Unscored row",
+      source: "manual",
+      tags: ["auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      confidenceScore: null,
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    // Byte-identical to the no-synopsis cell of the four-cell matrix.
+    expect(out).toBe("### Unscored row\n*manual | auth | 2026-04-20*")
+  })
+
+  it("renders nothing when confidenceScore is at or above the display threshold (0.5)", () => {
+    // Acceptance criterion: 0.95 → no trust line. The strict less-than
+    // gate also keeps 0.5 silent — pinning that boundary here protects
+    // against an off-by-one rewrite to `<=`.
+    const high = buildMemory({
+      id: "mem-h",
+      title: "Healthy row",
+      source: "manual",
+      tags: ["auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      confidenceScore: 0.95,
+    })
+    expect(formatMemoryListItem(high, { meta: defaultMemoryMetaBuilder })).toBe(
+      "### Healthy row\n*manual | auth | 2026-04-20*",
+    )
+
+    const exactlyAtThreshold = buildMemory({ ...high, confidenceScore: 0.5 })
+    expect(
+      formatMemoryListItem(exactlyAtThreshold, { meta: defaultMemoryMetaBuilder }),
+    ).toBe("### Healthy row\n*manual | auth | 2026-04-20*")
+  })
+
+  it("pins the strict-less-than gate at the 0.2 / 0.4 inter-bucket boundaries", () => {
+    // The bucket predicates (`< 0.2`, `< 0.4`) are strict-less-than. A
+    // contributor flipping any one to `<=` would shift a row into the
+    // wrong bucket without triggering the at-or-above-threshold test
+    // above. Mid-bucket tests (0.15 / 0.3 / 0.45) wouldn't catch it
+    // either. Pinning the boundary values protects the contract.
+    const base = buildMemory({
+      id: "mem-1",
+      title: "Boundary row",
+      source: "manual",
+      tags: [],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+
+    // 0.2 sits in the `low confidence` bucket (NOT `very low`) because
+    // the very-low predicate is `< 0.2`. A `<=` flip would render this
+    // as `_very low confidence_` instead.
+    const at02 = buildMemory({ ...base, confidenceScore: 0.2 })
+    expect(formatMemoryListItem(at02, { meta: () => null })).toBe(
+      "### Boundary row\n_low confidence_",
+    )
+
+    // 0.4 sits in the `moderate confidence` bucket (NOT `low`) because
+    // the low predicate is `< 0.4`. A `<=` flip would render this as
+    // `_low confidence_` instead.
+    const at04 = buildMemory({ ...base, confidenceScore: 0.4 })
+    expect(formatMemoryListItem(at04, { meta: () => null })).toBe(
+      "### Boundary row\n_moderate confidence_",
+    )
+  })
+
+  it("renders `_moderate confidence_` between heading and synopsis when 0.4 ≤ score < 0.5", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Borderline row",
+      source: "manual",
+      tags: ["auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      confidenceScore: 0.45,
+      synopsis: "One-line gist.",
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe(
+      "### Borderline row\n_moderate confidence_\nOne-line gist.\n*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("renders `_low confidence_` when 0.2 ≤ score < 0.4", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Decayed row",
+      source: "manual",
+      tags: ["auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      confidenceScore: 0.3,
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe("### Decayed row\n_low confidence_\n*manual | auth | 2026-04-20*")
+  })
+
+  it("renders `_very low confidence_` when score < 0.2", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Heavily-decayed row",
+      source: "manual",
+      tags: ["auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+      confidenceScore: 0.15,
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe(
+      "### Heavily-decayed row\n_very low confidence_\n*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("renders trust line above synopsis (signal contextualizes content)", () => {
+    // The order is load-bearing: a low-confidence memory's synopsis is
+    // itself suspect, so the trust signal must land before the reader
+    // parses the synopsis content. Inverting this order would silently
+    // re-prioritize content over the system's "treat with caution"
+    // signal.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Trust above synopsis",
+      synopsis: "Synopsis content.",
+      confidenceScore: 0.15,
+    })
+    const out = formatMemoryListItem(memory, { meta: () => null })
+    const lines = out.split("\n")
+    expect(lines[0]).toBe("### Trust above synopsis")
+    expect(lines[1]).toBe("_very low confidence_")
+    expect(lines[2]).toBe("Synopsis content.")
+  })
+
+  it("respects includeSynopsis: false but still renders the trust line", () => {
+    // Trust signal is system metadata; it is NOT gated by the
+    // synopsis-rendering toggle. Suppressing the synopsis line shouldn't
+    // suppress the trust signal — those are independent surfaces with
+    // independent rationale.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "No-synopsis low-trust",
+      synopsis: "This synopsis must not render.",
+      confidenceScore: 0.3,
+      source: "manual",
+      tags: [],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    const out = formatMemoryListItem(memory, {
+      meta: defaultMemoryMetaBuilder,
+      includeSynopsis: false,
+    })
+    expect(out).toBe(
+      "### No-synopsis low-trust\n_low confidence_\n*manual | 2026-04-20*",
+    )
+  })
+
+  it("composes trust line with body-on path so includeContent=true callers also see it", () => {
+    // recall/search forward `m.content` as `body` when `includeContent:
+    // true` — the trust signal must compose cleanly with the body
+    // attachment so the body-on cell of the four-cell matrix gets the
+    // same visibility rules.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Low-trust with body",
+      synopsis: "One-line gist.",
+      confidenceScore: 0.3,
+      source: "manual",
+      tags: ["auth"],
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    const out = formatMemoryListItem(memory, {
+      meta: defaultMemoryMetaBuilder,
+      body: "Body paragraph.",
+    })
+    expect(out).toBe(
+      "### Low-trust with body\n" +
+        "_low confidence_\n" +
+        "One-line gist.\n" +
+        "*manual | auth | 2026-04-20*\n\n" +
+        "Body paragraph.",
+    )
   })
 })

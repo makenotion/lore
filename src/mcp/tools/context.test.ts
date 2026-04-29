@@ -316,6 +316,154 @@ describe("lore-wake-up — Part A: title-only by default", () => {
   })
 })
 
+describe("lore-wake-up — trust indicator (issue 0.8.0/09)", () => {
+  // Pinned at the surface (not just the render helper) so a future
+  // contributor who swaps the wake-up Recent Memories renderer away
+  // from `formatMemoryListItem` would see this test fail. The trust
+  // signal must be visible on the same surfaces RRF (#08) reorders.
+
+  it("renders the trust line on a low-confidence Recent Memories row", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "Decayed memory",
+          tags: ["auth"],
+          confidenceScore: 0.3,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Decayed memory")
+    expect(text).toContain("_low confidence_")
+    // Order: heading line → trust line. The trust signal must precede
+    // the meta line so it reads as system metadata flagging the row,
+    // not as a footnote.
+    const trustIdx = text.indexOf("_low confidence_")
+    const headingIdx = text.indexOf("Decayed memory")
+    expect(headingIdx).toBeGreaterThan(-1)
+    expect(trustIdx).toBeGreaterThan(headingIdx)
+  })
+
+  it("omits the trust line on a healthy wake-up row", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "Healthy memory",
+          tags: ["auth"],
+          confidenceScore: 0.95,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Healthy memory")
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("omits the trust line on a null-score row (pre-migration vault stays byte-identical)", async () => {
+    // Acceptance criterion: rows with `confidenceScore: null` render
+    // identically to pre-0.8.0. A vault that hasn't run
+    // `lore migrate --build-confidence-scores` should look unchanged.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "Pre-migration row",
+          tags: ["auth"],
+          confidenceScore: null,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Pre-migration row")
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("renders the trust line on a low-confidence row in `## For Your Current Task`", async () => {
+    // Acceptance criterion explicitly lists the For-Your-Current-Task
+    // section. Pinning at the surface protects against a future
+    // contributor swapping the section's renderer away from
+    // `formatMemoryListItem`. The `userQuery` arg seeds the section.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [],
+      taskQuery: "fix outlook auth",
+      taskMemories: [
+        makeMemory("task-1", {
+          title: "Outlook auth investigation",
+          confidenceScore: 0.15,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ userQuery: "fix outlook auth" } as never)
+
+    const text = extractText(result)
+    const taskSectionIdx = text.indexOf("## For Your Current Task")
+    const trustLineIdx = text.indexOf("_very low confidence_")
+    const recentSectionIdx = text.indexOf("## Recent Memories")
+    expect(taskSectionIdx).toBeGreaterThan(-1)
+    expect(trustLineIdx).toBeGreaterThan(taskSectionIdx)
+    // The trust line must land WITHIN the task section, not below
+    // Recent Memories. (Recent Memories is empty in this fixture, so
+    // its index is -1; the `>` check above already covers placement.)
+    if (recentSectionIdx > -1) {
+      expect(trustLineIdx).toBeLessThan(recentSectionIdx)
+    }
+  })
+
+  it("renders the trust line on a low-confidence row in `## Related to Active Tasks`", async () => {
+    // Acceptance criterion explicitly lists the Related-to-Active-Tasks
+    // section. Pinning at the surface protects against a future
+    // contributor swapping the section's renderer.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [],
+      tasks: [
+        makeTask({
+          id: "t1",
+          title: "Router migration",
+          entity: "Router migration",
+        }),
+      ],
+      relatedMemories: [
+        makeMemory("r1", {
+          title: "Router migration debugging notes",
+          confidenceScore: 0.3,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const relatedSectionIdx = text.indexOf("## Related to Active Tasks")
+    const trustLineIdx = text.indexOf("_low confidence_")
+    expect(relatedSectionIdx).toBeGreaterThan(-1)
+    expect(trustLineIdx).toBeGreaterThan(relatedSectionIdx)
+  })
+})
+
 describe("lore-wake-up — Part B: topical dedup", () => {
   it("collapses overlapping memories with a (related: <uuid>) trailer", async () => {
     // Three wake-up debugging sessions with shared tags must collapse to

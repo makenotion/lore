@@ -21,7 +21,7 @@ import type {
   MemorySource,
   MemoryStatus,
 } from "../types.js"
-import { SYNOPSIS_MAX } from "../types.js"
+import { SYNOPSIS_MAX, formatTrustLabel } from "../types.js"
 
 /**
  * Notion page IDs are canonical 8-4-4-4-12 hex UUIDs. The SDK emits
@@ -190,6 +190,15 @@ export interface MemoryListItem {
   tags: string[]
   createdAt: string
   updatedAt: string
+  /**
+   * System-managed numeric confidence in [0, 1]. `null` until the row has
+   * been touched once by a read path (or backfilled by `lore migrate
+   * --build-confidence-scores`). Drives the trust-indicator line rendered
+   * between heading and synopsis when the score falls below
+   * `CONFIDENCE_DISPLAY_THRESHOLD`; null and above-threshold rows render
+   * byte-identically to pre-0.8.0.
+   */
+  confidenceScore: number | null
 }
 
 export interface FormatMemoryListItemOptions {
@@ -265,9 +274,17 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
  * Output shape, traversing the four-cell `body` × synopsis matrix:
  *
  *   `### {title}` (heading level configurable)
+ *   `[_{trust}_]`  (only when `confidenceScore !== null && confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD`)
  *   `[{synopsis}]`  (only when `includeSynopsis !== false` and present)
  *   `*{meta}*`      (only when meta builder/string yields a non-null value)
  *   `[\n\n{body}]`  (only when `body` is non-empty)
+ *
+ * The trust line sits ABOVE the synopsis because the trust signal
+ * contextualizes how to read the synopsis (a low-confidence memory's
+ * synopsis is itself suspect). Italic-wrapped via underscores so
+ * markdown viewers render the line as italic system metadata, distinct
+ * from the synopsis content; plain-text readers see the underscores
+ * literally — still parseable, still readable.
  *
  * The synopsis is defensively truncated at `SYNOPSIS_MAX` (declared in
  * `src/types.ts`). Per #01 the service layer accepts up to the Notion
@@ -286,6 +303,19 @@ export function formatMemoryListItem(
   const headingLevel = options.headingLevel ?? 3
   const heading = "#".repeat(headingLevel)
   const lines: string[] = [`${heading} ${memory.title}`]
+
+  // Trust indicator (#09). Above the synopsis on purpose — a
+  // low-confidence memory's synopsis is itself suspect, so the signal
+  // has to land before the reader parses the content. The threshold gate
+  // lives inside `formatTrustLabel` (returns `null` above
+  // `CONFIDENCE_DISPLAY_THRESHOLD`); the local guard handles the
+  // structurally-different "no score yet / pre-migration row" case so
+  // pre-migration vaults stay byte-identical to pre-0.8.0.
+  const trustLabel =
+    memory.confidenceScore !== null ? formatTrustLabel(memory.confidenceScore) : null
+  if (trustLabel !== null) {
+    lines.push(`_${trustLabel}_`)
+  }
 
   const includeSynopsis = options.includeSynopsis !== false
   // `.trim()` on the truthy check so a whitespace-only synopsis (a hypothetical

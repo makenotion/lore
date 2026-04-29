@@ -1042,6 +1042,133 @@ describe("lore-recall tag rendering", () => {
   })
 })
 
+describe("lore-recall trust indicator (issue 0.8.0/09)", () => {
+  // The trust line surfaces on recall when a memory's `confidenceScore`
+  // sits below the display threshold. Pinned at the surface (not just
+  // the renderer) so a future contributor swapping the recall handler
+  // away from `formatMemoryListItem` would see this fail rather than
+  // silently lose the signal.
+
+  it("renders the trust line on a low-confidence recall row", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "Decayed row",
+          source: "manual",
+          tags: ["auth"],
+          updatedAt: "2026-04-20T00:00:00.000Z",
+          confidenceScore: 0.3,
+        }),
+      ],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Decayed row\n_low confidence_\n")
+  })
+
+  it("omits the trust line on a healthy recall row (byte-identical to pre-0.8.0)", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "Healthy row",
+          source: "manual",
+          tags: ["auth"],
+          updatedAt: "2026-04-20T00:00:00.000Z",
+          confidenceScore: 0.95,
+        }),
+      ],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("confidence_")
+    expect(text).toContain("### Healthy row")
+  })
+})
+
+describe("lore-search trust indicator (issue 0.8.0/09)", () => {
+  it("renders the trust line on a low-confidence search hit", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([
+      makeMemory("mem-1", {
+        title: "Decayed hit",
+        source: "manual",
+        tags: ["auth"],
+        updatedAt: "2026-04-20T00:00:00.000Z",
+        confidenceScore: 0.15,
+      }),
+    ])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "anything" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Decayed hit\n_very low confidence_\n")
+  })
+
+  it("omits the trust line on a healthy search hit (byte-identical to pre-0.8.0)", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([
+        makeMemory("mem-1", { title: "Healthy hit", confidenceScore: 0.95 }),
+      ])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "anything" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("confidence_")
+  })
+})
+
 describe("lore-search content-off default", () => {
   it("passes includeContent: false to the service by default", async () => {
     const mockServer = createMockServer()

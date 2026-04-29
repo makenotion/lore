@@ -94,13 +94,13 @@ function renderMemoryEntry(
   })
   // The splice below assumes `formatMemoryListItem` returns lines joined
   // by a single `\n` with no internal blank lines (heading, optional
-  // synopsis, optional `*meta*` — that's it; body lives off the
-  // structural type and we never pass it here). If a future helper
-  // change introduces an internal `\n\n` (e.g. spec extension wrapping
-  // synopsis as a blockquote with surrounding blanks), the `(related:)`
-  // trailer would land in the wrong slot. The render-side test suite
-  // pins the no-body envelope shape; keep this comment in sync if the
-  // contract widens.
+  // `_{trust}_` line, optional synopsis, optional `*meta*` — that's it;
+  // body lives off the structural type and we never pass it here). If a
+  // future helper change introduces an internal `\n\n` (e.g. spec
+  // extension wrapping synopsis as a blockquote with surrounding
+  // blanks), the `(related:)` trailer would land in the wrong slot.
+  // The render-side test suite pins the no-body envelope shape; keep
+  // this comment in sync if the contract widens.
   const lines: string[] = rendered.split("\n")
   if (group && group.collapsedIds.length > 0) {
     lines.push(`(related: ${group.collapsedIds.join(", ")})`)
@@ -347,6 +347,19 @@ async function handleWakeUp(
     }
 
     if (digest) {
+      // The digest section bypasses `formatMemoryListItem` and therefore
+      // does NOT render a trust indicator (#09). Intentional: the digest
+      // is a synthesis surface (one bold-title row + a body paragraph),
+      // not a triage row in a list. A trust indicator would imply per-row
+      // ranking — which Recent / For-Your-Current-Task / Related need
+      // because they're scrollable lists of competing memories — but the
+      // digest is a single block summarizing recent activity. The
+      // synthesizer's own `Confidence Score` is system-managed like any
+      // other memory's, and a heavily-decayed digest IS a real signal
+      // worth flagging, but the canonical surface for that is
+      // `lore-context action='wake-up'` Recent Memories / For Your
+      // Current Task picking the digest up as just another memory if
+      // the agent's context warrants it.
       sections.push(`## Latest Digest — ${digest.createdAt.split("T")[0]}\n`)
       sections.push(`**${digest.title}**\n`)
       if (digest.content) {

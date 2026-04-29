@@ -325,6 +325,54 @@ export const DECREMENT_FACTOR = 0.5
  */
 export const CONFIDENCE_FACTOR_MIN = 0.5
 
+/**
+ * Threshold below which `formatMemoryListItem` renders an italic trust
+ * indicator between the heading and the synopsis. Pinned at 0.5 to match
+ * `CONFIDENCE_FACTOR_MIN` — a row whose RRF factor has bottomed out IS
+ * the row that needs the visible signal. Above this threshold, listings
+ * render byte-identically to pre-0.8.0 (modulo the synopsis line that
+ * 0.7.0 introduced); a `null` Confidence Score never renders the
+ * indicator either, so pre-migration vaults look unchanged until
+ * `lore migrate --build-confidence-scores` populates scores.
+ *
+ * Lives alongside the other confidence constants so the stale-confidence
+ * wake-up subsection (#10) can import the same threshold for its filter
+ * predicate.
+ */
+export const CONFIDENCE_DISPLAY_THRESHOLD = 0.5
+
+/**
+ * Map a numeric Confidence Score to the human-readable label rendered
+ * below the heading on recall / search / wake-up listings (#09). Three
+ * empirical buckets:
+ *
+ *   `score < 0.2` → `"very low confidence"`
+ *   `score < 0.4` → `"low confidence"`
+ *   `score < CONFIDENCE_DISPLAY_THRESHOLD` (0.5) → `"moderate confidence"`
+ *   `score >= CONFIDENCE_DISPLAY_THRESHOLD` → `null` (no indicator)
+ *
+ * The above-threshold case returns `null` so the function is the single
+ * gate — a forgetful caller that drops the surrounding `score < threshold`
+ * predicate cannot accidentally print `"moderate confidence"` next to a
+ * 0.95 row. Callers `??`-or-skip on `null`. Three tiers (not five, not
+ * two) is the pragmatic granularity: agents already triage 25 rows per
+ * wake-up, and a literal "0.34" is technically more precise but harder
+ * to read at a glance than `"low confidence"`. Bucket thresholds are
+ * pinned in code; tuning is one-line.
+ *
+ * Returns `null` only above the display threshold — never on a valid
+ * in-range score. The caller's `null` check on `Memory.confidenceScore`
+ * (the "no score yet / pre-migration row" case) stays at the call site
+ * because `null` there is structurally different from "scored above
+ * the indicator threshold."
+ */
+export function formatTrustLabel(score: number): string | null {
+  if (score >= CONFIDENCE_DISPLAY_THRESHOLD) return null
+  if (score < 0.2) return "very low confidence"
+  if (score < 0.4) return "low confidence"
+  return "moderate confidence"
+}
+
 export interface Memory {
   id: string
   title: string
