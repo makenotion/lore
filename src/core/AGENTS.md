@@ -15,7 +15,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
 | `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
 | `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
-| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03) |
+| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
@@ -30,9 +30,10 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |
 | `agent-normalization.ts` | `normalizeAgents()` | `lore migrate --normalize-agents` — collapse fragmented `Agent` strings onto their canonical form (PF3-02) |
 | `synopsis-backfill.ts` | `backfillSynopses()` | `lore migrate --backfill-synopses` — synthesize a 1–2 sentence synopsis for memories whose `Synopsis` is empty; pluggable `claude` / `placeholder` backends (issue 0.7.0/05) |
+| `confidence-migration.ts` | `runBuildConfidenceScoresMigration()` | `lore migrate --build-confidence-scores` — baseline-seed every memory's `Confidence Score` from its categorical `Confidence` and write `Last Referenced At = created_time`, then realize accrued decay. Plan-then-execute; `--yes` applies. Project-scoped via `--project <name>` (strict-resolve, fails fast on unknown names). (Issue 0.8.0/11.) |
 | `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
 | `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
-| `decay.ts` | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor` |
+| `decay.ts` | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor`. The migration in `confidence-migration.ts` consumes `seedConfidenceScore` + `decayConfidenceScore` for baseline backfill |
 
 ## Service Class Pattern
 

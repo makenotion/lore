@@ -1049,6 +1049,80 @@ export class MemoryService {
     return next
   }
 
+  /**
+   * Paginating async iterator over every non-archived memory in this
+   * service's Memories DB, optionally scoped to a single project. Yields
+   * `Memory` objects (with empty `content`) in created-time-ascending
+   * order so the migration's plan output is deterministic across runs.
+   *
+   * Sole consumer is `runBuildConfidenceScoresMigration` — exposing a
+   * `Memory[]`-shaped iterator (rather than raw `PageObjectResponse[]`)
+   * keeps the migration off the SDK type surface and lets it consume
+   * `Memory.createdAt` / `Memory.confidence` / `Memory.confidenceScore`
+   * via the same extractor pipeline every other read path uses.
+   *
+   * Archived rows are filtered client-side: Notion exposes the archived
+   * flag on the returned page object, and the existing read paths
+   * (`agent-normalization`, `memory-encoding`) skip via `page.archived`.
+   * Backfilling a score onto a row whose page is archived is wasted
+   * work — it surfaces in no read path and would be silently lost on
+   * the next un-archive's full re-write.
+   *
+   * Scoped by `projectId`: when omitted, the iterator walks every memory
+   * in the vault (vault-wide migration). When set, scopes via the same
+   * `projectOrUnscopedFilter` shape `MemoryService.list` uses, so a
+   * project-scoped run also covers repo-wide unscoped rows that belong
+   * to no project.
+   */
+  async *listAllForBackfill(opts: {
+    projectId?: string
+  } = {}): AsyncGenerator<Memory, void, void> {
+    let cursor: string | undefined
+    do {
+      const filter = opts.projectId
+        ? projectOrUnscopedFilter(opts.projectId)
+        : undefined
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "ascending" }],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        if (page.archived) continue
+        yield this.pageToMemory(page, "")
+      }
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+  }
+
+  /**
+   * Single `pages.update` writing both `Confidence Score` and
+   * `Last Referenced At`. Distinct from `touchOnRead` because the
+   * migration sets `Last Referenced At` to the memory's `createdAt`
+   * (sliced to YYYY-MM-DD), not today — the migration's contract is
+   * "treat creation as the implicit first reference," so the row's
+   * decay anchor IS its creation date.
+   *
+   * Caller is responsible for clamping `score`. Production callers
+   * (`runBuildConfidenceScoresMigration`) hand off scores produced by
+   * `decayConfidenceScore`, which clamps internally.
+   */
+  async applyBackfillScore(
+    memoryId: string,
+    score: number,
+    lastReferencedAt: string,
+  ): Promise<void> {
+    await this.client.pages.update({
+      page_id: memoryId,
+      properties: {
+        "Confidence Score": { number: score },
+        "Last Referenced At": { date: { start: lastReferencedAt } },
+      },
+    })
+  }
+
   async list(opts?: {
     projectId?: string
     topicId?: string

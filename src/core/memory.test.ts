@@ -4637,3 +4637,158 @@ describe("MemoryService.decrementConfidence", () => {
     ).rejects.toThrow("notion 429")
   })
 })
+
+// ---------------------------------------------------------------------------
+// listAllForBackfill + applyBackfillScore — confidence-score migration helpers
+// (issue 0.8.0/11). Pinned here so a future refactor does not silently break
+// the migration's contract.
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.listAllForBackfill", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makePage(
+    id: string,
+    overrides: Partial<PageObjectResponse> = {},
+    properties: Record<string, unknown> = {},
+  ): PageObjectResponse {
+    return {
+      object: "page",
+      id,
+      created_time: "2026-01-01T00:00:00.000Z",
+      last_edited_time: "2026-02-01T00:00:00.000Z",
+      archived: false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: id, text: { content: id } }] },
+        ...properties,
+      } as unknown as PageObjectResponse["properties"],
+      parent: { type: "database_id", database_id: "db-id" },
+      url: `https://notion.so/${id}`,
+      ...overrides,
+    } as PageObjectResponse
+  }
+
+  it("paginates through every page and yields every non-archived row", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [makePage("m1"), makePage("m2")],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [makePage("m3")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const ids: string[] = []
+    for await (const memory of service.listAllForBackfill()) {
+      ids.push(memory.id)
+    }
+    expect(ids).toEqual(["m1", "m2", "m3"])
+    expect(query).toHaveBeenCalledTimes(2)
+    // Second call carries the cursor from the first response.
+    expect(query.mock.calls[1]![0]).toMatchObject({ start_cursor: "cursor-1" })
+  })
+
+  it("filters out archived rows client-side", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makePage("m-live"),
+        makePage("m-archived", { archived: true }),
+        makePage("m-also-live"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const ids: string[] = []
+    for await (const memory of service.listAllForBackfill()) {
+      ids.push(memory.id)
+    }
+    expect(ids).toEqual(["m-live", "m-also-live"])
+  })
+
+  it("scopes to a project via the project-or-unscoped filter when projectId is set", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const iter = service.listAllForBackfill({ projectId: "project-123" })
+    // Drain.
+    for await (const _m of iter) void _m
+    expect(query).toHaveBeenCalledTimes(1)
+    const args = query.mock.calls[0]![0] as {
+      filter: unknown
+      sorts: unknown
+      page_size: number
+    }
+    expect(args.filter).toBeDefined()
+    // Sanity: the filter mentions the project id (exact shape comes from
+    // `projectOrUnscopedFilter`, pinned in its own tests).
+    expect(JSON.stringify(args.filter)).toContain("project-123")
+    expect(args.sorts).toEqual([
+      { timestamp: "created_time", direction: "ascending" },
+    ])
+    expect(args.page_size).toBe(100)
+  })
+
+  it("issues no filter when projectId is omitted (vault-wide scope)", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    for await (const _m of service.listAllForBackfill()) void _m
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls[0]![0]).toMatchObject({ filter: undefined })
+  })
+})
+
+describe("MemoryService.applyBackfillScore", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) =>
+        undefined,
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.applyBackfillScore("memory-1", 0.42, "2025-10-11")
+
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0]![0]).toEqual({
+      page_id: "memory-1",
+      properties: {
+        "Confidence Score": { number: 0.42 },
+        "Last Referenced At": { date: { start: "2025-10-11" } },
+      },
+    })
+  })
+
+  it("propagates errors from the underlying pages.update", async () => {
+    const update = vi.fn(async () => {
+      throw new Error("notion 429")
+    })
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.applyBackfillScore("memory-1", 0.5, "2025-10-11"),
+    ).rejects.toThrow("notion 429")
+  })
+})

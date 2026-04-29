@@ -23,6 +23,11 @@ import type {
   SynopsisBackend,
 } from "../../core/synopsis-backfill.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
+import {
+  runBuildConfidenceScoresMigration,
+  type BuildConfidenceScoresPlan,
+  type BuildConfidenceScoresResult,
+} from "../../core/confidence-migration.js"
 
 export const migrateCommand = new Command("migrate")
   .description("Add missing schema properties to the vault's data sources")
@@ -98,8 +103,16 @@ export const migrateCommand = new Command("migrate")
     "4"
   )
   .option(
+    "--build-confidence-scores",
+    "Seed every memory's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and write Last Referenced At = created_time, then realize any neglect-decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope to a single project. Idempotent: rows whose Confidence Score is already non-null (touched by a Phase 2 read path or a prior backfill) are skipped."
+  )
+  .option(
+    "--project <name>",
+    "Scope `--build-confidence-scores` to a single project. Resolved via `findByName`; unknown / typo'd names abort before any plan or write — the migration refuses to silently fall back to vault-wide because `--yes` consent for one project is not consent to mutate the entire vault. Omit for vault-wide scope."
+  )
+  .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, or `--backfill-synopses`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, or `--build-confidence-scores`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -122,6 +135,8 @@ export const migrateCommand = new Command("migrate")
       backfillSynopses?: boolean
       synopsisBackend?: string
       synopsisBatchSize?: string
+      buildConfidenceScores?: boolean
+      project?: string
     }) => {
       try {
         // Validate flag combinations BEFORE running the schema migration so
@@ -141,10 +156,17 @@ export const migrateCommand = new Command("migrate")
           !opts.normalizeAgents &&
           !opts.buildEntities &&
           !opts.mergeSimilarTopics &&
-          !opts.backfillSynopses
+          !opts.backfillSynopses &&
+          !opts.buildConfidenceScores
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, or --backfill-synopses."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, or --build-confidence-scores."
+          )
+          process.exit(1)
+        }
+        if (opts.project && !opts.buildConfidenceScores) {
+          console.error(
+            "--project only applies together with --build-confidence-scores."
           )
           process.exit(1)
         }
@@ -435,6 +457,14 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.buildConfidenceScores) {
+          await runBuildConfidenceScores(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: Boolean(opts.dryRun),
+            projectName: opts.project,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -491,7 +521,8 @@ export const migrateCommand = new Command("migrate")
             opts.normalizeAgents ||
             opts.buildEntities ||
             opts.mergeSimilarTopics ||
-            opts.backfillSynopses
+            opts.backfillSynopses ||
+            opts.buildConfidenceScores
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -1628,4 +1659,153 @@ export function formatBackfillBucket(
     return "n/a (placeholder backend)"
   }
   return String(count)
+}
+
+/**
+ * Drive the build-confidence-scores migration and render the report.
+ * Plan-only by default; `--yes` flips to apply mode. Mirrors
+ * `runFactEncodingFix` / `runBuildEntitiesMigration` posture.
+ *
+ * Exported so the migrate CLI tests can exercise it without invoking
+ * commander's argv plumbing.
+ */
+export async function runBuildConfidenceScores(
+  services: LoreServices,
+  options: { apply: boolean; dryRun: boolean; projectName?: string }
+): Promise<BuildConfidenceScoresResult> {
+  const planOnly = !options.apply
+  // Pre-resolve `--project <name>` so a typo'd / unknown name throws
+  // BEFORE the discovery breadcrumb prints. Without this preflight,
+  // the operator would see "Discovering memories without a Confidence
+  // Score in project X..." then immediately a "project X not found"
+  // error — the breadcrumb implies forward motion that didn't happen.
+  //
+  // The downstream `runBuildConfidenceScoresMigration` re-checks the
+  // same name as a defense-in-depth layer (so a future refactor that
+  // drops this preflight cannot accidentally break the safety AC).
+  // For the success path, `LruCache.getOrLoad` collapses the second
+  // resolve to a cache hit — one in-memory lookup. For the failure
+  // path, `findByName` returns `null` and the LRU explicitly does
+  // NOT cache negatives (`project.ts`), so the duplicate query would
+  // re-run if reached — but it never is, because this preflight's
+  // throw aborts before the migration call. The redundant work is
+  // bounded to the success path only.
+  if (options.projectName) {
+    const project = await services.projects.findByName(options.projectName)
+    if (project === null) {
+      throw new Error(
+        `lore migrate --build-confidence-scores: project "${options.projectName}" not found. ` +
+          `Run \`lore status\` to list configured projects, or omit --project to ` +
+          `run vault-wide.`
+      )
+    }
+  }
+
+  printDiscoveryBreadcrumb(
+    options.projectName
+      ? `memories without a Confidence Score in project "${options.projectName}"`
+      : "memories without a Confidence Score"
+  )
+
+  const result = await runBuildConfidenceScoresMigration({
+    services,
+    apply: options.apply,
+    dryRun: options.dryRun,
+    projectName: options.projectName,
+  })
+  const { plan, written } = result
+
+  console.log(
+    `\n[lore] build-confidence-scores: scanned ${plan.totalMemoriesScanned} ` +
+      `memor${plan.totalMemoriesScanned === 1 ? "y" : "ies"}`
+  )
+  console.log(
+    `       ${plan.rowsToSeed.length} to seed (${plan.rowsAlreadyScored} already scored)`
+  )
+
+  if (plan.rowsToSeed.length === 0) {
+    if (planOnly) {
+      console.log(
+        "\nNo memories need seeding — every row already has a Confidence Score."
+      )
+    } else {
+      console.log(
+        "\nNo memories needed seeding — every row already had a Confidence Score."
+      )
+    }
+    return result
+  }
+
+  const stats = summarizeConfidenceScorePlan(plan)
+  console.log(
+    `       avg seeded score:  ${stats.avgSeeded.toFixed(2)}`
+  )
+  // The "to-seed" qualifier is load-bearing on a vault that's mostly
+  // already-scored — averaging only the unseeded subset describes
+  // what `--yes` would write, NOT what the vault as a whole looks
+  // like. A label of "vault avg neglect" would mislead operators
+  // running the migration against a partly-populated vault.
+  console.log(
+    `       avg decayed score: ${stats.avgDecayed.toFixed(2)} ` +
+      `(to-seed avg neglect: ${stats.avgNeglectPastGrace} day${stats.avgNeglectPastGrace === 1 ? "" : "s"} past grace)`
+  )
+
+  const PREVIEW_LIMIT = 10
+  const sortedByDecay = [...plan.rowsToSeed].sort(
+    (a, b) => a.decayedScore - b.decayedScore
+  )
+  const top = sortedByDecay.slice(0, PREVIEW_LIMIT)
+  if (top.length > 0) {
+    console.log(
+      `\n       Top ${top.length} most-decayed (after seed + decay):`
+    )
+    top.forEach((row, i) => {
+      console.log(
+        `       ${i + 1}. (${row.decayedScore.toFixed(3)}) ${row.title}  —  ${row.daysSinceCreation}d ago`
+      )
+    })
+  }
+
+  if (planOnly) {
+    console.log(
+      "\n[lore] dry-run: no writes performed. Re-run with --yes to apply."
+    )
+  } else {
+    console.log(
+      `\n[lore] build-confidence-scores: wrote ${written} row${written === 1 ? "" : "s"}.`
+    )
+  }
+  return result
+}
+
+/**
+ * Pure summary stats for the build-confidence-scores plan output.
+ * Exported so tests pin the per-line numbers without re-deriving the
+ * arithmetic.
+ */
+export function summarizeConfidenceScorePlan(
+  plan: BuildConfidenceScoresPlan
+): {
+  avgSeeded: number
+  avgDecayed: number
+  avgNeglectPastGrace: number
+} {
+  const n = plan.rowsToSeed.length
+  if (n === 0) {
+    return { avgSeeded: 0, avgDecayed: 0, avgNeglectPastGrace: 0 }
+  }
+  const STALE_GRACE_DAYS = 60
+  let seededSum = 0
+  let decayedSum = 0
+  let neglectPastGraceSum = 0
+  for (const row of plan.rowsToSeed) {
+    seededSum += row.seededScore
+    decayedSum += row.decayedScore
+    neglectPastGraceSum += Math.max(0, row.daysSinceCreation - STALE_GRACE_DAYS)
+  }
+  return {
+    avgSeeded: seededSum / n,
+    avgDecayed: decayedSum / n,
+    avgNeglectPastGrace: Math.round(neglectPastGraceSum / n),
+  }
 }

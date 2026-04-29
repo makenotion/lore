@@ -14,11 +14,14 @@ import {
   printDiscoveryBreadcrumb,
   proposeSourceMemory,
   runAgentNormalization,
+  runBuildConfidenceScores,
   runBuildEntitiesMigration,
   runFactEncodingFix,
   runMemoryEncodingFix,
   runSynopsisBackfill,
+  summarizeConfidenceScorePlan,
 } from "./migrate.js"
+import type { BuildConfidenceScoresPlan } from "../../core/confidence-migration.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
 import type { BackfillReport } from "../../core/synopsis-backfill.js"
 
@@ -1405,3 +1408,225 @@ describe("runSynopsisBackfill", () => {
     expect(all).toMatch(/LORE_DEBUG=1/)
   })
 })
+
+describe("summarizeConfidenceScorePlan", () => {
+  function makeRow(
+    overrides: Partial<BuildConfidenceScoresPlan["rowsToSeed"][number]> = {},
+  ): BuildConfidenceScoresPlan["rowsToSeed"][number] {
+    return {
+      memoryId: "m1",
+      title: "title",
+      fromConfidence: "certain",
+      seededScore: 0.9,
+      decayedScore: 0.9,
+      createdDate: "2026-04-29",
+      daysSinceCreation: 0,
+      ...overrides,
+    }
+  }
+
+  it("returns zeroes on an empty plan (avoid NaN avg)", () => {
+    const stats = summarizeConfidenceScorePlan({
+      totalMemoriesScanned: 0,
+      rowsToSeed: [],
+      rowsAlreadyScored: 0,
+    })
+    expect(stats).toEqual({
+      avgSeeded: 0,
+      avgDecayed: 0,
+      avgNeglectPastGrace: 0,
+    })
+  })
+
+  it("computes per-row averages and rounds neglect-past-grace to whole days", () => {
+    const stats = summarizeConfidenceScorePlan({
+      totalMemoriesScanned: 3,
+      rowsAlreadyScored: 0,
+      rowsToSeed: [
+        makeRow({ seededScore: 0.9, decayedScore: 0.6, daysSinceCreation: 90 }),
+        makeRow({ seededScore: 0.6, decayedScore: 0.4, daysSinceCreation: 200 }),
+        makeRow({ seededScore: 0.3, decayedScore: 0.2, daysSinceCreation: 30 }),
+      ],
+    })
+    expect(stats.avgSeeded).toBeCloseTo((0.9 + 0.6 + 0.3) / 3, 6)
+    expect(stats.avgDecayed).toBeCloseTo((0.6 + 0.4 + 0.2) / 3, 6)
+    // (max(0, 90-60) + max(0, 200-60) + max(0, 30-60)) / 3 = (30 + 140 + 0) / 3 ≈ 56.67 → 57.
+    expect(stats.avgNeglectPastGrace).toBe(57)
+  })
+})
+
+describe("runBuildConfidenceScores", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+  let originalStderrWrite: typeof process.stderr.write
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logs.push(args.map((a) => String(a)).join(" "))
+      })
+    // Silence the discovery breadcrumb stderr line so test output stays
+    // clean. The breadcrumb is asserted in its own describe block above.
+    originalStderrWrite = process.stderr.write
+    process.stderr.write = (() => true) as typeof process.stderr.write
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+    process.stderr.write = originalStderrWrite
+  })
+
+  function fakeMemory(overrides: Partial<Memory> = {}): Memory {
+    const id = overrides.id ?? "m1"
+    return makeMemory(id, overrides)
+  }
+
+  async function* iter(memories: Memory[]) {
+    for (const m of memories) yield m
+  }
+
+  function makeServices(args: {
+    memories: Memory[]
+    findByName?: (name: string) => Promise<{ id: string; name: string } | null>
+    applyBackfillScore?: (
+      id: string,
+      score: number,
+      date: string,
+    ) => Promise<void>
+  }) {
+    const services = {
+      config: { notion: { rateLimit: { concurrency: 5 } } },
+      memories: {
+        listAllForBackfill: vi.fn(() => iter(args.memories)),
+        applyBackfillScore: vi.fn(args.applyBackfillScore ?? (async () => undefined)),
+      },
+      projects: {
+        findByName: vi.fn(args.findByName ?? (async () => null)),
+      },
+    }
+    return services
+  }
+
+  it("plan-only mode prints the dry-run footer and writes nothing", async () => {
+    const services = makeServices({
+      memories: [
+        fakeMemory({
+          id: "m1",
+          confidence: "certain",
+          confidenceScore: null,
+          createdAt: "2026-04-29T00:00:00.000Z",
+        }),
+      ],
+    })
+    const result = await runBuildConfidenceScores(services as never, {
+      apply: false,
+      dryRun: false,
+    })
+    expect(result.written).toBe(0)
+    const joined = logs.join("\n")
+    expect(joined).toContain("scanned 1")
+    expect(joined).toContain("1 to seed")
+    expect(joined).toContain("dry-run: no writes performed")
+    expect(joined).toContain("--yes to apply")
+  })
+
+  it("apply mode writes via applyBackfillScore and prints the wrote-N summary", async () => {
+    const calls: Array<{ id: string; score: number; date: string }> = []
+    const services = makeServices({
+      memories: [
+        fakeMemory({
+          id: "m1",
+          confidence: "certain",
+          confidenceScore: null,
+          createdAt: "2026-04-29T00:00:00.000Z",
+        }),
+        fakeMemory({
+          id: "m2",
+          confidence: "likely",
+          confidenceScore: null,
+          createdAt: "2025-10-11T00:00:00.000Z",
+        }),
+      ],
+      applyBackfillScore: async (id, score, date) => {
+        calls.push({ id, score, date })
+      },
+    })
+    const result = await runBuildConfidenceScores(services as never, {
+      apply: true,
+      dryRun: false,
+    })
+    expect(result.written).toBe(2)
+    expect(calls).toHaveLength(2)
+    const joined = logs.join("\n")
+    expect(joined).toContain("wrote 2 rows")
+  })
+
+  it("emits the no-rows-to-seed message when every row is already scored", async () => {
+    const services = makeServices({
+      memories: [fakeMemory({ id: "m1", confidenceScore: 0.85 })],
+    })
+    const result = await runBuildConfidenceScores(services as never, {
+      apply: false,
+      dryRun: false,
+    })
+    expect(result.plan.rowsAlreadyScored).toBe(1)
+    expect(logs.join("\n")).toMatch(/No memories need seeding/)
+  })
+
+  it("threads projectName through and resolves it via findByName", async () => {
+    const services = makeServices({
+      memories: [],
+      findByName: async (name) =>
+        name === "Mail" ? { id: "project-mail", name } : null,
+    })
+    await runBuildConfidenceScores(services as never, {
+      apply: false,
+      dryRun: false,
+      projectName: "Mail",
+    })
+    expect(services.projects.findByName).toHaveBeenCalledWith("Mail")
+    expect(services.memories.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: "project-mail",
+    })
+  })
+
+  it("aborts on unknown projectName BEFORE the discovery breadcrumb prints", async () => {
+    // Capture stderr to verify the breadcrumb does NOT appear on the
+    // failure path — operators shouldn't see "Discovering memories..."
+    // followed immediately by a "project not found" error.
+    const captured: string[] = []
+    const originalWrite = process.stderr.write
+    process.stderr.write = ((chunk: unknown) => {
+      captured.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
+
+    const services = makeServices({
+      memories: [makeMemory("m1")],
+      findByName: async () => null, // every name resolves to null
+    })
+
+    try {
+      await expect(
+        runBuildConfidenceScores(services as never, {
+          apply: false,
+          dryRun: false,
+          projectName: "Typo",
+        }),
+      ).rejects.toThrow(/project "Typo" not found/)
+    } finally {
+      process.stderr.write = originalWrite
+    }
+
+    // Critical: the breadcrumb stayed silent, AND no scan or write
+    // attempts ran — the safety property holds end-to-end.
+    expect(
+      captured.filter((c) => c.includes("Discovering memories")),
+    ).toHaveLength(0)
+    expect(services.memories.listAllForBackfill).not.toHaveBeenCalled()
+    expect(services.memories.applyBackfillScore).not.toHaveBeenCalled()
+  })
+})
+

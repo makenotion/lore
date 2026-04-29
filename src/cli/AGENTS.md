@@ -124,7 +124,7 @@ title-shaped to link.
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
-| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories |
+| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
 
@@ -216,6 +216,72 @@ on the next run. `pages.update` is per-request atomic, so a failed
 write leaves the Synopsis as Notion last observed it (empty if the
 update never landed) — the partial-failure log line tells the operator
 exactly which row needs another pass.
+
+### Confidence-score baseline backfill (`--build-confidence-scores`)
+
+Issue 0.8.0/11. Seeds every non-archived memory's `Confidence Score`
+from the categorical `Confidence` column (`certain → 0.9`, `likely →
+0.6`, `speculative → 0.3` — the `CONFIDENCE_SEED` table in
+`src/types.ts`), writes `Last Referenced At = created_time`, and
+realizes any neglect-decay accrued since creation via
+`decayConfidenceScore` so a 200-day-old `certain` row lands at
+`0.9 * 0.99^140 ≈ 0.220` rather than the bare seed value. Plan-only by
+default; `--yes` flips to apply mode. `--dry-run` always wins.
+
+**Why operators run this on upgrade.** Without the migration, every
+pre-0.8.0 row's `Confidence Score` is null until a Phase 2 read path
+touches it. RRF (#08) treats null as `confidenceFactor === 1.0`, so
+the new ordering signal effectively no-ops; the trust indicator (#09)
+never fires; the wake-up Stale Confidence section (#10) is empty.
+Running the backfill once after upgrade populates every row so day-one
+behavior matches steady-state.
+
+**Skip rule**: `Confidence Score !== null`. Rows already touched by a
+read-path or by a prior backfill are left alone. Idempotent — a second
+run reports 100% "already scored" and writes nothing.
+
+**Project scoping** via `--project <name>`: scopes the migration to one
+project. Unknown / typo'd names abort BEFORE plan or write. `--yes`
+consent for one project is not consent to mutate every null-scored row
+across the vault, so the strict-resolve gate is load-bearing safety.
+Omit `--project` for vault-wide scope.
+
+**Concurrent execution**: writes dispatch in chunked `Promise.all`
+batches sized to `notion.rateLimit.concurrency`
+(`DEFAULT_NOTION_CONCURRENCY = 3`). Rate-limit middleware is a
+`p-limit` gate, NOT a retry layer — a 429 surfaces as a thrown error
+and the migration aborts. Re-run is idempotent: surviving rows from
+prior batches are skipped via the `Confidence Score !== null` rule;
+unwritten rows finish.
+
+**Last Referenced At = created_time is a fiction.** The memory wasn't
+actually "referenced" at creation; the assignment exists so decay
+algebra has an anchor. Harmless: the operator who finds it confusing
+can re-run the migration after a few weeks of real read-traffic — the
+rows whose `Last Referenced At` got bumped by a Phase 2 read-touch
+keep that newer date (the migration skips them).
+
+The plan output surfaces top-N most-decayed titles so an operator can
+sanity-check before approving with `--yes`. Per-100-rows progress lines
+print to stderr during the apply pass. Implementation lives in
+`src/core/confidence-migration.ts` (pure plan-then-execute) plus
+`MemoryService.listAllForBackfill` / `applyBackfillScore` for the
+service-boundary I/O.
+
+**Categorical-default overstatement.** A pre-0.7.0 memory whose
+categorical `Confidence` was never explicitly set defaults to
+`certain` per `pageToMemory`. The migration treats `certain` as the
+seed `0.9` regardless of how confident the original author would have
+been if the column had existed, which can overstate confidence on
+historical rows whose author would have written `speculative`. This
+is unfixable at the migration layer without LLM-assisted relabeling
+(out of scope for 0.8.0). The operator workflow for vaults where
+this matters: re-grade specific rows via `lore-memory action='update'
+confidence=...` before running the backfill (the migration honors
+the explicit categorical), or after running it via the same update
+path followed by `lore-correct` to halve the seeded score on rows
+the operator wants to push lower. The Stale Confidence section (#10)
+surfaces these rows for triage in the natural course of work.
 
 ## The digest Command
 
