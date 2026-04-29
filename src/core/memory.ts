@@ -55,6 +55,7 @@ import {
   extractMultiSelect,
   extractRelationIds,
   extractDate,
+  extractNumber,
 } from "../notion/extractors.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
@@ -402,6 +403,7 @@ export class MemoryService {
         kind: input.kind,
         status: input.status,
         confidence: input.confidence,
+        confidenceScore: input.confidenceScore,
         reviewBy: input.reviewBy,
         decidedAt: input.decidedAt,
         supersedesIds: input.supersedesIds,
@@ -603,6 +605,13 @@ export class MemoryService {
     }
     if (input.confidence) {
       props["Confidence"] = { select: { name: input.confidence } }
+    }
+    // See `buildMemoryProps` for the three-state rationale.
+    if (input.confidenceScore !== undefined) {
+      props["Confidence Score"] =
+        input.confidenceScore === null
+          ? { number: null }
+          : { number: input.confidenceScore }
     }
     // `null` explicitly clears a date; `undefined` leaves it untouched.
     if (input.reviewBy !== undefined) {
@@ -1434,6 +1443,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     kind: extractSelect(props["Kind"], "note") as MemoryKind,
     status: extractSelect(props["Status"], "informational") as MemoryStatus,
     confidence: extractSelect(props["Confidence"], "certain") as MemoryConfidence,
+    confidenceScore: extractNumber(props["Confidence Score"]),
     reviewBy: extractDate(props["Review By"]),
     doneAt: extractDate(props["Done At"]),
     decidedAt: extractDate(props["Decided At"]),

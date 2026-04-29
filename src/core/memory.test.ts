@@ -152,6 +152,185 @@ describe("pageToMemory — fully populated decision page", () => {
   })
 })
 
+describe("Confidence Score property round-trip (#01)", () => {
+  it("returns null on a pre-migration page with no Confidence Score column", () => {
+    // A vault upgraded from <0.8.0 has no `Confidence Score` column on
+    // its Memories DB pages. `pageToMemory` must surface this as `null`
+    // so #08's RRF integration can branch on "never scored" without an
+    // extra schema check.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Pre-migration" }] },
+    })
+    expect(pageToMemory(page).confidenceScore).toBeNull()
+  })
+
+  it("extracts a populated Confidence Score number", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Scored" }] },
+      "Confidence Score": { type: "number", number: 0.85 },
+    })
+    expect(pageToMemory(page).confidenceScore).toBe(0.85)
+  })
+
+  it("returns null when the column exists but is empty on Notion's side", () => {
+    // A row whose Confidence Score was explicitly cleared (e.g. by an
+    // operator or the #11 migration) round-trips as `null`. Distinct
+    // from "scored to zero" — the floor of the range, which must remain
+    // a number through pageToMemory.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Cleared" }] },
+      "Confidence Score": { type: "number", number: null },
+    })
+    expect(pageToMemory(page).confidenceScore).toBeNull()
+  })
+
+  it("preserves zero as a populated value (not collapsed to null)", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Floor" }] },
+      "Confidence Score": { type: "number", number: 0 },
+    })
+    expect(pageToMemory(page).confidenceScore).toBe(0)
+  })
+
+  it("round-trips a Confidence Score through buildMemoryProps + pageToMemory", () => {
+    const built = buildMemoryProps({ title: "x", confidenceScore: 0.42 }) as Record<
+      string,
+      { number: number | null }
+    >
+    expect(built["Confidence Score"]).toEqual({ number: 0.42 })
+
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Confidence Score": { type: "number", number: built["Confidence Score"].number },
+    })
+    expect(pageToMemory(page).confidenceScore).toBe(0.42)
+  })
+})
+
+describe("MemoryService.create — Confidence Score write semantics (#01)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeCreateClient() {
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-1",
+        created_time: "2026-04-20T00:00:00.000Z",
+        last_edited_time: "2026-04-20T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      }),
+    )
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: { create: createSpy, updateMarkdown: updateMarkdownSpy },
+    } as unknown as Client
+    return { client, createSpy }
+  }
+
+  it("writes `{ number: <value> }` when confidenceScore is a number", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.create({ title: "x", content: "", confidenceScore: 0.85 })
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    const props = createSpy.mock.calls[0]![0].properties
+    expect(props["Confidence Score"]).toEqual({ number: 0.85 })
+  })
+
+  it("omits Confidence Score when the input does not include it", async () => {
+    // Production callers leave confidenceScore unset — the column is
+    // system-managed via #03/#06. Omission must produce a create payload
+    // with no `Confidence Score` key so Notion stores `null` (the
+    // "never scored" sentinel) rather than a default value.
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.create({ title: "x", content: "" })
+
+    const props = createSpy.mock.calls[0]![0].properties
+    expect("Confidence Score" in props).toBe(false)
+  })
+})
+
+describe("MemoryService.update — Confidence Score write semantics (#01)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeUpdateClient() {
+    const updateSpy = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}))
+    const retrieveSpy = vi.fn(async () => ({
+      object: "page",
+      id: "mem-1",
+      created_time: "2026-04-20T00:00:00.000Z",
+      last_edited_time: "2026-04-20T00:00:00.000Z",
+      archived: false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "x" }] },
+      },
+      parent: { type: "database_id", database_id: db.databaseId },
+      url: "",
+    }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        update: updateSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    return { client, updateSpy, retrieveSpy }
+  }
+
+  it("writes `{ number: <value> }` when confidenceScore is a number", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", { confidenceScore: 0.85 })
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const props = updateSpy.mock.calls[0]![0].properties
+    expect(props["Confidence Score"]).toEqual({ number: 0.85 })
+  })
+
+  it("writes `{ number: null }` when confidenceScore is explicitly null (clear)", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", { confidenceScore: null })
+
+    const props = updateSpy.mock.calls[0]![0].properties
+    expect(props["Confidence Score"]).toEqual({ number: null })
+  })
+
+  it("does NOT touch the column when confidenceScore is omitted (undefined leaves it untouched)", async () => {
+    // A `Title`-only update must leave the Confidence Score column
+    // entirely alone — both the touch-on-read helper (#03) and the
+    // contradiction-decrement path (#06) rely on this distinction so
+    // they can co-exist with title/body edits without clobbering the
+    // system-managed signal.
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", { title: "new title" })
+
+    const props = updateSpy.mock.calls[0]![0].properties
+    expect("Confidence Score" in props).toBe(false)
+  })
+
+  it("preserves zero as a valid write target", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", { confidenceScore: 0 })
+
+    const props = updateSpy.mock.calls[0]![0].properties
+    expect(props["Confidence Score"]).toEqual({ number: 0 })
+  })
+})
+
 describe("Synopsis property round-trip", () => {
   it("round-trips a Synopsis string through buildMemoryProps + pageToMemory", () => {
     const synopsis = "Adopt DecisionService so rationale chains stay traversable."
@@ -3114,6 +3293,7 @@ describe("MemoryService.materializeContent", () => {
       kind: "note" as const,
       status: "informational" as const,
       confidence: "certain" as const,
+      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,

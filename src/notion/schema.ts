@@ -164,6 +164,13 @@ export function memoriesProperties(
         ],
       },
     },
+    // System-managed numeric confidence in [0, 1]. Distinct from the
+    // categorical `Confidence` select (agent-curated semantic stance).
+    // Bumped on read-citation via touchOnRead (#03); decremented on
+    // contradiction (#06); decays on neglect. Empty until first touch —
+    // `pageToMemory` returns `null` when missing so the RRF integration
+    // (#08) can distinguish "never scored" from "scored zero."
+    "Confidence Score": { number: { format: "number" } },
     "Review By": { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
     // transitions to a terminal state — either via `TaskService.close()`
@@ -471,6 +478,7 @@ export function buildMemoryProps(input: {
   kind?: string
   status?: string
   confidence?: string
+  confidenceScore?: number | null
   reviewBy?: string | null
   doneAt?: string | null
   decidedAt?: string | null
@@ -508,6 +516,16 @@ export function buildMemoryProps(input: {
   }
   if (input.confidence) {
     props["Confidence"] = { select: { name: input.confidence } }
+  }
+  // Three-state semantics: `undefined` leaves the column untouched,
+  // `null` clears the column to "never scored", a number writes the
+  // value verbatim. Production read/write helpers in #03 only emit
+  // numbers; the `null` clear path is the test-fixture / migration path.
+  if (input.confidenceScore !== undefined) {
+    props["Confidence Score"] =
+      input.confidenceScore === null
+        ? { number: null }
+        : { number: input.confidenceScore }
   }
   // `null` explicitly clears a date; `undefined` leaves it untouched.
   if (input.reviewBy !== undefined) {

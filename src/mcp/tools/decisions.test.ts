@@ -13,6 +13,7 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     kind: "decision",
     status: "accepted",
     confidence: "certain",
+    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: "2026-04-20",

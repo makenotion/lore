@@ -27,6 +27,73 @@ describe("memoriesProperties — Done At column (#07)", () => {
   })
 })
 
+describe("memoriesProperties — Confidence Score column (#01)", () => {
+  it("declares Confidence Score as a number column on a fresh-vault config", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
+  })
+
+  it("declares Confidence Score on the legacy-vault (no self-relation) shape too", () => {
+    // `verifyVaultDatabases` + `migrateVaultSchema` use the two-arg
+    // overload on a vault that pre-dates self-relations. The new column
+    // ships in both shapes so a legacy vault running `lore migrate`
+    // surfaces the missing column on the same code path as a fresh
+    // `lore init`.
+    const props = memoriesProperties("p-ds", "t-ds")
+    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
+  })
+
+  it("places Confidence Score immediately after Confidence so insertion order matches the #01/#02 rebase contract", () => {
+    // The spec pins the insertion point so a parallel late-merger
+    // landing #02 (Last Referenced At) on top of #01 — or vice versa —
+    // does a one-line rebase rather than guessing where the column
+    // belongs. Co-locating with the categorical `Confidence` keeps the
+    // on-Notion schema readable: the two confidence axes live next to
+    // each other in the property list.
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    const confidenceIdx = keys.indexOf("Confidence")
+    const confidenceScoreIdx = keys.indexOf("Confidence Score")
+    expect(confidenceScoreIdx).toBe(confidenceIdx + 1)
+  })
+})
+
+describe("buildMemoryProps — confidenceScore emission", () => {
+  it("omits Confidence Score when the input is undefined (leaves the column untouched on update)", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Confidence Score" in built).toBe(false)
+  })
+
+  it("emits a number-with-value when confidenceScore is a finite number", () => {
+    const built = buildMemoryProps({ title: "x", confidenceScore: 0.85 }) as Record<
+      string,
+      { number: number | null }
+    >
+    expect(built["Confidence Score"]).toEqual({ number: 0.85 })
+  })
+
+  it("emits number:null when confidenceScore is null so an explicit clear writes through", () => {
+    // Distinct from `undefined` (which omits the property): test fixtures
+    // and the migration in #11 use `null` to wipe a stale score before
+    // re-seeding. Mirrors how `reviewBy: null` clears a date column.
+    const built = buildMemoryProps({ title: "x", confidenceScore: null }) as Record<
+      string,
+      { number: number | null }
+    >
+    expect(built["Confidence Score"]).toEqual({ number: null })
+  })
+
+  it("preserves zero as a valid score (writes `{ number: 0 }`)", () => {
+    // `0` is the floor of the score range, not a sentinel for "unset" —
+    // a memory contradicted to zero must round-trip through Notion as
+    // an explicit number rather than collapsing to a cleared column.
+    const built = buildMemoryProps({ title: "x", confidenceScore: 0 }) as Record<
+      string,
+      { number: number | null }
+    >
+    expect(built["Confidence Score"]).toEqual({ number: 0 })
+  })
+})
+
 describe("buildMemoryProps — doneAt emission", () => {
   it("omits Done At when the input is undefined (leaves the column untouched on update)", () => {
     const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>

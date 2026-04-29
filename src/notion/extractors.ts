@@ -71,3 +71,15 @@ export function extractDate(prop: PropertyValue | undefined): string | null {
   }
   return null
 }
+
+/**
+ * Returns the populated number, or `null` when the property is missing,
+ * cleared, or the wrong type. `0` is preserved verbatim — it is a valid
+ * stored value, distinct from "never scored" (`null`). Pre-migration
+ * pages with no column at all hit the `undefined` path and also yield
+ * `null`, the documented default.
+ */
+export function extractNumber(prop: PropertyValue | undefined): number | null {
+  if (prop?.type !== "number") return null
+  return prop.number ?? null
+}

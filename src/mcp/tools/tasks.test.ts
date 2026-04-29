@@ -14,6 +14,7 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     kind: "task",
     status: "informational",
     confidence: "certain",
+    confidenceScore: null,
     reviewBy: null,
     doneAt: null,
     decidedAt: null,

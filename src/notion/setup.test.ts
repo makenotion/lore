@@ -557,6 +557,23 @@ describe("migrateVaultSchema parallel retrieves", () => {
     ])
   })
 
+  it("reports Confidence Score as a missing property on a pre-0.8.0 Memories DB", async () => {
+    // A vault upgraded from <0.8.0 has no `Confidence Score` column on
+    // Memories. The drift detector must surface the column by name so an
+    // operator running `lore status` / `lore migrate` sees the nudge —
+    // and a future contributor can't silently rename or drop the
+    // property without this fixture failing first. Same posture as the
+    // Synopsis pin from 0.7.0/01.
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff?.missing).toContain("Confidence Score")
+  })
+
   it("reports Synopsis as a missing property on a pre-0.7.0 Memories DB", async () => {
     // A vault upgraded from <0.7.0 has no Synopsis column on Memories.
     // The drift detector must surface the column by name so an operator

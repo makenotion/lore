@@ -262,6 +262,33 @@ export type MemoryStatus =
  */
 export type MemoryConfidence = "certain" | "likely" | "speculative"
 
+/**
+ * Confidence Score is constrained to [CONFIDENCE_SCORE_MIN,
+ * CONFIDENCE_SCORE_MAX] inclusive. Out-of-range writes are clamped by
+ * `clampConfidenceScore` in `src/core/decay.ts` (#03). Notion's number
+ * column has no native range constraint, so the clamp is the single
+ * enforcement point.
+ */
+export const CONFIDENCE_SCORE_MIN = 0
+export const CONFIDENCE_SCORE_MAX = 1
+
+/**
+ * Initial Confidence Score seeded from the categorical Confidence select
+ * on first read-touch (or by `lore migrate --build-confidence-scores`,
+ * #11). Empirical: `certain` lands at 0.9 — leaves headroom for repeated
+ * confirmation to push it higher; `likely` at 0.6; `speculative` at 0.3.
+ * A memory written without an explicit `Confidence` defaults to `certain`
+ * per `pageToMemory`, so the seeded value is 0.9.
+ *
+ * Bump only with a coordinated #03 update — #08's RRF factor and #10's
+ * stale-confidence threshold are tuned against these values.
+ */
+export const CONFIDENCE_SEED: Record<MemoryConfidence, number> = {
+  certain: 0.9,
+  likely: 0.6,
+  speculative: 0.3,
+}
+
 export interface Memory {
   id: string
   title: string
@@ -271,6 +298,15 @@ export interface Memory {
   kind: MemoryKind
   status: MemoryStatus
   confidence: MemoryConfidence
+  /**
+   * System-managed numeric confidence in [0, 1]. `null` until the memory
+   * has been touched once by a read path (or backfilled by `lore migrate
+   * --build-confidence-scores`). RRF reads this as a weighting factor
+   * (#08); rendering surfaces a trust indicator when below
+   * `CONFIDENCE_DISPLAY_THRESHOLD` (#09). Distinct from the agent-curated
+   * `confidence` categorical above.
+   */
+  confidenceScore: number | null
   reviewBy: string | null
   /**
    * Most recent close timestamp for tasks. YYYY-MM-DD, or `null` for
@@ -339,6 +375,13 @@ export interface CreateMemoryInput {
   kind?: MemoryKind
   status?: MemoryStatus
   confidence?: MemoryConfidence
+  /**
+   * Optional initial Confidence Score. Production callers leave this
+   * unset — the column is system-managed via `touchOnRead` (#03) / decay
+   * (#03) / contradiction signals (#06). Test fixtures and migrations may
+   * set it explicitly. `null` clears the column to "never scored".
+   */
+  confidenceScore?: number | null
   reviewBy?: string
   decidedAt?: string
   supersedesIds?: string[]
@@ -381,6 +424,13 @@ export interface UpdateMemoryInput {
   kind?: MemoryKind
   status?: MemoryStatus
   confidence?: MemoryConfidence
+  /**
+   * Optional Confidence Score update. Production callers leave this unset —
+   * the column is system-managed via `touchOnRead` (#03) / decay (#03) /
+   * contradiction signals (#06). Test fixtures and migrations may set it
+   * explicitly. `null` clears the column to "never scored".
+   */
+  confidenceScore?: number | null
   reviewBy?: string | null
   decidedAt?: string | null
   supersedesIds?: string[]
