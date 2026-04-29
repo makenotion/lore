@@ -288,7 +288,12 @@ export function formatMemoryListItem(
   const lines: string[] = [`${heading} ${memory.title}`]
 
   const includeSynopsis = options.includeSynopsis !== false
-  if (includeSynopsis && memory.synopsis) {
+  // `.trim()` on the truthy check so a whitespace-only synopsis (a hypothetical
+  // future write-path bug, or a placeholder "   " landed by a migration) doesn't
+  // render as a blank line between heading and meta. The rendered value is the
+  // un-trimmed input — `truncateSynopsis` operates on the original so word-
+  // boundary truncation logic doesn't see a shifted index.
+  if (includeSynopsis && memory.synopsis.trim()) {
     lines.push(truncateSynopsis(memory.synopsis))
   }
 
@@ -320,8 +325,16 @@ function renderMetaLine(
  * cost. When no usable word boundary appears inside the window (a
  * single 600-char token, or whitespace only at index 0) we fall back
  * to the hard slice so the row still respects the cap.
+ *
+ * Exported so the per-surface formatters that don't go through
+ * `formatMemoryListItem` (decision-list's bold meta line; the bullet-
+ * row task formatters in `lore-task action='list'` and the wake-up
+ * `## Tasks` section) share the same defensive discipline. Internal
+ * callers (bulk migrations, the `--backfill-synopses` synthesizer)
+ * can write up to the Notion 2000-char ceiling; every list surface
+ * must defend against an over-cap row blowing up its output.
  */
-function truncateSynopsis(synopsis: string): string {
+export function truncateSynopsis(synopsis: string): string {
   if (synopsis.length <= SYNOPSIS_MAX) return synopsis
   const window = synopsis.slice(0, SYNOPSIS_MAX)
   const lastBoundary = window.search(/\s\S*$/u)

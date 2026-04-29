@@ -23,6 +23,7 @@ import { resolveProjectIds } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { findDuplicateActiveTasks } from "../../core/near-duplicate.js"
+import { truncateSynopsis } from "../render.js"
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { TaskState, TaskSummary } from "../../types.js"
 
@@ -60,8 +61,19 @@ function urgencyMarker(days: number): string {
  * an urgency marker and a `(N days overdue)` suffix; in-window rows show
  * their due date plainly. The `Blocked By` column is appended only when
  * non-empty so untouched fields don't visually clutter the output.
+ *
+ * When `includeSynopsis` is true (default), a non-empty `synopsis` is
+ * rendered as an indented line between the title row and the `ID:`
+ * line so the agent sees a one-line gist on the listing without paying
+ * a body fetch. Synopses are defensively truncated at `SYNOPSIS_MAX`
+ * via the shared helper, mirroring `formatMemoryListItem`'s discipline
+ * for over-cap rows that landed via legacy / migration paths.
  */
-function formatTaskRow(t: TaskSummary, today: string): string {
+function formatTaskRow(
+  t: TaskSummary,
+  today: string,
+  options: { includeSynopsis?: boolean } = {},
+): string {
   const overdueDays = taskDaysOverdue(t, today)
   const marker = overdueDays !== null ? urgencyMarker(overdueDays) : ""
   const stateLabel = t.taskState ?? "open"
@@ -75,8 +87,12 @@ function formatTaskRow(t: TaskSummary, today: string): string {
         : "no due date"
   const blocked = t.blockedBy ? ` — blocked by ${t.blockedBy}` : ""
   const overduePart = overdueDays !== null ? ` **(${due})**` : ` (${due})`
+  const includeSynopsis = options.includeSynopsis !== false
+  const synopsisLine =
+    includeSynopsis && t.synopsis.trim() ? `  ${truncateSynopsis(t.synopsis)}\n` : ""
   return (
     `- ${marker}**${t.title}** [${stateLabel}]${blocked}${overduePart}\n` +
+    synopsisLine +
     `  ID: ${t.id}`
   )
 }
@@ -389,6 +405,7 @@ interface ListArgs {
   state?: (typeof TASK_STATES)[number]
   dueBefore?: string
   limit?: number
+  includeSynopsis?: boolean
 }
 
 async function handleList(
@@ -471,6 +488,7 @@ async function handleList(
 
     const overdue = overdueAll.slice(0, cap)
     const active = activeAll.slice(0, cap)
+    const includeSynopsis = args.includeSynopsis !== false
 
     const sections: string[] = []
     if (overdueAll.length > 0) {
@@ -480,7 +498,8 @@ async function handleList(
           ? `### Overdue (${overdue.length} shown of ${overdueAll.length}, hiding ${hidden})`
           : `### Overdue (${overdueAll.length})`
       sections.push(
-        `${heading}\n\n` + overdue.map((t) => formatTaskRow(t, today)).join("\n"),
+        `${heading}\n\n` +
+          overdue.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n"),
       )
     }
     if (activeAll.length > 0) {
@@ -496,7 +515,8 @@ async function handleList(
           ? `### ${args.state ? args.state[0].toUpperCase() + args.state.slice(1) : "Active"} (${active.length} shown of ${activeAll.length}, hiding ${hidden})`
           : `### ${args.state ? args.state[0].toUpperCase() + args.state.slice(1) : "Active"} (${activeAll.length})`
       sections.push(
-        `${heading}\n\n` + active.map((t) => formatTaskRow(t, today)).join("\n"),
+        `${heading}\n\n` +
+          active.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n"),
       )
     }
 
@@ -573,6 +593,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     state: z.enum(TASK_STATES).optional(),
     dueBefore: z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format").optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    includeSynopsis: z.boolean().optional(),
   }),
 ])
 
@@ -736,6 +757,16 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .optional()
           .describe(
             `(action='list') Per-section cap (default ${DEFAULT_TASKS_LIMIT}). Capped at 200.`,
+          ),
+        includeSynopsis: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='list') Render each task's synopsis line (when set) " +
+              "as an indented line between the title row and the `ID:` line. " +
+              "Defaults true. Pass false to restore byte-identical " +
+              "pre-DEFERRED-01 output for callers piping the response into " +
+              "another formatter.",
           ),
       },
     },

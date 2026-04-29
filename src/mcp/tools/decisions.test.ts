@@ -849,3 +849,130 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
     expect(services.decisions.create).not.toHaveBeenCalled()
   })
 })
+
+describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
+  function listServices(items: ReturnType<typeof makeDecision>[]) {
+    return {
+      decisions: { list: vi.fn().mockResolvedValue({ items, nextCursor: null }) },
+      projects: { findByName: vi.fn() },
+      facts: {},
+      topics: {},
+      context: { project: null },
+    }
+  }
+
+  it("renders the synopsis line between the title heading and the metadata line by default", async () => {
+    const decision = makeDecision("dec-syn", {
+      title: "Cache project resolutions",
+      synopsis: "All resolved projects are cached in-process for 60s.",
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### Cache project resolutions")
+    expect(headingIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[headingIdx + 1]).toBe(
+      "All resolved projects are cached in-process for 60s.",
+    )
+    // Metadata bold line follows synopsis.
+    expect(lines[headingIdx + 2]).toMatch(/^\*\*\[accepted\]/)
+  })
+
+  it("omits the synopsis line on rows with empty synopsis (byte-identical pre-DEFERRED-01 path)", async () => {
+    const decision = makeDecision("dec-empty", {
+      title: "Plain decision",
+      synopsis: "",
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Byte-identical pin against the pre-DEFERRED-01 shape — `toBe` rather
+    // than `toMatch` so a trailing-space or extra-newline regression slips
+    // nothing past the assertion. The fixture's `decidedAt` is set on
+    // `makeDecision` (2026-04-20) and `reviewBy` is null, so the
+    // `formatSummary` line resolves deterministically without a clock dep.
+    expect(text).toBe(
+      "Found 1 decision:\n\n" +
+        "### Plain decision\n" +
+        "**[accepted] | decided 2026-04-20 | ID: dec-empty**\n",
+    )
+  })
+
+  it("treats whitespace-only synopsis the same as empty (no rendered line)", async () => {
+    // Whitespace-only synopses can't come from any current write path
+    // (Notion's rich_text default is empty string, and the Zod write
+    // schemas don't strip), but a future migration / hand-edit could
+    // land one. Pin the trim-aware truthy check so the listing surface
+    // never emits a row of pure whitespace between heading and meta.
+    const decision = makeDecision("dec-ws", {
+      title: "Whitespace synopsis",
+      synopsis: "   \t  ",
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toBe(
+      "Found 1 decision:\n\n" +
+        "### Whitespace synopsis\n" +
+        "**[accepted] | decided 2026-04-20 | ID: dec-ws**\n",
+    )
+  })
+
+  it("suppresses the synopsis line when includeSynopsis: false", async () => {
+    const decision = makeDecision("dec-syn", {
+      title: "Cache project resolutions",
+      synopsis: "All resolved projects are cached in-process for 60s.",
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({ includeSynopsis: false } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("All resolved projects are cached in-process for 60s.")
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### Cache project resolutions")
+    // Suppression collapses to the byte-identical pre-#02 shape: heading
+    // immediately followed by the bold meta line.
+    expect(lines[headingIdx + 1]).toMatch(/^\*\*\[accepted\]/)
+  })
+
+  it("defensively truncates over-cap synopses on the listing surface", async () => {
+    // 600 chars of "abcde " words, mirroring the render.test.ts truncation
+    // fixture so the boundary math is identical and obvious.
+    const word = "abcde "
+    const longSynopsis = word.repeat(100)
+    const decision = makeDecision("dec-long", {
+      title: "Long synopsis decision",
+      synopsis: longSynopsis,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### Long synopsis decision")
+    const synopsisLine = lines[headingIdx + 1]
+    expect(synopsisLine.length).toBeLessThanOrEqual(500)
+    // Boundary-safe: ends on a word, no trailing whitespace, no ellipsis.
+    expect(synopsisLine.endsWith("e")).toBe(true)
+    expect(synopsisLine).not.toContain("…")
+  })
+})

@@ -1447,3 +1447,180 @@ describe("lore-wake-up — Part H: stale-task bucketing (issue 0.7.0/12)", () =>
     expect(text).toContain("Active row")
   })
 })
+
+describe("lore-wake-up — Part I: Tasks synopsis rendering (DEFERRED-01)", () => {
+  function daysAgo(n: number): string {
+    return new Date(Date.now() - n * 86_400_000).toISOString()
+  }
+  function daysAgoDate(n: number): string {
+    return daysAgo(n).split("T")[0]
+  }
+
+  it("renders the synopsis as an indented line between the title row and the ID line", async () => {
+    // One row per bucket so the assertion proves synopsis rendering is
+    // bucket-agnostic — same posture as the closure-CTA test in Part H.
+    const overdueTask = makeTask({
+      id: "overdue-id",
+      title: "Overdue row",
+      synopsis: "Overdue synopsis text.",
+      reviewBy: daysAgoDate(27),
+      updatedAt: daysAgo(2),
+    })
+    const staleTask = makeTask({
+      id: "stale-id",
+      title: "Stale row",
+      synopsis: "Stale synopsis text.",
+      reviewBy: null,
+      updatedAt: daysAgo(45),
+    })
+    const activeTask = makeTask({
+      id: "active-id",
+      title: "Active row",
+      synopsis: "Active synopsis text.",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      tasks: [overdueTask, staleTask, activeTask],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    for (const fixture of [
+      { title: "Overdue row", id: "overdue-id", synopsis: "Overdue synopsis text." },
+      { title: "Stale row", id: "stale-id", synopsis: "Stale synopsis text." },
+      { title: "Active row", id: "active-id", synopsis: "Active synopsis text." },
+    ]) {
+      const lines = text.split("\n")
+      const titleIdx = lines.findIndex((l) => l.includes(`**${fixture.title}**`))
+      expect(titleIdx).toBeGreaterThanOrEqual(0)
+      expect(lines[titleIdx + 1]).toBe(`  ${fixture.synopsis}`)
+      expect(lines[titleIdx + 2]).toContain(`ID: ${fixture.id} — close if resolved:`)
+    }
+  })
+
+  it("omits the synopsis line on rows with empty synopsis (byte-identical pre-DEFERRED-01 path)", async () => {
+    const task = makeTask({
+      id: "plain-id",
+      title: "Plain row",
+      synopsis: "",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // Byte-identical pin against the pre-DEFERRED-01 row shape. The wake-up
+    // ## Tasks section's full output is too dependent on surrounding
+    // sections (digest / Recent Memories / Active Facts) to assert on the
+    // entire response, so we slice exactly the two-line bullet for the row
+    // and match it as a single string. Any indentation drift or stray
+    // newline between the title row and the ID row trips this check.
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Plain row**"))
+    expect(`${lines[titleIdx]}\n${lines[titleIdx + 1]}`).toBe(
+      "- **Plain row** [open]\n" +
+        "  ID: plain-id — close if resolved: lore-task({ action: 'close', taskId: 'plain-id' })",
+    )
+  })
+
+  it("treats whitespace-only synopsis the same as empty (no rendered line)", async () => {
+    // Mirror of the decisions-list and tasks-list whitespace tests: pin
+    // the trim-aware truthy check on the wake-up triage view so a future
+    // migration landing `"   "` synopsis can't emit a blank indented line
+    // between the title row and the ID/CTA line.
+    const task = makeTask({
+      id: "ws-id",
+      title: "Whitespace row",
+      synopsis: "   \t  ",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Whitespace row**"))
+    expect(`${lines[titleIdx]}\n${lines[titleIdx + 1]}`).toBe(
+      "- **Whitespace row** [open]\n" +
+        "  ID: ws-id — close if resolved: lore-task({ action: 'close', taskId: 'ws-id' })",
+    )
+  })
+
+  it("ignores caller-supplied includeSynopsis (wake-up has no synopsis toggle)", async () => {
+    // Per DEFERRED-01: wake-up does NOT gain new toggles. The field
+    // is not declared on the `wake-up` branch of `contextDispatchSchema`,
+    // so Zod's default `strip` posture drops it during `safeParse` —
+    // there is no dispatcher-layer code rejecting it explicitly. Pin
+    // this so a copy-paste from `lore-task action='list'` to
+    // `lore-context action='wake-up'` doesn't silently suppress the
+    // synopsis on the triage view.
+    const task = makeTask({
+      id: "syn-id",
+      title: "Syn row",
+      synopsis: "Visible synopsis.",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ includeSynopsis: false } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Visible synopsis.")
+  })
+
+  it("defensively truncates over-cap synopses on the triage row", async () => {
+    const word = "abcde "
+    const longSynopsis = word.repeat(100)
+    const task = makeTask({
+      id: "long-id",
+      title: "Long synopsis",
+      synopsis: longSynopsis,
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Long synopsis**"))
+    const synopsisLine = lines[titleIdx + 1]
+    expect(synopsisLine.startsWith("  ")).toBe(true)
+    const payload = synopsisLine.slice(2)
+    expect(payload.length).toBeLessThanOrEqual(500)
+    // Boundary-safe: ends on a word, no trailing whitespace, no ellipsis.
+    // Mirrors the decisions / tasks truncation assertions so a regression
+    // in `truncateSynopsis`'s word-boundary fallback catches symmetrically
+    // across all three new surfaces.
+    expect(payload.endsWith("e")).toBe(true)
+    expect(synopsisLine).not.toContain("…")
+  })
+})

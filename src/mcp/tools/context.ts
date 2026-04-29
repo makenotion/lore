@@ -32,6 +32,7 @@ import {
   formatMemoryListItem,
   renderFact,
   resolveReferencedTitles,
+  truncateSynopsis,
 } from "../render.js"
 
 type ToolResult = {
@@ -131,6 +132,13 @@ function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
  * of which bucket it lives in. The urgency marker fires only on overdue
  * rows — the Stale section heading already conveys staleness, so plain
  * rows in that bucket keep the visual noise down.
+ *
+ * A non-empty `synopsis` is rendered as an indented line between the
+ * title row and the `ID:` line — same shape as `lore-task action='list'`'s
+ * row formatter. Wake-up does NOT expose an `includeSynopsis` toggle:
+ * the section is the agent's primary triage view, and the synopsis
+ * line materially improves the matching surface for the closure-nudge
+ * mechanisms that frame the rest of 0.7.0.
  */
 function formatWakeUpTaskRow(task: TaskSummary, today: string): string {
   const overdueDays = taskDaysOverdue(task, today)
@@ -146,8 +154,10 @@ function formatWakeUpTaskRow(task: TaskSummary, today: string): string {
         : ""
   const prefix = overdueDays !== null ? "⚠ " : ""
   const closeCta = `lore-task({ action: 'close', taskId: '${task.id}' })`
+  const synopsisLine = task.synopsis.trim() ? `  ${truncateSynopsis(task.synopsis)}\n` : ""
   return (
     `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due}\n` +
+    synopsisLine +
     `  ID: ${task.id} — close if resolved: ${closeCta}`
   )
 }

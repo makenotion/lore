@@ -12,7 +12,7 @@ import {
   resolveCanonicalDecisionLinks,
   syncDecisionReachability,
 } from "../decision-graph.js"
-import { displayId, resolveTitles } from "../render.js"
+import { displayId, resolveTitles, truncateSynopsis } from "../render.js"
 import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
@@ -313,6 +313,7 @@ interface ListArgs {
   reviewBefore?: string
   limit?: number
   startCursor?: string
+  includeSynopsis?: boolean
 }
 
 async function handleList(services: LoreServices, args: ListArgs): Promise<ToolResult> {
@@ -349,9 +350,13 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
       }
     }
 
+    const includeSynopsis = args.includeSynopsis !== false
     const lines = [`Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`]
     for (const d of decisions) {
       lines.push(`### ${d.title}`)
+      if (includeSynopsis && d.synopsis.trim()) {
+        lines.push(truncateSynopsis(d.synopsis))
+      }
       lines.push(formatSummary(d))
       if (d.alternatives) lines.push(`Alternatives: ${d.alternatives}`)
       if (d.consequences) lines.push(`Consequences: ${d.consequences}`)
@@ -660,6 +665,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     reviewBefore: z.string().regex(YMD_REGEX).optional(),
     limit: z.number().int().min(1).max(100).optional(),
     startCursor: z.string().min(1).optional(),
+    includeSynopsis: z.boolean().optional(),
   }),
   z.object({
     action: z.literal("get"),
@@ -822,6 +828,15 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .min(1)
           .optional()
           .describe("(action='list') Opaque pagination cursor."),
+        includeSynopsis: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='list') Render each decision's synopsis line (when set) " +
+              "between the title heading and the status/metadata line. Defaults true. " +
+              "Pass false to restore byte-identical pre-DEFERRED-01 output for callers " +
+              "piping the response into another formatter.",
+          ),
         // get | review
         decisionId: z
           .string()

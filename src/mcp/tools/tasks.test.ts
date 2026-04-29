@@ -1025,3 +1025,174 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
     expect(svc.tasks.update).not.toHaveBeenCalled()
   })
 })
+
+describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
+  it("renders the synopsis as an indented line between the title row and the ID line by default", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-syn", {
+          title: "Rotate keys",
+          synopsis: "Rotate keys for new env.",
+          entity: "PR-1",
+          reviewBy: "2099-01-01",
+        }),
+      ],
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Rotate keys**"))
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    // Synopsis lives between the title row and the `  ID:` line.
+    expect(lines[titleIdx + 1]).toBe("  Rotate keys for new env.")
+    expect(lines[titleIdx + 2]).toMatch(/^ {2}ID: t-syn/)
+  })
+
+  it("omits the synopsis line on rows with empty synopsis (byte-identical pre-DEFERRED-01 path)", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-plain", {
+          title: "Plain task",
+          synopsis: "",
+          entity: "PR-1",
+          reviewBy: "2099-01-01",
+        }),
+      ],
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Byte-identical pin against the pre-DEFERRED-01 row shape — `toBe`
+    // rather than `toMatch` so any indentation drift, trailing whitespace,
+    // or extra newline shows up as a test failure rather than slipping past
+    // a regex that only checked the first line. `2099-01-01` is far enough
+    // in the future that `taskDaysOverdue` returns null on every wall-clock
+    // day this suite runs, keeping `due 2099-01-01` deterministic.
+    expect(text).toBe(
+      "1 task:\n\n" +
+        "### Active (1)\n\n" +
+        "- **Plain task** [open] (due 2099-01-01)\n" +
+        "  ID: t-plain",
+    )
+  })
+
+  it("treats whitespace-only synopsis the same as empty (no rendered line)", async () => {
+    // Mirror of the decisions-list test: pin the trim-aware truthy check
+    // so a hypothetical migration / hand-edit landing `"   "` synopsis
+    // doesn't emit a row of pure whitespace between the title and ID.
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-ws", {
+          title: "Whitespace task",
+          synopsis: "   \t  ",
+          entity: "PR-1",
+          reviewBy: "2099-01-01",
+        }),
+      ],
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toBe(
+      "1 task:\n\n" +
+        "### Active (1)\n\n" +
+        "- **Whitespace task** [open] (due 2099-01-01)\n" +
+        "  ID: t-ws",
+    )
+  })
+
+  it("suppresses the synopsis line when includeSynopsis: false", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-syn", {
+          title: "Rotate keys",
+          synopsis: "Rotate keys for new env.",
+          entity: "PR-1",
+          reviewBy: "2099-01-01",
+        }),
+      ],
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "list",
+      includeSynopsis: false,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("Rotate keys for new env.")
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Rotate keys**"))
+    expect(lines[titleIdx + 1]).toMatch(/^ {2}ID: t-syn/)
+  })
+
+  it("defensively truncates over-cap synopses on the listing surface", async () => {
+    const word = "abcde "
+    const longSynopsis = word.repeat(100)
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-long", {
+          title: "Long synopsis task",
+          synopsis: longSynopsis,
+          entity: "PR-1",
+          reviewBy: "2099-01-01",
+        }),
+      ],
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Long synopsis task**"))
+    const synopsisLine = lines[titleIdx + 1]
+    // Two-space indent + truncated synopsis, ≤ 500 chars of payload.
+    expect(synopsisLine.startsWith("  ")).toBe(true)
+    const payload = synopsisLine.slice(2)
+    expect(payload.length).toBeLessThanOrEqual(500)
+    // Boundary-safe: ends on a word, no trailing whitespace, no ellipsis.
+    // Mirrors `decisions.test.ts`'s assertion shape so a regression in
+    // `truncateSynopsis`'s word-boundary fallback catches symmetrically
+    // across all three new surfaces, not just the decision path.
+    expect(payload.endsWith("e")).toBe(true)
+    expect(synopsisLine).not.toContain("…")
+  })
+})
