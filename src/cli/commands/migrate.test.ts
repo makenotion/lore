@@ -6,13 +6,19 @@ import type { Fact, Memory } from "../../types.js"
 import type { TopicAliasMergeResult } from "../../core/topic-merge.js"
 import {
   backfillFactSources,
+  formatBackfillBucket,
   loadTopicAliasMerges,
+  parseSynopsisBackend,
+  parseSynopsisBatchSize,
   printAliasMergeResults,
   proposeSourceMemory,
   runBuildEntitiesMigration,
   runFactEncodingFix,
   runMemoryEncodingFix,
+  runSynopsisBackfill,
 } from "./migrate.js"
+import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
+import type { BackfillReport } from "../../core/synopsis-backfill.js"
 
 function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
   return {
@@ -924,5 +930,307 @@ describe("runBuildEntitiesMigration", () => {
 
     await runBuildEntitiesMigration(services, { apply: false })
     expect(logs.join("\n")).toContain("nothing to canonicalize")
+  })
+})
+
+function emptyBackfillReport(): BackfillReport {
+  return {
+    totalCandidates: 0,
+    archivedSkipped: 0,
+    bodyOversizeSkipped: 0,
+    emptyBodySkipped: 0,
+    synthesized: 0,
+    placeholderWritten: 0,
+    bodyFetchFailed: 0,
+    synthesisFailed: 0,
+    scaffoldingRejected: 0,
+    writeFailed: 0,
+    truncated: 0,
+    examples: [],
+  }
+}
+
+describe("parseSynopsisBackend", () => {
+  it("defaults to claude when undefined", () => {
+    expect(parseSynopsisBackend(undefined)).toBe("claude")
+  })
+
+  it("accepts the two valid backends case-insensitively", () => {
+    expect(parseSynopsisBackend("claude")).toBe("claude")
+    expect(parseSynopsisBackend("Claude")).toBe("claude")
+    expect(parseSynopsisBackend("placeholder")).toBe("placeholder")
+    expect(parseSynopsisBackend("PLACEHOLDER")).toBe("placeholder")
+  })
+
+  it("rejects an unknown backend with process.exit(1)", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit-called")
+    }) as never)
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(() => parseSynopsisBackend("openai")).toThrow("exit-called")
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("openai"))).toBe(
+        true
+      )
+    } finally {
+      exitSpy.mockRestore()
+      errSpy.mockRestore()
+    }
+  })
+})
+
+describe("parseSynopsisBatchSize", () => {
+  it("defaults to DEFAULT_SYNOPSIS_BATCH_SIZE when undefined", () => {
+    expect(parseSynopsisBatchSize(undefined)).toBe(DEFAULT_SYNOPSIS_BATCH_SIZE)
+  })
+
+  it("accepts a positive integer string", () => {
+    expect(parseSynopsisBatchSize("1")).toBe(1)
+    expect(parseSynopsisBatchSize("4")).toBe(4)
+    expect(parseSynopsisBatchSize("16")).toBe(16)
+  })
+
+  it("rejects non-positive / non-integer / non-numeric values", () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit-called")
+    }) as never)
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(() => parseSynopsisBatchSize("0")).toThrow("exit-called")
+      expect(() => parseSynopsisBatchSize("-1")).toThrow("exit-called")
+      expect(() => parseSynopsisBatchSize("3.5")).toThrow("exit-called")
+      expect(() => parseSynopsisBatchSize("abc")).toThrow("exit-called")
+      expect(() => parseSynopsisBatchSize("")).toThrow("exit-called")
+    } finally {
+      exitSpy.mockRestore()
+      errSpy.mockRestore()
+    }
+  })
+})
+
+describe("formatBackfillBucket", () => {
+  it("renders numeric on plan-only regardless of backend", () => {
+    expect(formatBackfillBucket(0, "claude", true)).toBe("0")
+    expect(formatBackfillBucket(0, "placeholder", true)).toBe("0")
+    expect(formatBackfillBucket(7, "claude", true)).toBe("7")
+  })
+
+  it("renders numeric on the claude apply path", () => {
+    expect(formatBackfillBucket(0, "claude", false)).toBe("0")
+    expect(formatBackfillBucket(7, "claude", false)).toBe("7")
+  })
+
+  it("renders n/a (placeholder backend) on the placeholder apply path", () => {
+    // Acceptance criterion: the CLI display layer renders both
+    // counters as `n/a (placeholder backend)` rather than the
+    // literal `0` so an operator scanning the report doesn't
+    // misread "checked and found zero" when the migration didn't
+    // check at all.
+    expect(formatBackfillBucket(0, "placeholder", false)).toBe(
+      "n/a (placeholder backend)"
+    )
+    expect(formatBackfillBucket(99, "placeholder", false)).toBe(
+      "n/a (placeholder backend)"
+    )
+  })
+})
+
+describe("runSynopsisBackfill", () => {
+  it("default (no --yes) is plan-only and surfaces the re-run footer", async () => {
+    const report = emptyBackfillReport()
+    report.totalCandidates = 5
+    report.examples = [
+      { id: "m1", title: "First", bucket: "candidate" as const },
+    ]
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: false,
+      backend: "claude",
+    })
+    log.mockRestore()
+
+    expect(services.memories.backfillSynopses).toHaveBeenCalledWith({
+      apply: false,
+      dryRun: undefined,
+      backend: "claude",
+      batchSize: undefined,
+    })
+    expect(logs.some((l) => l.includes("Would backfill 5 synopses"))).toBe(true)
+    expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
+    expect(
+      logs.some((l) => l.includes("estimated, exact counts require --yes"))
+    ).toBe(true)
+    // Plan-only output deliberately suppresses the batch-size clause —
+    // the operator hasn't paid anything yet so the concurrency knob
+    // is irrelevant noise.
+    expect(logs.some((l) => l.includes("batch-size:"))).toBe(false)
+  })
+
+  it("threads batchSize through to services.memories.backfillSynopses and into the apply-mode header", async () => {
+    const report = emptyBackfillReport()
+    report.totalCandidates = 8
+    report.synthesized = 8
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: true,
+      backend: "claude",
+      batchSize: 8,
+    })
+    log.mockRestore()
+
+    expect(services.memories.backfillSynopses).toHaveBeenCalledWith({
+      apply: true,
+      dryRun: undefined,
+      backend: "claude",
+      batchSize: 8,
+    })
+    expect(logs.some((l) => l.includes("batch-size: 8"))).toBe(true)
+  })
+
+  it("reports nothing-to-do when the candidate pool is empty", async () => {
+    const services = {
+      memories: {
+        backfillSynopses: vi.fn().mockResolvedValue(emptyBackfillReport()),
+      },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: true,
+      backend: "claude",
+    })
+    log.mockRestore()
+
+    expect(
+      logs.some((l) => l.includes("No memories with empty Synopsis"))
+    ).toBe(true)
+  })
+
+  it("apply path with claude backend reports the synthesis verb and counters", async () => {
+    const report = emptyBackfillReport()
+    report.totalCandidates = 3
+    report.synthesized = 3
+    report.truncated = 1
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: true,
+      backend: "claude",
+    })
+    log.mockRestore()
+
+    expect(logs.some((l) => l.includes("Synthesized 3 synopses"))).toBe(true)
+    expect(logs.some((l) => l.includes("backend: claude"))).toBe(true)
+    expect(logs.some((l) => l.includes("truncated:"))).toBe(true)
+  })
+
+  it("apply path with placeholder backend renders n/a for fetch-time counters", async () => {
+    // Acceptance criterion: "Test pins both behaviors separately
+    // (typed-value assertion vs. display-string snapshot)." The
+    // typed-value assertion lives in `synopsis-backfill.test.ts`;
+    // here is the display-string snapshot.
+    const report = emptyBackfillReport()
+    report.totalCandidates = 4
+    report.placeholderWritten = 4
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: true,
+      backend: "placeholder",
+    })
+    log.mockRestore()
+
+    expect(logs.some((l) => l.includes("Flagged 4 synopses"))).toBe(true)
+    expect(logs.some((l) => l.includes("backend: placeholder"))).toBe(true)
+    expect(
+      logs.some((l) => l.includes("body-oversize: n/a (placeholder backend)"))
+    ).toBe(true)
+    expect(
+      logs.some((l) => l.includes("empty-body:    n/a (placeholder backend)"))
+    ).toBe(true)
+  })
+
+  it("plan-only with placeholder backend renders numeric (estimated) buckets", async () => {
+    // Plan-only path: the typed report is `0` and the display layer
+    // renders the literal `0` (with the "estimated" caveat). The
+    // `n/a` substitution is only applied on the placeholder APPLY
+    // path, where the backend deliberately skips body fetches.
+    const report = emptyBackfillReport()
+    report.totalCandidates = 2
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: false,
+      backend: "placeholder",
+    })
+    log.mockRestore()
+
+    expect(
+      logs.some((l) => l.includes("body-oversize: 0") && l.includes("estimated"))
+    ).toBe(true)
+    expect(logs.some((l) => l.includes("n/a"))).toBe(false)
+  })
+
+  it("dry-run wins over apply: --yes --dry-run is plan-only", async () => {
+    const report = emptyBackfillReport()
+    report.totalCandidates = 1
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+
+    await runSynopsisBackfill(services as never, {
+      apply: true,
+      dryRun: true,
+      backend: "claude",
+    })
+    log.mockRestore()
+
+    expect(services.memories.backfillSynopses).toHaveBeenCalledWith({
+      apply: true,
+      dryRun: true,
+      backend: "claude",
+      batchSize: undefined,
+    })
+    expect(logs.some((l) => l.includes("Would backfill"))).toBe(true)
+    expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
   })
 })

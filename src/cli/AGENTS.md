@@ -123,7 +123,7 @@ title-shaped to link.
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
-| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent) |
+| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 
 ## The migrate Command
@@ -168,6 +168,52 @@ exists to canonicalize *historical* rows. Future agent integrations
 should set `LORE_AGENT_NAME=<Name>` explicitly — only add to the
 canonical table when a new *default-detection* variant appears in the
 wild.
+
+### Synopsis backfill (`--backfill-synopses`)
+
+Issue 0.7.0/05. Scans every non-archived memory whose `Synopsis`
+property is empty (the pre-0.7.0 historical corpus, plus any post-0.7.0
+row where the agent omitted the field on save). Plan-only by default;
+`--yes` flips to apply mode. `--dry-run` always wins, mirroring every
+other migrate flag's posture.
+
+Two backends, selected by `--synopsis-backend`:
+
+- `claude` (default): for each candidate, fetch the page body via
+  `pages.retrieveMarkdown`, synthesize a 1–2 sentence synopsis via
+  `claude -p` with a prompt-injection-guarded template, sanitize the
+  output, and write to the row's `Synopsis` rich_text property. PATH
+  preflight runs **only on the apply path** — operators without `claude`
+  installed can still preview the candidate count via the cheap dry-run
+  pass. Body-fetch / synthesis / sanitize / write failures all
+  continue-and-log to stderr (`[lore] synopsis-backfill: id=… phase=…
+  error=…`); the failed row's Synopsis stays empty so the next run picks
+  it up.
+- `placeholder`: writes the `SYNOPSIS_PLACEHOLDER_SENTINEL` constant
+  (`"[awaiting backfill]"`) directly to every non-archived candidate
+  row. Skips body fetches entirely — the sentinel doesn't consult body
+  content. Intended primarily for test infrastructure (CI, fixtures);
+  also usable by operators who want to flag every legacy row on a large
+  vault before committing to LLM cost. **One-way state**: once the
+  sentinel lands, the `Synopsis is_empty` discovery filter excludes the
+  row on every subsequent run. Re-clear via `lore-memory action='update'
+  synopsis: ""` to re-target a row, or wait on a future
+  `--backfill-only-placeholders` flag (out of scope for 0.7.0).
+
+The fetch-time counters (`bodyOversizeSkipped`, `emptyBodySkipped`)
+stay at typed numeric `0` on the placeholder apply path because the
+backend never fetches a body to evaluate them. The CLI display layer
+renders `n/a (placeholder backend)` in place of the literal `0` so an
+operator scanning the report doesn't misread "checked and found zero"
+when the migration didn't check at all. Programmatic consumers of
+`BackfillReport` read the typed `0`.
+
+Idempotency contract: discovery filters on `Synopsis is_empty`, so any
+written row (synthesized OR sentinel) drops out of the candidate list
+on the next run. `pages.update` is per-request atomic, so a failed
+write leaves the Synopsis as Notion last observed it (empty if the
+update never landed) — the partial-failure log line tells the operator
+exactly which row needs another pass.
 
 ## The digest Command
 

@@ -41,6 +41,11 @@ import {
   normalizeAgents,
   type AgentNormalizationReport,
 } from "./agent-normalization.js"
+import {
+  backfillSynopses,
+  type BackfillOptions,
+  type BackfillReport,
+} from "./synopsis-backfill.js"
 import { LruCache } from "./cache.js"
 import {
   isFullPage,
@@ -674,6 +679,16 @@ export class MemoryService {
     options: { dryRun?: boolean } = {}
   ): Promise<AgentNormalizationReport> {
     return normalizeAgents(this.client, this.db, options)
+  }
+
+  /**
+   * Run the synopsis-backfill pass against this service's Memories DB.
+   * Thin wrapper over `backfillSynopses` so the CLI dispatcher reaches
+   * the migration through the service boundary like every other
+   * encoding / normalization migration.
+   */
+  async backfillSynopses(options: BackfillOptions): Promise<BackfillReport> {
+    return backfillSynopses(this.client, this.db, options)
   }
 
   async archive(id: string): Promise<void> {

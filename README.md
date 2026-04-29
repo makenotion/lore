@@ -186,7 +186,7 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 | `lore status`                  | Show vault status, database counts, and active projects          |
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
-| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, `--merge-similar-topics`, etc.) |
+| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, `--merge-similar-topics`, `--backfill-synopses`, etc.) |
 
 ## Hooks
 
