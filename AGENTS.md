@@ -144,14 +144,26 @@ Rule #1: If you want an exception to ANY rule below, STOP and get explicit permi
 
 - **Decisions** (`lore-decide`): Architectural choices with their rationale, alternatives, consequences, and review date. Prefer this over `lore-remember` for decisions — records participate in `lore-audit`, `lore-wake-up`, and supersession workflows. Pass `affects: [...]` with affected entity names to auto-create `decided_by` facts so the decision surfaces via `lore-ask`.
 - **Memories** (`lore-remember`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights — anything that *isn't* a decision with formal rationale.
-- **Facts** (`lore-learn`): Relationships between system components (`uses`, `depends_on`, `is_a`). For tracked work — open PRs, blocked dependencies, follow-up investigations — use `lore-task action='create'` instead; tracking predicates were dropped from `FactPredicate` in 0.6.0. Invalidate facts with `lore-correct` when they become stale.
+- **Facts** (`lore-learn`): Relationships between system components (`uses`, `depends_on`, `is_a`). For tracked work — open PRs, blocked dependencies, follow-up investigations — use `lore-task action='create'` instead; tracking predicates were dropped from `FactPredicate` in 0.6.0. Invalidate facts with `lore-correct` when they become stale. **`lore-correct` also halves the `Confidence Score` of the memory the fact came from (0.8.0+) — facts don't carry a score; the decrement lands on the originating memory. Use it precisely, not as a soft "maybe" signal.**
+
+### Confidence: categorical vs. numeric (0.8.0+)
+
+The Memories DB carries two confidence columns. They are NOT interchangeable.
+
+- **`Confidence` (categorical, agent-set).** A select column with three values — `certain`, `likely`, `speculative`. You set this on write to capture your stance: "I'm sure" / "this seems true but I haven't fully verified it" / "this is a guess." It is the agent-curated, human-readable signal. Set it explicitly on every `lore-decide` and `lore-remember` call when the default (`certain`) doesn't match your actual stance — being honest about speculation is more valuable than overstating certainty.
+
+- **`Confidence Score` (numeric, system-managed).** A 0–1 score the system maintains. It is bumped on every read-citation (`lore-query action='ask'`, `'recall'`, `lore-context action='wake-up'` surfacing the row), decremented on every contradiction signal (`lore-correct`, `lore-supersede`), and decays toward zero when a memory is untouched past 60 days. RRF-based retrieval ranks by this score (lower-score rows surface less).
+
+  **You do not write this column directly.** It is system-managed, and the MCP tool surface deliberately does not accept it as a `lore-memory` / `lore-decision` / `lore-task` parameter. Trying to set it would either silently fail (no parameter to bind) or, worse, force the system's accumulated-evidence signal into the agent's stance — collapsing the two axes into one.
+
+The rule of thumb: **write the categorical to express your stance; let the numeric accumulate from the system's signals.** A memory you mark `speculative` that survives ten cites without contradiction will have its numeric score climb above what its categorical implies — and that's the system telling you the memory is more trustworthy than your initial stance suggested. A memory you mark `certain` that gets contradicted twice will see its numeric score drop below what its categorical implies, and that's the system telling you to revisit. The two columns together carry more information than either alone.
 
 **When to save:**
 
 - After resolving a non-obvious bug or build issue → `lore-remember`
 - When you discover an undocumented convention or constraint → `lore-remember`
 - When an architectural decision is made → `lore-decide` (capture the *why*, not just the *what*)
-- When a new decision supersedes an older one → `lore-decide` with `supersedesIds` or `lore-supersede`
+- When a new decision supersedes an older one → `lore-decide` with `supersedesIds` or `lore-supersede`. **Supersession also halves the superseded decision's `Confidence Score` (0.8.0+) — the earlier decision still exists for historical reading but retrieval ranks against it.**
 - When you identify work that needs to happen but is out of scope → `lore-task action='create'` (with `state: "open"` and an `entity` naming the subject)
 
 ### Tasks
