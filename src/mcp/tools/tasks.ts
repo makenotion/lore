@@ -14,10 +14,15 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { formatDispatchError, toolError } from "../helpers.js"
+import {
+  debugLogPartialFailures,
+  formatDispatchError,
+  toolError,
+} from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
+import { findDuplicateActiveTasks } from "../../core/near-duplicate.js"
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { TaskState, TaskSummary } from "../../types.js"
 
@@ -132,23 +137,50 @@ async function handleCreate(
       topicLabel = topic.name
     }
 
-    const task = await services.tasks.create({
-      subject: args.subject,
-      description: args.description,
-      entity: args.entity,
-      state: args.state as TaskState | undefined,
-      blockedBy: args.blockedBy,
-      dueDate: args.dueDate,
-      affectsIds: args.affectsIds,
-      projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-      topicId,
-      confidence: args.confidence,
-      tags: args.tags,
-      keywords: args.keywords,
-      synopsis: args.synopsis,
-      agent: args.agent,
-      session: args.session,
-    })
+    // Probe runs in parallel with the create — sequencing them would double
+    // wall-clock latency on the hot write path. The just-created row is
+    // filtered out post-resolve (the helper can't know task.id at probe-fire).
+    // Probe is advisory: failures return [] silently and never block the create,
+    // and the wasted query on a rejecting create is the deliberate parallelism cost.
+    const probeEntity = args.entity ?? args.subject
+    const [task, duplicates] = await Promise.all([
+      services.tasks.create({
+        subject: args.subject,
+        description: args.description,
+        entity: args.entity,
+        state: args.state as TaskState | undefined,
+        blockedBy: args.blockedBy,
+        dueDate: args.dueDate,
+        affectsIds: args.affectsIds,
+        projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+        topicId,
+        confidence: args.confidence,
+        tags: args.tags,
+        keywords: args.keywords,
+        synopsis: args.synopsis,
+        agent: args.agent,
+        session: args.session,
+      }),
+      findDuplicateActiveTasks(services.tasks, {
+        entity: probeEntity,
+        projectId: resolved.ids[0],
+        onError: (err) =>
+          debugLogPartialFailures("lore-task", [
+            { rootId: "duplicate-probe", error: err },
+          ]),
+      }),
+    ])
+
+    // Post-filter the just-created row out of the probe results. This
+    // is the SOLE exclusion mechanism — the parallel posture means
+    // `findDuplicateActiveTasks` can't know `task.id` at probe-fire
+    // time, so the helper performs no exclusion of its own. Closes
+    // the eventual-consistency race between create and the query
+    // index; same posture as the memory near-dup probe. The footer's
+    // `(${filteredDuplicates.length})` count derives from this filtered
+    // list, not the raw probe response — agent sees the same N rows
+    // and the same N in the heading.
+    const filteredDuplicates = duplicates.filter((t) => t.id !== task.id)
 
     // Record for `lore-fact action='create'` session auto-link,
     // mirroring how `lore-memory` action='save' and
@@ -181,6 +213,29 @@ async function handleCreate(
     if (resolved.warnings.length > 0) {
       lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
     }
+
+    // Duplicates footer precedes the closure CTA. Per the 0.7.0
+    // coordination note, the response reads `[duplicates footer] →
+    // [closure CTA]` so the singleton CTA acts as the closing visual
+    // beat after the per-duplicate close incantations. The order-pin
+    // fixture asserts every close-incantation line appears at-or-after
+    // the duplicates header; inverting the blocks fails the assertion
+    // loudly.
+    if (filteredDuplicates.length > 0) {
+      lines.push("")
+      lines.push(
+        `Other active tasks tracking "${probeEntity}" ` +
+          `(${filteredDuplicates.length}) — close any that are obsolete:`,
+      )
+      for (const dup of filteredDuplicates) {
+        const stateLabel = dup.taskState ?? "open"
+        lines.push(
+          `  - "${dup.title}" [${stateLabel}] — ` +
+            `lore-task({ action: 'close', taskId: '${dup.id}' })`,
+        )
+      }
+    }
+
     lines.push(
       `\nClose this task when the work is done: ` +
         `lore-task({ action: 'close', taskId: '${task.id}' })`,

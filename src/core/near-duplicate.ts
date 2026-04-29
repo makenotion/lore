@@ -15,7 +15,14 @@
  * 0.6 for decisions); tune on real data after rollout.
  */
 
-import type { Memory, MemoryKind, MemoryStatus } from "../types.js"
+import type {
+  Memory,
+  MemoryKind,
+  MemoryStatus,
+  TaskState,
+  TaskSummary,
+} from "../types.js"
+import { ACTIVE_TASK_STATES } from "../types.js"
 import { trigramJaccard, tagOverlap } from "./similarity.js"
 
 export interface NearDuplicateMatch {
@@ -171,4 +178,85 @@ export async function findNearDuplicates(
   }
   matches.sort((a, b) => b.titleSimilarity - a.titleSimilarity)
   return matches
+}
+
+/**
+ * Minimal interface the task duplicate probe needs from `TaskService`.
+ * Keeping it narrow (mirroring `MemoryLister` above) lets tests pass a
+ * plain object without constructing a full service, and documents the
+ * exact query shape the probe depends on so future `list()` signature
+ * changes don't silently break it.
+ */
+export interface TaskLister {
+  list(opts: {
+    projectId?: string
+    entities?: string[]
+    states?: TaskState[]
+    limit?: number
+  }): Promise<{ items: TaskSummary[]; nextCursor?: string }>
+}
+
+export interface FindDuplicateActiveTasksOpts {
+  /**
+   * Entity string to probe for. Matched against the `Entity` rich_text
+   * column server-side via `contains` — exact substring, not fuzzy.
+   * Empty / whitespace-only short-circuits the probe.
+   */
+  entity: string
+  /**
+   * Project to scope the candidate pool. Optional — the underlying
+   * `TaskService.list` honors `projectOrUnscopedFilter`, so an
+   * unscoped probe is well-defined (it surfaces vault-wide active
+   * tasks on the entity). The wire-in passes the create's resolved
+   * project so cross-project work doesn't generate cross-project
+   * duplicate warnings.
+   */
+  projectId?: string
+  /**
+   * Optional observer for list-query failures. Routed through
+   * `debugLogPartialFailures` at the tool layer so probe failures
+   * surface under `LORE_DEBUG=1` without adding noise to the default
+   * stderr stream — same convention the memory / decision probes use.
+   */
+  onError?: (err: unknown) => void
+}
+
+/**
+ * Probe for active tasks in the same project whose `Entity` column
+ * contains the given string. Sibling of `findNearDuplicates` for the
+ * `lore-task action='create'` path. Advisory only — returns `[]` on
+ * failure, never throws, must not block the create.
+ *
+ * Deliberately performs **no exclusion**. The `lore-task action='create'`
+ * wire-in fires this probe in parallel with `services.tasks.create`,
+ * so at probe-fire time the just-created task's id is not yet known.
+ * Exclusion of the just-created row is the caller's responsibility —
+ * the post-fetch `t.id !== task.id` filter at the `handleCreate` site,
+ * applied after `Promise.all([create, probe])` resolves. Any
+ * exclusion logic inside this helper would be a misleading no-op
+ * (the id we'd want to exclude doesn't exist when we run).
+ *
+ * Honors `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` for parity with the
+ * memory / decision probes — one operator switch, every advisory
+ * probe respects it.
+ */
+export async function findDuplicateActiveTasks(
+  tasks: TaskLister,
+  opts: FindDuplicateActiveTasksOpts,
+): Promise<TaskSummary[]> {
+  if (process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1") return []
+  if (!opts.entity || opts.entity.trim() === "") return []
+
+  try {
+    const { items } = await tasks.list({
+      projectId: opts.projectId,
+      entities: [opts.entity],
+      states: ACTIVE_TASK_STATES,
+      limit: 10,
+    })
+    return items
+  } catch (err) {
+    opts.onError?.(err)
+    return []
+  }
 }

@@ -31,7 +31,10 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     updatedAt: "2026-04-20T00:00:00Z",
     taskState: "open",
     blockedBy: "",
-    entity: `Task ${id}`,
+    // Distinct sentinel so tests asserting on the entity field can't
+    // be fooled by a default that mirrors the title — callers who care
+    // about a specific entity must override explicitly.
+    entity: "test-entity",
     ...overrides,
   }
 }
@@ -120,6 +123,276 @@ describe("lore-task-create", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("Created task")
     expect(text).toContain("State: open")
+  })
+})
+
+describe("lore-task-create duplicate-task probe (#10)", () => {
+  it("appends a duplicates footer when the probe surfaces other active tasks on the same entity", async () => {
+    const created: Task = {
+      ...makeTask("t-new", { entity: "PR-25750" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    // The probe rides the same `services.tasks.list` surface — return
+    // two existing rows so the footer renders, including the just-
+    // created row to verify the post-fetch `t.id !== task.id` filter.
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing-1", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          taskState: "in-progress",
+        }),
+        makeTask("t-existing-2", {
+          title: "PR-25750 follow-up",
+          entity: "PR-25750",
+          taskState: "open",
+        }),
+        // The probe's view of the just-created row (eventual-
+        // consistency simulation). Must be filtered out by the
+        // caller's post-fetch `t.id !== task.id` filter.
+        makeTask("t-new", { title: "New PR-25750 task", entity: "PR-25750" }),
+      ],
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "New PR-25750 task",
+      entity: "PR-25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('Other active tasks tracking "PR-25750" (2)')
+    expect(text).toContain('"Track PR-25750 review" [in-progress]')
+    expect(text).toContain('"PR-25750 follow-up" [open]')
+    expect(text).toContain(
+      "lore-task({ action: 'close', taskId: 't-existing-1' })",
+    )
+    // Just-created row stays out of the duplicate-list — caller-side
+    // filter is the SOLE exclusion mechanism. Scope the negative
+    // assertion to the bulleted duplicate lines (`  - "..." [...] — ...`)
+    // since the post-#09 closure CTA legitimately references `task.id`
+    // on its own line and would otherwise trip a naive substring check.
+    const duplicateListLines = text
+      .split("\n")
+      .filter((l) => l.startsWith("  - "))
+    expect(duplicateListLines).toHaveLength(2)
+    for (const line of duplicateListLines) {
+      expect(line).not.toContain("t-new")
+      expect(line).not.toContain('"New PR-25750 task"')
+    }
+  })
+
+  it("omits the duplicates footer when no other active tasks share the entity", async () => {
+    const created: Task = {
+      ...makeTask("t1", { entity: "AuthService" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Rotate keys",
+      entity: "AuthService",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Created task")
+    expect(text).not.toContain("Other active tasks")
+  })
+
+  it("succeeds silently when the probe rejects, while logging via debugLogPartialFailures", async () => {
+    // Three-way contract: (a) the probe's list call rejects, (b)
+    // `debugLogPartialFailures` fires with `root=duplicate-probe` and
+    // the upstream error message, (c) the create still succeeds and
+    // the agent-visible response carries no probe-failure text.
+    // LORE_DEBUG=1 unlocks the stderr write inside
+    // `debugLogPartialFailures`; without the env flag the helper
+    // returns silently and the spy capture would be empty even when
+    // the wire is correct.
+    const created: Task = {
+      ...makeTask("t1", { entity: "PR-25750" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const listError = new Error("notion 503")
+    svc.tasks.list = vi.fn().mockRejectedValue(listError)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    vi.stubEnv("LORE_DEBUG", "1")
+    try {
+      const handler = mockServer.getHandler("lore-task")
+      const result = await handler({
+        action: "create",
+        subject: "Track PR-25750",
+        entity: "PR-25750",
+      } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      // (a) the probe's underlying list call did reject.
+      expect(svc.tasks.list).toHaveBeenCalledTimes(1)
+      await expect(svc.tasks.list.mock.results[0].value).rejects.toBe(listError)
+
+      // (b) debugLogPartialFailures fired with the expected shape.
+      const partialFailureLines = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("[lore] partial-failure:"))
+      expect(partialFailureLines).toHaveLength(1)
+      expect(partialFailureLines[0]).toContain("tool=lore-task")
+      expect(partialFailureLines[0]).toContain("root=duplicate-probe")
+      expect(partialFailureLines[0]).toContain("error=notion 503")
+
+      // (c) the create still surfaced cleanly to the agent.
+      expect((result as { isError?: boolean }).isError).toBeUndefined()
+      expect(text).toContain("Created task")
+      expect(text).not.toContain("Other active tasks")
+      expect(text).not.toContain("Error")
+    } finally {
+      vi.unstubAllEnvs()
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("pins the duplicates footer as the trailing block (issue 0.7.0/10 coordination)", async () => {
+    // This pin ensures #09's closure CTA, when it lands, is appended
+    // after the duplicates footer per spec coordination — see issue
+    // 0.7.0/10. The footer must be the trailing block on this branch
+    // so that #09's late-merger has a concrete signal: a `lines.push`
+    // appended below the footer leaves this assertion green; a push
+    // above the footer (CTA-first ordering, wrong per spec) trips it.
+    const created: Task = {
+      ...makeTask("t-new", { entity: "PR-25750" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750",
+          entity: "PR-25750",
+          taskState: "open",
+        }),
+      ],
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "New PR-25750 task",
+      entity: "PR-25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    const lines = text.split("\n")
+
+    // Structural pin #1: the duplicates header must come AFTER every
+    // pre-existing structural line (Created, State, Project, Topic).
+    const headerIdx = lines.findIndex((l) =>
+      l.startsWith('Other active tasks tracking "PR-25750"'),
+    )
+    expect(headerIdx).toBeGreaterThan(-1)
+    expect(lines.slice(0, headerIdx).join("\n")).toContain("Created task")
+    expect(lines.slice(0, headerIdx).join("\n")).toContain("State:")
+    expect(lines.slice(0, headerIdx).join("\n")).toContain("Project:")
+    expect(lines.slice(0, headerIdx).join("\n")).toContain("Topic:")
+
+    // Structural pin #2 (the load-bearing handshake against #09):
+    // every `lore-task({ action: 'close', ... })` incantation in the
+    // response must appear at or after the duplicates header. The
+    // duplicate rows themselves are close incantations — those satisfy
+    // the rule trivially. The pin's value is forward-looking: when #09
+    // lands a closure CTA (also a `lore-task({ action: 'close' })`
+    // incantation, but referencing the just-created task's id), the
+    // late-merger has two options. (a) Insert the CTA at the bottom of
+    // `lines` — the CTA's index is >= headerIdx, this assertion still
+    // passes, and the spec ordering is satisfied. (b) Insert the CTA
+    // above the duplicates block — the CTA's index drops below
+    // headerIdx, this assertion FAILS LOUD, and the failure message
+    // plus the inline comment in `tasks.ts:215` point straight at the
+    // spec rule. Wrong ordering cannot ship green.
+    const closeIncantationIdxs = lines
+      .map((l, i) => (l.includes("lore-task({ action: 'close',") ? i : -1))
+      .filter((i) => i >= 0)
+    expect(closeIncantationIdxs.length).toBeGreaterThan(0)
+    for (const idx of closeIncantationIdxs) {
+      expect(idx).toBeGreaterThanOrEqual(headerIdx)
+    }
+  })
+
+  it("fires the probe in parallel with the create (Promise.all posture)", async () => {
+    // Pin the parallel posture: if a future refactor accidentally
+    // sequenced create→probe (or worse, gated probe behind create
+    // success), the create's wall-clock would regress. We can't
+    // measure wall-clock in a unit test, but we can pin that the
+    // probe was invoked even when the create's promise has not yet
+    // resolved by the time the probe is dispatched.
+    let createResolve!: (task: Task) => void
+    const createPromise = new Promise<Task>((resolve) => {
+      createResolve = resolve
+    })
+    const svc = services()
+    svc.tasks.create = vi.fn().mockReturnValue(createPromise)
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const handlerPromise = handler({
+      action: "create",
+      subject: "Track PR-25750",
+      entity: "PR-25750",
+    } as never)
+
+    // Yield the microtask queue so the parallel `Promise.all` can
+    // dispatch both branches before we assert.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(svc.tasks.list).toHaveBeenCalledTimes(1)
+
+    createResolve({
+      ...makeTask("t1", { entity: "PR-25750" }),
+      content: "",
+    } as Task)
+    await handlerPromise
+  })
+
+  it("falls back to subject when entity is omitted (probe scopes to the same default the row uses)", async () => {
+    const created: Task = {
+      ...makeTask("t1", { entity: "AuthService" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    await handler({ action: "create", subject: "AuthService" } as never)
+
+    // The row's `Entity` defaults to subject when entity is omitted
+    // (`TaskService.create`); the probe must use the same default so
+    // a future create on the same subject collides with this row.
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: ["AuthService"] }),
+    )
   })
 })
 
