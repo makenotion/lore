@@ -1367,6 +1367,493 @@ describe("MemoryService.search — RRF fusion under saturation threshold", () =>
   })
 })
 
+describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildScoredPage(
+    id: string,
+    title: string,
+    confidenceScore: number | null,
+  ): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+        "Confidence Score": { type: "number", number: confidenceScore },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("hybrid mode: rows with identical ranks but different Confidence Scores sort by confidence", async () => {
+    // Both rows: contains-only at rank 0 and rank 1. Without confidence
+    // weighting, contains rank 0 wins. With confidence weighting, the
+    // 0.9-scored row at rank 1 (score 1/62 * (0.5+0.5*0.9) = 1/62 * 0.95)
+    // sorts above the 0.1-scored row at rank 0 (score 1/61 * 0.55) ONLY
+    // when the confidence delta is large enough. With these constants:
+    //   row-low:  (1/61) * 0.55 ≈ 0.00902
+    //   row-high: (1/62) * 0.95 ≈ 0.01532
+    // So the higher-confidence rank-1 row beats the lower-confidence
+    // rank-0 row. Pin this end-to-end through hybrid's RRF accumulator.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildScoredPage("row-low", "rank 0 in contains, decayed", 0.1),
+        buildScoredPage("row-high", "rank 1 in contains, fresh", 0.9),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // High-confidence row at rank 1 beats low-confidence row at rank 0
+    // because the confidence-factor delta (0.95 vs 0.55) outweighs the
+    // single-rank gap.
+    expect(results.map((m) => m.id)).toEqual(["row-high", "row-low"])
+  })
+
+  it("contains mode: a fresh-rank-3 row sorts above a decayed-rank-1 row", async () => {
+    // The acceptance-criteria worked example:
+    //   rank 3 with confidence=0.95: (1/64) * (0.5+0.5*0.95) = (1/64) * 0.975 ≈ 0.01523
+    //   rank 1 with confidence=0.0:  (1/62) * 0.5 ≈ 0.00806
+    // Fresh-rank-3 wins.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
+        buildScoredPage("decay-rank-1", "rank 1, decayed", 0.0),
+        buildScoredPage("decay-rank-2", "rank 2, decayed", 0.0),
+        buildScoredPage("fresh-rank-3", "rank 3, fresh", 0.95),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(results[0].id).toBe("fresh-rank-3")
+  })
+
+  it("unscored rows (Confidence Score = null) yield byte-identical pre-0.8.0 ordering", async () => {
+    // Pre-migration vault: every row has `Confidence Score = null`.
+    // `confidenceFactor(null) = 1.0` and the all-unscored short-circuit in
+    // `rerankByConfidence` returns Notion's input order verbatim. Pinning
+    // this preserves the soft-dep contract from the spec: 0.8.0 ships
+    // visibly inert until #11's backfill / Phase 2 read-touches populate
+    // scores.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildScoredPage("first", "first by recency", null),
+        buildScoredPage("second", "second by recency", null),
+        buildScoredPage("third", "third by recency", null),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["first", "second", "third"])
+  })
+
+  it("hybrid mode: scored row at Confidence Score=0.0 has effective weight 0.5*baseWeight, NOT 0.25 (no double application)", async () => {
+    // The spec's flagship double-application regression test. In hybrid
+    // mode, a row at Confidence Score=0.0 with contains-rank=0 and absent
+    // from semantic should score `(1/61) * 1 * 0.5`, not
+    // `(1/61) * 1 * 0.5 * 0.5`. If hybrid composed the public single-
+    // branch wrappers (which apply the factor in their sort), the factor
+    // would be applied here AND in the RRF accumulator — collapsing the
+    // documented [0.5, 1.0] floor to [0.25, 1.0]. The fetch/sort split
+    // pins this.
+    const querySpy = vi.fn(async () => ({
+      results: [buildScoredPage("decayed", "decayed row", 0.0)],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({ results: [] }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(1)
+    // Single-application: (1/61) * 0.5
+    expect(explain[0].rrfScore).toBeCloseTo((1 / 61) * 0.5, 10)
+    // Sanity: NOT the double-applied value
+    expect(explain[0].rrfScore).not.toBeCloseTo((1 / 61) * 0.5 * 0.5, 10)
+    expect(explain[0].confidenceFactor).toBeCloseTo(0.5, 10)
+  })
+
+  it("LORE_DISABLE_CONFIDENCE_FACTOR=1 reverts ordering to pre-0.8.0", async () => {
+    // Operator escape hatch. With the kill switch set, every row's
+    // factor is forced to 1.0 and ordering matches pre-0.8.0 — even on
+    // a vault with populated scores. Verified end-to-end on the same
+    // contains-mode fixture as the "fresh-rank-3 wins" test above.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildScoredPage("decay-rank-0", "alphabetically first, decayed", 0.0),
+        buildScoredPage("decay-rank-1", "rank 1, decayed", 0.0),
+        buildScoredPage("decay-rank-2", "rank 2, decayed", 0.0),
+        buildScoredPage("fresh-rank-3", "rank 3, fresh", 0.95),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
+    process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = "1"
+    try {
+      const results = await service.search({
+        query: "q",
+        mode: "contains",
+        includeContent: false,
+      })
+      // Without the factor, Notion's recency order is preserved.
+      expect(results.map((m) => m.id)).toEqual([
+        "decay-rank-0",
+        "decay-rank-1",
+        "decay-rank-2",
+        "fresh-rank-3",
+      ])
+    } finally {
+      if (original === undefined) {
+        delete process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
+      } else {
+        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
+      }
+    }
+  })
+
+  it("saturation cutoff is unchanged — vault with 3+ high-confidence contains hits skips the RRF merge", async () => {
+    // Pin that 0.8.0 does NOT modify the saturation cutoff. The spec
+    // explicitly defers any "saturated-but-low-confidence" bypass to
+    // a follow-up; the RRF merge runs only when contains under-shoots.
+    // Even when contains saturates with low-confidence rows, the
+    // semantic branch's output is discarded as before. (The trace's
+    // confidenceFactor field still surfaces per-row factors so #09's
+    // rendering can still highlight stale rows.)
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildScoredPage("c-0", "decayed first", 0.0),
+        buildScoredPage("c-1", "decayed second", 0.0),
+        buildScoredPage("c-2", "decayed third", 0.0),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [buildScoredPage("would-float-in", "fresh semantic hit", 0.95)],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    // Cutoff fires; semantic-only row is discarded.
+    expect(results.map((m) => m.id)).toEqual(["c-0", "c-1", "c-2"])
+  })
+
+  it("searchWithExplain populates confidenceFactor on every row across every branch", async () => {
+    // Pin the SearchExplain shape contract: confidenceFactor is now
+    // a required field, populated for every row regardless of branch.
+    // The single-branch contains case maps each row to its
+    // confidenceFactor; the hybrid RRF case carries it via the trace;
+    // the contains-saturated case carries it via the saturation trace.
+    const containsRows = [
+      buildScoredPage("scored", "fresh row", 0.8),
+      buildScoredPage("unscored", "pre-migration row", null),
+    ]
+    const querySpy = vi.fn(async () => ({
+      results: containsRows,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(2)
+    for (const e of explain) {
+      expect(typeof e.confidenceFactor).toBe("number")
+      expect(e.confidenceFactor).toBeGreaterThanOrEqual(0.5)
+      expect(e.confidenceFactor).toBeLessThanOrEqual(1.0)
+    }
+    // Specifically: scored row at 0.8 → factor 0.5 + 0.5*0.8 = 0.9.
+    const scored = explain.find((e) => e.memoryId === "scored")!
+    expect(scored.confidenceFactor).toBeCloseTo(0.9, 10)
+    // Unscored row → factor 1.0 (neutral).
+    const unscored = explain.find((e) => e.memoryId === "unscored")!
+    expect(unscored.confidenceFactor).toBe(1.0)
+  })
+
+  it("score (level 1) dominates page-id (level 4) tie-break — comparator runs on factor-weighted scores", async () => {
+    // Pin that the comparator runs on the factor-weighted score (level
+    // 1), not on raw `1/(RRF_K + rank + 1)`. Two rows have factor 1.0
+    // each (so no factor delta) and the higher rank's higher score
+    // dominates the alphabetic page-id fall-through (level 4). If a
+    // future refactor wired the comparator to read raw scores from
+    // some pre-factor field, the tie-break levels would still trigger
+    // but on the wrong values; this test would catch a level-1
+    // collision on factor-weighted scores even when none should exist.
+    //
+    // The factor-driven ordering flip is covered by the companion test
+    // below ("decayed rank-0 sorts below fresh rank-1") — that one
+    // proves the factor is what changes the ordering. This test pins
+    // the comparator's read-side: it operates on the same scored
+    // values that come out of the accumulator.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        // Both rows scored at 1.0 → both factors 1.0 → score is purely
+        // rank-driven. Use scored rows (not unscored) so the
+        // all-unscored short-circuit doesn't fire.
+        buildScoredPage("z-id-rank-0", "fresh, alphabetically late", 1.0),
+        buildScoredPage("a-id-rank-1", "fresh, alphabetically early", 1.0),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    // (1/61) > (1/62), so z-id-rank-0 wins on level 1 score even
+    // though page-id ascending (level 4) would put a-id first. Score
+    // dominates because the comparator decides at the first level
+    // that produces a non-zero result.
+    expect(results.map((m) => m.id)).toEqual(["z-id-rank-0", "a-id-rank-1"])
+  })
+
+  it("decayed rank-0 sorts below fresh rank-1 in contains mode — factor flips ordering at level 1", async () => {
+    // Companion to the fresh-rank-3 worked example, scoped to the
+    // adjacent-rank case the spec calls out: pin that the factor
+    // multiplies in BEFORE the score comparison. A row at contains-
+    // rank 0 with `Confidence Score = 0.0` (factor = 0.5) scores
+    // (1/61) * 0.5 ≈ 0.00820. A row at contains-rank 1 with
+    // `Confidence Score = 1.0` (factor = 1.0) scores (1/62) * 1.0
+    // ≈ 0.01613. Fresh-rank-1 wins on level 1. If a future refactor
+    // accidentally applied the factor AFTER the comparator (or
+    // skipped it on the single-branch path), the comparator would
+    // see the unweighted scores and rank 0 would win — flipping this
+    // assertion.
+    //
+    // This case is distinct from the fresh-rank-3 test in that it
+    // pins the closest possible adjacent-rank flip — the smallest
+    // ordering change the factor can produce in a single-branch
+    // path — so a future tightening of `CONFIDENCE_FACTOR_MIN` toward
+    // 1.0 (which would shrink the factor's effective range and
+    // potentially un-flip this case) is caught here at the boundary.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildScoredPage("rank-0-decayed", "rank 0, fully decayed", 0.0),
+        buildScoredPage("rank-1-fresh", "rank 1, fully trusted", 1.0),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["rank-1-fresh", "rank-0-decayed"])
+  })
+})
+
+describe("MemoryService.searchByHybridPages — structural pipeline split (issue 0.8.0/08)", () => {
+  // Pin that hybrid composes the **raw** fetch helpers, not the public
+  // confidence-aware sort wrappers. Going through the public wrappers
+  // would double-apply the confidence factor and collapse the
+  // documented [0.5, 1.0] floor to [0.25, 1.0] in hybrid mode.
+  //
+  // We can't spy on private methods directly without exposing them, so
+  // the structural test goes through the observable Notion calls: the
+  // raw fetch helpers each issue exactly one Notion call (the
+  // dataSources.query and client.search respectively). If hybrid called
+  // the public sort wrappers, the wrappers would still issue one Notion
+  // call each (they pass through to the raw helpers), so the round-trip
+  // count is identical. The double-application detection lives in the
+  // `confidenceFactor` numerical pin in the test above.
+
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildScoredPage(
+    id: string,
+    confidenceScore: number | null,
+  ): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: id }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+        "Confidence Score": { type: "number", number: confidenceScore },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>,
+    )
+  }
+
+  it("hybrid issues exactly one dataSources.query and one client.search — same shape as pre-0.8.0", async () => {
+    // Round-trip pinning: hybrid calls the raw fetchContains/fetchSemantic
+    // helpers exactly once each. If a future refactor wired hybrid to call
+    // the public confidence-aware searchByContainsPages /
+    // searchBySemanticPages instead, the raw helpers would still be called
+    // exactly once each (transitively, via the public wrappers), so this
+    // test alone wouldn't catch the regression. The double-application
+    // numerical pin above is the load-bearing test; this one ensures the
+    // round-trip cost contract didn't drift.
+    const querySpy = vi.fn(async () => ({
+      results: [buildScoredPage("c-only", 0.5)],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [buildScoredPage("s-only", 0.7)],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("the documented [0.5, 1.0] confidence-factor floor holds in hybrid mode (no factor² collapse)", async () => {
+    // The cleanest cross-check that hybrid does NOT call the public
+    // wrappers. If it did, the score for a Confidence Score=0.0 row
+    // would be `(1/61) * 0.5 * 0.5 = ~0.00410`. With the correct fetch/
+    // sort split, the score is `(1/61) * 0.5 = ~0.00820`. The 2x gap
+    // is wide enough that floating-point noise can't mask the
+    // regression.
+    const querySpy = vi.fn(async () => ({
+      results: [buildScoredPage("decayed", 0.0)],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { explain } = await service.searchWithExplain({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    expect(explain).toHaveLength(1)
+    const single = (1 / 61) * 0.5
+    const doubled = single * 0.5
+    expect(explain[0].rrfScore).toBeCloseTo(single, 10)
+    // Belt-and-braces: explicitly assert NOT the doubled value.
+    expect(Math.abs((explain[0].rrfScore ?? 0) - doubled)).toBeGreaterThan(1e-6)
+  })
+})
+
 describe("MemoryService.search — RRF tie-break determinism", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
@@ -1529,12 +2016,14 @@ describe("tieBreakingRrfCompare — direct unit tests, one per tie-break level",
     score: number,
     containsRank: number | null,
     semanticRank: number | null,
+    confidenceFactor: number = 1.0,
   ): RrfEntry {
     return {
       page: { id } as unknown as PageObjectResponse,
       score,
       containsRank,
       semanticRank,
+      confidenceFactor,
     }
   }
 
@@ -2334,6 +2823,7 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
     const entry = explain[0]
     expect(Object.keys(entry).sort()).toEqual([
       "branch",
+      "confidenceFactor",
       "containsRank",
       "memoryId",
       "rrfScore",

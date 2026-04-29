@@ -49,6 +49,7 @@ import {
 import { LruCache } from "./cache.js"
 import {
   bumpConfidenceScore,
+  confidenceFactor,
   decayConfidenceScore,
   decrementConfidenceScore,
   seedConfidenceScore,
@@ -104,15 +105,22 @@ const RRF_K = 60
 /**
  * Per-row scoring entry built during the RRF merge. Carries the rank
  * each branch assigned this page (or `null` when the branch did not
- * surface it) plus the running fused score. Captured outside the merge
- * loop so the deterministic tie-break (see `tieBreakingRrfCompare`) and
- * the explain trace both read off the same authoritative state.
+ * surface it) plus the running fused score and the confidence-weighting
+ * factor applied to that score. Captured outside the merge loop so the
+ * deterministic tie-break (see `tieBreakingRrfCompare`) and the explain
+ * trace both read off the same authoritative state.
+ *
+ * `confidenceFactor` is computed once per row at the first time the row
+ * is encountered (it depends only on the row's stored `Confidence Score`,
+ * which doesn't change across branches) and multiplied into every
+ * per-branch contribution so the fused score reflects trust uniformly.
  */
 export type RrfEntry = {
   page: PageObjectResponse
   score: number
   containsRank: number | null
   semanticRank: number | null
+  confidenceFactor: number
 }
 
 /**
@@ -125,6 +133,7 @@ type HybridTraceEntry = {
   containsRank: number | null
   semanticRank: number | null
   rrfScore: number | null
+  confidenceFactor: number
 }
 
 /**
@@ -157,6 +166,58 @@ export function tieBreakingRrfCompare(a: RrfEntry, b: RrfEntry): number {
   const bHasContains = b.containsRank !== null
   if (aHasContains !== bHasContains) return aHasContains ? -1 : 1
   return a.page.id < b.page.id ? -1 : a.page.id > b.page.id ? 1 : 0
+}
+
+/**
+ * Confidence-weighted reranking shared by `searchByContainsPages` and
+ * `searchBySemanticPages`. Maps each page to a per-branch RRF entry with
+ * `score = (1 / (RRF_K + rank + 1)) * confidenceFactor`, then sorts via
+ * `tieBreakingRrfCompare`. The `branchKind` parameter sets the
+ * appropriate rank field (`containsRank` on contains-mode callers,
+ * `semanticRank` on semantic-mode callers) so the synthesized RrfEntry
+ * accurately reflects the row's branch — tie-break levels 2/3 read
+ * those fields directly, and a future caller that surfaces these
+ * entries (rather than going through `runSearch`'s explain rebuild)
+ * would otherwise see a row attributed to the wrong branch.
+ *
+ * **All-unscored short-circuit.** When every page's `Confidence Score`
+ * is `null`, every factor is uniformly `1.0` and the per-row scores
+ * `1/(RRF_K + rank + 1)` are strictly decreasing in input order — so
+ * `tieBreakingRrfCompare`'s level-1 (`score`) comparison alone
+ * preserves input order, and the page-id fall-through never fires.
+ * The short-circuit is an allocation/sort-avoidance optimization for
+ * the unmigrated-vault case (every retrieval until #11's backfill or
+ * Phase 2 read-touches populate scores) AND defense-in-depth against a
+ * future refactor that introduces score collisions on the unscored
+ * path — without that gate, an arithmetic regression here could
+ * silently re-sort unmigrated vaults into page-id order.
+ *
+ * Hybrid mode does NOT call this helper — it consumes the raw fetch
+ * helpers directly and applies the factor inside its RRF accumulator.
+ */
+function rerankByConfidence(
+  pages: PageObjectResponse[],
+  branchKind: "contains" | "semantic",
+): PageObjectResponse[] {
+  if (pages.length === 0) return pages
+  const allUnscored = pages.every(
+    (page) => extractNumber(page.properties["Confidence Score"]) === null,
+  )
+  if (allUnscored) return pages
+  return pages
+    .map((page, rank): RrfEntry => {
+      const score = extractNumber(page.properties["Confidence Score"])
+      const factor = confidenceFactor(score)
+      return {
+        page,
+        score: (1 / (RRF_K + rank + 1)) * factor,
+        containsRank: branchKind === "contains" ? rank : null,
+        semanticRank: branchKind === "semantic" ? rank : null,
+        confidenceFactor: factor,
+      }
+    })
+    .sort(tieBreakingRrfCompare)
+    .map((entry) => entry.page)
 }
 
 // eslint-disable-next-line no-control-regex -- coercing to a single log line is the point
@@ -1236,6 +1297,9 @@ export class MemoryService {
     const capped = pages.slice(0, limit)
     const memories = await this.materializeMemories(capped, input.includeContent)
     const explain = capped.map((page, i): SearchExplain => {
+      const factor = confidenceFactor(
+        extractNumber(page.properties["Confidence Score"]),
+      )
       if (explainBranch === "contains-only") {
         return {
           memoryId: page.id,
@@ -1243,6 +1307,7 @@ export class MemoryService {
           semanticRank: null,
           rrfScore: null,
           branch: "contains-only",
+          confidenceFactor: factor,
         }
       }
       if (explainBranch === "semantic-only") {
@@ -1252,6 +1317,7 @@ export class MemoryService {
           semanticRank: i,
           rrfScore: null,
           branch: "semantic-only",
+          confidenceFactor: factor,
         }
       }
       const trace = hybridTrace?.get(page.id)
@@ -1261,17 +1327,33 @@ export class MemoryService {
         semanticRank: trace?.semanticRank ?? null,
         rrfScore: trace?.rrfScore ?? null,
         branch: explainBranch,
+        // Hybrid trace is populated for every row that survives the merge
+        // and the saturation cutoff path — both call sites populate
+        // `confidenceFactor` — so the fall-through reads from there. The
+        // `?? factor` belt-and-braces handles a hypothetical future
+        // missing-trace path; in current code it is unreachable.
+        confidenceFactor: trace?.confidenceFactor ?? factor,
       }
     })
     return { memories, explain }
   }
 
   /**
-   * DS-scoped query path. Runs against the Memories data source only — no
-   * workspace-wide leakage. Filters compose as a single `and`: project
-   * inheritance (project relation contains projectId OR is_empty) plus topic,
-   * tags, kind, status, and finally a `(Title contains query) OR
-   * (Keywords contains query)` clause.
+   * DS-scoped query path — **raw fetch**. Runs against the Memories data
+   * source only, returns Notion's recency ordering verbatim. Does NOT
+   * apply the confidence factor; the caller is responsible for any
+   * confidence-aware reranking.
+   *
+   * The fetch/sort split exists because hybrid mode runs RRF over the
+   * raw outputs of both branches and applies the confidence factor
+   * inside its accumulator. If `searchByContainsPages` (the public,
+   * confidence-aware variant) called itself or piped its sorted output
+   * into hybrid, the factor would be applied twice — `factor * factor`
+   * collapses the documented `[CONFIDENCE_FACTOR_MIN, 1.0]` floor to
+   * `[CONFIDENCE_FACTOR_MIN², 1.0]`. Splitting into a raw-fetch helper
+   * and a public sort-applier keeps the factor applied exactly once
+   * per path. See `src/core/AGENTS.md` "Confidence dynamics" for the
+   * pipeline contract.
    *
    * Returns raw `PageObjectResponse[]` so the caller can dedupe with other
    * paths' output before materializing markdown bodies.
@@ -1281,7 +1363,7 @@ export class MemoryService {
    * that need body relevance should use `"semantic"` or rely on the
    * `"hybrid"` fallback.
    */
-  private async searchByContainsPages(
+  private async fetchContainsPages(
     input: SearchMemoriesInput,
   ): Promise<PageObjectResponse[]> {
     const limit = Math.min(input.limit ?? 10, 100)
@@ -1356,24 +1438,29 @@ export class MemoryService {
   }
 
   /**
-   * Workspace-wide semantic search via `client.search`. Notion's `search`
-   * endpoint returns results ranked by relevance when no `sort` parameter
-   * is passed. Passing `sort` switches to recency ordering and demotes the
-   * query to a lexical filter — which defeats the point. We pay for a
-   * larger `page_size` instead so the client-side filter to the Memories
-   * database has enough headroom when the workspace contains other pages
-   * that happen to match the query tokens.
+   * Workspace-wide semantic search via `client.search` — **raw fetch**.
+   * Notion's `search` endpoint returns results ranked by relevance when
+   * no `sort` parameter is passed. Passing `sort` switches to recency
+   * ordering and demotes the query to a lexical filter — which defeats
+   * the point. We pay for a larger `page_size` instead so the client-side
+   * filter to the Memories database has enough headroom when the
+   * workspace contains other pages that happen to match the query
+   * tokens.
    *
    * Property filters (`kind` / `status` / `tags` / `topicId`) apply as
    * client-side post-filters only — `client.search` does not accept them.
    * `projectId` post-filters with the same scope-inheritance semantics as
    * the contains path.
    *
+   * Does NOT apply the confidence factor; returns Notion's relevance
+   * ordering verbatim. Symmetric to `fetchContainsPages` — see that
+   * helper's docstring for the fetch/sort split rationale.
+   *
    * Returns raw `PageObjectResponse[]`. Markdown bodies are *not* fetched
    * here — `search()` runs `materializeMemories` once on the final
    * merged-and-capped list.
    */
-  private async searchBySemanticPages(
+  private async fetchSemanticPages(
     input: SearchMemoriesInput,
     intent: string | null,
   ): Promise<PageObjectResponse[]> {
@@ -1450,6 +1537,49 @@ export class MemoryService {
   }
 
   /**
+   * Public DS-scoped contains path with confidence-aware reranking.
+   * Calls `fetchContainsPages` for the raw Notion result, then maps each
+   * row to a per-branch RRF score weighted by `confidenceFactor` and
+   * sorts via `tieBreakingRrfCompare`. The factor is applied **here
+   * exactly once** because hybrid does NOT consume this function — it
+   * consumes `fetchContainsPages` directly. See `src/core/AGENTS.md`
+   * "Confidence dynamics" for the pipeline contract.
+   *
+   * Behavior change vs. pre-0.8.0: `mode: "contains"` callers no longer
+   * see Notion's recency order. They see confidence-reranked recency
+   * order — small reranking (RRF score declines slowly per rank) but
+   * a stale row at rank 3 can drop below a fresh row at rank 5 if the
+   * confidence delta is large enough. Pre-migration vaults
+   * (`Confidence Score = null` on every row) are unaffected because
+   * `confidenceFactor(null) = 1.0` reduces the algebra to the legacy
+   * `1 / (RRF_K + rank + 1)` ordering, and `tieBreakingRrfCompare`
+   * preserves Notion's input order on identical scores via the page
+   * id ascending fall-through... but only when ids happen to align
+   * with the input order. To preserve byte-identical pre-0.8.0
+   * ordering when every row is unscored, we short-circuit early.
+   */
+  private async searchByContainsPages(
+    input: SearchMemoriesInput,
+  ): Promise<PageObjectResponse[]> {
+    const pages = await this.fetchContainsPages(input)
+    return rerankByConfidence(pages, "contains")
+  }
+
+  /**
+   * Public workspace-wide semantic path with confidence-aware reranking.
+   * Symmetric to `searchByContainsPages`. Hybrid consumes
+   * `fetchSemanticPages` directly so the factor is applied here exactly
+   * once.
+   */
+  private async searchBySemanticPages(
+    input: SearchMemoriesInput,
+    intent: string | null,
+  ): Promise<PageObjectResponse[]> {
+    const pages = await this.fetchSemanticPages(input, intent)
+    return rerankByConfidence(pages, "semantic")
+  }
+
+  /**
    * Hybrid path: speculative parallelism. Fires the contains and semantic
    * queries concurrently via `Promise.allSettled` so the worst-case
    * wall-clock stays at one round-trip (≈ `client.search` latency)
@@ -1505,9 +1635,16 @@ export class MemoryService {
     branch: "contains-saturated" | "rrf"
     trace: Map<string, HybridTraceEntry>
   }> {
+    // Hybrid composes the **raw** fetch helpers, not the confidence-aware
+    // public wrappers. Calling `searchByContainsPages` /
+    // `searchBySemanticPages` here would double-apply the confidence
+    // factor (once in the single-branch sort, once in the RRF accumulator
+    // below) — collapsing the documented `[CONFIDENCE_FACTOR_MIN, 1.0]`
+    // floor to `[CONFIDENCE_FACTOR_MIN², 1.0]` for hybrid callers. See
+    // `src/core/AGENTS.md` "Confidence dynamics" for the pipeline split.
     const [containsResult, semanticResult] = await Promise.allSettled([
-      this.searchByContainsPages(input),
-      this.searchBySemanticPages(input, intent),
+      this.fetchContainsPages(input),
+      this.fetchSemanticPages(input, intent),
     ])
 
     if (containsResult.status === "rejected" && semanticResult.status === "rejected") {
@@ -1564,6 +1701,9 @@ export class MemoryService {
           containsRank: rank,
           semanticRank: null,
           rrfScore: null,
+          confidenceFactor: confidenceFactor(
+            extractNumber(page.properties["Confidence Score"]),
+          ),
         })
       })
       return { pages: containsPages, branch: "contains-saturated", trace }
@@ -1576,14 +1716,26 @@ export class MemoryService {
     // the order on score collisions so test fixtures don't drift on
     // `Map` iteration.
     const scored = new Map<string, RrfEntry>()
+    // Per-row `confidenceFactor` depends only on the row's stored
+    // `Confidence Score`, not on which branch surfaced it — so it's the
+    // same value across both branches and is multiplied into every
+    // contribution. Computing it once on first encounter (via `prev`'s
+    // cache) avoids a redundant property read on cross-branch rows
+    // without changing observable scores. The factor folds into the
+    // per-branch contribution, not the fused score after the fact, so
+    // the RRF formula stays `Σ (per-branch contribution)` — single-line
+    // bookkeeping for tests pinning per-branch scores.
     const accumulate = (
       branchPages: PageObjectResponse[],
       branchKind: "contains" | "semantic",
       weight = 1,
     ) => {
       branchPages.forEach((page, rank) => {
-        const score = (1 / (RRF_K + rank + 1)) * weight
         const prev = scored.get(page.id)
+        const factor =
+          prev?.confidenceFactor ??
+          confidenceFactor(extractNumber(page.properties["Confidence Score"]))
+        const score = (1 / (RRF_K + rank + 1)) * weight * factor
         if (prev) {
           prev.score += score
           if (branchKind === "contains") prev.containsRank = rank
@@ -1594,6 +1746,7 @@ export class MemoryService {
             score,
             containsRank: branchKind === "contains" ? rank : null,
             semanticRank: branchKind === "semantic" ? rank : null,
+            confidenceFactor: factor,
           })
         }
       })
@@ -1624,6 +1777,7 @@ export class MemoryService {
         containsRank: entry.containsRank,
         semanticRank: entry.semanticRank,
         rrfScore: entry.score,
+        confidenceFactor: entry.confidenceFactor,
       })
     }
     return { pages: ranked.map((entry) => entry.page), branch: "rrf", trace }

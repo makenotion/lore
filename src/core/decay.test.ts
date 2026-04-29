@@ -142,4 +142,49 @@ describe("confidenceFactor", () => {
     expect(confidenceFactor(0.2)).toBeCloseTo(0.6, 6)
     expect(confidenceFactor(0.8)).toBeCloseTo(0.9, 6)
   })
+
+  it("LORE_DISABLE_CONFIDENCE_FACTOR=1 returns 1.0 unconditionally — kill switch (issue 0.8.0/08)", () => {
+    // Operator escape hatch. The kill switch lives at the top of
+    // `confidenceFactor` so single-branch and hybrid paths share one
+    // bypass — same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
+    // `LORE_DISABLE_NEAR_DUPLICATE_PROBE`. With the env var set, every
+    // call returns 1.0 — even for fully-decayed (`0.0`) rows that would
+    // otherwise map to `CONFIDENCE_FACTOR_MIN`. Exhaustive coverage
+    // across the input range pins that a future refactor splitting the
+    // bypass between scored / unscored paths is caught.
+    const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
+    process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = "1"
+    try {
+      expect(confidenceFactor(0.0)).toBe(1.0)
+      expect(confidenceFactor(0.5)).toBe(1.0)
+      expect(confidenceFactor(1.0)).toBe(1.0)
+      expect(confidenceFactor(null)).toBe(1.0)
+    } finally {
+      if (original === undefined) {
+        delete process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
+      } else {
+        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
+      }
+    }
+  })
+
+  it("LORE_DISABLE_CONFIDENCE_FACTOR set to anything other than '1' does NOT activate the kill switch", () => {
+    // Strict-string match: the kill switch fires only on exact "1", same
+    // posture as every other lore env knob. Empty string, "true", "yes",
+    // "on", and other plausible truthy values must NOT bypass.
+    const original = process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
+    try {
+      for (const value of ["", "0", "true", "yes", "on", "false"]) {
+        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = value
+        // 0.0 input → factor 0.5 (not bypassed to 1.0)
+        expect(confidenceFactor(0.0)).toBeCloseTo(0.5, 6)
+      }
+    } finally {
+      if (original === undefined) {
+        delete process.env["LORE_DISABLE_CONFIDENCE_FACTOR"]
+      } else {
+        process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] = original
+      }
+    }
+  })
 })

@@ -621,6 +621,18 @@ export interface SearchExplain {
   /** Populated only on the `"rrf"` branch; null on every other branch. */
   rrfScore: number | null
   branch: "contains-only" | "semantic-only" | "contains-saturated" | "rrf"
+  /**
+   * The confidence-weighting factor applied to this row's per-branch RRF
+   * score. `1.0` for unscored (pre-migration `Confidence Score = null`)
+   * or fully-trusted rows; `CONFIDENCE_FACTOR_MIN` (default `0.5`) for
+   * fully-decayed rows. Multiplied into the score in
+   * `MemoryService.searchByHybridPages` and the single-branch
+   * `searchByContainsPages` / `searchBySemanticPages` paths.
+   *
+   * 0.8.0+. Older traces (pre-0.8.0 fixtures) have this field absent;
+   * deserialize-aware consumers tolerate the missing field.
+   */
+  confidenceFactor: number
 }
 
 // ---------------------------------------------------------------------------

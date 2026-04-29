@@ -169,9 +169,11 @@ tokens.
 
 ### `mode: "hybrid"` (default)
 
-Speculative parallelism. `searchByHybridPages` fires `searchByContainsPages`
-and `searchBySemanticPages` concurrently via `Promise.allSettled`. Once
-both settle:
+Speculative parallelism. `searchByHybridPages` fires `fetchContainsPages`
+and `fetchSemanticPages` (the **raw** fetch helpers — see "Fetch/sort
+pipeline split" below for why hybrid composes the raw helpers, not the
+public confidence-aware wrappers) concurrently via `Promise.allSettled`.
+Once both settle:
 
 - **Saturating case** (`containsPages.length >= HYBRID_FALLBACK_THRESHOLD`,
   default 3): the contains rows alone become the result. The parallel
@@ -181,11 +183,16 @@ both settle:
 - **Under-shooting case (RRF)**: when contains under-shoots the
   threshold, the merge runs Reciprocal Rank Fusion over both branches
   rather than concat-with-dedup. Each row's score is
-  `Σ 1 / (RRF_K + rank + 1)` summed across the branches it appears in;
-  `RRF_K = 60` (Cormack 2009 / qmd default). Cross-branch agreement is
-  the signal RRF surfaces — a row ranked #1 in both branches scores
-  `2/61` and beats a row ranked #1 in only one branch (`1/61`). The
-  earlier concat-then-fill heuristic discarded that signal.
+  `Σ (1 / (RRF_K + rank + 1)) * weight * confidenceFactor` summed across
+  the branches it appears in; `RRF_K = 60` (Cormack 2009 / qmd default).
+  `confidenceFactor` is the per-row `[CONFIDENCE_FACTOR_MIN, 1.0]`
+  multiplier from `decay.ts` (0.8.0/#08); the factor is applied **once
+  per per-branch contribution** inside the accumulator (see
+  `src/core/memory.ts:searchByHybridPages`). Cross-branch agreement is
+  the signal RRF surfaces — a row ranked #1 in both branches with
+  `confidenceFactor=1.0` scores `2/61` and beats a row ranked #1 in
+  only one branch (`1/61`). The earlier concat-then-fill heuristic
+  discarded that signal.
 
   **Tie-break order** (deterministic, fixture-pinned): score → best-rank
   → contains-presence → page id ascending. `bestRank = min(containsRank
@@ -365,6 +372,11 @@ The explain shape (`SearchExplain` in `src/types.ts`) carries:
 - `branch` — the canonical signal: `"contains-only"`, `"semantic-only"`,
   `"contains-saturated"`, or `"rrf"`. Reflects the **resolved** mode (after
   `LORE_FORCE_SEMANTIC_SEARCH=1` is applied), not the caller's request.
+- `confidenceFactor` — 0.8.0/#08. The factor multiplied into this row's
+  per-branch RRF score: `[CONFIDENCE_FACTOR_MIN, 1.0]`, default `1.0`
+  for unscored or fully-trusted rows. Populated on every branch.
+  Pre-0.8.0 trace fixtures (deserialized from disk) lack the field;
+  consumers tolerate the absence.
 
 **Branch-field rules** (pinned by tests):
 
@@ -385,11 +397,12 @@ action='search'` via the optional `explain: boolean` field, rendered as a
 `## Score trace` footer (one row per result). Agents that don't pass
 `explain` pay zero output-token cost.
 
-Field names (`containsRank`, `semanticRank`, `rrfScore`, `branch`) are
-canonical to lore and a test pins them. qmd uses `lexRank` for the
-contains lane; we keep `containsRank` because the underlying Notion
-query is a `contains` filter, not a lexical index. A future contributor
-chasing qmd's vocabulary would silently break the contract.
+Field names (`containsRank`, `semanticRank`, `rrfScore`, `branch`,
+`confidenceFactor`) are canonical to lore and a test pins them. qmd uses
+`lexRank` for the contains lane; we keep `containsRank` because the
+underlying Notion query is a `contains` filter, not a lexical index. A
+future contributor chasing qmd's vocabulary would silently break the
+contract.
 
 ### Materialization is a single pass
 
@@ -406,6 +419,54 @@ hybrid never fetches markdown for a row that isn't in the final response.
 `materializeMemories` honors `includeContent: false` to skip the per-page
 `retrieveMarkdown` round-trip. Use it when the caller renders only title /
 date / tags (e.g. the shell wake-up hook's related-memories section).
+
+### Fetch/sort pipeline split (0.8.0/#08)
+
+The single-branch and hybrid paths each apply `confidenceFactor` to the
+RRF score **exactly once**. The split keeps that contract enforceable:
+
+| Layer | Function | Confidence-aware? |
+|---|---|---|
+| Fetch | `fetchContainsPages(input)` | No — raw Notion result |
+| Fetch | `fetchSemanticPages(input, intent)` | No — raw Notion result |
+| Public | `searchByContainsPages(input)` | Yes — fetch + factor + sort |
+| Public | `searchBySemanticPages(input, intent)` | Yes — fetch + factor + sort |
+| Public | `searchByHybridPages(...)` | Yes — composes raw fetch + factor in RRF accumulator |
+
+Hybrid composes the **raw** fetch helpers, not the public confidence-
+aware wrappers. If hybrid called `searchByContainsPages` /
+`searchBySemanticPages`, the factor would be applied once in the
+single-branch sort and again in the RRF accumulator — collapsing the
+documented `[CONFIDENCE_FACTOR_MIN, 1.0]` floor to
+`[CONFIDENCE_FACTOR_MIN², 1.0]` for hybrid callers (e.g. a row at
+score 0.0 would multiply by 0.25, not 0.5).
+
+`rerankByConfidence` (private, in `memory.ts`) is the shared
+factor-then-sort applier used by both single-branch public wrappers.
+It short-circuits when every input row is unscored
+(`Confidence Score = null`) so pre-migration vaults see byte-identical
+pre-0.8.0 ordering — without that gate, the page-id-ascending fall-
+through in `tieBreakingRrfCompare` would re-sort otherwise-tied rows
+into id order, masking Notion's recency / relevance ordering on
+unmigrated vaults.
+
+**Saturation cutoff is unchanged**. The cutoff already has a documented
+bypass under `intent !== null`; 0.8.0 deliberately does NOT add a
+"saturated-but-low-confidence" bypass. Even when contains saturates,
+`confidenceFactor` reranks within the contains branch — a heavily-
+decayed row at contains-rank 1 can sort below a fresh row at
+contains-rank 2. If real-query feedback shows saturation suppressing
+fresh semantic hits, a follow-up issue can introduce the second
+bypass; track in `DEFERRED.md`.
+
+### `LORE_DISABLE_CONFIDENCE_FACTOR=1` kill switch (0.8.0/#08)
+
+Operator escape hatch at the top of `confidenceFactor` (`decay.ts`).
+With the env var set, every call returns `1.0` unconditionally — a
+sustained-failure rollback to pre-0.8.0 ranking, not a default. Same
+posture as `LORE_FORCE_SEMANTIC_SEARCH` and
+`LORE_DISABLE_NEAR_DUPLICATE_PROBE`. The check lives at the helper
+boundary so single-branch and hybrid paths share one bypass.
 
 ### Kill switch: `LORE_FORCE_SEMANTIC_SEARCH=1`
 

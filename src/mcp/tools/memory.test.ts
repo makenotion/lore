@@ -2768,6 +2768,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
           semanticRank: null,
           rrfScore: null,
           branch: "contains-only",
+          confidenceFactor: 1.0,
         },
       ],
     })

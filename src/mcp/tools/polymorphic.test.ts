@@ -572,6 +572,7 @@ describe("lore-query polymorphic dispatcher", () => {
           semanticRank: 1,
           rrfScore: 0.0322,
           branch: "rrf",
+          confidenceFactor: 1.0,
         },
       ],
     }))
@@ -587,7 +588,9 @@ describe("lore-query polymorphic dispatcher", () => {
     } as never)
     const text = extractText(result)
     expect(text).toContain("## Score trace")
-    expect(text).toContain("mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200")
+    expect(text).toContain(
+      "mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200 confidenceFactor=1.000",
+    )
   })
 
   it("omits ## Score trace footer when explain is not set", async () => {

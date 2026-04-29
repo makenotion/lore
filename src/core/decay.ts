@@ -148,8 +148,17 @@ export function decayConfidenceScore(
  * intuition: a maximally-decayed memory still surfaces at the
  * floor-multiple of the lexical / semantic weight of a fully-trusted
  * one — it doesn't disappear from results.
+ *
+ * **Kill switch.** `LORE_DISABLE_CONFIDENCE_FACTOR=1` returns `1.0`
+ * unconditionally — a sustained-failure rollback to pre-0.8.0 ranking,
+ * not a default. Same posture as `LORE_FORCE_SEMANTIC_SEARCH` and
+ * `LORE_DISABLE_NEAR_DUPLICATE_PROBE`: an opt-in defensive lever for an
+ * operator whose vault sees pathological ordering under the new signal.
+ * The check lives here (not at the RRF call sites) so single-branch
+ * paths and the hybrid accumulator share one bypass.
  */
 export function confidenceFactor(score: number | null): number {
+  if (process.env["LORE_DISABLE_CONFIDENCE_FACTOR"] === "1") return 1.0
   if (score === null) return 1.0
   return CONFIDENCE_FACTOR_MIN + (1 - CONFIDENCE_FACTOR_MIN) * score
 }
