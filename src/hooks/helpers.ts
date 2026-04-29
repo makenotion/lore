@@ -36,6 +36,7 @@ import { type LoreConfig } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
 import {
+  DEFAULT_WAKEUP_TASK_LIMIT,
   RANKED_WAKEUP_LIMITS,
   dateBucket,
   loadWakeUpData,
@@ -652,8 +653,14 @@ export async function wakeup(): Promise<void> {
 
   if (tasks.length > 0) {
     const today = new Date().toISOString().split("T")[0]
+    // The data layer over-fetches by 4× so the MCP renderer can bucket
+    // into Overdue / Stale / Active without one bucket starving the
+    // others. The shell hook flat-renders, so slice back to the visible
+    // cap before iterating — without this, the hook would emit up to
+    // 40 task lines on every session start.
+    const visibleTasks = tasks.slice(0, DEFAULT_WAKEUP_TASK_LIMIT)
     sections.push("\n## Tasks")
-    for (const task of tasks) {
+    for (const task of visibleTasks) {
       const stateLabel = task.taskState ?? "open"
       const blocker = task.blockedBy ? `, blocked by ${task.blockedBy}` : ""
       const due = task.reviewBy

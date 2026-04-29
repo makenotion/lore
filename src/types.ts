@@ -83,6 +83,20 @@ export type Tag = (typeof TAG_VOCABULARY)[number]
  */
 export const SYNOPSIS_MAX = 500
 
+/**
+ * Days since `last_edited_time` past which an active task is considered
+ * stale and surfaces with a "consider closing" prompt in wake-up.
+ * Conservative: 30 days is long enough to absorb a vacation or a
+ * context-switched project, short enough to flag truly-forgotten work.
+ * Read by `src/core/task.ts` (`taskDaysStale` helper) and the wake-up
+ * Tasks rendering in `src/mcp/tools/context.ts`.
+ *
+ * A future operator-tuning knob (`hooks.staleTaskDays` in `.lore.yaml`)
+ * is the next step if real-vault feedback shows 30 is wrong; ship the
+ * const first.
+ */
+export const STALE_TASK_DAYS = 30
+
 // ---------------------------------------------------------------------------
 // Vault
 // ---------------------------------------------------------------------------

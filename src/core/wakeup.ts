@@ -242,8 +242,15 @@ export interface WakeUpData {
    */
   relatedMemories: Memory[]
   /**
-   * Active task memories (Kind = task) capped at `taskLimit`. Sorted by
-   * due-date ascending so most-pressing rows are first.
+   * Active task memories (Kind = task), the over-fetched window of
+   * `min(taskLimit * 4, 100)` rows so renderers that bucket into
+   * Overdue / Stale / Active have headroom to apply per-bucket caps
+   * without one bucket starving the others. Sorted by due-date
+   * ascending so most-pressing rows are first.
+   *
+   * Flat-rendering callers should slice this array to `taskLimit`
+   * before iterating; bucketed renderers should bucket first and
+   * slice each bucket to `taskLimit`.
    */
   tasks: TaskSummary[]
   /**
@@ -311,6 +318,24 @@ export async function loadWakeUpData(
     userQuery && taskMemoryLimit > 0
       ? Math.min(NOTION_PAGE_SIZE, taskMemoryLimit + taskFetchSlack)
       : 0
+  // Over-fetch active tasks so the bucketing pass in the renderer
+  // (`src/mcp/tools/context.ts`) has headroom for Overdue / Stale /
+  // Active without the dominant bucket starving the others. Three
+  // buckets that each cap at `taskLimit` need at least `3 * taskLimit`
+  // candidates in the fetched window to render the spec's intent;
+  // 4× covers realistic bucket-skew on the Mail vault's 271-task
+  // profile per the precedent in `lore-task action='list'`
+  // (`src/mcp/tools/tasks.ts`'s `fetchLimit` computation: "4× absorbs
+  // realistic bucket-skew on the Mail vault's 271 open loops without
+  // paying a second query"). Bounded by Notion's per-page ceiling so
+  // this hot-path query never paginates.
+  //
+  // Flat-rendering callers (the shell wake-up hook) slice the
+  // returned `tasks` array to `taskLimit` before iterating; bucketed
+  // callers (the MCP `lore-context action='wake-up'` tool) bucket
+  // first and slice each bucket to `taskLimit`.
+  const tasksFetchLimit =
+    taskLimit > 0 ? Math.min(NOTION_PAGE_SIZE, taskLimit * 4) : 0
   // `taskCandidates: Memory[]` — annotated explicitly because this is the
   // only entry in the fan-out whose two arms (a real `services.memories.search`
   // call vs. `Promise.resolve([])`) produce identical shapes by coincidence
@@ -362,11 +387,11 @@ export async function loadWakeUpData(
     projectId && includeDecisions
       ? services.decisions.queryOverdue({ projectId })
       : Promise.resolve([] as DecisionSummary[]),
-    projectId && taskLimit > 0
+    projectId && tasksFetchLimit > 0
       ? services.tasks.list({
           projectId,
           // Default `states` (active set) lives inside `TaskService.list`.
-          limit: taskLimit,
+          limit: tasksFetchLimit,
         })
       : Promise.resolve({ items: [] as TaskSummary[] }),
     projectId && userQuery && taskFetchLimit > 0

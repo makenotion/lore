@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { TaskService, isCleared, taskDaysOverdue } from "./task.js"
+import { TaskService, isCleared, taskDaysOverdue, taskDaysStale } from "./task.js"
 import type { DatabaseRef, TaskState } from "../types.js"
 
 type MockablePage = Partial<PageObjectResponse> & { id: string }
@@ -534,6 +534,56 @@ describe("taskDaysOverdue", () => {
   it("returns null for active tasks whose reviewBy is still in the future", () => {
     const result = taskDaysOverdue(
       { reviewBy: "2026-05-01", taskState: "in-progress" },
+      "2026-04-20"
+    )
+    expect(result).toBeNull()
+  })
+})
+
+describe("taskDaysStale", () => {
+  it("returns days since updatedAt for active tasks", () => {
+    const result = taskDaysStale(
+      { updatedAt: "2026-03-01T00:00:00Z", taskState: "open" },
+      "2026-04-20"
+    )
+    // 50 days from 2026-03-01 → 2026-04-20.
+    expect(result).toBe(50)
+  })
+
+  it("returns 0 for active tasks edited today (no staleness yet)", () => {
+    const result = taskDaysStale(
+      { updatedAt: "2026-04-20T12:00:00Z", taskState: "in-progress" },
+      "2026-04-20"
+    )
+    expect(result).toBe(0)
+  })
+
+  it("returns null for done tasks", () => {
+    // Closed work isn't "stale", it's "done" — bucketing must not
+    // resurface a done task in the Stale section just because it was
+    // edited a long time ago.
+    const result = taskDaysStale(
+      { updatedAt: "2026-01-01T00:00:00Z", taskState: "done" },
+      "2026-04-20"
+    )
+    expect(result).toBeNull()
+  })
+
+  it("returns null for cancelled tasks", () => {
+    const result = taskDaysStale(
+      { updatedAt: "2026-01-01T00:00:00Z", taskState: "cancelled" },
+      "2026-04-20"
+    )
+    expect(result).toBeNull()
+  })
+
+  it("returns null when updatedAt is missing", () => {
+    // The field comes off Notion's `last_edited_time` which is always
+    // populated for live pages; missing only on synthetic / partially-
+    // initialized objects, where the staleness check should no-op
+    // rather than crash on `new Date("")`.
+    const result = taskDaysStale(
+      { updatedAt: "", taskState: "open" },
       "2026-04-20"
     )
     expect(result).toBeNull()

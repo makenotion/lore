@@ -764,6 +764,82 @@ describe("loadWakeUpData", () => {
     expect(relatedCall?.mode).toBe("semantic")
   })
 
+  describe("tasks over-fetch (issue 0.7.0/12)", () => {
+    it("over-fetches tasks at min(taskLimit * 4, 100) so renderers have bucketing headroom", async () => {
+      // The MCP renderer buckets tasks into Overdue / Stale / Active and
+      // applies `taskLimit` per bucket. Without an over-fetched window
+      // a fetch limited to `taskLimit` rows would let one bucket starve
+      // the others. 4× the cap matches the precedent in
+      // `lore-task action='list'` and absorbs realistic bucket-skew on
+      // the Mail vault.
+      const services = stubServices({ tasks: [] })
+
+      await loadWakeUpData(services, { projectId: "p1", taskLimit: 10, now: NOW })
+
+      const tasksCall = services.tasksListCalls[0]
+      expect(tasksCall?.limit).toBe(40)
+    })
+
+    it("clamps the over-fetch window to the Notion 100-row ceiling", async () => {
+      // A caller passing `taskLimit: 50` would compute `50 * 4 = 200`
+      // candidates without the clamp — twice Notion's per-page ceiling,
+      // forcing pagination on the hot path. The data layer caps at 100
+      // so wake-up never paginates regardless of caller config.
+      const services = stubServices({ tasks: [] })
+
+      await loadWakeUpData(services, { projectId: "p1", taskLimit: 50, now: NOW })
+
+      const tasksCall = services.tasksListCalls[0]
+      expect(tasksCall?.limit).toBe(100)
+    })
+
+    it("skips the tasks query when taskLimit is 0", async () => {
+      // The 0 case is the documented kill-switch for the Tasks section
+      // — wake-up should not even ask Notion for rows it will never
+      // render.
+      const services = stubServices({ tasks: [] })
+
+      await loadWakeUpData(services, { projectId: "p1", taskLimit: 0, now: NOW })
+
+      expect(services.tasksListCalls).toEqual([])
+    })
+
+    it("returns the full over-fetched window so renderers see all three buckets", async () => {
+      // Renderers bucket and slice; the data layer returns whatever
+      // `services.tasks.list` produced. A fixture spanning all three
+      // buckets must surface intact through the data layer for the
+      // renderer's bucketing pass to do its job.
+      const overdue = buildTask({
+        id: "overdue-1",
+        reviewBy: "2026-04-01",
+        updatedAt: "2026-04-19T00:00:00Z",
+      })
+      const stale = buildTask({
+        id: "stale-1",
+        reviewBy: null,
+        updatedAt: "2026-02-01T00:00:00Z",
+      })
+      const active = buildTask({
+        id: "active-1",
+        reviewBy: null,
+        updatedAt: "2026-04-19T00:00:00Z",
+      })
+      const services = stubServices({ tasks: [overdue, stale, active] })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        taskLimit: 10,
+        now: NOW,
+      })
+
+      expect(data.tasks.map((t) => t.id)).toEqual([
+        "overdue-1",
+        "stale-1",
+        "active-1",
+      ])
+    })
+  })
+
   describe("userQuery / taskMemories", () => {
     it("fires an extra search seeded by userQuery and surfaces the hits", async () => {
       // P3-05: when wake-up has the user's first message, the most

@@ -448,3 +448,36 @@ export function taskDaysOverdue(
   const diff = new Date(today).getTime() - new Date(task.reviewBy).getTime()
   return Math.floor(diff / 86_400_000)
 }
+
+/**
+ * Days since `last_edited_time` for an active task. Returns `null` when
+ * the task is in a terminal state (closed tasks aren't "stale", they're
+ * "done") or when `updatedAt` is missing. Sibling of `taskDaysOverdue`
+ * — same `Pick<TaskSummary>` shape and same `null`-or-positive-int
+ * return semantics so the rendering layer can branch on both
+ * uniformly.
+ *
+ * `TaskSummary` inherits `updatedAt: string` from `Memory` via the
+ * `Omit<Memory, "content">` projection in `src/types.ts`; the field is
+ * populated by `pageToMemory` from Notion's `last_edited_time` page
+ * attribute. `last_edited_time` updates on any property change — a tag
+ * edit, a comment, a re-relation — so a "stale" task here is "no edits
+ * in N days" rather than "no real progress in N days". Acceptable for
+ * the wake-up surfacing use case: false positives are rare and
+ * recoverable (the agent reads the body and decides not to close).
+ *
+ * Calendar-day diff: `updatedAt` is truncated to its `YYYY-MM-DD`
+ * prefix before parsing so a task edited today at noon yields `0`, not
+ * `-1`. Mirrors `taskDaysOverdue`'s posture against `reviewBy` (which
+ * is already date-only off the Notion `date` column).
+ */
+export function taskDaysStale(
+  task: Pick<TaskSummary, "updatedAt" | "taskState">,
+  today: string
+): number | null {
+  if (!ACTIVE_TASK_STATES.includes(task.taskState as TaskState)) return null
+  if (!task.updatedAt) return null
+  const updatedDate = task.updatedAt.split("T")[0]
+  const diff = new Date(today).getTime() - new Date(updatedDate).getTime()
+  return Math.floor(diff / 86_400_000)
+}

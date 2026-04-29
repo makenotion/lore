@@ -1062,3 +1062,268 @@ describe("lore-wake-up — synopsis is always rendered on wake-up (issue 0.7.0/0
     expect(text).toContain("This synopsis must render on wake-up.")
   })
 })
+describe("lore-wake-up — Part H: stale-task bucketing (issue 0.7.0/12)", () => {
+  // Pre-#12 the Tasks section was a flat list capped at 10. Real vaults
+  // accumulated dead work that rendered identically to live work — no
+  // staleness signal, no closure CTA. #12 splits the section into
+  // Overdue / Stale / Active sub-buckets and emits an inline closure
+  // CTA on every row.
+  //
+  // `now` for these tests is implicit via `new Date()` inside
+  // `handleWakeUp`. Every fixture timestamp is computed relative to
+  // wall-clock so the bucketing stays correct regardless of when the
+  // test runs. `daysAgo()` returns a full ISO timestamp;
+  // `daysAgoDate()` returns the date-only `YYYY-MM-DD` form that
+  // Notion's `date` column emits — used for `reviewBy` so an overdue
+  // fixture is overdue on every wall-clock day, not just on dates
+  // hardcoded into the test.
+  function daysAgo(n: number): string {
+    return new Date(Date.now() - n * 86_400_000).toISOString()
+  }
+  function daysAgoDate(n: number): string {
+    return daysAgo(n).split("T")[0]
+  }
+
+  it("renders Overdue / Stale / Active sub-headings in priority order with row counts", async () => {
+    const overdueTask = makeTask({
+      id: "overdue-1",
+      title: "Ship classifier hotfix",
+      reviewBy: daysAgoDate(27),
+      updatedAt: daysAgo(2),
+    })
+    const staleTask = makeTask({
+      id: "stale-1",
+      title: "Investigate timezone bug in BVC",
+      reviewBy: null,
+      updatedAt: daysAgo(45),
+    })
+    const activeTask = makeTask({
+      id: "active-1",
+      title: "Refactor router shim",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      tasks: [overdueTask, staleTask, activeTask],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## Tasks")
+    expect(text).toContain("### Overdue (1)")
+    expect(text).toContain(
+      "### Stale (1 active task untouched ≥30 days) — consider closing if resolved",
+    )
+    expect(text).toContain("### Active (1)")
+
+    // Bucket ordering: Overdue > Stale > Active.
+    const overdueIdx = text.indexOf("### Overdue")
+    const staleIdx = text.indexOf("### Stale")
+    const activeIdx = text.indexOf("### Active")
+    expect(overdueIdx).toBeGreaterThan(-1)
+    expect(staleIdx).toBeGreaterThan(overdueIdx)
+    expect(activeIdx).toBeGreaterThan(staleIdx)
+  })
+
+  it("emits an inline closure CTA on every task row regardless of bucket", async () => {
+    // Pin all three buckets in one fixture so a regression in any
+    // bucket's row formatting (Overdue / Stale / Active) surfaces the
+    // closure CTA. The CTA is the load-bearing nudge for #12 — losing
+    // it on the Stale path would silently undo the issue's intent.
+    const overdueTask = makeTask({
+      id: "overdue-id",
+      title: "Overdue row",
+      reviewBy: daysAgoDate(27),
+      updatedAt: daysAgo(2),
+    })
+    const staleTask = makeTask({
+      id: "stale-id",
+      title: "Stale row",
+      reviewBy: null,
+      updatedAt: daysAgo(45),
+    })
+    const activeTask = makeTask({
+      id: "active-id",
+      title: "Active row",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      tasks: [overdueTask, staleTask, activeTask],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // Each bucket's row carries the same "ID: <id> — close if resolved:"
+    // trailer + a ready-to-copy `lore-task({ action: 'close', ... })`
+    // call. The agent never has to remember the dispatcher signature.
+    for (const id of ["overdue-id", "stale-id", "active-id"]) {
+      expect(text).toContain(`ID: ${id} — close if resolved:`)
+      expect(text).toContain(
+        `lore-task({ action: 'close', taskId: '${id}' })`,
+      )
+    }
+  })
+
+  it("omits empty buckets so an Active-only project shows only ### Active", async () => {
+    const activeTask = makeTask({
+      id: "active-1",
+      title: "Refactor router shim",
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [activeTask] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## Tasks")
+    expect(text).toContain("### Active (1)")
+    expect(text).not.toContain("### Overdue")
+    expect(text).not.toContain("### Stale")
+  })
+
+  it("omits the entire Tasks section when there are no active tasks", async () => {
+    // Pre-existing behavior: a project with no active tasks emits no
+    // `## Tasks` header at all. The bucketing rewrite must preserve
+    // that — no empty header, no empty sub-buckets.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).not.toContain("## Tasks")
+  })
+
+  it("buckets a row that is both overdue and stale into Overdue (overdue is the stronger signal)", async () => {
+    // Mutual-exclusivity rule: a task with a past due date AND a 60-day-
+    // old `updatedAt` lands in Overdue, not Stale. Surfacing it in both
+    // buckets would double-count it; surfacing it in Stale would hide
+    // its overdue urgency under a softer header.
+    const both = makeTask({
+      id: "both-1",
+      title: "Long-overdue and untouched",
+      reviewBy: daysAgoDate(120),
+      updatedAt: daysAgo(60),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [both] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("### Overdue (1)")
+    expect(text).not.toContain("### Stale")
+  })
+
+  it("caps each bucket at taskLimit and surfaces the hidden count in the heading", async () => {
+    // The over-fetched window holds up to 4× the cap. Per-bucket caps
+    // ensure no single bucket dominates the rendered Tasks section.
+    // The heading itself surfaces the shown/total/hidden split — same
+    // single-signal posture `lore-task action='list'` already uses.
+    const tasks: TaskSummary[] = []
+    for (let i = 0; i < 12; i++) {
+      tasks.push(
+        makeTask({
+          id: `stale-${i}`,
+          title: `Stale task ${i}`,
+          reviewBy: null,
+          updatedAt: daysAgo(45),
+        }),
+      )
+    }
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    // Default `taskLimit` is 10 — render 10, hide 2.
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // Truncated-heading grammar: "10 shown of 12 active tasks untouched
+    // ≥30 days, hiding 2" — the descriptor stays attached to the total
+    // so the reader doesn't parse "hiding 2 active tasks untouched"
+    // as if only the 2 hidden are stale.
+    expect(text).toContain(
+      "### Stale (10 shown of 12 active tasks untouched ≥30 days, hiding 2) — consider closing if resolved",
+    )
+    // No separate trailer line — the heading carries the full signal.
+    expect(text).not.toContain("more not shown")
+    // Sanity: the first 10 rendered, not the last 2.
+    expect(text).toContain("Stale task 0")
+    expect(text).toContain("Stale task 9")
+    expect(text).not.toContain("Stale task 10")
+    expect(text).not.toContain("Stale task 11")
+  })
+
+  it("does not starve Stale and Active when the over-fetched window contains all three buckets", async () => {
+    // The data layer over-fetches by 4× so an Overdue-heavy fixture
+    // doesn't crowd Stale/Active out of the window. With one of each,
+    // all three render.
+    const tasks: TaskSummary[] = []
+    // 8 overdue rows
+    for (let i = 0; i < 8; i++) {
+      tasks.push(
+        makeTask({
+          id: `overdue-${i}`,
+          title: `Overdue ${i}`,
+          reviewBy: daysAgoDate(27),
+          updatedAt: daysAgo(2),
+        }),
+      )
+    }
+    // 1 stale, 1 active
+    tasks.push(
+      makeTask({
+        id: "stale-1",
+        title: "Stale row",
+        reviewBy: null,
+        updatedAt: daysAgo(45),
+      }),
+    )
+    tasks.push(
+      makeTask({
+        id: "active-1",
+        title: "Active row",
+        reviewBy: null,
+        updatedAt: daysAgo(2),
+      }),
+    )
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("### Overdue (8)")
+    expect(text).toContain("### Stale (1 active task untouched ≥30 days)")
+    expect(text).toContain("### Active (1)")
+    expect(text).toContain("Stale row")
+    expect(text).toContain("Active row")
+  })
+})

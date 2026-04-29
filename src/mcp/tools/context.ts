@@ -17,8 +17,8 @@ import {
   composeProjectContext,
   renderProjectContextLines,
 } from "../../core/project-context.js"
-import { taskDaysOverdue } from "../../core/task.js"
-import type { Memory } from "../../types.js"
+import { taskDaysOverdue, taskDaysStale } from "../../core/task.js"
+import { STALE_TASK_DAYS, type Memory, type TaskSummary } from "../../types.js"
 import {
   type CollapsedMemoryGroup,
   type MemoryListItem,
@@ -112,6 +112,38 @@ function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
   const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
   const date = mem.createdAt.split("T")[0]
   return `${mem.source} | ${tagPart} | ${date}`
+}
+
+/**
+ * Render one task row for the wake-up Tasks section. The row carries
+ * the urgency marker, state, blocker, due-date phrasing, and an inline
+ * closure CTA so the agent triaging the section never has to remember
+ * the `lore-task` dispatcher signature.
+ *
+ * Mutually-exclusive bucketing is enforced upstream (Overdue > Stale >
+ * Active); this helper renders any single row identically regardless
+ * of which bucket it lives in. The urgency marker fires only on overdue
+ * rows — the Stale section heading already conveys staleness, so plain
+ * rows in that bucket keep the visual noise down.
+ */
+function formatWakeUpTaskRow(task: TaskSummary, today: string): string {
+  const overdueDays = taskDaysOverdue(task, today)
+  const stateLabel = task.taskState ?? "open"
+  const blocker = task.blockedBy ? ` — blocked by ${task.blockedBy}` : ""
+  const due =
+    overdueDays !== null && task.reviewBy
+      ? overdueDays === 0
+        ? " **(due today)**"
+        : ` **(${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue — review by ${task.reviewBy})**`
+      : task.reviewBy
+        ? ` (due ${task.reviewBy})`
+        : ""
+  const prefix = overdueDays !== null ? "⚠ " : ""
+  const closeCta = `lore-task({ action: 'close', taskId: '${task.id}' })`
+  return (
+    `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due}\n` +
+    `  ID: ${task.id} — close if resolved: ${closeCta}`
+  )
 }
 
 // -------------------------------------------------------------------------
@@ -361,25 +393,92 @@ async function handleWakeUp(
 
     if (tasks.length > 0) {
       const today = new Date().toISOString().split("T")[0]
-      sections.push("## Tasks\n")
+      // Mutually-exclusive bucketing: Overdue > Stale > Active. An
+      // overdue task is by definition not stale (overdue is the
+      // stronger urgency signal); a stale task is by definition not
+      // overdue (no due date or due-after-today). A row lands in
+      // exactly one bucket. `loadWakeUpData` over-fetches by 4× so
+      // each bucket has headroom to apply its own `taskLimit` slice
+      // without one bucket starving the others.
+      const overdueBucket: TaskSummary[] = []
+      const staleBucket: TaskSummary[] = []
+      const activeBucket: TaskSummary[] = []
       for (const task of tasks) {
-        const overdueDays = taskDaysOverdue(task, today)
-        const stateLabel = task.taskState ?? "open"
-        const blocker = task.blockedBy ? ` — blocked by ${task.blockedBy}` : ""
-        const due =
-          overdueDays !== null && task.reviewBy
-            ? overdueDays === 0
-              ? " **(due today)**"
-              : ` **(${overdueDays} day${overdueDays === 1 ? "" : "s"} overdue — review by ${task.reviewBy})**`
-            : task.reviewBy
-              ? ` (due ${task.reviewBy})`
-              : ""
-        const prefix = overdueDays !== null ? "⚠ " : ""
-        sections.push(
-          `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due} | ID: ${task.id}`,
+        if (taskDaysOverdue(task, today) !== null) {
+          overdueBucket.push(task)
+          continue
+        }
+        const staleDays = taskDaysStale(task, today)
+        if (staleDays !== null && staleDays >= STALE_TASK_DAYS) {
+          staleBucket.push(task)
+          continue
+        }
+        activeBucket.push(task)
+      }
+
+      const taskCap = args.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
+      const overdueShown = overdueBucket.slice(0, taskCap)
+      const staleShown = staleBucket.slice(0, taskCap)
+      const activeShown = activeBucket.slice(0, taskCap)
+
+      // Heading-suffix count: when the bucket is truncated, surface
+      // shown / total / hiding in the heading itself rather than as a
+      // separate trailing line. Single signal, matches the precedent
+      // in `lore-task action='list'`'s bucket headings (`src/mcp/tools/
+      // tasks.ts`'s `handleList` — search for "shown of") so the
+      // operator-facing format stays consistent across the two
+      // surfaces that render task buckets. The optional `descriptor`
+      // (e.g. "active tasks untouched ≥30 days" for the Stale bucket)
+      // stays attached to the total count so the truncated heading
+      // reads as "10 shown of 12 active tasks untouched ≥30 days,
+      // hiding 2" — descriptor qualifies the bucket total, not the
+      // hidden count.
+      const countLabel = (
+        bucket: TaskSummary[],
+        rows: TaskSummary[],
+        descriptor: string,
+      ): string => {
+        const total = `${bucket.length}${descriptor ? ` ${descriptor}` : ""}`
+        const hidden = bucket.length - rows.length
+        return hidden > 0
+          ? `${rows.length} shown of ${total}, hiding ${hidden}`
+          : total
+      }
+
+      const renderBucket = (
+        rows: TaskSummary[],
+        heading: string,
+      ): void => {
+        if (rows.length === 0) return
+        sections.push(heading)
+        for (const task of rows) {
+          sections.push(formatWakeUpTaskRow(task, today))
+        }
+        sections.push("")
+      }
+
+      if (
+        overdueShown.length > 0 ||
+        staleShown.length > 0 ||
+        activeShown.length > 0
+      ) {
+        sections.push("## Tasks\n")
+        renderBucket(
+          overdueShown,
+          `### Overdue (${countLabel(overdueBucket, overdueShown, "")})\n`,
+        )
+        const staleDescriptor =
+          `active task${staleBucket.length === 1 ? "" : "s"} ` +
+          `untouched ≥${STALE_TASK_DAYS} days`
+        renderBucket(
+          staleShown,
+          `### Stale (${countLabel(staleBucket, staleShown, staleDescriptor)}) — consider closing if resolved\n`,
+        )
+        renderBucket(
+          activeShown,
+          `### Active (${countLabel(activeBucket, activeShown, "")})\n`,
         )
       }
-      sections.push("")
     }
 
     if (knowledgeFacts.length > 0) {
