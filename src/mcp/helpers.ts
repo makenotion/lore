@@ -81,6 +81,48 @@ function oneLine(value: string): string {
 }
 
 /**
+ * Operator observability for the auto-`mentions` fact emission path
+ * (0.8.0/#07). The auto-emit branch fires per-entity `createWithDedup`
+ * calls in parallel after `lore-memory action='save'`; a per-entity
+ * failure (transient 429, dedup probe race, schema drift on a vault
+ * that hasn't run `lore migrate`) degrades to a no-op for THAT entity
+ * rather than failing the surrounding save. The save itself always
+ * succeeds; auto-mentions are advisory.
+ *
+ * Without this helper, a partial-emit failure is invisible to the
+ * operator — the save response shows the saved memory but quietly
+ * drops the missing fact. Under `LORE_DEBUG=1`, one stderr line per
+ * failing entity surfaces enough detail to distinguish a transient
+ * blip from a pathological loop.
+ *
+ * Format: `[lore] auto-fact-failure: source=<save|update> memoryId=<id> entity=<entity> error=<message>`
+ *
+ * Same narrowing as `debugLogPartialFailures`: only `error.message`
+ * is logged. ASCII control characters in `memoryId` / `entity` /
+ * `message` are replaced with spaces before the line is written so
+ * the one-event-per-line invariant log aggregators rely on holds even
+ * if a future entity tokenizer surfaces a multi-line input.
+ *
+ * `source` is the originating tool action (`save` for #07's #07
+ * scope; `update` reserved for the deferred re-emission follow-up
+ * tracked in `DEFERRED-03`). Carrying it on every line lets a future
+ * contributor distinguish save-time vs. update-time emission failures
+ * without grepping the calling stack.
+ */
+export function debugLogAutoFactFailure(
+  source: "save" | "update",
+  memoryId: string,
+  entity: string,
+  error: unknown,
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  const message = error instanceof Error ? error.message : String(error)
+  process.stderr.write(
+    `[lore] auto-fact-failure: source=${source} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(message)}\n`,
+  )
+}
+
+/**
  * Render a Zod validation error as a single-line dispatch error message
  * for the polymorphic `lore-*` tools (P3-01). Surfaces the first issue
  * with `field.path: message` so the calling agent can correct the call

@@ -900,6 +900,14 @@ export type FactPredicate =
   | "decided_by"
   | "supersedes_decision"
   | "informs"
+  // Auto-emitted by `lore-memory action='save'` (0.8.0/#07) — one fact
+  // per entity surfaced by `extractEntityCandidates` over the saved
+  // memory's title / keywords / synopsis. Lower-quality (regex-derived,
+  // confidence: speculative) than agent-curated `uses` / `depends_on`
+  // facts; the categorical confidence tag lets retrieval prefer the
+  // agent-curated edges when both exist. Not exposed through
+  // `lore-fact action='create'` because the value is system-managed.
+  | "mentions"
 
 export type FactConfidence = "certain" | "likely" | "speculative"
 

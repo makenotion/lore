@@ -361,6 +361,13 @@ export function factsProperties(
           { name: "decided_by", color: "blue" },
           { name: "supersedes_decision", color: "gray" },
           { name: "informs", color: "pink" },
+          // Auto-emitted by `lore-memory action='save'` (0.8.0/#07).
+          // System-managed, regex-derived; not exposed through
+          // `lore-fact action='create'`. Distinguished from the
+          // agent-curated relationship predicates (uses / depends_on /
+          // is_a / etc.) so retrieval can prefer the higher-quality
+          // explicit edges when both exist.
+          { name: "mentions", color: "gray" },
         ],
       },
     },

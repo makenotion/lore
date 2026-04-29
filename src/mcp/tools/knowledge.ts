@@ -46,6 +46,13 @@ const SUGGESTED_OVERFLOW_LIMIT = 20
  * Decision-graph predicates (`decided_by`, `supersedes_decision`,
  * `informs`) stay internal-only — created by `DecisionService` and
  * never via `lore-fact`.
+ *
+ * `mentions` (0.8.0/#07) is also internal-only — auto-emitted by
+ * `lore-memory action='save'`. Agents that want to assert a richer
+ * relationship (`uses`, `depends_on`, etc.) call `lore-fact
+ * action='create'` directly; the auto-emitted `mentions` shape is the
+ * lowest-quality fallback and is intentionally not addressable as an
+ * agent-curated value.
  */
 const PREDICATE_VALUES = [
   "is_a",
@@ -804,7 +811,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` to today). Preserved for history.\n" +
         "- `action: 'extend'` — push back a fact's review-by date.\n\n" +
         "Every created fact SHOULD link back to a supporting memory via `sourceMemoryId` so `lore-query action='ask'` can retrace the reasoning. Pass the memory ID directly, or pass `agent`+`session` matching an earlier `lore-memory action='save'` / `lore-decision action='create'` call in the same process and `sourceMemoryId` auto-links.\n\n" +
-        "Decision predicates (`decided_by`, `supersedes_decision`, `informs`) are internal-only and not accepted here — they are auto-created by the decision tool family.",
+        "Decision predicates (`decided_by`, `supersedes_decision`, `informs`) and the auto-emitted `mentions` predicate are internal-only and not accepted here — `decided_by` / `supersedes_decision` / `informs` are auto-created by the decision tool family; `mentions` is auto-emitted by `lore-memory action='save'`. Use richer relationship predicates (`uses`, `depends_on`, etc.) for agent-curated edges.",
       inputSchema: {
         action: z
           .enum(["create", "invalidate", "extend"])

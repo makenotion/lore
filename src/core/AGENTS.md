@@ -1067,6 +1067,66 @@ for bulk-import flows, fixture setup, or distrust of the
 entity-extraction tokenizer's noise floor on a particular vault. The
 bypass lives inside `findRelatedActiveTasks`, not per-tool.
 
+## Auto-`mentions` fact emission
+
+`lore-memory action='save'` (issue 0.8.0/#07) emits one `mentions`
+fact per entity surfaced by `extractEntityCandidates(title, keywords,
+synopsis)` — the same fixture-pinned tokenizer the active-task
+cross-reference probe consumes. The branch fires after the create
+resolves (the fact's `Source` relation needs the just-created memory
+id) and dispatches per-entity `services.facts.createWithDedup` calls
+in parallel.
+
+`mentions` is system-managed, not agent-addressable. The value lives
+on `FactPredicate` for type coverage and on the `Predicate` select
+column for storage, but the `PREDICATE_VALUES` allowlist in
+`tools/knowledge.ts` excludes it — `decided_by` /
+`supersedes_decision` / `informs` get the same treatment. Auto-emitted
+facts ship at `confidence: speculative` so `lore-ask` preferentially
+surfaces agent-curated edges when both exist on the same entity.
+
+**Subject is the saved memory's title.** Matches the existing
+`decided_by` shape on `lore-decision action='create'` (subject is the
+affected entity name, not a synthetic "memory entity"). The `Source`
+relation provides the structural backlink to the originating page.
+
+**Cap is `ENTITY_CANDIDATE_LIMIT = 5`**, enforced inside the
+extractor — auto-emit honors the same ceiling as the active-task
+cross-reference probe rather than re-deriving its own limit. A memory
+that mentions ten entities emits at most five facts, dropping the
+noisiest candidates first via the high-precision-first pattern
+ordering.
+
+**Failure-domain isolation.** Per-entity `createWithDedup` failures
+route through `debugLogAutoFactFailure` (in `src/mcp/helpers.ts`) and
+degrade to a no-op for that entity. Surviving fact creates land; the
+save itself always succeeds. Same posture as the parallel near-dup /
+cross-ref probes. Under `LORE_DEBUG=1`, one stderr line per failure
+surfaces enough detail to distinguish a transient blip from a
+pathological loop.
+
+**Kill-switch.** `LORE_DISABLE_AUTO_MENTIONS=1` skips both extraction
+and per-entity fact creation entirely. **Distinct from
+`LORE_DISABLE_NEAR_DUPLICATE_PROBE` and `LORE_DISABLE_TASK_CROSSREF`**
+— single-axis kill switches let an operator distrust the
+regex-derived auto-mentions tokenizer independently of the
+deterministic substring near-dup probe and the active-task
+cross-reference. Set for bulk-import flows, fixture setup, or vaults
+where the tokenizer's noise floor is unacceptable.
+
+**Out of scope: `lore-memory action='update'` re-emission.** An
+update that mutates title / keywords / synopsis would face a
+stale-fact-cleanup problem (a removed entity leaves a dangling
+`mentions` fact). 0.8.0 ships save-time emission only. Update-time
+re-emission is tracked in `DEFERRED.md` (DEFERRED-03).
+
+**Out of scope: decision-side emission.** `lore-decision
+action='create'` already emits `decided_by` facts via its `affects`
+path. Adding a parallel `mentions` emission to the decision handler
+is plausible follow-up work but expands the surface, the test
+coverage, and the deferred-update problem in lockstep. 0.8.0 scopes
+auto-mentions to `lore-memory action='save'` exclusively.
+
 ## Schema Drift Detection
 
 `VaultManager.load()` can fire a non-blocking `detectDrift()` check that runs

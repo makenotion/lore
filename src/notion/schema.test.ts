@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildMemoryProps, memoriesProperties } from "./schema.js"
+import { buildMemoryProps, factsProperties, memoriesProperties } from "./schema.js"
 
 describe("memoriesProperties — Last Referenced At column (0.8.0/02)", () => {
   it("declares Last Referenced At as a date column on a fresh-vault config", () => {
@@ -232,5 +232,24 @@ describe("buildMemoryProps — confidenceScore + lastReferencedAt three-state se
       unknown
     >
     expect(built["Confidence Score"]).toEqual({ number: 0 })
+  })
+})
+
+describe("factsProperties — mentions Predicate option (0.8.0/07)", () => {
+  it("declares `mentions` as a Predicate select option", () => {
+    // The auto-emitted `mentions` predicate (0.8.0/#07) lives on the
+    // same closed select column as the agent-curated relationship
+    // predicates. Pin its presence so a future contributor reordering
+    // or trimming the option list can't silently drop the value the
+    // schema-drift migration adds to upgraded vaults. The two-arg
+    // and three-arg overloads share the same select-option list
+    // (the entities-aware path only adds relation columns), so one
+    // pin covers both drift-detection shapes.
+    const props = factsProperties("p-ds", "m-ds") as Record<
+      string,
+      { select: { options: Array<{ name: string; color?: string }> } }
+    >
+    const optionNames = props["Predicate"].select.options.map((o) => o.name)
+    expect(optionNames).toContain("mentions")
   })
 })

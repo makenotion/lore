@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import {
+  debugLogAutoFactFailure,
   formatDispatchError,
   paginationFooter,
   toolError,
@@ -20,6 +21,7 @@ import type {
 import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
+  extractEntityCandidates,
   findNearDuplicates,
   findRelatedActiveTasks,
   type NearDuplicateMatch,
@@ -201,6 +203,73 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       { memoryId: memory.id, projectIds: memory.projectIds },
     )
 
+    // Auto-emit `mentions` facts (issue 0.8.0/#07). Two non-obvious
+    // choices the spec pins:
+    //
+    // 1. Post-create placement. The `Source` relation needs the
+    //    just-created memory id, so the branch runs after the
+    //    `Promise.all([create, probes])` block resolves rather than
+    //    alongside it.
+    // 2. Deliberate double-tokenizer call. `extractEntityCandidates`
+    //    ALSO runs inside `findRelatedActiveTasks` above. Coupling
+    //    the two probes onto a single tokenizer pass would re-couple
+    //    their failure domains and force a shared kill switch —
+    //    keeping them independent lets `LORE_DISABLE_TASK_CROSSREF=1`
+    //    and `LORE_DISABLE_AUTO_MENTIONS=1` toggle separately. The
+    //    extractor is regex-only; the duplicate call is cheap.
+    const autoMentionsDisabled = process.env["LORE_DISABLE_AUTO_MENTIONS"] === "1"
+    let autoMentionsCount = 0
+    let autoMentionsAttempted = 0
+    if (!autoMentionsDisabled) {
+      const mentionedEntities = extractEntityCandidates(
+        memory.title,
+        memory.keywords,
+        memory.synopsis,
+      )
+      if (mentionedEntities.length > 0) {
+        autoMentionsAttempted = mentionedEntities.length
+        const projectIds = memory.projectIds.length > 0 ? memory.projectIds : undefined
+        // The per-entity `.then(success, failure)` is load-bearing for
+        // failure isolation: it converts every rejection into a
+        // resolved boolean BEFORE `Promise.all` ever sees it, so a
+        // single per-entity 400 (e.g. an upgraded-vault that hasn't
+        // run `lore migrate` and still lacks the `mentions` select
+        // option) can't sink the surviving creates. Replacing this
+        // with `await Promise.all(...)` over bare `createWithDedup`
+        // calls would re-introduce fail-fast semantics — surviving
+        // creates would still resolve under the hood (Notion already
+        // accepted them) but the caller's await would re-throw the
+        // first rejection, the surrounding `try/catch` would emit a
+        // tool-level error, and the user would see a save failure
+        // even though the memory landed. `Promise.allSettled` would
+        // produce the same end state but at the cost of a per-row
+        // `.status === 'fulfilled'` filter at the consumer; the
+        // current shape lets the success/failure callbacks return
+        // typed booleans the count operation can sum directly.
+        const results = await Promise.all(
+          mentionedEntities.map((entity) =>
+            services.facts
+              .createWithDedup({
+                subject: memory.title,
+                predicate: "mentions",
+                object: entity,
+                sourceMemoryId: memory.id,
+                projectIds,
+                confidence: "speculative",
+              })
+              .then(
+                () => true,
+                (err: unknown) => {
+                  debugLogAutoFactFailure("save", memory.id, entity, err)
+                  return false
+                },
+              ),
+          ),
+        )
+        autoMentionsCount = results.filter(Boolean).length
+      }
+    }
+
     const projectLabel = args.projectNames?.length
       ? args.projectNames.join(", ")
       : args.projectName ?? services.context.project?.name ?? "none (repo-wide)"
@@ -218,6 +287,21 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     }
     if (relatedTasks.length > 0) {
       lines.push("", ...formatRelatedTaskCrossref(relatedTasks))
+    }
+    // Advisory footer — emitted whenever the tokenizer produced at
+    // least one candidate, so an operator inspecting a save with
+    // entities ALWAYS sees a signal whether the work actually landed
+    // (count == attempted), partially landed (count < attempted,
+    // failures logged under LORE_DEBUG=1), or fully failed (count =
+    // 0/N). A kill-switched run (LORE_DISABLE_AUTO_MENTIONS=1) and a
+    // run with no extractable entities both stay silent (no
+    // attempted count to surface).
+    if (autoMentionsAttempted > 0) {
+      lines.push(
+        autoMentionsCount === autoMentionsAttempted
+          ? `Auto-mentions: ${autoMentionsCount}`
+          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} attempted`,
+      )
     }
 
     return {

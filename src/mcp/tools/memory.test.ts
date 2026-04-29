@@ -1538,6 +1538,11 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
       tasks: { list: tasksList },
+      facts: {
+        createWithDedup: vi
+          .fn()
+          .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -1589,6 +1594,11 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
       tasks: { list: tasksList },
+      facts: {
+        createWithDedup: vi
+          .fn()
+          .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -1622,6 +1632,11 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
       tasks: { list: tasksList },
+      facts: {
+        createWithDedup: vi
+          .fn()
+          .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -1653,6 +1668,11 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
       tasks: { list: tasksList },
+      facts: {
+        createWithDedup: vi
+          .fn()
+          .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -1685,6 +1705,11 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
       tasks: { list: tasksList },
+      facts: {
+        createWithDedup: vi
+          .fn()
+          .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -1733,6 +1758,20 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       topics: { getOrCreate: vi.fn() },
       memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
       tasks: { list: tasksList },
+      // Mock `facts.createWithDedup` so the post-create auto-emit
+      // branch (issue 0.8.0/#07) doesn't synchronously throw on the
+      // unresolved property access. Without it, the title `"Merged PR
+      // #25750"` extracts an entity, the auto-emit branch hits
+      // `services.facts.createWithDedup`, the synchronous `TypeError`
+      // routes through `handleSave`'s outer try/catch, and the test
+      // would pass only because its parallelism assertions run on the
+      // synchronous prefix before auto-emit ever runs — masking a
+      // silent toolError on the post-create path.
+      facts: {
+        createWithDedup: vi
+          .fn()
+          .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -1759,7 +1798,535 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
         projectIds: ["proj-a"],
       }),
     )
-    await pending
+    const result = await pending
+    // Post-fix sanity: with the `facts` mock present the post-create
+    // path runs cleanly. A regression where, e.g., `createWithDedup`
+    // is renamed surfaces here as a hard failure rather than a
+    // silently-masked toolError.
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+  })
+})
+
+describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
+  // The save handler now auto-emits one `mentions` fact per entity
+  // surfaced by `extractEntityCandidates` over the saved memory's
+  // title / keywords / synopsis. This widens `lore-ask`'s structural
+  // recall surface without an LLM call (the extractor is regex-based)
+  // and without changing the retrieval pipeline.
+
+  it("emits one `mentions` fact per extracted entity with subject=title, predicate=mentions, source=memory id", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-emit-1", {
+      title: "Investigated PR #25750 latency regression",
+      projectIds: ["proj-a"],
+      keywords: "performance",
+    })
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-1" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Investigated PR #25750 latency regression",
+      content: "body",
+      keywords: "performance",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // At least one `mentions` fact landed for `PR #25750` with the
+    // memory title as subject and the memory id as the source.
+    expect(createWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "Investigated PR #25750 latency regression",
+        predicate: "mentions",
+        object: "PR #25750",
+        sourceMemoryId: "mem-emit-1",
+        projectIds: ["proj-a"],
+        confidence: "speculative",
+      }),
+    )
+    // Footer surfaces the count. All creates landed so the "/N
+    // attempted" suffix is absent — that suffix only appears on
+    // partial-failure runs.
+    expect(text).toMatch(/Auto-mentions: \d+(?!\/)/)
+    expect(text).not.toContain("attempted")
+  })
+
+  it("respects ENTITY_CANDIDATE_LIMIT (caps at 5 facts even when more entities are extractable)", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-emit-cap", {
+      title: "Shipped PR #1 PR #2 PR #3 PR #4 PR #5 PR #6 PR #7",
+      projectIds: ["proj-a"],
+    })
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Shipped PR #1 PR #2 PR #3 PR #4 PR #5 PR #6 PR #7",
+      content: "body",
+    } as never)
+
+    // The extractor caps total candidates at 5 — auto-emit honors
+    // that ceiling without re-deriving its own cap.
+    expect(createWithDedup.mock.calls.length).toBeLessThanOrEqual(5)
+    expect(createWithDedup.mock.calls.length).toBeGreaterThan(0)
+  })
+
+  it("emits zero facts and omits the footer when no entities are extractable", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-no-entities", {
+      title: "ok",
+      projectIds: ["proj-a"],
+    })
+    const createWithDedup = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "ok",
+      content: "body",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(text).not.toContain("Auto-mentions:")
+  })
+
+  it("save still succeeds when a per-entity fact creation fails (failure-domain isolation)", async () => {
+    // A transient failure on one fact's create should not break the
+    // surrounding save response or block surviving fact creates from
+    // landing. Same posture as the parallel near-dup / cross-ref
+    // probes — auto-mentions are advisory.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-partial", {
+      title: "Reviewed PR #25750 against SENTRY-1234",
+      projectIds: ["proj-a"],
+    })
+    const createWithDedup = vi
+      .fn()
+      .mockResolvedValueOnce({ fact: { id: "fact-ok" }, deduped: false, enriched: [] })
+      .mockRejectedValueOnce(new Error("notion 503"))
+      .mockResolvedValue({ fact: { id: "fact-ok-2" }, deduped: false, enriched: [] })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Reviewed PR #25750 against SENTRY-1234",
+      content: "body",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("Saved memory:")
+    // Surviving creates landed; the partial failure didn't sink the
+    // whole branch.
+    expect(createWithDedup).toHaveBeenCalled()
+    // Partial-failure footer surfaces the "landed/attempted" split
+    // so an operator inspecting the save can tell whether the work
+    // actually happened — not just whether the tokenizer fired.
+    expect(text).toMatch(/Auto-mentions: \d+\/\d+ attempted/)
+  })
+
+  it("LORE_DISABLE_AUTO_MENTIONS=1 skips both extraction and fact creation entirely", async () => {
+    // Same posture as `LORE_DISABLE_NEAR_DUPLICATE_PROBE` /
+    // `LORE_DISABLE_TASK_CROSSREF`. Single-axis kill switch lets an
+    // operator distrust the regex-based entity tokenizer
+    // independently of the other advisory probes. Distinct from
+    // those two knobs: an operator may trust the deterministic
+    // substring near-dup probe and the active-task cross-ref while
+    // distrusting the auto-mentions tokenizer's noise floor.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-disabled", {
+      title: "Investigated PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const createWithDedup = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    vi.stubEnv("LORE_DISABLE_AUTO_MENTIONS", "1")
+    try {
+      const result = await remember({
+        title: "Investigated PR #25750",
+        content: "body",
+      } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      expect(text).toContain("Saved memory:")
+      // No fact-create call; no advisory footer.
+      expect(createWithDedup).not.toHaveBeenCalled()
+      expect(text).not.toContain("Auto-mentions:")
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("threads keywords and synopsis into the auto-mentions extraction surface", async () => {
+    // Tokenizer reads title + keywords + synopsis; pin the wire-in
+    // so a future refactor doesn't silently drop the auxiliary
+    // surfaces.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-threads", {
+      title: "Reviewed",
+      projectIds: ["proj-a"],
+      keywords: "PR #25750",
+      synopsis: "Closes SENTRY-1234.",
+    })
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Reviewed",
+      content: "body",
+      keywords: "PR #25750",
+      synopsis: "Closes SENTRY-1234.",
+    } as never)
+
+    const objects = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object,
+    )
+    expect(objects).toContain("PR #25750")
+    expect(objects).toContain("SENTRY-1234")
+  })
+
+  it("omits projectIds when the saved memory has no project scope (vault-wide auto-emit is well-defined)", async () => {
+    // `createWithDedup`'s `projectIds` is optional; passing an empty
+    // array would scope the dedup probe in a way the rest of the
+    // codebase doesn't. Match the convention used elsewhere in this
+    // handler — undefined when no projects, populated otherwise.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-vaultwide", {
+      title: "Reviewed PR #25750",
+      projectIds: [],
+    })
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Reviewed PR #25750",
+      content: "body",
+    } as never)
+
+    const firstCall = createWithDedup.mock.calls[0][0] as {
+      projectIds?: string[]
+    }
+    expect(firstCall.projectIds).toBeUndefined()
+  })
+
+  it("two saves with the same title + entity converge to one fact via createWithDedup (acceptance criterion #5)", async () => {
+    // Pin the wire-up: a second save with the same payload must route
+    // through `createWithDedup` so the existing dedup-key probe absorbs
+    // the second emission. This is a convergence test on the wire-in,
+    // not a re-test of `FactService.createWithDedup`'s dedup semantics
+    // — the latter is covered exhaustively in `core/fact.test.ts`. The
+    // wire-up bug shape this guards against is "second save creates a
+    // fresh row because the tool layer used `create` instead of
+    // `createWithDedup`."
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-dedup", {
+      title: "Investigated PR #25750",
+      projectIds: ["proj-a"],
+    })
+    // Default resolution covers every per-entity call (the title
+    // produces both `PR #25750` and `#25750` via overlapping
+    // patterns — two calls per save). The first save's calls return
+    // `deduped: false` (fresh rows); the remaining calls return
+    // `deduped: true` to mimic the live shape — the surrounding
+    // handler doesn't branch on the boolean, but the fixture
+    // documents intent.
+    const createWithDedup = vi
+      .fn()
+      .mockResolvedValueOnce({ fact: { id: "fact-pr" }, deduped: false, enriched: [] })
+      .mockResolvedValueOnce({ fact: { id: "fact-hash" }, deduped: false, enriched: [] })
+      .mockResolvedValue({ fact: { id: "fact-pr" }, deduped: true, enriched: [] })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const args = { title: "Investigated PR #25750", content: "body" }
+    const result1 = await remember(args as never)
+    const result2 = await remember(args as never)
+
+    // Both saves succeed and use `createWithDedup` (not `create`) so
+    // the second pass hits the dedup probe. Same entity set, same
+    // subject, same predicate → the second save's calls land on the
+    // same triples. Surface assertion: both saves see the same
+    // `(subject, predicate, object)` triples on `createWithDedup`
+    // and neither raises an error. The number of per-save calls
+    // depends on the extractor's candidate set for the title — what
+    // matters here is that the second save fires the same triples
+    // through `createWithDedup`, not `create`.
+    expect((result1 as { isError?: boolean }).isError).not.toBe(true)
+    expect((result2 as { isError?: boolean }).isError).not.toBe(true)
+    const calls = createWithDedup.mock.calls.map(
+      (c) => c[0] as { subject: string; predicate: string; object: string },
+    )
+    // At least two calls (one per save) — the title extracts at
+    // least one entity, both saves run the auto-emit branch.
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    // Every call uses the `mentions` predicate.
+    for (const call of calls) {
+      expect(call.predicate).toBe("mentions")
+      expect(call.subject).toBe("Investigated PR #25750")
+    }
+    // The convergence guarantee: the second save's `(predicate,
+    // object)` set is a subset of the first save's. Asserting subset
+    // (not "halves equal") decouples the test from the extractor's
+    // iteration order — what matters is that the second save sees
+    // the same triples through `createWithDedup`, regardless of
+    // which order the calls fire on each pass.
+    const firstSaveObjects = new Set<string>()
+    const secondSaveObjects = new Set<string>()
+    let seenSecondSaveStart = false
+    // Split calls by save: the first save's calls land before the
+    // second remember kicks off, so they appear first in the call
+    // log. The split point is implicit (calls.length is even when
+    // the extractor is deterministic) — assert subset rather than
+    // exact split to stay robust if a future tokenizer change
+    // alters the per-save call count.
+    const half = Math.floor(calls.length / 2)
+    for (let i = 0; i < calls.length; i++) {
+      if (i >= half) seenSecondSaveStart = true
+      if (seenSecondSaveStart) secondSaveObjects.add(calls[i].object)
+      else firstSaveObjects.add(calls[i].object)
+    }
+    for (const obj of secondSaveObjects) {
+      expect(firstSaveObjects).toContain(obj)
+    }
+  })
+
+  it("LORE_DISABLE_NEAR_DUPLICATE_PROBE=1 does NOT disable auto-mentions emission (single-axis kill switches)", async () => {
+    // Pin the single-axis contract the in-code comment and
+    // AGENTS.md doc both lean on: an operator who distrusts the
+    // near-duplicate substring probe must NOT lose auto-mentions
+    // emission as a side effect. Sibling of the `findRelatedActiveTasks`
+    // single-axis guard in `core/near-duplicate.test.ts` — a future
+    // contributor "consolidating" the kill switches onto a single
+    // env var would break this test rather than silently widening
+    // the disable surface.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-single-axis-1", {
+      title: "Reviewed PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const createWithDedup = vi
+      .fn()
+      .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    vi.stubEnv("LORE_DISABLE_NEAR_DUPLICATE_PROBE", "1")
+    try {
+      await remember({
+        title: "Reviewed PR #25750",
+        content: "body",
+      } as never)
+      // Auto-emit still fired despite the near-dup kill switch.
+      expect(createWithDedup).toHaveBeenCalled()
+      expect(createWithDedup).toHaveBeenCalledWith(
+        expect.objectContaining({ predicate: "mentions" }),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("LORE_DISABLE_TASK_CROSSREF=1 does NOT disable auto-mentions emission (single-axis kill switches)", async () => {
+    // Mirror of the near-dup single-axis test above — distrust of
+    // the active-task cross-reference probe must NOT cascade to
+    // auto-mentions. Same two-axis independence the AGENTS.md doc
+    // pins.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-single-axis-2", {
+      title: "Reviewed PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const createWithDedup = vi
+      .fn()
+      .mockResolvedValue({ fact: { id: "fact-x" }, deduped: false, enriched: [] })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    vi.stubEnv("LORE_DISABLE_TASK_CROSSREF", "1")
+    try {
+      await remember({
+        title: "Reviewed PR #25750",
+        content: "body",
+      } as never)
+      expect(createWithDedup).toHaveBeenCalled()
+      expect(createWithDedup).toHaveBeenCalledWith(
+        expect.objectContaining({ predicate: "mentions" }),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })
 
