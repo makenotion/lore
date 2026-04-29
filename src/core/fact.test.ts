@@ -1960,3 +1960,69 @@ describe("FactService.countByPredicateRaw (issue 0.6.0/24)", () => {
     })
   })
 })
+
+describe("FactService.getById (issue 0.8.0/06)", () => {
+  // Single-page lookup feeding the contradiction-decrement path on
+  // `lore-fact action='invalidate'`. Returns `Fact | null` with the
+  // same null contract as `pageToFact` — historical tracking-predicate
+  // rows surface as null so callers don't treat them as live facts.
+
+  it("returns the Fact when the page is full and the predicate is in-vocabulary", async () => {
+    const retrieve = vi.fn().mockResolvedValue(
+      factPage({
+        id: "fact-1",
+        subject: "AuthService",
+        predicate: "uses",
+        object: "JWT",
+        sourceMemoryId: "mem-source",
+      }),
+    )
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new FactService(client, db)
+
+    const fact = await service.getById("fact-1")
+
+    expect(retrieve).toHaveBeenCalledWith({ page_id: "fact-1" })
+    expect(fact).not.toBeNull()
+    expect(fact!.id).toBe("fact-1")
+    expect(fact!.subject).toBe("AuthService")
+    expect(fact!.predicate).toBe("uses")
+    expect(fact!.sourceMemoryId).toBe("mem-source")
+  })
+
+  it("returns null for historical tracking-predicate rows (needs_action / waiting_on / blocked_by)", async () => {
+    // Mirrors the `pageToFact` filter — invalidate's read-then-update
+    // ordering relies on this contract: a tracking row read returns
+    // null, the invalidate write still succeeds, the contradiction
+    // decrement skips because there's no live source to penalize.
+    const trackingPage = factPage({ id: "tracking-fact" })
+    ;(trackingPage.properties.Predicate as unknown as {
+      select: { name: string }
+    }).select.name = "needs_action"
+    const retrieve = vi.fn().mockResolvedValue(trackingPage)
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new FactService(client, db)
+
+    const fact = await service.getById("tracking-fact")
+
+    expect(fact).toBeNull()
+  })
+
+  it("returns null when the page response is partial (Notion is_full_page guard)", async () => {
+    // Notion's `pages.retrieve` returns a partial response when the
+    // integration lacks read access to the page or when the page has
+    // been deleted. `isFullPage` rejects those — `getById` must
+    // surface that as null rather than returning a half-built `Fact`.
+    const retrieve = vi.fn().mockResolvedValue({
+      object: "page",
+      id: "partial-id",
+      // Missing properties / parent — fails isFullPage.
+    })
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new FactService(client, db)
+
+    const fact = await service.getById("partial-id")
+
+    expect(fact).toBeNull()
+  })
+})

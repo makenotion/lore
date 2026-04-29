@@ -108,6 +108,9 @@ describe("registerDecisionTools", () => {
         queryBySourceMemory: vi.fn().mockResolvedValue([]),
         invalidate: vi.fn().mockResolvedValue(undefined),
       },
+      memories: {
+        decrementConfidence: vi.fn().mockResolvedValue(0.45),
+      },
       topics: {
         getOrCreate: vi.fn(),
       },
@@ -355,7 +358,10 @@ describe("registerDecisionTools", () => {
         getById: vi.fn().mockResolvedValue(knownOld),
         supersede: vi.fn(),
       },
-      memories: { list },
+      memories: {
+        list,
+        decrementConfidence: vi.fn().mockResolvedValue(0.45),
+      },
       facts: {
         create: vi.fn().mockResolvedValue(makeFact("fact-id")),
         queryBySourceMemory: vi.fn().mockResolvedValue([]),
@@ -976,5 +982,339 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
     // Boundary-safe: ends on a word, no trailing whitespace, no ellipsis.
     expect(synopsisLine.endsWith("e")).toBe(true)
     expect(synopsisLine).not.toContain("…")
+  })
+})
+
+describe("lore-decision action='supersede' — confidence decrement on old decision", () => {
+  // Acceptance criteria from 0.8.0/06: superseding a decision halves
+  // the old decision's `Confidence Score` (decay-realized first on
+  // stale rows), writes `Last Referenced At = today`, and degrades
+  // gracefully on `pages.update` failure.
+
+  function makeServices(opts: {
+    oldDecision: Decision
+    newDecision?: Decision
+    decrementImpl?: (memory: Decision) => Promise<number>
+  }) {
+    const newDecision =
+      opts.newDecision ?? makeDecision("dec-new", { title: "New decision" })
+    const memoriesDecrement =
+      opts.decrementImpl !== undefined
+        ? vi.fn(opts.decrementImpl)
+        : vi.fn().mockResolvedValue(0.45)
+    return {
+      newDecision,
+      services: {
+        decisions: {
+          create: vi.fn().mockResolvedValue(newDecision),
+          getById: vi.fn().mockImplementation(async (id: string) => {
+            if (id === opts.oldDecision.id) return opts.oldDecision
+            if (id === newDecision.id) return newDecision
+            throw new Error(`unknown decision ${id}`)
+          }),
+          supersede: vi.fn().mockResolvedValue(undefined),
+        },
+        facts: {
+          create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+          queryBySourceMemory: vi.fn().mockResolvedValue([]),
+          invalidate: vi.fn(),
+        },
+        memories: {
+          decrementConfidence: memoriesDecrement,
+        },
+        topics: { getOrCreate: vi.fn() },
+        projects: { findByName: vi.fn() },
+        context: { project: null },
+        sessionMemories: { record: vi.fn(), get: vi.fn() },
+      },
+      memoriesDecrement,
+    }
+  }
+
+  it("decrements the old decision after the supersede write", async () => {
+    const oldDecision = makeDecision("dec-old", {
+      title: "Old decision",
+      confidenceScore: 0.9,
+      lastReferencedAt: "2026-04-29",
+    })
+    const mockServer = createMockServer()
+    const ctx = makeServices({ oldDecision })
+    registerDecisionTools(mockServer.server, ctx.services as never)
+    const supersede = mockServer.getActionHandler("lore-decision", "supersede")
+
+    const result = await supersede({
+      newDecisionId: ctx.newDecision.id,
+      oldDecisionId: oldDecision.id,
+    } as never)
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    // The handler passes the full Decision shape (Memory & { kind:
+    // "decision" }) so seed/decay/decrement algebra has access to
+    // confidence, confidenceScore, lastReferencedAt, createdAt.
+    expect(ctx.memoriesDecrement).toHaveBeenCalledTimes(1)
+    expect(ctx.memoriesDecrement).toHaveBeenCalledWith(oldDecision)
+  })
+
+  it("decrement failure is advisory: supersede response stays clean (no isError)", async () => {
+    const oldDecision = makeDecision("dec-old", {
+      confidenceScore: 0.9,
+      lastReferencedAt: "2026-04-29",
+    })
+    const mockServer = createMockServer()
+    const ctx = makeServices({
+      oldDecision,
+      decrementImpl: async () => {
+        throw new Error("notion 429")
+      },
+    })
+    registerDecisionTools(mockServer.server, ctx.services as never)
+    const supersede = mockServer.getActionHandler("lore-decision", "supersede")
+
+    const result = await supersede({
+      newDecisionId: ctx.newDecision.id,
+      oldDecisionId: oldDecision.id,
+    } as never)
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toContain("Superseded")
+  })
+
+  it("logs decrement failure under LORE_DEBUG=1 with source=supersede", async () => {
+    const oldDecision = makeDecision("dec-old-log", {
+      confidenceScore: 0.9,
+      lastReferencedAt: "2026-04-29",
+    })
+    const mockServer = createMockServer()
+    const ctx = makeServices({
+      oldDecision,
+      decrementImpl: async () => {
+        throw new Error("notion 429")
+      },
+    })
+    registerDecisionTools(mockServer.server, ctx.services as never)
+    const supersede = mockServer.getActionHandler("lore-decision", "supersede")
+
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      await supersede({
+        newDecisionId: ctx.newDecision.id,
+        oldDecisionId: oldDecision.id,
+      } as never)
+      const lines = stderr.mock.calls.map(([line]) => String(line))
+      const failure = lines.find((l) =>
+        l.includes("contradiction-failure:"),
+      )
+      expect(failure).toBeDefined()
+      expect(failure).toContain("source=supersede")
+      expect(failure).toContain("memoryId=dec-old-log")
+      expect(failure).toContain("error=notion 429")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+})
+
+describe("lore-decision action='create' with supersedesIds — parallel decrement", () => {
+  it("decrements all superseded decisions in parallel; new decision is not decremented", async () => {
+    // Acceptance: supersedesIds: [a, b, c] decrements all three in
+    // parallel (Promise.all over the captured old decisions); the new
+    // decision never appears in the decrement call list.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new")
+    const oldA = makeDecision("dec-a", { confidenceScore: 0.9 })
+    const oldB = makeDecision("dec-b", { confidenceScore: 0.6 })
+    const oldC = makeDecision("dec-c", { confidenceScore: 0.3 })
+    const lookup: Record<string, Decision> = {
+      "dec-new": newDecision,
+      "dec-a": oldA,
+      "dec-b": oldB,
+      "dec-c": oldC,
+    }
+
+    // The test verifies parallelism by holding the first decrement
+    // call open until the others have been requested. If the
+    // implementation iterated serially with `await`, the second call
+    // would never arrive while the first is pending, and `Promise.all`
+    // over a serial loop would deadlock the assertion below.
+    let inFlight = 0
+    let peakInFlight = 0
+    let releaseGate!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    const decrementCalls: string[] = []
+    const memoriesDecrement = vi.fn(async (decision: Decision) => {
+      decrementCalls.push(decision.id)
+      inFlight++
+      peakInFlight = Math.max(peakInFlight, inFlight)
+      // Hold open until the gate releases — verifies parallel dispatch.
+      if (inFlight < 3) await gate
+      inFlight--
+      return 0.45
+    })
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          const found = lookup[id]
+          if (!found) throw new Error(`unknown decision ${id}`)
+          return found
+        }),
+        supersede: vi.fn().mockResolvedValue(undefined),
+      },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      memories: {
+        decrementConfidence: memoriesDecrement,
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    // Kick off the call; release the gate once we expect parallelism
+    // to have been kicked off. setImmediate gives the for-loop time
+    // to dispatch all three supersedesIds entries before we release.
+    const handlerPromise = loreDecide({
+      decision: "New decision",
+      rationale: "Because reasons",
+      supersedesIds: ["dec-a", "dec-b", "dec-c"],
+    } as never)
+    // Allow microtasks to run the parallel decrement dispatch.
+    await new Promise((r) => setImmediate(r))
+    releaseGate()
+    await handlerPromise
+
+    expect(memoriesDecrement).toHaveBeenCalledTimes(3)
+    expect(new Set(decrementCalls)).toEqual(new Set(["dec-a", "dec-b", "dec-c"]))
+    // The new decision is NEVER passed to decrementConfidence.
+    expect(decrementCalls).not.toContain("dec-new")
+    // Parallel dispatch: all three calls were in flight simultaneously.
+    expect(peakInFlight).toBe(3)
+  })
+
+  it("a single failing decrement does not fail the create response or block siblings", async () => {
+    // Acceptance: `Promise.all` with each decrement wrapped in `.catch`
+    // means a transient 429 on one row degrades to a no-op for that
+    // row; the other decrements still write, the create response is
+    // still success.
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new")
+    const oldA = makeDecision("dec-a", { confidenceScore: 0.9 })
+    const oldB = makeDecision("dec-b", { confidenceScore: 0.6 })
+
+    const memoriesDecrement = vi.fn(async (decision: Decision) => {
+      if (decision.id === "dec-a") throw new Error("notion 429")
+      return 0.3
+    })
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "dec-a") return oldA
+          if (id === "dec-b") return oldB
+          if (id === "dec-new") return newDecision
+          throw new Error(`unknown decision ${id}`)
+        }),
+        supersede: vi.fn().mockResolvedValue(undefined),
+      },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      memories: {
+        decrementConfidence: memoriesDecrement,
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    const result = await loreDecide({
+      decision: "New decision",
+      rationale: "Because reasons",
+      supersedesIds: ["dec-a", "dec-b"],
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBeFalsy()
+    // Both decrements were attempted (parallelism holds despite one failing).
+    expect(memoriesDecrement).toHaveBeenCalledTimes(2)
+  })
+
+  it("logs a failed decrement under LORE_DEBUG=1 with source=decide-supersede", async () => {
+    const mockServer = createMockServer()
+    const newDecision = makeDecision("dec-new")
+    const oldA = makeDecision("dec-a", { confidenceScore: 0.9 })
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(newDecision),
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "dec-a") return oldA
+          if (id === "dec-new") return newDecision
+          throw new Error(`unknown decision ${id}`)
+        }),
+        supersede: vi.fn().mockResolvedValue(undefined),
+      },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      memories: {
+        decrementConfidence: vi
+          .fn()
+          .mockRejectedValue(new Error("notion 429")),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      await loreDecide({
+        decision: "New decision",
+        rationale: "Because reasons",
+        supersedesIds: ["dec-a"],
+      } as never)
+      const lines = stderr.mock.calls.map(([line]) => String(line))
+      const failure = lines.find((l) =>
+        l.includes("contradiction-failure:"),
+      )
+      expect(failure).toBeDefined()
+      expect(failure).toContain("source=decide-supersede")
+      expect(failure).toContain("memoryId=dec-a")
+      expect(failure).toContain("error=notion 429")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
   })
 })

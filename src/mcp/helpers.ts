@@ -123,6 +123,46 @@ export function debugLogAutoFactFailure(
 }
 
 /**
+ * Opt-in operator observability for contradiction-decrement failures on
+ * `lore-fact action='invalidate'` and `lore-decision action='supersede'` /
+ * `'create'` (with `supersedesIds`). The decrement is advisory: a failed
+ * `pages.update` on the source memory's `Confidence Score` must not fail
+ * the surrounding response, because the user already got the contradiction
+ * write they asked for (the fact IS invalidated; the decision IS marked
+ * superseded). When `LORE_DEBUG=1`, this helper emits one stderr line per
+ * failed decrement so an operator triaging confidence drift can tell a
+ * transient 429 from a pathological loop.
+ *
+ * Format: `[lore] contradiction-failure: source=<source> memoryId=<memoryId> error=<message>`
+ *
+ * The `source` discriminator names the literal MCP action that triggered
+ * the decrement, not the colloquial CLAUDE.md alias:
+ * - `"invalidate"` — `lore-fact action='invalidate'`
+ * - `"supersede"` — `lore-decision action='supersede'`
+ * - `"decide-supersede"` — `lore-decision action='create'` with
+ *   `supersedesIds` (the supersession is a side-effect of the create)
+ *
+ * Same `[lore]` prefix as `debugLogPartialFailures` and (forthcoming)
+ * `debugLogTouchFailure` so `grep "[lore]"` surfaces all three failure
+ * classes together. Per-key naming diverges by surface — `source=` here
+ * because there is no Notion `root` and `tool=` would alias the more
+ * specific MCP action discriminator. Same redaction posture: only
+ * `error.message` is logged, control characters are coerced to spaces so
+ * one failure produces exactly one log line.
+ */
+export function debugLogContradictionFailure(
+  source: "invalidate" | "supersede" | "decide-supersede",
+  memoryId: string,
+  error: unknown,
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  const message = error instanceof Error ? error.message : String(error)
+  process.stderr.write(
+    `[lore] contradiction-failure: source=${oneLine(source)} memoryId=${oneLine(memoryId)} error=${oneLine(message)}\n`,
+  )
+}
+
+/**
  * Render a Zod validation error as a single-line dispatch error message
  * for the polymorphic `lore-*` tools (P3-01). Surfaces the first issue
  * with `field.path: message` so the calling agent can correct the call

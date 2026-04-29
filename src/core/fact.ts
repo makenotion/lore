@@ -1047,6 +1047,21 @@ export class FactService {
     return items
   }
 
+  /**
+   * Read a single fact by page ID. Returns `null` for the same two reasons
+   * `pageToFact` does: the page is partial (Notion `is_full_page` guard
+   * fails) or the row's raw `Predicate` is one of the historical tracking
+   * strings filtered at the deserialization boundary. Used by
+   * `lore-fact action='invalidate'` to capture `sourceMemoryId` BEFORE the
+   * invalidate write — invalidating first would leave the handler with no
+   * fact shape to read the source from.
+   */
+  async getById(id: string): Promise<Fact | null> {
+    const page = await this.client.pages.retrieve({ page_id: id })
+    if (!isFullPage(page)) return null
+    return this.pageToFact(page as PageObjectResponse)
+  }
+
   async extendReview(id: string, reviewBy: string): Promise<void> {
     await this.client.pages.update({
       page_id: id,

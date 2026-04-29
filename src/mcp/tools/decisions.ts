@@ -6,6 +6,7 @@ import {
   paginationFooter,
   toolError,
   debugLogPartialFailures,
+  debugLogContradictionFailure,
 } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import {
@@ -14,7 +15,7 @@ import {
 } from "../decision-graph.js"
 import { displayId, resolveTitles, truncateSynopsis } from "../render.js"
 import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
-import type { DecisionSummary, DecisionStatus } from "../../types.js"
+import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
   findNearDuplicates,
@@ -244,6 +245,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
 
     const supersededEntries: Array<{ id: string; title: string }> = []
     const reachabilityUpdates: string[] = []
+    const supersededDecisions: Decision[] = []
     for (const oldId of args.supersedesIds ?? []) {
       const oldDecision = await services.decisions.getById(oldId)
       await services.decisions.supersede(created.id, oldId)
@@ -257,11 +259,34 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
       })
       const reachability = await syncDecisionReachability(services, oldId, created)
       supersededEntries.push({ id: oldId, title: oldDecision.title })
+      supersededDecisions.push(oldDecision)
       if (reachability.invalidated > 0) {
         reachabilityUpdates.push(
           `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`,
         )
       }
+    }
+    // Contradiction decrement on each superseded decision, fired in
+    // parallel — `lore-decision action='create'` with N supersedesIds
+    // pays one decrement per superseded decision and they share no
+    // state, so a serial loop would gate the response on N round-trips.
+    // Each decrement is advisory; failures route through
+    // `debugLogContradictionFailure` and degrade to no-ops without
+    // failing the create response.
+    if (supersededDecisions.length > 0) {
+      await Promise.all(
+        supersededDecisions.map((oldDecision) =>
+          services.memories
+            .decrementConfidence(oldDecision)
+            .catch((err) =>
+              debugLogContradictionFailure(
+                "decide-supersede",
+                oldDecision.id,
+                err,
+              ),
+            ),
+        ),
+      )
     }
 
     const projectLabel = args.projectNames?.length
@@ -578,6 +603,14 @@ async function handleSupersede(
   args: { newDecisionId: string; oldDecisionId: string },
 ): Promise<ToolResult> {
   try {
+    // Both decision reads are non-advisory by design — the response text
+    // and the `supersedes_decision` fact write both need the resolved
+    // shapes (titles for the response, ids/projectIds/confidence for the
+    // fact). A read failure here is a real error and propagates to
+    // `toolError`. `lore-fact action='invalidate'` wraps its source-memory
+    // read in the contradiction-failure path because the response there
+    // is `Invalidated fact <id>` — independent of the source — so the
+    // asymmetry is deliberate.
     const [newDecision, oldDecision] = await Promise.all([
       services.decisions.getById(args.newDecisionId),
       services.decisions.getById(args.oldDecisionId),
@@ -593,6 +626,16 @@ async function handleSupersede(
       sourceMemoryId: newDecision.id,
       confidence: newDecision.confidence,
     })
+    // Contradiction decrement is advisory: a transient 429 / archived
+    // target on the old decision's `Confidence Score` write must not
+    // fail the supersede response. Decisions are memories with
+    // `Kind = decision`, so `MemoryService.decrementConfidence`
+    // accepts the decision shape directly.
+    await services.memories
+      .decrementConfidence(oldDecision)
+      .catch((err) =>
+        debugLogContradictionFailure("supersede", oldDecision.id, err),
+      )
     const reachability = await syncDecisionReachability(
       services,
       args.oldDecisionId,

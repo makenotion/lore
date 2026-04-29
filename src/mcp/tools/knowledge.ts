@@ -1,7 +1,12 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { formatDispatchError, toolError, debugLogPartialFailures } from "../helpers.js"
+import {
+  formatDispatchError,
+  toolError,
+  debugLogPartialFailures,
+  debugLogContradictionFailure,
+} from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
@@ -318,7 +323,39 @@ export async function handleInvalidate(
   args: { factId: string },
 ): Promise<ToolResult> {
   try {
+    // Read first so we capture `sourceMemoryId` before the invalidate write —
+    // `pageToFact`'s historical-tracking-predicate filter races against
+    // `Valid Until` updates if the read happens after invalidation, and
+    // `FactService.invalidate` returns `void`. A `null` from `getById`
+    // means the row is one of the historical tracking predicates that
+    // `pageToFact` filters out — invalidate still succeeds, but there's
+    // no provenance link to penalize.
+    const fact = await services.facts.getById(args.factId)
     await services.facts.invalidate(args.factId)
+
+    const sourceMemoryId = fact?.sourceMemoryId ?? null
+    if (sourceMemoryId !== null) {
+      // Contradiction decrement is advisory: a transient 429 on the
+      // source-memory read OR the `pages.update` write must not fail
+      // the surrounding `lore-fact` response. The user already got the
+      // contradiction write they asked for (the fact IS invalidated).
+      // Both calls live under the same `try/catch` so a future
+      // contributor can't accidentally narrow the advisory scope by
+      // moving one out — collapsing the inner `.catch` away here would
+      // let the decrement throw propagate to `toolError`.
+      // `getPropertiesById` skips the `retrieveMarkdown` round-trip
+      // because the decrement algebra reads only `id`, `confidence`,
+      // `confidenceScore`, `lastReferencedAt`, `createdAt`.
+      try {
+        const sourceMemory = await services.memories.getPropertiesById(
+          sourceMemoryId,
+        )
+        await services.memories.decrementConfidence(sourceMemory)
+      } catch (err) {
+        debugLogContradictionFailure("invalidate", sourceMemoryId, err)
+      }
+    }
+
     return {
       content: [{ type: "text", text: `Invalidated fact ${args.factId}` }],
     }

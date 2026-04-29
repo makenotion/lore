@@ -451,6 +451,26 @@ export class MemoryService {
   }
 
   /**
+   * Read a memory's properties without fetching its markdown body. Sibling
+   * of `getById` that skips the `pages.retrieveMarkdown` round-trip —
+   * issued exclusively for callers that need the property-tier shape
+   * (`confidenceScore`, `lastReferencedAt`, `createdAt`, `confidence`,
+   * `id`) and never read the body. The contradiction-decrement path
+   * (`lore-fact action='invalidate'` → `decrementConfidence`) is the
+   * canonical caller: every fact invalidation otherwise pays one extra
+   * `retrieveMarkdown` round-trip for content the decrement algebra
+   * never touches.
+   *
+   * The returned `Memory.content` is `""`. Callers that need the body
+   * should use `getById` instead, or hydrate via `materializeContent`
+   * after a `getPropertiesById` if both shapes are needed.
+   */
+  async getPropertiesById(id: string): Promise<Memory> {
+    const page = await this.client.pages.retrieve({ page_id: id })
+    return this.pageToMemory(page as PageObjectResponse, "")
+  }
+
+  /**
    * Hydrate the markdown body for a memory whose properties are already
    * known. Sibling of `getById` that skips the `pages.retrieve` call —
    * issued exclusively for callers that just received the row from a

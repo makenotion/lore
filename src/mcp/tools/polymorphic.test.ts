@@ -176,6 +176,7 @@ function makeServices(opts: StubOpts = {}): unknown {
     memories: {
       list: opts.memoriesList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),
       getById: opts.memoriesGetById ?? vi.fn(),
+      getPropertiesById: vi.fn(),
       archive: opts.memoriesArchive ?? vi.fn(async () => undefined),
       update: opts.memoriesUpdate ?? vi.fn(),
       create: opts.memoriesCreate ?? vi.fn(),
@@ -185,6 +186,7 @@ function makeServices(opts: StubOpts = {}): unknown {
         vi.fn(async () => ({ memories: [], explain: [] })),
       materializeContent: vi.fn(async (m) => m),
       getTitleById: vi.fn(),
+      decrementConfidence: vi.fn(async () => 0.45),
     },
     facts: {
       create: opts.factsCreate ?? vi.fn(async () => ({})),
@@ -203,6 +205,7 @@ function makeServices(opts: StubOpts = {}): unknown {
           enriched: [],
         })),
       invalidate: opts.factsInvalidate ?? vi.fn(async () => undefined),
+      getById: vi.fn(async () => null),
       extendReview: opts.factsExtendReview ?? vi.fn(async () => undefined),
       queryByEntity: vi.fn(async () => []),
       queryBySubject: vi.fn(async () => []),
