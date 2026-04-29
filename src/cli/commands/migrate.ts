@@ -11,13 +11,21 @@ import type {
   TopicAliasMergePlan,
   TopicAliasMergeResult,
 } from "../../core/topic-merge.js"
-import type { Fact, Memory } from "../../types.js"
+import { SYNOPSIS_MAX, type Fact, type Memory } from "../../types.js"
 import type { NormalizableAgentRow } from "../../core/agent-normalization.js"
 import {
   buildEntities,
   type EntityMigrationResult,
 } from "../../core/entity-migration.js"
 import { EntityService } from "../../core/entity.js"
+import {
+  backfillSynopses,
+  DEFAULT_SYNOPSIS_BACKEND,
+  DEFAULT_SYNOPSIS_BATCH_SIZE,
+  SYNOPSIS_PLACEHOLDER_SENTINEL,
+  type BackfillReport,
+  type SynopsisBackend,
+} from "../../core/synopsis-backfill.js"
 
 export const migrateCommand = new Command("migrate")
   .description("Add missing schema properties to the vault's data sources")
@@ -79,8 +87,22 @@ export const migrateCommand = new Command("migrate")
     "Collapse free-form `Agent` strings on every memory onto their canonical form. The seven Claude variants observed in the PF3-02 Mail-vault audit (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`, `claude-code-opus-4-7`) plus the bare-version cousin (`Claude Opus 4.7`) all rewrite to `Claude Code`; explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through unchanged. Plan-only by default — re-run with `--yes` to apply. Idempotent."
   )
   .option(
+    "--backfill-synopses",
+    "Synthesize a 1–2 sentence Synopsis for every memory whose Synopsis property is currently empty. Plan-only by default; `--yes` applies. `--dry-run` suppresses writes regardless of `--yes`. Synthesis goes through a pluggable backend selected by `--synopsis-backend` (default: claude)."
+  )
+  .option(
+    "--synopsis-backend <name>",
+    "Backend for `--backfill-synopses`. `claude` shells out to `claude -p` (requires the claude CLI installed and authenticated); `placeholder` writes `[awaiting backfill]` so the migration's discovery filter excludes the row on subsequent runs without any LLM cost.",
+    DEFAULT_SYNOPSIS_BACKEND
+  )
+  .option(
+    "--synopsis-batch-size <n>",
+    "How many memories to synthesize concurrently on the claude backend.",
+    String(DEFAULT_SYNOPSIS_BATCH_SIZE)
+  )
+  .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, or `--merge-similar-topics`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, or `--backfill-synopses`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -100,6 +122,9 @@ export const migrateCommand = new Command("migrate")
       yes?: boolean
       normalizeAgents?: boolean
       buildEntities?: boolean
+      backfillSynopses?: boolean
+      synopsisBackend?: string
+      synopsisBatchSize?: string
     }) => {
       try {
         // Validate flag combinations BEFORE running the schema migration so
@@ -118,12 +143,41 @@ export const migrateCommand = new Command("migrate")
           !opts.fixMemoryEncoding &&
           !opts.normalizeAgents &&
           !opts.buildEntities &&
-          !opts.mergeSimilarTopics
+          !opts.mergeSimilarTopics &&
+          !opts.backfillSynopses
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, or --merge-similar-topics."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, or --backfill-synopses."
           )
           process.exit(1)
+        }
+        // Pre-validate the synopsis-backend value before any service init so
+        // a typo'd `--synopsis-backend gpt` fails fast without a Notion
+        // round-trip. Mirrors the early-exit posture of the
+        // load-merge-yaml branch above.
+        let synopsisBackend: SynopsisBackend = DEFAULT_SYNOPSIS_BACKEND
+        if (opts.synopsisBackend !== undefined) {
+          if (
+            opts.synopsisBackend !== "claude" &&
+            opts.synopsisBackend !== "placeholder"
+          ) {
+            console.error(
+              `--synopsis-backend must be 'claude' or 'placeholder' (got '${opts.synopsisBackend}').`
+            )
+            process.exit(1)
+          }
+          synopsisBackend = opts.synopsisBackend
+        }
+        let synopsisBatchSize: number = DEFAULT_SYNOPSIS_BATCH_SIZE
+        if (opts.synopsisBatchSize !== undefined) {
+          const parsed = Number.parseInt(opts.synopsisBatchSize, 10)
+          if (!Number.isFinite(parsed) || parsed < 1) {
+            console.error(
+              `--synopsis-batch-size must be a positive integer (got '${opts.synopsisBatchSize}').`
+            )
+            process.exit(1)
+          }
+          synopsisBatchSize = parsed
         }
 
         // Load & validate merge-topics YAML before initializing services so
@@ -397,6 +451,15 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.backfillSynopses) {
+          await runSynopsisBackfill(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: opts.dryRun,
+            backend: synopsisBackend,
+            batchSize: synopsisBatchSize,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -452,7 +515,8 @@ export const migrateCommand = new Command("migrate")
             opts.fixMemoryEncoding ||
             opts.normalizeAgents ||
             opts.buildEntities ||
-            opts.mergeSimilarTopics
+            opts.mergeSimilarTopics ||
+            opts.backfillSynopses
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -1376,3 +1440,140 @@ export async function runSimilarTopicsMigration(
     )
   }
 }
+
+/**
+ * Drive `--backfill-synopses`. Plan-only by default; `--yes` flips to
+ * apply (with `--dry-run` always winning regardless of `--yes`,
+ * matching the posture of every other plan-then-execute migrate flag).
+ *
+ * Two backends with deliberately asymmetric reporting in the CLI
+ * display layer:
+ *
+ * - `claude` — counts every bucket (synthesized, body-fetch failures,
+ *   synthesis failures, scaffolding rejections, oversize / empty-body
+ *   skips, write failures, truncations).
+ * - `placeholder` — only `placeholderWritten` and `writeFailed` are
+ *   meaningful; the body-fetch buckets render as
+ *   `n/a (placeholder backend)` instead of literal `0` because the
+ *   placeholder backend never fetches a body, so a `0` would be
+ *   operator-misleading. The typed `BackfillReport` stays numeric for
+ *   programmatic consumers — see the "Display vs. typed report"
+ *   contract in `src/core/synopsis-backfill.ts`.
+ */
+export async function runSynopsisBackfill(
+  services: LoreServices,
+  options: {
+    apply: boolean
+    dryRun?: boolean
+    backend: SynopsisBackend
+    batchSize: number
+  }
+): Promise<BackfillReport> {
+  const planOnly = !options.apply
+  const report = await backfillSynopses(
+    services.vault.getClient(),
+    services.vault.databases.memories,
+    {
+      apply: options.apply,
+      dryRun: options.dryRun,
+      backend: options.backend,
+      batchSize: options.batchSize,
+    }
+  )
+
+  printSynopsisBackfillReport(report, {
+    planOnly,
+    backend: options.backend,
+  })
+
+  return report
+}
+
+/**
+ * Render `BackfillReport` for an operator. Pure-ish (mutates console
+ * only) so a future re-formatting can land without touching the
+ * orchestrator's branching. Exported so the CLI tests can exercise the
+ * display layer directly without re-running the whole migration shape.
+ */
+export function printSynopsisBackfillReport(
+  report: BackfillReport,
+  opts: { planOnly: boolean; backend: SynopsisBackend }
+): void {
+  if (report.totalCandidates === 0 && report.archivedSkipped === 0) {
+    console.log(
+      "\nNo memories with empty Synopsis found — every row already has a synopsis (or the column is freshly added and the vault is empty)."
+    )
+    return
+  }
+
+  const verb = opts.planOnly ? "Would backfill" : "Backfilled"
+  console.log(
+    `\n${verb} ${report.totalCandidates} memor${report.totalCandidates === 1 ? "y" : "ies"} with empty Synopsis ` +
+      `(backend: ${opts.backend}; ${report.archivedSkipped} archived row${report.archivedSkipped === 1 ? "" : "s"} skipped).`
+  )
+
+  if (report.examples.length > 0) {
+    console.log("\nExamples:")
+    for (const ex of report.examples) {
+      console.log(`  ${ex.id} — "${ex.title}"`)
+    }
+  }
+
+  if (opts.planOnly) {
+    if (opts.backend === "claude") {
+      console.log(
+        "\nNote: empty-body and oversize-body skip counts are estimated as 0 in plan-only mode " +
+          "(those buckets are fetch-time signals; exact counts require `--yes`)."
+      )
+      console.log(
+        "\nPlan only — no body fetches, no synthesizer spawned, no writes. " +
+          "Re-run with `--yes` to synthesize and write."
+      )
+    } else {
+      console.log(
+        "\nPlan only — no writes. Re-run with `--yes` to write " +
+          "the placeholder sentinel to every candidate row."
+      )
+    }
+    return
+  }
+
+  // Apply path. Render each backend's relevant counters, suppressing
+  // claude-only buckets on the placeholder path with the n/a marker so
+  // an operator scanning the output isn't misled by the literal `0`.
+  if (opts.backend === "claude") {
+    console.log(
+      `\nWritten: ${report.synthesized} synopses ` +
+        `(truncated to ${SYNOPSIS_MAX} chars: ${report.truncated}). ` +
+        `Empty-body skipped: ${report.emptyBodySkipped}. ` +
+        `Oversize-body skipped: ${report.bodyOversizeSkipped}.`
+    )
+    if (
+      report.bodyFetchFailed +
+        report.synthesisFailed +
+        report.scaffoldingRejected +
+        report.writeFailed >
+      0
+    ) {
+      console.log(
+        `Failures (re-run picks them up): ` +
+          `body-fetch ${report.bodyFetchFailed}; ` +
+          `synthesis ${report.synthesisFailed}; ` +
+          `scaffolding-leak ${report.scaffoldingRejected}; ` +
+          `write ${report.writeFailed}.`
+      )
+    }
+  } else {
+    console.log(
+      `\nWritten: ${report.placeholderWritten} placeholder sentinels ` +
+        `("${SYNOPSIS_PLACEHOLDER_SENTINEL}"). ` +
+        `Empty-body skipped: n/a (placeholder backend). ` +
+        `Oversize-body skipped: n/a (placeholder backend).`
+    )
+    if (report.writeFailed > 0) {
+      console.log(`Failures (re-run picks them up): write ${report.writeFailed}.`)
+    }
+  }
+}
+
+

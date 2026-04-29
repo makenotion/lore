@@ -123,7 +123,7 @@ title-shaped to link.
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
 | `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
-| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent) |
+| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses` | Add missing schema properties and select options; backfill canonical Agent strings; backfill empty Synopsis columns via the configured backend (add-only, idempotent) |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 
 ## The migrate Command
@@ -168,6 +168,62 @@ exists to canonicalize *historical* rows. Future agent integrations
 should set `LORE_AGENT_NAME=<Name>` explicitly — only add to the
 canonical table when a new *default-detection* variant appears in the
 wild.
+
+### Synopsis backfill (`--backfill-synopses`)
+
+Issue 0.7.0/05. Synthesizes a 1–2 sentence Synopsis for every memory whose
+`Synopsis` property is currently empty. Optional follow-up — the vault is
+not broken without this pass; agents write synopses on `lore-memory
+action='save'` going forward, and listing surfaces (`recall`, `search`,
+`wake-up`) render gracefully on rows whose Synopsis is empty.
+
+Plan-then-execute, same posture as `--fix-fact-encoding` /
+`--fix-memory-encoding` / `--normalize-agents`: bare invocation prints
+the candidate count and exits with no body fetches, no synthesizer
+spawns, and no PATH preflight; re-run with `--yes` to apply. `--dry-run`
+always wins regardless of `--yes`.
+
+Two backends, deliberately asymmetric:
+
+- **`claude`** (default): shell out to `claude -p` to synthesize each
+  candidate's synopsis from `(title, body)`. Requires the `claude` CLI
+  installed and authenticated. The PATH preflight runs **only on the
+  apply path for the claude backend** so an operator without `claude`
+  installed can still preview the candidate count without paying any
+  cost. Prompt-injection guard: the body is fenced with
+  `<<<BODY START>>>` / `<<<BODY END>>>` markers and explicitly framed
+  as untrusted data; output is sanitized to strip leading "Summary:"
+  preamble, reject scaffolding leaks, and truncate at the last word
+  boundary before `SYNOPSIS_MAX`.
+- **`placeholder`**: write the literal string `[awaiting backfill]`
+  (`SYNOPSIS_PLACEHOLDER_SENTINEL`) without consulting body content.
+  **Zero `pages.retrieveMarkdown` calls on the apply path** — the
+  sentinel write does not read body, so paying the per-row round-trip
+  would be a real cost with no payoff. Used by test infrastructure
+  (CI, fixtures) and by operators who want every legacy row flagged
+  with a visible "noted, not summarized" marker.
+
+**One-way state warning** (placeholder backend): once a row carries the
+sentinel, the discovery filter (`Synopsis is_empty`) excludes it on
+every subsequent run. There is no built-in `--backfill-only-placeholders`
+flag in #05 — re-batching placeholders into real synopses requires
+manually clearing the Synopsis property via `lore-memory action='update'`
+and re-running with the `claude` backend. Treat the placeholder backend
+as a one-way commit; an operator-pulled re-batch flag is plausible
+follow-up but explicit out-of-scope.
+
+Partial-failure contract: per-row failures (body fetch, synthesis,
+sanitizer scaffolding-leak rejection, write) are logged to stderr as
+`[lore] synopsis-backfill: id=<id> phase=<fetch|synthesize|sanitize|write> error=<msg>`
+and the migration continues. The next run re-picks up failed rows via
+the `Synopsis is_empty` discovery filter — failures are non-poisoning
+and the apply step is idempotent.
+
+CLI display layer renders `n/a (placeholder backend)` for the empty-body
+and oversize-body skip counters on the placeholder apply path; the typed
+`BackfillReport` stays numeric (`0`) for programmatic consumers. The
+`0` is technically correct but operator-misleading (the migration
+didn't check at all), hence the cosmetic substitution.
 
 ## The digest Command
 

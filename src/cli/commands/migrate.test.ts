@@ -8,11 +8,16 @@ import {
   backfillFactSources,
   loadTopicAliasMerges,
   printAliasMergeResults,
+  printSynopsisBackfillReport,
   proposeSourceMemory,
   runBuildEntitiesMigration,
   runFactEncodingFix,
   runMemoryEncodingFix,
 } from "./migrate.js"
+import {
+  SYNOPSIS_PLACEHOLDER_SENTINEL,
+  type BackfillReport,
+} from "../../core/synopsis-backfill.js"
 
 function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
   return {
@@ -924,5 +929,140 @@ describe("runBuildEntitiesMigration", () => {
 
     await runBuildEntitiesMigration(services, { apply: false })
     expect(logs.join("\n")).toContain("nothing to canonicalize")
+  })
+})
+
+describe("printSynopsisBackfillReport", () => {
+  function blankReport(overrides: Partial<BackfillReport> = {}): BackfillReport {
+    return {
+      totalCandidates: 0,
+      archivedSkipped: 0,
+      bodyOversizeSkipped: 0,
+      emptyBodySkipped: 0,
+      synthesized: 0,
+      placeholderWritten: 0,
+      bodyFetchFailed: 0,
+      synthesisFailed: 0,
+      scaffoldingRejected: 0,
+      writeFailed: 0,
+      truncated: 0,
+      examples: [],
+      ...overrides,
+    }
+  }
+
+  function captureLogs(): { logs: string[]; restore: () => void } {
+    const logs: string[] = []
+    const spy = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    return { logs, restore: () => spy.mockRestore() }
+  }
+
+  it("reports nothing-to-do on a fully-populated vault", () => {
+    const { logs, restore } = captureLogs()
+    printSynopsisBackfillReport(blankReport(), {
+      planOnly: true,
+      backend: "claude",
+    })
+    restore()
+    expect(logs.some((l) => l.includes("No memories with empty Synopsis"))).toBe(true)
+  })
+
+  it("plan-only claude branch surfaces the estimated-skip-counts caveat and the --yes directive", () => {
+    const { logs, restore } = captureLogs()
+    printSynopsisBackfillReport(
+      blankReport({
+        totalCandidates: 5,
+        examples: [{ id: "m1", title: "Auth refactor" }],
+      }),
+      { planOnly: true, backend: "claude" }
+    )
+    restore()
+    const all = logs.join("\n")
+    expect(all).toContain("Would backfill 5 memories with empty Synopsis")
+    expect(all).toContain("backend: claude")
+    expect(all).toContain("estimated as 0 in plan-only mode")
+    expect(all).toContain("Re-run with `--yes`")
+    expect(all).toContain("Auth refactor")
+  })
+
+  it("plan-only placeholder branch omits the LLM-cost caveat", () => {
+    const { logs, restore } = captureLogs()
+    printSynopsisBackfillReport(
+      blankReport({ totalCandidates: 3 }),
+      { planOnly: true, backend: "placeholder" }
+    )
+    restore()
+    const all = logs.join("\n")
+    expect(all).toContain("Would backfill 3 memories")
+    expect(all).toContain("backend: placeholder")
+    // No LLM-cost caveat on the placeholder path — that text is
+    // claude-specific.
+    expect(all).not.toContain("estimated as 0 in plan-only mode")
+    expect(all).toContain("placeholder sentinel")
+  })
+
+  it("apply, claude branch surfaces the per-bucket counts including failures", () => {
+    const { logs, restore } = captureLogs()
+    printSynopsisBackfillReport(
+      blankReport({
+        totalCandidates: 10,
+        synthesized: 7,
+        emptyBodySkipped: 1,
+        bodyOversizeSkipped: 1,
+        bodyFetchFailed: 1,
+        synthesisFailed: 0,
+        scaffoldingRejected: 0,
+        writeFailed: 0,
+        truncated: 2,
+      }),
+      { planOnly: false, backend: "claude" }
+    )
+    restore()
+    const all = logs.join("\n")
+    expect(all).toContain("Backfilled 10 memories")
+    expect(all).toContain("7 synopses")
+    expect(all).toContain("Empty-body skipped: 1")
+    expect(all).toContain("Oversize-body skipped: 1")
+    expect(all).toContain("body-fetch 1")
+  })
+
+  it("apply, placeholder branch renders empty/oversize buckets as n/a (placeholder backend)", () => {
+    const { logs, restore } = captureLogs()
+    printSynopsisBackfillReport(
+      blankReport({
+        totalCandidates: 4,
+        placeholderWritten: 4,
+      }),
+      { planOnly: false, backend: "placeholder" }
+    )
+    restore()
+    const all = logs.join("\n")
+    expect(all).toContain("Backfilled 4 memories")
+    expect(all).toContain("4 placeholder sentinels")
+    // The pinned display string for the n/a path. Operator-misleading
+    // `0` would be a regression — the typed report stays numeric, but
+    // the display layer suppresses literal zeros for buckets the
+    // placeholder backend never evaluates.
+    expect(all).toContain("Empty-body skipped: n/a (placeholder backend)")
+    expect(all).toContain("Oversize-body skipped: n/a (placeholder backend)")
+    // Sentinel is referenced by literal string so the test catches a
+    // future drift away from `[awaiting backfill]`.
+    expect(all).toContain(SYNOPSIS_PLACEHOLDER_SENTINEL)
+  })
+
+  it("apply, placeholder branch surfaces write failures when present", () => {
+    const { logs, restore } = captureLogs()
+    printSynopsisBackfillReport(
+      blankReport({
+        totalCandidates: 5,
+        placeholderWritten: 4,
+        writeFailed: 1,
+      }),
+      { planOnly: false, backend: "placeholder" }
+    )
+    restore()
+    expect(logs.join("\n")).toContain("write 1")
   })
 })
