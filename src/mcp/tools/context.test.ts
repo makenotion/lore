@@ -1823,3 +1823,233 @@ describe("lore-wake-up — Part I: Tasks synopsis rendering (DEFERRED-01)", () =
     expect(synopsisLine).not.toContain("…")
   })
 })
+
+// ---------------------------------------------------------------------------
+// touch-on-read wiring (issue 0.8.0/05)
+//
+// Pins the cross-section dedup contract: a memory rendered in two
+// sections (e.g. Recent + Cross-Ref) is touched exactly once per
+// wake-up call. Failure isolation pins the advisory contract — the
+// wake-up response must never error because of a write failure.
+// ---------------------------------------------------------------------------
+
+describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
+  function withTouch(
+    overrides: WakeServicesOverrides = {},
+    touchOnRead: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined),
+  ) {
+    const services = makeWakeServices(overrides)
+    return {
+      services: {
+        ...services,
+        memories: {
+          ...services.memories,
+          touchOnRead,
+        },
+      },
+      touchOnRead,
+    }
+  }
+
+  // `loadWakeUpData` only fetches related memories when (a) a project
+  // is in scope AND (b) at least one active task exists to seed entity
+  // extraction. The default fixture provides a project; we add a task
+  // here so the related-memories search actually fires.
+  function relatedReadyOverrides(
+    overrides: WakeServicesOverrides,
+  ): WakeServicesOverrides {
+    return {
+      tasks: [makeTask({ id: "task-1", entity: "Router migration" })],
+      ...overrides,
+    }
+  }
+
+  it("touches every surfaced memory across Recent and Related sections", async () => {
+    const mockServer = createMockServer()
+    const recent = [
+      makeMemory("recent-1", { title: "Recent A" }),
+      makeMemory("recent-2", { title: "Recent B" }),
+    ]
+    const related = [makeMemory("related-1", { title: "Related A" })]
+    const { services, touchOnRead } = withTouch(
+      relatedReadyOverrides({ memories: recent, relatedMemories: related }),
+    )
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    const ids = new Set(passed.map((m) => m.id))
+    expect(ids).toEqual(new Set(["recent-1", "recent-2", "related-1"]))
+  })
+
+  it("touches the post-collapse, post-slice rendered set — not the over-fetch window", async () => {
+    // `loadWakeUpData` over-fetches by `COLLAPSE_OVERFETCH_MULTIPLIER`
+    // (3×) so the topical-collapse pass has headroom to drop near-
+    // duplicates without shrinking the visible cluster count below
+    // `limit`. The touch batch must NOT see those over-fetched rows —
+    // they were never rendered to the agent, and bumping their
+    // `Confidence Score` would inflate RRF's confidence factor against
+    // a signal that should reflect actual citations.
+    //
+    // Fixture builds 30 input memories (3× the default `limit: 10`)
+    // with mutually-disjoint titles (no shared tokens of length ≥ 3
+    // — see `MIN_TITLE_TOKEN_LENGTH` and `titleTokens` in
+    // `src/mcp/render.ts`) and empty tags so the topical-collapse
+    // helper produces 30 single-element clusters; the slice then
+    // keeps exactly 10. The remaining 20 must NOT be touched.
+    const mockServer = createMockServer()
+    const overFetched = Array.from({ length: 30 }, (_, i) =>
+      // Each title produces exactly one unique token (length ≥ 3,
+      // no shared substrings with siblings). Empty tags bypass the
+      // tag-overlap branch of the similarity gate.
+      makeMemory(`m-${i}`, {
+        title: `aaa${i}bbb${i}ccc${i}xyz`,
+        tags: [],
+      }),
+    )
+    const { services, touchOnRead } = withTouch({ memories: overFetched })
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    // Default `limit: 10` slices to 10 cluster reps; with no collapse
+    // (mutually-disjoint titles + empty tags) that's exactly 10
+    // surfaced memories.
+    expect(passed).toHaveLength(10)
+    // The touched ids are the first 10 (slice keeps input order through
+    // `loadWakeUpData` -> `nonDigestMemories` -> `slice`).
+    expect(passed.map((m) => m.id)).toEqual(
+      overFetched.slice(0, 10).map((m) => m.id),
+    )
+  })
+
+  it("touches collapsed peers (their UUIDs surface in the (related: <uuid>) trailer)", async () => {
+    // When two memories topically collapse, only the cluster rep is
+    // rendered as a heading — but the peer's UUID surfaces in the
+    // representative's `(related: <uuid>)` trailer, and an agent can
+    // fetch the peer's body via the trailer ID. That's a cite of the
+    // peer just like a cite of the rep.
+    //
+    // Force collapse by giving two memories overlapping tags + similar
+    // titles; the collapse helper's similarity threshold (Jaccard ≥
+    // 0.5 on title trigrams OR tag overlap ≥ 0.5) clusters them.
+    const mockServer = createMockServer()
+    const rep = makeMemory("rep-id", {
+      title: "OAuth handshake failure",
+      tags: ["auth", "oauth"],
+    })
+    const peer = makeMemory("peer-id", {
+      title: "OAuth handshake failure notes",
+      tags: ["auth", "oauth"],
+    })
+    const { services, touchOnRead } = withTouch({ memories: [rep, peer] })
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    const ids = new Set(passed.map((m) => m.id))
+    // Both the rep and the peer must be touched: the peer's UUID is
+    // visible to the agent in the (related:) trailer.
+    expect(ids).toEqual(new Set(["rep-id", "peer-id"]))
+  })
+
+  it("touches a memory exactly once even when it surfaces in multiple sections", async () => {
+    // The same id appears as both a Recent row AND a Related-to-active-task
+    // hit. The wiring's Set<string> dedup must collapse these into a
+    // single touch so the cite count stays honest.
+    //
+    // `loadWakeUpData` itself dedupes related vs. recents at the data
+    // layer (alreadySurfaced filter), so to exercise the MCP-layer dedup
+    // we drive overlap between the digest channel and Recent Memories —
+    // those channels are NOT cross-deduped by the data layer (the digest
+    // filter is on `source`, not on `id`), so the MCP-layer Set is the
+    // only dedup mechanism that runs against the overlap.
+    const mockServer = createMockServer()
+    const sharedId = "shared-1"
+    // Digest: source="digest", fresh (within DEFAULT_DIGEST_FRESHNESS_DAYS
+    // = 7) so isFreshDigest accepts it.
+    const today = new Date()
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
+    const digest = makeMemory(sharedId, {
+      title: "Digest",
+      source: "digest",
+      createdAt: yesterday.toISOString(),
+    })
+    // Recent row with the same id but source="manual" and createdAt
+    // strictly newer than the digest. This combination passes the data
+    // layer's nonDigestMemories filter (source!=digest AND createdAt >
+    // digestCreatedAt), so both digest and the recent reach the MCP
+    // handler with overlapping ids.
+    const recentSameId = makeMemory(sharedId, {
+      title: "Recent shadow",
+      source: "manual",
+      createdAt: today.toISOString(),
+    })
+    const { services, touchOnRead } = withTouch({
+      digest,
+      memories: [recentSameId],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    // The Set<string> in handleWakeUp collapses the two surfacings
+    // into one. Without the Set, this would be 2.
+    const sharedHits = passed.filter((m) => m.id === sharedId).length
+    expect(sharedHits).toBe(1)
+  })
+
+  it("includes taskMemories (For Your Current Task) in the touch batch", async () => {
+    const mockServer = createMockServer()
+    const taskMem = makeMemory("task-mem-1", { title: "Task related" })
+    const { services, touchOnRead } = withTouch({
+      memories: [makeMemory("recent-1", { title: "Recent" })],
+      taskQuery: "current focus",
+      taskMemories: [taskMem],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({ userQuery: "current focus" })
+
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    expect(passed.map((m) => m.id)).toContain("task-mem-1")
+  })
+
+  it("does not surface a touchOnRead failure as a tool error", async () => {
+    const mockServer = createMockServer()
+    const { services } = withTouch(
+      { memories: [makeMemory("m1", { title: "M1" })] },
+      vi.fn().mockRejectedValue(new Error("notion 503")),
+    )
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const result = await wakeUp({})
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    const text = extractText(result)
+    expect(text).toContain("## Recent Memories")
+    expect(text).toContain("### M1")
+  })
+
+  it("does not call touchOnRead when no memories surfaced (empty wake-up)", async () => {
+    const mockServer = createMockServer()
+    const { services, touchOnRead } = withTouch({})
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    expect(touchOnRead).not.toHaveBeenCalled()
+  })
+})

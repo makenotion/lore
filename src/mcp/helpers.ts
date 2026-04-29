@@ -3,6 +3,8 @@
  */
 
 import type { ZodError } from "zod"
+import type { Memory } from "../types.js"
+import type { MemoryService } from "../core/memory.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -160,6 +162,98 @@ export function debugLogContradictionFailure(
   process.stderr.write(
     `[lore] contradiction-failure: source=${oneLine(source)} memoryId=${oneLine(memoryId)} error=${oneLine(message)}\n`,
   )
+}
+
+/**
+ * Per-row failure logger for `MemoryService.touchOnRead` calls fired
+ * from MCP read paths (issue 0.8.0/05). Touch is advisory — a 429 on
+ * one row must not break the surrounding response — so the wiring
+ * passes an `onError(memoryId, error)` callback that flows here.
+ *
+ * Format: `[lore] touch-failure: memory=<id> error=<message> tool=<toolName>`
+ *
+ * Sibling of `debugLogPartialFailures` and shares its operator-only
+ * posture: emits only when `LORE_DEBUG=1`, scrubs ASCII control
+ * characters out of interpolated fields, logs `error.message` not
+ * `error.stack`. The diverging key is `memory=<id>` rather than
+ * `root=<id>` — touch-on-read failures are always a single Notion
+ * memory page, not the root id of a fan-out, so the column name
+ * carries that scope. Downstream parsers should match on the
+ * `[lore] touch-failure:` prefix and the `error=` field.
+ *
+ * **Per-row signature, not a batch.** Unlike `debugLogPartialFailures`
+ * (which receives a `failures` array from `settleAll`), touch failures
+ * arrive one-at-a-time via `touchOnRead`'s per-row `onError` callback —
+ * the data layer has already iterated the batch and isolated each
+ * failure. Re-batching at this layer would either require accumulating
+ * across the callback (state) or post-processing the call sites.
+ * Per-row matches the data-layer contract; do not "normalize" to a
+ * batch shape without revisiting `touchOnRead`'s `onError` signature.
+ *
+ * `tool` identifies which read path triggered the touch — `lore-query
+ * (recall)` / `lore-query (search)` / `lore-query (ask)` / `lore-memory
+ * (expand)` / `lore-context (wake-up)` — so a flood of 429s during one
+ * action's hot path is distinguishable from a steady drip across all
+ * five.
+ */
+export function debugLogTouchFailure(
+  tool: string,
+  memoryId: string,
+  error: unknown,
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  process.stderr.write(
+    `[lore] touch-failure: memory=${oneLine(memoryId)} error=${oneLine(rawMessage)} tool=${tool}\n`,
+  )
+}
+
+/**
+ * Single shared seam for the citation-as-evidence touch wiring (issue
+ * 0.8.0/05). All five MCP read paths that surface a memory funnel
+ * through here so the contract — empty-batch short-circuit, per-row
+ * failure routing through `debugLogTouchFailure`, top-level throw
+ * suppression — lives in one place. Reworking the contract (e.g.
+ * switching from `await` to `void` for fire-and-forget) is a single-
+ * file change.
+ *
+ * **`await`-then-suppress, not `void`-then-discard.** The outer
+ * `await` is deliberate: tests rely on the awaited completion to
+ * observe the touch via spy assertions, and the production path's
+ * write latency on the first cite of the day is bounded by the
+ * rate-limit middleware's concurrency cap (per issue 0.8.0/05's risk
+ * note: `ceil(N / concurrency) × per-call-latency`). A `void
+ * touchOnRead(...).catch(() => {})` pattern would let the response
+ * return slightly faster but would (a) make the touch genuinely fire-
+ * and-forget — losing the deterministic test observability — and (b)
+ * race the next read on the same row through Notion's eventually-
+ * consistent query index. The `await` posture trades a one-time first-
+ * wake-up-of-day latency hit for testability and read-consistency; it
+ * matches the spec literally and the trade-off is documented in the
+ * 0.8.0/#12 release notes.
+ *
+ * **Advisory contract.** Both the per-row `onError` callback and the
+ * outer `try/catch` are needed: the callback drains the data layer's
+ * isolated per-row failures (one 429 doesn't sink the batch), the
+ * outer catch handles a synchronous throw on the `touchOnRead` call
+ * itself (e.g. a missing-method test stub or a hypothetical sync
+ * throw at the top of the implementation). Either layer alone would
+ * leak the other's failure mode through to the response, so both
+ * stay.
+ */
+export async function fireTouchOnRead(
+  service: Pick<MemoryService, "touchOnRead">,
+  rows: ReadonlyArray<Memory>,
+  tool: string,
+): Promise<void> {
+  if (rows.length === 0) return
+  try {
+    await service.touchOnRead(rows, {
+      onError: (id, error) => debugLogTouchFailure(tool, id, error),
+    })
+  } catch {
+    // intentionally suppressed — touch is advisory, never blocking
+  }
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   paginationFooter,
   toolError,
   debugLogPartialFailures,
+  fireTouchOnRead,
 } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
@@ -486,9 +487,20 @@ export async function handleExpand(
         ? `Expanded ${fulfilled.length}/${unique.length} memories (${failures.length} unresolved):`
         : `Expanded ${fulfilled.length} ${fulfilled.length === 1 ? "memory" : "memories"}:`
 
-    return {
+    const response: ToolResult = {
       content: [{ type: "text", text: `${header}\n\n${sections.join("\n\n---\n\n")}` }],
     }
+
+    // Citation-as-evidence (issue 0.8.0/05). `expand` fetches a
+    // memory's body for the agent to read directly — that is a cite.
+    // Touches only the rows that hydrated successfully; rows that
+    // 404'd / errored are already reported as `(unresolved: ...)` and
+    // touching them would duplicate the failure mode without any
+    // signal value.
+    const fulfilledMemories = fulfilled.map(([, memory]) => memory)
+    await fireTouchOnRead(services.memories, fulfilledMemories, "lore-memory (expand)")
+
+    return response
   } catch (err) {
     return toolError(err)
   }
@@ -578,7 +590,7 @@ export async function handleRecall(
       ? ""
       : `\n\n_Bodies omitted — re-call with \`includeContent: true\` to fetch them._`
 
-    return {
+    const response: ToolResult = {
       content: [
         {
           type: "text",
@@ -586,6 +598,14 @@ export async function handleRecall(
         },
       ],
     }
+
+    // Citation-as-evidence (issue 0.8.0/05). Touch fires AFTER the
+    // response is composed — write latency cannot block the agent's
+    // read. Failure handling and contract details live in
+    // `fireTouchOnRead`'s docstring.
+    await fireTouchOnRead(services.memories, memories, "lore-query (recall)")
+
+    return response
   } catch (err) {
     return toolError(err)
   }
@@ -710,7 +730,7 @@ export async function handleSearch(
 
     const explainFooter = wantExplain ? formatScoreTrace(explainSlice) : ""
 
-    return {
+    const response: ToolResult = {
       content: [
         {
           type: "text",
@@ -718,6 +738,14 @@ export async function handleSearch(
         },
       ],
     }
+
+    // Citation-as-evidence (issue 0.8.0/05). Touches every surfaced
+    // row, not just the slice the agent might read — surfacing alone
+    // is the signal that the row passed the filter and is contextually
+    // relevant. Fires post-response composition.
+    await fireTouchOnRead(services.memories, results, "lore-query (search)")
+
+    return response
   } catch (err) {
     return toolError(err)
   }

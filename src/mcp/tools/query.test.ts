@@ -225,3 +225,239 @@ describe("lore-query polymorphic dispatcher — includeSynopsis forwarding (issu
     expect((result as { isError?: boolean }).isError).toBe(true)
   })
 })
+
+describe("lore-query action='ask' — touch-on-read wiring (issue 0.8.0/05)", () => {
+  // The ask handler surfaces decisions via `decided_by` facts (each
+  // resolves to a canonical decision page that is itself a memory) and
+  // source memories backing every fact (`fact.sourceMemoryId`). Both
+  // are cites; the wiring collects their IDs, refreshes them via
+  // `getManyById`, and passes them through `touchOnRead` so the next
+  // RRF pass over the same row benefits from the bumped `Confidence
+  // Score`.
+  function makeFact(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "fact-1",
+      subject: "AuthService",
+      predicate: "uses",
+      object: "OAuth",
+      projectIds: [],
+      validFrom: null,
+      validUntil: null,
+      reviewBy: null,
+      sourceMemoryId: null,
+      confidence: "certain",
+      subjectEntityId: null,
+      objectEntityId: null,
+      ...overrides,
+    }
+  }
+
+  it("invokes getManyById + touchOnRead with every fact's sourceMemoryId", async () => {
+    const mockServer = createMockServer()
+    const facts = [
+      makeFact({ id: "fact-1", sourceMemoryId: "mem-source-1" }),
+      makeFact({ id: "fact-2", predicate: "depends_on", sourceMemoryId: "mem-source-2" }),
+      makeFact({ id: "fact-3", predicate: "uses", sourceMemoryId: null }),
+    ]
+    const getManyById = vi.fn().mockResolvedValue([
+      { id: "mem-source-1" },
+      { id: "mem-source-2" },
+    ])
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+    const services = {
+      ...makeAskServices(),
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById,
+        touchOnRead,
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    await ask({ entity: "AuthService" })
+
+    expect(getManyById).toHaveBeenCalledTimes(1)
+    const ids = getManyById.mock.calls[0]![0] as string[]
+    // null sourceMemoryIds are filtered out before getManyById fires.
+    expect(ids).toEqual(["mem-source-1", "mem-source-2"])
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+  })
+
+  it("dedupes IDs across decisionLinks and fact sourceMemoryIds (decisions are memories)", async () => {
+    // A `decided_by` fact's source memory IS the decision it resolves
+    // to — so when the same id appears in both channels the wiring's
+    // collector must dedupe rather than touch twice.
+    const mockServer = createMockServer()
+    const facts = [
+      makeFact({
+        id: "fact-1",
+        predicate: "decided_by",
+        object: "decision-1",
+        sourceMemoryId: "decision-1",
+      }),
+      makeFact({ id: "fact-2", sourceMemoryId: "mem-source-2" }),
+    ]
+    const getManyById = vi.fn().mockResolvedValue([])
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+    const decisionGetById = vi.fn().mockResolvedValue({
+      id: "decision-1",
+      title: "Decision 1",
+      kind: "decision",
+      status: "accepted",
+      confidence: "certain",
+      decidedAt: "2026-04-01",
+      reviewBy: null,
+      supersedesIds: [],
+    })
+    const services = {
+      ...makeAskServices(),
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      decisions: { getById: decisionGetById },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById,
+        touchOnRead,
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    await ask({ entity: "AuthService" })
+
+    expect(getManyById).toHaveBeenCalledTimes(1)
+    const ids = getManyById.mock.calls[0]![0] as string[]
+    expect(ids).toContain("decision-1")
+    expect(ids).toContain("mem-source-2")
+    // No duplicates: decision-1 surfaces once even though it appears
+    // both as the decided_by target and as the fact's sourceMemoryId.
+    const occurrences = ids.filter((id) => id === "decision-1").length
+    expect(occurrences).toBe(1)
+  })
+
+  it("skips getManyById and touchOnRead when no source IDs are surfaced", async () => {
+    const mockServer = createMockServer()
+    const getManyById = vi.fn().mockResolvedValue([])
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+    const services = {
+      ...makeAskServices(),
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([
+          makeFact({ id: "fact-1", sourceMemoryId: null }),
+        ]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById,
+        touchOnRead,
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    await ask({ entity: "AuthService" })
+
+    expect(getManyById).not.toHaveBeenCalled()
+    expect(touchOnRead).not.toHaveBeenCalled()
+  })
+
+  it("touches only the visible-slice source memories, not bucket-cap-hidden ones", async () => {
+    // Spec acceptance criterion (issue 0.8.0/05): every memory
+    // surfaced **as a source for a resolved entity** is touched. Rows
+    // past the per-bucket cap render as `(N hidden)` and the agent
+    // never sees their source memories — touching them anyway would
+    // inflate `Confidence Score` against rows that were never cited,
+    // and #08's RRF reads that score for ranking. The collector
+    // walks the post-cap visible slice; this test pins the boundary.
+    //
+    // Default cap is 5 (DEFAULT_ASK_BUCKET_CAP). Build 8 structure
+    // facts with distinct sourceMemoryIds so the Structure bucket
+    // overflows by 3. Sort key is `validFrom`, descending — newer
+    // dates land in the visible slice.
+    const mockServer = createMockServer()
+    const facts = Array.from({ length: 8 }, (_, i) => ({
+      id: `fact-${i}`,
+      subject: "AuthService",
+      predicate: "uses",
+      object: `Dep${i}`,
+      projectIds: [],
+      validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
+      validUntil: null,
+      reviewBy: null,
+      sourceMemoryId: `mem-source-${i}`,
+      confidence: "certain",
+      subjectEntityId: null,
+      objectEntityId: null,
+    }))
+    const getManyById = vi.fn(async (ids: string[]) =>
+      ids.map((id) => ({ id })),
+    )
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+    const services = {
+      ...makeAskServices(),
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById,
+        touchOnRead,
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({ entity: "AuthService" })
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    // Sanity: the cap fired and the response surfaces 3 hidden rows.
+    expect(text).toContain("(3 hidden)")
+
+    // The collector walks only the visible 5 — hidden rows' source
+    // memories must be absent from the touch batch.
+    expect(getManyById).toHaveBeenCalledTimes(1)
+    const ids = getManyById.mock.calls[0]![0] as string[]
+    expect(ids).toHaveLength(5)
+    // Newest-first ordering means fact-7 (validFrom 2026-04-17) is
+    // the newest and survives the cap; fact-0 (2026-04-10) is the
+    // oldest and falls into the hidden bucket.
+    expect(ids).toContain("mem-source-7")
+    expect(ids).not.toContain("mem-source-0")
+  })
+
+  it("does not surface a touchOnRead failure as a tool error (advisory contract)", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      ...makeAskServices(),
+      facts: {
+        queryByEntity: vi
+          .fn()
+          .mockResolvedValue([makeFact({ id: "f1", sourceMemoryId: "mem-1" })]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById: vi.fn().mockResolvedValue([{ id: "mem-1" }]),
+        touchOnRead: vi.fn().mockRejectedValue(new Error("notion 429")),
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const ask = mockServer.getActionHandler("lore-query", "ask")
+
+    const result = await ask({ entity: "AuthService" })
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+  })
+})

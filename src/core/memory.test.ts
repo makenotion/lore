@@ -3561,6 +3561,162 @@ describe("MemoryService.materializeContent", () => {
 })
 
 // ---------------------------------------------------------------------------
+// getManyById — batched fetch used by `lore-query action='ask'` to seed
+// `touchOnRead` (issue 0.8.0/05). Pinned here so a future refactor of
+// the underlying `getById` semantics surfaces the round-trip + 404
+// filter contract this method publishes.
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.getManyById", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildMemoryPage(id: string, title: string): PageObjectResponse {
+    return {
+      ...buildPage({
+        Title: { type: "title", title: [{ plain_text: title }] },
+      }),
+      id,
+      url: `https://notion.so/${id}`,
+    } as PageObjectResponse
+  }
+
+  it("returns a Memory per input id, in input order, when every id resolves", async () => {
+    const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
+      buildMemoryPage(page_id, `Memory ${page_id}`),
+    )
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.getManyById(["m-1", "m-2", "m-3"])
+
+    expect(memories.map((m) => m.id)).toEqual(["m-1", "m-2", "m-3"])
+    expect(memories.map((m) => m.title)).toEqual([
+      "Memory m-1",
+      "Memory m-2",
+      "Memory m-3",
+    ])
+    expect(retrieve).toHaveBeenCalledTimes(3)
+  })
+
+  it("issues exactly one pages.retrieve and zero pages.retrieveMarkdown per id", async () => {
+    // Spec budget for `getManyById` (issue 0.8.0/05): "one
+    // `pages.retrieve` per memory beyond the original read." Routing
+    // through `getById` would also fire `retrieveMarkdown` per id,
+    // doubling the Notion call count for cited source-memories on the
+    // ask hot path. The properties-only posture is load-bearing —
+    // `touchOnRead` only reads property fields off the row.
+    const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
+      buildMemoryPage(page_id, `Memory ${page_id}`),
+    )
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.getManyById(["m-1", "m-2", "m-3"])
+
+    expect(retrieve).toHaveBeenCalledTimes(3)
+    expect(retrieveMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("filters out 404 / archived / permission failures rather than rejecting the batch", async () => {
+    // touchOnRead callers pass IDs they believe exist (from list/search
+    // results); rows that disappeared between the read and the touch
+    // must be silently dropped so the touch never inflates the
+    // surrounding tool's failure surface.
+    const retrieve = vi.fn(async ({ page_id }: { page_id: string }) => {
+      if (page_id === "m-gone") throw new Error("notion 404")
+      return buildMemoryPage(page_id, `Memory ${page_id}`)
+    })
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.getManyById(["m-1", "m-gone", "m-3"])
+
+    expect(memories.map((m) => m.id)).toEqual(["m-1", "m-3"])
+  })
+
+  it("returns an empty array for an empty input — no Notion calls", async () => {
+    const retrieve = vi.fn()
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.getManyById([])
+
+    expect(memories).toEqual([])
+    expect(retrieve).not.toHaveBeenCalled()
+    expect(retrieveMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("dispatches retrieve calls in parallel — every fetch starts before any returns", async () => {
+    // Mirrors the lore-expand parallel-dispatch invariant: a serial
+    // `for await` loop would only kick off one fetch at a time.
+    const inflight = new Map<string, () => void>()
+    const started: string[] = []
+
+    const retrieve = vi.fn(({ page_id }: { page_id: string }) => {
+      started.push(page_id)
+      return new Promise<PageObjectResponse>((resolve) => {
+        inflight.set(page_id, () => resolve(buildMemoryPage(page_id, `T ${page_id}`)))
+      })
+    })
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const pending = service.getManyById(["m-a", "m-b", "m-c"])
+    await new Promise((r) => setImmediate(r))
+    expect(started).toEqual(["m-a", "m-b", "m-c"])
+
+    inflight.get("m-a")?.()
+    inflight.get("m-b")?.()
+    inflight.get("m-c")?.()
+
+    const memories = await pending
+    expect(memories.map((m) => m.id)).toEqual(["m-a", "m-b", "m-c"])
+  })
+
+  it("dedupes repeated input ids before dispatching — one fetch per distinct id", async () => {
+    // Mirrors `lore-memory action='expand'`'s dedup-on-input contract:
+    // a caller passing `["a", "a", "b"]` gets one fetch per distinct
+    // id and one Memory per distinct id back. Saves an unnecessary
+    // Notion round-trip when the upstream collector hasn't deduped.
+    const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
+      buildMemoryPage(page_id, `Memory ${page_id}`),
+    )
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.getManyById(["m-a", "m-a", "m-b"])
+
+    expect(retrieve).toHaveBeenCalledTimes(2)
+    expect(memories.map((m) => m.id)).toEqual(["m-a", "m-b"])
+  })
+
+  it("returns memories with empty content — properties-only fetch", async () => {
+    // The Memory shape carries `content` for downstream renderers.
+    // Property-only fetch leaves it empty; callers needing the body
+    // must use `getById` instead. Pinned so a future contributor
+    // doesn't "helpfully" route through `getById` and silently
+    // re-introduce the doubled Notion budget the spec rejected.
+    const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
+      buildMemoryPage(page_id, `Memory ${page_id}`),
+    )
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.getManyById(["m-1"])
+
+    expect(memories[0]!.content).toBe("")
+    expect(retrieveMarkdown).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // touchOnRead + decrementConfidence — confidence dynamics I/O
 // ---------------------------------------------------------------------------
 

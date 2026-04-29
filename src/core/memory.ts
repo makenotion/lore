@@ -471,6 +471,55 @@ export class MemoryService {
   }
 
   /**
+   * Batched property-only reads. Issues one `pages.retrieve` per
+   * **distinct** input ID via `Promise.all` and skips the
+   * `pages.retrieveMarkdown` round-trip — `touchOnRead` reads
+   * `confidenceScore` / `lastReferencedAt` / `confidence` / `createdAt`
+   * off the in-memory row, all of which live in the page's properties
+   * bag. The returned `Memory` shapes carry `content: ""`; callers
+   * needing the body must use `getById` instead.
+   *
+   * The properties-only posture matters because the touch-on-read
+   * wiring in `lore-query action='ask'` (issue 0.8.0/05) routes through
+   * here — fetching markdown bodies the caller will discard would
+   * double the Notion call budget on every ask response with cited
+   * source memories.
+   *
+   * **Output ordering.** Returned memories preserve the input order of
+   * their FIRST occurrence. Repeated IDs are deduped at the boundary
+   * (collapsed to one fetch), so a caller passing `["a", "a"]` gets
+   * `[Memory{a}]` once. Missing IDs (404 / archived / permission
+   * errors) resolve to `null` and are filtered out, so a 404 on the
+   * row at input position 2 of `[a, b, c]` returns `[Memory{a},
+   * Memory{c}]` — output positions are 1:1 with input positions only
+   * after the dedup + drop-failures filter has been applied.
+   *
+   * Callers that already hold materialized `Memory[]` (`recall` /
+   * `search` / `expand` / wake-up loaders) should pass them directly
+   * to `touchOnRead` instead of re-fetching here.
+   */
+  async getManyById(ids: ReadonlyArray<string>): Promise<Memory[]> {
+    const seen = new Set<string>()
+    const distinct: string[] = []
+    for (const id of ids) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      distinct.push(id)
+    }
+    const results = await Promise.all(
+      distinct.map(async (id) => {
+        try {
+          const page = await this.client.pages.retrieve({ page_id: id })
+          return this.pageToMemory(page as PageObjectResponse, "")
+        } catch {
+          return null
+        }
+      }),
+    )
+    return results.filter((m): m is Memory => m !== null)
+  }
+
+  /**
    * Hydrate the markdown body for a memory whose properties are already
    * known. Sibling of `getById` that skips the `pages.retrieve` call —
    * issued exclusively for callers that just received the row from a

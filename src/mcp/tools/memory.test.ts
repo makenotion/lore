@@ -2820,3 +2820,229 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     expect(text).toContain("### Search hit\n*manual | auth | 2026-04-20*")
   })
 })
+
+// ---------------------------------------------------------------------------
+// touch-on-read wiring (issue 0.8.0/05)
+//
+// Pins the citation-as-evidence contract at the MCP boundary: every
+// surfaced memory on recall / search / expand passes through
+// `MemoryService.touchOnRead`. The data-layer touch algebra is
+// independently pinned by `src/core/memory.test.ts`'s
+// `MemoryService.touchOnRead` block; these tests are about the wiring,
+// not the algebra.
+// ---------------------------------------------------------------------------
+
+describe("lore-query action='recall' — touch-on-read wiring (issue 0.8.0/05)", () => {
+  it("touches every returned memory after recall composes its response", async () => {
+    const mockServer = createMockServer()
+    const m1 = makeMemory("mem-1", { title: "A" })
+    const m2 = makeMemory("mem-2", { title: "B" })
+    const memoriesList = vi.fn().mockResolvedValue({ items: [m1, m2] })
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList, touchOnRead },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    expect(passed.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
+  })
+
+  it("does not invoke touchOnRead when the recall result is empty", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({ items: [] })
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList, touchOnRead },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    await recall({} as never)
+    // Empty-input touchOnRead is a no-op at the data layer, but the
+    // wiring layer doesn't bother calling it — saves one allocation
+    // per zero-result recall.
+    expect(touchOnRead).not.toHaveBeenCalled()
+  })
+
+  it("does not surface a touchOnRead failure as a tool error", async () => {
+    // Touch is advisory — a 429 / network blip on the post-response
+    // write must not poison the rendered response. This pins the
+    // try/catch isolation around the touch call.
+    const mockServer = createMockServer()
+    const memoriesList = vi
+      .fn()
+      .mockResolvedValue({ items: [makeMemory("mem-1", { title: "A" })] })
+    const touchOnRead = vi.fn().mockRejectedValue(new Error("notion 429"))
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList, touchOnRead },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("### A")
+  })
+})
+
+describe("lore-query action='search' — touch-on-read wiring (issue 0.8.0/05)", () => {
+  it("touches every returned search result after the response composes", async () => {
+    const mockServer = createMockServer()
+    const m1 = makeMemory("mem-1", { title: "Hit one" })
+    const m2 = makeMemory("mem-2", { title: "Hit two" })
+    const memoriesSearch = vi.fn().mockResolvedValue([m1, m2])
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn(), touchOnRead },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    await search({ query: "auth" } as never)
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    expect(passed.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
+  })
+
+  it("touches the post-limit slice, not the full over-fetch window", async () => {
+    // Semantic mode over-fetches by 2× to give the post-filter
+    // headroom; the wiring touches the SLICED results so a touch
+    // batch reflects what the agent actually sees.
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([
+      makeMemory("mem-1"),
+      makeMemory("mem-2"),
+      makeMemory("mem-3"),
+      makeMemory("mem-4"),
+    ])
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn(), touchOnRead },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    await search({ query: "auth", limit: 2, mode: "semantic" } as never)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    expect(passed.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
+  })
+})
+
+describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)", () => {
+  const ID_A = "11111111-1111-4111-8111-111111111111"
+  const ID_B = "22222222-2222-4222-8222-222222222222"
+
+  it("touches the expanded memories on a successful expand call", async () => {
+    const mockServer = createMockServer()
+    const getById = vi.fn(async (id: string) =>
+      makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` }),
+    )
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById, touchOnRead },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    await expand({ ids: [ID_A, ID_B] } as never)
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    expect(passed.map((m) => m.id).sort()).toEqual([ID_A, ID_B].sort())
+  })
+
+  it("only touches successfully-hydrated rows when one fetch fails", async () => {
+    // The 404 row already surfaces as `(unresolved: ...)` to the
+    // agent — re-touching it would duplicate the failure mode without
+    // any signal value, so the wiring filters partial-failures out
+    // before invoking touchOnRead.
+    const mockServer = createMockServer()
+    const getById = vi.fn(async (id: string) => {
+      if (id === ID_B) throw new Error("notion 404")
+      return makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` })
+    })
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById, touchOnRead },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    await expand({ ids: [ID_A, ID_B] } as never)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    expect(passed.map((m) => m.id)).toEqual([ID_A])
+  })
+
+  it("does not invoke touchOnRead when every fetch failed", async () => {
+    const mockServer = createMockServer()
+    const getById = vi.fn(async () => {
+      throw new Error("notion 503")
+    })
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById, touchOnRead },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    const result = await expand({ ids: [ID_A] } as never)
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(touchOnRead).not.toHaveBeenCalled()
+  })
+})

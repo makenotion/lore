@@ -1,7 +1,11 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
-import { formatDispatchError, toolError } from "../helpers.js"
+import {
+  fireTouchOnRead,
+  formatDispatchError,
+  toolError,
+} from "../helpers.js"
 import {
   DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
@@ -350,6 +354,26 @@ async function handleWakeUp(
       }
     }
 
+    // Citation-as-evidence (issue 0.8.0/05). Wake-up over-fetches by
+    // `COLLAPSE_OVERFETCH_MULTIPLIER` to leave the topical-collapse pass
+    // headroom; the touch batch must NOT see those over-fetched rows
+    // (they were never rendered). Each section captures its rendered
+    // cluster-rep + collapsed-peer IDs into `surfacedIds`; at the end
+    // those IDs are resolved to Memory shapes via the over-fetched
+    // input arrays. This keeps the touch surface aligned with what the
+    // agent actually sees, not what the data layer fetched.
+    const surfacedIds = new Set<string>()
+    const inputMemoriesById = new Map<string, Memory>()
+    if (digest) inputMemoriesById.set(digest.id, digest)
+    for (const m of memories) inputMemoriesById.set(m.id, m)
+    for (const m of relatedMemories) inputMemoriesById.set(m.id, m)
+    for (const m of taskMemories) inputMemoriesById.set(m.id, m)
+    if (digest) surfacedIds.add(digest.id)
+    const recordSurfaced = (group: CollapsedMemoryGroup): void => {
+      surfacedIds.add(group.keep.id)
+      for (const id of group.collapsedIds) surfacedIds.add(id)
+    }
+
     // P3-05: relevance hits seeded by the caller's `userQuery`. Surfaced
     // directly under the digest (densest single signal about what the
     // user is asking about) and above timestamp-ordered Recent Memories.
@@ -365,6 +389,7 @@ async function handleWakeUp(
       const groups = collapseOverlappingMemories(taskMemories).slice(0, taskCap)
       for (const group of groups) {
         sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
+        recordSurfaced(group)
       }
     }
 
@@ -380,6 +405,7 @@ async function handleWakeUp(
         const bucket = dateBucket(group.keep.createdAt)
         if (!buckets.has(bucket)) buckets.set(bucket, [])
         buckets.get(bucket)!.push(group.keep)
+        recordSurfaced(group)
       }
       for (const label of ["Today", "Yesterday", "Earlier"] as const) {
         const mems = buckets.get(label)
@@ -402,6 +428,7 @@ async function handleWakeUp(
       const groups = collapseOverlappingMemories(relatedMemories).slice(0, relatedCap)
       for (const group of groups) {
         sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
+        recordSurfaced(group)
       }
     }
 
@@ -562,7 +589,40 @@ async function handleWakeUp(
       }
     }
 
-    return { content: [{ type: "text", text: sections.join("\n") }] }
+    const response: ToolResult = {
+      content: [{ type: "text", text: sections.join("\n") }],
+    }
+
+    // Resolve surfaced IDs to Memory shapes from the input pool. A
+    // collapsed peer's id reaches `surfacedIds` via the cluster's
+    // `collapsedIds` field — its full Memory shape lives in the
+    // over-fetched input array (`memories` / `relatedMemories` /
+    // `taskMemories`), so the lookup map covers both cluster reps and
+    // collapsed peers. IDs missing from the map (shouldn't happen
+    // structurally, but defensive against a future change to
+    // collapseOverlappingMemories that injects synthesized ids) are
+    // silently dropped — touch is advisory.
+    //
+    // **"Decisions Requiring Attention" memories are deliberately NOT
+    // touched.** That section surfaces decisions BECAUSE they need
+    // human review (proposed waiting for acceptance, or accepted but
+    // past their `Review By` date). Bumping `Confidence Score` on
+    // every wake-up that lists an overdue decision would (a) push the
+    // score upward despite the decision being neglected, and (b) reset
+    // the decay clock via `Last Referenced At`, masking the staleness
+    // signal that put the decision in the section in the first place.
+    // The cite-as-evidence model treats agent attention as evidence;
+    // a review-reminder section is the opposite of evidence — it is
+    // the system flagging something as needing attention. Skipping
+    // these rows preserves the staleness signal that drives them.
+    const surfacedMemories: Memory[] = []
+    for (const id of surfacedIds) {
+      const memory = inputMemoriesById.get(id)
+      if (memory) surfacedMemories.push(memory)
+    }
+    await fireTouchOnRead(services.memories, surfacedMemories, "lore-context (wake-up)")
+
+    return response
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return toolError(new Error(`lore-context action='wake-up' failed to load context: ${message}`))

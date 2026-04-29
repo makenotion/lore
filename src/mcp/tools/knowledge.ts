@@ -6,6 +6,7 @@ import {
   toolError,
   debugLogPartialFailures,
   debugLogContradictionFailure,
+  fireTouchOnRead,
 } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
@@ -122,6 +123,41 @@ function compareSortKeyDesc(
   if (!a.sortKey) return 1
   if (!b.sortKey) return -1
   return a.sortKey < b.sortKey ? 1 : -1
+}
+
+/**
+ * Dedup-collect the source-memory IDs visible in a `lore-query
+ * action='ask'` response (issue 0.8.0/05). Walks the post-cap
+ * **visible** slices, not the raw input arrays — rows past the
+ * per-bucket cap render as `(N hidden)` and the agent never sees
+ * them, so touching their backing memories would inflate
+ * `Confidence Score` against rows that were never cited. Two cite
+ * channels per visible row:
+ *
+ * - `decision.id` — `decided_by` governance rows cite a canonical
+ *   decision page (decisions are memories via `Kind = decision`).
+ * - `fact.sourceMemoryId` — every visible fact carries an optional
+ *   pointer to the memory backing the assertion; a cite of the fact
+ *   IS a cite of the source memory it rests on.
+ *
+ * Insertion order keeps decisions-first then fact-sources-second so
+ * the resulting `getManyById` fan-out matches the response's reading
+ * order — useful for `LORE_DEBUG=1` triage where touch-failure lines
+ * land in the same sequence the response surfaced the rows.
+ */
+function collectAskSourceMemoryIds(
+  visibleGovernance: ReadonlyArray<{ decision?: Decision; fact?: Fact }>,
+  visibleStructure: ReadonlyArray<{ fact: Fact }>,
+): string[] {
+  const ids = new Set<string>()
+  for (const item of visibleGovernance) {
+    if (item.decision) ids.add(item.decision.id)
+    if (item.fact?.sourceMemoryId) ids.add(item.fact.sourceMemoryId)
+  }
+  for (const item of visibleStructure) {
+    if (item.fact.sourceMemoryId) ids.add(item.fact.sourceMemoryId)
+  }
+  return Array.from(ids)
 }
 
 // -------------------------------------------------------------------------
@@ -584,11 +620,22 @@ export async function handleAsk(
       )
     }
 
-    type Governed = { sortKey: string | null; line: string }
+    // Each governance row carries its underlying cite reference (a
+    // Decision for `decided_by` links, a Fact for `supersedes_decision`)
+    // so the post-cap touch collector can walk the visible slice
+    // without re-deriving the partition. See `collectAskSourceMemoryIds`.
+    type Governed = {
+      sortKey: string | null
+      line: string
+      decision?: Decision
+      fact?: Fact
+    }
     const governanceItems: Governed[] = [
       ...decisionLinks.map(({ fact, decision }) => ({
         sortKey: fact.validFrom,
         line: renderDecidedByLine(fact, decision, today),
+        decision,
+        fact,
       })),
       ...supersedesFacts.map((fact) => ({
         sortKey: fact.validFrom,
@@ -596,39 +643,52 @@ export async function handleAsk(
           titleMap,
           trailing: renderGenericTrailing(fact, today),
         }),
+        fact,
       })),
     ]
     governanceItems.sort(compareSortKeyDesc)
 
-    const structureItems = structure.map((fact) =>
-      renderFact(fact, {
+    type Structured = { fact: Fact; line: string }
+    const structureItems: Structured[] = structure.map((fact) => ({
+      fact,
+      line: renderFact(fact, {
         titleMap,
         trailing: renderGenericTrailing(fact, today),
       }),
-    )
+    }))
 
     const sections: string[] = []
     let anyOverflow = false
 
+    // Visible-slice tracking for the touch collector: only rows the
+    // agent actually sees count as cites. Hidden-overflow rows are
+    // suppressed via `(N hidden)` and bumping their `Confidence Score`
+    // would inflate RRF's confidence factor against rows that were
+    // never displayed.
+    let visibleGovernance: Governed[] = []
+    let visibleStructure: Structured[] = []
+
     if (governanceItems.length > 0) {
-      const visible = governanceItems.slice(0, cap)
-      const hidden = governanceItems.length - visible.length
+      visibleGovernance = governanceItems.slice(0, cap)
+      const hidden = governanceItems.length - visibleGovernance.length
       if (hidden > 0) anyOverflow = true
       const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
       sections.push(
-        `### Governance (${governanceItems.length})${hiddenSuffix}\n${visible
+        `### Governance (${governanceItems.length})${hiddenSuffix}\n${visibleGovernance
           .map((item) => item.line)
           .join("\n")}`,
       )
     }
 
     if (structureItems.length > 0) {
-      const visible = structureItems.slice(0, cap)
-      const hidden = structureItems.length - visible.length
+      visibleStructure = structureItems.slice(0, cap)
+      const hidden = structureItems.length - visibleStructure.length
       if (hidden > 0) anyOverflow = true
       const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
       sections.push(
-        `### Structure (${structureItems.length})${hiddenSuffix}\n${visible.join("\n")}`,
+        `### Structure (${structureItems.length})${hiddenSuffix}\n${visibleStructure
+          .map((item) => item.line)
+          .join("\n")}`,
       )
     }
 
@@ -703,7 +763,7 @@ export async function handleAsk(
     // misreport "0 facts" when the section actually rendered.
     const noun =
       taskItems.length > 0 && facts.length === 0 ? "results" : "facts"
-    return {
+    const response: ToolResult = {
       content: [
         {
           type: "text",
@@ -711,6 +771,35 @@ export async function handleAsk(
         },
       ],
     }
+
+    // Citation-as-evidence (issue 0.8.0/05). The ask response surfaces
+    // canonical decisions (decisions are memories) and the source
+    // memories backing each fact; both are cites and both bump the
+    // confidence column. The IDs are surfaced but the full memories
+    // aren't materialized in this handler — `getManyById` refreshes
+    // them so `touchOnRead`'s short-circuit / seed branches read
+    // current `confidenceScore` / `lastReferencedAt` / `confidence`.
+    // The cost (one `pages.retrieve` per cited row, properties-only)
+    // is the seam the spec accepts.
+    //
+    // Scoped to **visible** slices: rows past the per-bucket cap
+    // (`(N hidden)`) are not surfaced to the agent, so touching their
+    // backing memories would inflate RRF's confidence factor against
+    // rows that were never cited. See `collectAskSourceMemoryIds`.
+    const sourceMemoryIds = collectAskSourceMemoryIds(
+      visibleGovernance,
+      visibleStructure,
+    )
+    if (sourceMemoryIds.length > 0) {
+      try {
+        const cited = await services.memories.getManyById(sourceMemoryIds)
+        await fireTouchOnRead(services.memories, cited, "lore-query (ask)")
+      } catch {
+        // advisory — never block the response on a getManyById throw
+      }
+    }
+
+    return response
   } catch (err) {
     return toolError(err)
   }
