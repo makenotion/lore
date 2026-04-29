@@ -868,3 +868,197 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(text).not.toContain('> Scoped to catch-all')
   })
 })
+
+describe("lore-wake-up — Part G: synopsis rendering (issue 0.7.0/03)", () => {
+  // Wake-up's three memory sections (Recent, Related, For-Your-Current-Task)
+  // all gain synopsis rendering by default. The digest section is
+  // unchanged — the digest IS the content. The `expand: true` opt-in
+  // remains additive: synopsis renders on the default path; expand adds
+  // bodies on top.
+
+  it("renders the synopsis in the Recent Memories section by default", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "OAuth handshake notes",
+          synopsis: "Outlook callbacks fail because the redirect URI is not allow-listed.",
+          tags: ["auth"],
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain(
+      "#### OAuth handshake notes\n" +
+        "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
+        "*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("renders the synopsis in the Related to Active Tasks section by default", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      tasks: [makeTask({ id: "t1", title: "Router migration", entity: "Router" })],
+      relatedMemories: [
+        makeMemory("r1", {
+          title: "Router migration playbook",
+          synopsis: "Three-phase rollout: dual-write, cut over, decommission.",
+          tags: ["migration"],
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain(
+      "### Router migration playbook\n" +
+        "Three-phase rollout: dual-write, cut over, decommission.\n" +
+        "*manual | migration | 2026-04-20*",
+    )
+  })
+
+  it("renders the synopsis in the For Your Current Task section by default", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      taskQuery: "fix outlook auth bug",
+      taskMemories: [
+        makeMemory("task-1", {
+          title: "Outlook auth investigation",
+          synopsis: "Token rotation broke when MS rolled out the v2 endpoint.",
+          tags: ["auth"],
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ userQuery: "fix outlook auth bug" } as never)
+
+    const text = extractText(result)
+    expect(text).toContain(
+      "### Outlook auth investigation\n" +
+        "Token rotation broke when MS rolled out the v2 endpoint.\n" +
+        "*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("renders synopsis above the (related: <uuid>) trailer when topical collapse fires", async () => {
+    // The shared helper places synopsis between the heading and the
+    // italic meta line, so the trailer (added in renderMemoryEntry)
+    // sits below the meta line just like it did pre-#03.
+    const tags = ["hooks", "wakeup", "debugging"]
+    const peerId = "2c1ffab4-e67f-8185-bec0-d3902135c5bb"
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("3a853ab4-e67f-8185-bec0-d3902135c5ba", {
+          title: "Wakeup silent-failure root cause",
+          synopsis: "Token loader silently failed on missing LORE_NOTION_TOKEN.",
+          tags,
+        }),
+        makeMemory(peerId, {
+          title: "Wakeup silent-failure debugging followup",
+          synopsis: "Peer synopsis that must NOT render — peer is collapsed.",
+          tags,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    // Representative's synopsis renders.
+    expect(text).toContain("Token loader silently failed on missing LORE_NOTION_TOKEN.")
+    // Collapsed peer's synopsis stays suppressed — only the
+    // representative is rendered, per the topical-collapse contract.
+    expect(text).not.toContain("Peer synopsis that must NOT render")
+    // Synopsis above trailer above date — pin the order.
+    const synopsisIdx = text.indexOf("Token loader silently failed")
+    const trailerIdx = text.indexOf(`(related: ${peerId})`)
+    expect(synopsisIdx).toBeGreaterThan(-1)
+    expect(trailerIdx).toBeGreaterThan(synopsisIdx)
+  })
+
+  it("expand=true renders synopsis AND body (additive)", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "OAuth handshake notes",
+          synopsis: "One-line gist.",
+          content: "Body paragraph that only renders under expand=true.",
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({ expand: true } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("One-line gist.")
+    expect(text).toContain("Body paragraph that only renders under expand=true.")
+    // Order: synopsis above body.
+    expect(text.indexOf("One-line gist.")).toBeLessThan(
+      text.indexOf("Body paragraph"),
+    )
+  })
+
+  it("makes the same number of memories.list calls regardless of synopsis rendering", async () => {
+    // Synopsis rides along on dataSources.query — adding the property
+    // to the rendered output does NOT add Notion round-trips.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", { title: "With synopsis", synopsis: "x" }),
+        makeMemory("m2", { title: "Without synopsis", synopsis: "" }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    await wake({} as never)
+
+    // Pre-#03 wake-up calls memories.list once for the digest probe and
+    // once for the recent memories query — two calls total. #03 must
+    // not introduce a third.
+    expect(services._calls.memoriesList).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("lore-wake-up — synopsis is always rendered on wake-up (issue 0.7.0/03 scoping)", () => {
+  // Per the spec's scoping rationale, includeSynopsis is a recall/search
+  // knob only. Wake-up's dispatch schema does not declare the field, and
+  // wake-up's renderer does not consult it — so even a caller that
+  // tries to pass includeSynopsis to wake-up should still see synopses.
+  // The wake-up audience benefits from synopses by default; the
+  // existing `limit: 0` short-circuit covers "I want fewer rows."
+  it("renders synopsis even when caller passes includeSynopsis: false (field is dropped, not honored)", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "Always-rendered synopsis",
+          synopsis: "This synopsis must render on wake-up.",
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const result = await wake({ includeSynopsis: false } as never)
+    const text = extractText(result)
+    expect(text).toContain("This synopsis must render on wake-up.")
+  })
+})

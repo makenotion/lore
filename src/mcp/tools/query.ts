@@ -70,6 +70,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     limit: z.number().int().min(1).max(100).optional(),
     startCursor: z.string().min(1).optional(),
     includeContent: z.boolean().optional(),
+    includeSynopsis: z.boolean().optional(),
   }),
   z.object({
     action: z.literal("search"),
@@ -85,6 +86,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     status: z.enum(STATUSES).optional(),
     limit: z.number().int().min(1).max(50).optional(),
     includeContent: z.boolean().optional(),
+    includeSynopsis: z.boolean().optional(),
     mode: z.enum(["contains", "semantic", "hybrid"]).optional(),
     explain: z.boolean().optional(),
     intent: z.string().optional(),
@@ -225,6 +227,13 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(recall | search) Include each memory's markdown body (default false). One extra Notion round-trip per row.",
+          ),
+        // recall | search
+        includeSynopsis: z
+          .boolean()
+          .optional()
+          .describe(
+            "(recall | search) Render the memory's 1–2 sentence synopsis (when present) under the title (default true). Pass false to restore the byte-identical pre-synopsis title-only output for narrow terminals or callers that already plan to fetch bodies.",
           ),
         // ask only
         includeContext: z

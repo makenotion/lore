@@ -162,3 +162,66 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
     }
   })
 })
+
+describe("lore-query polymorphic dispatcher — includeSynopsis forwarding (issue 0.7.0/03)", () => {
+  // The flag lives on the recall and search arms of the dispatch schema.
+  // Pinning the wiring here protects against a future contributor
+  // dropping the field from one arm and not the other, or accidentally
+  // adding it to ask/audit (where it would be conceptually wrong — those
+  // arms don't render memory rows).
+
+  it("accepts includeSynopsis=false on the recall arm", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      ...makeAskServices(),
+      topics: { findByName: vi.fn() },
+      memories: {
+        list: vi.fn().mockResolvedValue({ items: [] }),
+        getTitleById: vi.fn(),
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({ includeSynopsis: false })
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+  })
+
+  it("accepts includeSynopsis=false on the search arm", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      ...makeAskServices(),
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn().mockResolvedValue([]),
+        list: vi.fn(),
+        getTitleById: vi.fn(),
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "anything", includeSynopsis: false })
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+  })
+
+  it("rejects non-boolean includeSynopsis at the dispatcher schema layer", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      ...makeAskServices(),
+      topics: { findByName: vi.fn() },
+      memories: {
+        list: vi.fn().mockResolvedValue({ items: [] }),
+        getTitleById: vi.fn(),
+      },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({ includeSynopsis: "yes" })
+    expect((result as { isError?: boolean }).isError).toBe(true)
+  })
+})

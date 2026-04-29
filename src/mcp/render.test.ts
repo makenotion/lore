@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   collapseOverlappingMemories,
+  defaultMemoryMetaBuilder,
   displayId,
   displayValue,
   factClass,
+  formatMemoryListItem,
   groupFactsByClass,
   isUuid,
   renderFact,
@@ -17,6 +19,7 @@ import type {
   Memory,
   MemorySource,
 } from "../types.js"
+import { SYNOPSIS_MAX } from "../types.js"
 
 function buildMemory(overrides: Partial<Memory> & { id: string; title: string }): Memory {
   return {
@@ -484,5 +487,187 @@ describe("collapseOverlappingMemories", () => {
 
     const groups = collapseOverlappingMemories(memories)
     expect(groups).toHaveLength(2)
+  })
+})
+
+describe("formatMemoryListItem — four-cell matrix", () => {
+  // Pins the body × synopsis matrix from issue 0.7.0/03 verbatim. The
+  // pre-#03 paths (no synopsis) must remain byte-identical so callers
+  // who pass `includeSynopsis: false` truly restore prior output.
+  const baseMemory = buildMemory({
+    id: "mem-1",
+    title: "OAuth handshake notes",
+    source: "manual",
+    tags: ["auth"],
+    updatedAt: "2026-04-20T00:00:00.000Z",
+  })
+  const synopsisMemory = buildMemory({
+    ...baseMemory,
+    synopsis: "Outlook callbacks fail because the redirect URI is not allow-listed.",
+  })
+
+  it("includeContent=false, no synopsis → `### {title}\\n*{meta}*` (byte-identical to pre-#03)", () => {
+    const out = formatMemoryListItem(baseMemory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe("### OAuth handshake notes\n*manual | auth | 2026-04-20*")
+  })
+
+  it("includeContent=false, synopsis → `### {title}\\n{synopsis}\\n*{meta}*`", () => {
+    const out = formatMemoryListItem(synopsisMemory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe(
+      "### OAuth handshake notes\n" +
+        "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
+        "*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("includeContent=true, no synopsis → `### {title}\\n*{meta}*\\n\\n{body}` (byte-identical to pre-#03)", () => {
+    const out = formatMemoryListItem(baseMemory, {
+      meta: defaultMemoryMetaBuilder,
+      body: "Body paragraph.",
+    })
+    expect(out).toBe("### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.")
+  })
+
+  it("includeContent=true, synopsis → `### {title}\\n{synopsis}\\n*{meta}*\\n\\n{body}`", () => {
+    const out = formatMemoryListItem(synopsisMemory, {
+      meta: defaultMemoryMetaBuilder,
+      body: "Body paragraph.",
+    })
+    expect(out).toBe(
+      "### OAuth handshake notes\n" +
+        "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
+        "*manual | auth | 2026-04-20*\n\n" +
+        "Body paragraph.",
+    )
+  })
+})
+
+describe("formatMemoryListItem — includeSynopsis opt-out", () => {
+  const synopsisMemory = buildMemory({
+    id: "mem-1",
+    title: "OAuth handshake notes",
+    source: "manual",
+    tags: ["auth"],
+    updatedAt: "2026-04-20T00:00:00.000Z",
+    synopsis: "Outlook callbacks fail because the redirect URI is not allow-listed.",
+  })
+
+  it("includeSynopsis=false suppresses the synopsis line on the body-off path", () => {
+    const out = formatMemoryListItem(synopsisMemory, {
+      meta: defaultMemoryMetaBuilder,
+      includeSynopsis: false,
+    })
+    // Byte-identical to the no-synopsis cell.
+    expect(out).toBe("### OAuth handshake notes\n*manual | auth | 2026-04-20*")
+  })
+
+  it("includeSynopsis=false suppresses the synopsis line on the body-on path", () => {
+    const out = formatMemoryListItem(synopsisMemory, {
+      meta: defaultMemoryMetaBuilder,
+      includeSynopsis: false,
+      body: "Body paragraph.",
+    })
+    expect(out).toBe("### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.")
+  })
+})
+
+describe("formatMemoryListItem — heading level + meta variants", () => {
+  const synopsisMemory = buildMemory({
+    id: "mem-1",
+    title: "OAuth handshake notes",
+    source: "manual",
+    tags: [],
+    synopsis: "One-liner.",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+    createdAt: "2026-04-20T00:00:00.000Z",
+  })
+
+  it("respects headingLevel for nested call sites (e.g. wake-up Recent Memories under date buckets)", () => {
+    const out = formatMemoryListItem(synopsisMemory, { headingLevel: 4 })
+    expect(out.split("\n")[0]).toBe("#### OAuth handshake notes")
+  })
+
+  it("accepts a literal meta string and wraps it in asterisks verbatim", () => {
+    const out = formatMemoryListItem(synopsisMemory, { meta: "manual | no tags | 2026-04-20" })
+    expect(out).toBe(
+      "### OAuth handshake notes\nOne-liner.\n*manual | no tags | 2026-04-20*",
+    )
+  })
+
+  it("omits the meta line entirely when the builder returns null", () => {
+    const out = formatMemoryListItem(synopsisMemory, { meta: () => null })
+    // Heading + synopsis only, no italic meta line.
+    expect(out).toBe("### OAuth handshake notes\nOne-liner.")
+  })
+
+  it("falls back to the default recall/search builder when meta option is omitted", () => {
+    const out = formatMemoryListItem(synopsisMemory)
+    // Default builder is `defaultMemoryMetaBuilder`; this is the
+    // recall/search shape.
+    expect(out).toBe("### OAuth handshake notes\nOne-liner.\n*manual | 2026-04-20*")
+  })
+})
+
+describe("formatMemoryListItem — defensive truncation", () => {
+  // Per #01 the service layer accepts up to the Notion 2000-char ceiling
+  // and only the MCP write Zod enforces the 500-char cap, so internal
+  // callers (bulk migrations, the future --backfill-synopses synthesizer)
+  // can still write longer values. The renderer must defend against that
+  // path landing 1500-char synopses on a wake-up listing.
+  it("truncates over-cap synopses at the last word boundary at or before SYNOPSIS_MAX", () => {
+    // Build a 600-char synopsis with words exactly 5 chars + 1 space wide
+    // so the word boundary is deterministic.
+    const word = "abcde "
+    const longSynopsis = word.repeat(100) // 600 chars, last char is a space
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Long synopsis",
+      synopsis: longSynopsis,
+    })
+    const out = formatMemoryListItem(memory, { meta: () => null })
+    const synopsisLine = out.split("\n")[1]
+    // SYNOPSIS_MAX = 500. 500 / 6 = 83.33, so 83 full words fit (498
+    // chars), and the truncation snaps back to that boundary.
+    expect(synopsisLine.length).toBeLessThanOrEqual(SYNOPSIS_MAX)
+    expect(synopsisLine.endsWith("e")).toBe(true)
+    // No ellipsis marker — adding one would diverge from prior text-field
+    // truncation in this codebase.
+    expect(synopsisLine).not.toContain("…")
+  })
+
+  it("does not collapse the meta line into the truncated synopsis text", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Truncated row",
+      source: "manual",
+      tags: ["auth"],
+      synopsis: "x".repeat(600),
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    // The meta line must still appear, on its own line, after the
+    // (possibly truncated) synopsis.
+    expect(out).toContain("\n*manual | auth | 2026-04-20*")
+  })
+
+  it("hard-slices when the synopsis has no whitespace to break on (single very long token)", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Single long token",
+      synopsis: "x".repeat(600),
+    })
+    const out = formatMemoryListItem(memory, { meta: () => null })
+    const synopsisLine = out.split("\n")[1]
+    expect(synopsisLine.length).toBe(SYNOPSIS_MAX)
+  })
+
+  it("leaves under-cap synopses untouched", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Short synopsis",
+      synopsis: "Short and sweet.",
+    })
+    const out = formatMemoryListItem(memory, { meta: () => null })
+    expect(out).toBe("### Short synopsis\nShort and sweet.")
   })
 })

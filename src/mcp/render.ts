@@ -13,7 +13,15 @@
  * to 25+ body fetches just to read a Title property.
  */
 
-import type { Fact, FactPredicate, Memory } from "../types.js"
+import type {
+  Fact,
+  FactPredicate,
+  Memory,
+  MemoryKind,
+  MemorySource,
+  MemoryStatus,
+} from "../types.js"
+import { SYNOPSIS_MAX } from "../types.js"
 
 /**
  * Notion page IDs are canonical 8-4-4-4-12 hex UUIDs. The SDK emits
@@ -160,6 +168,165 @@ function unresolvedHint(id: string): string {
   const normalized = id.toLowerCase()
   if (!isUuid(normalized)) return `${id} (?)`
   return `…${normalized.slice(-8)} (?)`
+}
+
+/**
+ * Structural subtype documenting the field set `formatMemoryListItem`
+ * actually reads. Using a structural subtype (rather than `Memory`) means
+ * `DecisionSummary` and `TaskSummary` — the body-less projections, see
+ * naming note in `0.7.0/README.md` — can be passed without an unsafe
+ * cast. The fields cover what every meta-builder used by the recall /
+ * search / wake-up surfaces needs: source / kind / status / tags /
+ * dates for recall/search, source / tags / date for wake-up Recent
+ * Memories, and id for diagnostic paths.
+ */
+export interface MemoryListItem {
+  id: string
+  title: string
+  synopsis: string
+  source: MemorySource
+  kind: MemoryKind
+  status: MemoryStatus
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FormatMemoryListItemOptions {
+  /** When false, suppress synopsis even on rows that have one. Default: true. */
+  includeSynopsis?: boolean
+  /**
+   * Heading level (number of leading `#`). Defaults to 3 — recall,
+   * search, and wake-up's Related / For-Your-Current-Task all use `###`.
+   * Wake-up Recent Memories sits under date-bucket `### Today`
+   * sub-heads and passes 4 to keep the markdown tree balanced.
+   */
+  headingLevel?: 1 | 2 | 3 | 4 | 5 | 6
+  /**
+   * How to render the italic metadata line. Either:
+   * - a `(memory) => string | null` builder — call it with the row and
+   *   wrap the returned string in asterisks; `null` skips the meta line
+   *   entirely.
+   * - a literal string — wrapped in asterisks verbatim.
+   *
+   * Recall/search pass a builder that emits the
+   * `[source, kind (when !== "note"), status (when !== "informational"),
+   * tags.join(", ") (when non-empty), updatedAt.split("T")[0]]`
+   * pipe-joined shape pre-#03 already produced. Wake-up Recent /
+   * Related pass a leaner builder. Omitting this option falls back to
+   * the recall/search shape via `defaultMemoryMetaBuilder`.
+   */
+  meta?: ((memory: MemoryListItem) => string | null) | string
+  /**
+   * Markdown body to append after the meta line. When supplied AND
+   * non-empty, the helper appends `\n\n${body}` to the rendered row,
+   * producing the `### {title}\n[{synopsis}\n]*{meta}*\n\n{body}`
+   * shape from the includeContent=true cells of the four-cell matrix.
+   * When omitted or empty, the helper renders the body-off shape
+   * (`### {title}\n[{synopsis}\n]*{meta}*`).
+   *
+   * Body lives on `Memory` (`content` field) but NOT on
+   * `MemoryListItem` — keeping it off the structural type lets
+   * `DecisionSummary` and `TaskSummary` (the body-less projections)
+   * pass the helper without a content field they don't have. Recall /
+   * search forward `m.content` here when their `includeContent` flag
+   * is `true`. Wake-up does NOT pass body — its body inclusion is
+   * gated by `expand: true` and rendered in a different code path
+   * outside this helper.
+   */
+  body?: string
+}
+
+/**
+ * Default builder matching recall / search's pre-#03 meta shape. Pulled
+ * out so wake-up's section-specific builders can fall back to it for the
+ * non-Recent-Memories surfaces if they ever need to.
+ */
+export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
+  return [
+    memory.source,
+    memory.kind !== "note" ? memory.kind : null,
+    memory.status !== "informational" ? memory.status : null,
+    memory.tags.length > 0 ? memory.tags.join(", ") : null,
+    memory.updatedAt.split("T")[0],
+  ]
+    .filter(Boolean)
+    .join(" | ")
+}
+
+/**
+ * Render one memory listing entry. Shared by `lore-query action='recall'`,
+ * `lore-query action='search'`, and `lore-context action='wake-up'`'s
+ * memory sections so a future rendering tweak (e.g. wrapping the
+ * synopsis in italics, or moving it after the metadata line) is a
+ * one-place edit instead of a fan-out across three handlers with
+ * fixture pins each.
+ *
+ * Output shape, traversing the four-cell `body` × synopsis matrix:
+ *
+ *   `### {title}` (heading level configurable)
+ *   `[{synopsis}]`  (only when `includeSynopsis !== false` and present)
+ *   `*{meta}*`      (only when meta builder/string yields a non-null value)
+ *   `[\n\n{body}]`  (only when `body` is non-empty)
+ *
+ * The synopsis is defensively truncated at `SYNOPSIS_MAX` (declared in
+ * `src/types.ts`). Per #01 the service layer accepts up to the Notion
+ * 2000-char ceiling and only the MCP write Zod enforces the 500-char
+ * soft cap — internal callers (bulk migrations, `--backfill-synopses`
+ * synthesizer, future scripts) can write longer values, and a 1500-char
+ * synopsis on a wake-up listing would blow up the page. Truncation
+ * snaps back to the last word boundary at or before the cap. No
+ * ellipsis marker is appended — adding `…` would diverge from how
+ * other text fields handle truncation in this codebase.
+ */
+export function formatMemoryListItem(
+  memory: MemoryListItem,
+  options: FormatMemoryListItemOptions = {},
+): string {
+  const headingLevel = options.headingLevel ?? 3
+  const heading = "#".repeat(headingLevel)
+  const lines: string[] = [`${heading} ${memory.title}`]
+
+  const includeSynopsis = options.includeSynopsis !== false
+  if (includeSynopsis && memory.synopsis) {
+    lines.push(truncateSynopsis(memory.synopsis))
+  }
+
+  const metaText = renderMetaLine(memory, options.meta)
+  if (metaText !== null) {
+    lines.push(`*${metaText}*`)
+  }
+
+  let rendered = lines.join("\n")
+  if (options.body && options.body.length > 0) {
+    rendered = `${rendered}\n\n${options.body}`
+  }
+  return rendered
+}
+
+function renderMetaLine(
+  memory: MemoryListItem,
+  meta: FormatMemoryListItemOptions["meta"],
+): string | null {
+  if (typeof meta === "string") return meta
+  if (typeof meta === "function") return meta(memory)
+  return defaultMemoryMetaBuilder(memory)
+}
+
+/**
+ * Trim a synopsis to `SYNOPSIS_MAX` chars on the last word boundary at
+ * or before the cap. When the synopsis is already within budget, the
+ * input is returned as-is — short paths shouldn't pay a slice/regex
+ * cost. When no usable word boundary appears inside the window (a
+ * single 600-char token, or whitespace only at index 0) we fall back
+ * to the hard slice so the row still respects the cap.
+ */
+function truncateSynopsis(synopsis: string): string {
+  if (synopsis.length <= SYNOPSIS_MAX) return synopsis
+  const window = synopsis.slice(0, SYNOPSIS_MAX)
+  const lastBoundary = window.search(/\s\S*$/u)
+  if (lastBoundary <= 0) return window
+  return window.slice(0, lastBoundary)
 }
 
 /**

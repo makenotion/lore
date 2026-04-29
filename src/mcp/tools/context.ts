@@ -21,7 +21,9 @@ import { taskDaysOverdue } from "../../core/task.js"
 import type { Memory } from "../../types.js"
 import {
   type CollapsedMemoryGroup,
+  type MemoryListItem,
   collapseOverlappingMemories,
+  formatMemoryListItem,
   renderFact,
   resolveReferencedTitles,
 } from "../render.js"
@@ -70,10 +72,24 @@ function renderMemoryEntry(
   expand: boolean,
   headingLevel: 3 | 4,
 ): string[] {
-  const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
-  const date = mem.createdAt.split("T")[0]
-  const heading = "#".repeat(headingLevel)
-  const lines: string[] = [`${heading} ${mem.title}`, `*${mem.source} | ${tagPart} | ${date}*`]
+  // Wake-up's leaner meta shape — source | tags | createdAt — diverges
+  // from recall/search's kind/status-conditional pipe chain on purpose
+  // (different audiences, different signal density). The shared helper
+  // takes a builder so both formats compose into the same envelope.
+  const rendered = formatMemoryListItem(mem, {
+    headingLevel,
+    meta: wakeUpMemoryMetaBuilder,
+  })
+  // The splice below assumes `formatMemoryListItem` returns lines joined
+  // by a single `\n` with no internal blank lines (heading, optional
+  // synopsis, optional `*meta*` — that's it; body lives off the
+  // structural type and we never pass it here). If a future helper
+  // change introduces an internal `\n\n` (e.g. spec extension wrapping
+  // synopsis as a blockquote with surrounding blanks), the `(related:)`
+  // trailer would land in the wrong slot. The render-side test suite
+  // pins the no-body envelope shape; keep this comment in sync if the
+  // contract widens.
+  const lines: string[] = rendered.split("\n")
   if (group && group.collapsedIds.length > 0) {
     lines.push(`(related: ${group.collapsedIds.join(", ")})`)
   }
@@ -90,6 +106,12 @@ function renderMemoryEntry(
     lines.push(mem.content, "")
   }
   return lines
+}
+
+function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
+  const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
+  const date = mem.createdAt.split("T")[0]
+  return `${mem.source} | ${tagPart} | ${date}`
 }
 
 // -------------------------------------------------------------------------

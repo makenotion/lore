@@ -1617,3 +1617,347 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
   //   - TaskService.create / update — `src/core/task.test.ts`
   // Keep the proof at the seam, not at the helper.
 })
+
+describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
+  // Pins the four-cell `includeContent` × synopsis-non-empty matrix on
+  // the recall surface. The pre-#03 cells (no synopsis) must remain
+  // byte-identical so existing fixtures and agent expectations don't
+  // shift on the no-synopsis path.
+
+  function buildRecallServices(memory: Memory) {
+    const memoriesList = vi.fn().mockResolvedValue({ items: [memory] })
+    return {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+  }
+
+  it("includeContent=false, no synopsis → byte-identical pre-#03 row", async () => {
+    const mockServer = createMockServer()
+    const services = buildRecallServices(
+      makeMemory("mem-1", { title: "OAuth handshake notes", tags: ["auth"] }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### OAuth handshake notes\n*manual | auth | 2026-04-20*")
+  })
+
+  it("includeContent=false, synopsis → synopsis line between heading and meta", async () => {
+    const mockServer = createMockServer()
+    const services = buildRecallServices(
+      makeMemory("mem-1", {
+        title: "OAuth handshake notes",
+        tags: ["auth"],
+        synopsis: "Outlook callbacks fail because the redirect URI is not allow-listed.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "### OAuth handshake notes\n" +
+        "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
+        "*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("includeContent=true, no synopsis → byte-identical pre-#03 body-on row", async () => {
+    const mockServer = createMockServer()
+    const services = buildRecallServices(
+      makeMemory("mem-1", {
+        title: "OAuth handshake notes",
+        tags: ["auth"],
+        content: "Body paragraph.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({ includeContent: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.",
+    )
+  })
+
+  it("includeContent=true, synopsis → synopsis above meta, body below", async () => {
+    const mockServer = createMockServer()
+    const services = buildRecallServices(
+      makeMemory("mem-1", {
+        title: "OAuth handshake notes",
+        tags: ["auth"],
+        synopsis: "Outlook callbacks fail.",
+        content: "Body paragraph.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({ includeContent: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "### OAuth handshake notes\n" +
+        "Outlook callbacks fail.\n" +
+        "*manual | auth | 2026-04-20*\n\n" +
+        "Body paragraph.",
+    )
+  })
+
+  it("includeSynopsis=false restores byte-identical pre-#03 output (body-off)", async () => {
+    const mockServer = createMockServer()
+    const services = buildRecallServices(
+      makeMemory("mem-1", {
+        title: "OAuth handshake notes",
+        tags: ["auth"],
+        synopsis: "This synopsis should not render.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({ includeSynopsis: false } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("This synopsis should not render.")
+    expect(text).toContain("### OAuth handshake notes\n*manual | auth | 2026-04-20*")
+  })
+
+  it("includeSynopsis=false restores byte-identical pre-#03 output (body-on)", async () => {
+    const mockServer = createMockServer()
+    const services = buildRecallServices(
+      makeMemory("mem-1", {
+        title: "OAuth handshake notes",
+        tags: ["auth"],
+        synopsis: "This synopsis should not render.",
+        content: "Body paragraph.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({
+      includeContent: true,
+      includeSynopsis: false,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("This synopsis should not render.")
+    expect(text).toContain(
+      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.",
+    )
+  })
+
+  it("preserves the multi-row separator with mixed-synopsis rows", async () => {
+    // Pins the row separator from the spec's acceptance criteria.
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "With synopsis",
+          tags: ["auth"],
+          synopsis: "First row has a synopsis.",
+        }),
+        makeMemory("mem-2", { title: "Without synopsis", tags: ["auth"] }),
+      ],
+    })
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "### With synopsis\n" +
+        "First row has a synopsis.\n" +
+        "*manual | auth | 2026-04-20*\n\n---\n\n" +
+        "### Without synopsis\n" +
+        "*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("does not add a Notion round-trip when synopsis renders (property rides the dataSources.query response)", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "Synopsis rendered",
+          synopsis: "rides along on the property payload",
+        }),
+      ],
+    })
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    await recall({} as never)
+
+    // Exactly one list call; recall does not fan out per row.
+    expect(memoriesList).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
+  function buildSearchServices(memory: Memory) {
+    const memoriesSearch = vi.fn().mockResolvedValue([memory])
+    return {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+  }
+
+  it("renders synopsis between heading and meta on the body-off path", async () => {
+    const mockServer = createMockServer()
+    const services = buildSearchServices(
+      makeMemory("mem-1", {
+        title: "Search hit",
+        tags: ["auth"],
+        synopsis: "One-line gist.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "auth" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "### Search hit\nOne-line gist.\n*manual | auth | 2026-04-20*",
+    )
+  })
+
+  it("renders synopsis above meta and body below on the body-on path", async () => {
+    const mockServer = createMockServer()
+    const services = buildSearchServices(
+      makeMemory("mem-1", {
+        title: "Search hit",
+        tags: ["auth"],
+        synopsis: "One-line gist.",
+        content: "Body paragraph.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "auth", includeContent: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "### Search hit\n" +
+        "One-line gist.\n" +
+        "*manual | auth | 2026-04-20*\n\n" +
+        "Body paragraph.",
+    )
+  })
+
+  it("renders the optional Score trace footer below the memory list when explain=true", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearchWithExplain = vi.fn().mockResolvedValue({
+      memories: [
+        makeMemory("mem-1", {
+          title: "Search hit",
+          synopsis: "synopsis line",
+        }),
+      ],
+      explain: [
+        {
+          memoryId: "mem-1",
+          containsRank: 0,
+          semanticRank: null,
+          rrfScore: null,
+          branch: "contains-only",
+        },
+      ],
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn(),
+        searchWithExplain: memoriesSearchWithExplain,
+        list: vi.fn(),
+      },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "auth", explain: true } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Synopsis rendered, then the score trace footer below.
+    const synopsisIdx = text.indexOf("synopsis line")
+    const traceIdx = text.indexOf("## Score trace")
+    expect(synopsisIdx).toBeGreaterThan(-1)
+    expect(traceIdx).toBeGreaterThan(synopsisIdx)
+  })
+
+  it("includeSynopsis=false restores byte-identical pre-#03 search output", async () => {
+    const mockServer = createMockServer()
+    const services = buildSearchServices(
+      makeMemory("mem-1", {
+        title: "Search hit",
+        tags: ["auth"],
+        synopsis: "Should not appear.",
+      }),
+    )
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({
+      query: "auth",
+      includeSynopsis: false,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("Should not appear.")
+    expect(text).toContain("### Search hit\n*manual | auth | 2026-04-20*")
+  })
+})

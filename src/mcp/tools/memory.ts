@@ -23,6 +23,7 @@ import {
   findNearDuplicates,
   type NearDuplicateMatch,
 } from "../../core/near-duplicate.js"
+import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -367,6 +368,7 @@ interface RecallArgs {
   limit?: number
   startCursor?: string
   includeContent?: boolean
+  includeSynopsis?: boolean
 }
 
 export async function handleRecall(
@@ -424,20 +426,16 @@ export async function handleRecall(
       }
     }
 
+    const includeSynopsis = args.includeSynopsis !== false
+
     const text = memories
-      .map((m) => {
-        const meta = [
-          m.source,
-          m.kind !== "note" ? m.kind : null,
-          m.status !== "informational" ? m.status : null,
-          m.tags.length > 0 ? m.tags.join(", ") : null,
-          m.updatedAt.split("T")[0],
-        ]
-          .filter(Boolean)
-          .join(" | ")
-        const body = withContent && m.content ? `\n\n${m.content}` : ""
-        return `### ${m.title}\n*${meta}*${body}`
-      })
+      .map((m) =>
+        formatMemoryListItem(m, {
+          meta: defaultMemoryMetaBuilder,
+          body: withContent ? m.content : undefined,
+          includeSynopsis,
+        }),
+      )
       .join("\n\n---\n\n")
 
     const bodiesFooter = withContent
@@ -466,6 +464,7 @@ interface SearchArgs {
   status?: (typeof STATUSES)[number]
   limit?: number
   includeContent?: boolean
+  includeSynopsis?: boolean
   mode?: SearchMode
   explain?: boolean
   intent?: string
@@ -557,21 +556,16 @@ export async function handleSearch(
       }
     }
 
-    const text = results
-      .map((m) => {
-        const meta = [
-          m.source,
-          m.kind !== "note" ? m.kind : null,
-          m.status !== "informational" ? m.status : null,
-          m.tags.length > 0 ? m.tags.join(", ") : null,
-          m.updatedAt.split("T")[0],
-        ]
-          .filter(Boolean)
-          .join(" | ")
+    const includeSynopsis = args.includeSynopsis !== false
 
-        const body = withContent && m.content ? `\n\n${m.content}` : ""
-        return `### ${m.title}\n*${meta}*${body}`
-      })
+    const text = results
+      .map((m) =>
+        formatMemoryListItem(m, {
+          meta: defaultMemoryMetaBuilder,
+          body: withContent ? m.content : undefined,
+          includeSynopsis,
+        }),
+      )
       .join("\n\n---\n\n")
 
     const bodiesFooter = withContent
