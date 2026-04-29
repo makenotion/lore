@@ -199,6 +199,18 @@ export interface MemoryListItem {
    * byte-identically to pre-0.8.0.
    */
   confidenceScore: number | null
+  /**
+   * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
+   * row has been touched once by a read path (or backfilled by
+   * `lore migrate --build-confidence-scores`). Read by the wake-up Stale
+   * Confidence section's per-row meta builder (issue 0.8.0/#10) to render
+   * `Last referenced: Nd ago`. Carried on the structural type rather than
+   * cast at the call site so other section-specific meta builders that
+   * want the same neglect signal don't have to re-derive it. `Memory`,
+   * `DecisionSummary`, and `TaskSummary` all carry the field structurally,
+   * so every existing caller satisfies the shape.
+   */
+  lastReferencedAt: string | null
 }
 
 export interface FormatMemoryListItemOptions {

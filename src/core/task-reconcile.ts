@@ -16,7 +16,7 @@
  */
 
 import type { Memory, TaskSummary } from "../types.js"
-import { ACTIVE_TASK_STATES } from "../types.js"
+import { ACTIVE_TASK_STATES, MS_PER_DAY } from "../types.js"
 import type { TaskService } from "./task.js"
 import type { MemoryService } from "./memory.js"
 
@@ -98,7 +98,6 @@ const SOFT_CUE_PATTERN = /\b(?:done|landed|out)\b/i
  */
 const RECENCY_FULL_DAYS = 14
 const RECENCY_ZERO_DAYS = 90
-const MS_PER_DAY = 86_400_000
 
 /**
  * Per-axis score weights. The triple sums to 1.0 so the final score

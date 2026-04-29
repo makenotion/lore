@@ -135,6 +135,14 @@ interface WakeServicesOverrides {
   facts?: Fact[]
   tasks?: TaskSummary[]
   /**
+   * Memories returned by the Stale Confidence query (issue 0.8.0/#10).
+   * Sliced to the caller's `limit` to mirror the production
+   * `MemoryService.queryStaleConfidence` contract — the wake-up test
+   * suite simulates saturation by feeding more rows than
+   * `STALE_CONFIDENCE_LIMIT` and asserting the `≥` heading marker.
+   */
+  staleConfidence?: Memory[]
+  /**
    * Override the auto-detected project on `services.context.project`.
    * Defaults to a minimal Mail project with no description and `path:
    * "/mail"` to match the pre-issue-18 fixture exactly.
@@ -177,6 +185,15 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       return { items: all.slice(0, opts.limit), hasMore: false }
     },
   )
+  const queryStaleConfidence = vi.fn(
+    async (opts: { projectId?: string; limit: number; today: string }) => {
+      const all = overrides.staleConfidence ?? []
+      // Mirror the production query: it caps at `page_size: opts.limit`
+      // server-side. Slicing here lets the saturation-marker fixture
+      // feed more rows than the limit.
+      return all.slice(0, opts.limit)
+    },
+  )
 
   // Default to the same minimal Mail project the pre-issue-18 fixture
   // used. Tests that rely on the project framing block override
@@ -196,6 +213,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       list: memoriesList,
       search: memoriesSearch,
       getTitleById,
+      queryStaleConfidence,
     },
     facts: {
       listRecent: factsListRecent,
@@ -253,6 +271,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       memoriesSearch,
       factsListRecent,
       findByName,
+      queryStaleConfidence,
     },
   }
 }
@@ -2199,5 +2218,217 @@ describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
     await wakeUp({})
 
     expect(touchOnRead).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stale Confidence subsection (issue 0.8.0/#10)
+// ---------------------------------------------------------------------------
+
+describe("lore-wake-up — Stale Confidence subsection (issue 0.8.0/#10)", () => {
+  // Freeze wall-clock time so `todayUtc()` inside `handleWakeUp`
+  // resolves to a known anchor. Without this, the per-row `Nd ago`
+  // assertions below would have to use loose regex ranges (the test
+  // would silently start passing on the wrong day if `today` and the
+  // fixture's `lastReferencedAt` drift apart). Pinning the anchor
+  // also pins the spec's same-anchor invariant — query cutoff and
+  // render age MUST share the exact same day — by exposing any
+  // off-by-one bug as a failed assertion.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-04-29T12:00:00.000Z"))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("omits the heading when no memories match either OR-branch", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ staleConfidence: [] })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).not.toContain("### Stale Confidence")
+  })
+
+  it("renders the section with an exact count when below the saturation cap", async () => {
+    const mockServer = createMockServer()
+    const stale = [
+      makeMemory("low-1", {
+        title: "Low score row",
+        confidenceScore: 0.2,
+        lastReferencedAt: "2026-04-25",
+      }),
+      makeMemory("low-2", {
+        title: "Another low row",
+        confidenceScore: 0.3,
+        lastReferencedAt: "2026-04-20",
+      }),
+      makeMemory("low-3", {
+        title: "Third low row",
+        confidenceScore: 0.4,
+        lastReferencedAt: "2026-04-10",
+      }),
+    ]
+    const services = makeWakeServices({ staleConfidence: stale })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain(
+      "### Stale Confidence (3 memories scored < 0.5 or untouched ≥60d)",
+    )
+    expect(text).not.toContain("≥3 memories")
+    // The three rows render in the order returned by the data layer
+    // (sorted by score ascending — most-decayed first per the
+    // queryStaleConfidence contract).
+    expect(text).toContain("### Low score row")
+    expect(text).toContain("### Another low row")
+    expect(text).toContain("### Third low row")
+  })
+
+  it("prefixes the count with `≥` when the section is saturated", async () => {
+    // Five rows hits the STALE_CONFIDENCE_LIMIT (default 5). The
+    // production query caps at `page_size: limit`; the stub mirrors
+    // that. The heading honestly signals "at least this many" rather
+    // than implying the limit IS the total.
+    const mockServer = createMockServer()
+    const stale = Array.from({ length: 5 }, (_, i) =>
+      makeMemory(`low-${i}`, {
+        title: `Decayed row ${i}`,
+        confidenceScore: 0.05 + i * 0.05,
+        lastReferencedAt: "2026-04-20",
+      }),
+    )
+    const services = makeWakeServices({ staleConfidence: stale })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain(
+      "### Stale Confidence (≥5 memories scored < 0.5 or untouched ≥60d)",
+    )
+  })
+
+  it("surfaces a high-stored-score row whose Last Referenced At is past the cutoff (neglect-OR branch)", async () => {
+    // The load-bearing case under #03's write-realized lazy decay
+    // model: a memory at stored 0.9 touched 90 days ago keeps a
+    // stored 0.9 (RRF reads it as-is), so without the neglect-OR
+    // branch it would silently rot. The query's neglect-OR clause
+    // surfaces it; the agent reading it via `lore-memory
+    // action='expand'` realizes the accrued decay through
+    // `touchOnRead`. The data layer is responsible for matching the
+    // OR-clause against the row's Notion properties — the renderer
+    // just trusts whatever the query returned.
+    const mockServer = createMockServer()
+    const neglected = makeMemory("neglected-but-trusted", {
+      title: "Trusted but stale",
+      confidenceScore: 0.9,
+      lastReferencedAt: "2026-01-29", // 90 days before 2026-04-29
+    })
+    const services = makeWakeServices({ staleConfidence: [neglected] })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("### Trusted but stale")
+    // No #09 trust label on a row whose stored score is above
+    // CONFIDENCE_DISPLAY_THRESHOLD (0.5) — the per-row gate inside
+    // `formatTrustLabel` returns null at >= threshold.
+    expect(text).not.toMatch(
+      /Trusted but stale[\s\S]*?_(?:very low|low|moderate) confidence_/,
+    )
+    // The `Last referenced: Nd ago` meta-line IS present — the
+    // disambiguating signal that flags the neglect even when no
+    // trust label fires. The frozen `today` anchor (2026-04-29) and
+    // the fixture's `lastReferencedAt` (2026-01-29) are exactly 90
+    // days apart, so the rendered age pins exactly — an off-by-one
+    // between query cutoff and render arithmetic surfaces as a
+    // failed assertion rather than a quietly-loose match.
+    expect(text).toContain("Last referenced: 90d ago")
+  })
+
+  it("renders the trust label on a low-stored-score row alongside the meta-line", async () => {
+    // Both signals together mean "score is low AND we recently
+    // checked" — the system has high-quality negative evidence about
+    // this row.
+    const mockServer = createMockServer()
+    const lowScore = makeMemory("low-recent", {
+      title: "Low and recent",
+      confidenceScore: 0.3,
+      lastReferencedAt: "2026-04-19", // 10 days before 2026-04-29
+    })
+    const services = makeWakeServices({ staleConfidence: [lowScore] })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("### Low and recent")
+    // formatTrustLabel(0.3) → "low confidence" (per the bucket
+    // function: < 0.4 → "low confidence").
+    expect(text).toMatch(/Low and recent[\s\S]*?_low confidence_/)
+    // Meta-line still renders.
+    expect(text).toMatch(/Last referenced: 10d ago/)
+  })
+
+  it("excludes Stale Confidence rows from the touchOnRead batch", async () => {
+    // Same posture as Decisions Requiring Attention: rows surfaced in
+    // this section are surfaced BECAUSE they need triage. Bumping
+    // `Confidence Score` and resetting `Last Referenced At` on every
+    // wake-up that lists them would mask the very signal that put
+    // them here. Pin the contract.
+    const touchOnRead = vi.fn().mockResolvedValue(undefined)
+    const mockServer = createMockServer()
+    const recent = [makeMemory("recent-1", { title: "Recent normal row" })]
+    const stale = [
+      makeMemory("stale-1", {
+        title: "Stale low-score row",
+        confidenceScore: 0.2,
+        lastReferencedAt: "2026-04-19",
+      }),
+    ]
+    const baseServices = makeWakeServices({
+      memories: recent,
+      staleConfidence: stale,
+    })
+    const services = {
+      ...baseServices,
+      memories: {
+        ...baseServices.memories,
+        touchOnRead,
+      },
+    }
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wake({})
+
+    expect(touchOnRead).toHaveBeenCalledTimes(1)
+    const passed = touchOnRead.mock.calls[0]![0] as Memory[]
+    const ids = new Set(passed.map((m) => m.id))
+    expect(ids).toContain("recent-1")
+    expect(ids).not.toContain("stale-1")
+  })
+
+  it("issues exactly one queryStaleConfidence call per wake-up (no per-row body fetches)", async () => {
+    const mockServer = createMockServer()
+    const stale = [
+      makeMemory("s1", { confidenceScore: 0.2, lastReferencedAt: "2026-04-25" }),
+      makeMemory("s2", { confidenceScore: 0.3, lastReferencedAt: "2026-04-20" }),
+    ]
+    const services = makeWakeServices({ staleConfidence: stale })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wake({})
+
+    expect(services._calls.queryStaleConfidence).toHaveBeenCalledTimes(1)
+    // The query was scoped against the auto-detected project from
+    // services.context.project (proj-1 in the default fixture).
+    expect(services._calls.queryStaleConfidence.mock.calls[0]![0]).toMatchObject({
+      projectId: "proj-1",
+      limit: 5,
+    })
   })
 })

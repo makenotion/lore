@@ -30,7 +30,13 @@ import type {
   TaskState,
   DatabaseRef,
 } from "../types.js"
+import {
+  CONFIDENCE_DISPLAY_THRESHOLD,
+  MS_PER_DAY,
+  STALE_CONFIDENCE_DAYS,
+} from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
+import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
@@ -1121,6 +1127,123 @@ export class MemoryService {
         "Last Referenced At": { date: { start: lastReferencedAt } },
       },
     })
+  }
+
+  /**
+   * Memories that need triage: either scored low, OR long-neglected
+   * regardless of stored score. Backs the Stale Confidence wake-up
+   * subsection (0.8.0/#10).
+   *
+   * Server-side filter (when `opts.projectId` is supplied):
+   *
+   *     (Project contains projectId OR Project is_empty)
+   *     AND Confidence Score is_not_empty
+   *     AND (
+   *       Confidence Score < CONFIDENCE_DISPLAY_THRESHOLD
+   *       OR Last Referenced At on_or_before today - STALE_CONFIDENCE_DAYS
+   *     )
+   *
+   * Server-side filter (vault-wide, when `opts.projectId` is omitted):
+   * the project clause is dropped entirely so the query covers every
+   * memory regardless of project scoping. Same posture as
+   * `MemoryService.list`.
+   *
+   * The neglect-OR clause is load-bearing under #03's
+   * **write-realized lazy decay** model. RRF (#08) reads stored
+   * Confidence Score verbatim — no decay applied at read. So a memory
+   * touched once 6 months ago at score 0.9 keeps a stored 0.9 (and
+   * ranks high in retrieval) until something disturbs it. The
+   * neglect-OR clause is what surfaces it for triage. When the agent
+   * reads it, `touchOnRead` realizes the accrued decay (decay-then-bump
+   * per #03), the stored score drops, and the row either continues
+   * surfacing (if now actually low-score) or rotates out.
+   *
+   * The `is_not_empty` guard excludes pre-migration rows (null score)
+   * — those have not yet been touched by any read path; flagging them
+   * as stale would conflate "never scored" with "needs triage."
+   * Operators backfill them via #11's
+   * `lore migrate --build-confidence-scores`.
+   *
+   * `projectOrUnscopedFilter` matches `MemoryService.list` etc. —
+   * repo-wide memories surface in the Stale Confidence section the
+   * same way they surface in Recent Memories.
+   *
+   * Sorted by score ascending so most-decayed rows surface first;
+   * neglected-but-fresh-score rows fall to the end of the list. Page
+   * size = `opts.limit`; archived rows are filtered client-side
+   * (matches the established Memories DS pattern). No body fetch —
+   * the wake-up subsection renders title + synopsis + trust label +
+   * meta only, never bodies.
+   */
+  async queryStaleConfidence(opts: {
+    /** Omit for vault-wide wake-up; matches `MemoryService.list` shape. */
+    projectId?: string
+    limit: number
+    /** YYYY-MM-DD anchor; same shape as `taskDaysOverdue` etc. */
+    today: string
+  }): Promise<Memory[]> {
+    const neglectCutoff = new Date(
+      new Date(opts.today).getTime() - STALE_CONFIDENCE_DAYS * MS_PER_DAY,
+    )
+      .toISOString()
+      .slice(0, 10)
+
+    const filters: Array<Record<string, unknown>> = []
+    if (opts.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+    filters.push({
+      property: "Confidence Score",
+      number: { is_not_empty: true },
+    })
+    filters.push({
+      or: [
+        {
+          property: "Confidence Score",
+          number: { less_than: CONFIDENCE_DISPLAY_THRESHOLD },
+        },
+        {
+          property: "Last Referenced At",
+          date: { on_or_before: neglectCutoff },
+        },
+      ],
+    })
+
+    const filter = { and: filters } as QueryDataSourceParameters["filter"]
+
+    // Pre-migration vaults that haven't yet run `lore migrate` against
+    // the 0.8.0 schema lack the `Confidence Score` and
+    // `Last Referenced At` columns entirely. Notion responds with a
+    // `validation_error` ("Could not find sort property with name or
+    // id: Confidence Score") rather than an empty result, which would
+    // otherwise propagate up through `loadWakeUpData`'s `Promise.all`
+    // and fail the entire wake-up. Degrade to an empty section
+    // instead — same posture as `FactService.queryByEntityTextOnUnmigrated`
+    // and `TaskService.countClosedSince`, both of which silently
+    // suppress their feature on vaults that pre-date the column they
+    // depend on. The schema-drift detector
+    // (`migrateVaultSchema` / `lore migrate --dry-run`) is the
+    // canonical operator-facing surface for "you need to migrate";
+    // wake-up itself stays decorative. Transient 5xx / rate-limit /
+    // network errors do NOT match `isMissingPropertyError` and still
+    // propagate so a real outage isn't masked.
+    let response
+    try {
+      response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter,
+        sorts: [{ property: "Confidence Score", direction: "ascending" }],
+        page_size: opts.limit,
+      })
+    } catch (err) {
+      if (isMissingPropertyError(err)) return []
+      throw err
+    }
+
+    return response.results
+      .filter(isFullPage)
+      .filter((page) => !page.archived)
+      .map((page) => this.pageToMemory(page as PageObjectResponse, ""))
   }
 
   async list(opts?: {

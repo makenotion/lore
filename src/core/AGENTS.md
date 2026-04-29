@@ -556,6 +556,41 @@ Notion has no batch-update primitive; per-call concurrency is bounded
 by the rate-limit middleware (`src/notion/rate-limit.ts`), tunable via
 `notion.rateLimit.concurrency` in `.lore.yaml`.
 
+### Stale Confidence wake-up subsection (#10)
+
+`MemoryService.queryStaleConfidence` backs the
+`### Stale Confidence` subsection on `lore-context action='wake-up'`
+— a triage view for memories that need attention, surfaced via either
+of two OR-branches: `Confidence Score < CONFIDENCE_DISPLAY_THRESHOLD`
+**OR** `Last Referenced At` past `STALE_CONFIDENCE_DAYS` days. The
+neglect-OR clause is load-bearing under write-realized lazy decay
+(see above): a memory cited 6 months ago at score 0.9 keeps stored 0.9
+and ranks high in RRF until something disturbs it; the neglect branch
+is what surfaces it for triage. Reading the row via `lore-memory
+action='expand'` realizes the accrued decay through `touchOnRead`'s
+decay-then-bump path.
+
+**Pre-migration vaults render an empty section.** The query's
+`Confidence Score is_not_empty` guard rules pre-0.8.0 rows out of
+BOTH OR-branches (a null score can't satisfy `< threshold`, and the
+AND-wrapped guard rules out the neglect branch too). The section
+populates only after `lore migrate --build-confidence-scores` (#11)
+seeds scores on existing rows, or after read paths organically touch
+them via `touchOnRead`. This is the correct behavior — the section
+flags "things the system has decided need triage," and "no scores
+yet" is honestly an absence of decision, not a decision-of-stale.
+Operators who want the section populated on day one run #11.
+
+**Rows in this section are NOT touched.** The MCP renderer
+(`handleWakeUp` in `src/mcp/tools/context.ts`) deliberately excludes
+stale-confidence rows from the `touchOnRead` batch. Same posture as
+Decisions Requiring Attention: the rows surface BECAUSE they need
+triage, and bumping the score / resetting `Last Referenced At` on
+every wake-up that lists them would mask the very signal that put
+them here. The agent acts on a row by reading it via `lore-memory
+action='expand'`, at which point `touchOnRead` fires through the
+correct read-path wrapper.
+
 ## Fact Invalidation
 
 Facts are never deleted. To mark a fact as no longer true:

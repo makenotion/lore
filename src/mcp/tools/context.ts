@@ -29,7 +29,15 @@ import {
   taskStats,
   todayUtc,
 } from "../../core/task.js"
-import { STALE_TASK_DAYS, type Memory, type TaskSummary } from "../../types.js"
+import {
+  CONFIDENCE_DISPLAY_THRESHOLD,
+  MS_PER_DAY,
+  STALE_CONFIDENCE_DAYS,
+  STALE_CONFIDENCE_LIMIT,
+  STALE_TASK_DAYS,
+  type Memory,
+  type TaskSummary,
+} from "../../types.js"
 import {
   type CollapsedMemoryGroup,
   type MemoryListItem,
@@ -124,6 +132,53 @@ function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
   const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
   const date = mem.createdAt.split("T")[0]
   return `${mem.source} | ${tagPart} | ${date}`
+}
+
+/**
+ * Meta builder for the Stale Confidence subsection (issue 0.8.0/#10).
+ * Diverges from `wakeUpMemoryMetaBuilder` by leading with `Last
+ * referenced: Nd ago` — the load-bearing signal for rows surfaced via
+ * the neglect-only OR-branch. A row whose stored score is above
+ * `CONFIDENCE_DISPLAY_THRESHOLD` skips #09's trust label, so the
+ * `Nd ago` line is the only thing that flags the neglect to the
+ * agent. `today` is threaded from `handleWakeUp` so the query's
+ * neglect cutoff and this builder's `Nd ago` arithmetic share the
+ * exact same anchor (a wake-up that crosses UTC midnight between
+ * fetch and render must not produce off-by-one rendered ages).
+ *
+ * Native `Date` math + `MS_PER_DAY` — no `date-fns` dependency, matching
+ * the convention in `taskDaysOverdue` / `taskDaysStale`.
+ *
+ * `lastReferencedAt` lives on `MemoryListItem` directly (issue
+ * 0.8.0/#10) so the builder reads it without a cast — every existing
+ * caller (`Memory`, `DecisionSummary`, `TaskSummary`) carries the
+ * field structurally.
+ */
+function staleConfidenceMetaBuilder(today: string) {
+  return (mem: MemoryListItem): string => {
+    const fields: string[] = []
+    if (mem.lastReferencedAt) {
+      const days = Math.floor(
+        (new Date(today).getTime() - new Date(mem.lastReferencedAt).getTime()) /
+          MS_PER_DAY,
+      )
+      fields.push(`Last referenced: ${days}d ago`)
+    } else {
+      // Defensive — the query's `is_not_empty` guard on `Confidence
+      // Score` excludes pre-migration rows from BOTH OR-branches (a
+      // null-score row can't satisfy `< threshold` AND the `and`-
+      // wrapped `is_not_empty` rules out the neglect-only branch
+      // too), so a null `lastReferencedAt` should not surface here in
+      // practice. Render `never` rather than crashing on the date
+      // math if a future schema change loosens the guard.
+      fields.push("Last referenced: never")
+    }
+    const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
+    fields.push(mem.source)
+    fields.push(tagPart)
+    fields.push(mem.createdAt.split("T")[0])
+    return fields.join(" | ")
+  }
 }
 
 /**
@@ -309,6 +364,15 @@ async function handleWakeUp(
     // resolving it once just makes it visible to the post-fetch
     // renderer below.
     const bucketedTaskLimit = args.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
+    // Hoist `today` once so the Stale Confidence query's neglect cutoff
+    // and every per-row `Nd ago` builder (Stale Confidence meta, the
+    // Decisions Requiring Attention "N days overdue" line, the Tasks
+    // section's bucketing) all anchor against the exact same day. A
+    // wake-up that crosses UTC midnight between fetches and renders
+    // would otherwise compute one cutoff against one day and the
+    // rendered ages against the next, producing `-1d ago` / off-by-one
+    // surfaces. `todayUtc()` is the shared helper from `core/task.ts`.
+    const today = todayUtc()
     const {
       digest,
       memories,
@@ -318,6 +382,7 @@ async function handleWakeUp(
       relatedMemories,
       tasks,
       taskMemories,
+      staleConfidence,
     } = await loadWakeUpData(services, {
       projectId: projectId ?? undefined,
       memoryLimit: recentOverfetch,
@@ -328,6 +393,7 @@ async function handleWakeUp(
       userQuery: args.userQuery,
       taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
+      todayDate: today,
     })
 
     const sections: string[] = []
@@ -433,6 +499,46 @@ async function handleWakeUp(
       sections.push("No memories found for this context.\n")
     }
 
+    // Stale Confidence subsection (issue 0.8.0/#10). Triage view for
+    // memories whose stored Confidence Score is below the display
+    // threshold OR whose `Last Referenced At` is past the
+    // `STALE_CONFIDENCE_DAYS` cutoff. Suppression-when-empty matches
+    // the 0.7.0/12 Stale Tasks posture — a healthy vault doesn't pay
+    // prompt-budget for header-then-blank.
+    //
+    // Memories surfaced via this section are deliberately NOT touched
+    // (`recordSurfaced` is intentionally not called below). The
+    // section flags rows BECAUSE they need triage; bumping
+    // `Confidence Score` and resetting `Last Referenced At` on every
+    // wake-up that lists them would mask the very signal that put
+    // them here. Same posture as Decisions Requiring Attention. When
+    // the agent acts — `lore-memory action='expand'`, `lore-fact
+    // action='invalidate'`, `lore-decision action='supersede'` — the
+    // touch / decrement happens through the appropriate read-/write-
+    // path wrapper and is the right time for the score to move.
+    if (staleConfidence.length > 0) {
+      // Heading explicitly names BOTH OR-branch criteria so the agent
+      // can disambiguate which branch fired per row. A high-stored-
+      // score row in this section was surfaced via the neglect-only
+      // branch (#09's per-row trust label gate skips it because the
+      // score is above `CONFIDENCE_DISPLAY_THRESHOLD`); the
+      // `Last referenced: Nd ago` meta-line below is the
+      // disambiguating signal. A low-stored-score row renders the
+      // trust label automatically.
+      const isSaturated = staleConfidence.length === STALE_CONFIDENCE_LIMIT
+      const countLabel = isSaturated
+        ? `≥${staleConfidence.length}`
+        : `${staleConfidence.length}`
+      sections.push(
+        `### Stale Confidence (${countLabel} memories scored < ${CONFIDENCE_DISPLAY_THRESHOLD} or untouched ≥${STALE_CONFIDENCE_DAYS}d)\n`,
+      )
+      const buildMeta = staleConfidenceMetaBuilder(today)
+      for (const mem of staleConfidence) {
+        sections.push(formatMemoryListItem(mem, { meta: buildMeta }))
+        sections.push("")
+      }
+    }
+
     if (relatedMemories.length > 0) {
       sections.push("## Related to Active Tasks\n")
       sections.push(
@@ -446,7 +552,6 @@ async function handleWakeUp(
     }
 
     if (proposedDecisions.length > 0 || overdueDecisions.length > 0) {
-      const today = new Date().toISOString().split("T")[0]
       sections.push("## Decisions Requiring Attention\n")
       if (proposedDecisions.length > 0) {
         sections.push(`### Proposed (${proposedDecisions.length})\n`)
@@ -477,7 +582,6 @@ async function handleWakeUp(
     const factTitleMap = await resolveReferencedTitles(knowledgeFacts, services)
 
     if (tasks.length > 0) {
-      const today = new Date().toISOString().split("T")[0]
       // Mutually-exclusive bucketing: Overdue > Stale > Active. An
       // overdue task is by definition not stale (overdue is the
       // stronger urgency signal); a stale task is by definition not

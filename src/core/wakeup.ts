@@ -33,8 +33,12 @@ import type {
   MemorySource,
   TaskSummary,
 } from "../types.js"
-
-export const MS_PER_DAY = 86_400_000
+import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT } from "../types.js"
+// Re-exported so existing callers that import `MS_PER_DAY` from
+// `wakeup.ts` keep working — the canonical declaration moved to
+// `types.ts` (issue 0.8.0/#10 follow-up) so day-arithmetic across
+// services shares one source of truth.
+export { MS_PER_DAY }
 
 export const DEFAULT_WAKEUP_MEMORY_LIMIT = 10
 export const DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST = 3
@@ -179,6 +183,21 @@ export interface WakeUpServices {
       includeContent?: boolean
       mode?: "contains" | "semantic" | "hybrid"
     }): Promise<Memory[]>
+    /**
+     * Surfaces low-score-or-long-neglected memories for the Stale
+     * Confidence wake-up subsection (0.8.0/#10). Required on the
+     * structural type so the type system catches "I forgot to wire
+     * the new method" at compile time rather than letting it
+     * silently degrade to an empty section at runtime. Hook callers
+     * skip the query via `includeStaleConfidence: false`, NOT by
+     * omitting the method — every consumer of `WakeUpServices` must
+     * implement it.
+     */
+    queryStaleConfidence(opts: {
+      projectId?: string
+      limit: number
+      today: string
+    }): Promise<Memory[]>
   }
   facts: {
     listRecent(opts: {
@@ -248,6 +267,24 @@ export interface WakeUpOptions {
    * true so MCP callers (which DO render decisions) keep working.
    */
   includeDecisions?: boolean
+  /**
+   * When false, skip the Stale Confidence query (0.8.0/#10). The shell
+   * hook never renders the section, so it has no reason to pay the
+   * extra Notion round-trip on every session start. Defaults to true
+   * so MCP callers (which DO render the section) keep working. Same
+   * posture as `includeDecisions`.
+   */
+  includeStaleConfidence?: boolean
+  /**
+   * Anchor date (`YYYY-MM-DD`) for the Stale Confidence query's
+   * neglect cutoff and the renderer's `Nd ago` arithmetic. Threaded
+   * from the caller so the query and the render see the exact same
+   * day — without this, a wake-up that crosses UTC midnight between
+   * fetch and render would compute the cutoff against one day and the
+   * rendered age against the next. Optional; defaults to
+   * `new Date(now).toISOString().slice(0, 10)`.
+   */
+  todayDate?: string
   /** Override Date.now() for testing. */
   now?: number
 }
@@ -291,6 +328,18 @@ export interface WakeUpData {
    * memory sections. Empty when `userQuery` was absent or whitespace-only.
    */
   taskMemories: Memory[]
+  /**
+   * Memories scored below `CONFIDENCE_DISPLAY_THRESHOLD` OR with
+   * `Last Referenced At` past the `STALE_CONFIDENCE_DAYS` cutoff
+   * (0.8.0/#10). Sorted by score ascending, capped at
+   * `STALE_CONFIDENCE_LIMIT`. Empty when the option
+   * `includeStaleConfidence` is false (hook path) or the underlying
+   * service does not implement the optional `queryStaleConfidence`
+   * method. NOT deduped against the other memory sections — a row
+   * surfacing in Recent and in Stale Confidence is meaningful: it
+   * tells the agent the row is recent AND triage-worthy.
+   */
+  staleConfidence: Memory[]
 }
 
 export async function loadWakeUpData(
@@ -308,7 +357,9 @@ export async function loadWakeUpData(
   const taskMemoryLimit = opts.taskMemoryLimit ?? DEFAULT_WAKEUP_TASK_MEMORY_LIMIT
   const includeContent = opts.includeMemoryContent ?? true
   const includeDecisions = opts.includeDecisions ?? true
+  const includeStaleConfidence = opts.includeStaleConfidence ?? true
   const now = opts.now ?? Date.now()
+  const todayDate = opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
   const userQuery = sanitizeUserQuery(opts.userQuery)
 
   // Request one extra memory so we can drop a digest entry without running
@@ -381,6 +432,24 @@ export async function loadWakeUpData(
   // rather than by a `{ items, ... }` envelope. The annotation makes the
   // contract obvious for the next reader and pins the resolution shape if
   // `MemoryService.search`'s return type ever changes.
+  // Stale Confidence (0.8.0/#10): single-page query, runs in parallel
+  // with the rest of the fan-out so the section costs no extra wall-
+  // clock. Hook callers turn it off via `includeStaleConfidence:
+  // false` (the hook never renders the section); the method itself is
+  // required on `WakeUpServices` so the type system catches "I forgot
+  // to wire the new method" at compile time rather than letting a
+  // missing implementation silently surface as an empty section.
+  // Vault-wide wake-up (`projectId === undefined`) also fires the
+  // query — `queryStaleConfidence` skips the project filter in that
+  // branch.
+  const staleConfidenceQuery = includeStaleConfidence
+    ? services.memories.queryStaleConfidence({
+        projectId,
+        limit: STALE_CONFIDENCE_LIMIT,
+        today: todayDate,
+      })
+    : Promise.resolve([] as Memory[])
+
   const [
     { items: rawMemories },
     { items: latestDigestList },
@@ -389,6 +458,7 @@ export async function loadWakeUpData(
     overdueDecisions,
     { items: tasks },
     taskCandidates,
+    staleConfidence,
   ]: [
     { items: Memory[] },
     { items: Memory[] },
@@ -396,6 +466,7 @@ export async function loadWakeUpData(
     { items: DecisionSummary[] },
     DecisionSummary[],
     { items: TaskSummary[] },
+    Memory[],
     Memory[],
   ] = await Promise.all([
     services.memories.list({
@@ -441,6 +512,7 @@ export async function loadWakeUpData(
           includeContent,
         })
       : Promise.resolve([] as Memory[]),
+    staleConfidenceQuery,
   ])
 
   const latestDigest = latestDigestList[0] ?? null
@@ -544,6 +616,7 @@ export async function loadWakeUpData(
     relatedMemories,
     tasks,
     taskMemories,
+    staleConfidence,
   }
 }
 

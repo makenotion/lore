@@ -4792,3 +4792,286 @@ describe("MemoryService.applyBackfillScore", () => {
     ).rejects.toThrow("notion 429")
   })
 })
+
+// ---------------------------------------------------------------------------
+// queryStaleConfidence — wake-up Stale Confidence subsection (issue 0.8.0/#10)
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.queryStaleConfidence", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  const TODAY = "2026-04-29"
+
+  function buildStalePage(
+    id: string,
+    extras: {
+      confidenceScore?: number | null
+      lastReferencedAt?: string | null
+      archived?: boolean
+    } = {},
+  ): PageObjectResponse {
+    const props: Record<string, unknown> = {
+      Title: { type: "title", title: [{ plain_text: id }] },
+      Project: { type: "relation", relation: [] },
+      Topic: { type: "relation", relation: [] },
+      Source: { type: "select", select: { name: "manual" } },
+      Author: { type: "rich_text", rich_text: [] },
+      Agent: { type: "rich_text", rich_text: [] },
+      Tags: { type: "multi_select", multi_select: [] },
+      Session: { type: "rich_text", rich_text: [] },
+    }
+    if (extras.confidenceScore !== undefined) {
+      props["Confidence Score"] = { type: "number", number: extras.confidenceScore }
+    }
+    if (extras.lastReferencedAt !== undefined) {
+      props["Last Referenced At"] = {
+        type: "date",
+        date: extras.lastReferencedAt ? { start: extras.lastReferencedAt } : null,
+      }
+    }
+    return buildPage(props, { id, archived: extras.archived ?? false })
+  }
+
+  function makeQueryClient(pages: PageObjectResponse[]) {
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      object: "list" as const,
+      results: pages,
+      has_more: false,
+      next_cursor: null,
+      type: "page_or_database" as const,
+      page_or_database: {},
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    return { client, querySpy }
+  }
+
+  it("composes the projectOrUnscopedFilter when projectId is supplied", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({
+      projectId: "proj-1",
+      limit: 5,
+      today: TODAY,
+    })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        {
+          or: [
+            { property: "Project", relation: { contains: "proj-1" } },
+            { property: "Project", relation: { is_empty: true } },
+          ],
+        },
+      ]),
+    )
+  })
+
+  it("omits the project clause for vault-wide wake-up (projectId undefined)", async () => {
+    // Vault-wide wake-up: handleWakeUp running without a resolved
+    // project (cwd outside any configured project). Without this
+    // branch, an unconditional `projectOrUnscopedFilter(undefined)`
+    // would either produce a Notion filter error or silently filter
+    // to memories whose Project relation contains the literal
+    // `undefined` (zero rows).
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    // No `Project` clause ANYWHERE in the filter — checked via a deep
+    // serialized scan rather than per-clause shape assertions because
+    // a future refactor that nests the filter in additional and/or
+    // envelopes would let a leaked Project clause pass per-clause
+    // checks while still being structurally present. The serialized
+    // form catches both the current top-level shape and any future
+    // nested form.
+    expect(JSON.stringify(filter)).not.toContain('"property":"Project"')
+    // Surviving clauses (`is_not_empty` + the score-or-neglect OR)
+    // are pinned positively below so a refactor that DROPS them is
+    // also caught.
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        { property: "Confidence Score", number: { is_not_empty: true } },
+      ]),
+    )
+  })
+
+  it("includes the is_not_empty guard so pre-migration rows are excluded", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        { property: "Confidence Score", number: { is_not_empty: true } },
+      ]),
+    )
+  })
+
+  it("composes the load-bearing OR clause: low-score OR neglected", async () => {
+    // The neglect-OR clause is what surfaces a memory at stored 0.9
+    // touched 6 months ago — RRF reads stored values verbatim, so
+    // without this branch a never-disturbed high-score row never
+    // gets triaged. `today - STALE_CONFIDENCE_DAYS` (60) =
+    // 2026-02-28 (60 days before 2026-04-29).
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    const filter = querySpy.mock.calls[0][0]["filter"] as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        {
+          or: [
+            { property: "Confidence Score", number: { less_than: 0.5 } },
+            { property: "Last Referenced At", date: { on_or_before: "2026-02-28" } },
+          ],
+        },
+      ]),
+    )
+  })
+
+  it("sorts by Confidence Score ascending — most-decayed first", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    const args = querySpy.mock.calls[0][0]
+    expect(args["sorts"]).toEqual([
+      { property: "Confidence Score", direction: "ascending" },
+    ])
+  })
+
+  it("applies the requested limit as page_size", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    expect(querySpy.mock.calls[0][0]["page_size"]).toBe(5)
+  })
+
+  it("filters out archived rows client-side", async () => {
+    // Notion's `dataSources.query` returns archived rows by default;
+    // every Memories DS read in this codebase post-filters them out
+    // (see `MemoryService.list`). Pin the same posture for the stale
+    // section so a row archived after a heavy decrement doesn't
+    // re-surface.
+    const { client } = makeQueryClient([
+      buildStalePage("live-1", {
+        confidenceScore: 0.3,
+        lastReferencedAt: "2026-04-25",
+        archived: false,
+      }),
+      buildStalePage("archived-1", {
+        confidenceScore: 0.1,
+        lastReferencedAt: "2026-04-25",
+        archived: true,
+      }),
+    ])
+    const service = new MemoryService(client, db)
+
+    const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    expect(memories.map((m) => m.id)).toEqual(["live-1"])
+  })
+
+  it("degrades to [] on `validation_error` from a pre-migration vault missing the Confidence Score column", async () => {
+    // Production smoke test against the Mail vault (vault hadn't run
+    // `lore migrate` against the 0.8.0 schema yet) caught this:
+    // Notion responds with `code: 'validation_error'`, message
+    // "Could not find sort property with name or id: Confidence Score"
+    // when the column doesn't exist on the DS. Without this guard the
+    // failure propagates up through `loadWakeUpData`'s `Promise.all`
+    // and fails the entire wake-up. Degrading to [] matches the
+    // posture of `FactService.queryByEntityTextOnUnmigrated` and
+    // `TaskService.countClosedSince`, both of which silently suppress
+    // their 0.7.0/PF3-01 feature on pre-column vaults. The schema-
+    // drift detector is the canonical "run lore migrate" nudge.
+    const querySpy = vi.fn(async () => {
+      const err = Object.assign(new Error("Could not find sort property with name or id: Confidence Score"), {
+        code: "validation_error",
+      })
+      throw err
+    })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    expect(memories).toEqual([])
+    expect(querySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("propagates non-schema errors (transient 5xx / rate-limit / network) instead of masking them", async () => {
+    // A 429 / 503 / network error MUST propagate so a real outage
+    // surfaces to the operator rather than rendering as a silently-
+    // empty section that's indistinguishable from a healthy empty
+    // vault. `isMissingPropertyError` only matches `validation_error`
+    // with a missing-property message; everything else throws.
+    const querySpy = vi.fn(async () => {
+      const err = Object.assign(new Error("rate_limited"), {
+        code: "rate_limited",
+        status: 429,
+      })
+      throw err
+    })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.queryStaleConfidence({ limit: 5, today: TODAY }),
+    ).rejects.toThrow("rate_limited")
+  })
+
+  it("returns Memory shapes with empty bodies — no markdown round-trip", async () => {
+    // The wake-up subsection renders title + synopsis + trust label
+    // + meta — never the body. Skipping `retrieveMarkdown` keeps the
+    // section's per-row cost at exactly zero extra Notion calls.
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "should not be called" }))
+    const querySpy = vi.fn(async () => ({
+      object: "list" as const,
+      results: [
+        buildStalePage("m-1", {
+          confidenceScore: 0.2,
+          lastReferencedAt: "2026-04-25",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+      type: "page_or_database" as const,
+      page_or_database: {},
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
+
+    expect(memories).toHaveLength(1)
+    expect(memories[0].content).toBe("")
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+})

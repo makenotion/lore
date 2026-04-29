@@ -335,9 +335,13 @@ export const CONFIDENCE_FACTOR_MIN = 0.5
  * indicator either, so pre-migration vaults look unchanged until
  * `lore migrate --build-confidence-scores` populates scores.
  *
- * Lives alongside the other confidence constants so the stale-confidence
- * wake-up subsection (#10) can import the same threshold for its filter
- * predicate.
+ * Single source of truth for the per-row trust indicator (#09) AND the
+ * low-score branch of the Stale Confidence wake-up subsection (#10).
+ * Diverging the two would mean a row could surface in Stale Confidence's
+ * low-score branch AND fail to flag in Recent Memories (or vice versa),
+ * which is incoherent for a score-driven signal. The neglect branch of
+ * #10 is governed by `STALE_CONFIDENCE_DAYS` instead and is allowed to
+ * surface rows whose stored score is above this threshold.
  */
 export const CONFIDENCE_DISPLAY_THRESHOLD = 0.5
 
@@ -372,6 +376,29 @@ export function formatTrustLabel(score: number): string | null {
   if (score < 0.4) return "low confidence"
   return "moderate confidence"
 }
+
+/**
+ * Maximum rows surfaced in the Stale Confidence wake-up subsection
+ * (0.8.0/#10). Default 5 — tight enough to keep the subsection a
+ * triage prompt rather than an exhaustive list. When the section is
+ * saturated (returned exactly STALE_CONFIDENCE_LIMIT rows), the heading
+ * prefixes the count with `≥` (e.g. `≥5`) to signal "at least this
+ * many"; no exact total is computed (one query, no inventory). See
+ * 0.8.0/#10 spec for the design-decision rationale.
+ */
+export const STALE_CONFIDENCE_LIMIT = 5
+
+/**
+ * Milliseconds in a day. Cross-cutting constant — every native-`Date`
+ * day-arithmetic site (`taskDaysOverdue`, `decayConfidenceScore`,
+ * `MemoryService.queryStaleConfidence`, the wake-up renderer's
+ * `Last referenced: Nd ago` builder, `task-reconcile`'s age scoring,
+ * `loadWakeUpData`'s digest-freshness window, `dateBucket`) divides
+ * by this value. Pinned in `src/types.ts` rather than a per-module
+ * local so a future tweak (or the inevitable contributor who writes
+ * `1000 * 60 * 60 * 24` from muscle memory) finds one source of truth.
+ */
+export const MS_PER_DAY = 86_400_000
 
 export interface Memory {
   id: string

@@ -131,6 +131,12 @@ type ListRecentCall = {
   limit?: number
 }
 
+type StaleConfidenceCall = {
+  projectId?: string
+  limit: number
+  today: string
+}
+
 interface StubServices extends WakeUpServices {
   memoriesCalls: ListCall[]
   memoriesSearchCalls: SearchCall[]
@@ -138,6 +144,7 @@ interface StubServices extends WakeUpServices {
   decisionsListCalls: ListDecisionsOpts[]
   decisionsOverdueCalls: Array<{ projectId?: string } | undefined>
   tasksListCalls: ListTasksOpts[]
+  staleConfidenceCalls: StaleConfidenceCall[]
 }
 
 function stubServices(opts: {
@@ -156,13 +163,15 @@ function stubServices(opts: {
   proposedDecisions?: DecisionSummary[]
   overdueDecisions?: DecisionSummary[]
   tasks?: TaskSummary[]
-}): StubServices {
+  staleConfidence?: Memory[]
+} = {}): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
   const factsListRecentCalls: ListRecentCall[] = []
   const decisionsListCalls: ListDecisionsOpts[] = []
   const decisionsOverdueCalls: Array<{ projectId?: string } | undefined> = []
   const tasksListCalls: ListTasksOpts[] = []
+  const staleConfidenceCalls: StaleConfidenceCall[] = []
   const factsResult = opts.facts ?? []
 
   return {
@@ -184,6 +193,13 @@ function stubServices(opts: {
           return opts.taskMemories
         }
         return opts.relatedMemories ?? []
+      }),
+      queryStaleConfidence: vi.fn(async (args: StaleConfidenceCall) => {
+        staleConfidenceCalls.push(args)
+        // Mirror the production `page_size: opts.limit` cap so a
+        // fixture feeding more rows than the limit can authentically
+        // simulate saturation.
+        return (opts.staleConfidence ?? []).slice(0, args.limit)
       }),
     },
     facts: {
@@ -219,6 +235,7 @@ function stubServices(opts: {
     decisionsListCalls,
     decisionsOverdueCalls,
     tasksListCalls,
+    staleConfidenceCalls,
   }
 }
 

@@ -580,6 +580,10 @@ export async function wakeup(): Promise<void> {
       // Hook never renders decisions — skip the two Notion queries so
       // session-start latency doesn't regress on the hot path.
       includeDecisions: false,
+      // Hook never renders the Stale Confidence section either — skip
+      // the extra Notion query for the same reason. Same posture as
+      // `includeDecisions: false` above.
+      includeStaleConfidence: false,
       userQuery,
       ...rankedLimits,
     }))

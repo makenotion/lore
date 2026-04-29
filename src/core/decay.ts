@@ -18,6 +18,7 @@ import {
   CONFIDENCE_SCORE_MIN,
   CONFIDENCE_SCORE_MAX,
   CONFIDENCE_SEED,
+  MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
   BUMP_RATE,
   DECAY_RATE,
@@ -81,8 +82,6 @@ export function decrementConfidenceScore(current: number): number {
   return clampConfidenceScore(current * DECREMENT_FACTOR)
 }
 
-const DAY_MS = 1000 * 60 * 60 * 24
-
 /**
  * Apply neglect decay. Returns the new score (clamped).
  *
@@ -123,7 +122,7 @@ export function decayConfidenceScore(
   const todayMs = new Date(today).getTime()
   const refMs = new Date(lastReferencedAt).getTime()
   if (Number.isNaN(todayMs) || Number.isNaN(refMs)) return current
-  const days = Math.floor((todayMs - refMs) / DAY_MS)
+  const days = Math.floor((todayMs - refMs) / MS_PER_DAY)
   const staleDays = Math.max(0, days - STALE_CONFIDENCE_DAYS)
   if (staleDays === 0) return current
   return clampConfidenceScore(current * Math.pow(DECAY_RATE, staleDays))
