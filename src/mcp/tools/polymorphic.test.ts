@@ -220,6 +220,14 @@ function makeServices(opts: StubOpts = {}): unknown {
       update: opts.tasksUpdate ?? vi.fn(),
       close: opts.tasksClose ?? vi.fn(async () => undefined),
       list: opts.tasksList ?? vi.fn(async () => ({ items: [] })),
+      countActive: vi.fn(async () => ({
+        total: 0,
+        overdue: 0,
+        stale: 0,
+        inProgress: 0,
+        blocked: 0,
+      })),
+      countClosedSince: vi.fn(async () => null),
     },
     sessionMemories: { record: vi.fn(), get: vi.fn(() => null) },
   }

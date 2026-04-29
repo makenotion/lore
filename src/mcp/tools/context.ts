@@ -17,7 +17,13 @@ import {
   composeProjectContext,
   renderProjectContextLines,
 } from "../../core/project-context.js"
-import { taskDaysOverdue, taskDaysStale } from "../../core/task.js"
+import {
+  formatTaskSummary,
+  taskDaysOverdue,
+  taskDaysStale,
+  taskStats,
+  todayUtc,
+} from "../../core/task.js"
 import { STALE_TASK_DAYS, type Memory, type TaskSummary } from "../../types.js"
 import {
   type CollapsedMemoryGroup,
@@ -166,6 +172,16 @@ async function handleStatus(services: LoreServices): Promise<ToolResult> {
       `  Memories: ${stats.memories}`,
       `  Facts:    ${stats.facts}`,
     ]
+
+    // Task summary (issue 0.7.0/13). Same `taskStats` orchestrator the
+    // CLI calls — `formatTaskSummary` is the single renderer so the
+    // emitted Tasks line is byte-identical between MCP and CLI for the
+    // same vault state.
+    const tasks = await taskStats(services.tasks, {
+      projectId: project?.id,
+      today: todayUtc(),
+    })
+    lines.push(...formatTaskSummary(tasks))
 
     if (services.config.projects?.length) {
       lines.push("", "Configured projects:")
@@ -582,7 +598,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       title: "Vault context operations",
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
-        "- `action: 'status'` — vault page id, database counts, active project, configured projects.\n" +
+        "- `action: 'status'` — vault page id, database counts, active project, configured projects, and a task summary line (active / overdue / stale / in-progress / blocked, plus a closure-rate line on vaults with the `Done At` column).\n" +
         "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {

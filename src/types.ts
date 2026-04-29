@@ -88,12 +88,14 @@ export const SYNOPSIS_MAX = 500
  * stale and surfaces with a "consider closing" prompt in wake-up.
  * Conservative: 30 days is long enough to absorb a vacation or a
  * context-switched project, short enough to flag truly-forgotten work.
- * Read by `src/core/task.ts` (`taskDaysStale` helper) and the wake-up
- * Tasks rendering in `src/mcp/tools/context.ts`.
+ * Read by `src/core/task.ts` (`taskDaysStale` helper), the wake-up
+ * Tasks rendering in `src/mcp/tools/context.ts` (issue 0.7.0/12), and
+ * the `lore status` / `lore-context action='status'` task summary
+ * line (issue 0.7.0/13).
  *
  * A future operator-tuning knob (`hooks.staleTaskDays` in `.lore.yaml`)
- * is the next step if real-vault feedback shows 30 is wrong; ship the
- * const first.
+ * is the next step if real-vault feedback shows 30 is wrong; the const
+ * is the single source of truth in 0.7.0.
  */
 export const STALE_TASK_DAYS = 30
 

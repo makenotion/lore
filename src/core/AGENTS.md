@@ -18,7 +18,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories                 |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
-| `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue. Canonical surface for tracked work (P3-02). |
+| `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
 | `entity.ts`   | `EntityService`    | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases. Optional service — `null` on legacy vaults that pre-date the Entities DB. `merge` was scoped out of PF3-01 because it requires a `FactService.repointEntity` helper that hasn't landed yet. |
 | `entity-migration.ts` | `buildEntities()` | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`. |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |

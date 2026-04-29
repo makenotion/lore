@@ -19,6 +19,7 @@ import type {
   DatabaseRef,
 } from "../types.js"
 import { buildFactProps } from "../notion/schema.js"
+import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
@@ -95,40 +96,6 @@ const NOTION_MAX_PAGE_SIZE = 100
 export function clampNotionPageSize(limit: number | undefined): number {
   if (limit === undefined) return NOTION_MAX_PAGE_SIZE
   return Math.min(Math.max(limit, 1), NOTION_MAX_PAGE_SIZE)
-}
-
-/**
- * Match Notion API errors that signal "the property you're filtering
- * on doesn't exist on this data source." Used to gate the recall-
- * preserving empty-result path in `queryByEntityTextOnUnmigrated`:
- * legacy vaults whose Facts DB lacks the `SubjectEntity` /
- * `ObjectEntity` columns 400 with `validation_error`, and we want
- * those to silently fall through to the relation-only result set.
- * Transient 5xx / rate-limit / network errors must NOT match — those
- * propagate so the caller sees the failure instead of getting a
- * silently-halved union.
- *
- * Matches by error `code` rather than checking `instanceof
- * APIResponseError` to keep the dependency surface narrow (the SDK's
- * error class hierarchy has churned between v4 and v5). The
- * `validation_error` code is stable across versions per the SDK
- * `APIErrorCode` enum.
- */
-function isMissingPropertyError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false
-  const code = (err as { code?: unknown }).code
-  if (code !== "validation_error") return false
-  const message =
-    typeof (err as { message?: unknown }).message === "string"
-      ? ((err as { message: string }).message)
-      : ""
-  // Notion's validation_error wraps several distinct schema mistakes;
-  // match the substring that names the missing-property case so a
-  // genuinely-malformed-filter validation_error (e.g. wrong operator
-  // for the property type) still propagates. The SDK's error message
-  // shape is "Could not find property with name or id: <name>" or
-  // similar — match either spelling defensively.
-  return /property/i.test(message) && /(not found|could not find|does not exist)/i.test(message)
 }
 
 /**

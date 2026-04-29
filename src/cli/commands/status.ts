@@ -2,6 +2,7 @@ import { Command } from "commander"
 import { initServices } from "../../services.js"
 import type { LoreServices } from "../../services.js"
 import type { FactService } from "../../core/fact.js"
+import { formatTaskSummary, taskStats, todayUtc } from "../../core/task.js"
 import type { Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
@@ -65,6 +66,17 @@ export const statusCommand = new Command("status")
       console.log(`  Topics:   ${stats.topics}`)
       console.log(`  Memories: ${stats.memories}`)
       console.log(`  Facts:    ${stats.facts}`)
+
+      // Task summary (issue 0.7.0/13). Two paginated queries fan out via
+      // `Promise.all` inside `taskStats` so wall-clock is `max(active,
+      // closed)` rather than the sum. Pre-#07 vaults silently omit the
+      // closure-rate line — `countClosedSince` returns null on the
+      // missing-property error path.
+      const tasks = await taskStats(services.tasks, {
+        projectId: project?.id,
+        today: todayUtc(),
+      })
+      for (const line of formatTaskSummary(tasks)) console.log(line)
 
       // List projects
       const projects = await services.projects.list("active")

@@ -213,7 +213,28 @@ won't be immediately overridden by the next Stop hook.
 ## The status Command
 
 `status` prints vault metadata (page id, current project, database counts,
-active projects) plus a per-project **Digests** section that surfaces:
+active projects), a one-line **Tasks** summary, and a per-project
+**Digests** section.
+
+The Tasks line surfaces `Tasks: N active (overdue: M, stale ≥30d: K,
+in-progress: P, blocked: Q)` against the active project (or vault-wide
+when no project is detected). Per-bucket sub-stats render only when
+non-zero, and `active === 0` collapses to the bare `Tasks: 0 active`
+form so a task-empty vault still prints the line as an explicit signal.
+On vaults with the `Done At` column (post-#07), a second line shows
+`Closed last 30 days: N (rate: R/day)` (`R = N / 30`, two-decimal
+rounded). Pre-#07 vaults silently omit the closure-rate line —
+`TaskService.countClosedSince` returns null on the missing-property
+error path. Cost: two paginated `dataSources.query` calls fanned out
+via `Promise.all`, so wall-clock is `max(active, closed)` rather than
+the sum.
+
+The pure renderer (`formatTaskSummary`) and the orchestrator
+(`taskStats`) live in `src/core/task.ts` so both surfaces — `lore
+status` (CLI) and `lore-context action='status'` (MCP) — emit the
+same line shape for the same vault state.
+
+The Digests section that follows surfaces:
 
 - Date of the latest existing `source: digest` memory linked to the project
   (or `no digest yet`).

@@ -38,8 +38,9 @@ import type {
   ListTasksOpts,
   DatabaseRef,
 } from "../types.js"
-import { ACTIVE_TASK_STATES } from "../types.js"
+import { ACTIVE_TASK_STATES, STALE_TASK_DAYS } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
+import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { isFullPage } from "../notion/extractors.js"
@@ -392,6 +393,124 @@ export class TaskService {
   }
 
   /**
+   * Count active tasks broken into the buckets `lore status` surfaces.
+   * One paginated walk against `list({ states: ACTIVE_TASK_STATES })`
+   * per call — bounded by total active count, not vault size.
+   *
+   * `today` is caller-supplied so the active-window and the closed-
+   * window threaded by `taskStats` agree to the millisecond. Per-method
+   * `new Date()` would let the two windows disagree by whatever wall-
+   * clock time elapsed between them, which makes status tests flap on
+   * clock skew.
+   */
+  async countActive(opts: {
+    projectId?: string
+    today: string
+  }): Promise<{
+    total: number
+    overdue: number
+    stale: number
+    inProgress: number
+    blocked: number
+  }> {
+    const today = opts.today
+    // Defense-in-depth at the public service boundary. Without this,
+    // a malformed `today` cascades silently: `new Date(NaN)` flows
+    // through `taskDaysOverdue` / `taskDaysStale` as `NaN`, every
+    // comparison against `NaN` is `false`, and every bucket zeros
+    // out. `taskStats` (the typical caller) already validates, but
+    // `countActive` is public and a direct caller bypassing the
+    // orchestrator deserves the same error shape.
+    parseTodayMs(today, "countActive")
+    let total = 0
+    let overdue = 0
+    let stale = 0
+    let inProgress = 0
+    let blocked = 0
+    let cursor: string | undefined = undefined
+    do {
+      const page = await this.list({
+        projectId: opts.projectId,
+        states: ACTIVE_TASK_STATES,
+        limit: 100,
+        startCursor: cursor,
+      })
+      for (const t of page.items) {
+        total++
+        if (taskDaysOverdue(t, today) !== null) {
+          overdue++
+        } else {
+          const days = taskDaysStale(t, today)
+          if (days !== null && days >= STALE_TASK_DAYS) stale++
+        }
+        if (t.taskState === "in-progress") inProgress++
+        if (t.taskState === "blocked") blocked++
+      }
+      cursor = page.nextCursor
+    } while (cursor)
+    return { total, overdue, stale, inProgress, blocked }
+  }
+
+  /**
+   * Count tasks whose `Done At` is on or after `date` AND whose
+   * current `Task State` is terminal (`done` / `cancelled`). Returns
+   * `null` on a pre-#07 vault (the column doesn't exist; Notion
+   * returns a `validation_error` on the filter clause) so the caller
+   * can suppress the closure-rate line entirely instead of
+   * fabricating a zero.
+   *
+   * **Why the terminal-state filter is load-bearing.** `Done At` is
+   * preserved across re-open by design (`update({ state: "open" })`
+   * keeps the prior `Done At` as historical fact — see the docstring
+   * on `update()`). Without the state guard, a task closed inside
+   * the window then re-opened would still match the filter and
+   * inflate the closure count even though it's currently active.
+   * "Closed last 30 days" means *currently-closed in the last 30
+   * days*, not *ever-closed* — the state filter pins that.
+   *
+   * Uses `this.client` / `this.db` directly rather than going through
+   * `list()` because `Done At` is not in the public filter map and
+   * exposing it would only serve this one caller.
+   */
+  async countClosedSince(
+    date: string,
+    opts?: { projectId?: string },
+  ): Promise<number | null> {
+    try {
+      let total = 0
+      let cursor: string | undefined = undefined
+      do {
+        const filters: Array<Record<string, unknown>> = [
+          { property: "Kind", select: { equals: "task" } },
+          { property: "Done At", date: { on_or_after: date } },
+          {
+            or: [
+              { property: "Task State", select: { equals: "done" } },
+              { property: "Task State", select: { equals: "cancelled" } },
+            ],
+          },
+        ]
+        if (opts?.projectId) filters.push(projectOrUnscopedFilter(opts.projectId))
+        const response = await this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: { and: filters } as QueryDataSourceParameters["filter"],
+          page_size: 100,
+          start_cursor: cursor,
+        })
+        total += response.results.length
+        cursor =
+          response.has_more && response.next_cursor
+            ? response.next_cursor
+            : undefined
+      } while (cursor)
+      return total
+    } catch (err) {
+      if (isMissingPropertyError(err)) return null
+      throw err
+    }
+  }
+
+  /**
    * Active tasks past their due date. Mirrors
    * `DecisionService.queryOverdue` so wake-up / `lore-query action='audit'`
    * can compose all three sources without per-service branching.
@@ -469,7 +588,10 @@ export function taskDaysOverdue(
  * Calendar-day diff: `updatedAt` is truncated to its `YYYY-MM-DD`
  * prefix before parsing so a task edited today at noon yields `0`, not
  * `-1`. Mirrors `taskDaysOverdue`'s posture against `reviewBy` (which
- * is already date-only off the Notion `date` column).
+ * is already date-only off the Notion `date` column). `today` is a
+ * YYYY-MM-DD UTC day (parses to UTC midnight); `updatedAt` carries
+ * arbitrary time-of-day, so the truncation is what makes "untouched
+ * ≥30 days" honest about whole-day counts.
  */
 export function taskDaysStale(
   task: Pick<TaskSummary, "updatedAt" | "taskState">,
@@ -480,4 +602,144 @@ export function taskDaysStale(
   const updatedDate = task.updatedAt.split("T")[0]
   const diff = new Date(today).getTime() - new Date(updatedDate).getTime()
   return Math.floor(diff / 86_400_000)
+}
+
+/**
+ * Aggregated task counts surfaced by `lore status` /
+ * `lore-context action='status'`. `closedLast30Days` is `null` on
+ * pre-#07 vaults that lack the `Done At` column; the renderer
+ * suppresses the closure-rate line entirely in that case.
+ */
+export interface TaskStats {
+  active: number
+  overdue: number
+  stale: number
+  inProgress: number
+  blocked: number
+  closedLast30Days: number | null
+}
+
+/**
+ * Today's date in UTC YYYY-MM-DD form, suitable as the `today` anchor
+ * threaded into `taskStats`. Centralized so both status surfaces (CLI
+ * and MCP) compute the anchor identically — silent skew between the
+ * two would let the rendered Tasks line diverge on a vault that's
+ * queried from both surfaces around midnight UTC.
+ */
+export function todayUtc(): string {
+  return new Date().toISOString().split("T")[0]!
+}
+
+/**
+ * Parse a YYYY-MM-DD `today` argument and surface a clean
+ * `RangeError` on malformed input. Without this guard, a malformed
+ * value cascades silently: `new Date(NaN).getTime()` returns NaN,
+ * comparisons against NaN return false, every bucket zeros out, and
+ * the operator sees a wrong status without any error in stderr.
+ *
+ * Used by `taskStats` (orchestrator) and `TaskService.countActive`
+ * (public service method) — the two boundaries where a malformed
+ * `today` could plausibly enter the system. The helper takes a
+ * caller-name string so the failure message names the offending
+ * site rather than this helper.
+ */
+function parseTodayMs(today: string, caller: string): number {
+  const todayMs = new Date(today).getTime()
+  if (Number.isNaN(todayMs)) {
+    throw new RangeError(`${caller}: invalid today value "${today}" — expected YYYY-MM-DD`)
+  }
+  return todayMs
+}
+
+/**
+ * Compose `TaskService.countActive` and `TaskService.countClosedSince`
+ * into the single shape rendered by both status surfaces.
+ *
+ * Takes the `TaskService` directly (not the whole services bag) — the
+ * orchestrator doesn't need any other service. Both queries fan out
+ * via `Promise.all`, so wall-clock is `max(active, closed)` rather
+ * than the sum.
+ *
+ * `today` is caller-supplied so per-test fixtures can pin a fixed
+ * date; the active and closed windows derive from the same anchor so
+ * they cannot disagree by clock skew.
+ */
+export async function taskStats(
+  service: TaskService,
+  opts: { projectId?: string; today: string }
+): Promise<TaskStats> {
+  const todayMs = parseTodayMs(opts.today, "taskStats")
+  // 30-day window inclusive of `today`: `today - 29 days` through `today`
+  // is 30 calendar days when `Done At on_or_after windowStart` is matched
+  // against rows whose date is on or before `today`. Subtracting 30 days
+  // would cover 31 inclusive days and silently inflate the rate against
+  // the `N / 30` divisor by ~3.3% — the label reads "Closed last 30 days"
+  // verbatim, so the math must match.
+  const windowStart = new Date(todayMs - 29 * 86_400_000)
+    .toISOString()
+    .split("T")[0]!
+  const [active, closedLast30Days] = await Promise.all([
+    service.countActive({ projectId: opts.projectId, today: opts.today }),
+    service.countClosedSince(windowStart, { projectId: opts.projectId }),
+  ])
+  return {
+    active: active.total,
+    overdue: active.overdue,
+    stale: active.stale,
+    inProgress: active.inProgress,
+    blocked: active.blocked,
+    closedLast30Days,
+  }
+}
+
+/**
+ * Prefix used for both the primary Tasks line and the continuation-
+ * line indent on the closure-rate row. Pinned at the constant so a
+ * future copy edit on the primary line (e.g. `Tasks (project): `)
+ * doesn't silently rot the alignment of the second line.
+ */
+const TASKS_PREFIX = "Tasks: "
+
+/**
+ * Render the Tasks line from a `TaskStats` report. Both `lore status`
+ * (CLI) and `lore-context action='status'` (MCP) call this so the
+ * rendered output is byte-identical across surfaces.
+ *
+ * Returns one or two lines:
+ *
+ * - Always: a `Tasks: N active …` line. Sub-stats render only when
+ *   non-zero, joined by `, `. When `active === 0` the line is the
+ *   bare `Tasks: 0 active` form — operator signal that the vault is
+ *   task-empty, not that the surface is broken.
+ * - Optionally: a closure-rate continuation line, indented to align
+ *   under the start of `N` on the primary line so the two read as
+ *   one logical block. Rendered only when `closedLast30Days !== null`
+ *   (post-#07 vaults). Pre-#07 vaults silently omit the line.
+ *
+ * Pure function: deterministic in `report`, no I/O.
+ */
+export function formatTaskSummary(report: TaskStats): string[] {
+  const lines: string[] = []
+  if (report.active === 0) {
+    lines.push(`${TASKS_PREFIX}0 active`)
+  } else {
+    const subStats: string[] = []
+    if (report.overdue > 0) subStats.push(`overdue: ${report.overdue}`)
+    if (report.stale > 0) subStats.push(`stale ≥${STALE_TASK_DAYS}d: ${report.stale}`)
+    if (report.inProgress > 0) subStats.push(`in-progress: ${report.inProgress}`)
+    if (report.blocked > 0) subStats.push(`blocked: ${report.blocked}`)
+    const suffix = subStats.length > 0 ? ` (${subStats.join(", ")})` : ""
+    lines.push(`${TASKS_PREFIX}${report.active} active${suffix}`)
+  }
+  if (report.closedLast30Days !== null) {
+    const rate = (report.closedLast30Days / 30).toFixed(2)
+    // Indent derived from `TASKS_PREFIX` so the continuation line
+    // aligns under the count on the primary line regardless of any
+    // future prefix change.
+    const indent = " ".repeat(TASKS_PREFIX.length)
+    lines.push(
+      `${indent}Closed last 30 days: ${report.closedLast30Days} (rate: ${rate}/day)`,
+    )
+  }
+  return lines
 }

@@ -202,13 +202,36 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     },
     tasks: {
       list: vi.fn(async () => ({ items: overrides.tasks ?? [] })),
+      countActive: vi.fn(async () => ({
+        total: 0,
+        overdue: 0,
+        stale: 0,
+        inProgress: 0,
+        blocked: 0,
+      })),
+      // Typed as `number | null` so test cases can override the stub
+      // with a finite count (post-#07 vaults) without TS complaining
+      // about the fixed-`null` inference.
+      countClosedSince: vi.fn(async (): Promise<number | null> => null),
     },
     context: {
       project: contextProject,
       isCatchAllFallback: overrides.isCatchAllFallback ?? false,
+      // `handleStatus` reads `services.context.vault.pageId`. Wake-up
+      // doesn't, but the stub serves both surfaces so the field is
+      // populated unconditionally.
+      vault: { pageId: "vault-1" },
     },
     config: { vault: { pageId: "vault-1" }, projects: overrides.configProjects ?? [] },
-    vault: { pageId: "vault-1", stats: vi.fn() },
+    vault: {
+      pageId: "vault-1",
+      stats: vi.fn(async () => ({
+        projects: 0,
+        topics: 0,
+        memories: 0,
+        facts: 0,
+      })),
+    },
     _calls: {
       memoriesList,
       memoriesSearch,
@@ -830,6 +853,103 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(text).toContain("  Marketing site.")
     // Mail's description must NOT appear — explicit pick wins.
     expect(text).not.toContain("Notion-backed mail client.")
+  })
+
+  it("renders the Tasks summary line on action='status' (issue 0.7.0/13)", async () => {
+    // Acceptance criterion: the same `formatTaskSummary` shape the CLI
+    // emits also surfaces via `lore-context action='status'`. Pin the
+    // line shape so a future divergence between the two surfaces fails
+    // here instead of leaking into operator-facing output.
+    const mockServer = createMockServer()
+    const services = makeWakeServices()
+    services.tasks.countActive = vi.fn(async () => ({
+      total: 271,
+      overdue: 25,
+      stale: 89,
+      inProgress: 12,
+      blocked: 0,
+    }))
+    services.tasks.countClosedSince = vi.fn(async () => 14)
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain(
+      "Tasks: 271 active (overdue: 25, stale ≥30d: 89, in-progress: 12)",
+    )
+    expect(text).toContain("Closed last 30 days: 14 (rate: 0.47/day)")
+  })
+
+  it("suppresses the closure-rate line on action='status' for pre-#07 vaults", async () => {
+    // `countClosedSince` returns null when the `Done At` column is
+    // missing; the renderer drops the line entirely so the operator
+    // doesn't see "Closed last 30 days: 0 (rate: 0.00/day)" misleadingly.
+    const mockServer = createMockServer()
+    const services = makeWakeServices()
+    services.tasks.countActive = vi.fn(async () => ({
+      total: 5,
+      overdue: 0,
+      stale: 0,
+      inProgress: 0,
+      blocked: 0,
+    }))
+    services.tasks.countClosedSince = vi.fn(async () => null)
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Tasks: 5 active")
+    expect(text).not.toContain("Closed last 30 days")
+  })
+
+  it("renders the bare 'Tasks: 0 active' line for a task-empty vault", async () => {
+    // Empty-vault signal — operator needs explicit confirmation that the
+    // surface is wired up, not that the line silently dropped because
+    // the count was zero.
+    const mockServer = createMockServer()
+    const services = makeWakeServices()
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Tasks: 0 active")
+  })
+
+  it("scopes the Tasks summary to the active project when one is auto-detected", async () => {
+    // The MCP path threads `services.context.project?.id` into both
+    // counters so a project-scoped agent sees only its own tasks. Pin
+    // the projectId pass-through so a future refactor can't silently
+    // unscope the queries (which would surface 271 tasks regardless of
+    // which sub-project the agent is in).
+    const mockServer = createMockServer()
+    const services = makeWakeServices()
+    const countActive = vi.fn(async () => ({
+      total: 0,
+      overdue: 0,
+      stale: 0,
+      inProgress: 0,
+      blocked: 0,
+    }))
+    const countClosedSince = vi.fn(async () => null)
+    services.tasks.countActive = countActive
+    services.tasks.countClosedSince = countClosedSince
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    await status({} as never)
+
+    expect(countActive).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "proj-1" }),
+    )
+    expect(countClosedSince).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ projectId: "proj-1" }),
+    )
   })
 
   it("explicit projectName forces isCatchAllFallback off even when context was a catch-all", async () => {

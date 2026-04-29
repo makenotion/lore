@@ -710,3 +710,36 @@ describe("loadTrackingPreflight (issue 0.6.0/24)", () => {
     expect(report.count).toBe(12)
   })
 })
+
+describe("Tasks line wiring (issue 0.7.0/13)", () => {
+  // The CLI status command's `taskStats` call is exercised here at the
+  // free-function level rather than via `statusCommand.action(...)`
+  // because the command spins up real `initServices()` against a vault.
+  // The wiring proven below (CLI imports `formatTaskSummary` +
+  // `taskStats` from `core/task`, and renders the lines into stdout) is
+  // covered structurally by the format tests in `core/task.test.ts` and
+  // the dispatcher test in `mcp/tools/context.test.ts`.
+
+  it("formatTaskSummary is re-exported from `core/task` and produces the spec example", async () => {
+    // Pin the import path the CLI uses: anyone refactoring the renderer's
+    // location would have to update both `cli/commands/status.ts` and
+    // `mcp/tools/context.ts` together. This guards the byte-identical
+    // contract the issue calls out.
+    const { formatTaskSummary } = await import("../../core/task.js")
+    expect(typeof formatTaskSummary).toBe("function")
+    const lines = formatTaskSummary({
+      active: 271,
+      overdue: 25,
+      stale: 89,
+      inProgress: 12,
+      blocked: 0,
+      closedLast30Days: 14,
+    })
+    expect(lines[0]).toBe(
+      "Tasks: 271 active (overdue: 25, stale ≥30d: 89, in-progress: 12)",
+    )
+    expect(lines[1]).toBe(
+      "       Closed last 30 days: 14 (rate: 0.47/day)",
+    )
+  })
+})

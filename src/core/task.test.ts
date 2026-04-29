@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { TaskService, isCleared, taskDaysOverdue, taskDaysStale } from "./task.js"
+import {
+  TaskService,
+  formatTaskSummary,
+  isCleared,
+  taskDaysOverdue,
+  taskDaysStale,
+  taskStats,
+  todayUtc,
+  type TaskStats,
+} from "./task.js"
+import { STALE_TASK_DAYS } from "../types.js"
 import type { DatabaseRef, TaskState } from "../types.js"
 
 type MockablePage = Partial<PageObjectResponse> & { id: string }
@@ -587,5 +597,557 @@ describe("taskDaysStale", () => {
       "2026-04-20"
     )
     expect(result).toBeNull()
+  })
+
+  it("returns null for terminal-state tasks regardless of how old they are", () => {
+    // Closed work isn't "stale" — it's done. Mirrors how `taskDaysOverdue`
+    // suppresses urgency markers on done/cancelled rows.
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-01-01T00:00:00.000Z", taskState: "done" },
+        "2026-04-28"
+      )
+    ).toBeNull()
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-01-01T00:00:00.000Z", taskState: "cancelled" },
+        "2026-04-28"
+      )
+    ).toBeNull()
+  })
+
+  it("returns the day-count delta against `today` for active tasks", () => {
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-04-01T00:00:00.000Z", taskState: "open" },
+        "2026-05-01"
+      )
+    ).toBe(30)
+  })
+
+  it("returns 0 for a task touched today (not yet stale)", () => {
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-04-28T00:00:00.000Z", taskState: "in-progress" },
+        "2026-04-28"
+      )
+    ).toBe(0)
+  })
+
+  it("returns null when updatedAt is missing", () => {
+    expect(
+      taskDaysStale({ updatedAt: "", taskState: "open" }, "2026-04-28")
+    ).toBeNull()
+  })
+
+  it("computes calendar-day diffs regardless of `updatedAt` time-of-day", () => {
+    // `last_edited_time` is a full ISO timestamp with arbitrary
+    // time-of-day; `today` is a calendar day at UTC midnight.
+    // Comparing the raw timestamps would let the time component
+    // skew the diff: `2026-04-20T12:00:00Z` is 0.5d before
+    // `2026-04-20T00:00:00Z` if you go raw, so `Math.floor(-0.5d)`
+    // returns `-1`. Truncating `updatedAt` to the calendar-day
+    // prefix produces the whole-day count operators expect, and
+    // makes the helper signature match PR #129's spec
+    // (`taskDaysStale(updatedAt: "2026-04-20T12:00:00Z", today:
+    // "2026-04-20") === 0`).
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-04-20T12:00:00Z", taskState: "open" },
+        "2026-04-20",
+      ),
+    ).toBe(0)
+    // 30 days, 1 hour ago must register as the full 30 days, not 29.
+    // A pre-fix implementation returns `Math.floor(29.96) = 29` here
+    // and the row silently undercounts in the stale bucket.
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-03-29T01:00:00Z", taskState: "open" },
+        "2026-04-28",
+      ),
+    ).toBe(30)
+    // Time-of-day later than the today anchor still resolves to the
+    // calendar-day diff — a raw-timestamp diff would produce `-1`
+    // here and silently pull the row out of the stale bucket.
+    expect(
+      taskDaysStale(
+        { updatedAt: "2026-04-20T23:59:59Z", taskState: "open" },
+        "2026-04-20",
+      ),
+    ).toBe(0)
+  })
+})
+
+describe("TaskService.countActive", () => {
+  it("buckets each active row into total/overdue/stale/in-progress/blocked", async () => {
+    // Three rows: one overdue, one stale (>30d untouched, no due), one
+    // in-progress (fresh). Pinning every counter on the same call
+    // proves the bucketing is mutually consistent — overdue and stale
+    // can co-exist on different rows but the same row can't double-count
+    // (the `else` branch on the stale check makes overdue strictly
+    // dominant per row).
+    const overduePage: PageObjectResponse = makePage({
+      id: "t-overdue",
+      created_time: "2026-04-20T00:00:00.000Z",
+      last_edited_time: "2026-04-25T00:00:00.000Z",
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Overdue task" }] } as unknown,
+        Kind: { type: "select", select: { name: "task" } } as unknown,
+        "Task State": { type: "select", select: { name: "open" } } as unknown,
+        "Review By": { type: "date", date: { start: "2026-04-01" } } as unknown,
+        "Blocked By": { type: "rich_text", rich_text: [] } as unknown,
+        Entity: { type: "rich_text", rich_text: [] } as unknown,
+      } as PageObjectResponse["properties"],
+    })
+    const stalePage: PageObjectResponse = makePage({
+      id: "t-stale",
+      created_time: "2026-01-01T00:00:00.000Z",
+      // 90 days before 2026-04-28 → past the 30-day stale threshold.
+      last_edited_time: "2026-01-28T00:00:00.000Z",
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Stale task" }] } as unknown,
+        Kind: { type: "select", select: { name: "task" } } as unknown,
+        "Task State": { type: "select", select: { name: "blocked" } } as unknown,
+        "Blocked By": {
+          type: "rich_text",
+          rich_text: [{ plain_text: "PR #25700" }],
+        } as unknown,
+        Entity: { type: "rich_text", rich_text: [] } as unknown,
+      } as PageObjectResponse["properties"],
+    })
+    const inProgressPage: PageObjectResponse = makePage({
+      id: "t-fresh",
+      created_time: "2026-04-25T00:00:00.000Z",
+      last_edited_time: "2026-04-27T00:00:00.000Z",
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Fresh task" }] } as unknown,
+        Kind: { type: "select", select: { name: "task" } } as unknown,
+        "Task State": {
+          type: "select",
+          select: { name: "in-progress" },
+        } as unknown,
+        "Blocked By": { type: "rich_text", rich_text: [] } as unknown,
+        Entity: { type: "rich_text", rich_text: [] } as unknown,
+      } as PageObjectResponse["properties"],
+    })
+    const client = createMockClient({
+      queryResults: [overduePage, stalePage, inProgressPage],
+    })
+    const service = new TaskService(client, DB)
+
+    const stats = await service.countActive({ today: "2026-04-28" })
+
+    expect(stats.total).toBe(3)
+    expect(stats.overdue).toBe(1)
+    expect(stats.stale).toBe(1)
+    expect(stats.inProgress).toBe(1)
+    expect(stats.blocked).toBe(1)
+  })
+
+  it("walks pagination to exhaustion (multi-page result)", async () => {
+    // Two pages: first returns has_more, second has no cursor. Pin
+    // pagination so a future change to `list({ startCursor })` doesn't
+    // silently turn the count into "first page only."
+    const page1 = taskPage("t1", { state: "open" })
+    const page2 = taskPage("t2", { state: "open" })
+    const dataSourceQuery = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [page1],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [page2],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = {
+      pages: {
+        retrieve: vi.fn(),
+        retrieveMarkdown: vi.fn(),
+        update: vi.fn(),
+        create: vi.fn(),
+        updateMarkdown: vi.fn(),
+      },
+      dataSources: { query: dataSourceQuery },
+    } as unknown as Client
+    const service = new TaskService(client, DB)
+
+    const stats = await service.countActive({ today: "2026-04-28" })
+
+    expect(stats.total).toBe(2)
+    expect(dataSourceQuery).toHaveBeenCalledTimes(2)
+    expect(
+      (dataSourceQuery.mock.calls[1]![0] as { start_cursor?: string }).start_cursor,
+    ).toBe("cursor-1")
+  })
+
+  it("scopes by projectId via the same OR-with-unscoped clause as TaskService.list", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.countActive({ projectId: "proj-mail", today: "2026-04-28" })
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    const filter = JSON.stringify(args.filter)
+    expect(filter).toContain("proj-mail")
+    // Active states drive the filter — done/cancelled rows are excluded
+    // server-side so the count never sees closed work.
+    expect(filter).toContain('"open"')
+    expect(filter).toContain('"in-progress"')
+    expect(filter).toContain('"blocked"')
+    expect(filter).not.toContain('"done"')
+    expect(filter).not.toContain('"cancelled"')
+  })
+
+  it("rejects malformed `today` with a clear RangeError before issuing any Notion query", async () => {
+    // Defense-in-depth at the public service boundary. Without the
+    // guard, a malformed `today` would silently zero every bucket:
+    // `new Date(NaN)` flows through both bucket helpers as `NaN`,
+    // every comparison against `NaN` is `false`, and the response
+    // claims "no overdue, no stale, no anything" without ever
+    // surfacing the input mistake. `taskStats` (the typical caller)
+    // already validates; `countActive` is public and a direct caller
+    // bypassing the orchestrator must see the same error shape.
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await expect(
+      service.countActive({ today: "not-a-date" }),
+    ).rejects.toThrow(/invalid today value "not-a-date"/i)
+    // The Notion query must NOT have fired — validation runs before
+    // the paginated walk.
+    expect(client.dataSources.query).not.toHaveBeenCalled()
+  })
+})
+
+describe("TaskService.countClosedSince", () => {
+  it("returns the row count when Done At exists on the data source", async () => {
+    const client = createMockClient({
+      queryResults: [
+        taskPage("c1", { state: "done" }),
+        taskPage("c2", { state: "cancelled" }),
+        taskPage("c3", { state: "done" }),
+      ],
+    })
+    const service = new TaskService(client, DB)
+
+    const total = await service.countClosedSince("2026-03-30")
+    expect(total).toBe(3)
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    // `Done At on_or_after` is inclusive on the lower bound and
+    // matches rows whose `Done At` is on or before today; combined,
+    // `today - 29 days` produces the 30-day inclusive window the
+    // `Closed last 30 days` label promises.
+    expect(JSON.stringify(args.filter)).toContain(
+      '"Done At","date":{"on_or_after":"2026-03-30"}',
+    )
+  })
+
+  it("excludes re-opened tasks via a Task State in (done, cancelled) filter", async () => {
+    // `Done At` is preserved across re-open by design — `update({
+    // state: 'open' })` keeps the prior closure timestamp as
+    // historical fact. Without the terminal-state guard, a row closed
+    // on day -1 then re-opened today would still match the filter and
+    // double-count as a closure. Pin the guard so a future change to
+    // the date filter can't silently drop the state filter and
+    // regress the rate metric.
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.countClosedSince("2026-03-30")
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    const filter = JSON.stringify(args.filter)
+    // Both terminal states must appear under an `or` group — the
+    // filter pins "currently-closed" not "ever-closed."
+    expect(filter).toContain('"Task State","select":{"equals":"done"}')
+    expect(filter).toContain('"Task State","select":{"equals":"cancelled"}')
+    // Active states must NOT appear in the filter — they belong to
+    // `countActive`, not `countClosedSince`.
+    expect(filter).not.toContain('"Task State","select":{"equals":"open"}')
+    expect(filter).not.toContain('"Task State","select":{"equals":"in-progress"}')
+    expect(filter).not.toContain('"Task State","select":{"equals":"blocked"}')
+  })
+
+  it("returns null when the column doesn't exist (pre-#07 vault)", async () => {
+    // Notion raises a `validation_error` whose message names the
+    // missing property; `isMissingPropertyError` matches it and the
+    // method falls through to `null` so the renderer can suppress the
+    // closure-rate line entirely.
+    const dataSourceQuery = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Could not find property with name or id: Done At"), {
+        code: "validation_error",
+      }),
+    )
+    const client = {
+      pages: {},
+      dataSources: { query: dataSourceQuery },
+    } as unknown as Client
+    const service = new TaskService(client, DB)
+
+    const total = await service.countClosedSince("2026-03-30")
+    expect(total).toBeNull()
+  })
+
+  it("re-throws unrelated Notion errors instead of swallowing them as null", async () => {
+    // A genuinely-malformed filter shape, a 5xx, or a rate-limit error
+    // must propagate so the caller surfaces the failure rather than
+    // showing "no closures" to the operator while the vault is
+    // actually broken.
+    const dataSourceQuery = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Internal server error"), { code: "internal_server_error" }),
+    )
+    const client = {
+      pages: {},
+      dataSources: { query: dataSourceQuery },
+    } as unknown as Client
+    const service = new TaskService(client, DB)
+
+    await expect(service.countClosedSince("2026-03-30")).rejects.toThrow(
+      /Internal server error/,
+    )
+  })
+
+  it("scopes the closed-since query by projectId when provided", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.countClosedSince("2026-03-30", { projectId: "proj-mail" })
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    expect(JSON.stringify(args.filter)).toContain("proj-mail")
+  })
+})
+
+describe("taskStats orchestrator", () => {
+  it("composes countActive + countClosedSince into the surface-rendering shape", async () => {
+    const service = {
+      countActive: vi.fn(async () => ({
+        total: 271,
+        overdue: 25,
+        stale: 89,
+        inProgress: 12,
+        blocked: 4,
+      })),
+      countClosedSince: vi.fn(async () => 14),
+    }
+
+    const stats = await taskStats(service as never, {
+      today: "2026-04-28",
+    })
+
+    expect(stats).toEqual({
+      active: 271,
+      overdue: 25,
+      stale: 89,
+      inProgress: 12,
+      blocked: 4,
+      closedLast30Days: 14,
+    })
+    // The closed-since window is `today - 29 days` so `Done At
+    // on_or_after windowStart` covers exactly 30 inclusive calendar
+    // days through `today`. Subtracting 30 would cover 31 days and
+    // silently inflate the rate against the `N / 30` divisor.
+    expect(service.countClosedSince).toHaveBeenCalledWith(
+      "2026-03-30",
+      expect.any(Object),
+    )
+  })
+
+  it("computes a 30-day inclusive window: today − 29 days through today", () => {
+    // Pin the off-by-one explicitly. A regression to `today - 30` would
+    // span 31 inclusive days; this assertion catches that immediately.
+    const todayMs = new Date("2026-04-28").getTime()
+    const expected = new Date(todayMs - 29 * 86_400_000)
+      .toISOString()
+      .split("T")[0]
+    expect(expected).toBe("2026-03-30")
+  })
+
+  it("propagates a null closedLast30Days from a pre-#07 vault unchanged", async () => {
+    const service = {
+      countActive: vi.fn(async () => ({
+        total: 0,
+        overdue: 0,
+        stale: 0,
+        inProgress: 0,
+        blocked: 0,
+      })),
+      countClosedSince: vi.fn(async () => null),
+    }
+
+    const stats = await taskStats(service as never, { today: "2026-04-28" })
+    expect(stats.closedLast30Days).toBeNull()
+  })
+
+  it("forwards projectId to both underlying counters", async () => {
+    const service = {
+      countActive: vi.fn(async () => ({
+        total: 0,
+        overdue: 0,
+        stale: 0,
+        inProgress: 0,
+        blocked: 0,
+      })),
+      countClosedSince: vi.fn(async () => 0),
+    }
+
+    await taskStats(service as never, {
+      projectId: "proj-mail",
+      today: "2026-04-28",
+    })
+
+    expect(service.countActive).toHaveBeenCalledWith({
+      projectId: "proj-mail",
+      today: "2026-04-28",
+    })
+    expect(service.countClosedSince).toHaveBeenCalledWith("2026-03-30", {
+      projectId: "proj-mail",
+    })
+  })
+
+  it("rejects malformed `today` with a clear RangeError instead of letting NaN propagate", async () => {
+    // Without the boundary check, a malformed `today` would cascade
+    // through `new Date(NaN)` → `.toISOString()` and surface as an
+    // opaque RangeError several frames up. The explicit guard names
+    // the offending value at the helper site so the failure is
+    // self-explanatory.
+    const service = {
+      countActive: vi.fn(),
+      countClosedSince: vi.fn(),
+    }
+    await expect(
+      taskStats(service as never, { today: "not-a-date" }),
+    ).rejects.toThrow(/invalid today value "not-a-date"/i)
+    // Neither underlying counter should have fired — the validation
+    // runs before the `Promise.all` fan-out.
+    expect(service.countActive).not.toHaveBeenCalled()
+    expect(service.countClosedSince).not.toHaveBeenCalled()
+  })
+})
+
+describe("todayUtc", () => {
+  it("returns a YYYY-MM-DD string parseable as a UTC date", () => {
+    const value = todayUtc()
+    expect(value).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    // Round-trip through Date — the value must be a real UTC date,
+    // not a string that happens to match the regex.
+    const ms = new Date(value).getTime()
+    expect(Number.isNaN(ms)).toBe(false)
+    // Should be today by UTC; allow a 1-day window to accommodate
+    // tests crossing midnight UTC during execution.
+    const todayMs = Date.now()
+    const dayMs = 86_400_000
+    expect(Math.abs(todayMs - ms)).toBeLessThan(2 * dayMs)
+  })
+})
+
+describe("formatTaskSummary", () => {
+  function baseStats(overrides: Partial<TaskStats> = {}): TaskStats {
+    return {
+      active: 0,
+      overdue: 0,
+      stale: 0,
+      inProgress: 0,
+      blocked: 0,
+      closedLast30Days: null,
+      ...overrides,
+    }
+  }
+
+  it("renders 'Tasks: 0 active' bare when the vault is task-empty", () => {
+    // Acceptance criterion: a task-empty vault still renders the line
+    // — operators need an explicit signal that the surface is working,
+    // not that it's hidden.
+    const lines = formatTaskSummary(baseStats({ active: 0 }))
+    expect(lines).toEqual(["Tasks: 0 active"])
+  })
+
+  it("emits no parenthetical when active>0 but every sub-stat is zero", () => {
+    const lines = formatTaskSummary(baseStats({ active: 5 }))
+    expect(lines).toEqual(["Tasks: 5 active"])
+  })
+
+  it("renders the full sub-stat parenthetical in the canonical order", () => {
+    const lines = formatTaskSummary(
+      baseStats({
+        active: 271,
+        overdue: 25,
+        stale: 89,
+        inProgress: 12,
+        blocked: 4,
+      }),
+    )
+    expect(lines).toEqual([
+      `Tasks: 271 active (overdue: 25, stale ≥${STALE_TASK_DAYS}d: 89, in-progress: 12, blocked: 4)`,
+    ])
+  })
+
+  it("omits per-bucket sub-stats whose count is zero", () => {
+    // Only overdue is non-zero — the parenthetical contains overdue
+    // alone. The renderer never emits "stale ≥30d: 0" as filler.
+    const lines = formatTaskSummary(baseStats({ active: 25, overdue: 25 }))
+    expect(lines).toEqual(["Tasks: 25 active (overdue: 25)"])
+  })
+
+  it("appends a closure-rate line when closedLast30Days is non-null (post-#07)", () => {
+    const lines = formatTaskSummary(
+      baseStats({ active: 271, closedLast30Days: 14 }),
+    )
+    expect(lines).toEqual([
+      "Tasks: 271 active",
+      "       Closed last 30 days: 14 (rate: 0.47/day)",
+    ])
+  })
+
+  it("aligns the closure-rate continuation line under the count on the primary line", () => {
+    // Pin the alignment-by-prefix-length contract: the indent on the
+    // continuation line equals the length of the `Tasks: ` prefix.
+    // A future copy edit on the primary line (e.g. `Tasks (project): `)
+    // would silently rot the visual block alignment without this guard.
+    // Use a fixture where the count cannot collide with any other
+    // numeric token in the line so `indexOf(String(active))` lands on
+    // the count and not on a substring of "30d" / "0.03/day" / etc.
+    const report = baseStats({ active: 271, closedLast30Days: 1 })
+    const lines = formatTaskSummary(report)
+    const primary = lines[0]!
+    const continuation = lines[1]!
+    const tasksPrefixLen = primary.indexOf(String(report.active))
+    const continuationIndent = continuation.indexOf("Closed")
+    expect(tasksPrefixLen).toBeGreaterThan(0) // sanity: count is found
+    expect(continuationIndent).toBe(tasksPrefixLen)
+  })
+
+  it("renders a 0/30 closure rate as '0.00/day' (operator-visible signal of stagnation)", () => {
+    const lines = formatTaskSummary(
+      baseStats({ active: 5, closedLast30Days: 0 }),
+    )
+    expect(lines).toEqual([
+      "Tasks: 5 active",
+      "       Closed last 30 days: 0 (rate: 0.00/day)",
+    ])
+  })
+
+  it("suppresses the closure-rate line entirely when closedLast30Days is null (pre-#07)", () => {
+    const lines = formatTaskSummary(
+      baseStats({ active: 5, closedLast30Days: null }),
+    )
+    expect(lines).toEqual(["Tasks: 5 active"])
+  })
+
+  it("rounds the rate to 2 decimals", () => {
+    // 30 closures / 30 days → 1.00; 100 closures / 30 days → 3.33.
+    expect(
+      formatTaskSummary(baseStats({ active: 1, closedLast30Days: 30 }))[1],
+    ).toContain("rate: 1.00/day")
+    expect(
+      formatTaskSummary(baseStats({ active: 1, closedLast30Days: 100 }))[1],
+    ).toContain("rate: 3.33/day")
   })
 })
