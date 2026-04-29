@@ -1470,3 +1470,150 @@ describe("lore-expand", () => {
     expect(text).toContain("Expanded 2 memories")
   })
 })
+
+describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
+  it("threads synopsis on action='save' through to memories.create", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-with-synopsis", {
+      title: "Saved",
+      synopsis: "One-line gist for the listings tier.",
+    })
+    const create = vi.fn().mockResolvedValue(created)
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Saved",
+      content: "body",
+      synopsis: "One-line gist for the listings tier.",
+    } as never)
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Saved",
+        synopsis: "One-line gist for the listings tier.",
+      }),
+    )
+  })
+
+  it("threads synopsis on action='update' through to memories.update", async () => {
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-1", { synopsis: "New synopsis" })
+    const update = vi.fn().mockResolvedValue(updated)
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-1",
+      synopsis: "New synopsis",
+    } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ synopsis: "New synopsis" }),
+    )
+  })
+
+  it("update with empty-string synopsis is forwarded as the explicit clear", async () => {
+    // The boundary preserves the `""` semantic so MemoryService.update
+    // can write a cleared rich_text. `undefined` (omitted) means leave
+    // untouched — pinned in the next test.
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue(makeMemory("mem-1"))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({ memoryId: "mem-1", synopsis: "" } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ synopsis: "" }),
+    )
+  })
+
+  it("update with no synopsis arg leaves the field untouched (forwards undefined)", async () => {
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue(makeMemory("mem-1"))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({ memoryId: "mem-1", title: "Just renaming" } as never)
+
+    const [, args] = update.mock.calls[0]
+    expect(args.synopsis).toBeUndefined()
+  })
+
+  it("rejects synopsis longer than 500 chars at the Zod boundary", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+    const overCap = "x".repeat(501)
+
+    const result = await remember({
+      title: "Saved",
+      content: "body",
+      synopsis: overCap,
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("synopsis")
+    // The save was rejected; create was never invoked.
+    expect(services.memories.create).not.toHaveBeenCalled()
+  })
+
+  // Note: write-time decode coverage for synopsis lives where the
+  // decode actually fires:
+  //   - MemoryService.create / update — `src/core/memory.test.ts`
+  //   - DecisionService.create — `src/core/decision.test.ts`
+  //   - TaskService.create / update — `src/core/task.test.ts`
+  // Keep the proof at the seam, not at the helper.
+})

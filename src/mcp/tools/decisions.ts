@@ -13,7 +13,7 @@ import {
   syncDecisionReachability,
 } from "../decision-graph.js"
 import { displayId, resolveTitles } from "../render.js"
-import { ACTIVE_DECISION_STATUSES } from "../../types.js"
+import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
@@ -125,6 +125,7 @@ interface CreateArgs {
   consequences?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
   agent?: string
   session?: string
 }
@@ -181,6 +182,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
         consequences: args.consequences,
         tags: args.tags,
         keywords: args.keywords,
+        synopsis: args.synopsis,
         agent: args.agent,
         session: args.session,
       }),
@@ -647,6 +649,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     consequences: z.string().optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
+    synopsis: z.string().max(SYNOPSIS_MAX).optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
   }),
@@ -789,6 +792,15 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .describe("(action='create') Consequences accepted (≤2000 chars)."),
         tags: tagsSchema.optional().describe("(action='create') Closed-vocabulary tags."),
         keywords: keywordsSchema.optional().describe("(action='create') Free-form labels."),
+        synopsis: z
+          .string()
+          .max(SYNOPSIS_MAX)
+          .optional()
+          .describe(
+            "(action='create') 1–2 sentence synopsis of the governing rule — distinct from " +
+              "`decision` (the title) and `rationale` (the body). Surfaces under the title on " +
+              `recall/search/wake-up listings. Up to ${SYNOPSIS_MAX} chars.`,
+          ),
         agent: z
           .string()
           .optional()

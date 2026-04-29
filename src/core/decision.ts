@@ -28,6 +28,7 @@ import type {
 } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import { isFullPage } from "../notion/extractors.js"
 import { pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
@@ -58,6 +59,10 @@ export class DecisionService {
     const decidedAt = input.decidedAt ?? todayISO()
     const status = input.status ?? "accepted"
     const confidence = input.confidence ?? "certain"
+    // Decode at the write boundary so doubly-encoded autosave input
+    // (`&amp;amp;`) lands clean.
+    const synopsis =
+      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined
 
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
@@ -78,6 +83,7 @@ export class DecisionService {
         agent: input.agent,
         tags: input.tags,
         keywords: input.keywords,
+        synopsis,
         session: input.session,
       }),
     })

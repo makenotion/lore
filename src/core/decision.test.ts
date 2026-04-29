@@ -166,6 +166,42 @@ describe("DecisionService.create", () => {
     expect(props.Supersedes.relation).toEqual([{ id: "old-1" }, { id: "old-2" }])
     expect(props.Affects.relation).toEqual([{ id: "mem-a" }, { id: "mem-b" }])
   })
+
+  it("decodes doubly-encoded synopsis at the write boundary", async () => {
+    // Through-path proof of the inline `decodeTextEntities` seam at
+    // `decision.ts:create`. The rest of `DecisionService` doesn't decode
+    // any fields today, so this is the lone seam — a future contributor
+    // dropping the wrapper has nothing else to catch the regression.
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.create({
+      decision: "Cache project resolutions",
+      rationale: "long form",
+      synopsis: "Foo &amp;amp; Bar",
+    })
+
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    expect(props.Synopsis).toEqual({
+      rich_text: [{ text: { content: "Foo & Bar" } }],
+    })
+  })
+
+  it("does NOT emit Synopsis on the create page when synopsis is omitted", async () => {
+    // `buildMemoryProps` gates the Synopsis emission on `!== undefined`;
+    // this test pins that omitting the field produces no Synopsis key on
+    // the create payload (rather than a cleared rich_text).
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.create({
+      decision: "No synopsis",
+      rationale: "rationale",
+    })
+
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    expect(props.Synopsis).toBeUndefined()
+  })
 })
 
 describe("DecisionService.getById", () => {

@@ -103,6 +103,8 @@ export class TaskService {
       input.blockedBy !== undefined ? decodeTextEntities(input.blockedBy) : undefined
     const keywords =
       input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined
+    const synopsis =
+      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined
     const confidence = input.confidence ?? "certain"
 
     const page = await this.client.pages.create({
@@ -124,6 +126,7 @@ export class TaskService {
         agent: input.agent,
         tags: input.tags,
         keywords,
+        synopsis,
         session: input.session,
         taskState: state,
         blockedBy,
@@ -299,6 +302,15 @@ export class TaskService {
     if (input.keywords !== undefined) {
       props["Keywords"] = {
         rich_text: [{ text: { content: decodeTextEntities(input.keywords) } }],
+      }
+    }
+    // `!== undefined` (rather than `isCleared`) matches how `Blocked By`
+    // and `Entity` are emitted on update — empty string is a valid clear
+    // write and lands in Notion as a cleared rich_text. Using `isCleared`
+    // would diverge from sibling text-field semantics for no benefit.
+    if (input.synopsis !== undefined) {
+      props["Synopsis"] = {
+        rich_text: [{ text: { content: decodeTextEntities(input.synopsis) } }],
       }
     }
     if (input.affectsIds) {

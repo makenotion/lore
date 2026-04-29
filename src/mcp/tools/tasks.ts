@@ -18,7 +18,7 @@ import { formatDispatchError, toolError } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
-import { ACTIVE_TASK_STATES } from "../../types.js"
+import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { TaskState, TaskSummary } from "../../types.js"
 
 type ToolResult = {
@@ -96,6 +96,7 @@ interface CreateArgs {
   confidence?: (typeof CONFIDENCES)[number]
   tags?: string[]
   keywords?: string
+  synopsis?: string
   agent?: string
   session?: string
 }
@@ -144,6 +145,7 @@ async function handleCreate(
       confidence: args.confidence,
       tags: args.tags,
       keywords: args.keywords,
+      synopsis: args.synopsis,
       agent: args.agent,
       session: args.session,
     })
@@ -198,6 +200,7 @@ interface UpdateArgs {
   description?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
 }
 
 async function handleUpdate(
@@ -245,6 +248,7 @@ async function handleUpdate(
       description: args.description,
       tags: args.tags,
       keywords: args.keywords,
+      synopsis: args.synopsis,
     })
 
     const lines = [
@@ -452,6 +456,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     confidence: z.enum(CONFIDENCES).optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
+    synopsis: z.string().max(SYNOPSIS_MAX).optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
   }),
@@ -468,6 +473,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     description: z.string().optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
+    synopsis: z.string().max(SYNOPSIS_MAX).optional(),
   }),
   z.object({
     action: z.literal("close"),
@@ -606,6 +612,16 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         keywords: keywordsSchema
           .optional()
           .describe("(action='create' | 'update') Free-form keywords."),
+        synopsis: z
+          .string()
+          .max(SYNOPSIS_MAX)
+          .optional()
+          .describe(
+            "(action='create' | 'update') 1–2 sentence synopsis of what the task is about " +
+              "and what 'done' looks like — distinct from `subject` (short title) and " +
+              `\`description\` (the body). Up to ${SYNOPSIS_MAX} chars. ` +
+              "On update, omit to leave untouched; pass empty string to clear.",
+          ),
         agent: z
           .string()
           .optional()

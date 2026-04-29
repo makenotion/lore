@@ -774,3 +774,78 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
     expect(services.facts.queryByEntity).toHaveBeenCalled()
   })
 })
+
+describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
+  it("threads synopsis on action='create' through to decisions.create", async () => {
+    const mockServer = createMockServer()
+    const created = makeDecision("dec-1", {
+      title: "Cache project resolutions for 60s",
+      synopsis: "All resolved projects are cached in-process for 60s.",
+    })
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(created),
+        getById: vi.fn(),
+        supersede: vi.fn(),
+      },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      memories: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    await loreDecide({
+      decision: "Cache project resolutions for 60s",
+      rationale: "Long-form rationale here.",
+      synopsis: "All resolved projects are cached in-process for 60s.",
+    } as never)
+
+    expect(services.decisions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "Cache project resolutions for 60s",
+        rationale: "Long-form rationale here.",
+        synopsis: "All resolved projects are cached in-process for 60s.",
+      }),
+    )
+  })
+
+  it("rejects synopsis longer than 500 chars at the Zod boundary", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      decisions: { create: vi.fn(), getById: vi.fn(), supersede: vi.fn() },
+      facts: { create: vi.fn(), queryBySourceMemory: vi.fn(), invalidate: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      memories: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+    const overCap = "x".repeat(501)
+
+    const result = await loreDecide({
+      decision: "T",
+      rationale: "R",
+      synopsis: overCap,
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("synopsis")
+    expect(services.decisions.create).not.toHaveBeenCalled()
+  })
+})

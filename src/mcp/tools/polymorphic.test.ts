@@ -1136,3 +1136,178 @@ describe("MCP tool surface", () => {
     }
   })
 })
+
+// -------------------------------------------------------------------------
+// Synopsis surface (issue 0.7.0/02)
+//
+// Pin that the optional `synopsis` field threads through to the right
+// action handlers, that the 500-char Zod cap fires at the dispatch
+// boundary, and that each write tool's MCP-visible inputSchema names
+// `synopsis` so an agent introspecting via tools/list discovers it.
+// -------------------------------------------------------------------------
+
+describe("synopsis surface (issue 0.7.0/02)", () => {
+  it("threads synopsis on lore-memory action='save' to memories.create", async () => {
+    const memoriesCreate = vi.fn(async () => ({
+      id: "m1",
+      title: "T",
+      projectIds: [],
+      content: "C",
+    }))
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices({ memoriesCreate }) as never)
+    await mock.get("lore-memory")({
+      action: "save",
+      title: "T",
+      content: "C",
+      synopsis: "One-liner",
+    } as never)
+    expect(memoriesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ synopsis: "One-liner" }),
+    )
+  })
+
+  it("threads synopsis on lore-memory action='update' to memories.update", async () => {
+    const memoriesUpdate = vi.fn(async () => ({
+      id: "m1",
+      title: "T",
+      projectIds: [],
+      content: "C",
+    }))
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices({ memoriesUpdate }) as never)
+    await mock.get("lore-memory")({
+      action: "update",
+      memoryId: "m1",
+      synopsis: "Refined",
+    } as never)
+    expect(memoriesUpdate).toHaveBeenCalledWith(
+      "m1",
+      expect.objectContaining({ synopsis: "Refined" }),
+    )
+  })
+
+  it("threads synopsis on lore-decision action='create' to decisions.create", async () => {
+    const decisionsCreate = vi.fn(async () => ({
+      id: "d1",
+      title: "T",
+      projectIds: [],
+      confidence: "certain",
+    }))
+    const mock = createMockServer()
+    registerDecisionTools(
+      mock.server,
+      makeServices({ decisionsCreate }) as never,
+    )
+    await mock.get("lore-decision")({
+      action: "create",
+      decision: "Cache resolutions",
+      rationale: "long form",
+      synopsis: "Resolved projects cached for 60s.",
+    } as never)
+    expect(decisionsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        synopsis: "Resolved projects cached for 60s.",
+      }),
+    )
+  })
+
+  it("threads synopsis on lore-task action='create' and 'update' to TaskService", async () => {
+    const tasksCreate = vi.fn(async () => ({
+      id: "t1",
+      title: "T",
+      projectIds: [],
+      taskState: "open",
+    }))
+    const tasksUpdate = vi.fn(async () => ({
+      id: "t1",
+      title: "T",
+      projectIds: [],
+      taskState: "open",
+    }))
+    const mock = createMockServer()
+    registerTaskTools(
+      mock.server,
+      makeServices({ tasksCreate, tasksUpdate }) as never,
+    )
+
+    await mock.get("lore-task")({
+      action: "create",
+      subject: "Rotate keys",
+      synopsis: "Rotate keys for new env.",
+    } as never)
+    expect(tasksCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ synopsis: "Rotate keys for new env." }),
+    )
+
+    await mock.get("lore-task")({
+      action: "update",
+      taskId: "t1",
+      synopsis: "Updated synopsis",
+    } as never)
+    expect(tasksUpdate).toHaveBeenCalledWith(
+      "t1",
+      expect.objectContaining({ synopsis: "Updated synopsis" }),
+    )
+  })
+
+  it("rejects synopsis longer than 500 chars at the dispatch boundary on every write tool", async () => {
+    const overCap = "x".repeat(501)
+    const cases: Array<{ tool: string; args: Record<string, unknown> }> = [
+      {
+        tool: "lore-memory",
+        args: { action: "save", title: "T", content: "C", synopsis: overCap },
+      },
+      {
+        tool: "lore-memory",
+        args: { action: "update", memoryId: "m1", synopsis: overCap },
+      },
+      {
+        tool: "lore-decision",
+        args: {
+          action: "create",
+          decision: "T",
+          rationale: "R",
+          synopsis: overCap,
+        },
+      },
+      {
+        tool: "lore-task",
+        args: { action: "create", subject: "T", synopsis: overCap },
+      },
+      {
+        tool: "lore-task",
+        args: { action: "update", taskId: "t1", synopsis: overCap },
+      },
+    ]
+    const mock = createMockServer()
+    const services = makeServices() as never
+    registerMemoryTools(mock.server, services)
+    registerDecisionTools(mock.server, services)
+    registerTaskTools(mock.server, services)
+
+    for (const { tool, args } of cases) {
+      const result = await mock.get(tool)(args as never)
+      expect(isError(result), `${tool} ${args.action} should reject overcap synopsis`).toBe(true)
+      expect(extractText(result)).toContain("synopsis")
+    }
+  })
+
+  it("each write tool's inputSchema names synopsis so agents discover it via tools/list", () => {
+    const mock = createMockServer()
+    const services = makeServices() as never
+    registerMemoryTools(mock.server, services)
+    registerDecisionTools(mock.server, services)
+    registerTaskTools(mock.server, services)
+
+    for (const tool of ["lore-memory", "lore-decision", "lore-task"]) {
+      const cfg = mock.config(tool)
+      const schema = cfg.inputSchema as Record<string, unknown> | undefined
+      expect(schema, `${tool} must declare an inputSchema`).toBeDefined()
+      expect(
+        schema && Object.keys(schema).includes("synopsis"),
+        `${tool} inputSchema must declare a synopsis field`,
+      ).toBe(true)
+    }
+  })
+})

@@ -455,3 +455,113 @@ describe("lore-tasks", () => {
     expect(callArgs.entities).toBeUndefined()
   })
 })
+
+describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
+  it("threads synopsis on action='create' through to TaskService.create", async () => {
+    const created: Task = {
+      ...makeTask("t-syn", { synopsis: "Rotate keys for new env." }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    await handler({
+      action: "create",
+      subject: "Rotate keys",
+      synopsis: "Rotate keys for new env.",
+    } as never)
+
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "Rotate keys",
+        synopsis: "Rotate keys for new env.",
+      }),
+    )
+  })
+
+  it("threads synopsis on action='update' through to TaskService.update with update/leave-alone/clear semantics", async () => {
+    const svc = services()
+    svc.tasks.update = vi.fn().mockResolvedValue({
+      ...makeTask("t-1"),
+      content: "",
+    } as Task)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    const handler = mockServer.getHandler("lore-task")
+
+    // Update — explicit value lands.
+    await handler({
+      action: "update",
+      taskId: "t-1",
+      synopsis: "Updated synopsis",
+    } as never)
+    expect(svc.tasks.update).toHaveBeenCalledWith(
+      "t-1",
+      expect.objectContaining({ synopsis: "Updated synopsis" }),
+    )
+
+    // Clear — empty string forwards through.
+    ;(svc.tasks.update as ReturnType<typeof vi.fn>).mockClear()
+    await handler({
+      action: "update",
+      taskId: "t-1",
+      synopsis: "",
+    } as never)
+    expect(svc.tasks.update).toHaveBeenCalledWith(
+      "t-1",
+      expect.objectContaining({ synopsis: "" }),
+    )
+
+    // Leave-alone — omitted arg arrives as undefined.
+    ;(svc.tasks.update as ReturnType<typeof vi.fn>).mockClear()
+    await handler({
+      action: "update",
+      taskId: "t-1",
+      subject: "rename",
+    } as never)
+    const [, args] = (svc.tasks.update as ReturnType<typeof vi.fn>).mock
+      .calls[0]
+    expect(args.synopsis).toBeUndefined()
+  })
+
+  it("rejects synopsis longer than 500 chars at the Zod boundary on create", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    const handler = mockServer.getHandler("lore-task")
+    const overCap = "x".repeat(501)
+
+    const result = await handler({
+      action: "create",
+      subject: "T",
+      synopsis: overCap,
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("synopsis")
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+  })
+
+  it("rejects synopsis longer than 500 chars at the Zod boundary on update", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    const handler = mockServer.getHandler("lore-task")
+    const overCap = "x".repeat(501)
+
+    const result = await handler({
+      action: "update",
+      taskId: "t-1",
+      synopsis: overCap,
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("synopsis")
+    expect(svc.tasks.update).not.toHaveBeenCalled()
+  })
+})

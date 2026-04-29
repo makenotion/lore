@@ -189,6 +189,26 @@ describe("TaskService.create", () => {
       relation: [{ id: "mem-1" }, { id: "mem-2" }],
     })
   })
+
+  it("decodes doubly-encoded synopsis at the write boundary", async () => {
+    // Through-path proof of the inline `decodeTextEntities` seam at
+    // `task.ts:create`. Mirrors `keywords` / `blockedBy` decode coverage
+    // — a future contributor dropping the wrapper has nothing else to
+    // catch the regression.
+    const created = taskPage("new-task-id")
+    const client = createMockClient({ createReturn: created })
+    const service = new TaskService(client, DB)
+
+    await service.create({
+      subject: "Rotate keys",
+      synopsis: "Foo &amp;amp; Bar",
+    })
+
+    const args = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties.Synopsis).toEqual({
+      rich_text: [{ text: { content: "Foo & Bar" } }],
+    })
+  })
 })
 
 describe("TaskService.list", () => {
@@ -412,6 +432,54 @@ describe("TaskService.update", () => {
 
     const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(args.properties["Done At"]).toBeUndefined()
+  })
+
+  it("decodes doubly-encoded synopsis at the write boundary", async () => {
+    // Through-path proof of the direct `decodeTextEntities` call inside
+    // the `props["Synopsis"]` emission (rather than inside a helper).
+    const updatedPage = taskPage("task-id", { state: "open" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { synopsis: "Foo &amp;amp; Bar" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties.Synopsis).toEqual({
+      rich_text: [{ text: { content: "Foo & Bar" } }],
+    })
+  })
+
+  it("emits empty Synopsis rich_text on synopsis: '' to clear the column", async () => {
+    // Sibling-text-field shape: empty string clears, undefined leaves
+    // untouched. Pin the `!== undefined` guard at the property emission
+    // so the alternative (`isCleared`) regression is detectable.
+    const updatedPage = taskPage("task-id", { state: "open" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { synopsis: "" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties.Synopsis).toEqual({
+      rich_text: [{ text: { content: "" } }],
+    })
+  })
+
+  it("does NOT emit Synopsis when synopsis is omitted (leave-untouched)", async () => {
+    const updatedPage = taskPage("task-id", { state: "open" })
+    const client = createMockClient({
+      retrievedPages: { "task-id": updatedPage },
+    })
+    const service = new TaskService(client, DB)
+
+    await service.update("task-id", { state: "in-progress" })
+
+    const args = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.properties.Synopsis).toBeUndefined()
   })
 
 })

@@ -549,6 +549,13 @@ export interface CreateDecisionInput {
   consequences?: string
   tags?: string[]
   keywords?: string
+  /**
+   * One-line synopsis of the governing rule — distinct from `decision` (the
+   * title) and `rationale` (the body). Soft-capped at 500 chars by Zod at the
+   * MCP boundary; the service layer accepts any string for legacy data and
+   * internal migrations.
+   */
+  synopsis?: string
   agent?: string
   session?: string
 }
@@ -621,6 +628,13 @@ export interface CreateTaskInput {
   consequences?: string
   tags?: string[]
   keywords?: string
+  /**
+   * One-line synopsis of what the task is about and what "done" looks like —
+   * distinct from `subject` (short title) and `description` (the body).
+   * Soft-capped at 500 chars by Zod at the MCP boundary; the service layer
+   * accepts any string for legacy data and internal migrations.
+   */
+  synopsis?: string
   agent?: string
   session?: string
 }
@@ -635,6 +649,7 @@ export interface UpdateTaskInput {
   description?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
   affectsIds?: string[]
 }
 

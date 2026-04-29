@@ -17,6 +17,7 @@ import type {
   SearchMode,
   SearchExplain,
 } from "../../types.js"
+import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
   findNearDuplicates,
@@ -108,6 +109,7 @@ interface SaveArgs {
   decidedAt?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
   agent?: string
   session?: string
 }
@@ -160,6 +162,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         decidedAt: args.decidedAt,
         tags: args.tags,
         keywords: args.keywords,
+        synopsis: args.synopsis,
         agent: args.agent,
         session: args.session,
       }),
@@ -203,6 +206,7 @@ interface UpdateArgs {
   content?: string
   tags?: string[]
   keywords?: string
+  synopsis?: string
   projectName?: string
   projectNames?: string[]
   topicName?: string
@@ -259,6 +263,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
       content: args.content,
       tags: args.tags,
       keywords: args.keywords,
+      synopsis: args.synopsis,
       projectIds,
       topicId,
       kind: args.kind as MemoryKind | undefined,
@@ -633,6 +638,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     decidedAt: z.string().regex(YMD_REGEX).optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
+    synopsis: z.string().max(SYNOPSIS_MAX).optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
   }),
@@ -643,6 +649,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     content: z.string().optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
+    synopsis: z.string().max(SYNOPSIS_MAX).optional(),
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),
@@ -766,6 +773,16 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         keywords: keywordsSchema
           .optional()
           .describe("(save | update) Free-form keywords."),
+        synopsis: z
+          .string()
+          .max(SYNOPSIS_MAX)
+          .optional()
+          .describe(
+            "(save | update) 1–2 sentence synopsis surfaced under the title on " +
+              `recall/search/wake-up listings. Up to ${SYNOPSIS_MAX} chars. Keep it tight — ` +
+              "this is the snippet a triager reads to decide whether to expand the body. " +
+              "On update, omit to leave untouched; pass empty string to clear.",
+          ),
         agent: z
           .string()
           .optional()
