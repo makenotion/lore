@@ -179,6 +179,10 @@ async function handleCreate(
     if (resolved.warnings.length > 0) {
       lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
     }
+    lines.push(
+      `\nClose this task when the work is done: ` +
+        `lore-task({ action: 'close', taskId: '${task.id}' })`,
+    )
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
@@ -260,6 +264,19 @@ async function handleUpdate(
       lines.push(`Entity: ${updated.entity}`)
     }
 
+    // Closure CTA suppressed on terminal-state updates — an agent that
+    // closed via `update({ state: "done" })` doesn't need "close this
+    // task" repeated to them. `update` to a terminal state is a
+    // close-shaped operation; same Done At stamp ships in the same atom
+    // as the state write (see TaskService.update / TaskService.close).
+    const updatedState = updated.taskState ?? "open"
+    if (updatedState !== "done" && updatedState !== "cancelled") {
+      lines.push(
+        `\nClose this task when the work is done: ` +
+          `lore-task({ action: 'close', taskId: '${updated.id}' })`,
+      )
+    }
+
     return {
       content: [{ type: "text", text: lines.join("\n") }],
     }
@@ -280,13 +297,27 @@ async function handleClose(
   try {
     const closingState: "done" | "cancelled" = args.state ?? "done"
     await services.tasks.close(args.taskId, closingState)
+
+    // Re-read the post-close row so the response can echo the stamped
+    // `Done At` (issue 0.7.0/07). On a vault that hasn't migrated the
+    // Memories DS to add the column, `extractDate` returns `null` and
+    // we suppress the line — graceful degradation, no version gate.
+    let doneAt: string | null = null
+    try {
+      const reread = await services.tasks.getById(args.taskId)
+      doneAt = reread.doneAt
+    } catch {
+      // Ignore re-read failures: the close itself succeeded, and the
+      // Done At echo is a courtesy line. A transient 5xx shouldn't
+      // mask the close confirmation.
+    }
+
+    const text =
+      `Closed task ${args.taskId} (state: ${closingState})` +
+      (doneAt ? `\nDone at: ${doneAt}` : "")
+
     return {
-      content: [
-        {
-          type: "text",
-          text: `Closed task ${args.taskId} (state: ${closingState})`,
-        },
-      ],
+      content: [{ type: "text", text }],
     }
   } catch (err) {
     return toolError(err)
@@ -496,7 +527,14 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "Create, update, close, or list tasks. Tasks are the canonical " +
         "surface for tracked work; the description lives in the page body " +
         "(no 2000-char rich_text limit) and the subject is structurally " +
-        "indexed. Action-dispatched:\n\n" +
+        "indexed.\n\n" +
+        "CRITICAL CLOSURE RULE: close tasks (action='close') as soon as " +
+        "work completes. A closed task is the source of truth for " +
+        "\"done\"; an unclosed task lingers in every future session's " +
+        "wake-up Tasks section, eating prompt budget on dead work. Bias " +
+        "toward closure — re-open is free; a forgotten-open task costs " +
+        "prompt budget permanently.\n\n" +
+        "Action-dispatched:\n\n" +
         "- `action: 'create'` — open a new task. Use `entity` when the task is about " +
         "a specific subject other facts/decisions also reference; `lore-query` " +
         "action='ask' surfaces it in the Tasks bucket.\n" +

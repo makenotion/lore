@@ -83,6 +83,9 @@ function services(overrides: Record<string, unknown> = {}) {
       update: vi.fn(),
       close: vi.fn(),
       list: vi.fn().mockResolvedValue({ items: [] }),
+      // Default `getById` resolves to a doneAt-less task so close-path
+      // tests that don't override it see no Done At echo line.
+      getById: vi.fn().mockResolvedValue(makeTask("t1", { doneAt: null })),
     },
     sessionMemories: { record: vi.fn() },
     context: { project: null },
@@ -266,6 +269,190 @@ describe("lore-task-update", () => {
       "task-id",
       expect.objectContaining({ dueDate: null })
     )
+  })
+})
+
+/**
+ * Issue 0.7.0/09 — closure CTA + description tightening.
+ *
+ * The CTA is the agent-facing nudge that the work-context-freshest
+ * agent (the one who just opened or mutated the task) should close it
+ * when the work completes. Pin presence on create + active-state
+ * update; pin absence on close (self-referential) and on terminal-state
+ * updates (close-shaped operation, repeating the rule is noise).
+ */
+describe("closure CTA (issue 0.7.0/09)", () => {
+  const CTA_PREFIX = "Close this task when the work is done:"
+
+  it("renders the closure CTA on create", async () => {
+    const created: Task = {
+      ...makeTask("t-new"),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "create", subject: "Rotate keys" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(CTA_PREFIX)
+    // The exact incantation lets the agent copy-paste back into a
+    // tool call. Pin the literal so a refactor that drops `taskId`
+    // or shifts to single-quotes-vs-double trips here.
+    expect(text).toContain(`lore-task({ action: 'close', taskId: 't-new' })`)
+  })
+
+  it("renders the closure CTA on an active-state update", async () => {
+    const svc = services()
+    svc.tasks.update = vi.fn().mockResolvedValue({
+      ...makeTask("t-active", { taskState: "in-progress" }),
+      content: "",
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "update",
+      taskId: "t-active",
+      state: "in-progress",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(CTA_PREFIX)
+    expect(text).toContain(`lore-task({ action: 'close', taskId: 't-active' })`)
+  })
+
+  it("suppresses the closure CTA on a done-state update", async () => {
+    const svc = services()
+    svc.tasks.update = vi.fn().mockResolvedValue({
+      ...makeTask("t-done", { taskState: "done" }),
+      content: "",
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "update",
+      taskId: "t-done",
+      state: "done",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // `update({ state: "done" })` is itself a close-shaped operation
+    // — repeating "close this task" is noise, not a nudge.
+    expect(text).not.toContain(CTA_PREFIX)
+  })
+
+  it("suppresses the closure CTA on a cancelled-state update", async () => {
+    const svc = services()
+    svc.tasks.update = vi.fn().mockResolvedValue({
+      ...makeTask("t-cx", { taskState: "cancelled" }),
+      content: "",
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "update",
+      taskId: "t-cx",
+      state: "cancelled",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain(CTA_PREFIX)
+  })
+
+  it("suppresses the closure CTA on close (self-referential)", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain(CTA_PREFIX)
+  })
+
+  it("echoes the post-close Done At date when present", async () => {
+    const svc = services()
+    svc.tasks.getById = vi
+      .fn()
+      .mockResolvedValue(makeTask("t-id", { doneAt: "2026-04-28" }))
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Closed task t-id (state: done)")
+    expect(text).toContain("Done at: 2026-04-28")
+  })
+
+  it("omits the Done at line when the post-close re-read returns null", async () => {
+    // Pre-#07 vault that hasn't been migrated: the row exists but
+    // the column is empty. Suppress the courtesy line rather than
+    // surface "Done at: null" / "Done at: undefined".
+    const svc = services()
+    svc.tasks.getById = vi
+      .fn()
+      .mockResolvedValue(makeTask("t-id", { doneAt: null }))
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toBe("Closed task t-id (state: done)")
+  })
+
+  it("returns the close confirmation even when the post-close re-read fails", async () => {
+    // The Done At echo is a courtesy line — a transient 5xx on
+    // `getById` shouldn't mask the close confirmation that already
+    // landed on Notion.
+    const svc = services()
+    svc.tasks.getById = vi.fn().mockRejectedValue(new Error("boom"))
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "close", taskId: "t-id" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toBe("Closed task t-id (state: done)")
+  })
+
+  it("leads the lore-task description with the CRITICAL CLOSURE RULE", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const config = (mockServer.server.registerTool as ReturnType<typeof vi.fn>)
+      .mock.calls.find(([name]) => name === "lore-task")?.[1] as
+      | { description?: string }
+      | undefined
+
+    // Pin **position**, not just presence. Agents tokenize tool
+    // descriptions top-down and weight early all-caps directives
+    // disproportionately. The whole point of this issue is that the
+    // rule sits *before* the per-action bullet list — a future
+    // refactor that moves the rule below the bullets passes a bare
+    // `toContain` assertion but silently regresses the leverage.
+    const description = config?.description ?? ""
+    const ruleIdx = description.indexOf("CRITICAL CLOSURE RULE")
+    const firstBulletIdx = description.indexOf("- `action:")
+    expect(ruleIdx).toBeGreaterThan(-1)
+    expect(firstBulletIdx).toBeGreaterThan(-1)
+    expect(ruleIdx).toBeLessThan(firstBulletIdx)
+    expect(description).toContain("action='close'")
   })
 })
 
