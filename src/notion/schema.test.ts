@@ -175,3 +175,62 @@ describe("buildMemoryProps — doneAt emission", () => {
     expect(built["Done At"]).toEqual({ date: null })
   })
 })
+
+describe("memoriesProperties — Confidence Score + Last Referenced At columns (0.8.0/#01 + #02)", () => {
+  it("declares Confidence Score as a numeric column", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
+  })
+
+  it("declares Last Referenced At as a date column", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Last Referenced At"]).toEqual({ date: {} })
+  })
+
+  it("includes both columns on the legacy two-arg overload (so drift detection picks them up)", () => {
+    const props = memoriesProperties("p-ds", "t-ds")
+    expect(props["Confidence Score"]).toEqual({ number: { format: "number" } })
+    expect(props["Last Referenced At"]).toEqual({ date: {} })
+  })
+})
+
+describe("buildMemoryProps — confidenceScore + lastReferencedAt three-state semantics", () => {
+  it("omits Confidence Score and Last Referenced At when both inputs are undefined", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Confidence Score" in built).toBe(false)
+    expect("Last Referenced At" in built).toBe(false)
+  })
+
+  it("emits clear-shapes when both inputs are null", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      confidenceScore: null,
+      lastReferencedAt: null,
+    }) as Record<string, unknown>
+    expect(built["Confidence Score"]).toEqual({ number: null })
+    expect(built["Last Referenced At"]).toEqual({ date: null })
+  })
+
+  it("emits set-shapes for a number score and a YYYY-MM-DD date", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      confidenceScore: 0.42,
+      lastReferencedAt: "2026-04-29",
+    }) as Record<string, unknown>
+    expect(built["Confidence Score"]).toEqual({ number: 0.42 })
+    expect(built["Last Referenced At"]).toEqual({
+      date: { start: "2026-04-29" },
+    })
+  })
+
+  it("preserves zero (not collapsed to null) — zero is a valid stored confidence", () => {
+    // Defensive: zero is below CONFIDENCE_SCORE_MIN's clamp boundary
+    // but explicitly inside the closed range, so the build path must
+    // emit it as-is rather than treating it as falsy.
+    const built = buildMemoryProps({ title: "x", confidenceScore: 0 }) as Record<
+      string,
+      unknown
+    >
+    expect(built["Confidence Score"]).toEqual({ number: 0 })
+  })
+})

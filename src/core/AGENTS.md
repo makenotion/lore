@@ -15,7 +15,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
 | `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
 | `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
-| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories                 |
+| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03) |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
@@ -32,6 +32,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `synopsis-backfill.ts` | `backfillSynopses()` | `lore migrate --backfill-synopses` — synthesize a 1–2 sentence synopsis for memories whose `Synopsis` is empty; pluggable `claude` / `placeholder` backends (issue 0.7.0/05) |
 | `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
 | `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
+| `decay.ts` | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor` |
 
 ## Service Class Pattern
 
@@ -421,6 +422,77 @@ suited for browsing recent memories by project/topic/source. It has no
 substring-title filter — use `search()` for anything that needs relevance
 ranking or body-text matching (e.g. `loadWakeUpData`'s related-memories pass,
 which seeds a single query from active-task subjects).
+
+## Confidence dynamics (0.8.0)
+
+The `Confidence Score` numeric column (0.8.0/#01) is **system-managed**:
+read paths bump it, contradictions decrement it, neglect decays it.
+Distinct from the agent-curated categorical `Confidence` select — they
+answer the same question ("how reliable is this?") at different
+granularities. The categorical seeds the numeric on first touch; the
+numeric carries the dynamic signal afterwards. Operating-contract rule:
+agents must NEVER write `Confidence Score` directly through
+`lore-memory`'s save/update tools — it's surfaced as `system-managed` in
+the schema and clamped at the write boundary by `clampConfidenceScore`.
+
+### Write-realized lazy decay
+
+Every mutation of the stored score realizes the time-decay accrued since
+the last touch BEFORE applying its bump or decrement, then writes the
+result. This is the load-bearing model — RRF (#08) reads the stored
+value verbatim via `confidenceFactor`, so the score visible in Notion
+equals the score used in retrieval. Decay accrues only on touch /
+decrement / migration; a never-touched-after-creation memory keeps its
+post-migration value until something disturbs it.
+
+The alternative (decay-at-read) was rejected: it would force
+`confidenceFactor` to read `lastReferencedAt` and run `Math.pow` per row
+per query, AND would let the stored value diverge from its observable
+RRF contribution. The asymmetry is what the design review caught.
+
+### Algebra (`src/core/decay.ts`)
+
+| Helper | Algebra | Where it fires |
+|--------|---------|----------------|
+| `seedConfidenceScore(c)` | `CONFIDENCE_SEED[c]` (0.9 / 0.6 / 0.3) | First touch on a never-scored row; bulk migration |
+| `bumpConfidenceScore(s)` | `s + (1 − s) * BUMP_RATE` (`BUMP_RATE = 0.05`) | After decay realization, on every read-citation |
+| `decrementConfidenceScore(s)` | `s * DECREMENT_FACTOR` (`= 0.5`) | After decay realization, on `lore-correct` / `lore-supersede` |
+| `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days − STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In-flight on every touch / decrement / migration |
+| `confidenceFactor(s)` | `CONFIDENCE_FACTOR_MIN + (1 − CONFIDENCE_FACTOR_MIN) * s`, null → 1 | Read-side, in RRF accumulator (#08) |
+
+The asymmetry — slow recovery (BUMP_RATE = 0.05), slow decay (DECAY_RATE
+= 0.99 per stale day), aggressive contradiction (DECREMENT_FACTOR = 0.5)
+— is deliberate and reflects relative signal quality. A single citation
+is weaker evidence than 30 days of neglect; a contradiction is high-
+quality negative evidence on a single explicit signal. All four
+constants live in `src/types.ts` for cross-module visibility.
+
+### I/O wrappers (`MemoryService.touchOnRead` / `decrementConfidence`)
+
+Both wrappers seed-decay-then-mutate when `confidenceScore === null` so
+a pre-migration read followed by a `lore migrate
+--build-confidence-scores` re-run produces the same value as the
+migration alone. Without this convergence, a never-scored 200-day-old
+row read pre-migration would seed fresh at 0.9, the migration would
+skip it as "already scored", and 200 days of accrued decay would be
+permanently lost.
+
+`touchOnRead` short-circuits per-row when `lastReferencedAt === today
+&& confidenceScore !== null` — same gate as the column write,
+intentionally bump-once-per-day. Failures route through `onError` and
+degrade to a no-op for that row; the caller's read result is always
+preserved. `touchOnRead` is advisory, never blocking.
+
+`decrementConfidence` writes `Last Referenced At = today` alongside
+the score decrement so a heavily-contradicted memory doesn't
+double-count the negative signal: contradiction IS a form of cite
+(negative cite), so it resets the decay clock; the explicit decrement
+provides the negative signal.
+
+Both wrappers issue exactly one `pages.update` per affected memory.
+Notion has no batch-update primitive; per-call concurrency is bounded
+by the rate-limit middleware (`src/notion/rate-limit.ts`), tunable via
+`notion.rateLimit.concurrency` in `.lore.yaml`.
 
 ## Fact Invalidation
 

@@ -48,6 +48,13 @@ import {
 } from "./synopsis-backfill.js"
 import { LruCache } from "./cache.js"
 import {
+  bumpConfidenceScore,
+  decayConfidenceScore,
+  decrementConfidenceScore,
+  seedConfidenceScore,
+} from "./decay.js"
+import { todayUtc } from "./task.js"
+import {
   isFullPage,
   extractTitle,
   extractRichText,
@@ -750,6 +757,166 @@ export class MemoryService {
     })
     this.titleCache.set(id, null)
     this.bumpWriteEpoch()
+  }
+
+  /**
+   * Update `Last Referenced At` to today and lazily seed / decay / bump
+   * `Confidence Score` for the given memories. Updates dispatch in
+   * parallel via `Promise.all`. Each update is its own `pages.update`
+   * (Notion has no batch-update primitive); the rate-limit middleware
+   * (`src/notion/rate-limit.ts`) handles backpressure.
+   *
+   * Short-circuits per-row when `lastReferencedAt === today` AND the
+   * row's `confidenceScore` is already non-null — no Notion call. The
+   * check is structural; concurrent reads in the same session may both
+   * miss the short-circuit and both fire writes (Notion accepts in
+   * arrival order, final state is consistent).
+   *
+   * Failure handling: any per-row failure routes through `onError` and
+   * degrades to a no-op for that row. The caller's read result is
+   * always preserved; `touchOnRead` is advisory, never blocking.
+   *
+   * Bump-once-per-day: a memory cited 50 times in one session bumps
+   * exactly once — same gate as the column write.
+   *
+   * Decay-then-bump on stale rows: when `lastReferencedAt` is non-null
+   * and not today, the helper first applies `decayConfidenceScore`
+   * against the staleness accrued since the last touch, THEN applies
+   * `bumpConfidenceScore`. Write-realized lazy decay — every mutation
+   * realizes the time-decay since the last mutation. RRF reads the
+   * stored value as-is via `confidenceFactor`.
+   *
+   * Seed-decay-then-bump on never-scored rows: when
+   * `confidenceScore === null`, the row is pre-0.8.0 (or
+   * pre-migration). The decay anchor is `createdAt` — the row's been
+   * "neglected" since creation. Seed → decay against `createdAt` →
+   * bump matches what the bulk migration writes for the same row, so
+   * a read-before-migrate path and a migrate-before-read path
+   * converge to the same stored value.
+   */
+  async touchOnRead(
+    memories: ReadonlyArray<
+      Pick<
+        Memory,
+        "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
+      >
+    >,
+    opts?: {
+      today?: string
+      onError?: (memoryId: string, error: unknown) => void
+    },
+  ): Promise<void> {
+    const today = opts?.today ?? todayUtc()
+    await Promise.all(
+      memories.map(async (memory) => {
+        if (
+          memory.lastReferencedAt === today &&
+          memory.confidenceScore !== null
+        ) {
+          return
+        }
+        try {
+          let nextScore: number
+          if (memory.confidenceScore === null) {
+            const seeded = seedConfidenceScore(memory.confidence)
+            const decayed = decayConfidenceScore(
+              seeded,
+              memory.createdAt.slice(0, 10),
+              today,
+            )
+            nextScore = bumpConfidenceScore(decayed)
+          } else {
+            // `lastReferencedAt` may be null on this branch in
+            // theory — production callers always write both columns
+            // together, but `decayConfidenceScore` is null-tolerant
+            // (returns the input unchanged) so the corner case is
+            // safe without a cast.
+            const decayed = decayConfidenceScore(
+              memory.confidenceScore,
+              memory.lastReferencedAt,
+              today,
+            )
+            nextScore = bumpConfidenceScore(decayed)
+          }
+          await this.client.pages.update({
+            page_id: memory.id,
+            properties: {
+              "Last Referenced At": { date: { start: today } },
+              "Confidence Score": { number: nextScore },
+            },
+          })
+        } catch (error) {
+          opts?.onError?.(memory.id, error)
+        }
+      }),
+    )
+  }
+
+  /**
+   * Apply a contradiction decrement to a single memory. Reads the
+   * current score, lazily seeds from the categorical when null,
+   * realizes any accrued decay, applies `decrementConfidenceScore`,
+   * writes back. Single round-trip. Returns the new score.
+   *
+   * Decay-then-decrement on stale rows parallels touchOnRead's
+   * decay-then-bump: a stale row's stored value reflects the score at
+   * last-touch, not at today, so realizing decay before the
+   * contradiction keeps the negative signal proportional to current
+   * trust. A row at 0.9 with `lastReferencedAt` 200 days before today
+   * has effective `0.9 * 0.99^140 ≈ 0.220` (140 stale days), so the
+   * halving lands at `≈ 0.110` — not 0.45 as it would be without the
+   * realize step.
+   *
+   * Seed-decay-then-decrement on never-scored rows mirrors
+   * `touchOnRead` — same convergence guarantee that a pre-migration
+   * contradiction and a post-migration contradiction land on the same
+   * effective current value before decrementing.
+   *
+   * The `Last Referenced At` write on contradiction is deliberate:
+   * contradiction IS a form of cite (negative cite), and treating it
+   * as neglect would let a heavily-contradicted memory simultaneously
+   * decay, producing double-counted negative signal. Bumping
+   * `Last Referenced At` resets the decay clock; the explicit
+   * decrement provides the negative signal.
+   */
+  async decrementConfidence(
+    memory: Pick<
+      Memory,
+      "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
+    >,
+    opts?: { today?: string },
+  ): Promise<number> {
+    const today = opts?.today ?? todayUtc()
+    // Mirror `touchOnRead`'s structure: gate only on the null-score
+    // branch and let `decayConfidenceScore`'s null-tolerance + same-day
+    // zero-stale-days behavior carry the rest. `decay(score, today,
+    // today)` returns `score` (zero days elapsed); `decay(score, null,
+    // today)` returns `score` (null-tolerant short-circuit). Same
+    // result as the prior tri-branch shape, one call instead of two.
+    let current: number
+    if (memory.confidenceScore === null) {
+      const seeded = seedConfidenceScore(memory.confidence)
+      current = decayConfidenceScore(
+        seeded,
+        memory.createdAt.slice(0, 10),
+        today,
+      )
+    } else {
+      current = decayConfidenceScore(
+        memory.confidenceScore,
+        memory.lastReferencedAt,
+        today,
+      )
+    }
+    const next = decrementConfidenceScore(current)
+    await this.client.pages.update({
+      page_id: memory.id,
+      properties: {
+        "Confidence Score": { number: next },
+        "Last Referenced At": { date: { start: today } },
+      },
+    })
+    return next
   }
 
   async list(opts?: {

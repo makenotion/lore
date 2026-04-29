@@ -62,6 +62,8 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.alternatives).toBe("")
     expect(memory.consequences).toBe("")
     expect(memory.synopsis).toBe("")
+    expect(memory.confidenceScore).toBeNull()
+    expect(memory.lastReferencedAt).toBeNull()
     expect(memory.content).toBe("body content")
   })
 
@@ -152,6 +154,30 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.synopsis).toBe("Adopt DecisionService for the rationale chain.")
     expect(memory.session).toBe("sess-42")
     expect(memory.content).toBe("Rationale prose.")
+  })
+
+  it("extracts Confidence Score and Last Referenced At when present", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Touched memory" }] },
+      "Confidence Score": { type: "number", number: 0.72 },
+      "Last Referenced At": { type: "date", date: { start: "2026-04-29" } },
+    })
+
+    const memory = pageToMemory(page)
+    expect(memory.confidenceScore).toBe(0.72)
+    expect(memory.lastReferencedAt).toBe("2026-04-29")
+  })
+
+  it("preserves null when Confidence Score is present-but-empty", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Cleared" }] },
+      "Confidence Score": { type: "number", number: null },
+      "Last Referenced At": { type: "date", date: null },
+    })
+
+    const memory = pageToMemory(page)
+    expect(memory.confidenceScore).toBeNull()
+    expect(memory.lastReferencedAt).toBeNull()
   })
 })
 
@@ -374,6 +400,36 @@ describe("Synopsis property round-trip", () => {
       Title: { type: "title", title: [{ plain_text: "Old" }] },
     })
     expect(pageToMemory(page).synopsis).toBe("")
+  })
+})
+
+describe("Confidence Score / Last Referenced At — buildMemoryProps three-state semantics", () => {
+  it("omits both properties when the inputs are undefined (untouched)", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Confidence Score" in built).toBe(false)
+    expect("Last Referenced At" in built).toBe(false)
+  })
+
+  it("emits null clears when explicitly set to null", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      confidenceScore: null,
+      lastReferencedAt: null,
+    }) as Record<string, unknown>
+    expect(built["Confidence Score"]).toEqual({ number: null })
+    expect(built["Last Referenced At"]).toEqual({ date: null })
+  })
+
+  it("emits the value when set to a number / ISO date", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      confidenceScore: 0.85,
+      lastReferencedAt: "2026-04-29",
+    }) as Record<string, unknown>
+    expect(built["Confidence Score"]).toEqual({ number: 0.85 })
+    expect(built["Last Referenced At"]).toEqual({
+      date: { start: "2026-04-29" },
+    })
   })
 })
 
@@ -3501,5 +3557,437 @@ describe("MemoryService.materializeContent", () => {
 
     const memory = makeIndexTierMemory("mem-1")
     await expect(service.materializeContent(memory)).rejects.toThrow("notion 503")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// touchOnRead + decrementConfidence — confidence dynamics I/O
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.touchOnRead", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  const TODAY = "2026-04-29"
+
+  function makeMemoryShape(
+    overrides: {
+      id?: string
+      confidence?: "certain" | "likely" | "speculative"
+      confidenceScore?: number | null
+      lastReferencedAt?: string | null
+      createdAt?: string
+    } = {},
+  ) {
+    return {
+      id: overrides.id ?? "m1",
+      confidence: overrides.confidence ?? ("certain" as const),
+      confidenceScore: overrides.confidenceScore ?? null,
+      lastReferencedAt: overrides.lastReferencedAt ?? null,
+      createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
+    }
+  }
+
+  it("short-circuits when lastReferencedAt is today AND confidenceScore is non-null", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          id: "m1",
+          confidenceScore: 0.85,
+          lastReferencedAt: TODAY,
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("does not short-circuit when lastReferencedAt is today but confidenceScore is null", async () => {
+    // Realistic concurrent-read scenario: another touch wrote
+    // `Last Referenced At` but the score column is still empty (the
+    // companion column write would only diverge under a partial Notion
+    // failure, but the helper must not skip on the in-memory snapshot).
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          id: "m1",
+          confidenceScore: null,
+          lastReferencedAt: TODAY,
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it("seed-decay-then-bumps a never-scored row whose createdAt is recent", async () => {
+    // createdAt is today → zero stale days → decay no-ops, only the
+    // bump applies. seed("certain") = 0.9; bump(0.9) = 0.9 + 0.1*0.05
+    // = 0.905.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          confidence: "certain",
+          confidenceScore: null,
+          lastReferencedAt: null,
+          createdAt: `${TODAY}T00:00:00.000Z`,
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    expect(update).toHaveBeenCalledTimes(1)
+    const writtenScore = (update.mock.calls[0]![0] as unknown as {
+      properties: { "Confidence Score": { number: number } }
+    }).properties["Confidence Score"].number
+    expect(writtenScore).toBeCloseTo(0.905, 6)
+  })
+
+  it("seed-decay-then-bumps a never-scored 200-day-old row (pre-migration convergence)", async () => {
+    // 2026-04-29 minus 200 days = 2025-10-11 → 200 days elapsed →
+    // 140 stale days past the 60-day grace.
+    // seed("certain") = 0.9 → decay = 0.9 * 0.99^140 → bump.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          confidence: "certain",
+          confidenceScore: null,
+          lastReferencedAt: null,
+          createdAt: "2025-10-11T00:00:00.000Z",
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    const writtenScore = (update.mock.calls[0]![0] as unknown as {
+      properties: { "Confidence Score": { number: number } }
+    }).properties["Confidence Score"].number
+    const decayed = 0.9 * Math.pow(0.99, 140)
+    const expected = decayed + (1 - decayed) * 0.05
+    expect(writtenScore).toBeCloseTo(expected, 6)
+    // Sanity: should land far below the no-decay baseline (~0.905).
+    expect(writtenScore).toBeLessThan(0.3)
+  })
+
+  it("decays-then-bumps a stale row instead of bumping the stored score directly", async () => {
+    // 2026-04-29 minus 100 days = 2026-01-19 → 100 days elapsed →
+    // 40 stale days past the 60-day grace. Stored 0.9 → decay
+    // 0.9 * 0.99^40 ≈ 0.602 → bump → ≈ 0.622. NOT bump(0.9) ≈ 0.905.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          confidenceScore: 0.9,
+          lastReferencedAt: "2026-01-19",
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    const writtenScore = (update.mock.calls[0]![0] as unknown as {
+      properties: { "Confidence Score": { number: number } }
+    }).properties["Confidence Score"].number
+    const decayed = 0.9 * Math.pow(0.99, 40)
+    const expected = decayed + (1 - decayed) * 0.05
+    expect(writtenScore).toBeCloseTo(expected, 6)
+    // Sanity: should not be the no-decay bump value (~0.905).
+    expect(writtenScore).toBeLessThan(0.7)
+  })
+
+  it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead([makeMemoryShape()], { today: TODAY })
+
+    expect(update).toHaveBeenCalledTimes(1)
+    const args = update.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(args.properties["Last Referenced At"]).toEqual({
+      date: { start: TODAY },
+    })
+    expect(args.properties["Confidence Score"]).toMatchObject({
+      number: expect.any(Number),
+    })
+  })
+
+  it("isolates per-row failures and continues processing the rest of the batch", async () => {
+    const update = vi.fn(async (args: { page_id: string }) => {
+      if (args.page_id === "m-bad") throw new Error("notion 503")
+      return undefined
+    })
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+    const errors: Array<{ id: string; message: string }> = []
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({ id: "m-good-1" }),
+        makeMemoryShape({ id: "m-bad" }),
+        makeMemoryShape({ id: "m-good-2" }),
+      ],
+      {
+        today: TODAY,
+        onError: (id, error) => {
+          errors.push({
+            id,
+            message: error instanceof Error ? error.message : String(error),
+          })
+        },
+      },
+    )
+
+    expect(update).toHaveBeenCalledTimes(3)
+    expect(errors).toEqual([{ id: "m-bad", message: "notion 503" }])
+  })
+
+  it("does not throw when a row fails and onError is omitted (the callback is optional)", async () => {
+    // Sibling to the `onError` failure-isolation test above: the
+    // helper's signature marks `onError` as optional, so a caller that
+    // doesn't pass one must still get advisory non-throwing semantics
+    // — the read result is preserved regardless of write outcome.
+    const update = vi.fn(
+      async (args: { page_id: string; properties: Record<string, unknown> }) => {
+        if (args.page_id === "m-bad") throw new Error("notion 503")
+        return undefined
+      },
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.touchOnRead(
+        [
+          makeMemoryShape({ id: "m-good-1" }),
+          makeMemoryShape({ id: "m-bad" }),
+          makeMemoryShape({ id: "m-good-2" }),
+        ],
+        { today: TODAY },
+      ),
+    ).resolves.toBeUndefined()
+    expect(update).toHaveBeenCalledTimes(3)
+  })
+
+  it("is a no-op (and issues no Notion calls) for an empty memory list", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead([], { today: TODAY })
+
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("treats `confidenceScore non-null + lastReferencedAt null` as no-op decay (corner-case safety net)", async () => {
+    // Production callers always write both columns together via
+    // `touchOnRead` / `decrementConfidence`, so a row with a stored
+    // score but no last-reference date shouldn't exist. The type
+    // system permits the shape, though, and the implementation leans
+    // on `decayConfidenceScore`'s null-tolerant pass-through for this
+    // case — pin it so a future "narrow lastReferencedAt to non-null
+    // here" refactor surfaces this corner case.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          confidenceScore: 0.7,
+          lastReferencedAt: null, // pathological — production never produces this
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    const writtenScore = (update.mock.calls[0]![0] as unknown as {
+      properties: { "Confidence Score": { number: number } }
+    }).properties["Confidence Score"].number
+    // No decay applies (lastReferencedAt is null) → bump 0.7 directly:
+    // 0.7 + (1 − 0.7) * 0.05 = 0.715.
+    expect(writtenScore).toBeCloseTo(0.715, 6)
+  })
+
+  it("converges with the bulk-migration baseline on the never-scored branch", async () => {
+    // Pre-migration / post-migration convergence test. The migration
+    // would compute decay(seed, createdAt, today) — no bump. touchOnRead
+    // computes bump(decay(seed, createdAt, today)). Modulo the single
+    // bump step (representing the cite the touchOnRead path embodies),
+    // the two paths land on the same intermediate decayed value.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.touchOnRead(
+      [
+        makeMemoryShape({
+          confidence: "likely",
+          confidenceScore: null,
+          lastReferencedAt: null,
+          createdAt: "2025-10-11T00:00:00.000Z",
+        }),
+      ],
+      { today: TODAY },
+    )
+
+    const writtenScore = (update.mock.calls[0]![0] as unknown as {
+      properties: { "Confidence Score": { number: number } }
+    }).properties["Confidence Score"].number
+    // seed("likely") = 0.6 → decay over 140 stale days → bump.
+    const migrationValue = 0.6 * Math.pow(0.99, 140)
+    const touchValue = migrationValue + (1 - migrationValue) * 0.05
+    expect(writtenScore).toBeCloseTo(touchValue, 6)
+  })
+})
+
+describe("MemoryService.decrementConfidence", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  const TODAY = "2026-04-29"
+
+  function makeMemoryShape(
+    overrides: {
+      id?: string
+      confidence?: "certain" | "likely" | "speculative"
+      confidenceScore?: number | null
+      lastReferencedAt?: string | null
+      createdAt?: string
+    } = {},
+  ) {
+    return {
+      id: overrides.id ?? "m1",
+      confidence: overrides.confidence ?? ("certain" as const),
+      confidenceScore: overrides.confidenceScore ?? null,
+      lastReferencedAt: overrides.lastReferencedAt ?? null,
+      createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
+    }
+  }
+
+  it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.decrementConfidence(
+      makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
+      { today: TODAY },
+    )
+
+    expect(update).toHaveBeenCalledTimes(1)
+    const args = update.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(args.properties["Last Referenced At"]).toEqual({
+      date: { start: TODAY },
+    })
+    expect(args.properties["Confidence Score"]).toMatchObject({
+      number: expect.any(Number),
+    })
+  })
+
+  it("halves a fresh, non-stale, non-null score (no decay applied)", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const next = await service.decrementConfidence(
+      makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
+      { today: TODAY },
+    )
+
+    expect(next).toBeCloseTo(0.45, 6)
+  })
+
+  it("decays-then-decrements on a stale row (200 days neglected)", async () => {
+    // 200 days elapsed → 140 stale days past 60-day grace.
+    // 0.9 * 0.99^140 ≈ 0.220 → halve → ≈ 0.110.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const next = await service.decrementConfidence(
+      makeMemoryShape({
+        confidenceScore: 0.9,
+        lastReferencedAt: "2025-10-11",
+      }),
+      { today: TODAY },
+    )
+
+    const decayed = 0.9 * Math.pow(0.99, 140)
+    const expected = decayed * 0.5
+    expect(next).toBeCloseTo(expected, 6)
+    // Sanity: well below the no-decay baseline (0.45).
+    expect(next).toBeLessThan(0.2)
+  })
+
+  it("seed-decay-then-decrements a never-scored row", async () => {
+    // Pre-migration row contradicted directly. seed("certain") = 0.9 →
+    // decay against createdAt → halve. Same convergence guarantee as
+    // touchOnRead's null-score branch.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const next = await service.decrementConfidence(
+      makeMemoryShape({
+        confidence: "certain",
+        confidenceScore: null,
+        lastReferencedAt: null,
+        createdAt: "2025-10-11T00:00:00.000Z",
+      }),
+      { today: TODAY },
+    )
+
+    const decayed = 0.9 * Math.pow(0.99, 140)
+    const expected = decayed * 0.5
+    expect(next).toBeCloseTo(expected, 6)
+  })
+
+  it("returns the new score from the call", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const next = await service.decrementConfidence(
+      makeMemoryShape({ confidenceScore: 0.5, lastReferencedAt: TODAY }),
+      { today: TODAY },
+    )
+
+    expect(next).toBeCloseTo(0.25, 6)
+  })
+
+  it("propagates errors from the underlying pages.update (no onError swallow)", async () => {
+    const update = vi.fn(async () => {
+      throw new Error("notion 429")
+    })
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.decrementConfidence(
+        makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
+        { today: TODAY },
+      ),
+    ).rejects.toThrow("notion 429")
   })
 })

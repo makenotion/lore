@@ -539,6 +539,7 @@ describe("lore-query polymorphic dispatcher", () => {
           kind: "note",
           status: "informational",
           confidence: "certain",
+          confidenceScore: null,
           reviewBy: null,
           doneAt: null,
           decidedAt: null,

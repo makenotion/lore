@@ -1255,6 +1255,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
       kind: "note",
       status: "informational",
       confidence: "certain",
+      confidenceScore: null,
       reviewBy: null,
       doneAt: null,
       decidedAt: null,

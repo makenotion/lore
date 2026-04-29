@@ -265,8 +265,8 @@ export type MemoryConfidence = "certain" | "likely" | "speculative"
 /**
  * Confidence Score is constrained to [CONFIDENCE_SCORE_MIN,
  * CONFIDENCE_SCORE_MAX] inclusive. Out-of-range writes are clamped by
- * `clampConfidenceScore` in `src/core/decay.ts` (#03). Notion's number
- * column has no native range constraint, so the clamp is the single
+ * `clampConfidenceScore` in `src/core/decay.ts`. Notion's number column
+ * has no native range constraint, so the clamp is the single
  * enforcement point.
  */
 export const CONFIDENCE_SCORE_MIN = 0
@@ -274,20 +274,56 @@ export const CONFIDENCE_SCORE_MAX = 1
 
 /**
  * Initial Confidence Score seeded from the categorical Confidence select
- * on first read-touch (or by `lore migrate --build-confidence-scores`,
- * #11). Empirical: `certain` lands at 0.9 — leaves headroom for repeated
- * confirmation to push it higher; `likely` at 0.6; `speculative` at 0.3.
- * A memory written without an explicit `Confidence` defaults to `certain`
- * per `pageToMemory`, so the seeded value is 0.9.
- *
- * Bump only with a coordinated #03 update — #08's RRF factor and #10's
- * stale-confidence threshold are tuned against these values.
+ * on first read-touch (or by `lore migrate --build-confidence-scores`).
+ * Empirical: `certain` lands at 0.9 (not 1.0 — leaves headroom for
+ * repeated confirmation to push higher), `likely` at 0.6, `speculative`
+ * at 0.3. A memory written without an explicit `Confidence` defaults to
+ * `certain` per `pageToMemory`, so the seeded value is 0.9.
  */
 export const CONFIDENCE_SEED: Record<MemoryConfidence, number> = {
   certain: 0.9,
   likely: 0.6,
   speculative: 0.3,
 }
+
+/**
+ * Days of neglect (no read-citation) past which `decayConfidenceScore`
+ * begins multiplying the stored value by `DECAY_RATE` per stale day.
+ * Pinned at 60 — empirical, the same shape as `STALE_TASK_DAYS`.
+ */
+export const STALE_CONFIDENCE_DAYS = 60
+
+/**
+ * Bump multiplier applied on every read-citation. The bump uses
+ * `next = current + (1 - current) * BUMP_RATE` so high-confidence rows
+ * ratchet slowly and stay below 1.0; low-confidence rows recover
+ * faster than a high-confidence row decays per stale day.
+ */
+export const BUMP_RATE = 0.05
+
+/**
+ * Per-day multiplier applied past the `STALE_CONFIDENCE_DAYS` grace.
+ * `next = current * DECAY_RATE^staleDays` — at 0.99, half-life past
+ * the grace is ~69 stale days.
+ */
+export const DECAY_RATE = 0.99
+
+/**
+ * Multiplier applied on a contradiction signal (`lore-correct`,
+ * `lore-supersede`). Aggressive: a single contradiction halves the
+ * stored score. Asymmetry vs. `BUMP_RATE` is deliberate — contradiction
+ * is high-quality negative evidence, not the diffuse signal neglect
+ * carries.
+ */
+export const DECREMENT_FACTOR = 0.5
+
+/**
+ * Floor for the RRF weighting factor exposed by `confidenceFactor`.
+ * `score = 0` maps to this value; `score = 1` maps to 1. Preserves the
+ * "score is a tiebreaker, not a veto" intuition — a maximally-decayed
+ * memory still surfaces at half the weight of a fully-trusted one.
+ */
+export const CONFIDENCE_FACTOR_MIN = 0.5
 
 export interface Memory {
   id: string
