@@ -20,6 +20,7 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     reviewBy: null,
     doneAt: null,
     decidedAt: "2026-04-20",
+    lastReferencedAt: null,
     supersedesIds: [],
     affectsIds: [],
     alternatives: "",

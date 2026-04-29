@@ -591,6 +591,39 @@ describe("migrateVaultSchema parallel retrieves", () => {
     ])
   })
 
+  it("surfaces Last Referenced At as a missing property on a pre-0.8.0 Memories DB", async () => {
+    // A legacy vault retrieved through dataSources.retrieve returns the
+    // pre-0.8.0 Memories shape — Review By / Done At / Decided At present,
+    // Last Referenced At absent. The first `lore status` against an
+    // upgraded vault must surface `Last Referenced At` in the missing
+    // list so the operator's `lore migrate` adds it.
+    const memoriesLive: Record<string, Record<string, unknown>> = {
+      "Review By": { type: "date", date: {} },
+      "Done At": { type: "date", date: {} },
+      "Decided At": { type: "date", date: {} },
+    }
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async (args: { data_source_id: string }) => {
+          if (args.data_source_id === "m-ds") {
+            return { properties: memoriesLive }
+          }
+          return { properties: {} }
+        },
+        update: async () => ({}),
+      },
+    } as unknown as Client
+
+    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: false }), {
+      dryRun: true,
+    })
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff).toBeDefined()
+    expect(memoriesDiff!.missing).toContain("Last Referenced At")
+  })
+
   it("surfaces Done At as a missing property on a pre-#07 Memories DB", async () => {
     // A legacy vault retrieved through dataSources.retrieve returns the
     // pre-#07 Memories shape — Review By and Decided At present, Done At

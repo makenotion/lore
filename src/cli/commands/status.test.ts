@@ -29,6 +29,7 @@ function makeMemory(overrides: Partial<Memory>): Memory {
     reviewBy: null,
     doneAt: null,
     decidedAt: null,
+    lastReferencedAt: null,
     supersedesIds: [],
     affectsIds: [],
     alternatives: "",

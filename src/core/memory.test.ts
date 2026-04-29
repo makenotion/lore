@@ -56,6 +56,7 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.reviewBy).toBeNull()
     expect(memory.doneAt).toBeNull()
     expect(memory.decidedAt).toBeNull()
+    expect(memory.lastReferencedAt).toBeNull()
     expect(memory.supersedesIds).toEqual([])
     expect(memory.affectsIds).toEqual([])
     expect(memory.alternatives).toBe("")
@@ -96,6 +97,7 @@ describe("pageToMemory — fully populated decision page", () => {
       "Review By": { type: "date", date: { start: "2026-10-20" } },
       "Done At": { type: "date", date: { start: "2026-04-25" } },
       "Decided At": { type: "date", date: { start: "2026-04-20" } },
+      "Last Referenced At": { type: "date", date: { start: "2026-04-29" } },
       Supersedes: { type: "relation", relation: [{ id: "old-decision" }] },
       Affects: {
         type: "relation",
@@ -138,6 +140,7 @@ describe("pageToMemory — fully populated decision page", () => {
     expect(memory.reviewBy).toBe("2026-10-20")
     expect(memory.doneAt).toBe("2026-04-25")
     expect(memory.decidedAt).toBe("2026-04-20")
+    expect(memory.lastReferencedAt).toBe("2026-04-29")
     expect(memory.supersedesIds).toEqual(["old-decision"])
     expect(memory.affectsIds).toEqual(["affected-1", "affected-2"])
     expect(memory.alternatives).toBe("Alt A; Alt B")
@@ -231,6 +234,134 @@ describe("Keywords property round-trip", () => {
   it("emits a Keywords property when explicitly set to empty (clears the field)", () => {
     const built = buildMemoryProps({ title: "x", keywords: "" }) as Record<string, unknown>
     expect("Keywords" in built).toBe(true)
+  })
+})
+
+describe("Last Referenced At property round-trip (0.8.0/02)", () => {
+  it("round-trips a YYYY-MM-DD value through buildMemoryProps + pageToMemory", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      lastReferencedAt: "2026-04-29",
+    }) as Record<string, { date: { start: string } | null }>
+
+    expect(built["Last Referenced At"]).toEqual({ date: { start: "2026-04-29" } })
+
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Last Referenced At": {
+        type: "date",
+        date: { start: "2026-04-29" },
+      },
+    })
+    expect(pageToMemory(page).lastReferencedAt).toBe("2026-04-29")
+  })
+
+  it("returns null on a pre-migration page that has no Last Referenced At column", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Old" }] },
+    })
+    expect(pageToMemory(page).lastReferencedAt).toBeNull()
+  })
+})
+
+describe("MemoryService.create / update — lastReferencedAt three-state semantics (0.8.0/02)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeCreateClient() {
+    const createSpy = vi.fn(async (_args: { properties: Record<string, unknown> }) => ({
+      object: "page",
+      id: "new-id",
+      created_time: "2026-04-29T00:00:00.000Z",
+      last_edited_time: "2026-04-29T00:00:00.000Z",
+      archived: false,
+      properties: {},
+      parent: { type: "database_id", database_id: db.databaseId },
+      url: "https://notion.so/new-id",
+    }))
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+    )
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const retrieveSpy = vi.fn(async () => ({
+      object: "page",
+      id: "existing-id",
+      created_time: "2026-04-29T00:00:00.000Z",
+      last_edited_time: "2026-04-29T00:00:00.000Z",
+      archived: false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "x" }] },
+      },
+      parent: { type: "database_id", database_id: db.databaseId },
+      url: "https://notion.so/existing-id",
+    }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        create: createSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    return { client, createSpy, updateSpy }
+  }
+
+  it("create() writes the Last Referenced At date when lastReferencedAt is provided", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.create({
+      title: "x",
+      content: "",
+      lastReferencedAt: "2026-04-29",
+    })
+
+    const props = createSpy.mock.calls[0]![0].properties as Record<
+      string,
+      { date: { start: string } | null }
+    >
+    expect(props["Last Referenced At"]).toEqual({ date: { start: "2026-04-29" } })
+  })
+
+  it("update() with lastReferencedAt: null clears the column (date:null)", async () => {
+    const { client, updateSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("existing-id", { lastReferencedAt: null })
+
+    const props = updateSpy.mock.calls[0]![0].properties as Record<
+      string,
+      { date: { start: string } | null }
+    >
+    expect(props["Last Referenced At"]).toEqual({ date: null })
+  })
+
+  it("update() without lastReferencedAt leaves the column untouched (no Last Referenced At in props)", async () => {
+    const { client, updateSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("existing-id", { title: "y" })
+
+    // No update is issued at all when no fields apart from title flow
+    // through; the title path triggers a single `pages.update`. The Last
+    // Referenced At key must not appear in that payload.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const props = updateSpy.mock.calls[0]![0].properties as Record<string, unknown>
+    expect("Last Referenced At" in props).toBe(false)
+  })
+
+  it("update() with lastReferencedAt: 'YYYY-MM-DD' writes the date through", async () => {
+    const { client, updateSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("existing-id", { lastReferencedAt: "2026-04-29" })
+
+    const props = updateSpy.mock.calls[0]![0].properties as Record<
+      string,
+      { date: { start: string } | null }
+    >
+    expect(props["Last Referenced At"]).toEqual({ date: { start: "2026-04-29" } })
   })
 })
 
@@ -2403,12 +2534,14 @@ describe("pageToMemory — partial migration (mixed defaults + real values)", ()
       "Review By": { type: "date", date: null },
       "Done At": { type: "date", date: null },
       "Decided At": { type: "date", date: null },
+      "Last Referenced At": { type: "date", date: null },
     })
 
     const memory = pageToMemory(page)
     expect(memory.reviewBy).toBeNull()
     expect(memory.doneAt).toBeNull()
     expect(memory.decidedAt).toBeNull()
+    expect(memory.lastReferencedAt).toBeNull()
   })
 })
 
@@ -3117,6 +3250,7 @@ describe("MemoryService.materializeContent", () => {
       reviewBy: null,
       doneAt: null,
       decidedAt: null,
+      lastReferencedAt: null,
       supersedesIds: [],
       affectsIds: [],
       alternatives: "",

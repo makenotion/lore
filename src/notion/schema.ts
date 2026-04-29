@@ -175,6 +175,11 @@ export function memoriesProperties(
     // metrics — the only consumer in 0.7.0.
     "Done At": { date: {} },
     "Decided At": { date: {} },
+    // System-managed read-citation timestamp; distinct from
+    // `last_edited_time` which tracks writes. Written by
+    // `MemoryService.touchOnRead` (0.8.0/#03), read by the decay function
+    // and the stale-confidence wake-up subsection (0.8.0/#10).
+    "Last Referenced At": { date: {} },
     Alternatives: { rich_text: {} },
     Consequences: { rich_text: {} },
     Author: { rich_text: {} },
@@ -474,6 +479,7 @@ export function buildMemoryProps(input: {
   reviewBy?: string | null
   doneAt?: string | null
   decidedAt?: string | null
+  lastReferencedAt?: string | null
   supersedesIds?: string[]
   affectsIds?: string[]
   alternatives?: string
@@ -510,14 +516,30 @@ export function buildMemoryProps(input: {
     props["Confidence"] = { select: { name: input.confidence } }
   }
   // `null` explicitly clears a date; `undefined` leaves it untouched.
+  // Strict `=== null` (rather than bare-truthy) so the contract is exact:
+  // a non-null string lands as `{ date: { start: <string> } }` verbatim,
+  // including any malformed value the caller managed to slip past Zod —
+  // surfacing as a Notion-side validation error instead of silently
+  // collapsing to a column clear. Documented agent-facing inputs are
+  // `null`, `undefined`, and `YYYY-MM-DD` (regex-enforced at the MCP
+  // Zod boundary, see `src/mcp/tools/memory.ts:YMD_REGEX`).
   if (input.reviewBy !== undefined) {
-    props["Review By"] = input.reviewBy ? { date: { start: input.reviewBy } } : { date: null }
+    props["Review By"] =
+      input.reviewBy === null ? { date: null } : { date: { start: input.reviewBy } }
   }
   if (input.doneAt !== undefined) {
-    props["Done At"] = input.doneAt ? { date: { start: input.doneAt } } : { date: null }
+    props["Done At"] =
+      input.doneAt === null ? { date: null } : { date: { start: input.doneAt } }
   }
   if (input.decidedAt !== undefined) {
-    props["Decided At"] = input.decidedAt ? { date: { start: input.decidedAt } } : { date: null }
+    props["Decided At"] =
+      input.decidedAt === null ? { date: null } : { date: { start: input.decidedAt } }
+  }
+  if (input.lastReferencedAt !== undefined) {
+    props["Last Referenced At"] =
+      input.lastReferencedAt === null
+        ? { date: null }
+        : { date: { start: input.lastReferencedAt } }
   }
   if (input.supersedesIds) {
     props["Supersedes"] = { relation: input.supersedesIds.map((id) => ({ id })) }

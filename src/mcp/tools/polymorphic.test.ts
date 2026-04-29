@@ -542,6 +542,7 @@ describe("lore-query polymorphic dispatcher", () => {
           reviewBy: null,
           doneAt: null,
           decidedAt: null,
+          lastReferencedAt: null,
           supersedesIds: [],
           affectsIds: [],
           alternatives: "",
