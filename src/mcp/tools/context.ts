@@ -9,6 +9,7 @@ import {
   DEFAULT_WAKEUP_TASK_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
   RANKED_WAKEUP_LIMITS,
+  computeTasksFetchLimit,
   dateBucket,
   loadWakeUpData,
 } from "../../core/wakeup.js"
@@ -139,9 +140,19 @@ function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
  * the section is the agent's primary triage view, and the synopsis
  * line materially improves the matching surface for the closure-nudge
  * mechanisms that frame the rest of 0.7.0.
+ *
+ * `overdueDays` is threaded in from the bucketing pass in `handleWakeUp`
+ * rather than recomputed here — `taskDaysOverdue(task, today)` is the
+ * load-bearing signal for both bucketing precedence and row-format
+ * urgency, and computing it twice is a drift footgun if a future change
+ * to the bucketing pass diverges from the row format. Caller owns the
+ * computation, formatter consumes the cached value.
  */
-function formatWakeUpTaskRow(task: TaskSummary, today: string): string {
-  const overdueDays = taskDaysOverdue(task, today)
+function formatWakeUpTaskRow(
+  task: TaskSummary,
+  today: string,
+  overdueDays: number | null,
+): string {
   const stateLabel = task.taskState ?? "open"
   const blocker = task.blockedBy ? ` — blocked by ${task.blockedBy}` : ""
   const due =
@@ -286,6 +297,14 @@ async function handleWakeUp(
     const knowledgeFactLimit =
       args.knowledgeFactLimit ??
       (ranked ? RANKED_WAKEUP_LIMITS.knowledgeFactLimit : DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT)
+    // Resolve the task-bucket cap here so the renderer can size
+    // `computeTasksFetchLimit`'s saturation gate against the same
+    // value the data layer used. `loadWakeUpData` applies the same
+    // `?? DEFAULT_WAKEUP_TASK_LIMIT` internally, so the value passed
+    // through is structurally a no-op for the data-layer call —
+    // resolving it once just makes it visible to the post-fetch
+    // renderer below.
+    const bucketedTaskLimit = args.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
     const {
       digest,
       memories,
@@ -301,7 +320,7 @@ async function handleWakeUp(
       memoryLimitWithDigest: recentOverfetch,
       relatedMemoryLimit: relatedOverfetch,
       knowledgeFactLimit,
-      taskLimit: args.taskLimit,
+      taskLimit: bucketedTaskLimit,
       userQuery: args.userQuery,
       taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
@@ -426,26 +445,44 @@ async function handleWakeUp(
       // exactly one bucket. `loadWakeUpData` over-fetches by 4× so
       // each bucket has headroom to apply its own `taskLimit` slice
       // without one bucket starving the others.
-      const overdueBucket: TaskSummary[] = []
-      const staleBucket: TaskSummary[] = []
-      const activeBucket: TaskSummary[] = []
+      //
+      // The `overdueDays` value is computed once per row here and
+      // threaded through to `formatWakeUpTaskRow` so bucketing
+      // precedence and row-format urgency can never drift apart —
+      // they read the same cached signal.
+      type BucketedTask = { task: TaskSummary; overdueDays: number | null }
+      const overdueBucket: BucketedTask[] = []
+      const staleBucket: BucketedTask[] = []
+      const activeBucket: BucketedTask[] = []
       for (const task of tasks) {
-        if (taskDaysOverdue(task, today) !== null) {
-          overdueBucket.push(task)
+        const overdueDays = taskDaysOverdue(task, today)
+        if (overdueDays !== null) {
+          overdueBucket.push({ task, overdueDays })
           continue
         }
         const staleDays = taskDaysStale(task, today)
         if (staleDays !== null && staleDays >= STALE_TASK_DAYS) {
-          staleBucket.push(task)
+          staleBucket.push({ task, overdueDays })
           continue
         }
-        activeBucket.push(task)
+        activeBucket.push({ task, overdueDays })
       }
 
-      const taskCap = args.taskLimit ?? DEFAULT_WAKEUP_TASK_LIMIT
-      const overdueShown = overdueBucket.slice(0, taskCap)
-      const staleShown = staleBucket.slice(0, taskCap)
-      const activeShown = activeBucket.slice(0, taskCap)
+      const overdueShown = overdueBucket.slice(0, bucketedTaskLimit)
+      const staleShown = staleBucket.slice(0, bucketedTaskLimit)
+      const activeShown = activeBucket.slice(0, bucketedTaskLimit)
+
+      // Saturation marker. When the resolved row count fills the
+      // over-fetch window computed by `computeTasksFetchLimit`, both
+      // bucket totals and hidden counts are lower bounds, not
+      // inventory claims. Prefix with `≥` so the heading signals the
+      // over-fetch bound rather than overstating coverage.
+      // `lore-task action='reconcile'` is the proper audit surface;
+      // the wake-up Tasks section is the triage view, and the marker
+      // is its claim to that scope.
+      const tasksFetchLimit = computeTasksFetchLimit(bucketedTaskLimit)
+      const saturated =
+        tasksFetchLimit > 0 && tasks.length >= tasksFetchLimit
 
       // Heading-suffix count: when the bucket is truncated, surface
       // shown / total / hiding in the heading itself rather than as a
@@ -459,26 +496,32 @@ async function handleWakeUp(
       // reads as "10 shown of 12 active tasks untouched ≥30 days,
       // hiding 2" — descriptor qualifies the bucket total, not the
       // hidden count.
+      //
+      // Shown is exact — we know what we rendered. Total and hidden
+      // are lower bounds under saturation — we know we hit the
+      // over-fetch ceiling, not what's beyond it — so the `bound`
+      // prefix attaches to those two and not to shown.
+      const bound = saturated ? "≥" : ""
       const countLabel = (
-        bucket: TaskSummary[],
-        rows: TaskSummary[],
+        bucket: BucketedTask[],
+        rows: BucketedTask[],
         descriptor: string,
       ): string => {
-        const total = `${bucket.length}${descriptor ? ` ${descriptor}` : ""}`
+        const total = `${bound}${bucket.length}${descriptor ? ` ${descriptor}` : ""}`
         const hidden = bucket.length - rows.length
         return hidden > 0
-          ? `${rows.length} shown of ${total}, hiding ${hidden}`
+          ? `${rows.length} shown of ${total}, hiding ${bound}${hidden}`
           : total
       }
 
       const renderBucket = (
-        rows: TaskSummary[],
+        rows: BucketedTask[],
         heading: string,
       ): void => {
         if (rows.length === 0) return
         sections.push(heading)
-        for (const task of rows) {
-          sections.push(formatWakeUpTaskRow(task, today))
+        for (const { task, overdueDays } of rows) {
+          sections.push(formatWakeUpTaskRow(task, today, overdueDays))
         }
         sections.push("")
       }

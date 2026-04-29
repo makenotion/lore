@@ -122,6 +122,36 @@ const MAX_USER_QUERY_LENGTH = 1000
  * formula self-documenting.
  */
 const NOTION_PAGE_SIZE = 100
+
+/**
+ * Multiplier applied to `taskLimit` when the data layer over-fetches active
+ * tasks for the bucketing pass in the MCP renderer. Three buckets that each
+ * cap at `taskLimit` need at least `3 × taskLimit` candidates to render the
+ * spec's intent; 4× absorbs realistic bucket-skew on the Mail vault's
+ * 271-task profile per the precedent in `lore-task action='list'`.
+ */
+const WAKEUP_TASK_OVERFETCH_MULTIPLIER = 4
+
+/**
+ * Compute the over-fetch row cap for the active-tasks query. Single source
+ * of truth shared by `loadWakeUpData` (which fires the query) and the MCP
+ * renderer (which compares the resolved row count against this cap to
+ * detect saturation: `tasks.length >= computeTasksFetchLimit(taskLimit)`
+ * means the window is full and bucket counts are lower bounds, not
+ * inventory). Returns `0` when `taskLimit` is `0` or negative — the
+ * caller skips the Notion query entirely in that case.
+ *
+ * The renderer's saturation gate uses `>=` rather than `===` to defend
+ * against a future change inside `TaskService.list` (e.g. an internal
+ * `while has_more` paginating wrapper) returning more rows than the
+ * caller asked for; today Notion's `page_size` is a strict upper bound,
+ * so under the current contract `>=` and `===` are equivalent.
+ */
+export function computeTasksFetchLimit(taskLimit: number): number {
+  return taskLimit > 0
+    ? Math.min(NOTION_PAGE_SIZE, taskLimit * WAKEUP_TASK_OVERFETCH_MULTIPLIER)
+    : 0
+}
 /** Upper bound on entity-name seeds passed into the `titleAny` filter. */
 const MAX_ENTITY_CANDIDATES = 10
 /** Skip entity strings shorter than this — too noisy to match on. */
@@ -334,8 +364,17 @@ export async function loadWakeUpData(
   // returned `tasks` array to `taskLimit` before iterating; bucketed
   // callers (the MCP `lore-context action='wake-up'` tool) bucket
   // first and slice each bucket to `taskLimit`.
-  const tasksFetchLimit =
-    taskLimit > 0 ? Math.min(NOTION_PAGE_SIZE, taskLimit * 4) : 0
+  //
+  // **Sort-order invariant.** `TaskService.list` sorts the active set by
+  // `Review By ascending`, and Notion places null-date rows AFTER non-
+  // null rows. A vault with `tasksFetchLimit` due-dated active tasks
+  // therefore consumes the entire over-fetch window before any null-due
+  // Stale or Active row can appear. The renderer reflects this honestly
+  // via the saturation marker (`tasks.length === computeTasksFetchLimit(...)`
+  // → `≥` prefix on bucket counts); `lore-task action='reconcile'` is
+  // the audit surface for vaults where the over-fetch window is too
+  // tight to characterize the inventory.
+  const tasksFetchLimit = computeTasksFetchLimit(taskLimit)
   // `taskCandidates: Memory[]` — annotated explicitly because this is the
   // only entry in the fan-out whose two arms (a real `services.memories.search`
   // call vs. `Promise.resolve([])`) produce identical shapes by coincidence

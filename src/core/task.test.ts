@@ -561,8 +561,15 @@ describe("taskDaysStale", () => {
   })
 
   it("returns 0 for active tasks edited today (no staleness yet)", () => {
+    // `T23:59:59Z` is the rigorous upper-edge same-day timestamp:
+    // a raw-timestamp diff against `today` (parsed as UTC midnight)
+    // yields `-1` and a pre-fix implementation would silently pull
+    // the row out of the Stale bucket. The calendar-day truncation
+    // in `taskDaysStale` makes both the noon and the end-of-day
+    // case resolve to `0`; pinning the harder case here ensures the
+    // truncation can't regress without the test catching it.
     const result = taskDaysStale(
-      { updatedAt: "2026-04-20T12:00:00Z", taskState: "in-progress" },
+      { updatedAt: "2026-04-20T23:59:59Z", taskState: "in-progress" },
       "2026-04-20"
     )
     expect(result).toBe(0)
