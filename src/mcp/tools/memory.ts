@@ -21,9 +21,11 @@ import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
   findNearDuplicates,
+  findRelatedActiveTasks,
   type NearDuplicateMatch,
 } from "../../core/near-duplicate.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
+import type { TaskSummary } from "../../types.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -149,7 +151,28 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         })
       : Promise.resolve([] as NearDuplicateMatch[])
 
-    const [memory, nearDuplicates] = await Promise.all([
+    // Active-task cross-reference probe (issue 0.7.0/11). Fires in
+    // parallel with the create + near-dup probe so wall-clock latency
+    // stays at `max(latencies)` rather than summed. The probe surfaces
+    // active tasks whose `Entity` column contains an entity extracted
+    // from the saved memory's title / keywords / synopsis — anchoring
+    // closure CTAs at the moment the agent reasons about resolution.
+    // Project scope is optional here (unlike near-dup): the helper's
+    // unscoped path is well-defined since `TaskService.list` honors
+    // `projectOrUnscopedFilter`. Advisory: failures route through
+    // `debugLogPartialFailures` and degrade to `[]` silently.
+    const taskCrossrefPromise = findRelatedActiveTasks(services, {
+      memoryTitle: args.title,
+      memoryKeywords: args.keywords,
+      memorySynopsis: args.synopsis,
+      projectId: probeProjectId,
+      onError: (err) =>
+        debugLogPartialFailures("lore-memory", [
+          { rootId: "task-crossref", error: err },
+        ]),
+    })
+
+    const [memory, nearDuplicates, relatedTasks] = await Promise.all([
       services.memories.create({
         title: args.title,
         content: args.content,
@@ -168,6 +191,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         session: args.session,
       }),
       probePromise,
+      taskCrossrefPromise,
     ])
 
     const matches = nearDuplicates.filter((m) => m.id !== memory.id)
@@ -192,6 +216,9 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     if (matches.length > 0) {
       lines.push("", ...formatNearDuplicateMatches(matches))
     }
+    if (relatedTasks.length > 0) {
+      lines.push("", ...formatRelatedTaskCrossref(relatedTasks))
+    }
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
@@ -199,6 +226,31 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
   } catch (err) {
     return toolError(err)
   }
+}
+
+/**
+ * Render the active-task cross-reference footer (issue 0.7.0/11).
+ *
+ * Mirrors the duplicate-task footer on `lore-task action='create'`
+ * (issue 0.7.0/10) — heading line + one bulleted line per task with
+ * title, state, and a copy-paste closure CTA. Heading wording differs
+ * deliberately: the duplicate-task footer says "close any that are
+ * obsolete" because it surfaces *competing* trackers; this footer says
+ * "close any that this memory resolves" because it surfaces tasks the
+ * just-saved memory may have *finished*.
+ */
+function formatRelatedTaskCrossref(tasks: TaskSummary[]): string[] {
+  const lines: string[] = [
+    `Related active tasks (${tasks.length}) — close any that this memory resolves:`,
+  ]
+  for (const task of tasks) {
+    const stateLabel = task.taskState ?? "open"
+    lines.push(
+      `  - "${task.title}" [${stateLabel}] — ` +
+        `lore-task({ action: 'close', taskId: '${task.id}' })`,
+    )
+  }
+  return lines
 }
 
 interface UpdateArgs {

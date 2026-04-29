@@ -933,6 +933,66 @@ flows where the per-save round-trip isn't justified. The bypass
 lives inside `findNearDuplicates`, not per-tool, so both write tools
 honor it without duplicate plumbing.
 
+## Active-task cross-reference probe
+
+`findRelatedActiveTasks()` in `near-duplicate.ts` is the third leg of
+the closure-nudge tripod (issue 0.7.0/11), alongside the operating-
+contract rule (#08) and the `lore-task` create/update closure CTA
+(#09). Fired in parallel with `lore-memory action='save'` so the
+response can surface active tasks tracking the same entity the saved
+memory describes — anchoring closure CTAs at the resolution moment.
+
+`extractEntityCandidates(title, keywords, synopsis)` is the
+fixture-pinned tokenizer that feeds it. The candidate set is scored
+by an `Entity contains` server-side OR probe; helpers include:
+
+- **PR / issue / Jira shapes**: `\bPR\s*#\d+\b`, `\bPR-\d+\b`,
+  `(?<![\w#])#\d+\b`, `\b[A-Z]{2,}-\d+\b`. High-precision; iterate
+  first so cap-induced truncation drops the noisy candidates.
+- **URLs**: `https?:\/\/[a-zA-Z0-9][^\s]*` plus a trailing-punct
+  strip (`URL_TRAILING_PUNCT`) so `See https://x.com/foo,` produces
+  `https://x.com/foo` not `https://x.com/foo,`. The leading
+  `[a-zA-Z0-9]` after `://` rejects bare-scheme stubs like `Just
+  https://.` — `Entity contains "https://"` would substring-hit
+  every URL-bearing task entity in the vault.
+- **Capitalized phrases**: split into multi-word and single-word
+  patterns gated by `isMeaningfulCapitalizedMatch`. A leading-word
+  stop-list (`Merged`, `Found`, `Fixed`, `Saved`, ..., paired
+  imperatives `Merge`, `Find`, `Fix`, `Save`, ...) drops common
+  save-title verbs that would otherwise burn cap-5 slots; 1-word
+  matches further require length ≥ 4 AND
+  identifier-shape (mixed-case after first letter OR contains a
+  digit). The split exists because a greedy multi-word match would
+  swallow `Investigated PR1234` — stoplist rejects the lead, and
+  `PR1234` would never get a chance via single-word alone. Two
+  patterns iterating independently let `PR1234` land. Past-tense
+  AND bare-imperative entries are paired 1:1 in `TITLE_LEAD_STOPLIST`
+  because agent-written titles use both shapes (`"Fixed the bug"` AND
+  `"Fix the bug"`); future contributors adding a past-tense entry
+  should add the imperative form alongside.
+
+Candidate cap is `ENTITY_CANDIDATE_LIMIT = 5` (Notion's OR-branch
+ceiling); per-pattern cap is `PER_PATTERN_MATCH_CAP = 5` and counts
+**iteration attempts**, not unique additions — a pathological input
+where the same `PR #25750` repeats 50 times in keywords would
+otherwise scan all 50 before yielding to later patterns.
+
+**Failure-domain isolation**. The whole helper body (sync tokenizer +
+async list call) is wrapped in a single `try/catch` that routes any
+throw through `opts.onError` and degrades to `[]`. The save always
+succeeds; the cross-reference footer is silently absent on probe
+failure. A future regex change introducing catastrophic backtracking
+would NOT propagate to the user as a save error.
+
+**Kill-switch.** `LORE_DISABLE_TASK_CROSSREF=1` skips the probe
+entirely without making any Notion call. **Distinct from
+`LORE_DISABLE_NEAR_DUPLICATE_PROBE`** — single-axis kill switches let
+an operator trust the deterministic substring near-dup probe and
+distrust the regex-based entity extraction here (or vice versa). Use
+for bulk-import flows, fixture setup, or distrust of the
+entity-extraction tokenizer's noise floor on a particular vault. The
+bypass lives inside `findRelatedActiveTasks`, not per-tool.
+
 ## Schema Drift Detection
 
 `VaultManager.load()` can fire a non-blocking `detectDrift()` check that runs

@@ -1471,6 +1471,294 @@ describe("lore-expand", () => {
   })
 })
 
+describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
+  // The save response surfaces active tasks tracking the same entity
+  // the just-saved memory describes — anchoring closure CTAs at the
+  // resolution moment. Probe runs in parallel with the create + the
+  // existing near-dup probe so wall-clock latency is unchanged.
+
+  function makeTaskSummary(
+    overrides: { id: string; title: string } & Partial<{
+      taskState: "open" | "in-progress" | "blocked" | "done" | "cancelled"
+      entity: string
+    }>,
+  ) {
+    return {
+      id: overrides.id,
+      title: overrides.title,
+      projectIds: ["proj-a"],
+      topicId: null,
+      source: "manual" as const,
+      kind: "task" as const,
+      status: "informational" as const,
+      confidence: "certain" as const,
+      reviewBy: null,
+      doneAt: null,
+      decidedAt: null,
+      supersedesIds: [],
+      affectsIds: [],
+      alternatives: "",
+      consequences: "",
+      author: "",
+      agent: "",
+      tags: [],
+      keywords: "",
+      synopsis: "",
+      session: "",
+      taskState: overrides.taskState ?? "open",
+      blockedBy: "",
+      entity: overrides.entity ?? overrides.title,
+      createdAt: "2026-04-20T00:00:00.000Z",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    }
+  }
+
+  it("surfaces a Related active tasks footer when entities match active tasks", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Merged PR #25750: outlook label.applied classifier",
+      projectIds: ["proj-a"],
+    })
+    const tasksList = vi.fn().mockResolvedValue({
+      items: [
+        makeTaskSummary({
+          id: "task-1",
+          title: "Track PR #25750 review",
+          taskState: "in-progress",
+        }),
+      ],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: tasksList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Merged PR #25750: outlook label.applied classifier",
+      content: "body",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Saved memory:")
+    // Heading uses the issue's spec wording.
+    expect(text).toContain("Related active tasks (1)")
+    expect(text).toContain("close any that this memory resolves")
+    // Per-task line carries title, state, and copy-paste closure CTA.
+    expect(text).toContain('"Track PR #25750 review" [in-progress]')
+    expect(text).toContain("lore-task({ action: 'close', taskId: 'task-1' })")
+    // Probe was scoped to project + ACTIVE_TASK_STATES, with extracted
+    // entities including PR #25750.
+    expect(tasksList).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        states: ["open", "in-progress", "blocked"],
+        entities: expect.arrayContaining(["PR #25750"]),
+        limit: 5,
+      }),
+    )
+  })
+
+  it("threads keywords and synopsis into the entity-extraction surface", async () => {
+    // Pre-#02 the handler had no `synopsis` field; the wire-in here
+    // exists because #11 hard-deps on #02. Pin the surface so a future
+    // refactor doesn't silently drop synopsis from the probe inputs.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Shipped",
+      projectIds: ["proj-a"],
+      keywords: "PR #25750",
+      synopsis: "Closes SENTRY-1234.",
+    })
+    const tasksList = vi.fn().mockResolvedValue({ items: [] })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: tasksList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "Shipped",
+      content: "body",
+      keywords: "PR #25750",
+      synopsis: "Closes SENTRY-1234.",
+    } as never)
+
+    const call = tasksList.mock.calls[0][0] as { entities: string[] }
+    expect(call.entities).toContain("PR #25750")
+    expect(call.entities).toContain("SENTRY-1234")
+  })
+
+  it("omits the cross-reference footer when the probe returns no tasks", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Merged PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const tasksList = vi.fn().mockResolvedValue({ items: [] })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: tasksList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Merged PR #25750",
+      content: "body",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Saved memory:")
+    expect(text).not.toContain("Related active tasks")
+  })
+
+  it("save still succeeds when the cross-reference probe fails (advisory)", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Merged PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const tasksList = vi.fn().mockRejectedValue(new Error("notion 503"))
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: tasksList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Merged PR #25750",
+      content: "body",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Saved memory:")
+    expect(text).not.toContain("Related active tasks")
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+  })
+
+  it("LORE_DISABLE_TASK_CROSSREF=1 skips the probe without making a Notion call", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-new", {
+      title: "Merged PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const tasksList = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: tasksList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    vi.stubEnv("LORE_DISABLE_TASK_CROSSREF", "1")
+    try {
+      const result = await remember({
+        title: "Merged PR #25750",
+        content: "body",
+      } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("Saved memory:")
+      expect(text).not.toContain("Related active tasks")
+      expect(tasksList).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("fires the probe in parallel with the create — both start before either resolves", async () => {
+    // Wall-clock guarantee from the issue: latency unchanged from
+    // pre-#11. Concretely, the probe fires before `memories.create`
+    // resolves. Without parallelism, `tasks.list` would only run after
+    // `memories.create` resolved.
+    const mockServer = createMockServer()
+    const events: string[] = []
+    let resolveCreate!: (m: Memory) => void
+
+    const create = vi.fn(() => {
+      events.push("create-called")
+      return new Promise<Memory>((resolve) => {
+        resolveCreate = resolve
+      })
+    })
+    const tasksList = vi.fn().mockImplementation(async () => {
+      events.push("tasks-list-called")
+      return { items: [] }
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: tasksList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const pending = remember({
+      title: "Merged PR #25750",
+      content: "body",
+    } as never)
+
+    // Yield so both kicked-off promises run their synchronous prefix.
+    await new Promise((r) => setImmediate(r))
+
+    // Both calls fired before create resolved — proves parallelism.
+    expect(events).toContain("create-called")
+    expect(events).toContain("tasks-list-called")
+
+    resolveCreate(
+      makeMemory("mem-new", {
+        title: "Merged PR #25750",
+        projectIds: ["proj-a"],
+      }),
+    )
+    await pending
+  })
+})
+
 describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
   it("threads synopsis on action='save' through to memories.create", async () => {
     const mockServer = createMockServer()
