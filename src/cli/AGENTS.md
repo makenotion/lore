@@ -123,7 +123,7 @@ title-shaped to link.
 | `lore status` | none | none | Show vault status, database counts, active projects, and per-project digest watermarks |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
-| `lore install` | none | `--client`, `--project`, `--cursor-global`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor` for Cursor-only; `--cursor-global` writes Cursor config under `~/.cursor/mcp.json`) |
+| `lore install` | none | `--client`, `--project`, `--cursor-global`, `--print-config`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor` for Cursor-only; `--cursor-global` writes Cursor config under `~/.cursor/mcp.json`; `--print-config json\|toml` prints a paste-ready snippet for unsupported hosts) |
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
@@ -510,6 +510,35 @@ same `${VAR}` placeholders.
   ignored** with a one-line stderr note (no error, no exit code change).
   Operators who scripted `--cursor-global` in advance of an `--client all`
   rollout aren't surprised by it.
+
+### `--print-config <json|toml>` escape hatch
+
+For MCP hosts not directly supported via `--client` (Gemini-CLI, OpenCode,
+Windsurf, Antigravity, Copilot, etc.), `--print-config` emits a paste-ready
+config snippet to stdout. Pure stdout-emitter — no files written, `--client`
+and `--project` are accepted as no-ops alongside it.
+
+- `--print-config json` calls `buildClaudeMcpEntry` and wraps the result in
+  `{ "mcpServers": { "lore": ... } }`. Byte-identical to what
+  `--client claude` writes to `.mcp.json`.
+- `--print-config toml` calls `buildCodexMcpSection`. Byte-identical to what
+  `--client codex` appends to `.codex/config.toml`.
+
+Reuse — not parallel formatters — is the contract: drift between the
+printed snippet and the on-disk shape would silently break operators of
+unsupported hosts. Future format changes to the build helpers must
+preserve the byte-identity tests in `install.test.ts`.
+
+The runtime path validates `dist/mcp.js` exists (otherwise the printed
+`args[0]` would point at nothing and the operator's pasted config would
+fail at agent startup); on missing build output the command exits 1 with
+the same `Run 'npm run build' first.` message the install paths use.
+
+Hooks are not part of this surface. Stop / UserPromptSubmit hooks are
+Claude-Code-shaped today; operators of other hosts get the MCP tool
+surface only. `--print-config` does not pretend feature-equivalence
+across hosts — see the README "Other MCP hosts" subsection for the
+operator-facing framing.
 
 ### Agent identity via LORE_AGENT_NAME
 

@@ -72,6 +72,42 @@ so the Cursor installer only writes the MCP entry; the Stop-triggered
 autosave and the detached auto-digest spawn run only under Claude Code or
 Codex. Recall / save / scan paths work identically across all three.
 
+### Other MCP hosts
+
+For agents not directly supported by `lore install --client`, use
+`--print-config` to emit a paste-ready snippet for the appropriate format:
+
+```bash
+lore install --print-config json   # JSON `mcpServers` block
+lore install --print-config toml   # TOML `[mcp_servers.lore]` section
+```
+
+The snippet's `cwd` and env-placeholder list are byte-identical to what
+`--client claude` writes to `.mcp.json` and what `--client codex` appends
+to `.codex/config.toml`. No files are written; pipe the output into your
+agent's MCP config file by hand.
+
+> **Note:** Per-host config paths below are **best-effort references**, not
+> contracts. Each host owns its own config schema and may relocate the file
+> between releases. Verify against your agent's official documentation
+> before pasting; lore only commits to producing the canonical JSON / TOML
+> shape.
+
+- **Gemini-CLI** — typically a TOML file under `~/.config/gemini/`. Run
+  `lore install --print-config toml`, paste the output into the appropriate
+  section per the agent's current docs.
+- **OpenCode** — TOML under `~/.opencode/` or `<project>/.opencode/`. Same
+  workflow.
+- **Windsurf** — JSON. Run `lore install --print-config json`, paste into
+  Windsurf's `mcpServers` block per its docs.
+- **Antigravity, Copilot, etc.** — locate your agent's MCP config file
+  (host docs), pick the right format, paste.
+
+> **Hooks unsupported by design.** Stop-triggered autosave and the
+> detached auto-digest spawn only fire under Claude Code today. Other
+> hosts get the MCP tool surface but not the background hooks — same as
+> Cursor.
+
 ## Data Model
 
 A vault is a Notion page containing four core databases plus an optional
@@ -190,7 +226,7 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 | Command                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
 | `lore init <page-id>`          | Create vault databases in a Notion page and write `.lore.yaml`   |
-| `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor`, `--cursor-global` for Cursor-only setup) |
+| `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor`, `--cursor-global` for Cursor-only setup; `--print-config json\|toml` prints a paste-ready snippet for unsupported MCP hosts) |
 | `lore auth`                    | Check authentication status                                      |
 | `lore auth --login`            | Authenticate via OAuth (opens browser)                           |
 | `lore search <query>`          | Semantic search across memories (`-p`, `-t`, `-n` flags)         |

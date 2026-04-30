@@ -32,7 +32,7 @@ interface ClaudeMcpEntry {
   env: Record<string, string>
 }
 
-function buildClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
+export function buildClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
   const env: Record<string, string> = {}
   for (const key of LORE_MCP_ENV_VARS) {
     env[key] = `\${${key}}`
@@ -111,7 +111,7 @@ function formatTomlArray(values: readonly string[]): string {
   return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`
 }
 
-function buildCodexMcpSection(mcpJsPath: string): string {
+export function buildCodexMcpSection(mcpJsPath: string): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const launchCommand = `node ${JSON.stringify(portableMcpJsPath)}`
 
@@ -1386,6 +1386,60 @@ export function isDeprecatedInstallClient(value: string | undefined): boolean {
   return value === "both"
 }
 
+export type PrintConfigFormat = "json" | "toml"
+
+export function parsePrintConfigFormat(value: string): PrintConfigFormat | null {
+  if (value === "json" || value === "toml") return value
+  return null
+}
+
+/**
+ * Render a paste-ready MCP config snippet as a string.
+ *
+ * Pure: takes resolved paths in, returns the snippet out. Reuses
+ * `buildClaudeMcpEntry` / `buildCodexMcpSection` so the snippet stays
+ * byte-identical to what `--client claude` writes to `.mcp.json` and what
+ * `--client codex` writes to `.codex/config.toml`. Drift between the
+ * printed shape and the on-disk shape is the failure mode this reuse
+ * exists to prevent — operators paste the snippet expecting it to behave
+ * the same as a first-class install.
+ */
+export function buildPrintConfigOutput(
+  format: PrintConfigFormat,
+  mcpJsPath: string,
+  pkgRoot: string,
+): string {
+  const portableMcpJsPath = toPortablePath(mcpJsPath)
+  const portablePkgRoot = toPortablePath(pkgRoot)
+
+  if (format === "json") {
+    const entry = buildClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
+    return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
+  }
+
+  return buildCodexMcpSection(portableMcpJsPath) + "\n"
+}
+
+/**
+ * `--print-config` runtime path. Resolves `pkgRoot` and `mcpJsPath` via the
+ * same helpers the install paths use, validates `dist/mcp.js` exists (the
+ * printed `args[0]` would otherwise point at a non-existent file), and
+ * writes the snippet to stdout. No filesystem writes — `--project` is
+ * accepted upstream as a no-op and never reaches this function.
+ */
+async function runPrintConfig(format: PrintConfigFormat): Promise<void> {
+  const pkgRoot = resolvePkgRoot()
+  const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
+
+  if (!(await fileExists(mcpJsPath))) {
+    throw new Error(
+      `dist/mcp.js not found at ${mcpJsPath}. Run 'npm run build' first.`,
+    )
+  }
+
+  process.stdout.write(buildPrintConfigOutput(format, mcpJsPath, pkgRoot))
+}
+
 export const installCommand = new Command("install")
   .description("Install Lore assistant integrations for the current project")
   .option(
@@ -1397,15 +1451,41 @@ export const installCommand = new Command("install")
     "--cursor-global",
     "Cursor only: write to ~/.cursor/mcp.json instead of <projectDir>/.cursor/mcp.json (overrides --project for the Cursor branch)",
   )
+  .option(
+    "--print-config <format>",
+    "print a paste-ready MCP config snippet to stdout (no files written); format: json or toml",
+  )
   .option("-y, --yes", "skip confirmation prompts")
   .action(
     async (opts: {
       client?: string
       project?: string
+      printConfig?: string
       yes?: boolean
       cursorGlobal?: boolean
     }) => {
       try {
+        if (opts.printConfig != null) {
+          const format = parsePrintConfigFormat(opts.printConfig)
+          if (!format) {
+            // Message intentionally starts with `Install failed:` so the shape
+            // matches the outer-catch path's `Install failed: <msg>` rendering;
+            // a top-level rethrow would be redundant. Same posture as the
+            // `--client` rejection a few lines below.
+            console.error(
+              `Install failed: --print-config must be 'json' or 'toml', got '${opts.printConfig}'.`,
+            )
+            process.exit(1)
+          }
+          // --client, --project, and --cursor-global are accepted but ignored
+          // when --print-config is set. The escape-hatch flag prints to stdout
+          // regardless of which assistant the operator nominally targeted;
+          // --project would have controlled the on-disk write directory but
+          // no file is written.
+          await runPrintConfig(format)
+          return
+        }
+
         if (isDeprecatedInstallClient(opts.client)) {
           // `console.warn` writes to stderr — kept distinct from the install
           // body's stdout so CI scripts that capture stdout for diffing don't

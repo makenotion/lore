@@ -3,10 +3,34 @@ import { readFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
+
+// runPrintConfig calls fileExists(dist/mcp.js) before printing. Under vitest
+// the source-file `import.meta.url` resolves pkgRoot to `src/cli/`, not the
+// package root, so dist/mcp.js doesn't exist at the computed path even on a
+// fresh `npm run build`. Stub access ONLY for the dist/mcp.js probe; every
+// other path passes through to the real fs.access. Tightly scoping the stub
+// keeps the runtime tests honest — if a future refactor accidentally drops
+// the `if (opts.printConfig != null) { ... return }` short-circuit and falls
+// into prepareInstallContext, the hooks/autosave.sh and hooks/wakeup.sh
+// existence checks would still hit the real filesystem and fail loudly
+// rather than silently passing under a blanket-true stub.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return {
+    ...actual,
+    access: async (path: import("node:fs").PathLike, mode?: number) => {
+      if (typeof path === "string" && path.endsWith("/dist/mcp.js")) return undefined
+      return actual.access(path, mode)
+    },
+  }
+})
 import {
+  buildClaudeMcpEntry,
   buildCodexHookCommand,
+  buildCodexMcpSection,
   buildCursorGlobalIgnoredNotice,
   buildCursorMcpEntry,
+  buildPrintConfigOutput,
   containsTomlArrayOfTables,
   deepEqual,
   detectClaudeHook,
@@ -14,8 +38,10 @@ import {
   displayHomePath,
   dispatchInstall,
   ensureHookPrerequisites,
+  installCommand,
   isDeprecatedInstallClient,
   parseInstallClient,
+  parsePrintConfigFormat,
   removeClaudeScriptEntries,
   resolveCursorMcpPath,
   runCursorInstall,
@@ -73,6 +99,21 @@ describe("install helpers", () => {
     // path doesn't start at home.
     const trickyPath = `/var/${home.slice(1)}/legacy`
     expect(displayHomePath(trickyPath)).toBe(trickyPath)
+  })
+
+  it("toPortablePath is idempotent — re-applying to an already-portable path returns it unchanged", () => {
+    // buildPrintConfigOutput double-applies toPortablePath when format='toml'
+    // (once on its own input, once inside buildCodexMcpSection). The result
+    // stays byte-identical to a single application because a `${HOME}/...`
+    // path does not start with the current `home + "/"` prefix and falls
+    // through unchanged. Pinning this property keeps the print path's
+    // byte-identity guarantee from regressing on a future toPortablePath
+    // refactor.
+    const homePath = `${homedir()}/.lore/dist/mcp.js`
+    expect(toPortablePath(toPortablePath(homePath))).toBe(toPortablePath(homePath))
+
+    const nonHomePath = "/opt/lore/dist/mcp.js"
+    expect(toPortablePath(toPortablePath(nonHomePath))).toBe(toPortablePath(nonHomePath))
   })
 
   it("compares nested JSON-like values structurally", () => {
@@ -837,5 +878,195 @@ describe("dispatchInstall (--client all orchestration)", () => {
     await dispatchInstall(makeContext(), null, { client: "cursor", cursorGlobal: true }, runners)
     expect(receivedGlobal).toBe(true)
     expect(receivedPath).toBe(`${homedir()}/.cursor/mcp.json`)
+  })
+})
+
+describe("parsePrintConfigFormat (issue 0.9.0/12)", () => {
+  it("accepts the two supported formats", () => {
+    expect(parsePrintConfigFormat("json")).toBe("json")
+    expect(parsePrintConfigFormat("toml")).toBe("toml")
+  })
+
+  it("rejects unknown formats", () => {
+    expect(parsePrintConfigFormat("yaml")).toBeNull()
+    expect(parsePrintConfigFormat("")).toBeNull()
+  })
+
+  it("is case-sensitive — uppercase variants do not match", () => {
+    // Operators paste the snippet into config files where lowercase is the
+    // convention; rejecting `JSON` keeps the surface tight.
+    expect(parsePrintConfigFormat("JSON")).toBeNull()
+    expect(parsePrintConfigFormat("Toml")).toBeNull()
+  })
+})
+
+describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
+  // The print-config snippet is the escape hatch for hosts not supported
+  // directly via --client (Gemini-CLI, OpenCode, Windsurf, etc.). The
+  // contract is byte-identity with what `--client claude` writes to
+  // `.mcp.json` and what `--client codex` writes to `.codex/config.toml`,
+  // so an operator pasting the snippet sees the same shape as a
+  // first-class install.
+
+  it("emits parseable JSON wrapping the lore mcpServers entry for format='json'", () => {
+    const output = buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { command: string; args: string[]; cwd: string; env: Record<string, string> } }
+    }
+    expect(parsed.mcpServers.lore.command).toBe("node")
+    expect(parsed.mcpServers.lore.args).toEqual(["/lore/dist/mcp.js"])
+    expect(parsed.mcpServers.lore.cwd).toBe("/lore")
+    expect(parsed.mcpServers.lore.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
+    expect(output.endsWith("\n")).toBe(true)
+  })
+
+  it("emits a TOML [mcp_servers.lore] section for format='toml'", () => {
+    const output = buildPrintConfigOutput("toml", "/lore/dist/mcp.js", "/lore")
+    expect(output.startsWith("[mcp_servers.lore]\n")).toBe(true)
+    expect(output).toContain('command = "bash"')
+    expect(output).toContain("env_vars = ")
+    expect(output).toContain('"LORE_NOTION_TOKEN"')
+    // Trailing newline lets `lore install --print-config toml >> file.toml`
+    // append a clean section without joining the next line.
+    expect(output.endsWith("\n")).toBe(true)
+  })
+
+  it("rewrites home-directory paths to ${HOME} in the JSON entry", () => {
+    const home = homedir()
+    const output = buildPrintConfigOutput(
+      "json",
+      `${home}/.lore/dist/mcp.js`,
+      `${home}/.lore`,
+    )
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { args: string[]; cwd: string } }
+    }
+    expect(parsed.mcpServers.lore.args[0]).toBe("${HOME}/.lore/dist/mcp.js")
+    expect(parsed.mcpServers.lore.cwd).toBe("${HOME}/.lore")
+  })
+
+  it("rewrites home-directory paths to ${HOME} in the TOML section", () => {
+    const home = homedir()
+    const output = buildPrintConfigOutput(
+      "toml",
+      `${home}/.lore/dist/mcp.js`,
+      `${home}/.lore`,
+    )
+    expect(output).toContain('"node \\"${HOME}/.lore/dist/mcp.js\\""')
+  })
+
+  it("byte-matches the JSON entry that --client claude would write to .mcp.json", () => {
+    // The install path passes portable paths into buildClaudeMcpEntry and
+    // serializes the result with two-space indent. This test pins the print
+    // path against that exact shape so drift surfaces immediately.
+    const expected =
+      JSON.stringify(
+        { mcpServers: { lore: buildClaudeMcpEntry("/lore/dist/mcp.js", "/lore") } },
+        null,
+        2,
+      ) + "\n"
+    expect(buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")).toBe(expected)
+  })
+
+  it("byte-matches the TOML section that --client codex would write to .codex/config.toml", () => {
+    // buildCodexMcpSection portable-encodes its input internally; passing the
+    // raw absolute path or the already-portable path produces the same
+    // string. The print path mirrors the install path so the snippet stays
+    // in lockstep on a future codex format change.
+    const expected = buildCodexMcpSection("/lore/dist/mcp.js") + "\n"
+    expect(buildPrintConfigOutput("toml", "/lore/dist/mcp.js", "/lore")).toBe(expected)
+  })
+
+  it("ignores --client / --project context — output depends only on resolved paths", () => {
+    // Neither --client nor --project flows into buildPrintConfigOutput. Two
+    // calls with the same paths always produce the same snippet, regardless
+    // of what the operator passed alongside --print-config.
+    const first = buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")
+    const second = buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")
+    expect(second).toBe(first)
+  })
+})
+
+describe("install command runtime — --print-config short-circuits other flags", () => {
+  // End-to-end test of the action handler's branch order: --print-config
+  // takes precedence over --client and --project. Acceptance criterion 6
+  // pins this no-op behavior so existing operator invocations that pair
+  // --client with --print-config keep working as later releases extend the
+  // --client enum (e.g. when 0.9.0/11 adds `cursor`). The behavior is
+  // structurally guaranteed by the `if (opts.printConfig != null) { ...
+  // return; }` short-circuit in install.ts; this test pins it against
+  // accidental reordering.
+
+  it("emits only the JSON snippet when --client is set alongside --print-config", async () => {
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+
+    try {
+      // --client claude is a valid value pre-#158 and post-#158; the test
+      // works regardless of what later releases add to parseInstallClient's
+      // enum. The point is that the install path never runs, so none of its
+      // headers ("Lore — Claude Code Integration", "Checking
+      // prerequisites...") land on stdout.
+      // `from: "user"` means argv contains only the option args — installCommand
+      // is the leaf command, not a `node lore install …` invocation.
+      await installCommand.parseAsync(
+        ["--client", "claude", "--print-config", "json"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+    }
+
+    const output = writes.join("")
+    expect(output.startsWith('{\n  "mcpServers":')).toBe(true)
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { command: string } }
+    }
+    expect(parsed.mcpServers.lore.command).toBe("node")
+    // The install path's pre-flight banner would precede any JSON output if
+    // it had run — its absence is the proof that --client was a no-op.
+    expect(output).not.toContain("Checking prerequisites")
+    expect(output).not.toContain("Claude Code Integration")
+  })
+
+  it("emits only the JSON snippet when --project is set alongside --print-config", async () => {
+    // --project would have controlled the on-disk write directory for
+    // --client claude / --client codex. With --print-config no file is
+    // written, so --project is a no-op — verified here by passing a
+    // fictitious path and confirming the printed snippet is unchanged.
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+
+    try {
+      await installCommand.parseAsync(
+        [
+          "--project",
+          "/tmp/nonexistent-print-config-test",
+          "--print-config",
+          "json",
+        ],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+    }
+
+    const output = writes.join("")
+    const parsed = JSON.parse(output) as {
+      mcpServers: { lore: { cwd: string } }
+    }
+    // The entry's `cwd` is sourced from pkgRoot resolution, NOT from
+    // --project. Acceptance criterion 7 makes this explicit.
+    expect(parsed.mcpServers.lore.cwd).not.toBe("/tmp/nonexistent-print-config-test")
   })
 })
