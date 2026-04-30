@@ -114,6 +114,47 @@ page property. The workflow:
 This keeps the database properties lightweight (metadata only) while page bodies
 hold arbitrarily large content.
 
+## Memories self-relation columns: symmetric-write contract
+
+The Memories DB exposes three `single_property` self-relations:
+`Supersedes`, `Affects`, and `Compared With` (0.9.0/#02). Notion's
+`single_property` does NOT auto-mirror writes — when memory A names B
+in `Compared With`, the relation only points from A to B. The reverse
+(B → A) only exists if a parallel write adds it.
+
+**Calling code is responsible for symmetric writes** for any consumer
+that depends on the bidirectional invariant. The compare workstream
+(0.9.0/#05, future) is the canonical example: `lore conflicts scan`
+(0.9.0/#09, future) checks whether **either side** names the other in
+`Compared With` and skips the pair on a hit. So a half-written A → B
+relation (A names B, but B does not name A) is enough to suppress the
+next scan — re-judgment is not the failure mode. The actual harm is
+**asymmetric audit visibility**: an operator inspecting B's Notion
+page sees an empty `Compared With` and an empty `Compare Notes`,
+gives no indication that B was ever judged, and a future `lore-memory
+action='compare'` against the same pair produces a stale or
+contradictory verdict that depends on which side the agent loaded
+first. The two-write contract preserves audit symmetry (both pages
+list the counterpart, both `Compare Notes` columns carry the verdict
+line) so neither side surfaces as "never compared" when it has been.
+
+The pattern: the consumer issues two `pages.update` calls, one per
+side, with the rate-limit middleware (`src/notion/rate-limit.ts`)
+governing concurrency. Failure of the second write leaves a visible,
+re-runnable inconsistency rather than a silent half-state — re-running
+#05's compare path is idempotent (the same `appendCompareNote` line
+won't double-add given identical inputs, and `Compared With` set
+membership is naturally idempotent) so an operator catching a
+half-written verdict re-issues the same call. Do not collapse to one
+write; do not switch to `dual_property` without migrating every
+existing self-relation column in lockstep — `Supersedes` and `Affects`
+follow the same `single_property` posture, and a mixed-shape Memories
+DB would surprise every consumer reading the relation.
+
+A future Notion API addition of true `dual_property` self-relations
+(auto-mirrored at the data layer) would let consumers drop the
+explicit second-write call. Until then, two writes is correct.
+
 ## Memory Search
 
 `MemoryService.search()` switches on `input.mode` (default `"hybrid"`)

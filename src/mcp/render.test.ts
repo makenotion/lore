@@ -54,6 +54,8 @@ function buildMemory(overrides: Partial<Memory> & { id: string; title: string })
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
     ...overrides,

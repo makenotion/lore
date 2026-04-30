@@ -52,6 +52,8 @@ function buildMemory(overrides: Partial<Memory> & { createdAt: string }): Memory
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     updatedAt: overrides.createdAt,
     ...overrides,
   }
@@ -107,6 +109,8 @@ function buildTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummar
     entity: overrides.entity ?? "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: "2026-04-01T00:00:00Z",
     updatedAt: "2026-04-01T00:00:00Z",
   }
@@ -485,6 +489,8 @@ describe("loadWakeUpData", () => {
         entity: "",
         topicKey: "",
         revisionCount: 1,
+        comparedWith: [],
+        compareNotes: "",
       },
     ]
     const overdueDecisions: DecisionSummary[] = [

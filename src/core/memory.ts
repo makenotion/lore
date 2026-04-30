@@ -35,7 +35,12 @@ import {
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
 } from "../types.js"
-import { buildMemoryProps } from "../notion/schema.js"
+import {
+  buildMemoryProps,
+  COMPARE_NOTES_MAX_CHARS,
+  encodeCompareNotesRichText,
+  type CompareNotesTextChunk,
+} from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
@@ -2265,5 +2270,80 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     // Revision Count carries no "uninitialized" semantic — every row
     // has been written at least once by definition.
     revisionCount: extractNumber(props["Revision Count"]) ?? 1,
+    comparedWith: extractRelationIds(props["Compared With"]),
+    compareNotes: extractRichText(props["Compare Notes"]),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Compare Notes (0.9.0/#02) — append-only NDJSON audit trail
+// ---------------------------------------------------------------------------
+//
+// **Helper seam for #05.** The compare-notes helper family — cap, append,
+// encoder, types — is exported as a single import surface from this
+// module so #05's compare-write path imports everything from one
+// location:
+//
+//     import {
+//       COMPARE_NOTES_MAX_CHARS,
+//       appendCompareNote,
+//       encodeCompareNotesRichText,
+//       type CompareNoteEntry,
+//       type CompareNotesTextChunk,
+//     } from "../core/memory.js"
+//
+// Implementation lives where the layering wants it: the pure-NDJSON
+// helpers (`appendCompareNote`, `CompareNoteEntry`) stay here because
+// they have no Notion dependency, and the Notion-shape helpers
+// (`encodeCompareNotesRichText`, `CompareNotesTextChunk`,
+// `COMPARE_NOTES_MAX_CHARS`) live in `src/notion/schema.ts` next to
+// `buildMemoryProps`. Re-exporting here keeps the seam at one location
+// for #05 without duplicating the implementation.
+//
+// `COMPARE_NOTES_MAX_CHARS` is the chokepoint cap: both `appendCompareNote`
+// (every grow-step) AND `encodeCompareNotesRichText` (every write to
+// `Compare Notes`, including via `buildMemoryProps`) refuse over-cap
+// input. There is no path that produces an over-cap rich_text payload.
+//
+// Read-side decoding goes through the shared `extractRichText` extractor
+// in `src/notion/extractors.ts` — no per-property wrapper is needed.
+export { COMPARE_NOTES_MAX_CHARS, encodeCompareNotesRichText }
+export type { CompareNotesTextChunk }
+
+export interface CompareNoteEntry {
+  verdict: string
+  target: string
+  reason: string
+  judgedAt: string
+  promptVersion: string
+}
+
+/**
+ * Append one NDJSON entry to an existing `Compare Notes` string. Returns
+ * the new string; throws when the appended length would exceed
+ * `COMPARE_NOTES_MAX_CHARS`. The error names the cap so the operator
+ * can decide whether to widen the cap (future patch) or consolidate the
+ * over-compared memory via archival.
+ *
+ * Pure function. The serialized form is `JSON.stringify(entry)` (no
+ * trailing newline on the final line, joined with `\n` for prior
+ * entries) so a future `split("\n")` parser produces one entry per line
+ * without an empty trailing element.
+ */
+export function appendCompareNote(
+  existing: string,
+  entry: CompareNoteEntry,
+): string {
+  const line = JSON.stringify(entry)
+  const next = existing.length === 0 ? line : existing + "\n" + line
+  if (next.length > COMPARE_NOTES_MAX_CHARS) {
+    throw new Error(
+      `Compare Notes overflow: appending this entry would push ` +
+        `total length to ${next.length} chars (cap ` +
+        `${COMPARE_NOTES_MAX_CHARS}). The memory is over-compared; ` +
+        `consolidate via lore-memory action='archive' on duplicate ` +
+        `pairs or split the topic.`,
+    )
+  }
+  return next
 }

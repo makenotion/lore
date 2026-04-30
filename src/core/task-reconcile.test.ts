@@ -41,6 +41,8 @@ function makeTask(overrides: Partial<TaskSummary> = {}): TaskSummary {
     entity: "PR-25750",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     ...overrides,
   }
 }
@@ -78,6 +80,8 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     ...overrides,
   }
 }

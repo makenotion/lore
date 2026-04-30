@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { buildMemoryProps, factsProperties, memoriesProperties } from "./schema.js"
+import {
+  buildMemoryProps,
+  COMPARE_NOTES_MAX_CHARS,
+  factsProperties,
+  memoriesProperties,
+  memoriesSelfRelationProperties,
+} from "./schema.js"
 
 describe("memoriesProperties — Last Referenced At column (0.8.0/02)", () => {
   it("declares Last Referenced At as a date column on a fresh-vault config", () => {
@@ -341,6 +347,174 @@ describe("buildMemoryProps — revisionCount emission (0.9.0/01)", () => {
       { number: number }
     >
     expect(built["Revision Count"]).toEqual({ number: 1 })
+  })
+})
+
+describe("memoriesProperties — Compare Notes column (0.9.0/02)", () => {
+  it("declares Compare Notes as a rich_text column on the fresh-vault config", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Compare Notes"]).toEqual({ rich_text: {} })
+  })
+
+  it("declares Compare Notes on the legacy-vault (no self-relation) shape too", () => {
+    // The two-arg overload is what `verifyVaultDatabases` uses on a vault
+    // that pre-dates self-relations. The column ships in both shapes so a
+    // legacy vault running `lore migrate` surfaces the missing column on
+    // the same code path as a fresh `lore init`.
+    const props = memoriesProperties("p-ds", "t-ds")
+    expect(props["Compare Notes"]).toEqual({ rich_text: {} })
+  })
+
+  it("places Compare Notes between Confidence Score and Review By", () => {
+    // The 0.9.0 spec orders the scalar cluster as `Confidence Score →
+    // Topic Key → Revision Count → Compare Notes → Review By`. #01
+    // (Topic Key + Revision Count) and #02 (Compare Notes) are
+    // independent PRs against the same scalar block; this test pins
+    // the boundaries (after Confidence Score, before Review By) but
+    // not the exact `+1` adjacency, so a #160-vs-#161 merge order
+    // doesn't churn whichever PR lands second. The schema comment in
+    // `schema.ts` documents the full cluster ordering for the
+    // late-merger.
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    const confidenceScoreIdx = keys.indexOf("Confidence Score")
+    const compareNotesIdx = keys.indexOf("Compare Notes")
+    const reviewByIdx = keys.indexOf("Review By")
+    expect(compareNotesIdx).toBeGreaterThan(confidenceScoreIdx)
+    expect(compareNotesIdx).toBeLessThan(reviewByIdx)
+  })
+})
+
+describe("memoriesProperties / memoriesSelfRelationProperties — Compared With self-relation (0.9.0/02)", () => {
+  it("declares Compared With as a single_property self-relation on the three-arg shape", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Compared With"]).toEqual({
+      relation: {
+        single_property: {},
+        data_source_id: "m-ds",
+      },
+    })
+  })
+
+  it("does NOT declare Compared With on the legacy two-arg shape (self-relations require the DS id)", () => {
+    // Self-relations cannot reference a data source that doesn't yet
+    // exist, so the two-arg overload — used during fresh-vault creation
+    // before the Memories DS has an id — must omit them. `Supersedes`
+    // and `Affects` follow the same pattern; Compared With must too.
+    const props = memoriesProperties("p-ds", "t-ds")
+    expect("Compared With" in props).toBe(false)
+    expect("Supersedes" in props).toBe(false)
+    expect("Affects" in props).toBe(false)
+  })
+
+  it("declares Compared With as a single_property self-relation on memoriesSelfRelationProperties", () => {
+    // memoriesSelfRelationProperties is the second-step patch path used
+    // by createVaultDatabases — the post-creation patch that adds
+    // Supersedes / Affects / Compared With once the Memories DS id is
+    // known. Drift detection on a vault upgraded from <0.9.0 picks up
+    // the missing column through this shape.
+    const props = memoriesSelfRelationProperties("m-ds")
+    expect(props["Compared With"]).toEqual({
+      relation: {
+        single_property: {},
+        data_source_id: "m-ds",
+      },
+    })
+  })
+
+  it("keeps Supersedes and Affects as single_property in the same shape — Compared With matches the convention", () => {
+    // Sanity-pin: if a future contributor flips Compared With to
+    // dual_property without flipping the others, the symmetric-write
+    // contract documented for #05 silently breaks.
+    const props = memoriesSelfRelationProperties("m-ds")
+    expect(props["Supersedes"]).toEqual({
+      relation: { single_property: {}, data_source_id: "m-ds" },
+    })
+    expect(props["Affects"]).toEqual({
+      relation: { single_property: {}, data_source_id: "m-ds" },
+    })
+    expect(props["Compared With"]).toEqual({
+      relation: { single_property: {}, data_source_id: "m-ds" },
+    })
+  })
+})
+
+describe("buildMemoryProps — comparedWith + compareNotes emission (0.9.0/02)", () => {
+  it("omits both columns when both inputs are undefined", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Compared With" in built).toBe(false)
+    expect("Compare Notes" in built).toBe(false)
+  })
+
+  it("emits a relation for comparedWith with one entry per memory id", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      comparedWith: ["page-a", "page-b"],
+    }) as Record<string, { relation: { id: string }[] }>
+    expect(built["Compared With"]).toEqual({
+      relation: [{ id: "page-a" }, { id: "page-b" }],
+    })
+  })
+
+  it("emits an empty relation when comparedWith is the empty array (clears the cell)", () => {
+    // Mirrors how supersedesIds + affectsIds behave: an empty array is a
+    // deliberate write that wipes the relation, distinct from `undefined`
+    // which leaves the column untouched.
+    const built = buildMemoryProps({
+      title: "x",
+      comparedWith: [],
+    }) as Record<string, { relation: { id: string }[] }>
+    expect(built["Compared With"]).toEqual({ relation: [] })
+  })
+
+  it("emits a single text sub-block for a short compareNotes string (under 1900 chars)", () => {
+    const ndjson = '{"verdict":"scoped","target":"page-a"}'
+    const built = buildMemoryProps({
+      title: "x",
+      compareNotes: ndjson,
+    }) as Record<string, { rich_text: { type: "text"; text: { content: string } }[] }>
+    expect(built["Compare Notes"]).toEqual({
+      rich_text: [{ type: "text", text: { content: ndjson } }],
+    })
+  })
+
+  it("chunks a long compareNotes string into multiple text sub-blocks (≤1900 chars each)", () => {
+    // The simple-write path (a single text block with the full content)
+    // would fail Notion's per-block 2000-char ceiling. Routing through
+    // `encodeCompareNotesRichText` produces the chunked payload that
+    // any audit trail past ~13 entries needs.
+    const longNotes = "a".repeat(3000)
+    const built = buildMemoryProps({
+      title: "x",
+      compareNotes: longNotes,
+    }) as Record<string, { rich_text: { text: { content: string } }[] }>
+    const chunks = built["Compare Notes"].rich_text
+    expect(chunks).toHaveLength(2)
+    expect(chunks[0].text.content).toHaveLength(1900)
+    expect(chunks[1].text.content).toHaveLength(1100)
+  })
+
+  it("emits an empty rich_text array when compareNotes is the empty string (explicit clear)", () => {
+    // `""` is distinct from `undefined`. Empty-string emits the
+    // encoder's empty-array shape so the simple-write and chunked
+    // paths agree on what "clear" looks like — a future caller diffing
+    // the property write payloads sees one shape regardless of which
+    // path produced it. Notion accepts `rich_text: []` as cell-clear.
+    const built = buildMemoryProps({
+      title: "x",
+      compareNotes: "",
+    }) as Record<string, { rich_text: unknown[] }>
+    expect(built["Compare Notes"]).toEqual({ rich_text: [] })
+  })
+
+  it("throws when compareNotes exceeds COMPARE_NOTES_MAX_CHARS (chokepoint cap reaches buildMemoryProps)", () => {
+    // The cap is enforced at the encoder, which `buildMemoryProps`
+    // routes through. A caller passing an over-cap string here gets
+    // the same overflow error that `appendCompareNote` would throw —
+    // there is no path that produces an over-cap rich_text payload.
+    const overCap = "a".repeat(COMPARE_NOTES_MAX_CHARS + 1)
+    expect(() => buildMemoryProps({ title: "x", compareNotes: overCap })).toThrow(
+      /Compare Notes overflow/,
+    )
   })
 })
 

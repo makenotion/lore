@@ -505,6 +505,24 @@ export interface Memory {
    * #10 surfaces the count on listings when ≥2.
    */
   revisionCount: number
+  /**
+   * Memory page IDs this memory has been judged against by
+   * `lore-memory action='compare'` (0.9.0/#05). Empty for legacy rows
+   * and for memories that have never been compared. The relation is
+   * `single_property` on the Notion side, so #05's calling code is
+   * responsible for symmetric writes (A→B and B→A).
+   */
+  comparedWith: string[]
+  /**
+   * Append-only NDJSON audit trail for compare verdicts. One JSON line
+   * per call to `lore-memory action='compare'`:
+   * `{"verdict": ..., "target": ..., "reason": ..., "judgedAt": ...,
+   * "promptVersion": ...}`. Empty string for legacy rows. Capped via
+   * `COMPARE_NOTES_MAX_CHARS` in `src/core/memory.ts`; the helper
+   * `appendCompareNote` throws on overflow rather than truncating so
+   * over-compared memories surface to the operator.
+   */
+  compareNotes: string
 }
 
 export interface CreateMemoryInput {

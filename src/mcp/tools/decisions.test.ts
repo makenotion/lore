@@ -34,6 +34,8 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,

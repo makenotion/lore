@@ -702,6 +702,60 @@ describe("migrateVaultSchema parallel retrieves", () => {
     expect(memoriesDiff!.missing).toContain("Done At")
   })
 
+  it("surfaces Compare Notes as a missing property on a pre-0.9.0 Memories DB", async () => {
+    // A vault upgraded from <0.9.0 has no Compare Notes column. Drift
+    // detection must surface it by name so `lore migrate` adds it. Same
+    // posture as the Done At / Last Referenced At pins.
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }), {
+      dryRun: true,
+    })
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff?.missing).toContain("Compare Notes")
+  })
+
+  it("surfaces Compared With as a missing self-relation on a pre-0.9.0 Memories DB", async () => {
+    // Self-relations live on the same Memories DS as the scalar columns.
+    // A pre-0.9.0 DS has Supersedes + Affects but no Compared With. The
+    // drift detector must surface the missing self-relation column the
+    // same way it does for any scalar property — additions only, no
+    // rename/remove.
+    const memoriesLive: Record<string, Record<string, unknown>> = {
+      Supersedes: {
+        type: "relation",
+        relation: { single_property: {}, data_source_id: "m-ds" },
+      },
+      Affects: {
+        type: "relation",
+        relation: { single_property: {}, data_source_id: "m-ds" },
+      },
+    }
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async (args: { data_source_id: string }) => {
+          if (args.data_source_id === "m-ds") {
+            return { properties: memoriesLive }
+          }
+          return { properties: {} }
+        },
+        update: async () => ({}),
+      },
+    } as unknown as Client
+
+    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: false }), {
+      dryRun: true,
+    })
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff).toBeDefined()
+    expect(memoriesDiff!.missing).toContain("Compared With")
+  })
+
   it("preserves per-database error attribution on update failure", async () => {
     // Force every DB to surface a missing-property diff so Phase B issues an
     // update for each one. The `memories` update rejects — the thrown error

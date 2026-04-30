@@ -4,8 +4,11 @@ import {
   MemoryService,
   pageToMemory,
   tieBreakingRrfCompare,
+  appendCompareNote,
+  COMPARE_NOTES_MAX_CHARS,
   type RrfEntry,
 } from "./memory.js"
+import { encodeCompareNotesRichText } from "../notion/schema.js"
 import type { DatabaseRef } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
 
@@ -4422,6 +4425,8 @@ describe("MemoryService.materializeContent", () => {
       entity: "",
       topicKey: "",
       revisionCount: 1,
+      comparedWith: [],
+      compareNotes: "",
     }
   }
 
@@ -5684,5 +5689,379 @@ describe("MemoryService.queryStaleConfidence", () => {
     expect(memories).toHaveLength(1)
     expect(memories[0].content).toBe("")
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("pageToMemory — Compared With + Compare Notes (0.9.0/02)", () => {
+  it("returns empty defaults on a pre-migration page (no Compared With or Compare Notes columns)", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Pre-#02 row" }] },
+    })
+    const memory = pageToMemory(page)
+    expect(memory.comparedWith).toEqual([])
+    expect(memory.compareNotes).toBe("")
+  })
+
+  it("extracts Compared With as a relation id list and Compare Notes as the joined NDJSON string", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Compared row" }] },
+      "Compared With": {
+        type: "relation",
+        relation: [{ id: "page-a" }, { id: "page-b" }],
+      },
+      "Compare Notes": {
+        type: "rich_text",
+        rich_text: [
+          { plain_text: '{"verdict":"scoped","target":"page-a"}\n' },
+          { plain_text: '{"verdict":"related","target":"page-b"}' },
+        ],
+      },
+    })
+    const memory = pageToMemory(page)
+    expect(memory.comparedWith).toEqual(["page-a", "page-b"])
+    expect(memory.compareNotes).toBe(
+      '{"verdict":"scoped","target":"page-a"}\n{"verdict":"related","target":"page-b"}',
+    )
+  })
+
+  it("round-trips through buildMemoryProps + pageToMemory for a populated entry", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      comparedWith: ["page-a"],
+      compareNotes: '{"verdict":"scoped","target":"page-a"}',
+    }) as Record<string, unknown>
+
+    // Reconstruct a Notion-shaped page from buildMemoryProps's output and
+    // confirm pageToMemory surfaces the same values back.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Compared With": {
+        type: "relation",
+        relation: ((built["Compared With"] as { relation: { id: string }[] }).relation),
+      },
+      "Compare Notes": {
+        type: "rich_text",
+        rich_text: ((built["Compare Notes"] as {
+          rich_text: { text: { content: string }; plain_text?: string }[]
+        }).rich_text).map((r) => ({ plain_text: r.text.content })),
+      },
+    })
+    const memory = pageToMemory(page)
+    expect(memory.comparedWith).toEqual(["page-a"])
+    expect(memory.compareNotes).toBe('{"verdict":"scoped","target":"page-a"}')
+  })
+})
+
+describe("appendCompareNote (0.9.0/02)", () => {
+  const sampleEntry = {
+    verdict: "scoped",
+    target: "page-a",
+    reason: "different projects",
+    judgedAt: "2026-04-30",
+    promptVersion: "1",
+  }
+
+  it("appends the JSON-serialized entry as the first line when existing is empty", () => {
+    const next = appendCompareNote("", sampleEntry)
+    expect(next).toBe(JSON.stringify(sampleEntry))
+  })
+
+  it("joins subsequent entries with a single newline (no trailing newline)", () => {
+    const first = appendCompareNote("", sampleEntry)
+    const second = appendCompareNote(first, {
+      ...sampleEntry,
+      verdict: "related",
+      target: "page-b",
+    })
+    expect(second.split("\n")).toHaveLength(2)
+    expect(second.endsWith("\n")).toBe(false)
+  })
+
+  it("throws with the documented overflow message when the next entry would push past the cap", () => {
+    // Build an existing payload such that adding sampleEntry exceeds the
+    // cap. JSON.stringify(sampleEntry) length is the same on every call,
+    // so we pad the existing string to within one entry of the cap.
+    const entryLen = JSON.stringify(sampleEntry).length
+    const padTo = COMPARE_NOTES_MAX_CHARS - entryLen + 1
+    const existing = "a".repeat(padTo)
+
+    expect(() => appendCompareNote(existing, sampleEntry)).toThrow(
+      /Compare Notes overflow/,
+    )
+    expect(() => appendCompareNote(existing, sampleEntry)).toThrow(
+      String(COMPARE_NOTES_MAX_CHARS),
+    )
+  })
+
+  it("permits an entry that lands exactly at the cap (boundary: total === cap)", () => {
+    // Boundary behavior — appending an entry where total length equals
+    // COMPARE_NOTES_MAX_CHARS is allowed; only `>` triggers the throw.
+    const entryLen = JSON.stringify(sampleEntry).length
+    // existing + "\n" + entry must equal the cap exactly. So:
+    //   existing.length = cap - entryLen - 1
+    const existing = "a".repeat(COMPARE_NOTES_MAX_CHARS - entryLen - 1)
+    const next = appendCompareNote(existing, sampleEntry)
+    expect(next.length).toBe(COMPARE_NOTES_MAX_CHARS)
+  })
+
+  it("permits an entry that lands one byte under the cap (boundary: total === cap - 1)", () => {
+    // Pin the `<` side of the strict-`>` overflow check: an append
+    // ending one byte under the cap stays comfortably inside.
+    const entryLen = JSON.stringify(sampleEntry).length
+    const existing = "a".repeat(COMPARE_NOTES_MAX_CHARS - entryLen - 2)
+    const next = appendCompareNote(existing, sampleEntry)
+    expect(next.length).toBe(COMPARE_NOTES_MAX_CHARS - 1)
+  })
+
+  it("rejects an entry that would land one byte over the cap (boundary: total === cap + 1)", () => {
+    // Pin the strict-`>` overflow contract: a single byte past the cap
+    // throws. Together with the `=== cap` and `=== cap - 1` boundary
+    // pins above, this fixes the throw threshold at exactly `> cap`.
+    const entryLen = JSON.stringify(sampleEntry).length
+    const existing = "a".repeat(COMPARE_NOTES_MAX_CHARS - entryLen)
+    expect(() => appendCompareNote(existing, sampleEntry)).toThrow(
+      /Compare Notes overflow/,
+    )
+  })
+})
+
+describe("encodeCompareNotesRichText (0.9.0/02)", () => {
+  it("returns an empty array when the input is empty (Notion treats this as a clear)", () => {
+    expect(encodeCompareNotesRichText("")).toEqual([])
+  })
+
+  it("permits an input that lands exactly at COMPARE_NOTES_MAX_CHARS (boundary)", () => {
+    // The encoder's cap check is strict-`>`, mirroring `appendCompareNote`'s
+    // overflow contract. Exactly-at-cap input encodes successfully; only
+    // `> cap` throws.
+    const atCap = "a".repeat(COMPARE_NOTES_MAX_CHARS)
+    const chunks = encodeCompareNotesRichText(atCap)
+    expect(chunks.length).toBeGreaterThan(0)
+    // Reassemble: the chunked payload's content concatenated equals the
+    // input (the encoder doesn't transform content, only chunks it).
+    const joined = chunks
+      .map((c) => (c as { text: { content: string } }).text.content)
+      .join("")
+    expect(joined).toBe(atCap)
+  })
+
+  it("throws with the documented overflow message when input exceeds COMPARE_NOTES_MAX_CHARS", () => {
+    // The encoder is the chokepoint cap. Any caller — `buildMemoryProps`,
+    // a future migration that synthesizes a Compare Notes string from
+    // external data, #05's compare-write path bypassing `appendCompareNote`
+    // — hits the same threshold here, so an over-cap rich_text payload
+    // can never reach Notion.
+    const overCap = "a".repeat(COMPARE_NOTES_MAX_CHARS + 1)
+    expect(() => encodeCompareNotesRichText(overCap)).toThrow(
+      /Compare Notes overflow/,
+    )
+    expect(() => encodeCompareNotesRichText(overCap)).toThrow(
+      String(COMPARE_NOTES_MAX_CHARS),
+    )
+    // The error names the input length too so the operator can quickly
+    // see how far over the cap they are.
+    expect(() => encodeCompareNotesRichText(overCap)).toThrow(
+      String(COMPARE_NOTES_MAX_CHARS + 1),
+    )
+  })
+
+  it("emits a single text sub-block when content fits within the chunk budget", () => {
+    const notes = '{"verdict":"scoped","target":"page-a"}'
+    const chunks = encodeCompareNotesRichText(notes)
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]).toEqual({ type: "text", text: { content: notes } })
+  })
+
+  it("splits across the 1900-char boundary into exactly two sub-blocks for a 3000-char input", () => {
+    const notes = "a".repeat(3000)
+    const chunks = encodeCompareNotesRichText(notes)
+    expect(chunks).toHaveLength(2)
+    // First chunk fills the 1900-char budget; second carries the remainder.
+    const first = chunks[0] as { type: "text"; text: { content: string } }
+    const second = chunks[1] as { type: "text"; text: { content: string } }
+    expect(first.text.content).toHaveLength(1900)
+    expect(second.text.content).toHaveLength(1100)
+    expect(first.text.content + second.text.content).toBe(notes)
+  })
+
+  it("round-trips a multi-line NDJSON payload through extractRichText (across the chunk boundary)", () => {
+    // Build NDJSON with several entries totalling more than one chunk's
+    // worth of characters. Round-tripping through `extractRichText`
+    // confirms the chunk boundaries don't corrupt newlines and
+    // pre-migration reads (where Notion returns multiple `text`
+    // sub-blocks) reconstruct cleanly.
+    const lines: string[] = []
+    for (let i = 0; i < 30; i++) {
+      lines.push(
+        JSON.stringify({
+          verdict: "scoped",
+          target: `page-${i}`,
+          reason: "lorem ipsum dolor sit amet consectetur adipiscing elit",
+          judgedAt: "2026-04-30",
+          promptVersion: "1",
+        }),
+      )
+    }
+    const payload = lines.join("\n")
+    expect(payload.length).toBeGreaterThan(1900)
+
+    const chunks = encodeCompareNotesRichText(payload)
+    // Reconstruct as a Notion property using each chunk's text.content as
+    // its plain_text — that's how Notion serializes `text` sub-blocks on
+    // read. `pageToMemory` consumes this same shape via `extractRichText`.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "round-trip" }] },
+      "Compare Notes": {
+        type: "rich_text",
+        rich_text: chunks.map((c) => ({
+          plain_text: (c as { type: "text"; text: { content: string } }).text.content,
+        })),
+      },
+    })
+    expect(pageToMemory(page).compareNotes).toBe(payload)
+  })
+
+  it("emits exactly one block per 1900 chars at the boundary (boundary slicing pin)", () => {
+    // Three boundary lengths: 1899 (one block, just under), 1900 (one
+    // block, exactly the budget), 1901 (two blocks, just over). Pins
+    // the slicing arithmetic so a future contributor reordering
+    // `i + CHUNK` vs `slice(i, i + CHUNK)` can't silently shift the
+    // boundary. The 1901 case lands in the single-line fallback path
+    // (the input is one NDJSON line that exceeds the budget).
+    expect(encodeCompareNotesRichText("a".repeat(1899))).toHaveLength(1)
+    expect(encodeCompareNotesRichText("a".repeat(1900))).toHaveLength(1)
+    expect(encodeCompareNotesRichText("a".repeat(1901))).toHaveLength(2)
+  })
+
+  it("splits at NDJSON line boundaries when cumulative length exceeds the chunk budget", () => {
+    // Two ~1500-char NDJSON entries totalling 3001 chars. With
+    // line-boundary chunking, each entry lands in its own sub-block;
+    // a naive fixed-stride char-slice would put part of entry 1 in
+    // chunk 2, fragmenting Notion's per-block full-text search index.
+    const e1 = "x".repeat(1500)
+    const e2 = "y".repeat(1500)
+    const notes = e1 + "\n" + e2
+    const chunks = encodeCompareNotesRichText(notes)
+    expect(chunks).toHaveLength(2)
+    // First chunk is the first entry verbatim (no leading "\n").
+    expect((chunks[0] as { text: { content: string } }).text.content).toBe(e1)
+    // Second chunk preserves the leading "\n" separator so an
+    // `extractRichText` concatenation (which inserts no separators)
+    // reconstructs the original NDJSON byte-for-byte.
+    expect((chunks[1] as { text: { content: string } }).text.content).toBe(
+      "\n" + e2,
+    )
+  })
+
+  it("packs multiple entries into one chunk when they collectively fit", () => {
+    // Three small entries totalling well under 1900 chars stay in a
+    // single sub-block. Pins the "fill, don't fragment" behavior so
+    // a future contributor can't silently revert to one-block-per-entry.
+    const e1 = '{"verdict":"scoped","target":"a"}'
+    const e2 = '{"verdict":"related","target":"b"}'
+    const e3 = '{"verdict":"compatible","target":"c"}'
+    const notes = [e1, e2, e3].join("\n")
+    const chunks = encodeCompareNotesRichText(notes)
+    expect(chunks).toHaveLength(1)
+    expect((chunks[0] as { text: { content: string } }).text.content).toBe(notes)
+  })
+
+  it("preserves astral codepoints in NDJSON entries via line-boundary splits", () => {
+    // The line-boundary path is inherently surrogate-safe because
+    // JSON.stringify never emits a literal "\n" between the two
+    // halves of a UTF-16 surrogate pair. Build NDJSON with an emoji
+    // (🟢 = U+1F7E2 → surrogate pair D83D DFE2) inside a `reason`
+    // field positioned to land exactly at the boundary, and confirm
+    // the round-trip preserves the codepoint.
+    const reasonPad = "x".repeat(1850)
+    const e1 = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      reason: reasonPad + "🟢",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    const e2 = JSON.stringify({
+      verdict: "related",
+      target: "page-b",
+      reason: "🔴 second entry",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    const notes = e1 + "\n" + e2
+    expect(notes.length).toBeGreaterThan(1900)
+
+    const chunks = encodeCompareNotesRichText(notes)
+    // Each emitted chunk must be a valid UTF-16 string (no lone
+    // surrogates at either edge). Notion may normalize lone
+    // surrogates server-side, so a well-formed write is the only
+    // way to guarantee round-trip fidelity.
+    for (const chunk of chunks) {
+      const content = (chunk as { text: { content: string } }).text.content
+      if (content.length === 0) continue
+      const first = content.charCodeAt(0)
+      const last = content.charCodeAt(content.length - 1)
+      expect(first >= 0xdc00 && first <= 0xdfff).toBe(false)
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+    }
+
+    // Round-trip via extractRichText reconstructs the original NDJSON
+    // byte-for-byte. The emoji codepoints survive intact.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Compare Notes": {
+        type: "rich_text",
+        rich_text: chunks.map((c) => ({
+          plain_text: (c as { text: { content: string } }).text.content,
+        })),
+      },
+    })
+    expect(pageToMemory(page).compareNotes).toBe(notes)
+  })
+
+  it("backs off from a UTF-16 surrogate pair in the single-line fallback path", () => {
+    // The fallback only fires for a single NDJSON entry exceeding the
+    // chunk budget — rare in practice, but if it does, the char-slice
+    // must not split a surrogate pair. Construct an input with a
+    // surrogate pair landing exactly at the chunk boundary and assert
+    // (a) no chunk holds a lone surrogate at either edge, and (b)
+    // round-trip via `extractRichText` recovers the original.
+    //
+    // Place the astral codepoint 𝓐 (U+1D4D0 → surrogate pair D835
+    // DCD0) starting at index 1899 of a 2001-char single-line input.
+    // Naive slicing at index 1900 would split D835 (chunk 1's last
+    // char) from DCD0 (chunk 2's first char).
+    const padding = "a".repeat(1899)
+    const tail = "a".repeat(100)
+    const notes = padding + "𝓐" + tail
+    expect(notes.length).toBe(2001)
+    expect(notes.includes("\n")).toBe(false) // forces fallback path
+
+    const chunks = encodeCompareNotesRichText(notes)
+    expect(chunks.length).toBeGreaterThan(1)
+
+    // No chunk may end with a high surrogate (D800-DBFF) or start
+    // with a low surrogate (DC00-DFFF) — that's the surrogate-safe
+    // contract.
+    for (const chunk of chunks) {
+      const content = (chunk as { text: { content: string } }).text.content
+      if (content.length === 0) continue
+      const first = content.charCodeAt(0)
+      const last = content.charCodeAt(content.length - 1)
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+      expect(first >= 0xdc00 && first <= 0xdfff).toBe(false)
+    }
+
+    // Round-trip recovers the original codepoint intact.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Compare Notes": {
+        type: "rich_text",
+        rich_text: chunks.map((c) => ({
+          plain_text: (c as { text: { content: string } }).text.content,
+        })),
+      },
+    })
+    expect(pageToMemory(page).compareNotes).toBe(notes)
   })
 })

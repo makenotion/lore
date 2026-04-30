@@ -691,6 +691,8 @@ describe("lore-query polymorphic dispatcher", () => {
           taskState: null,
           blockedBy: "",
           entity: "",
+          comparedWith: [],
+          compareNotes: "",
         },
       ],
       explain: [

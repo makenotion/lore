@@ -171,6 +171,14 @@ export function memoriesProperties(
     // `pageToMemory` returns `null` when missing so the RRF integration
     // (#08) can distinguish "never scored" from "scored zero."
     "Confidence Score": { number: { format: "number" } },
+    // 0.9.0 scalar cluster between `Confidence Score` and `Review By`:
+    //   Confidence Score → Topic Key → Revision Count → Compare Notes → Review By
+    // `Topic Key` and `Revision Count` are added by 0.9.0/#01 (Topic-key
+    // upsert workstream). #02 lands `Compare Notes` after them. Tests pin
+    // `Compare Notes` precedes `Review By` (loose) rather than
+    // "immediately before" (rigid) so a future scalar addition between
+    // the two columns doesn't force a test churn.
+    //
     // Stable identifier for upsert grouping. Distinct from the `Topic`
     // relation column above (which links to the Topics DB for faceted
     // browsing) — `Topic Key` is *operationally* a per-row identifier
@@ -187,6 +195,14 @@ export function memoriesProperties(
     // returns null, which `pageToMemory` coalesces to 1 so
     // formatMemoryListItem (#10) treats legacy rows as single-revision.
     "Revision Count": { number: { format: "number" } },
+    // Append-only NDJSON audit trail for `lore-memory action='compare'`
+    // (0.9.0/#05). One JSON line per verdict — `{"verdict": ...,
+    // "target": ..., "reason": ..., "judgedAt": ..., "promptVersion":
+    // ...}`. Capped via `COMPARE_NOTES_MAX_CHARS` in `src/core/memory.ts`;
+    // append-past-cap throws so over-compared rows surface to the
+    // operator instead of silently truncating. Empty for legacy rows
+    // and for memories that have never been compared.
+    "Compare Notes": { rich_text: {} },
     "Review By": { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
     // transitions to a terminal state — either via `TaskService.close()`
@@ -234,6 +250,12 @@ export function memoriesProperties(
         data_source_id: memoriesDsId,
       },
     }
+    base["Compared With"] = {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDsId,
+      },
+    }
   }
 
   return base
@@ -255,6 +277,20 @@ export function memoriesSelfRelationProperties(
       },
     },
     Affects: {
+      relation: {
+        single_property: {},
+        data_source_id: memoriesDsId,
+      },
+    },
+    // Pairs a memory with every other memory it has been judged against
+    // by `lore-memory action='compare'` (0.9.0/#05). `single_property`
+    // (not `dual_property`) matches the existing self-relations — the
+    // calling code in #05 takes responsibility for symmetric writes
+    // (when memory A names B, #05 issues a parallel update so B names A).
+    // Set membership encodes "have these two been judged?" and the
+    // `lore conflicts scan` (0.9.0/#09) candidate filter consults it
+    // to skip already-judged pairs.
+    "Compared With": {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
@@ -454,6 +490,182 @@ export function factsProperties(
 }
 
 // ---------------------------------------------------------------------------
+// Compare Notes encoder + cap (0.9.0/#02)
+// ---------------------------------------------------------------------------
+//
+// Notion-shape concerns live next to the property builders that consume
+// them. The pure-NDJSON helpers (`appendCompareNote`, `CompareNoteEntry`)
+// live in `src/core/memory.ts` because they have no Notion dependency,
+// and re-export `COMPARE_NOTES_MAX_CHARS` and `encodeCompareNotesRichText`
+// from there so #05's compare-write path has a single import surface for
+// the entire compare-notes helper family.
+//
+// The cap lives here (not in `src/core/memory.ts`) so the encoder is the
+// single chokepoint that enforces it. Both `appendCompareNote` (upstream
+// validation on every append) AND any direct caller of
+// `encodeCompareNotesRichText` (including `buildMemoryProps`) hit the
+// same threshold — there is no path that produces an over-cap rich_text
+// payload.
+
+/**
+ * Total serialized-NDJSON length cap for a single memory's `Compare Notes`
+ * cell. Notion's rich_text columns hold ~20KB across multiple sub-blocks
+ * but the exact total-cell ceiling is not a stable contract across SDK
+ * versions, so the property's contract caps total length explicitly. At
+ * ~150 chars per NDJSON entry, an 8000-char cap fits ~50 verdicts per
+ * memory — well above any realistic comparison count for one row.
+ *
+ * Append-past-cap throws via `appendCompareNote`; encode-past-cap throws
+ * via `encodeCompareNotesRichText`. Both throw rather than truncating so
+ * over-compared memories surface to the operator as an explicit error
+ * instead of silently corrupting the audit trail.
+ */
+export const COMPARE_NOTES_MAX_CHARS = 8000
+
+/**
+ * Per-block char budget when chunking the NDJSON string into Notion
+ * `text` sub-blocks. Notion's hard limit is 2000 chars per block; the
+ * 1900 budget leaves a 100-char defensive margin for any SDK-side
+ * framing or BOM-style additions.
+ */
+const COMPARE_NOTES_CHUNK_CHARS = 1900
+
+/** NDJSON entry separator — the only literal "\n" in a `Compare Notes`
+ *  string. `JSON.stringify` always escapes embedded newlines inside
+ *  values, so splitting on this constant is the natural per-entry
+ *  boundary AND guarantees code-unit safety (a "\n" can never fall
+ *  between the two halves of a UTF-16 surrogate pair).
+ */
+const NDJSON_LINE_SEPARATOR = "\n"
+
+/**
+ * One Notion `rich_text` sub-block carrying a plain-text payload. The
+ * `@notionhq/client` package does not re-export the SDK-internal
+ * `RichTextItemRequest` from its public surface in this codebase, so we
+ * declare the narrow text-only variant inline. The shape matches what
+ * other rich_text writes in `buildMemoryProps` consume verbatim, so a
+ * Notion `pages.update` accepts the encoded array as the cell value.
+ */
+export interface CompareNotesTextChunk {
+  type: "text"
+  text: { content: string }
+}
+
+/**
+ * Slice an NDJSON string into Notion `rich_text` sub-blocks, each
+ * holding at most `COMPARE_NOTES_CHUNK_CHARS` (1900) characters. The
+ * 1900 budget stays safely under Notion's per-block 2000-char limit
+ * while leaving a defensive margin. Empty input → empty array (Notion
+ * accepts an empty rich_text array as "clear cell"). The
+ * `buildMemoryProps` `compareNotes` branch routes through this helper
+ * so any caller passing a string up to `COMPARE_NOTES_MAX_CHARS`
+ * produces a Notion-valid payload — the simple-write path
+ * `[{ text: { content: notes } }]` would fail on Notion's per-block
+ * 2000-char ceiling for any audit trail past ~13 entries.
+ *
+ * **Enforces `COMPARE_NOTES_MAX_CHARS` at the chokepoint.** Every
+ * write path lands here — `buildMemoryProps({ compareNotes })`,
+ * direct callers in #05's compare-write helper, anything else that
+ * needs the chunked rich_text shape. Throwing on over-cap input here
+ * means `appendCompareNote`'s 8000-char overflow check is no longer
+ * the only line of defense; a future caller that builds an audit
+ * trail outside `appendCompareNote` (e.g. a one-shot migration that
+ * synthesizes a Compare Notes string from external data) is held to
+ * the same cap.
+ *
+ * **Chunks on NDJSON line boundaries.** Splitting the input on the
+ * `"\n"` separator that delimits NDJSON entries gives two
+ * load-bearing benefits over a naive fixed-stride char-slice:
+ *
+ * 1. **UTF-16 surrogate pairs survive intact.** `JSON.stringify`
+ *    never inserts a literal `"\n"` between the high and low
+ *    halves of an astral codepoint (emoji, extended CJK,
+ *    mathematical alphanumerics) inside a `reason` field, so
+ *    splitting on `"\n"` cannot orphan a surrogate. A fixed-stride
+ *    slice landing exactly on a surrogate pair would emit two
+ *    sub-blocks each holding a lone surrogate — which Notion may
+ *    normalize to U+FFFD or reject server-side, silently
+ *    corrupting the audit trail.
+ * 2. **Per-block atomicity for Notion-side full-text search.**
+ *    Each emitted sub-block is a complete NDJSON fragment (one or
+ *    more whole entries), so Notion's search index ranks per
+ *    entry rather than against fragments split across an
+ *    arbitrary character boundary.
+ *
+ * The fallback for a single NDJSON entry that exceeds the chunk
+ * budget (rare in practice — `appendCompareNote`'s 8000-char total
+ * cap puts hard limits on aggregate growth, and a single entry
+ * would have to be near-pathologically large to overshoot 1900
+ * chars) char-slices with a surrogate-pair-safe backoff: if the
+ * chunk would end on a high surrogate (`U+D800..U+DBFF`), back off
+ * one position so the pair stays intact at the start of the next
+ * chunk.
+ */
+export function encodeCompareNotesRichText(notes: string): CompareNotesTextChunk[] {
+  if (notes.length > COMPARE_NOTES_MAX_CHARS) {
+    throw new Error(
+      `Compare Notes overflow: input is ${notes.length} chars, exceeds cap ` +
+        `${COMPARE_NOTES_MAX_CHARS}. Use \`appendCompareNote\` to grow the ` +
+        `audit trail incrementally with overflow protection, or consolidate ` +
+        `via lore-memory action='archive' on duplicate pairs before writing.`,
+    )
+  }
+  if (notes.length === 0) return []
+
+  const lines = notes.split(NDJSON_LINE_SEPARATOR)
+  const chunks: CompareNotesTextChunk[] = []
+  let currentChunk = ""
+
+  for (let i = 0; i < lines.length; i++) {
+    // Each fragment carries the leading separator (when not the first
+    // line) so the chunk-spanning `extractRichText` concatenation
+    // reconstructs the original "\n"-delimited string verbatim —
+    // `extractRichText` joins sub-blocks without inserting any
+    // separator between them.
+    const fragment = i === 0 ? lines[i] : NDJSON_LINE_SEPARATOR + lines[i]
+
+    if (currentChunk.length + fragment.length <= COMPARE_NOTES_CHUNK_CHARS) {
+      currentChunk += fragment
+      continue
+    }
+
+    // Adding this entry would overflow the current chunk. Flush.
+    if (currentChunk.length > 0) {
+      chunks.push({ type: "text", text: { content: currentChunk } })
+      currentChunk = ""
+    }
+
+    // Common case: the fragment fits in a fresh chunk. Start one.
+    if (fragment.length <= COMPARE_NOTES_CHUNK_CHARS) {
+      currentChunk = fragment
+      continue
+    }
+
+    // Fallback: a single NDJSON entry exceeds the chunk budget.
+    // Char-slice with a surrogate-pair-safe backoff so neither
+    // emitted block holds a lone surrogate.
+    let pos = 0
+    while (pos < fragment.length) {
+      let end = Math.min(pos + COMPARE_NOTES_CHUNK_CHARS, fragment.length)
+      if (end < fragment.length) {
+        const lastCode = fragment.charCodeAt(end - 1)
+        if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+          end -= 1
+        }
+      }
+      chunks.push({ type: "text", text: { content: fragment.slice(pos, end) } })
+      pos = end
+    }
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push({ type: "text", text: { content: currentChunk } })
+  }
+
+  return chunks
+}
+
+// ---------------------------------------------------------------------------
 // Property builder helpers
 // ---------------------------------------------------------------------------
 
@@ -526,6 +738,8 @@ export function buildMemoryProps(input: {
   entity?: string
   topicKey?: string
   revisionCount?: number
+  comparedWith?: string[]
+  compareNotes?: string
 }): PageProperties {
   const props: PageProperties = {
     Title: { title: [{ text: { content: input.title } }] },
@@ -635,6 +849,30 @@ export function buildMemoryProps(input: {
   }
   if (input.revisionCount !== undefined) {
     props["Revision Count"] = { number: input.revisionCount }
+  }
+  // Three-state semantics, mirrors `supersedesIds` / `affectsIds` /
+  // `tags`: `undefined` leaves the column untouched, an empty array
+  // explicitly writes an empty relation (clear-cell), a populated
+  // array maps each id to a relation entry. The truthy gate matches
+  // existing precedent — do not "normalize" to `!== undefined`, which
+  // would silently change the clear semantics for callers that pass
+  // an empty array intending a write.
+  if (input.comparedWith) {
+    props["Compared With"] = { relation: input.comparedWith.map((id) => ({ id })) }
+  }
+  // 0.9.0/#02 — Compare Notes is an append-only NDJSON cell. Routes
+  // through `encodeCompareNotesRichText` so any string up to
+  // `COMPARE_NOTES_MAX_CHARS` produces a Notion-valid chunked payload,
+  // not a single text block that would fail Notion's per-block
+  // 2000-char ceiling on any audit trail past ~13 entries. Empty
+  // string emits `[]` (clear-cell), matching the encoder's
+  // empty-input contract — a future caller diffing the property
+  // write payloads sees one shape regardless of which path produced
+  // it.
+  if (input.compareNotes !== undefined) {
+    props["Compare Notes"] = {
+      rich_text: encodeCompareNotesRichText(input.compareNotes),
+    }
   }
   return props
 }

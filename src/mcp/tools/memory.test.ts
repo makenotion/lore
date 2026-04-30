@@ -36,6 +36,8 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,
@@ -1641,6 +1643,8 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       taskState: overrides.taskState ?? "open",
       blockedBy: "",
       entity: overrides.entity ?? overrides.title,
+      comparedWith: [],
+      compareNotes: "",
       createdAt: "2026-04-20T00:00:00.000Z",
       updatedAt: "2026-04-20T00:00:00.000Z",
     }

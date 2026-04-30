@@ -39,6 +39,8 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     entity: "test-entity",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     ...overrides,
   }
 }

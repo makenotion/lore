@@ -35,6 +35,8 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
     ...overrides,
@@ -88,6 +90,8 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
     entity: overrides.entity ?? "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
   }

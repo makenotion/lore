@@ -47,6 +47,8 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     entity: "",
     topicKey: "",
     revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     createdAt: `${TODAY}T00:00:00.000Z`,
     updatedAt: `${TODAY}T00:00:00.000Z`,
     ...overrides,
