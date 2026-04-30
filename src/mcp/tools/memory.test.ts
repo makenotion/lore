@@ -3774,3 +3774,113 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
     expect(touchOnRead).not.toHaveBeenCalled()
   })
 })
+
+describe("lore-recall / lore-search revision marker (issue 0.9.0/10)", () => {
+  // Surface-pin: the rev-N marker must reach recall and search via the
+  // shared `formatMemoryListItem` path. Lives at the surface so a
+  // future contributor swapping either handler away from the helper
+  // would see this fail rather than silently lose the indicator.
+
+  it("renders `rev N` in the recall meta line for an upserted memory", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "JWT auth model",
+          source: "conversation",
+          kind: "decision",
+          status: "accepted",
+          tags: ["auth", "security"],
+          updatedAt: "2026-04-29T00:00:00.000Z",
+          revisionCount: 4,
+        }),
+      ],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "*conversation | decision | accepted | auth, security | rev 4 | 2026-04-29*",
+    )
+  })
+
+  it("omits the rev marker on a fresh row (revisionCount: 1) — byte-identical to pre-#10", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [
+        makeMemory("mem-1", {
+          title: "Untouched note",
+          source: "manual",
+          tags: ["auth"],
+          updatedAt: "2026-04-20T00:00:00.000Z",
+          revisionCount: 1,
+        }),
+      ],
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("rev")
+    expect(text).toContain("*manual | auth | 2026-04-20*")
+  })
+
+  it("renders `rev N` on a search hit (parity with recall via shared meta builder)", async () => {
+    // The same memory through search must produce the same meta line —
+    // the contract is shared via `defaultMemoryMetaBuilder`. Mirrors the
+    // existing tag-rendering parity test above.
+    const mockServer = createMockServer()
+    const memoriesSearch = vi.fn().mockResolvedValue([
+      makeMemory("mem-1", {
+        title: "Database migration runbook",
+        source: "manual",
+        kind: "runbook",
+        status: "accepted",
+        tags: ["db", "migration"],
+        updatedAt: "2026-04-29T00:00:00.000Z",
+        revisionCount: 3,
+      }),
+    ])
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { search: memoriesSearch, list: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "anything" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "*manual | runbook | accepted | db, migration | rev 3 | 2026-04-29*",
+    )
+  })
+})

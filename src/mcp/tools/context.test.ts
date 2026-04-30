@@ -491,6 +491,68 @@ describe("lore-wake-up — trust indicator (issue 0.8.0/09)", () => {
   })
 })
 
+describe("lore-wake-up — revision marker (issue 0.9.0/10)", () => {
+  // Pinned at the surface so a future contributor swapping the wake-up
+  // Recent Memories renderer away from `wakeUpMemoryMetaBuilder` would
+  // see the rev marker disappear from listings and surface here, not
+  // just in render.test.ts. Wake-up uses its own meta builder (leaner:
+  // `source | tags | rev? | createdAt-date`) — distinct from
+  // `defaultMemoryMetaBuilder` by design.
+
+  it("renders `rev N` on a Recent Memories row with revisionCount >= 2", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "Upserted runbook",
+          source: "conversation",
+          tags: ["db"],
+          createdAt: "2026-04-29T00:00:00.000Z",
+          updatedAt: "2026-04-29T00:00:00.000Z",
+          revisionCount: 4,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Upserted runbook")
+    // Wake-up's leaner meta — `source | tags | rev | date` — diverges
+    // from recall/search's kind/status-conditional pipe chain.
+    expect(text).toContain("*conversation | db | rev 4 | 2026-04-29*")
+  })
+
+  it("omits the marker on a fresh row (revisionCount: 1) — pre-#10 byte-identical", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("m1", {
+          title: "Fresh note",
+          source: "manual",
+          tags: ["auth"],
+          createdAt: "2026-04-20T00:00:00.000Z",
+          updatedAt: "2026-04-20T00:00:00.000Z",
+          revisionCount: 1,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Fresh note")
+    // Pre-#10 wake-up shape: `source | tags | date`. No rev marker, no
+    // change in field count.
+    expect(text).toContain("*manual | auth | 2026-04-20*")
+    expect(text).not.toContain("rev")
+  })
+})
+
 describe("lore-wake-up — Part B: topical dedup", () => {
   it("collapses overlapping memories with a (related: <uuid>) trailer", async () => {
     // Three wake-up debugging sessions with shared tags must collapse to
@@ -2563,6 +2625,61 @@ describe("lore-wake-up — Stale Confidence subsection (issue 0.8.0/#10)", () =>
     expect(text).toMatch(/Low and recent[\s\S]*?_low confidence_/)
     // Meta-line still renders.
     expect(text).toMatch(/Last referenced: 10d ago/)
+  })
+
+  it("renders the rev marker on a Stale Confidence row with revisionCount >= 2 (issue 0.9.0/10)", async () => {
+    // The Stale Confidence subsection is its own wake-up listing
+    // surface, distinct from Recent Memories. `staleConfidenceMetaBuilder`
+    // emits `Last referenced: Nd ago | source | tags | rev | date` when
+    // the threshold fires. Pin the full meta line so a future
+    // contributor moving the rev component (e.g. before tags, after
+    // date) silently reorders the field hierarchy here.
+    const mockServer = createMockServer()
+    const upserted = makeMemory("upserted-stale", {
+      title: "Upserted but stale",
+      confidenceScore: 0.3,
+      lastReferencedAt: "2026-04-19", // 10 days before frozen 2026-04-29
+      revisionCount: 3,
+    })
+    const services = makeWakeServices({ staleConfidence: [upserted] })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("### Upserted but stale")
+    // Full meta-line shape: rev slots between tags and date.
+    // makeMemory defaults source="manual", tags=[]→"no tags",
+    // createdAt="2026-04-20T00:00:00Z"→"2026-04-20".
+    expect(text).toContain(
+      "*Last referenced: 10d ago | manual | no tags | rev 3 | 2026-04-20*",
+    )
+  })
+
+  it("omits the rev marker on a fresh Stale Confidence row (revisionCount: 1) — pre-#10 byte-identical", async () => {
+    // Negative pin: a row that satisfies the Stale Confidence query but
+    // hasn't gone through the upsert path renders byte-identically to
+    // pre-0.9.0/#10 output — `Last referenced: ... | source | tags |
+    // date`, no rev component, no extra pipe.
+    const mockServer = createMockServer()
+    const fresh = makeMemory("fresh-stale", {
+      title: "Stale but unrevised",
+      confidenceScore: 0.3,
+      lastReferencedAt: "2026-04-19",
+      revisionCount: 1,
+    })
+    const services = makeWakeServices({ staleConfidence: [fresh] })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("### Stale but unrevised")
+    expect(text).toContain(
+      "*Last referenced: 10d ago | manual | no tags | 2026-04-20*",
+    )
+    // Defensive: ensure the rev token never appears anywhere in this
+    // row's render — catches a future regression that emits `rev 1`
+    // unconditionally.
+    expect(text).not.toMatch(/Stale but unrevised[\s\S]*?rev/)
   })
 
   it("excludes Stale Confidence rows from the touchOnRead batch", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  REVISION_DISPLAY_THRESHOLD,
   collapseOverlappingMemories,
   defaultMemoryMetaBuilder,
   displayId,
@@ -9,6 +10,7 @@ import {
   groupFactsByClass,
   isUuid,
   renderFact,
+  renderRevisionMarker,
   resolveReferencedTitles,
   resolveTitles,
 } from "./render.js"
@@ -893,5 +895,209 @@ describe("formatMemoryListItem — trust indicator (issue 0.8.0/09)", () => {
         "*manual | auth | 2026-04-20*\n\n" +
         "Body paragraph.",
     )
+  })
+})
+
+describe("REVISION_DISPLAY_THRESHOLD (issue 0.9.0/10)", () => {
+  it("is the single exported const, default 2", () => {
+    // Pinned because the spec calls out a single source of truth that
+    // operators may want to bump to 3 in a follow-up if real-vault data
+    // shows the marker dominating wake-up listings.
+    expect(REVISION_DISPLAY_THRESHOLD).toBe(2)
+  })
+})
+
+describe("renderRevisionMarker (issue 0.9.0/10)", () => {
+  // The shared helper consumed by every meta builder. Pinning its
+  // return contract so a forgetful caller that drops a surrounding
+  // gate can't accidentally print `rev 1` next to a fresh row, and so
+  // tuning the threshold or the rendered string is a one-place change.
+
+  it("returns null for revisionCount below the threshold (legacy / fresh row)", () => {
+    expect(renderRevisionMarker(1)).toBeNull()
+    expect(renderRevisionMarker(0)).toBeNull()
+  })
+
+  it("returns `rev N` at and above the threshold", () => {
+    expect(renderRevisionMarker(REVISION_DISPLAY_THRESHOLD)).toBe("rev 2")
+    expect(renderRevisionMarker(3)).toBe("rev 3")
+    expect(renderRevisionMarker(42)).toBe("rev 42")
+  })
+
+  it("pins the strict greater-than-or-equal gate at the threshold boundary", () => {
+    // The gate is `>=` (not `>`). Flipping to strict `>` would silently
+    // skip the marker on rows whose revisionCount exactly equals the
+    // threshold. Mid-bucket tests above wouldn't catch that. Pin the
+    // boundary value to protect the contract.
+    expect(renderRevisionMarker(REVISION_DISPLAY_THRESHOLD - 1)).toBeNull()
+    expect(renderRevisionMarker(REVISION_DISPLAY_THRESHOLD)).toBe(
+      `rev ${REVISION_DISPLAY_THRESHOLD}`,
+    )
+  })
+
+  it("returns null (not empty string) so type-narrowing filters preserve string[]", () => {
+    // The helper's docstring promises `null`-on-skip so callers can
+    // chain `.filter((p): p is string => p !== null)` and narrow to
+    // `string[]`. An empty string would survive a permissive
+    // `.filter(Boolean)` filter but emit a double-pipe in
+    // `.join(" | ")` on the truthy-empty path. Pin the nullness.
+    const skipped = renderRevisionMarker(1)
+    expect(skipped).toBeNull()
+    expect(skipped).not.toBe("")
+  })
+})
+
+describe("defaultMemoryMetaBuilder — revision count marker (issue 0.9.0/10)", () => {
+  // The marker reads only `Revision Count` — no body fetch — and slots
+  // into the meta line between tags and date so the reader scans
+  // "identity → state → tags → revision count → recency."
+
+  const baseMemory = buildMemory({
+    id: "mem-1",
+    title: "Topic-key upserted memory",
+    source: "conversation",
+    kind: "decision",
+    status: "accepted",
+    tags: ["auth", "security"],
+    updatedAt: "2026-04-29T00:00:00.000Z",
+  })
+
+  it("renders no marker for revisionCount: 1 (legacy / fresh row)", () => {
+    const memory = buildMemory({ ...baseMemory, revisionCount: 1 })
+    const meta = defaultMemoryMetaBuilder(memory)
+    expect(meta).toBe(
+      "conversation | decision | accepted | auth, security | 2026-04-29",
+    )
+    expect(meta).not.toContain("rev")
+  })
+
+  it("renders `rev 2` at the threshold boundary", () => {
+    const memory = buildMemory({ ...baseMemory, revisionCount: 2 })
+    const meta = defaultMemoryMetaBuilder(memory)
+    expect(meta).toBe(
+      "conversation | decision | accepted | auth, security | rev 2 | 2026-04-29",
+    )
+  })
+
+  it("renders `rev 5` for higher counts in the same position", () => {
+    const memory = buildMemory({ ...baseMemory, revisionCount: 5 })
+    expect(defaultMemoryMetaBuilder(memory)).toBe(
+      "conversation | decision | accepted | auth, security | rev 5 | 2026-04-29",
+    )
+  })
+
+  it("places `rev N` BEFORE the date component", () => {
+    // Field-order pin: the spec fixes "identity → state → tags →
+    // revision count → recency." A future contributor moving rev after
+    // date (or before tags) silently breaks the documented reading order.
+    const memory = buildMemory({ ...baseMemory, revisionCount: 3 })
+    const components = defaultMemoryMetaBuilder(memory).split(" | ")
+    const revIdx = components.findIndex((c) => c === "rev 3")
+    const dateIdx = components.findIndex((c) => c === "2026-04-29")
+    expect(revIdx).toBeGreaterThan(-1)
+    expect(dateIdx).toBeGreaterThan(revIdx)
+  })
+
+  it("preserves byte-identical pre-#10 output for `note` + `informational` + no tags + revisionCount 1", () => {
+    // Acceptance criterion: a memory with `kind: "note"`, `status:
+    // "informational"`, no tags, and revisionCount 1 renders only
+    // `source | YYYY-MM-DD` — every other component is filtered.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Quick observation",
+      source: "conversation",
+      kind: "note",
+      status: "informational",
+      tags: [],
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      revisionCount: 1,
+    })
+    expect(defaultMemoryMetaBuilder(memory)).toBe("conversation | 2026-04-29")
+  })
+
+  it("emits no double-pipes when filterable components elide and rev fires", () => {
+    // The shift from `.filter(Boolean)` to `.filter((p): p is string =>
+    // p !== null)` is type-narrowing (the array narrows to `string[]`),
+    // not a behavior change for null elision. Pin the joined output to
+    // catch any future regression that drops the filter or substitutes
+    // empty strings for `null`.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Upserted note",
+      source: "manual",
+      kind: "note",
+      status: "informational",
+      tags: [],
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      revisionCount: 4,
+    })
+    const meta = defaultMemoryMetaBuilder(memory)
+    expect(meta).toBe("manual | rev 4 | 2026-04-29")
+    expect(meta).not.toMatch(/\|\s*\|/)
+  })
+
+  it("integrates the rev marker into formatMemoryListItem output between tags and date", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "JWT auth model",
+      source: "conversation",
+      kind: "decision",
+      status: "accepted",
+      tags: ["auth", "security"],
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      revisionCount: 4,
+      synopsis: "JWT-based authentication with refresh-token rotation.",
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe(
+      "### JWT auth model\n" +
+        "JWT-based authentication with refresh-token rotation.\n" +
+        "*conversation | decision | accepted | auth, security | rev 4 | 2026-04-29*",
+    )
+  })
+
+  it("stacks under the trust line — rev N is meta content, not a trust-line peer", () => {
+    // Acceptance criterion: the trust line stays on its own line above
+    // the synopsis; `rev N` lives in the meta line below the synopsis.
+    // The two indicators are independent surfaces.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Decayed but oft-revised",
+      source: "conversation",
+      kind: "decision",
+      status: "accepted",
+      tags: ["auth"],
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      confidenceScore: 0.15,
+      revisionCount: 4,
+    })
+    const out = formatMemoryListItem(memory, { meta: defaultMemoryMetaBuilder })
+    expect(out).toBe(
+      "### Decayed but oft-revised\n" +
+        "_very low confidence_\n" +
+        "*conversation | decision | accepted | auth | rev 4 | 2026-04-29*",
+    )
+    const lines = out.split("\n")
+    expect(lines[1]).toBe("_very low confidence_")
+    expect(lines[2]).toContain("rev 4")
+  })
+
+  it("sources the date from updatedAt, not createdAt (existing builder contract)", () => {
+    // Acceptance criterion explicitly preserves the existing date split
+    // of `memory.updatedAt`. A future refactor that confused createdAt
+    // with updatedAt would slip past tests that share a single timestamp
+    // for both fields.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Date source",
+      source: "manual",
+      tags: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-04-29T00:00:00.000Z",
+      revisionCount: 3,
+    })
+    const meta = defaultMemoryMetaBuilder(memory)
+    expect(meta).toContain("2026-04-29")
+    expect(meta).not.toContain("2026-01-01")
   })
 })

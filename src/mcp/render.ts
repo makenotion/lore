@@ -11,6 +11,15 @@
  * equivalent index-tier loader) — never `getById`, which pulls the full
  * markdown body. A wake-up rendering 25 Active Facts must not fan out
  * to 25+ body fetches just to read a Title property.
+ *
+ * Memory meta-line field order (defaultMemoryMetaBuilder):
+ *   `source | kind | status | tags | rev | date`
+ * Read top-to-bottom as "identity → state → tags → revision count → recency."
+ * `kind` is filtered when `=== "note"` (catch-all default); `status` is
+ * filtered when `=== "informational"` (catch-all default); `tags` is filtered
+ * when empty; `rev N` is filtered when `revisionCount < REVISION_DISPLAY_THRESHOLD`.
+ * The trust line (`_{trust}_`) is a SEPARATE line emitted between the heading
+ * and the synopsis — it is NOT a meta-line component.
  */
 
 import type {
@@ -211,6 +220,15 @@ export interface MemoryListItem {
    * so every existing caller satisfies the shape.
    */
   lastReferencedAt: string | null
+  /**
+   * System-managed counter incremented on every topic-key upsert
+   * (0.9.0/#06). Defaults to 1 for fresh rows and for legacy rows.
+   * `defaultMemoryMetaBuilder` surfaces a `rev N` marker when the value
+   * is at or above `REVISION_DISPLAY_THRESHOLD`. `Memory`, `DecisionSummary`,
+   * and `TaskSummary` all carry the field structurally — same migration
+   * pattern as `confidenceScore` (0.8.0/09).
+   */
+  revisionCount: number
 }
 
 export interface FormatMemoryListItemOptions {
@@ -259,9 +277,56 @@ export interface FormatMemoryListItemOptions {
 }
 
 /**
+ * Threshold at or above which `defaultMemoryMetaBuilder` renders a
+ * `rev N` marker on the meta line (0.9.0/#10). Pinned at 2 — a fresh
+ * row carries `Revision Count: 1` and would otherwise add visual noise
+ * with no signal. Single source of truth; tuning the threshold is a
+ * one-line change.
+ *
+ * Parallels `CONFIDENCE_DISPLAY_THRESHOLD` (0.8.0/09) in posture — both
+ * gate an additive surface signal on a system-managed numeric column —
+ * but the comparison polarities INVERT: the trust label fires when
+ * `confidenceScore < threshold` (low-confidence rows are the ones that
+ * need flagging), while the rev marker fires when
+ * `revisionCount >= threshold` (high-revision rows are the ones with
+ * evolution depth worth surfacing). Both are still strict comparisons
+ * gating a non-default signal; only the direction differs.
+ */
+export const REVISION_DISPLAY_THRESHOLD = 2
+
+/**
+ * Render the `rev N` meta-line component when `revisionCount` clears the
+ * display threshold; otherwise return `null` so caller-side
+ * `.filter((p): p is string => p !== null)` chains drop the slot
+ * cleanly. Single helper consumed by every meta builder
+ * (`defaultMemoryMetaBuilder`, plus wake-up's
+ * `wakeUpMemoryMetaBuilder` and `staleConfidenceMetaBuilder` over in
+ * `src/mcp/tools/context.ts`) so a future tuning of the threshold or
+ * the rendered string lands in one place.
+ *
+ * Returns `null` rather than the empty string so consumers using a
+ * type-narrowing predicate filter (`(p): p is string => p !== null`)
+ * still narrow to `string[]`. An empty-string return would survive
+ * a permissive `.filter(Boolean)` filter but emit a double-pipe in
+ * `.join(" | ")` on the truthy-empty case — not a current bug, but a
+ * trap for a future contributor who switches the filter shape.
+ */
+export function renderRevisionMarker(revisionCount: number): string | null {
+  if (revisionCount < REVISION_DISPLAY_THRESHOLD) return null
+  return `rev ${revisionCount}`
+}
+
+/**
  * Default builder matching recall / search's pre-#03 meta shape. Pulled
  * out so wake-up's section-specific builders can fall back to it for the
  * non-Recent-Memories surfaces if they ever need to.
+ *
+ * Field order: `source | kind | status | tags | rev | date`. `kind` and
+ * `status` are filtered when they equal their catch-all defaults
+ * (`note`, `informational`); `tags` is filtered when empty; `rev N` is
+ * filtered when `revisionCount < REVISION_DISPLAY_THRESHOLD`. `rev` is
+ * placed before `date` so the reader scans "identity → state → tags →
+ * revision count → recency."
  */
 export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
   return [
@@ -269,9 +334,10 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
     memory.kind !== "note" ? memory.kind : null,
     memory.status !== "informational" ? memory.status : null,
     memory.tags.length > 0 ? memory.tags.join(", ") : null,
+    renderRevisionMarker(memory.revisionCount),
     memory.updatedAt.split("T")[0],
   ]
-    .filter(Boolean)
+    .filter((p): p is string => p !== null)
     .join(" | ")
 }
 

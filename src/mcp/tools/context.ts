@@ -45,6 +45,7 @@ import {
   collapseOverlappingMemories,
   formatMemoryListItem,
   renderFact,
+  renderRevisionMarker,
   resolveReferencedTitles,
   truncateSynopsis,
 } from "../render.js"
@@ -132,7 +133,17 @@ function renderMemoryEntry(
 function wakeUpMemoryMetaBuilder(mem: MemoryListItem): string {
   const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
   const date = mem.createdAt.split("T")[0]
-  return `${mem.source} | ${tagPart} | ${date}`
+  // `rev N` slots between tags and date so the agent reads
+  // "identity → tags → revision count → recency" — same ordering as
+  // `defaultMemoryMetaBuilder`. Wake-up uses its own meta builder
+  // rather than delegating to `defaultMemoryMetaBuilder` because the
+  // surfaces diverge by design (wake-up triage skips kind/status,
+  // recall/search surfaces them); the rev marker shape is shared via
+  // `renderRevisionMarker` so threshold tuning lands in one place.
+  const rev = renderRevisionMarker(mem.revisionCount)
+  return [mem.source, tagPart, rev, date]
+    .filter((p): p is string => p !== null)
+    .join(" | ")
 }
 
 /**
@@ -177,6 +188,8 @@ function staleConfidenceMetaBuilder(today: string) {
     const tagPart = mem.tags.length > 0 ? mem.tags.join(", ") : "no tags"
     fields.push(mem.source)
     fields.push(tagPart)
+    const rev = renderRevisionMarker(mem.revisionCount)
+    if (rev !== null) fields.push(rev)
     fields.push(mem.createdAt.split("T")[0])
     return fields.join(" | ")
   }
