@@ -12,6 +12,7 @@ import {
 import { resolveProjectIds } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
 import type {
+  Fact,
   Memory,
   MemoryKind,
   MemoryStatus,
@@ -27,6 +28,7 @@ import {
   findRelatedActiveTasks,
   type NearDuplicateMatch,
 } from "../../core/near-duplicate.js"
+import { decodeTextEntities } from "../../notion/html-entities.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
 import type { TaskSummary } from "../../types.js"
 
@@ -222,11 +224,23 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     let autoMentionsCount = 0
     let autoMentionsAttempted = 0
     if (!autoMentionsDisabled) {
+      // `decodeTextEntities` matches what `createWithDedup` applies
+      // internally (`src/core/fact.ts`'s decode-at-write-boundary
+      // step). Decoding here as well keeps the on-the-wire `Object`
+      // value byte-identical between the input the dedup-key probe
+      // hashes and the input the update-time covered-set check
+      // compares against — without it, an entity name surfaced by
+      // the regex tokenizer that contains an HTML-decodable
+      // character (`Foo &amp; Bar` → `Foo & Bar`) would be stored
+      // decoded by `createWithDedup` but compared raw on update,
+      // producing a wasted Notion round-trip per update per
+      // affected entity. Idempotent — clean ASCII entities pass
+      // through unchanged.
       const mentionedEntities = extractEntityCandidates(
         memory.title,
         memory.keywords,
         memory.synopsis,
-      )
+      ).map(decodeTextEntities)
       if (mentionedEntities.length > 0) {
         autoMentionsAttempted = mentionedEntities.length
         const projectIds = memory.projectIds.length > 0 ? memory.projectIds : undefined
@@ -415,12 +429,132 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
       consequences: args.consequences,
     })
 
+    // Add-only re-emission of `mentions` facts (DEFERRED-03). An
+    // update that surfaces a fresh entity in title / keywords /
+    // synopsis emits a new `mentions` fact for it; an update that
+    // REMOVES an entity leaves the corresponding fact in place.
+    // Silent drift on removes is the accepted cost — the alternative
+    // (diff-and-invalidate on every update) extends the auto-fact
+    // contract with invalidation behavior that today only
+    // `lore-correct` carries, which is a separate design decision
+    // worth its own review.
+    //
+    // Pre-query existing `mentions` facts sourced from this memory
+    // so per-entity `createWithDedup` only fires for entities the
+    // graph doesn't already cover. The "covered" check is by Object
+    // alone, deliberately: a title-only update that leaves the
+    // entity set untouched changes every existing fact's subject
+    // text but emits zero new rows. `createWithDedup`'s dedup-key
+    // probe is the second-line defense against a concurrent
+    // autosave landing the same triple between our pre-query and
+    // our writes.
+    //
+    // Gate the whole branch on at least one extraction-relevant arg
+    // being defined: title, keywords, or synopsis. An update that
+    // only mutates `confidence` / `status` / `reviewBy` /
+    // `decidedAt` / `tags` / `projectIds` / `topicId` /
+    // `supersedesIds` / `affectsIds` / `alternatives` /
+    // `consequences` cannot change the extraction surface, so the
+    // pre-query and per-entity `createWithDedup` calls would be
+    // pure waste — every candidate would resolve to "already
+    // covered" and the round-trips burn for no signal. The gate
+    // checks arg presence, not arg-vs-resolved-value diff, so an
+    // agent that re-supplies an unchanged title still pays the
+    // pre-query; that noise case is the agent's choice and bounded
+    // by the kill switch.
+    const autoMentionsDisabled = process.env["LORE_DISABLE_AUTO_MENTIONS"] === "1"
+    const extractionInputsTouched =
+      args.title !== undefined ||
+      args.keywords !== undefined ||
+      args.synopsis !== undefined
+    let autoMentionsCount = 0
+    let autoMentionsAttempted = 0
+    if (!autoMentionsDisabled && extractionInputsTouched) {
+      // Decode candidates to match `createWithDedup`'s internal
+      // decode-at-write-boundary step. Without this, an entity
+      // surfaced as `Foo &amp; Bar` would compare raw against an
+      // already-decoded `Foo & Bar` in the covered-set Set,
+      // triggering a wasted round-trip per affected entity per
+      // update. Idempotent.
+      const mentionedEntities = extractEntityCandidates(
+        updated.title,
+        updated.keywords,
+        updated.synopsis,
+      ).map(decodeTextEntities)
+      if (mentionedEntities.length > 0) {
+        let existing: Fact[]
+        try {
+          existing = await services.facts.queryBySourceMemory(updated.id, {
+            predicates: ["mentions"],
+          })
+        } catch (err) {
+          // Probe failure must not block the update response.
+          // Degrade to "assume nothing covered" — `createWithDedup`'s
+          // own probe still absorbs same-triple duplicates downstream,
+          // so the worst case is one wasted round-trip per entity
+          // rather than a duplicated row.
+          debugLogPartialFailures("lore-memory", [
+            { rootId: `${updated.id}: existing-mentions-probe`, error: err },
+          ])
+          existing = []
+        }
+        const covered = new Set(existing.map((f) => f.object))
+        const newCandidates = mentionedEntities.filter((entity) => !covered.has(entity))
+        if (newCandidates.length > 0) {
+          autoMentionsAttempted = newCandidates.length
+          const autoProjectIds =
+            updated.projectIds.length > 0 ? updated.projectIds : undefined
+          // Per-entity `.then(success, failure)` — same shape as
+          // the save-time emission: convert every rejection into a
+          // resolved boolean BEFORE `Promise.all` ever sees it so a
+          // single per-entity 400 cannot sink the surviving creates.
+          // See `handleSave`'s comment for the full rationale.
+          const results = await Promise.all(
+            newCandidates.map((entity) =>
+              services.facts
+                .createWithDedup({
+                  subject: updated.title,
+                  predicate: "mentions",
+                  object: entity,
+                  sourceMemoryId: updated.id,
+                  projectIds: autoProjectIds,
+                  confidence: "speculative",
+                })
+                .then(
+                  () => true,
+                  (err: unknown) => {
+                    debugLogAutoFactFailure("update", updated.id, entity, err)
+                    return false
+                  },
+                ),
+            ),
+          )
+          autoMentionsCount = results.filter(Boolean).length
+        }
+      }
+    }
+
     const lines = [`Updated memory: "${updated.title}" (${updated.id})`]
     if (topicLabel) {
       lines.push(`Topic: ${topicLabel}`)
     }
     if (warnings.length > 0) {
       lines.push(`Warnings: ${warnings.join("; ")}`)
+    }
+    // Footer fires only when at least one new fact was attempted —
+    // the add-only contract's steady state (every entity already
+    // covered) renders no footer, matching save's silent-on-no-
+    // tokenizer-output posture. The "new" suffix distinguishes
+    // update-time emission from save-time emission ("Auto-mentions:
+    // 2" on save vs. "Auto-mentions: 2 new" on update) so an
+    // operator triaging response output can tell which surface
+    // produced the count.
+    if (autoMentionsAttempted > 0) {
+      lines.push(
+        autoMentionsCount === autoMentionsAttempted
+          ? `Auto-mentions: ${autoMentionsCount} new`
+          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} new attempted`,
+      )
     }
 
     return {

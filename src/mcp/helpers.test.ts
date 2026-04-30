@@ -48,10 +48,11 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     }
   })
 
-  it("carries source=update for the deferred re-emission follow-up's eventual call site", () => {
-    // `update` is reserved for DEFERRED-03's eventual re-emission
-    // path — pinning the value here so the helper's union doesn't
-    // need a parameter rename when that work lands.
+  it("carries source=update for the add-only re-emission landed via DEFERRED-03", () => {
+    // `update` is the call-site discriminator for the re-emission
+    // path landed via DEFERRED-03 — pin the value here so the
+    // helper's union doesn't drift if a future contributor renames
+    // the call site.
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "1")
     try {

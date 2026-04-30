@@ -105,11 +105,11 @@ function oneLine(value: string): string {
  * the one-event-per-line invariant log aggregators rely on holds even
  * if a future entity tokenizer surfaces a multi-line input.
  *
- * `source` is the originating tool action (`save` for #07's #07
- * scope; `update` reserved for the deferred re-emission follow-up
- * tracked in `DEFERRED-03`). Carrying it on every line lets a future
- * contributor distinguish save-time vs. update-time emission failures
- * without grepping the calling stack.
+ * `source` is the originating tool action (`save` for save-time
+ * emission; `update` for the add-only re-emission landed via
+ * DEFERRED-03). Carrying it on every line lets a future contributor
+ * distinguish save-time vs. update-time emission failures without
+ * grepping the calling stack.
  */
 export function debugLogAutoFactFailure(
   source: "save" | "update",

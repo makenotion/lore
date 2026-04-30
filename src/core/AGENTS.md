@@ -1211,18 +1211,29 @@ deterministic substring near-dup probe and the active-task
 cross-reference. Set for bulk-import flows, fixture setup, or vaults
 where the tokenizer's noise floor is unacceptable.
 
-**Out of scope: `lore-memory action='update'` re-emission.** An
-update that mutates title / keywords / synopsis would face a
-stale-fact-cleanup problem (a removed entity leaves a dangling
-`mentions` fact). 0.8.0 ships save-time emission only. Update-time
-re-emission is tracked in `DEFERRED.md` (DEFERRED-03).
+**Update-time re-emission (add-only, DEFERRED-03).**
+`lore-memory action='update'` runs the same extraction over the
+post-update title / keywords / synopsis, pre-queries existing
+`mentions` facts sourced from this memory via
+`FactService.queryBySourceMemory`, and emits `createWithDedup` only
+for entities the graph doesn't already cover. The "covered" check
+is by Object alone, deliberately: a title-only update changes
+every existing fact's subject text but emits zero new rows.
+**Stale facts (entities removed by the update) are NOT cleaned
+up** — diff-and-invalidate would extend the auto-fact contract
+with invalidation behavior that today only `lore-correct`
+carries; that surface is its own design decision, not part of
+this follow-up. The advisory footer mirrors save (`Auto-mentions:
+N new` / `Auto-mentions: K/N new attempted`) with the `new`
+suffix distinguishing update-time emission from save-time. Same
+`LORE_DISABLE_AUTO_MENTIONS=1` kill switch.
 
 **Out of scope: decision-side emission.** `lore-decision
 action='create'` already emits `decided_by` facts via its `affects`
 path. Adding a parallel `mentions` emission to the decision handler
-is plausible follow-up work but expands the surface, the test
-coverage, and the deferred-update problem in lockstep. 0.8.0 scopes
-auto-mentions to `lore-memory action='save'` exclusively.
+is plausible follow-up work but expands the surface and the test
+coverage in lockstep. 0.8.0 scopes auto-mentions to `lore-memory`
+(save and update via DEFERRED-03) exclusively.
 
 ## Schema Drift Detection
 

@@ -2457,6 +2457,600 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
   })
 })
 
+describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => {
+  // Update-time re-emission of `mentions` facts uses the add-only
+  // contract: pre-query existing mentions sourced from this memory,
+  // emit `createWithDedup` only for entities not already covered.
+  // Stale facts (entities removed by the update) are deliberately NOT
+  // cleaned up — that requires extending the auto-fact contract with
+  // invalidation, which today only `lore-correct` carries.
+
+  it("emits a `mentions` fact for an entity newly surfaced in the post-update title", async () => {
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-1", {
+      title: "Investigated PR #25750 latency regression",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-new" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-1",
+      title: "Investigated PR #25750 latency regression",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(queryBySourceMemory).toHaveBeenCalledWith(
+      "mem-update-1",
+      expect.objectContaining({ predicates: ["mentions"] }),
+    )
+    // The pre-query intentionally does NOT pass `projectId` —
+    // same-source-memory already implies same-scope, so scoping by
+    // project would silently lose facts for memories whose
+    // `projectIds` differ from the call site's. Pin the omission so
+    // a future contributor "tightening" the query doesn't drop
+    // legitimate covered-set rows.
+    const probeOpts = queryBySourceMemory.mock.calls[0][1] as {
+      projectId?: string
+    }
+    expect(probeOpts.projectId).toBeUndefined()
+    expect(createWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "Investigated PR #25750 latency regression",
+        predicate: "mentions",
+        object: "PR #25750",
+        sourceMemoryId: "mem-update-1",
+        projectIds: ["proj-a"],
+        confidence: "speculative",
+      }),
+    )
+    // Footer surfaces the count with the `new` suffix that
+    // distinguishes update-time emission from save-time emission.
+    // Anchor on the line boundary rather than relying on a
+    // negative-lookahead regex — `^Auto-mentions: N new$` is the
+    // exact full-success shape, and the partial-failure shape
+    // (`Auto-mentions: K/N new attempted`) cannot match.
+    expect(text).toMatch(/^Auto-mentions: \d+ new$/m)
+  })
+
+  it("does NOT re-emit a fact for an entity already covered by an existing mentions fact", async () => {
+    // The covered-set check is the load-bearing dedup primitive: if
+    // `queryBySourceMemory` returns a fact with `object: "PR #25750"`,
+    // a post-update set that includes "PR #25750" must not re-emit.
+    // Pinning this guards against a refactor that swaps the per-Object
+    // Set for an `id`-based check (which would never match across
+    // saves) or that drops the pre-query entirely (which would
+    // re-introduce the dedup-key probe round-trip per call).
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-cover", {
+      title: "Investigated PR #25750 again",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-existing", object: "PR #25750" },
+      { id: "fact-existing-2", object: "#25750" },
+    ])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-cover",
+      title: "Investigated PR #25750 again",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Every extracted candidate is already covered → zero
+    // `createWithDedup` calls and no advisory footer.
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(text).not.toContain("Auto-mentions:")
+  })
+
+  it("does NOT invalidate or touch facts for entities removed by the update (add-only contract)", async () => {
+    // Stale-fact silence is the contract we're pinning: the spec
+    // explicitly accepts drift on removes as the cost of avoiding
+    // the diff-and-invalidate path, which would extend the auto-fact
+    // contract with invalidation behavior. A future contributor
+    // tempted to "clean up stale mentions on update" would break
+    // this test rather than silently widening the contract.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-stale", {
+      title: "Investigated PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    // Existing facts include one for an entity NOT in the post-update
+    // text — the add-only contract leaves it alone. The current-text
+    // entities (`PR #25750` + `#25750`, surfaced by overlapping
+    // patterns in the extractor) are all covered so no fresh emission
+    // fires; the test isolates the stale-fact-handling assertion from
+    // any "fresh entity slipped through" noise.
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-stale", object: "SENTRY-9999" },
+      { id: "fact-current-pr", object: "PR #25750" },
+      { id: "fact-current-hash", object: "#25750" },
+    ])
+    const createWithDedup = vi.fn()
+    const invalidate = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-update-stale",
+      title: "Investigated PR #25750",
+    } as never)
+
+    // No invalidate. No fresh creates either (PR #25750 already
+    // covered, SENTRY-9999 not in post-update text).
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("emits only for the candidates not already covered (mixed add + already-covered)", async () => {
+    // The realistic case: one entity carried over from the previous
+    // version, one entity newly added in this update. The covered
+    // entity is filtered out; the new entity emits.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-mixed", {
+      title: "Reviewed PR #25750 against SENTRY-1234",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-existing", object: "PR #25750" },
+    ])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-update-mixed",
+      title: "Reviewed PR #25750 against SENTRY-1234",
+    } as never)
+
+    const objects = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object,
+    )
+    // PR #25750 was already covered → not in the calls.
+    expect(objects).not.toContain("PR #25750")
+    // SENTRY-1234 is freshly surfaced → in the calls.
+    expect(objects).toContain("SENTRY-1234")
+  })
+
+  it("threads post-update keywords and synopsis into the extraction surface", async () => {
+    // The branch reads the resolved-update memory's fields, not the
+    // request args — so an update that clears synopsis or sets new
+    // keywords sees the resolved values. Pin the wire-in.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-fields", {
+      title: "Reviewed",
+      projectIds: ["proj-a"],
+      keywords: "PR #25750",
+      synopsis: "Closes SENTRY-1234.",
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-update-fields",
+      keywords: "PR #25750",
+      synopsis: "Closes SENTRY-1234.",
+    } as never)
+
+    const objects = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object,
+    )
+    expect(objects).toContain("PR #25750")
+    expect(objects).toContain("SENTRY-1234")
+  })
+
+  it("LORE_DISABLE_AUTO_MENTIONS=1 skips both pre-query and per-entity emission entirely", async () => {
+    // Same kill switch as save — single-axis disable for the regex
+    // tokenizer. Pinning that update-time emission honors the same
+    // env var lets an operator distrust the tokenizer end-to-end with
+    // one toggle.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-disabled", {
+      title: "Investigated PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn()
+    const createWithDedup = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    vi.stubEnv("LORE_DISABLE_AUTO_MENTIONS", "1")
+    try {
+      const result = await lore({
+        memoryId: "mem-update-disabled",
+        title: "Investigated PR #25750",
+      } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      // Neither the pre-query nor the per-entity emission fire; no
+      // advisory footer.
+      expect(queryBySourceMemory).not.toHaveBeenCalled()
+      expect(createWithDedup).not.toHaveBeenCalled()
+      expect(text).not.toContain("Auto-mentions:")
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("update succeeds when a per-entity fact creation fails (failure-domain isolation)", async () => {
+    // Same posture as save's failure-isolation test: one fact's
+    // create rejects, the other lands, the update response is not
+    // an error, and the partial-failure footer surfaces the split.
+    //
+    // Title is "Investigated PR #25750" — `Investigated` is in the
+    // extractor stoplist so the multi-word phrase pattern can't
+    // match, leaving exactly two candidates: `PR #25750` (PR
+    // pattern) and `#25750` (issue-hash pattern). One reject + one
+    // resolve gives a deterministic `1/2 new attempted` ratio so
+    // the footer assertion can pin the exact count rather than a
+    // permissive regex shape.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-partial", {
+      title: "Investigated PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([])
+    const createWithDedup = vi
+      .fn()
+      .mockResolvedValueOnce({ fact: { id: "fact-ok" }, deduped: false, enriched: [] })
+      .mockRejectedValueOnce(new Error("notion 503"))
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-partial",
+      title: "Investigated PR #25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("Updated memory:")
+    expect(createWithDedup).toHaveBeenCalledTimes(2)
+    // Pin the exact ratio rather than a regex shape — guards
+    // against an off-by-one in `results.filter(Boolean).length` or
+    // a future refactor that flips success/failure semantics.
+    expect(text).toContain("Auto-mentions: 1/2 new attempted")
+  })
+
+  it("update succeeds when the pre-query for existing mentions fails (degrades to assume-nothing-covered)", async () => {
+    // A `queryBySourceMemory` failure must not block the update or
+    // the surrounding emission — degrade to "assume nothing covered"
+    // so `createWithDedup`'s own probe carries the dedup load.
+    // Pinning that the update response is not an error guards against
+    // the obvious refactor that swaps the try/catch for a bare await.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-probefail", {
+      title: "Reviewed PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockRejectedValue(new Error("notion 500"))
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-probefail",
+      title: "Reviewed PR #25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("Updated memory:")
+    // Pre-query degraded to empty → every candidate was attempted.
+    expect(createWithDedup).toHaveBeenCalled()
+  })
+
+  it("an update with no extractable entities skips the pre-query and emits no facts", async () => {
+    // The branch short-circuits before `queryBySourceMemory` when
+    // the extractor surfaces nothing, so a synopsis-only update on
+    // a low-token title pays zero round-trips for the auto-mentions
+    // path.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-noentities", {
+      title: "ok",
+      projectIds: ["proj-a"],
+      synopsis: "",
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn()
+    const createWithDedup = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-noentities",
+      title: "ok",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(queryBySourceMemory).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(text).not.toContain("Auto-mentions:")
+  })
+
+  it("omits projectIds when the resolved-update memory has no project scope", async () => {
+    // Mirror of the save-side `omits projectIds when …` test — a
+    // vault-wide auto-emit must pass `projectIds: undefined` not
+    // `projectIds: []` to `createWithDedup`, matching the convention
+    // the rest of the handler uses.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-vaultwide", {
+      title: "Reviewed PR #25750",
+      projectIds: [],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-update-vaultwide",
+      title: "Reviewed PR #25750",
+    } as never)
+
+    const firstCall = createWithDedup.mock.calls[0][0] as {
+      projectIds?: string[]
+    }
+    expect(firstCall.projectIds).toBeUndefined()
+  })
+
+  it("does NOT fire the pre-query when the update touches no extraction-relevant fields", async () => {
+    // Steady-state efficiency gate: an update that only mutates
+    // confidence / status / tags / projectIds / etc. cannot change
+    // the extraction surface, so running the pre-query just to
+    // discover the existing covered-set is unchanged is pure waste.
+    // The branch is gated on `args.title` / `args.keywords` /
+    // `args.synopsis` being defined; this test pins that a
+    // confidence-only update on a memory whose RESOLVED title would
+    // produce extractable entities does not fire the pre-query.
+    // Without the gate, every confidence-only update on a memory
+    // titled `"Investigated PR #25750"` would round-trip to Notion
+    // for the `queryBySourceMemory` probe.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-confidence-only", {
+      title: "Investigated PR #25750",
+      projectIds: ["proj-a"],
+      confidence: "certain",
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn()
+    const createWithDedup = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-confidence-only",
+      confidence: "certain",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(queryBySourceMemory).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(text).not.toContain("Auto-mentions:")
+  })
+
+  it("decodes HTML entities on candidates so the covered-set check matches createWithDedup's stored form", async () => {
+    // `createWithDedup` decodes Subject/Object via `decodeTextEntities`
+    // at its write boundary (`src/core/fact.ts`), so the existing
+    // fact's `Object` value is the decoded form (`Foo & Bar`). The
+    // raw extractor output for an update that surfaces the same
+    // entity is the encoded form (`Foo &amp; Bar`). Without the
+    // decode pass on candidates, the covered-set Set would treat
+    // them as different strings, the candidate would be classified
+    // as "new", `createWithDedup` would round-trip to Notion (its
+    // dedup-key probe would catch the duplicate, returning
+    // `deduped: true`), and the steady-state cost would be one
+    // wasted Notion call per HTML-encoded entity per update.
+    //
+    // Pinning the decode here so a future contributor "simplifying"
+    // the candidate normalization would break this test rather than
+    // silently re-introducing the wasted-round-trip class of bug.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-decoded", {
+      // Use a multi-word capitalized phrase carrying `&amp;` —
+      // matches the multi-word capitalized phrase pattern post-
+      // decode (`Café & Bar` → both words capitalized) and is the
+      // canonical PF1-06 bug class fixture.
+      title: "Café &amp; Bar review",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    // Stored fact's Object is already decoded — this is what
+    // `createWithDedup` writes after decoding `Café &amp; Bar`.
+    const queryBySourceMemory = vi
+      .fn()
+      .mockResolvedValue([{ id: "fact-pre", object: "Café & Bar" }])
+    const createWithDedup = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-update-decoded",
+      title: "Café &amp; Bar review",
+    } as never)
+
+    // The candidate `Café &amp; Bar` decodes to `Café & Bar`, which
+    // matches the stored fact → no fresh emission.
+    const calls = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object,
+    )
+    expect(calls).not.toContain("Café &amp; Bar")
+    expect(calls).not.toContain("Café & Bar")
+  })
+})
+
 describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
   it("threads synopsis on action='save' through to memories.create", async () => {
     const mockServer = createMockServer()
