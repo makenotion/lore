@@ -15,6 +15,7 @@ import type {
   Fact,
   Memory,
   MemoryKind,
+  MemorySource,
   MemoryStatus,
   MemoryConfidence,
   SearchMode,
@@ -48,6 +49,23 @@ const MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7
 
 /** Cap the probe candidate pool. See `findNearDuplicates` docstring. */
 const NEAR_DUPLICATE_POOL_LIMIT = 50
+
+/**
+ * Topic-key format (0.9.0/#06): kebab-case path like `decision/jwt-auth`.
+ * Requires a `family/key` shape — at least one slash separator —
+ * because the `suggest-topic-key` heuristic always emits
+ * `${family}/${slug}` (per `src/core/topic-key.ts`'s `KIND_TO_FAMILY`)
+ * and the upsert grouping is meaningful only when the family prefix is
+ * present. Single-segment tokens (e.g. `decision` alone) are rejected
+ * at the Zod boundary so the contract between suggester and upsert
+ * stays tight: any key the suggester would return is accepted, and
+ * any key it wouldn't is a typo or contract violation.
+ *
+ * Format violations are validation errors, not silent acceptance —
+ * a malformed `topicKey` is almost always a typo, not a deliberate
+ * choice.
+ */
+const TOPIC_KEY_REGEX = /^[a-z0-9]+\/[a-z0-9-]+(\/[a-z0-9-]+)*$/
 
 /** Max candidates to surface in the response. */
 const NEAR_DUPLICATE_SURFACE_LIMIT = 3
@@ -170,10 +188,47 @@ interface SaveArgs {
   synopsis?: string
   agent?: string
   session?: string
+  topicKey?: string
 }
 
 async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolResult> {
   try {
+    // Validate the topicKey + kind contract BEFORE any service call.
+    //
+    // Topic keys group recurring decision/runbook/policy/incident/
+    // postmortem topics. Notes are the catch-all default and don't form
+    // a recurring topic — the suggester (`action='suggest-topic-key'`)
+    // returns null for `kind: 'note'` and `kind: 'task'` for the same
+    // reason. The contract is documented in CLAUDE.md ("Topic keys for
+    // evolving memories").
+    //
+    // **Position is load-bearing**: this guard runs BEFORE
+    // `resolveProjectIds`, BEFORE `topics.getOrCreate` (which CREATES
+    // a Topic in Notion as a side effect), and BEFORE the parallel
+    // probes are dispatched. A rejected save must leave zero side
+    // effects in Notion. An earlier placement after topic resolution
+    // could create an orphaned Topic row that the rejected save never
+    // links to. A regression test (`rejects topicKey + default-note
+    // before any service call ... including topics.getOrCreate`)
+    // pins this by passing `topicName` and asserting `topics.getOrCreate`,
+    // `memories.create`, AND `memories.upsertByTopicKey` all stay
+    // unmocked.
+    //
+    // Catching the omitted-kind path is also load-bearing — without
+    // the default check, an agent that passes only `topicKey` (no
+    // `kind`) would silently land in an upsert chain on a
+    // `note`-defaulted memory.
+    const resolvedKind = (args.kind as MemoryKind | undefined) ?? "note"
+    if (args.topicKey && resolvedKind === "note") {
+      throw new Error(
+        "topicKey is not valid on kind: 'note'. Topic keys group " +
+          "recurring decision/runbook/policy-style topics; notes are " +
+          "the catch-all default and do not form a recurring topic. " +
+          "Either omit topicKey, or set kind to one of: decision, " +
+          "runbook, incident, postmortem, policy.",
+      )
+    }
+
     const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
 
     let topicId: string | undefined
@@ -227,28 +282,65 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         ]),
     })
 
-    const [memory, nearDuplicates, relatedTasks] = await Promise.all([
-      services.memories.create({
-        title: args.title,
-        content: args.content,
-        projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-        topicId,
-        source: args.source ?? "conversation",
-        kind: args.kind as MemoryKind | undefined,
-        status: args.status as MemoryStatus | undefined,
-        confidence: args.confidence as MemoryConfidence | undefined,
-        reviewBy: args.reviewBy,
-        decidedAt: args.decidedAt,
-        tags: args.tags,
-        keywords: args.keywords,
-        synopsis: args.synopsis,
-        agent: args.agent,
-        session: args.session,
-      }),
+    // Topic-key upsert dispatch (0.9.0/#06). When `topicKey` is set,
+    // the save path looks for an existing memory with that key +
+    // identical project-set and appends a revision block instead of
+    // creating a fresh row. The lookup (`findByTopicKey`) is the first
+    // step inside `upsertByTopicKey` and runs concurrently with the
+    // probes via `Promise.all` — caller wall-clock is `max(latencies)`,
+    // not summed. The kind=note guard above already short-circuited
+    // the unsafe-defaulting case; from here either path is contract-
+    // valid.
+    const writePromise: Promise<{
+      memory: Memory
+      revisionCount: number
+      upserted: boolean
+    }> = args.topicKey
+      ? services.memories.upsertByTopicKey({
+          topicKey: args.topicKey,
+          projectIds: resolved.ids,
+          title: args.title,
+          content: args.content,
+          kind: resolvedKind,
+          source: (args.source ?? "conversation") as MemorySource,
+          status: args.status as MemoryStatus | undefined,
+          confidence: args.confidence as MemoryConfidence | undefined,
+          topicId,
+          tags: args.tags,
+          keywords: args.keywords,
+          synopsis: args.synopsis,
+          agent: args.agent,
+          session: args.session,
+          reviewBy: args.reviewBy,
+          decidedAt: args.decidedAt,
+        })
+      : services.memories
+          .create({
+            title: args.title,
+            content: args.content,
+            projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+            topicId,
+            source: args.source ?? "conversation",
+            kind: args.kind as MemoryKind | undefined,
+            status: args.status as MemoryStatus | undefined,
+            confidence: args.confidence as MemoryConfidence | undefined,
+            reviewBy: args.reviewBy,
+            decidedAt: args.decidedAt,
+            tags: args.tags,
+            keywords: args.keywords,
+            synopsis: args.synopsis,
+            agent: args.agent,
+            session: args.session,
+          })
+          .then((memory) => ({ memory, revisionCount: 1, upserted: false }))
+
+    const [writeResult, nearDuplicates, relatedTasks] = await Promise.all([
+      writePromise,
       probePromise,
       taskCrossrefPromise,
     ])
 
+    const memory = writeResult.memory
     const matches = nearDuplicates.filter((m) => m.id !== memory.id)
 
     services.sessionMemories.record(
@@ -339,8 +431,17 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       ? args.projectNames.join(", ")
       : args.projectName ?? services.context.project?.name ?? "none (repo-wide)"
 
+    // Header line distinguishes upsert-append from fresh-create so the
+    // agent knows which path fired without parsing for revision count.
+    // "Created (revision 1, topic key 'X')" / "Appended as revision N
+    // (topic key 'X')" wording matches the spec footer for #06.
+    const headerLine = args.topicKey
+      ? writeResult.upserted
+        ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${args.topicKey}')`
+        : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, topic key '${args.topicKey}')`
+      : `Saved memory: "${memory.title}" (${memory.id})`
     const lines = [
-      `Saved memory: "${memory.title}" (${memory.id})`,
+      headerLine,
       `Project: ${projectLabel}`,
       `Topic: ${topicLabel}`,
     ]
@@ -1020,6 +1121,13 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     synopsis: z.string().max(SYNOPSIS_MAX).optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
+    topicKey: z
+      .string()
+      .regex(
+        TOPIC_KEY_REGEX,
+        "Must be kebab-case path like 'decision/jwt-auth' (lowercase, slash-separated, no leading/trailing slash)",
+      )
+      .optional(),
   }),
   z.object({
     action: z.literal("update"),
@@ -1068,11 +1176,11 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       title: "Memory operations",
       description:
         "Save, update, archive, batch-expand, or suggest a topic key for memories. Action-dispatched:\n\n" +
-        "- `action: 'save'` — create a new memory page in the vault. Runs a near-duplicate probe in parallel.\n" +
+        "- `action: 'save'` — create a new memory page in the vault. Runs a near-duplicate probe in parallel. When `topicKey` is set, save UPSERTS: if a memory exists with the same key AND identical project-set, the new content appends as a revision block instead of creating a new row.\n" +
         "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched.\n" +
         "- `action: 'archive'` — soft-delete a memory by ID (Notion archive flag).\n" +
         "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
-        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. No I/O. Once topic-key upsert lands (0.9.0/06), the suggestion can be passed to `action: 'save'` as `topicKey`; until then it is informational. Notes and tasks return no suggestion.\n\n" +
+        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. No I/O. Pass the result to `action: 'save'` as `topicKey` to opt into upsert grouping. Notes and tasks return no suggestion.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {
@@ -1181,6 +1289,25 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe("(action='save') Session ID to group related memories."),
+        topicKey: z
+          .string()
+          .regex(
+            TOPIC_KEY_REGEX,
+            "Must be kebab-case path like 'decision/jwt-auth' (lowercase, slash-separated, no leading/trailing slash)",
+          )
+          .optional()
+          .describe(
+            "(action='save') Optional kebab-case path like 'decision/jwt-auth'. " +
+              "When provided, save upserts: if a memory with the same topicKey AND " +
+              "identical project-set exists, the new content appends as a revision " +
+              "block to the existing page (incrementing Revision Count) instead of " +
+              "creating a new row. Title bumps to latest; Kind / Project-set cannot " +
+              "change (rejected). Requires `kind` to be set to one of decision / " +
+              "runbook / incident / postmortem / policy — not valid on `kind: 'note'` " +
+              "(the catch-all default) and not valid on tasks. Use " +
+              "`action: 'suggest-topic-key'` for a heuristic key from (title, kind). " +
+              "See CLAUDE.md 'Topic keys for evolving memories'.",
+          ),
         // update only
         supersedesIds: z
           .array(z.string())

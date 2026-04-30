@@ -15,7 +15,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
 | `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
 | `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
-| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker |
+| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper — and `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
@@ -113,6 +113,133 @@ page property. The workflow:
 
 This keeps the database properties lightweight (metadata only) while page bodies
 hold arbitrarily large content.
+
+## Topic-key upsert (`MemoryService.upsertByTopicKey`, 0.9.0/#06)
+
+`upsertByTopicKey` is the save-time upsert path: when an agent passes
+`topicKey` to `lore-memory action='save'`, the handler dispatches here
+instead of `create`. The match key is `(Topic Key, Project-set)` and
+project equality is set-equal — `[A]` does not match `[A, B]`.
+`findByTopicKey` (0.9.0/#01) is the shared lookup helper that resolves
+the match.
+
+**Two paths, one return shape**:
+
+| Branch | Behavior | `upserted` |
+|--------|----------|------------|
+| No existing match | `create` with `revisionCount: 1` and the topic key seeded onto the new row | `false` |
+| Existing match | Append `## Revision N (YYYY-MM-DD)` block to the page body via `replace_content_range`, then property update with new title + revision count | `true` |
+
+**Kind-mismatch validation runs BEFORE any Notion write.** The
+acceptance criterion is "kind mismatch throws before any Notion
+write" — the kind check fires immediately after `findByTopicKey`
+returns, NOT after the body read/write. An earlier draft of this
+spec had the validation after `retrieveMarkdown` + `updateMarkdown`
+— a real correctness bug because a kind-mismatched upsert would
+have appended a revision block to the page before rejecting. The
+test `throws on kind mismatch BEFORE any Notion write` pins this.
+
+**Project-set equality is enforced by `findByTopicKey`, not by a
+defensive recheck.** The lookup post-filters candidates to exact
+set-equality (`existing.projectIds.length === input.projectIds.length
+&& existing.projectIds.every(id => inputSet.has(id))`) and returns
+null on mismatch — so by construction the post-find row is set-equal
+to the input. A second JS-side recheck against the same returned
+value would be structurally tautological, and a true race detection
+(a writer mutating the project relation between find and write on
+the same process) would require a second `pages.retrieve` round-
+trip whose worst-case consequence (one revision lands on a row
+whose project set just expanded under a concurrent write) is
+benign — not justified.
+
+**Field policy on upsert**:
+
+- **THROW on mismatch**: Kind (the upsert chain is per-kind).
+  Project-set is handled by the lookup contract above; not a
+  separate throw at this layer.
+- **PRESERVE silently** (input dropped, no warning, no property write):
+  Status, Topic relation. State transitions belong on `lore-memory
+  action='update'`; the upsert path treats these as forgotten-to-omit
+  envelopes.
+- **REPLACE on every save** (latest write wins): Title, Synopsis,
+  Keywords, Source. Confidence (categorical) bumps if input provides
+  one; otherwise the existing categorical is written back.
+- **UNTOUCHED**: Confidence Score (system-managed per 0.8.0/#01),
+  Last Referenced At (read-citation signal per 0.8.0/#02). Bumping
+  `Last Referenced At` on upsert would conflate writes with reads
+  and break the staleness signal driving the wake-up Stale Confidence
+  section.
+
+**Title-cache write-through is load-bearing**. The upsert always bumps
+Title, so the same write-epoch sandwich + post-write `set` discipline
+that protects `MemoryService.update` from concurrent `getTitleById`
+callers applies here. The pre-write epoch bump invalidates any
+in-flight reader's commit-time epoch check; the cache delete clears
+the stored value; the post-write `set` installs the authoritative new
+title; the post-write bump closes the dispatched-during-write
+window. Without this, render-layer resolvers would keep returning
+the pre-upsert title from `titleCache` until the 60s TTL expired
+even though the new title has landed in Notion.
+
+**`topicKey` is rejected at the MCP boundary when kind is `note`**.
+The MCP layer (`src/mcp/tools/memory.ts:handleSave`) throws before
+calling `upsertByTopicKey` whenever the resolved save kind is `note`
+— either explicitly passed or defaulted (omitted `kind` falls back to
+`note`). The contract is symmetric with the suggester's
+no-suggestion verdict on note/task: notes are the catch-all default
+and don't form a recurring topic. Rejecting at the boundary catches
+the omitted-kind path, where an agent passing only `topicKey` would
+otherwise silently land in an upsert chain on a `note`-defaulted
+memory. The service layer accepts any kind because internal
+migrations may bypass the agent-facing contract; the kind-vocabulary
+gate lives at the agent boundary, not in the service.
+
+**Empty-project guard**. An upsert with `projectIds: []` is structurally
+undefined — set-equality on the empty set matches every other
+empty-project memory in the vault. Lore allows projectless saves via
+the create path (catch-all), but those must NOT participate in
+topic-key upsert. `findByTopicKey` returns null on empty projects, but
+`upsertByTopicKey` throws here for a clearer error.
+
+**Notion v5 markdown API has no append mode**. The SDK exposes
+`insert_content` for fresh writes on a page with no body and
+`replace_content_range` with `content_range: "full_page"` for edits
+to an existing body (per `src/notion/CLAUDE.md`). The upsert path
+therefore always reads existing markdown via `retrieveMarkdown` and
+writes back the concatenation via `replace_content_range` with
+`allow_deleting_content: true`. Two API calls per upsert.
+
+**Idempotency NOT guaranteed**. Calling upsert twice with identical
+inputs produces revisions 2 and 3, not the same revision twice — upsert
+is *append*, not idempotent.
+
+**Returned memory shape carries post-write title / synopsis / keywords**.
+The MCP layer's auto-mentions emitter reads `memory.title`,
+`memory.keywords`, `memory.synopsis` to extract entities. The returned
+memory shape spreads the existing row's untouched fields and overlays
+the new title / synopsis / keywords / source / confidence so entity
+extraction runs against the post-upsert content (per 0.9.0/#06's
+"auto-mentions re-runs on upsert" acceptance criterion).
+
+**Per-revision auto-mentions facts collapse via `createWithDedup`**.
+Each revision re-runs the entity tokenizer over the new content and
+attempts a `mentions` fact create per surfaced entity. Since the
+emitter routes through `FactService.createWithDedup` (see
+"Fact Write-Side Dedup" below) and the dedup-key hashes
+`normalize(subject) ␟ predicate ␟ normalize(object)`, a stable entity
+re-extracted across N revisions does NOT produce N duplicate fact
+rows — the second-and-later attempts hit the live-match dedup path
+and merge metadata onto the existing fact instead. Fresh entities
+introduced by a revision land as new fact rows, and entities dropped
+by a revision leave their previously-emitted fact in place (the
+0.8.0/#07 staleness posture).
+
+**Concurrent upserts**. Two parallel `lore-memory action='save'` calls
+with the same `topicKey` can both find no existing match and both
+create fresh — producing two memories with `Revision Count: 1`. Notion
+has no per-key uniqueness enforcement. Single-agent serial usage is
+the common case; if this becomes a real problem, a follow-up adds a
+brief lock via `src/hooks/lock.ts` or via the existing rate-limit gate.
 
 ## Memories self-relation columns: symmetric-write contract
 

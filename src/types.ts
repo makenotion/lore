@@ -576,6 +576,19 @@ export interface CreateMemoryInput {
   blockedBy?: string
   /** Normalized subject. Only meaningful on `kind === "task"`. */
   entity?: string
+  /**
+   * Stable identifier for upsert grouping (0.9.0/#01). Format is
+   * kebab-case path like `decision/jwt-auth`. Validation lives at the
+   * MCP boundary; the service layer accepts any string so internal
+   * migrations can re-write existing keys without re-validating.
+   */
+  topicKey?: string
+  /**
+   * Initial revision count. Production callers leave this unset — the
+   * column defaults to 1 for fresh creates. Set explicitly by
+   * `upsertByTopicKey` when seeding a fresh row in the upsert path.
+   */
+  revisionCount?: number
 }
 
 export interface UpdateMemoryInput {

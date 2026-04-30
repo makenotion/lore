@@ -1030,6 +1030,451 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
   })
 })
 
+describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  /** Build a Memory page that will round-trip through findByTopicKey. */
+  function buildExistingMemoryPage(
+    id: string,
+    opts: {
+      topicKey: string
+      projectIds: string[]
+      revisionCount?: number
+      kind?: string
+      title?: string
+    },
+  ): PageObjectResponse {
+    return {
+      object: "page",
+      id,
+      created_time: "2026-01-01T00:00:00.000Z",
+      last_edited_time: "2026-02-01T00:00:00.000Z",
+      archived: false,
+      properties: {
+        Title: {
+          type: "title",
+          title: [{ plain_text: opts.title ?? `Memory ${id}` }],
+        },
+        Project: {
+          type: "relation",
+          relation: opts.projectIds.map((pid) => ({ id: pid })),
+        },
+        "Topic Key": {
+          type: "rich_text",
+          rich_text: [{ plain_text: opts.topicKey }],
+        },
+        "Revision Count": {
+          type: "number",
+          number: opts.revisionCount ?? 1,
+        },
+        Kind: { type: "select", select: { name: opts.kind ?? "note" } },
+      },
+      parent: { type: "database_id", database_id: db.databaseId },
+      url: `https://notion.so/${id}`,
+    } as unknown as PageObjectResponse
+  }
+
+  /**
+   * Build a stub `Client` that combines `dataSources.query` (for the
+   * `findByTopicKey` lookup), `pages.create` / `pages.update` (for the
+   * fresh-create + property-update writes), and `pages.retrieveMarkdown`
+   * / `pages.updateMarkdown` (for the body-append step). Tests inspect
+   * the spies to assert call ordering and payloads.
+   */
+  function makeUpsertClient(opts: {
+    findResults?: PageObjectResponse[]
+    existingBody?: string
+  } = {}) {
+    const querySpy = vi.fn(async (_args: { data_source_id: string; filter?: unknown; start_cursor?: string }) => ({
+      results: opts.findResults ?? [],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const createdId = "new-page-id"
+    const createSpy = vi.fn(async (_args: { properties: Record<string, unknown> }) => ({
+      object: "page",
+      id: createdId,
+      properties: {},
+    }))
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+    )
+    const retrieveMarkdownSpy = vi.fn(async (_args: { page_id: string }) => ({
+      markdown: opts.existingBody ?? "Initial body content",
+    }))
+    const updateMarkdownSpy = vi.fn(
+      async (_args: {
+        page_id: string
+        type: string
+        replace_content_range?: { content: string; content_range: string; allow_deleting_content: boolean }
+        insert_content?: { content: string }
+      }) => ({}),
+    )
+    const client = {
+      dataSources: { query: querySpy },
+      pages: {
+        create: createSpy,
+        update: updateSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    return {
+      client,
+      querySpy,
+      createSpy,
+      updateSpy,
+      retrieveMarkdownSpy,
+      updateMarkdownSpy,
+    }
+  }
+
+  it("creates a fresh memory with Revision Count: 1 when no existing match is found", async () => {
+    // No existing match — the upsert path falls through to the
+    // standard create path with `revisionCount: 1` seeded so the
+    // upsert chain can grow on the next save.
+    const { client, createSpy, updateMarkdownSpy } = makeUpsertClient({
+      findResults: [],
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "We chose JWT.",
+      kind: "decision",
+    })
+
+    expect(result.upserted).toBe(false)
+    expect(result.revisionCount).toBe(1)
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    const createArgs = createSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    // Topic Key + Revision Count flow through buildMemoryProps onto
+    // the new page so the next save against this key + project-set
+    // upserts.
+    expect(createArgs.properties["Topic Key"]).toEqual({
+      rich_text: [{ text: { content: "decision/jwt-auth" } }],
+    })
+    expect(createArgs.properties["Revision Count"]).toEqual({ number: 1 })
+    // Body write fires on initial create via `insert_content`, NOT
+    // `replace_content_range` — the upsert path's append shape is
+    // reserved for subsequent revisions.
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
+      type: string
+    }
+    expect(mdArgs.type).toBe("insert_content")
+  })
+
+  it("appends a revision block, bumps Revision Count, and updates Title when an existing match is found", async () => {
+    // Existing memory at revision 1; upsert produces revision 2 with
+    // a `## Revision 2 (YYYY-MM-DD)` block appended to the existing
+    // body via `replace_content_range`. Title bumps to the new value.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model",
+    })
+    const { client, retrieveMarkdownSpy, updateMarkdownSpy, updateSpy } =
+      makeUpsertClient({
+        findResults: [existing],
+        existingBody: "Initial body about JWT.",
+      })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision",
+      today: "2026-04-30",
+    })
+
+    expect(result.upserted).toBe(true)
+    expect(result.revisionCount).toBe(2)
+    expect(result.memory.id).toBe("existing-mem")
+    expect(result.memory.title).toBe("JWT auth model with refresh rotation")
+
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
+      type: string
+      replace_content_range: { content: string; content_range: string; allow_deleting_content: boolean }
+    }
+    expect(mdArgs.type).toBe("replace_content_range")
+    expect(mdArgs.replace_content_range.content_range).toBe("full_page")
+    expect(mdArgs.replace_content_range.allow_deleting_content).toBe(true)
+    // Append shape: existing body, then `---`, then the H2 revision
+    // header, then the title-at-this-revision line, then the new body.
+    expect(mdArgs.replace_content_range.content).toContain("Initial body about JWT.")
+    expect(mdArgs.replace_content_range.content).toContain("---")
+    expect(mdArgs.replace_content_range.content).toContain(
+      "## Revision 2 (2026-04-30)",
+    )
+    expect(mdArgs.replace_content_range.content).toContain(
+      "**Title at this revision:** JWT auth model with refresh rotation",
+    )
+    expect(mdArgs.replace_content_range.content).toContain(
+      "Now we rotate refresh tokens.",
+    )
+
+    // Property update bumps Title and Revision Count.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      page_id: string
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.page_id).toBe("existing-mem")
+    expect(updateArgs.properties["Revision Count"]).toEqual({ number: 2 })
+    expect(updateArgs.properties["Title"]).toEqual({
+      title: [{ text: { content: "JWT auth model with refresh rotation" } }],
+    })
+  })
+
+  it("throws on kind mismatch BEFORE any Notion write — pages.retrieveMarkdown and pages.updateMarkdown are never called", async () => {
+    // The acceptance criterion: a kind-mismatched upsert must throw
+    // before the body read/write so a rejected upsert leaves the
+    // existing page untouched. An earlier draft of #06 had the
+    // validation AFTER retrieveMarkdown + updateMarkdown — a real
+    // correctness bug.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+    })
+    const {
+      client,
+      retrieveMarkdownSpy,
+      updateMarkdownSpy,
+      updateSpy,
+    } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.upsertByTopicKey({
+        topicKey: "decision/jwt-auth",
+        projectIds: ["P1"],
+        title: "JWT auth model",
+        content: "...",
+        kind: "runbook",
+      }),
+    ).rejects.toThrow(/Kind cannot change on upsert/)
+
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("throws when projectIds is empty without issuing any Notion call", async () => {
+    // Empty project-set is structurally undefined for upsert — the
+    // set-equality on the empty set would match every projectless
+    // memory in the vault. The guard fires before findByTopicKey.
+    const { client, querySpy } = makeUpsertClient()
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.upsertByTopicKey({
+        topicKey: "decision/jwt-auth",
+        projectIds: [],
+        title: "JWT auth model",
+        content: "...",
+        kind: "decision",
+      }),
+    ).rejects.toThrow(/topicKey requires at least one projectId/)
+
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("treats Revision Count: null (legacy row) as 1 and appends as revision 2", async () => {
+    // pageToMemory coalesces a missing/null Revision Count to 1, so
+    // the upsert path's `existing.revisionCount + 1` produces 2 on
+    // legacy rows. Pin that behavior so a future change to the
+    // coalesce default doesn't silently shift legacy upserts to
+    // revision 3.
+    const legacyExisting = {
+      object: "page",
+      id: "legacy-mem",
+      created_time: "2025-01-01T00:00:00.000Z",
+      last_edited_time: "2025-02-01T00:00:00.000Z",
+      archived: false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Legacy" }] },
+        Project: { type: "relation", relation: [{ id: "P1" }] },
+        "Topic Key": {
+          type: "rich_text",
+          rich_text: [{ plain_text: "decision/jwt-auth" }],
+        },
+        // Revision Count column is missing — pre-#06 legacy row.
+        Kind: { type: "select", select: { name: "decision" } },
+      },
+      parent: { type: "database_id", database_id: db.databaseId },
+      url: "https://notion.so/legacy",
+    } as unknown as PageObjectResponse
+    const { client } = makeUpsertClient({ findResults: [legacyExisting] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "Legacy",
+      content: "next",
+      kind: "decision",
+    })
+    expect(result.revisionCount).toBe(2)
+  })
+
+  it("REPLACES title / synopsis / keywords on the property update; UNTOUCHED Confidence Score and Last Referenced At", async () => {
+    // Title bumps; synopsis and keywords replace; Kind / Status /
+    // Project / Confidence Score / Last Referenced At are NOT in the
+    // property update (the spec's "untouched" list).
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "runbook",
+    })
+    const { client, updateSpy } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration v3",
+      content: "step 4 added.",
+      kind: "runbook",
+      synopsis: "Now with step 4.",
+      keywords: "PR-123 migration",
+      today: "2026-04-30",
+    })
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Title"]).toBeDefined()
+    expect(updateArgs.properties["Revision Count"]).toEqual({ number: 3 })
+    expect(updateArgs.properties["Synopsis"]).toEqual({
+      rich_text: [{ text: { content: "Now with step 4." } }],
+    })
+    expect(updateArgs.properties["Keywords"]).toEqual({
+      rich_text: [{ text: { content: "PR-123 migration" } }],
+    })
+    // The "untouched" set MUST NOT appear in the property update —
+    // bumping Last Referenced At would conflate writes with reads
+    // (breaking the staleness signal driving the wake-up Stale
+    // Confidence section), and Confidence Score is system-managed.
+    expect(updateArgs.properties).not.toHaveProperty("Last Referenced At")
+    expect(updateArgs.properties).not.toHaveProperty("Confidence Score")
+    // Kind / Status / Project / Topic relation are not in the update
+    // either — they are either pinned (Kind, Project) or silently
+    // preserved (Status, Topic).
+    expect(updateArgs.properties).not.toHaveProperty("Kind")
+    expect(updateArgs.properties).not.toHaveProperty("Status")
+    expect(updateArgs.properties).not.toHaveProperty("Project")
+    expect(updateArgs.properties).not.toHaveProperty("Topic")
+  })
+
+  it("returned memory shape carries the post-write title / synopsis / keywords so auto-mentions extracts on new content", async () => {
+    // The auto-mentions emitter at the MCP layer reads
+    // `memory.title / keywords / synopsis` to extract entities. The
+    // returned memory shape must reflect the post-upsert state, NOT
+    // the pre-upsert existing row.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "runbook",
+      title: "DB migration v2",
+    })
+    const { client } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration v3",
+      content: "...",
+      kind: "runbook",
+      synopsis: "Now with step 4.",
+      keywords: "PR-123 migration",
+    })
+
+    expect(result.memory.title).toBe("DB migration v3")
+    expect(result.memory.synopsis).toBe("Now with step 4.")
+    expect(result.memory.keywords).toBe("PR-123 migration")
+  })
+
+  it("invalidates and write-through-installs the post-upsert title in the title cache", async () => {
+    // Mirrors the `update()` cache discipline. Without the write-
+    // through, `getTitleById` would keep returning the pre-upsert
+    // title from the in-memory cache until the 60s TTL expired, even
+    // though the new title has landed in Notion. Render-layer
+    // resolvers (`render.ts:resolveTitles`, wake-up listings) all
+    // hit `getTitleById`, so a stale cache surfaces the wrong label
+    // on every consumer.
+    //
+    // The test seeds the cache with the pre-upsert title, runs the
+    // upsert, then re-reads via `getTitleById` and asserts:
+    //   1. The new title is returned.
+    //   2. No additional `pages.retrieve` call fires (the write-
+    //      through committed the new value, so the read short-
+    //      circuits on the cache hit).
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "runbook",
+      title: "Old title",
+    })
+    const { client } = makeUpsertClient({ findResults: [existing] })
+    // `makeUpsertClient` doesn't expose a `pages.retrieve` spy because
+    // the upsert path doesn't use it. Add one so we can prove the
+    // post-upsert `getTitleById` reads from the cache, not Notion.
+    const retrieveSpy = vi.fn(async () =>
+      buildExistingMemoryPage("existing-mem", {
+        topicKey: "runbook/db-migration",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "runbook",
+        title: "Stale fallback",
+      }),
+    )
+    ;(client as unknown as { pages: { retrieve: typeof retrieveSpy } }).pages.retrieve =
+      retrieveSpy
+
+    const service = new MemoryService(client, db)
+
+    // Seed the cache with the pre-upsert title.
+    expect(await service.getTitleById("existing-mem")).toBe("Stale fallback")
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+
+    await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "Brand new title",
+      content: "rev-2 body.",
+      kind: "runbook",
+    })
+
+    // Post-upsert read returns the new title — the write-through
+    // installed it; the cache is no longer stale.
+    expect(await service.getTitleById("existing-mem")).toBe("Brand new title")
+    // And critically, the read short-circuited on the cache hit —
+    // no additional `pages.retrieve` was issued. Without the write-
+    // through, the cache would still hold the seeded pre-upsert
+    // title and this assertion would fail (the call would either
+    // return the stale value or refetch via Notion).
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe("MemoryService.search", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 

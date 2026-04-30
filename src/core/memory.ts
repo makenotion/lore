@@ -499,6 +499,8 @@ export class MemoryService {
         taskState: input.taskState,
         blockedBy: decoded.blockedBy,
         entity: decoded.entity,
+        topicKey: input.topicKey,
+        revisionCount: input.revisionCount,
       }),
     })
 
@@ -701,6 +703,243 @@ export class MemoryService {
     })
 
     return matches[0] ?? null
+  }
+
+  /**
+   * Topic-key upsert (0.9.0/#06). Either appends a revision block to an
+   * existing memory or creates a fresh one. The match key is `(Topic Key,
+   * Project-set)`; project equality is set-equal (same IDs, same count),
+   * resolved by `findByTopicKey` (#01).
+   *
+   * **Kind-mismatch validation runs BEFORE any Notion write.** The
+   * acceptance criterion for #06 ("kind mismatch throws before any
+   * Notion write") requires the kind check to fire immediately after
+   * `findByTopicKey` returns, NOT after the body read/write. An
+   * earlier draft of this spec had the validation after
+   * `retrieveMarkdown` + `updateMarkdown` — a real correctness bug
+   * because a kind-mismatched upsert would have appended a revision
+   * block to the page before rejecting.
+   *
+   * **Project-set equality is enforced by `findByTopicKey`, NOT by a
+   * defensive recheck here.** The lookup post-filters candidates to
+   * `existing.projectIds.length === input.projectIds.length &&
+   * existing.projectIds.every(id => inputSet.has(id))` and returns
+   * null on mismatch — so by construction the post-find row is
+   * set-equal to the input. A second JS-side recheck against the same
+   * returned value is structurally tautological. True race detection
+   * (a writer that mutates the project relation between find and write
+   * on this process) would require a second `pages.retrieve` round-
+   * trip and the worst-case consequence (one revision lands on a row
+   * whose project set just expanded under a concurrent write) is
+   * benign — not justified.
+   *
+   * **Field policy on upsert:**
+   * - **THROW on mismatch**: Kind (per-kind chain). Project-set is
+   *   handled by the lookup; not a separate throw at this layer.
+   * - **PRESERVE silently** (input dropped, no warning): Status,
+   *   Topic relation. State transitions belong on `lore-memory
+   *   action='update'`; the upsert path treats these as forgotten-to-
+   *   omit envelopes.
+   * - **REPLACE on every save** (latest write wins): Title, Synopsis,
+   *   Keywords, Source. Confidence (categorical) bumps if input
+   *   provides one.
+   * - **UNTOUCHED**: Confidence Score (system-managed per 0.8.0/#01),
+   *   Last Referenced At (read-citation signal per 0.8.0/#02).
+   *
+   * **Empty-project guard.** An upsert with `projectIds: []` is
+   * structurally undefined — set-equality on the empty set matches
+   * every other empty-project memory. Lore allows projectless saves
+   * via the create path (catch-all), but those must NOT participate
+   * in topic-key upsert. `findByTopicKey` returns null on empty
+   * projects, but we throw here for a clearer error.
+   *
+   * **Notion v5 markdown API.** The SDK exposes `insert_content` for
+   * fresh writes on a page with no body and `replace_content_range`
+   * with `content_range: "full_page"` for edits to an existing body
+   * (per `src/notion/CLAUDE.md`). There is no append mode, so the
+   * upsert path always reads existing markdown and writes back the
+   * concatenation. Two API calls per upsert.
+   *
+   * **Idempotency NOT guaranteed.** Calling upsert twice with
+   * identical inputs produces revisions 2 and 3, not the same revision
+   * twice — upsert is *append*, not idempotent.
+   */
+  async upsertByTopicKey(input: {
+    topicKey: string
+    projectIds: string[]
+    title: string
+    content: string
+    kind: MemoryKind
+    source?: MemorySource
+    status?: MemoryStatus
+    confidence?: MemoryConfidence
+    topicId?: string
+    synopsis?: string
+    keywords?: string
+    tags?: string[]
+    agent?: string
+    session?: string
+    reviewBy?: string
+    decidedAt?: string
+    today?: string
+  }): Promise<{
+    memory: Memory
+    revisionCount: number
+    upserted: boolean
+  }> {
+    if (input.projectIds.length === 0) {
+      throw new Error(
+        "topicKey requires at least one projectId. " +
+          "Projectless memories cannot upsert.",
+      )
+    }
+
+    const existing = await this.findByTopicKey({
+      topicKey: input.topicKey,
+      projectIds: input.projectIds,
+    })
+
+    if (!existing) {
+      const created = await this.create({
+        title: input.title,
+        content: input.content,
+        projectIds: input.projectIds,
+        topicId: input.topicId,
+        source: input.source,
+        kind: input.kind,
+        status: input.status,
+        confidence: input.confidence,
+        tags: input.tags,
+        keywords: input.keywords,
+        synopsis: input.synopsis,
+        agent: input.agent,
+        session: input.session,
+        reviewBy: input.reviewBy,
+        decidedAt: input.decidedAt,
+        topicKey: input.topicKey,
+        revisionCount: 1,
+      })
+      return { memory: created, revisionCount: 1, upserted: false }
+    }
+
+    // Validate Kind BEFORE any Notion write. The kind-mismatch throw
+    // must fire before retrieveMarkdown / updateMarkdown so a rejected
+    // upsert leaves the existing page untouched.
+    //
+    // Project-set is NOT re-checked here: `findByTopicKey` already
+    // post-filters to set-equality and returns null on mismatch, so by
+    // construction `existing.projectIds` is set-equal to
+    // `input.projectIds` whenever we get past the find. A defensive
+    // re-check of the same returned value is structurally unreachable
+    // (it can only fire if `findByTopicKey`'s post-filter is
+    // bypassed, which is not a path a caller can take). True
+    // race detection would require a second `pages.retrieve` round-
+    // trip, which is not justified — the only racing writer that
+    // could change the project set between find and write is another
+    // process holding the same `topicKey`, an extremely rare case
+    // whose worst outcome (one revision lands on a row whose project
+    // set just expanded) is benign.
+    if (input.kind !== existing.kind) {
+      throw new Error(
+        `Kind cannot change on upsert. Existing: '${existing.kind}'; ` +
+          `input: '${input.kind}'. Pick a new topicKey for the new ` +
+          `kind, or supersede via lore-decision action='create'.`,
+      )
+    }
+
+    // Decode at the write boundary — same posture as `create`. Encoded
+    // values flowing in from autosave-rendered transcripts (`Foo &amp;
+    // Bar`) must land in Notion as plain text. Idempotent on clean
+    // input; covers title, content body, synopsis, and keywords (the
+    // similarity / embedding surfaces that read these fields downstream).
+    const decodedTitle = decodeTextEntities(input.title)
+    const decodedContent = input.content ? decodeTextEntities(input.content) : ""
+    const decodedSynopsis =
+      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined
+    const decodedKeywords =
+      input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined
+
+    // Title-cache sandwich (mirrors `update()`). The upsert always
+    // bumps Title, so the same write-epoch + delete pattern that
+    // protects `update()` from concurrent `getTitleById` callers
+    // applies here. Without this, render-layer resolvers would keep
+    // returning the pre-upsert title from `titleCache` until the 60s
+    // TTL expired even though the new title has landed in Notion.
+    // The pre-write bump invalidates any in-flight reader's commit-
+    // time epoch check; the delete clears the stored value; the
+    // post-write `set` installs the authoritative new title; the
+    // post-write bump closes the dispatched-during-write window.
+    this.bumpWriteEpoch()
+    this.titleCache.delete(existing.id)
+
+    // Read + append + write. Notion's v5 markdown API has no append
+    // mode (per `src/notion/CLAUDE.md`); replace_content_range with
+    // allow_deleting_content is the canonical edit-existing-body path.
+    const existingBody = await this.client.pages.retrieveMarkdown({
+      page_id: existing.id,
+    })
+    const nextRevision = existing.revisionCount + 1
+    const today = input.today ?? todayUtc()
+    const revisionBlock = [
+      "",
+      "---",
+      "",
+      `## Revision ${nextRevision} (${today})`,
+      "",
+      `**Title at this revision:** ${decodedTitle}`,
+      "",
+      decodedContent,
+    ].join("\n")
+    await this.client.pages.updateMarkdown({
+      page_id: existing.id,
+      type: "replace_content_range",
+      replace_content_range: {
+        content: existingBody.markdown + revisionBlock,
+        content_range: "full_page",
+        allow_deleting_content: true,
+      },
+    })
+
+    // Property update: Title bumps, Revision Count increments,
+    // synopsis / keywords / source replace if provided, confidence
+    // bumps if provided. Kind / Status / topicId / projectIds /
+    // lastReferencedAt / confidenceScore are NOT in this update.
+    await this.client.pages.update({
+      page_id: existing.id,
+      properties: buildMemoryProps({
+        title: decodedTitle,
+        revisionCount: nextRevision,
+        synopsis: decodedSynopsis,
+        keywords: decodedKeywords,
+        source: input.source,
+        confidence: input.confidence ?? existing.confidence,
+      }) as CreatePageParameters["properties"],
+    })
+
+    // Write-through: install the post-upsert title + close the
+    // sandwich with a second epoch bump. Mirror of `update()`'s
+    // post-write `nameCache.set` + bump.
+    this.titleCache.set(existing.id, decodedTitle || null)
+    this.bumpWriteEpoch()
+
+    // Return the post-write memory shape so callers (auto-mentions,
+    // session recording) read the new title / keywords / synopsis when
+    // re-running entity extraction. `synopsis` and `keywords` fall
+    // back to existing when caller omitted them, matching the
+    // buildMemoryProps `if (input.X !== undefined)` gate behavior.
+    return {
+      memory: {
+        ...existing,
+        title: decodedTitle,
+        revisionCount: nextRevision,
+        synopsis: decodedSynopsis ?? existing.synopsis,
+        keywords: decodedKeywords ?? existing.keywords,
+        source: input.source ?? existing.source,
+        confidence: input.confidence ?? existing.confidence,
+      },
+      revisionCount: nextRevision,
+      upserted: true,
+    }
   }
 
   /**

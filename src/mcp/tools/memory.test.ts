@@ -3884,3 +3884,457 @@ describe("lore-recall / lore-search revision marker (issue 0.9.0/10)", () => {
     )
   })
 })
+
+describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
+  it("dispatches to upsertByTopicKey when topicKey is set; create is NOT called", async () => {
+    // The handler's dispatch should route topicKey-bearing saves to
+    // the upsert path. The fresh-create path must not fire when a
+    // topicKey is present, otherwise revisions never group.
+    const mockServer = createMockServer()
+    const upserted = makeMemory("mem-existing", {
+      title: "JWT auth model with refresh rotation",
+      projectIds: ["proj-a"],
+      topicKey: "decision/jwt-auth",
+      revisionCount: 2,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: upserted,
+      revisionCount: 2,
+      upserted: true,
+    })
+    const create = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    expect(upsertByTopicKey).toHaveBeenCalledTimes(1)
+    expect(create).not.toHaveBeenCalled()
+    const args = upsertByTopicKey.mock.calls[0]![0]
+    expect(args.topicKey).toBe("decision/jwt-auth")
+    expect(args.projectIds).toEqual(["proj-a"])
+    expect(args.kind).toBe("decision")
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain('Saved memory: "JWT auth model with refresh rotation"')
+    expect(text).toContain("Appended as revision 2")
+    expect(text).toContain("topic key 'decision/jwt-auth'")
+  })
+
+  it("renders 'Created (revision 1)' header when topicKey is set but no existing match", async () => {
+    // Fresh create through the upsert path — the response footer
+    // distinguishes "Created (revision 1)" from "Appended as
+    // revision N" so the agent knows which branch fired.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-fresh", {
+      title: "JWT auth model",
+      projectIds: ["proj-a"],
+      topicKey: "decision/jwt-auth",
+      revisionCount: 1,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: created,
+      revisionCount: 1,
+      upserted: false,
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "JWT auth model",
+      content: "We chose JWT.",
+      kind: "decision",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Created (revision 1, topic key 'decision/jwt-auth')")
+    expect(text).not.toContain("Appended as revision")
+  })
+
+  it("preserves the legacy create path byte-identically when topicKey is omitted", async () => {
+    // 0.8.x callers — and the catch-all default path — never set
+    // topicKey. The acceptance criterion: "behaves byte-identical to
+    // 0.8.x" when topicKey is unset.
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-legacy", { projectIds: ["proj-a"] })
+    const create = vi.fn().mockResolvedValue(created)
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Legacy save",
+      content: "no topic key",
+    } as never)
+
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    // No upsert hint — header line matches the pre-#06 shape exactly.
+    expect(text).toContain('Saved memory: "Memory mem-legacy" (mem-legacy)')
+    expect(text).not.toContain("Appended as revision")
+    expect(text).not.toContain("Created (revision 1")
+    expect(text).not.toContain("topic key '")
+  })
+
+  it("rejects malformed topicKey at the Zod boundary before any service call", async () => {
+    // The regex enforces lowercase + slash-separated segments. A
+    // malformed key (uppercase, leading slash, spaces) is almost
+    // always a typo, so the schema rejects it as a tool-level error.
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, upsertByTopicKey, list: vi.fn() },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    for (const bad of ["Decision/JWT", " decision/jwt", "/decision/jwt", "decision/jwt/"]) {
+      const result = await remember({
+        title: "x",
+        content: "y",
+        topicKey: bad,
+      } as never)
+      expect((result as { isError?: boolean }).isError).toBe(true)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("topicKey")
+    }
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+  })
+
+  it("auto-mentions facts re-emit on upsert against the post-write title / keywords / synopsis", async () => {
+    // Acceptance criterion: auto-`mentions` fact emission re-runs
+    // on upsert with the new content. The returned memory shape
+    // carries the new title / keywords / synopsis so the entity
+    // tokenizer extracts against the fresh values.
+    const mockServer = createMockServer()
+    const upserted = makeMemory("mem-existing", {
+      title: "JWT auth with PR-123 refresh rotation",
+      projectIds: ["proj-a"],
+      keywords: "PR-123 refresh",
+      topicKey: "decision/jwt-auth",
+      revisionCount: 2,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: upserted,
+      revisionCount: 2,
+      upserted: true,
+    })
+    const createWithDedup = vi.fn().mockResolvedValue({ deduped: false })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    await remember({
+      title: "JWT auth with PR-123 refresh rotation",
+      content: "rotation now lands.",
+      kind: "decision",
+      keywords: "PR-123 refresh",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    // Auto-mentions fired against the post-write entity set —
+    // PR-123 surfaces from the new title / keywords blob via the
+    // `\bPR-\d+\b` pattern in `extractEntityCandidates`.
+    expect(createWithDedup).toHaveBeenCalled()
+    const objects = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object,
+    )
+    expect(objects).toContain("PR-123")
+  })
+
+  it("surfaces the upsert-path error (e.g. kind mismatch) through toolError", async () => {
+    // The service-layer kind-mismatch throw must surface as a tool
+    // error to the agent, not crash the dispatcher. The wording
+    // points the agent at remediation.
+    const mockServer = createMockServer()
+    const upsertByTopicKey = vi.fn().mockRejectedValue(
+      new Error(
+        "Kind cannot change on upsert. Existing: 'decision'; input: 'runbook'. Pick a new topicKey for the new kind, or supersede via lore-decision action='create'.",
+      ),
+    )
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "x",
+      content: "y",
+      kind: "runbook",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Kind cannot change on upsert")
+  })
+
+  it("rejects topicKey when kind is omitted (which would default to 'note')", async () => {
+    // The contract: topic keys group recurring decision/runbook/policy-
+    // style topics; the suggester returns null for `kind: 'note'` and
+    // `kind: 'task'` for the same reason. An agent that passes
+    // `topicKey` without explicit `kind` would silently land in an
+    // upsert chain on a `note`-defaulted memory. The MCP layer
+    // catches this BEFORE any service call so neither `create` nor
+    // `upsertByTopicKey` fires.
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, upsertByTopicKey, list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Wakeup hook diagnosis",
+      content: "body",
+      topicKey: "decision/jwt-auth",
+      // kind deliberately omitted — defaults to 'note'.
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("topicKey is not valid on kind: 'note'")
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+  })
+
+  it("rejects topicKey when kind is explicitly 'note'", async () => {
+    // Same rejection, agent-explicit form. Pinning both the omitted-
+    // kind path and the explicit-note path keeps the contract clear
+    // for any future refactor that splits the default-kind handling.
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, upsertByTopicKey, list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "A note about something",
+      content: "body",
+      kind: "note",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("topicKey is not valid on kind: 'note'")
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+  })
+
+  it("rejects topicKey + default-note before any Notion side effect — including topics.getOrCreate", async () => {
+    // Position-correctness regression. The kind=note guard MUST run
+    // before `services.topics.getOrCreate`, which CREATES a Topic
+    // row in Notion as a side effect when the named topic doesn't
+    // exist. A late-firing guard (post-topic-resolution) would leak
+    // an orphaned Topic row that the rejected save never links to.
+    //
+    // The reviewer-flagged earlier shape ran the guard AFTER both
+    // `resolveProjectIds` AND `topics.getOrCreate`, and AFTER
+    // dispatching the parallel probes. This test pins all three
+    // service surfaces as untouched: `projects.findByName`,
+    // `topics.getOrCreate`, and the `memories` write methods. The
+    // probe-related list/createWithDedup mocks are also pinned to
+    // ensure the parallel probes never fire either — a probe that
+    // ran before rejection would still issue a `dataSources.query`,
+    // which is read-only but observable in the per-save cost
+    // budget.
+    const mockServer = createMockServer()
+    const findByName = vi.fn()
+    const getOrCreate = vi.fn()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const list = vi.fn()
+    const createWithDedup = vi.fn()
+    const taskList = vi.fn()
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate },
+      memories: { create, upsertByTopicKey, list },
+      facts: { createWithDedup },
+      tasks: { list: taskList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Topic-key with default note kind",
+      content: "body",
+      // kind omitted — defaults to 'note'.
+      topicKey: "decision/jwt-auth",
+      // topicName forces a `topics.getOrCreate` call IF the guard
+      // runs after topic resolution. The guard MUST short-circuit
+      // before this resolves.
+      topicName: "Auth Models",
+      projectName: "a",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("topicKey is not valid on kind: 'note'")
+
+    // Zero side effects across every service surface a save normally
+    // touches. If any of these fail, the kind=note guard has drifted
+    // back to a late-firing position.
+    expect(findByName).not.toHaveBeenCalled()
+    expect(getOrCreate).not.toHaveBeenCalled()
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+    expect(list).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(taskList).not.toHaveBeenCalled()
+  })
+
+  it("rejects single-segment topicKey ('decision' alone) at the Zod boundary", async () => {
+    // The TOPIC_KEY_REGEX requires `family/key` shape — at least
+    // one slash separator — to match what `suggest-topic-key`
+    // emits. A single-segment key like `decision` is a malformed
+    // contract violation: the family prefix carries no upsert-
+    // grouping value without a key after it. Pin the rejection
+    // here so a future loosening of the regex surfaces.
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, upsertByTopicKey, list: vi.fn() },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "x",
+      content: "y",
+      kind: "decision",
+      topicKey: "decision",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("topicKey")
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+  })
+})
