@@ -1061,9 +1061,14 @@ export class MemoryService {
    * `Memory` objects (with empty `content`) in created-time-ascending
    * order so the migration's plan output is deterministic across runs.
    *
-   * Sole consumer is `runBuildConfidenceScoresMigration` — exposing a
+   * Two consumers: `runBuildConfidenceScoresMigration` (the 0.8.0/#11
+   * baseline backfill) and `MemoryService.confidenceStats` (the
+   * `lore status` confidence-distribution summary). Both want a
+   * walker over every non-archived memory with no body fetch and the
+   * same optional project scope, so they share one iterator rather
+   * than re-deriving the pagination algebra. Exposing a
    * `Memory[]`-shaped iterator (rather than raw `PageObjectResponse[]`)
-   * keeps the migration off the SDK type surface and lets it consume
+   * keeps callers off the SDK type surface and lets them consume
    * `Memory.createdAt` / `Memory.confidence` / `Memory.confidenceScore`
    * via the same extractor pipeline every other read path uses.
    *
@@ -1127,6 +1132,87 @@ export class MemoryService {
         "Last Referenced At": { date: { start: lastReferencedAt } },
       },
     })
+  }
+
+  /**
+   * Aggregate `Confidence Score` distribution across non-archived
+   * memories — the data the `lore status` confidence-summary line
+   * surfaces (DEFERRED-04). Memory-side parallel of `taskStats`'s
+   * closure-rate aggregation: pure read, no body fetch, optional
+   * project scope.
+   *
+   * Walks via `listAllForBackfill` so we share one paginated iterator
+   * with the 0.8.0/#11 migration. Aggregates in a single pass:
+   *
+   * - `totalMemories` — every non-archived row the iterator yields.
+   * - `scoredMemories` — `Memory.confidenceScore !== null`. On a
+   *   pre-#11 vault that hasn't run the backfill, this stays at zero
+   *   and the renderer collapses the `(avg …, … below threshold)`
+   *   suffix off the line accordingly.
+   * - `averageScore` — arithmetic mean across scored rows. Returns
+   *   `0` when no scored rows exist; the renderer suppresses the avg
+   *   surface in that case via the `scoredMemories === 0` guard, so
+   *   the placeholder zero never reaches the operator.
+   * - `belowThreshold` — count of scored rows whose stored value is
+   *   strictly below `CONFIDENCE_DISPLAY_THRESHOLD` (the same gate
+   *   the trust indicator and Stale Confidence wake-up use, so all
+   *   three surfaces agree on what "below threshold" means).
+   *
+   * Cost is one paginated walk over the (project-scoped) Memories
+   * data source — the same shape `--build-confidence-scores`
+   * already pays per `lore migrate` invocation. The migration is
+   * operator-pulled and infrequent; `lore status` is on-demand and
+   * now pays this walk on every invocation, so per-status cost
+   * scales linearly in vault size (≈ N/100 round-trips). Acceptable
+   * on the operator-facing status surface but worth a follow-up
+   * (cache, `--confidence` flag, or `lore status` skip) if a vault
+   * grows past the point where the walk feels slow.
+   *
+   * The walk is **internally sequential** — `listAllForBackfill`
+   * is a paginated async iterator that awaits each `dataSources.query`
+   * before issuing the next. The shared rate-limited client
+   * (`src/notion/rate-limit.ts`, default `concurrency = 3`) bounds
+   * total in-flight calls but does not parallelize this iterator;
+   * its pagination is what dominates wall-clock on large vaults.
+   * The CLI fan-out runs `confidenceStats` parallel to `taskStats`
+   * at the top level, but the pagination inside this method stays
+   * serial. Read together with the per-invocation-cost note above:
+   * the `max(taskStats, confidenceStats)` claim at the call site
+   * holds for the orchestration, not for any single round-trip.
+   *
+   * `averageScore` is an arithmetic mean computed in floating-point;
+   * accumulation across long pagination can leave the result off by
+   * one ULP from the "true" mean. The renderer truncates at two
+   * decimals, so this is invisible in practice but worth noting if
+   * a future caller compares two stats reports for exact equality.
+   *
+   * Pre-0.8.0 vaults (no `Confidence Score` column) work fine:
+   * every yielded `Memory.confidenceScore` is `null`, so
+   * `scoredMemories` / `averageScore` / `belowThreshold` all stay
+   * at zero.
+   */
+  async confidenceStats(opts: { projectId?: string } = {}): Promise<{
+    totalMemories: number
+    scoredMemories: number
+    averageScore: number
+    belowThreshold: number
+  }> {
+    let totalMemories = 0
+    let scoredMemories = 0
+    let scoreSum = 0
+    let belowThreshold = 0
+    for await (const memory of this.listAllForBackfill(opts)) {
+      totalMemories += 1
+      if (memory.confidenceScore !== null) {
+        scoredMemories += 1
+        scoreSum += memory.confidenceScore
+        if (memory.confidenceScore < CONFIDENCE_DISPLAY_THRESHOLD) {
+          belowThreshold += 1
+        }
+      }
+    }
+    const averageScore = scoredMemories > 0 ? scoreSum / scoredMemories : 0
+    return { totalMemories, scoredMemories, averageScore, belowThreshold }
   }
 
   /**

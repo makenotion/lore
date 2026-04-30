@@ -67,16 +67,43 @@ export const statusCommand = new Command("status")
       console.log(`  Memories: ${stats.memories}`)
       console.log(`  Facts:    ${stats.facts}`)
 
-      // Task summary (issue 0.7.0/13). Two paginated queries fan out via
-      // `Promise.all` inside `taskStats` so wall-clock is `max(active,
-      // closed)` rather than the sum. Pre-#07 vaults silently omit the
+      // Task summary (issue 0.7.0/13) and Memory confidence summary
+      // (DEFERRED-04) fan out via `Promise.all`. Both walk the Memories
+      // DB under the same project scope, so issuing them in parallel
+      // keeps `lore status`'s wall-clock at `max(taskStats, confidenceStats)`
+      // rather than the sum. Pre-#07 vaults silently omit the
       // closure-rate line — `countClosedSince` returns null on the
-      // missing-property error path.
-      const tasks = await taskStats(services.tasks, {
-        projectId: project?.id,
-        today: todayUtc(),
-      })
+      // missing-property error path. Pre-#11 vaults render the
+      // confidence line with `0 scored` and no avg/below-threshold
+      // suffix; the line itself never disappears.
+      //
+      // `Promise.all` (not `allSettled`) is deliberate. A 5xx that
+      // takes down one of these calls almost certainly takes down
+      // the other — both walk the same data source under the same
+      // scope, paginated through the same rate-limited client, so
+      // any partial-recovery the `allSettled` posture would buy us
+      // is mostly the case where exactly one transient failure
+      // happens to the smaller of the two queries. The rate-limit
+      // middleware doesn't retry through 5xx either; an outage
+      // surfaces as a thrown error and the outer try/catch renders
+      // `Status failed: ...`. Matches `taskStats`'s pre-DEFERRED-04
+      // posture and the `searchByHybridPages` design rule that
+      // "fully-broken subsystem doesn't masquerade as no-results".
+      //
+      // `confidenceStats` is internally sequential — its pagination
+      // dominates wall-clock on large vaults. The fan-out gives us
+      // parallel fan-out of the two top-level calls; it does not
+      // parallelize the iterator inside `confidenceStats`. The
+      // method's docstring documents the cost gap.
+      const [tasks, confidence] = await Promise.all([
+        taskStats(services.tasks, {
+          projectId: project?.id,
+          today: todayUtc(),
+        }),
+        services.memories.confidenceStats({ projectId: project?.id }),
+      ])
       for (const line of formatTaskSummary(tasks)) console.log(line)
+      for (const line of formatConfidenceSummary(confidence)) console.log(line)
 
       // List projects
       const projects = await services.projects.list("active")
@@ -611,4 +638,103 @@ export function formatTrackingPreflight(
     "  (b) hand-edit the Notion rows to convert them to tasks.",
     "  Until remediated, these rows are invisible to lore.",
   ]
+}
+
+// ---------------------------------------------------------------------------
+// Confidence summary (DEFERRED-04)
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggregated `Confidence Score` distribution surfaced as a single line
+ * on `lore status` next to the Tasks summary. Memory-side parallel of
+ * `TaskStats`'s closure-rate row.
+ *
+ * `averageScore` is `0` when `scoredMemories === 0`; the renderer
+ * suppresses the avg surface in that case rather than rendering
+ * `avg 0.00`. The placeholder zero is a typing artifact, not an
+ * operator signal.
+ */
+export interface ConfidenceStatsReport {
+  totalMemories: number
+  scoredMemories: number
+  averageScore: number
+  belowThreshold: number
+}
+
+/**
+ * Render the confidence-summary line from a `ConfidenceStatsReport`.
+ *
+ * Returns at most one line:
+ *
+ * - Empty / non-positive `totalMemories` ⇒ `[]` so the caller's single
+ *   length check suppresses the line entirely (same contract as
+ *   `formatDigestStatus` / `formatDriftStatus` / `formatTrackingPreflight`).
+ * - `scoredMemories === 0` ⇒ `Memory confidence: N total, 0 scored`.
+ *   Pre-#11 vaults that haven't run
+ *   `lore migrate --build-confidence-scores` land here. The `(avg …)`
+ *   suffix is suppressed — there is no meaningful average over zero
+ *   rows.
+ * - `belowThreshold === 0` ⇒
+ *   `Memory confidence: N total, M scored (avg X.XX)`. Drops the
+ *   trailing `, K below threshold` when nothing is below the
+ *   `CONFIDENCE_DISPLAY_THRESHOLD` gate, matching `formatTaskSummary`'s
+ *   "only render non-zero substats" posture.
+ * - Otherwise ⇒
+ *   `Memory confidence: N total, M scored (avg X.XX, K below threshold)`.
+ *
+ * Average is the arithmetic mean across scored rows, rendered to two
+ * decimal places — same precision the Tasks closure rate uses, so
+ * the two summary lines read as one visual cluster. Floating-point
+ * accumulation can leave the displayed value off by one ULP from the
+ * "true" mean on long pagination; the line is signal, not financial,
+ * so this is acceptable. The renderer clamps `averageScore` to
+ * `[0, 1]` defensively so a ULP drift past 1.0 (or a future caller
+ * constructing the report directly with an out-of-band value)
+ * cannot render `avg 1.0000…2` or `avg 99.00`.
+ *
+ * Pure function: deterministic in `report`, no I/O.
+ */
+export function formatConfidenceSummary(
+  report: ConfidenceStatsReport,
+): string[] {
+  if (report.totalMemories <= 0) return []
+
+  // Defense-in-depth on the structural invariants `confidenceStats`
+  // upholds — `scoredMemories <= totalMemories`, `belowThreshold <=
+  // scoredMemories`, and `0 <= averageScore <= 1`. The loader cannot
+  // produce inconsistent values, but a future caller constructing a
+  // `ConfidenceStatsReport` directly (a JSON-import test fixture, a
+  // hypothetical MCP parallel surface that reuses this renderer)
+  // could pass `{ totalMemories: 100, scoredMemories: 200 }` or
+  // `{ averageScore: 99 }` and render a structurally impossible line
+  // like `(avg 99.00, …)`. Same posture as the negative-
+  // `totalMemories` short-circuit above and the
+  // `formatTrackingPreflight` non-positive guard. The score clamp
+  // also absorbs the FP-mean's ULP drift past 1.0 noted in
+  // `MemoryService.confidenceStats`'s docstring.
+  const scoredMemories = Math.min(
+    Math.max(0, report.scoredMemories),
+    report.totalMemories,
+  )
+  const belowThreshold = Math.min(
+    Math.max(0, report.belowThreshold),
+    scoredMemories,
+  )
+  const averageScore = Math.min(1, Math.max(0, report.averageScore))
+
+  // `Memory confidence:` rather than `Memories:` deliberately —
+  // the bare `Memories:` prefix would visually collide with the
+  // `Database counts → Memories: N` line two rows above on
+  // post-#11 vaults where archive-rate is low. Two summaries
+  // reading as a duplicate count is the failure mode this naming
+  // sidesteps.
+  let line = `Memory confidence: ${report.totalMemories} total, ${scoredMemories} scored`
+  if (scoredMemories > 0) {
+    const subStats: string[] = [`avg ${averageScore.toFixed(2)}`]
+    if (belowThreshold > 0) {
+      subStats.push(`${belowThreshold} below threshold`)
+    }
+    line += ` (${subStats.join(", ")})`
+  }
+  return [line]
 }

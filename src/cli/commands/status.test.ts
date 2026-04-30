@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  formatConfidenceSummary,
   formatDigestStatus,
   formatDriftStatus,
   formatTrackingPreflight,
@@ -7,6 +8,7 @@ import {
   loadDigestStatus,
   loadDriftStatus,
   loadTrackingPreflight,
+  type ConfidenceStatsReport,
   type DigestStatusReport,
   type DriftStatusReport,
   type TrackingPreflightReport,
@@ -742,6 +744,239 @@ describe("Tasks line wiring (issue 0.7.0/13)", () => {
     )
     expect(lines[1]).toBe(
       "       Closed last 30 days: 14 (rate: 0.47/day)",
+    )
+  })
+})
+
+describe("formatConfidenceSummary (DEFERRED-04)", () => {
+  it("returns no lines on an empty vault so the section is suppressed", () => {
+    // Same contract as `formatDigestStatus` / `formatDriftStatus` /
+    // `formatTrackingPreflight`: empty array → caller's length-check
+    // drops the entire surface. A vault with zero memories has nothing
+    // confidence-shaped to report.
+    const report: ConfidenceStatsReport = {
+      totalMemories: 0,
+      scoredMemories: 0,
+      averageScore: 0,
+      belowThreshold: 0,
+    }
+    expect(formatConfidenceSummary(report)).toEqual([])
+  })
+
+  it("renders a one-memory unscored vault — the smallest non-suppressed input", () => {
+    // The `<= 0` empty-vault gate defends one boundary; this test
+    // pins the OTHER side of that boundary — the smallest input that
+    // produces a rendered line. A future change that broadens the
+    // suppression gate (e.g. `<= 1`) would silently hide single-row
+    // vaults from `lore status`; pinning this case forces the change
+    // to be deliberate. Pre-#11 single-memory case so the parens
+    // suffix is also exercised at minimum totals.
+    const lines = formatConfidenceSummary({
+      totalMemories: 1,
+      scoredMemories: 0,
+      averageScore: 0,
+      belowThreshold: 0,
+    })
+    expect(lines).toEqual(["Memory confidence: 1 total, 0 scored"])
+  })
+
+  it("produces the deferred-spec example shape", () => {
+    // Pins the line-shape DEFERRED.md gave as the rendering target.
+    // The prefix is `Memory confidence:` rather than the deferred's
+    // illustrative `Memories:` to avoid a visual collision with the
+    // `Database counts → Memories: N` line two rows above; the
+    // structural shape (total, scored, parens with avg + below
+    // threshold) matches the spec.
+    const lines = formatConfidenceSummary({
+      totalMemories: 1247,
+      scoredMemories: 1023,
+      averageScore: 0.51,
+      belowThreshold: 412,
+    })
+    expect(lines).toEqual([
+      "Memory confidence: 1247 total, 1023 scored (avg 0.51, 412 below threshold)",
+    ])
+  })
+
+  it("collapses to bare 'N total, 0 scored' on a pre-#11 vault", () => {
+    // Pre-migration vaults ship with every `Confidence Score` null.
+    // Rendering `(avg 0.00, 0 below threshold)` would imply the score
+    // distribution actually concentrated at zero; instead we suppress
+    // the parens entirely so the operator reads "no scoring yet" and
+    // knows to run `lore migrate --build-confidence-scores`.
+    const lines = formatConfidenceSummary({
+      totalMemories: 432,
+      scoredMemories: 0,
+      averageScore: 0,
+      belowThreshold: 0,
+    })
+    expect(lines).toEqual(["Memory confidence: 432 total, 0 scored"])
+  })
+
+  it("drops the trailing 'below threshold' segment when nothing is below", () => {
+    // Mirrors `formatTaskSummary`'s "only render non-zero substats"
+    // posture — a vault with every score above CONFIDENCE_DISPLAY_THRESHOLD
+    // shouldn't render `, 0 below threshold` as if zero were a remarkable
+    // count.
+    const lines = formatConfidenceSummary({
+      totalMemories: 100,
+      scoredMemories: 100,
+      averageScore: 0.87,
+      belowThreshold: 0,
+    })
+    expect(lines).toEqual(["Memory confidence: 100 total, 100 scored (avg 0.87)"])
+  })
+
+  it("renders averageScore to two decimal places", () => {
+    // Pin the precision so a future contributor swapping `toFixed(2)`
+    // for a different format (`.toFixed(3)`, `Intl.NumberFormat`) has
+    // to surface the shape change. Two decimals matches the Tasks
+    // closure-rate line so the two summaries read as one cluster.
+    const lines = formatConfidenceSummary({
+      totalMemories: 50,
+      scoredMemories: 50,
+      averageScore: 0.6666666,
+      belowThreshold: 5,
+    })
+    expect(lines[0]).toContain("avg 0.67")
+  })
+
+  it("renders averageScore=1.0 as 'avg 1.00' rather than 'avg 1'", () => {
+    // `(1).toFixed(2)` yields "1.00" — pinned so a future change to
+    // numeric formatting (e.g. swapping in `Intl.NumberFormat`) has
+    // to surface the shape change for the perfect-score case.
+    const lines = formatConfidenceSummary({
+      totalMemories: 1,
+      scoredMemories: 1,
+      averageScore: 1.0,
+      belowThreshold: 0,
+    })
+    expect(lines).toEqual(["Memory confidence: 1 total, 1 scored (avg 1.00)"])
+  })
+
+  it("renders the 'vault is in crisis' shape when every scored row is below threshold", () => {
+    // DEFERRED-04 explicitly calls out the operator-visible signal
+    // "vault whose average score has crashed below 0.5" as the
+    // load-bearing motivation for the line. Pin the rendering for
+    // the case where every scored row is below threshold so a future
+    // refactor can't quietly degrade the crisis surface.
+    const lines = formatConfidenceSummary({
+      totalMemories: 50,
+      scoredMemories: 50,
+      averageScore: 0.32,
+      belowThreshold: 50,
+    })
+    expect(lines).toEqual([
+      "Memory confidence: 50 total, 50 scored (avg 0.32, 50 below threshold)",
+    ])
+  })
+
+  it("treats negative totalMemories as the suppressed branch (defense-in-depth)", () => {
+    // Defensive: the loader can only return non-negative integers, but a
+    // future caller constructing a ConfidenceStatsReport directly mustn't
+    // be able to render `Memories: -1 total` — collapse any non-positive
+    // count to the empty branch, same shape `formatTrackingPreflight`
+    // uses for negative `count`.
+    for (const negative of [-1, -42]) {
+      const report: ConfidenceStatsReport = {
+        totalMemories: negative,
+        scoredMemories: 0,
+        averageScore: 0,
+        belowThreshold: 0,
+      }
+      expect(formatConfidenceSummary(report)).toEqual([])
+    }
+  })
+
+  it("clamps inconsistent inputs to the structural invariants (defense-in-depth)", () => {
+    // The loader cannot produce `scoredMemories > totalMemories` or
+    // `belowThreshold > scoredMemories`, but a future caller
+    // constructing a `ConfidenceStatsReport` directly mustn't be
+    // able to render a structurally impossible line like
+    // `Memory confidence: 100 total, 200 scored ...`. Pin the
+    // clamp at the renderer entry: scoredMemories ⊆ [0,
+    // totalMemories], belowThreshold ⊆ [0, scoredMemories].
+    const lines = formatConfidenceSummary({
+      totalMemories: 100,
+      scoredMemories: 200, // impossible — must clamp to 100
+      averageScore: 0.5,
+      belowThreshold: 500, // impossible — must clamp to scoredMemories (100)
+    })
+    expect(lines).toEqual([
+      "Memory confidence: 100 total, 100 scored (avg 0.50, 100 below threshold)",
+    ])
+  })
+
+  it("clamps negative scored / below-threshold inputs to zero (defense-in-depth)", () => {
+    // Same posture as the negative-`totalMemories` short-circuit
+    // above, but for the inner counts. Negative `scoredMemories`
+    // collapses to `0 scored` (and the parens drop because there
+    // are no scored rows to compute an average over). Negative
+    // `belowThreshold` collapses to zero so the trailing
+    // `, K below threshold` segment can't render with a nonsensical
+    // count.
+    const lines = formatConfidenceSummary({
+      totalMemories: 10,
+      scoredMemories: -5,
+      averageScore: 0.5,
+      belowThreshold: -3,
+    })
+    expect(lines).toEqual(["Memory confidence: 10 total, 0 scored"])
+  })
+
+  it("clamps averageScore outside [0, 1] back into range (defense-in-depth)", () => {
+    // The third structural invariant `confidenceStats` upholds:
+    // `0 <= averageScore <= 1`. A future caller constructing a
+    // report directly mustn't be able to render `avg 99.00` or
+    // `avg -1.00`. The clamp also absorbs FP-mean ULP drift past
+    // 1.0 noted in `confidenceStats`'s docstring — a sum that
+    // accumulates to `0.9999999999999998 * N + ε` divided by `N`
+    // can land at `1.0000000000000002`, which `(1.0000000000000002)
+    // .toFixed(2)` would otherwise render as `"1.00"` (harmless
+    // here, but the principle generalizes — pin the clamp).
+    const high = formatConfidenceSummary({
+      totalMemories: 50,
+      scoredMemories: 50,
+      averageScore: 99,
+      belowThreshold: 0,
+    })
+    expect(high).toEqual(["Memory confidence: 50 total, 50 scored (avg 1.00)"])
+
+    const low = formatConfidenceSummary({
+      totalMemories: 50,
+      scoredMemories: 50,
+      averageScore: -42,
+      belowThreshold: 50,
+    })
+    expect(low).toEqual([
+      "Memory confidence: 50 total, 50 scored (avg 0.00, 50 below threshold)",
+    ])
+  })
+})
+
+describe("formatConfidenceSummary wiring (DEFERRED-04)", () => {
+  // Mirrors the `Tasks line wiring` block above: structural
+  // assertion at the import boundary rather than an integration
+  // test that would require a real `initServices()` against a
+  // vault. A future contributor swapping `Promise.all` for
+  // sequential `await`s in the action handler — or moving the
+  // renderer to a different module — would have to update this
+  // assertion in lockstep.
+
+  it("formatConfidenceSummary is exported from `cli/commands/status` as a pure function", async () => {
+    const mod = await import("./status.js")
+    expect(typeof mod.formatConfidenceSummary).toBe("function")
+    // Pin the spec-shape one more time at the import-boundary level
+    // — a sibling-module refactor that re-exported a renamed function
+    // (e.g. `formatConfidenceLine`) would compile-pass but break this.
+    const lines = mod.formatConfidenceSummary({
+      totalMemories: 1247,
+      scoredMemories: 1023,
+      averageScore: 0.51,
+      belowThreshold: 412,
+    })
+    expect(lines[0]).toBe(
+      "Memory confidence: 1247 total, 1023 scored (avg 0.51, 412 below threshold)",
     )
   })
 })

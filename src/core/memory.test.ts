@@ -4794,6 +4794,188 @@ describe("MemoryService.applyBackfillScore", () => {
 })
 
 // ---------------------------------------------------------------------------
+// confidenceStats — `lore status` confidence-summary line (DEFERRED-04)
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.confidenceStats", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makePage(
+    id: string,
+    confidenceScore: number | null,
+    overrides: Partial<PageObjectResponse> = {},
+  ): PageObjectResponse {
+    const props: Record<string, unknown> = {
+      Title: { type: "title", title: [{ plain_text: id, text: { content: id } }] },
+    }
+    if (confidenceScore !== null) {
+      props["Confidence Score"] = { type: "number", number: confidenceScore }
+    }
+    return {
+      object: "page",
+      id,
+      created_time: "2026-01-01T00:00:00.000Z",
+      last_edited_time: "2026-02-01T00:00:00.000Z",
+      archived: false,
+      properties: props as unknown as PageObjectResponse["properties"],
+      parent: { type: "database_id", database_id: "db-id" },
+      url: `https://notion.so/${id}`,
+      ...overrides,
+    } as PageObjectResponse
+  }
+
+  it("returns all-zero stats on an empty vault", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stats = await service.confidenceStats()
+    expect(stats).toEqual({
+      totalMemories: 0,
+      scoredMemories: 0,
+      averageScore: 0,
+      belowThreshold: 0,
+    })
+  })
+
+  it("counts every non-archived row as totalMemories regardless of score", async () => {
+    // Pre-#11 vault shape: every page has a null `Confidence Score`.
+    // The total count must still include them so the operator sees
+    // "N total, 0 scored" rather than "0 total".
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [makePage("m1", null), makePage("m2", null), makePage("m3", null)],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stats = await service.confidenceStats()
+    expect(stats.totalMemories).toBe(3)
+    expect(stats.scoredMemories).toBe(0)
+    expect(stats.averageScore).toBe(0)
+    expect(stats.belowThreshold).toBe(0)
+  })
+
+  it("computes the arithmetic mean across only scored rows", async () => {
+    // Mixed vault: scored 0.9 + 0.6 + 0.3 = 1.8 / 3 = 0.6 average.
+    // Unscored rows must NOT pull the average toward zero — the
+    // divisor is `scoredMemories`, not `totalMemories`.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makePage("scored-high", 0.9),
+        makePage("unscored", null),
+        makePage("scored-mid", 0.6),
+        makePage("scored-low", 0.3),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stats = await service.confidenceStats()
+    expect(stats.totalMemories).toBe(4)
+    expect(stats.scoredMemories).toBe(3)
+    expect(stats.averageScore).toBeCloseTo(0.6, 5)
+  })
+
+  it("counts only scored rows strictly below CONFIDENCE_DISPLAY_THRESHOLD", async () => {
+    // Threshold gate matches the trust indicator + Stale Confidence
+    // wake-up. A row exactly at the threshold (0.5) does NOT count as
+    // below — same `<` semantics `getTrustLabel` uses.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makePage("at-threshold", 0.5),
+        makePage("below-1", 0.49),
+        makePage("below-2", 0.2),
+        makePage("above", 0.8),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stats = await service.confidenceStats()
+    expect(stats.belowThreshold).toBe(2)
+  })
+
+  it("paginates through every result page and aggregates across them", async () => {
+    // Two response pages — confirms the iterator follows `next_cursor`
+    // and the aggregator accumulates across pages rather than resetting.
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [makePage("m1", 0.9), makePage("m2", 0.4)],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [makePage("m3", null)],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stats = await service.confidenceStats()
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(stats).toEqual({
+      totalMemories: 3,
+      scoredMemories: 2,
+      averageScore: 0.65,
+      belowThreshold: 1,
+    })
+  })
+
+  it("excludes archived rows from every count", async () => {
+    // Archived rows are filtered client-side by `listAllForBackfill`;
+    // confidenceStats inherits that behavior. A backfilled-then-
+    // archived row should NOT pull the live-vault stats around.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makePage("live-scored", 0.9),
+        makePage("archived-scored", 0.1, { archived: true }),
+        makePage("live-unscored", null),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stats = await service.confidenceStats()
+    expect(stats.totalMemories).toBe(2)
+    expect(stats.scoredMemories).toBe(1)
+    expect(stats.belowThreshold).toBe(0)
+  })
+
+  it("scopes to a project via projectOrUnscopedFilter when projectId is set", async () => {
+    // Pin the project-scoping seam: `confidenceStats({ projectId })`
+    // forwards through to `listAllForBackfill`, so the operator running
+    // `lore status` inside a sub-project sees the per-project number,
+    // not vault-wide.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.confidenceStats({ projectId: "project-123" })
+    expect(query).toHaveBeenCalledTimes(1)
+    const args = query.mock.calls[0]![0] as { filter: unknown }
+    expect(JSON.stringify(args.filter)).toContain("project-123")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // queryStaleConfidence — wake-up Stale Confidence subsection (issue 0.8.0/#10)
 // ---------------------------------------------------------------------------
 

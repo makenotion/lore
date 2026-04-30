@@ -348,6 +348,56 @@ The pure renderer (`formatTaskSummary`) and the orchestrator
 status` (CLI) and `lore-context action='status'` (MCP) — emit the
 same line shape for the same vault state.
 
+A **Memory confidence** line follows the Tasks summary
+(DEFERRED-04). Shape:
+
+```
+Memory confidence: 1247 total, 1023 scored (avg 0.51, 412 below threshold)
+```
+
+`MemoryService.confidenceStats` walks every non-archived memory in the
+project scope (vault-wide when no project is resolved) via the same
+`listAllForBackfill` iterator the `--build-confidence-scores`
+migration uses, aggregates the four numbers in one pass, and returns
+the report. The CLI fans the call out via `Promise.all` alongside
+`taskStats` — both walk the Memories DB under the same project scope,
+so wall-clock at the orchestration level is `max(taskStats,
+confidenceStats)` rather than the sum. (The walk inside
+`confidenceStats` is internally sequential — pagination dominates
+single-method wall-clock on large vaults; the fan-out is what gives
+us the parallelism, not the iterator.)
+
+**`Promise.all` not `allSettled`** is deliberate. Both calls walk the
+same data source under the same scope through the same rate-limited
+client, so a 5xx that takes down one almost certainly takes down the
+other; `allSettled`'s partial-recovery posture would help only on the
+narrow case of a transient single-call failure that the rate-limit
+middleware doesn't retry through. `taskStats`'s pre-DEFERRED-04
+posture was the same `Promise.all` shape, and the
+`searchByHybridPages` design rule already pins "fully-broken
+subsystem must not masquerade as no-results" — `lore status` should
+fail loudly, not paper over an outage with half a status line.
+
+The renderer (`formatConfidenceSummary`) is exported from
+`commands/status.ts` and follows the established `formatTaskSummary`
+posture: `0 below threshold` collapses off, the parens drop entirely
+on a `0 scored` (pre-#11) vault, and `totalMemories === 0`
+suppresses the line. CLI-only — no MCP parallel exists; the line is
+operator-facing vault-health surface, distinct from the agent-facing
+`lore-context action='status'`.
+
+The prefix is deliberately `Memory confidence:` rather than the
+deferred-spec's illustrative `Memories:` — the bare `Memories:`
+prefix would visually collide with the `Database counts →
+Memories: N` line two rows above. The two surfaces also count
+different sets: `Database counts → Memories: N` is a vault-wide
+`countDatabase` walk that includes archived rows; the confidence
+line is project-scoped (when applicable) and excludes archived rows
+(inherited from `listAllForBackfill`). On a vault with archived
+memories the two numbers will differ legitimately — operators
+reading `Memories: 1247` and `Memory confidence: 1245 total …`
+should not interpret that as a bug.
+
 The Digests section that follows surfaces:
 
 - Date of the latest existing `source: digest` memory linked to the project
