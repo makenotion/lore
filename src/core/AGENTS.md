@@ -33,6 +33,8 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `confidence-migration.ts` | `runBuildConfidenceScoresMigration()` | `lore migrate --build-confidence-scores` — baseline-seed every memory's `Confidence Score` from its categorical `Confidence` and write `Last Referenced At = created_time`, then realize accrued decay. Plan-then-execute; `--yes` applies. Project-scoped via `--project <name>` (strict-resolve, fails fast on unknown names). (Issue 0.8.0/11.) |
 | `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
 | `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
+| `conflict.ts` | `findConflictCandidates()` | Lexical conflict-candidate generator (0.9.0 issue #03). Pure function over a `Memory[]` snapshot — no Notion access. Consumed by #05 (`lore-memory action='compare'`) and #09 (`lore conflicts scan`). Returns pairs whose title-blob trigram OR tag overlap crosses threshold; the caller filters on `comparedWith` / archive state |
+| `prompts/conflict-judge.ts` | `renderConflictJudgePrompt()` + `CONFLICT_JUDGE_PROMPT_VERSION` | Locked judgment-prompt template for the conflict-detection workflow (0.9.0 issue #03). Borrowed from engram's `internal/llm/prompt.go` discipline; see "Locked LLM prompts (`src/core/prompts/`)" below |
 | `decay.ts` | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor`. The migration in `confidence-migration.ts` consumes `seedConfidenceScore` + `decayConfidenceScore` for baseline backfill |
 
 ## Service Class Pattern
@@ -1103,6 +1105,101 @@ probe entirely. Use for bulk-import, fixture setup, or autosave
 flows where the per-save round-trip isn't justified. The bypass
 lives inside `findNearDuplicates`, not per-tool, so both write tools
 honor it without duplicate plumbing.
+
+## Lexical conflict candidates (`conflict.ts`)
+
+`findConflictCandidates()` in `conflict.ts` is the deterministic
+half of the 0.9.0 conflict-detection workflow (issue #03). Pure
+function over a `Memory[]` snapshot — no Notion access, no service
+state, no `client.` imports. Consumed by `lore-memory
+action='compare'` (#05) and `lore conflicts scan` (#09); shipped
+in Phase 1 ahead of either consumer.
+
+The function returns pairs whose `title + " " + keywords` trigram
+similarity OR tag-overlap crosses threshold AND that share at least
+one project. Each unordered pair is emitted at most once via a flat
+`i < j` loop with a per-pair project-intersection guard — partition-
+by-project would either double-count or miss cross-overlap pairs
+(memory in `[A, B]` paired against memory in `[B, C]`).
+
+**Filters this module applies, vs. caller's job.** This module
+applies the project intersection guard and the similarity/tag-
+overlap threshold. It does NOT filter on `comparedWith`, archive
+state, status, time windows, or any other state-aware predicate.
+Keeping the module pure decouples it from the `Compared With`
+schema column added in #02 and lets #09 evolve its filter set
+without touching this module. Acceptance criteria pin both halves
+— a fixture passing memories that already cite each other in
+`comparedWith` still surfaces the pair (caller filters), and the
+`Memory` shape's archive flag (Notion page metadata) isn't on the
+shape this module sees at all.
+
+**Pair-limit semantics.** Default cap is `CONFLICT_PAIR_LIMIT = 50`
+applied as `slice(0, cap)`. To opt out of the cap entirely (the
+path #09's `--exhaustive` flag uses), callers pass `pairLimit:
+Number.POSITIVE_INFINITY` — `slice(0, Infinity)` is a no-op
+truncation in JavaScript and returns the full sorted set. Do NOT
+special-case `Infinity` to "default to 50" in the truncation step;
+the natural slice behavior is correct, the test fixture pins both
+literals, and silently defeating `--exhaustive` would be
+observable.
+
+**Threshold tuning.** `CONFLICT_TRIGRAM_THRESHOLD = 0.25` and
+`CONFLICT_TAG_OVERLAP_THRESHOLD = 0.5` are starting points
+deliberately set lower than the memory near-duplicate threshold
+(`MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7` in
+`src/mcp/tools/memory.ts`). Conflict candidates are a wider net
+than near-duplicates because the agent provides the semantic
+verdict — a borderline pair is worth examining, not worth
+suppressing. Re-tune the consts if real-vault data warrants;
+document the new value in the test header (`conflict.test.ts`).
+
+## Locked LLM prompts (`src/core/prompts/`)
+
+The `prompts/` subdirectory is the home for version-stamped LLM
+prompt templates. Each file:
+
+- Exports a SemVer-style version constant (e.g.,
+  `CONFLICT_JUDGE_PROMPT_VERSION = "1"`) at the top.
+- Exports a renderer (e.g., `renderConflictJudgePrompt`) that
+  takes a typed input and returns the prompt text.
+- Carries a snapshot test pinned to the version constant so a
+  drive-by edit fails CI; intentional edits require a paired
+  version bump and snapshot update in the same PR.
+
+Borrowed from engram's locked-prompt discipline. The borrow is
+the discipline (frozen wording + version stamp), not the
+specific prompt text. Source on engram's side, commit-pinned:
+`https://github.com/Gentleman-Programming/engram/blob/ea1acdaf494e/internal/llm/prompt.go`.
+This section is the canonical single-source pointer for the
+engram lineage; the source-file header comments in `conflict.ts`
+and `prompts/conflict-judge.ts` defer to this paragraph rather
+than re-citing the path. The pin keeps the citation navigable
+even if engram's default branch later moves the file or rewrites
+the prompt — bumping the pin is an intentional act, not a passive
+consequence of upstream drift. Lore renders prompts but does NOT
+invoke them from the system itself — `findConflictCandidates`
+returns candidates, the calling agent reads the prompt and
+reasons in-context, then records the verdict via the relevant
+tool (#05 for compare verdicts).
+
+**When to bump the version.** Any change to a prompt that could
+plausibly change a downstream verdict (verdict definitions
+adjusted, `affected`-field semantics changed, output-format
+changed) requires a new version constant — bump
+`CONFLICT_JUDGE_PROMPT_VERSION` to `"2"` and add a sibling
+exported renderer (`renderConflictJudgePromptV2`). Old verdicts
+in storage continue to reference the old version; new verdicts
+use the new one. Editing the v1 wording in place silently
+changes what stored v1 verdicts mean — that is the failure
+mode the discipline exists to prevent.
+
+**Verdict vocabulary frozen for 0.9.x.** `conflict-judge.ts`
+enumerates exactly six verdicts (`conflicts_with | supersedes |
+scoped | related | compatible | not_conflict`). Adding a
+verdict requires a prompt-version bump for the same reason a
+wording change does — historical verdicts must remain
+interpretable.
 
 ## Active-task cross-reference probe
 
