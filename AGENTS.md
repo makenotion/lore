@@ -181,24 +181,30 @@ symmetric verdicts, omit `affectedMemoryId`.
 - **`conflicts_with` (asymmetric)** — A and B make incompatible
   factual claims about the same subject in the same scope.
   Pass `affectedMemoryId` naming the contradicted memory (the
-  one to lose confidence). Routes through `lore-correct`:
-  affected memory's `Confidence Score` halves, the
-  contradiction is recorded as a fact (subject = winner, object
-  = loser).
+  one to lose confidence). The compare flow shares
+  `lore-correct`'s halving algebra (`MemoryService.decrementConfidence`)
+  and emits a fresh `conflicts_with` fact (subject = winner's
+  title, object = loser's title) — it is NOT literally a
+  `lore-correct` invocation: `lore-correct` invalidates an
+  existing fact, while `compare` creates a new contradiction
+  edge.
 - **`supersedes` (asymmetric)** — Decision-kind affected
   targets ONLY. The other memory is the later, more accurate
   statement; the affected (decision) memory should be retired.
   Pass `affectedMemoryId` naming the superseded decision.
-  Routes through `lore-supersede`: affected memory's
-  `Confidence Score` halves, a `supersedes_decision` fact is
-  emitted. For non-decision affected targets, use `compatible`
-  and manually edit one body to incorporate the other via
-  `lore-memory action='update'` (no structured merge primitive
-  ships — `update` is a body-edit surface, not a merge engine),
-  OR promote to a formal decision via `lore-decision
-  action='create'` with `supersedesIds`. Calling `compare` with
-  `verdict: 'supersedes'` and a non-decision affected memory
-  throws.
+  Routes through `lore-supersede`'s code path
+  (`DecisionService.supersede`): the new decision's `Supersedes`
+  relation gains the old decision's id, the old decision's
+  `Status` flips to `superseded`, a `supersedes_decision` fact
+  emits (subject/object are decision ids), and the affected
+  memory's `Confidence Score` halves. For non-decision affected
+  targets, use `compatible` and manually edit one body to
+  incorporate the other via `lore-memory action='update'` (no
+  structured merge primitive ships — `update` is a body-edit
+  surface, not a merge engine), OR promote to a formal decision
+  via `lore-decision action='create'` with `supersedesIds`.
+  Calling `compare` with `verdict: 'supersedes'` and a
+  non-decision affected memory throws.
 - **`scoped` (symmetric)** — A and B differ but the
   differences are explained by scope (project, time,
   environment). Recorded via `Compared With` and `Compare

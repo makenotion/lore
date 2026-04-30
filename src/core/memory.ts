@@ -461,6 +461,25 @@ export class PartialUpdateError extends Error {
   }
 }
 
+/**
+ * Per-side outcome of `MemoryService.recordCompared`. Each flag is
+ * `true` when this call actually issued a `pages.update` for that side
+ * (the loaded snapshot did NOT already carry a matching `(target,
+ * verdict, affected)` entry) and `false` when this call SKIPPED that
+ * side because the entry was already present.
+ *
+ * The MCP handler reads these flags to distinguish three response
+ * shapes: a fresh judgment (`wroteA && wroteB`), a partial-failure
+ * recovery (`wroteA !== wroteB` — one side caught up to the other),
+ * and an idempotent no-op (`!wroteA && !wroteB` — both sides already
+ * carried the entry, callable on top of `lore-memory action='compare'`
+ * but normally short-circuited at the gate before reaching this method).
+ */
+export interface RecordComparedResult {
+  wroteA: boolean
+  wroteB: boolean
+}
+
 export class MemoryService {
   /**
    * `getTitleById` is the hot path for UUID→title resolution in
@@ -1727,6 +1746,155 @@ export class MemoryService {
   }
 
   /**
+   * Symmetric audit-marker write for `lore-memory action='compare'`
+   * (0.9.0/#05). Issues up to two `pages.update` calls in parallel,
+   * one per side, each writing BOTH the `Compared With` relation
+   * (with the counterpart's id added) AND the `Compare Notes`
+   * rich_text (with a fresh NDJSON entry appended). Notion has no
+   * multi-page atomic primitive, so the two writes share a
+   * `Promise.all`; failure of either is the documented partial-state
+   * risk.
+   *
+   * **Per-side idempotency.** Each side's write is gated locally by
+   * `hasMatchingCompareNote(side.compareNotes, {target, verdict,
+   * affected})`. If the loaded snapshot already carries a matching
+   * entry, that side's `pages.update` is SKIPPED. This is what makes
+   * a partial-failure recovery safe: when one side succeeded on a
+   * prior call and the other failed, a re-run of `recordCompared`
+   * with the same inputs writes only the missing side and leaves the
+   * already-present side untouched (no duplicate audit line, no
+   * duplicated `Compared With` relation). The returned
+   * `RecordComparedResult` tells the caller which sides actually
+   * landed a write, so the MCP handler can distinguish "fresh
+   * judgment" from "recovery completion" in its response text.
+   *
+   * **Caller contract.**
+   *
+   * - The caller MUST have already validated overflow against
+   *   `COMPARE_NOTES_MAX_CHARS` by running `appendCompareNote` on
+   *   each side as a preflight (see `handleCompare` step 7). When
+   *   per-side idempotency skips a write, the preflight cost
+   *   already incurred is wasted but harmless; the alternative —
+   *   moving the preflight inside `recordCompared` — would couple
+   *   the dispatch path to the audit-marker layout.
+   * - The caller is responsible for the OUTER pair-scoped gate that
+   *   decides whether to invoke this method at all. For symmetric
+   *   verdicts the gate must check BOTH sides; for asymmetric
+   *   verdicts the gate's single-side check is correct because the
+   *   destructive dispatch (decrement + fact) is the dominant
+   *   concern there.
+   *
+   * **Compared With set semantics.** `Compared With` is a Notion
+   * `single_property` self-relation; the API treats the relation list
+   * as a set, so re-adding an id Notion already has is a no-op at the
+   * data layer. The compose step still de-dupes locally so a fresh
+   * verdict on a previously-judged pair doesn't grow the relation
+   * list with a stale duplicate before the API collapses it.
+   *
+   * **Why two calls, not one.** Notion's relation column points only
+   * from the side that names the counterpart. Writing only A → B
+   * leaves B's `Compared With` empty, so an operator inspecting B in
+   * the Notion UI sees no signal that the pair was judged. Symmetric
+   * writes preserve audit visibility on both pages.
+   */
+  async recordCompared(input: {
+    memoryA: Pick<Memory, "id" | "comparedWith" | "compareNotes">
+    memoryB: Pick<Memory, "id" | "comparedWith" | "compareNotes">
+    verdict: string
+    /**
+     * Loser memory's id for asymmetric verdicts; `null` for symmetric.
+     * Persisted in each side's NDJSON entry so direction is part of
+     * the idempotency key — a flipped-direction re-judgment bypasses
+     * the gate and re-dispatches.
+     */
+    affected: string | null
+    reason: string
+    judgedAt: string
+    promptVersion: string
+  }): Promise<RecordComparedResult> {
+    const { memoryA, memoryB, verdict, affected, reason, judgedAt, promptVersion } =
+      input
+    const entryA: CompareNoteEntry = {
+      verdict,
+      target: memoryB.id,
+      affected,
+      reason,
+      judgedAt,
+      promptVersion,
+    }
+    const entryB: CompareNoteEntry = {
+      verdict,
+      target: memoryA.id,
+      affected,
+      reason,
+      judgedAt,
+      promptVersion,
+    }
+
+    // Per-side idempotent check. The match-key is (target, verdict,
+    // affected) — judgedAt is intentionally NOT part of it because a
+    // retry creates a new judgedAt timestamp, and we want to skip the
+    // write based on "this pair-and-direction was already audited"
+    // rather than "this exact timestamp was already written."
+    const aHasEntry = hasMatchingCompareNote(memoryA.compareNotes, {
+      target: memoryB.id,
+      verdict,
+      affected,
+    })
+    const bHasEntry = hasMatchingCompareNote(memoryB.compareNotes, {
+      target: memoryA.id,
+      verdict,
+      affected,
+    })
+
+    const writes: Promise<unknown>[] = []
+    if (!aHasEntry) {
+      const nextNotesA = appendCompareNote(memoryA.compareNotes, entryA)
+      const nextComparedWithA = memoryA.comparedWith.includes(memoryB.id)
+        ? memoryA.comparedWith
+        : [...memoryA.comparedWith, memoryB.id]
+      writes.push(
+        this.client.pages.update({
+          page_id: memoryA.id,
+          properties: {
+            "Compared With": {
+              relation: nextComparedWithA.map((id) => ({ id })),
+            },
+            "Compare Notes": {
+              rich_text: encodeCompareNotesRichText(nextNotesA),
+            },
+          },
+        }),
+      )
+    }
+    if (!bHasEntry) {
+      const nextNotesB = appendCompareNote(memoryB.compareNotes, entryB)
+      const nextComparedWithB = memoryB.comparedWith.includes(memoryA.id)
+        ? memoryB.comparedWith
+        : [...memoryB.comparedWith, memoryA.id]
+      writes.push(
+        this.client.pages.update({
+          page_id: memoryB.id,
+          properties: {
+            "Compared With": {
+              relation: nextComparedWithB.map((id) => ({ id })),
+            },
+            "Compare Notes": {
+              rich_text: encodeCompareNotesRichText(nextNotesB),
+            },
+          },
+        }),
+      )
+    }
+
+    await Promise.all(writes)
+    return {
+      wroteA: !aHasEntry,
+      wroteB: !bHasEntry,
+    }
+  }
+
+  /**
    * Paginating async iterator over every non-archived memory in this
    * service's Memories DB, optionally scoped to a single project. Yields
    * `Memory` objects (with empty `content`) in created-time-ascending
@@ -2867,6 +3035,18 @@ export type { CompareNotesTextChunk }
 export interface CompareNoteEntry {
   verdict: string
   target: string
+  /**
+   * The loser memory's id for asymmetric verdicts (`conflicts_with`,
+   * `supersedes`); `null` for symmetric verdicts. Storing it on each
+   * NDJSON line is what lets `hasMatchingCompareNote` distinguish a
+   * direction-corrected re-judgment (`(A, B, conflicts_with,
+   * affected=A)` after `(A, B, conflicts_with, affected=B)`) from a
+   * true duplicate. Without this field, the same-pair-same-verdict
+   * idempotency gate would suppress a corrected verdict — leaving the
+   * incorrect previous direction authoritative and the newly-affected
+   * memory undecremented.
+   */
+  affected: string | null
   reason: string
   judgedAt: string
   promptVersion: string
@@ -2900,4 +3080,430 @@ export function appendCompareNote(
     )
   }
   return next
+}
+
+// ---------------------------------------------------------------------------
+// Compare-verdict dispatch helpers (0.9.0/#05)
+// ---------------------------------------------------------------------------
+//
+// `lore-memory action='compare'` records an agent's verdict on a memory
+// pair. Two of the six verdicts are *actionable* — they dispatch into
+// the existing contradiction / supersession surfaces 0.8.0/#06 already
+// established. The dispatch logic is split here so the MCP handler in
+// `src/mcp/tools/memory.ts` can call one async function per actionable
+// verdict and the audit-marker write (`recordCompared` above) stays the
+// single uniform tail.
+
+/**
+ * Pair-scoped idempotency check: does the memory's existing
+ * `Compare Notes` NDJSON column already record an entry whose
+ * `(target, verdict, affected?)` matches the incoming pair?
+ *
+ * The compare flow's idempotency must distinguish "this specific pair
+ * was judged" from "a fact with this triple exists from somewhere" —
+ * `FactService.createWithDedup` deduplicates globally on the triple
+ * hash, so a fact existing from a different source memory (e.g., a
+ * same-titled pair in a different project) would either suppress the
+ * gate erroneously or fail to record "this specific pair has been
+ * judged." Compare Notes is the authoritative pair-scoped signal.
+ *
+ * **Direction is part of the key for asymmetric verdicts.** Asymmetric
+ * callers (`conflicts_with`, `supersedes`) MUST pass the loser's id as
+ * `match.affected`; the entry's `affected` field must equal it. This
+ * lets a corrected judgment with the flipped direction (same pair,
+ * same verdict, opposite loser) bypass the gate and re-dispatch.
+ * Symmetric callers (`scoped`, `related`, `compatible`, `not_conflict`)
+ * pass `match.affected: null`; the entry's `affected` field must also
+ * be `null` for the match to fire — which is automatic because the
+ * write path stores `null` for symmetric entries.
+ *
+ * Returns `false` on any parse error — a malformed existing line MUST
+ * NOT gate a fresh write. The cost of "miss the dedup" is one extra
+ * audit-trail line; the cost of "suppress the dispatch" is a
+ * silent-no-op verdict.
+ */
+export function hasMatchingCompareNote(
+  notesNdjson: string,
+  match: { target: string; verdict: string; affected: string | null },
+): boolean {
+  if (notesNdjson.length === 0) return false
+  for (const line of notesNdjson.split("\n")) {
+    if (line.trim().length === 0) continue
+    try {
+      const entry = JSON.parse(line) as {
+        target?: string
+        verdict?: string
+        affected?: string | null
+      }
+      // `affected` may be missing on legacy entries written before
+      // this PR (none yet exist in production but a future schema
+      // migration could resurrect old payloads). Coalesce `undefined`
+      // to `null` so a legacy symmetric entry matches a symmetric
+      // lookup; legacy asymmetric entries are vanishingly rare and a
+      // missed dedup costs only an extra audit line.
+      const entryAffected = entry.affected ?? null
+      if (
+        entry.target === match.target &&
+        entry.verdict === match.verdict &&
+        entryAffected === match.affected
+      ) {
+        return true
+      }
+    } catch {
+      // Skip malformed line; do not let it gate the write.
+    }
+  }
+  return false
+}
+
+/**
+ * Map a 0..1 self-reported judge confidence to a categorical
+ * `FactConfidence` for the emitted contradiction / supersession fact.
+ * Boundaries match the same ladder `confidenceFactor` and the
+ * categorical `Confidence` select use elsewhere — `certain` at the
+ * high end, `speculative` at the low. Undefined / null defaults to
+ * `likely` (the middle bucket): the agent didn't volunteer a number,
+ * so the fact lands as agent-reasoned-but-not-strongly-asserted.
+ */
+function factConfidenceFromJudge(
+  score: number | undefined,
+): "certain" | "likely" | "speculative" {
+  if (score === undefined) return "likely"
+  if (score >= 0.85) return "certain"
+  if (score >= 0.6) return "likely"
+  return "speculative"
+}
+
+/**
+ * Structural services bundle for the compare-dispatch helpers. Mirrors
+ * `WakeUpServices` / `ReconcileServices` posture — accepts the real
+ * `LoreServices` shape AND lightweight test stubs without dragging the
+ * full bundle through. Only the methods the dispatch path actually
+ * invokes are listed; adding a method to `MemoryService` /
+ * `FactService` / `DecisionService` doesn't widen this surface.
+ *
+ * `decisions.supersede` is on the bundle so `recordSupersedence` can
+ * route through the existing `lore-decision action='supersede'` code
+ * path — updating the new decision's `Supersedes` relation and the
+ * old decision's `Status` — rather than just decrementing confidence
+ * and emitting a fact. Without this, a `verdict: 'supersedes'` compare
+ * would NOT actually supersede anything in the decision graph.
+ */
+export interface CompareDispatchServices {
+  memories: {
+    decrementConfidence(
+      memory: Pick<
+        Memory,
+        "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
+      >,
+      opts?: { today?: string },
+    ): Promise<number>
+  }
+  facts: {
+    createWithDedup(input: {
+      subject: string
+      predicate:
+        | "is_a"
+        | "has_a"
+        | "uses"
+        | "depends_on"
+        | "related_to"
+        | "created_by"
+        | "owned_by"
+        | "replaces"
+        | "extends"
+        | "conflicts_with"
+        | "decided_by"
+        | "supersedes_decision"
+        | "informs"
+        | "mentions"
+      object: string
+      projectIds?: string[]
+      sourceMemoryId?: string
+      confidence?: "certain" | "likely" | "speculative"
+    }): Promise<{ fact: { id: string }; deduped: boolean }>
+  }
+  decisions: {
+    supersede(newId: string, oldId: string): Promise<void>
+  }
+}
+
+/**
+ * Structured error surfaced when a compare-dispatch helper has landed
+ * a non-idempotent destructive write but a follow-up step failed,
+ * leaving the vault in a partial state. Carries diagnostic fields the
+ * MCP handler interpolates into its tool-error message so the agent
+ * can surface them to the operator.
+ *
+ * The `step` field names which call landed before the failure: `fact`
+ * means the fact was emitted but the decrement failed (and for the
+ * supersede path, the decision-supersede may have already run too);
+ * `supersede` means `decisions.supersede` succeeded but the fact-
+ * create failed. Distinguishing them matters for manual reconciliation
+ * — operator's recovery procedure differs by what actually landed.
+ */
+export class CompareDispatchPartialFailureError extends Error {
+  readonly step: "fact" | "supersede"
+  readonly affectedMemoryId: string
+  readonly factId: string | undefined
+  readonly cause: unknown
+
+  constructor(args: {
+    message: string
+    step: "fact" | "supersede"
+    affectedMemoryId: string
+    factId: string | undefined
+    cause: unknown
+  }) {
+    super(args.message)
+    this.name = "CompareDispatchPartialFailureError"
+    this.step = args.step
+    this.affectedMemoryId = args.affectedMemoryId
+    this.factId = args.factId
+    this.cause = args.cause
+  }
+}
+
+/**
+ * Dispatch helper for `verdict: 'conflicts_with'`. Emits the
+ * `conflicts_with` fact FIRST, then halves the contradicted (loser)
+ * memory's `Confidence Score`. Order matters for retry safety:
+ *
+ * - `createWithDedup` is idempotent on the triple hash — a retry that
+ *   races with a successful first call no-ops at the dedup probe.
+ * - `decrementConfidence` is non-idempotent (it halves the current
+ *   stored score every call), so it runs LAST. If the fact landed and
+ *   the decrement throws, the helper raises a
+ *   `CompareDispatchPartialFailureError` carrying the dispatched fact
+ *   id and the affected memory id; the MCP handler interpolates these
+ *   into the tool-error message so the operator can manually reconcile
+ *   without re-firing compare (which would re-fact no-op + re-decrement,
+ *   double-halving the score).
+ *
+ * The fact's `subject = source memory's title`, `object = contradicted
+ * memory's title` — `lore-query action='ask'` retrieves it via the
+ * subject substring fallback even on un-migrated vaults that lack the
+ * Entities relation column.
+ *
+ * Confidence is mapped from the optional `judgeConfidence` (0..1) to
+ * a categorical via `factConfidenceFromJudge`. Auto-emitted system
+ * facts default to `speculative` (see 0.8.0/#07's `mentions`); a
+ * compare verdict is genuinely agent-reasoned, so the categorical
+ * follows the agent's stance rather than a fixed floor.
+ *
+ * Prompt-version provenance survives via the Compare Notes audit
+ * trail (`recordCompared`'s NDJSON entries carry `promptVersion`),
+ * NOT via the fact body — the Facts schema has no body column in
+ * 0.9.0, and adding one would require its own schema migration.
+ *
+ * **Idempotency is the caller's responsibility.** The pair-scoped
+ * `hasMatchingCompareNote` gate runs upstream in the MCP handler;
+ * this function unconditionally fires the fact create + decrement.
+ */
+export async function recordContradiction(
+  services: CompareDispatchServices,
+  input: {
+    contradictedMemory: Pick<
+      Memory,
+      | "id"
+      | "title"
+      | "projectIds"
+      | "confidence"
+      | "confidenceScore"
+      | "lastReferencedAt"
+      | "createdAt"
+    >
+    sourceMemory: Pick<Memory, "id" | "title" | "projectIds">
+    judgeConfidence: number | undefined
+  },
+): Promise<{ factId: string }> {
+  const sharedProjects = intersectProjects(
+    input.sourceMemory.projectIds,
+    input.contradictedMemory.projectIds,
+  )
+  // Step 1: emit the fact. `createWithDedup` is idempotent on the
+  // triple hash, so a retry that races against a partial-success on
+  // step 2 collapses to a no-op merge rather than a duplicate row.
+  const result = await services.facts.createWithDedup({
+    subject: input.sourceMemory.title,
+    predicate: "conflicts_with",
+    object: input.contradictedMemory.title,
+    projectIds: sharedProjects.length > 0 ? sharedProjects : undefined,
+    sourceMemoryId: input.sourceMemory.id,
+    confidence: factConfidenceFromJudge(input.judgeConfidence),
+  })
+  // Step 2: halve the loser's Confidence Score. Non-idempotent — if
+  // this throws after step 1 landed, the MCP handler surfaces a
+  // structured partial-failure error so the operator can manually
+  // halve the score in Notion without re-firing compare.
+  try {
+    await services.memories.decrementConfidence(input.contradictedMemory)
+  } catch (err) {
+    throw new CompareDispatchPartialFailureError({
+      // Diagnostic fields are interpolated INTO the message string so
+      // they survive the MCP boundary — `toolError` (src/mcp/helpers.ts)
+      // forwards `.message` only, dropping typed `readonly` props.
+      // Field names match the corresponding properties on the error
+      // class so an operator triaging logs can grep either source.
+      message:
+        "conflicts_with dispatch: fact emitted but decrementConfidence " +
+        "failed (inconsistentState: true). The contradicted memory's " +
+        "Confidence Score was NOT halved. Manually halve the score in " +
+        "Notion using the diagnostic fields below (do NOT retry " +
+        "lore-memory action='compare' — the fact would no-op via dedup " +
+        "but a retry-then-success on decrement would still halve once " +
+        "correctly).\n" +
+        `step=fact\n` +
+        `affectedMemoryId=${input.contradictedMemory.id}\n` +
+        `factId=${result.fact.id}`,
+      step: "fact",
+      affectedMemoryId: input.contradictedMemory.id,
+      factId: result.fact.id,
+      cause: err,
+    })
+  }
+  return { factId: result.fact.id }
+}
+
+/**
+ * Dispatch helper for `verdict: 'supersedes'`. Routes through the
+ * existing `lore-decision action='supersede'` semantics — updates the
+ * new decision's `Supersedes` relation, flips the old decision's
+ * `Status` to `superseded`, emits the `supersedes_decision` fact, and
+ * halves the superseded memory's `Confidence Score`. Caller has
+ * already gated on `superseded.kind === 'decision'`.
+ *
+ * Order mirrors `recordContradiction` for retry safety:
+ *
+ * 1. `decisions.supersede` — atomic-by-ordering inside `DecisionService`
+ *    (writes `Supersedes` first, `Status` second). Failure here leaves
+ *    the system in a "new points at old; old still accepted" state per
+ *    `DecisionService.supersede`'s docstring; safe to retry.
+ * 2. `createWithDedup` — idempotent on the triple hash. If this fails
+ *    after step 1 landed, the helper raises a
+ *    `CompareDispatchPartialFailureError(step: "supersede")`.
+ * 3. `decrementConfidence` — non-idempotent. If this fails after
+ *    steps 1-2 landed, the helper raises a
+ *    `CompareDispatchPartialFailureError(step: "fact")`.
+ *
+ * Direction is encoded by the `superseding` / `superseded` parameter
+ * names — NOT by positional order — so a flipped scan order can't
+ * silently halve the wrong memory. The MCP handler resolves
+ * `affectedMemoryId` to the `superseded` (loser) shape before calling.
+ */
+export async function recordSupersedence(
+  services: CompareDispatchServices,
+  input: {
+    supersedingMemory: Pick<
+      Memory,
+      "id" | "title" | "projectIds" | "confidence"
+    >
+    supersededMemory: Pick<
+      Memory,
+      | "id"
+      | "title"
+      | "projectIds"
+      | "confidence"
+      | "confidenceScore"
+      | "lastReferencedAt"
+      | "createdAt"
+    >
+    judgeConfidence: number | undefined
+  },
+): Promise<{ factId: string }> {
+  // Step 1: update the decision graph (Supersedes relation + Status).
+  // Without this the response saying "marked superseded" would be
+  // false; the new decision's Supersedes relation would never be set
+  // and the old decision's Status would stay at "accepted."
+  await services.decisions.supersede(
+    input.supersedingMemory.id,
+    input.supersededMemory.id,
+  )
+
+  const sharedProjects = intersectProjects(
+    input.supersedingMemory.projectIds,
+    input.supersededMemory.projectIds,
+  )
+
+  // Step 2: emit the fact. Subject = superseding memory's id (matches
+  // the existing `lore-decision action='supersede'` shape, since this
+  // helper now drives the same code path).
+  let result: { fact: { id: string }; deduped: boolean }
+  try {
+    result = await services.facts.createWithDedup({
+      subject: input.supersedingMemory.id,
+      predicate: "supersedes_decision",
+      object: input.supersededMemory.id,
+      projectIds: sharedProjects.length > 0 ? sharedProjects : undefined,
+      sourceMemoryId: input.supersedingMemory.id,
+      confidence: factConfidenceFromJudge(input.judgeConfidence),
+    })
+  } catch (err) {
+    throw new CompareDispatchPartialFailureError({
+      // Diagnostic fields interpolated INTO the message — same
+      // `toolError`-survives-message-only contract as the
+      // conflicts_with throw above. `factId` is `(none)` here
+      // because the fact create is exactly the step that failed.
+      // `supersedingMemoryId` is named because the operator's
+      // recovery action ("manually create the supersedes_decision
+      // fact") needs the subject side too.
+      message:
+        "supersedes dispatch: decisions.supersede landed (Supersedes " +
+        "relation + Status updated) but the supersedes_decision fact " +
+        "create failed (inconsistentState: true). The graph edge is " +
+        "missing; lore-query action='ask' won't surface the " +
+        "supersession on the affected entity. Manually create the " +
+        "fact in Notion or via lore-fact action='create' using the " +
+        "diagnostic fields below (do NOT retry lore-memory " +
+        "action='compare' — decisions.supersede is idempotent on " +
+        "relation set semantics but a retry-then-success on the fact " +
+        "would still emit it once correctly via createWithDedup's " +
+        "global triple-hash dedup).\n" +
+        `step=supersede\n` +
+        `affectedMemoryId=${input.supersededMemory.id}\n` +
+        `supersedingMemoryId=${input.supersedingMemory.id}\n` +
+        `factId=(none)`,
+      step: "supersede",
+      affectedMemoryId: input.supersededMemory.id,
+      factId: undefined,
+      cause: err,
+    })
+  }
+
+  // Step 3: halve the superseded memory's Confidence Score.
+  try {
+    await services.memories.decrementConfidence(input.supersededMemory)
+  } catch (err) {
+    throw new CompareDispatchPartialFailureError({
+      message:
+        "supersedes dispatch: decisions.supersede and the " +
+        "supersedes_decision fact landed, but decrementConfidence on " +
+        "the superseded memory failed (inconsistentState: true). The " +
+        "Confidence Score was NOT halved. Manually halve the score in " +
+        "Notion using the diagnostic fields below (do NOT retry " +
+        "lore-memory action='compare').\n" +
+        `step=fact\n` +
+        `affectedMemoryId=${input.supersededMemory.id}\n` +
+        `factId=${result.fact.id}`,
+      step: "fact",
+      affectedMemoryId: input.supersededMemory.id,
+      factId: result.fact.id,
+      cause: err,
+    })
+  }
+  return { factId: result.fact.id }
+}
+
+/**
+ * Set-intersection of two project-id arrays. Order follows the first
+ * argument so the returned `projectIds` is deterministic across calls
+ * with stable inputs. A pair sharing no projects returns `[]`; the
+ * MCP handler's cross-project guard catches that case before reaching
+ * the dispatch helpers, so an empty intersection here means the guard
+ * was bypassed (e.g., a future test that calls a helper directly).
+ */
+function intersectProjects(a: string[], b: string[]): string[] {
+  if (a.length === 0 || b.length === 0) return []
+  const setB = new Set(b)
+  return a.filter((id) => setB.has(id))
 }

@@ -15,7 +15,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
 | `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
 | `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
-| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper shared by #06's upsert and #14's re-key — `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set — and `rekeyTopicKey` (0.9.0/#14) — re-key path that appends a `## Re-keyed (date)` audit block, validates collision via `findByTopicKey`, and writes only the `Topic Key` column |
+| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper shared by #06's upsert and #14's re-key — `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set — and `rekeyTopicKey` (0.9.0/#14) — re-key path that appends a `## Re-keyed (date)` audit block, validates collision via `findByTopicKey`, and writes only the `Topic Key` column. Hosts `recordCompared` — symmetric two-page `pages.update` writing `Compared With` + `Compare Notes` on both sides of a judged pair (0.9.0/#05); accepts an `affected` field (loser id for asymmetric verdicts, `null` for symmetric) so direction is part of the pair-scoped idempotency key. Module also exports the standalone dispatch helpers `recordContradiction` / `recordSupersedence` — `recordContradiction` runs `createWithDedup` first (idempotent on the triple hash) then `decrementConfidence` (non-idempotent, runs LAST so a fact-create failure leaves nothing destructive landed); `recordSupersedence` adds `decisions.supersede` as step 1 ahead of fact + decrement, routing through the existing `lore-decision action='supersede'` semantics so the new decision's `Supersedes` relation and the old decision's `Status` flip alongside the contradiction signal. Both throw `CompareDispatchPartialFailureError` with `step` / `affectedMemoryId` / `factId` fields when a step lands but a successor fails — surfaces partial-state as a structured error rather than an inconsistent retry. Prompt-version provenance survives only via the Compare Notes audit trail; `FactService` has no body column in 0.9.0 so the helpers do NOT thread `reason` / `promptVersion` into the emitted fact. Module also exports the pair-scoped idempotency helper `hasMatchingCompareNote` (pure NDJSON parse, matches on `target` + `verdict` + `affected`) and the structural `CompareDispatchServices` type the helpers accept |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
@@ -265,18 +265,74 @@ first. The two-write contract preserves audit symmetry (both pages
 list the counterpart, both `Compare Notes` columns carry the verdict
 line) so neither side surfaces as "never compared" when it has been.
 
-The pattern: the consumer issues two `pages.update` calls, one per
-side, with the rate-limit middleware (`src/notion/rate-limit.ts`)
+The pattern: the consumer issues up to two `pages.update` calls, one
+per side, with the rate-limit middleware (`src/notion/rate-limit.ts`)
 governing concurrency. Failure of the second write leaves a visible,
-re-runnable inconsistency rather than a silent half-state — re-running
-#05's compare path is idempotent (the same `appendCompareNote` line
-won't double-add given identical inputs, and `Compared With` set
-membership is naturally idempotent) so an operator catching a
-half-written verdict re-issues the same call. Do not collapse to one
-write; do not switch to `dual_property` without migrating every
-existing self-relation column in lockstep — `Supersedes` and `Affects`
-follow the same `single_property` posture, and a mixed-shape Memories
-DB would surprise every consumer reading the relation.
+re-runnable inconsistency rather than a silent half-state.
+
+**Retry-safety divides on whether dispatch landed.** A `lore-memory
+action='compare'` call runs three concerns: idempotency gate →
+dispatch (decrement + fact emission for actionable verdicts) →
+audit-marker write. `MemoryService.recordCompared` itself is
+**per-side idempotent**: each side's `pages.update` is gated locally
+by `hasMatchingCompareNote` against the loaded snapshot, so a side
+whose entry already landed on a prior call is skipped. Combined with
+the both-sides gate at the handler level (for symmetric verdicts),
+this makes a partial audit-marker failure safely repairable by a
+straight retry of the same call. The retry matrix:
+
+- **Symmetric verdict (`scoped` / `related` / `compatible` /
+  `not_conflict`) — audit-marker only, no dispatch.** Safely
+  retried by re-issuing `lore-memory action='compare'` with the
+  same inputs. The handler-level gate checks BOTH sides for the
+  matching `(target, verdict, affected=null)` entry; it
+  short-circuits with `alreadyJudged: true` only when both sides
+  already carry the entry. If only one side is present (the prior
+  call's `Promise.all` had one success and one failure), the gate
+  clears and `recordCompared` runs again — its per-side
+  idempotency skips the side that already landed and writes the
+  missing side. The handler's overflow preflight mirrors the
+  per-side skip: a side that already carries the entry is NOT
+  preflighted (it won't be written this call), so a near-cap
+  already-written side cannot block the missing side's repair.
+  The response surfaces `recoveredSide: "A" | "B"` so the agent
+  can tell the operator that the pair's audit state is now
+  consistent.
+- **Actionable verdict (`conflicts_with` / `supersedes`) —
+  dispatch landed, audit-marker failed.** The handler raises a
+  structured `inconsistentCompareStateMessage` carrying every
+  diagnostic field needed for manual repair. The
+  `Confidence Score` decrement and the fact emission are
+  non-idempotent on retry semantics: a re-issued compare would
+  see the asymmetric gate clear (no `(target, verdict, affected)`
+  entry on the winner's notes yet, because the audit-marker write
+  is exactly what failed), re-fire dispatch, and double-decrement
+  the score. The recovery procedure is **inspect-then-upsert via
+  Notion's UI or a one-off `pages.update`**, NOT a re-issued
+  compare. The error message embeds the dispatched fact id, the
+  decremented memory id, the pending NDJSON entries, and the
+  pending Compared With pair so the operator can write only the
+  missing pieces.
+- **Actionable verdict — partial dispatch (helper raised
+  `CompareDispatchPartialFailureError` mid-step).** Same retry
+  prohibition: the `step` field on the error names which call
+  landed before the failure, and the message body interpolates
+  `factId` / `affectedMemoryId` so manual reconciliation has
+  enough context. Retry of the compare call would re-fire the
+  surviving steps and double-apply the destructive ones.
+
+The asymmetric gate stays single-side (`winner.compareNotes` for
+`(target=loser, verdict, affected=loser)`) by design: tightening it
+to a both-sides check wouldn't help — the dominant retry hazard for
+actionable verdicts is the destructive dispatch, not the audit
+write — and would let an operator who ignores the inspect-then-
+upsert guidance silently double-decrement.
+
+Do not collapse to one write; do not switch to `dual_property`
+without migrating every existing self-relation column in lockstep —
+`Supersedes` and `Affects` follow the same `single_property`
+posture, and a mixed-shape Memories DB would surprise every
+consumer reading the relation.
 
 A future Notion API addition of true `dual_property` self-relations
 (auto-mirrored at the data layer) would let consumers drop the

@@ -32,7 +32,16 @@ import {
 import { decodeTextEntities } from "../../notion/html-entities.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
 import { suggestTopicKey, type TopicKeySuggestion } from "../../core/topic-key.js"
-import { PartialUpdateError, RekeyAuditError } from "../../core/memory.js"
+import {
+  appendCompareNote,
+  hasMatchingCompareNote,
+  PartialUpdateError,
+  recordContradiction,
+  recordSupersedence,
+  RekeyAuditError,
+  type RecordComparedResult,
+} from "../../core/memory.js"
+import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
 import type { TaskSummary } from "../../types.js"
 
 type ToolResult = {
@@ -932,6 +941,514 @@ async function handleArchive(
   }
 }
 
+// -------------------------------------------------------------------------
+// Compare verdict (issue 0.9.0/05) — frozen vocabulary, mirrors the locked
+// judgment prompt in `src/core/prompts/conflict-judge.ts`. Adding a verdict
+// requires bumping `CONFLICT_JUDGE_PROMPT_VERSION` in lockstep so historical
+// stored verdicts remain interpretable.
+// -------------------------------------------------------------------------
+
+const COMPARE_VERDICTS = [
+  "conflicts_with",
+  "supersedes",
+  "scoped",
+  "related",
+  "compatible",
+  "not_conflict",
+] as const
+
+type CompareVerdict = (typeof COMPARE_VERDICTS)[number]
+
+const ASYMMETRIC_VERDICTS: ReadonlySet<CompareVerdict> = new Set([
+  "conflicts_with",
+  "supersedes",
+])
+
+interface CompareArgs {
+  memoryIdA: string
+  memoryIdB: string
+  verdict: CompareVerdict
+  affectedMemoryId?: string
+  reason: string
+  judgeConfidence?: number
+  promptVersion?: string
+}
+
+/**
+ * Cross-field validation for `affectedMemoryId`. Asymmetric verdicts
+ * (`conflicts_with`, `supersedes`) name a loser; symmetric verdicts
+ * don't. Throws BEFORE any Notion read so a direction mismatch is
+ * caught with zero side effects — `services.memories.getById` must
+ * not fire when this throws.
+ */
+function validateAffectedMemoryId(input: CompareArgs): void {
+  const isAsymmetric = ASYMMETRIC_VERDICTS.has(input.verdict)
+  if (isAsymmetric) {
+    if (!input.affectedMemoryId) {
+      throw new Error(
+        `verdict='${input.verdict}' requires affectedMemoryId ` +
+          "naming the loser memory (memoryIdA or memoryIdB).",
+      )
+    }
+    if (
+      input.affectedMemoryId !== input.memoryIdA &&
+      input.affectedMemoryId !== input.memoryIdB
+    ) {
+      throw new Error(
+        "affectedMemoryId must equal memoryIdA or memoryIdB.",
+      )
+    }
+  } else {
+    if (input.affectedMemoryId) {
+      throw new Error(
+        `verdict='${input.verdict}' is symmetric; ` +
+          "affectedMemoryId must be omitted.",
+      )
+    }
+  }
+}
+
+/**
+ * Compose the tool-error message body for a post-dispatch
+ * `recordCompared` failure. `toolError` (`src/mcp/helpers.ts`) only
+ * forwards `error.message`, so every diagnostic field the operator
+ * needs to manually reconcile lives in the message text itself —
+ * structured `readonly` properties on a custom Error class would be
+ * dropped before the agent ever sees them.
+ *
+ * Fields embedded in the message:
+ * - `dispatchedFactId` — the fact that landed on the actionable path
+ *   (the operator can `lore-fact action='invalidate'` it during
+ *   manual cleanup if needed).
+ * - `decrementedMemoryId` — the loser whose Confidence Score was
+ *   halved.
+ * - `compareNotesEntryToWriteA/B` — the NDJSON lines that should
+ *   have been appended to each side's Compare Notes.
+ * - `comparedWithRelationToWrite` — the pair ids that should appear
+ *   in each other's Compared With relation.
+ * - `inconsistentState: true` — sentinel marker the operator can
+ *   `grep` for in agent transcripts.
+ *
+ * The agent surfaces this back to the operator instead of pretending
+ * the call succeeded; recovery is manual (inspect then upsert) since
+ * retrying `lore-memory action='compare'` would double-decrement.
+ */
+function inconsistentCompareStateMessage(args: {
+  dispatchedFactId: string | undefined
+  decrementedMemoryId: string
+  compareNotesEntryToWriteA: string
+  compareNotesEntryToWriteB: string
+  comparedWithRelationToWrite: { memoryIdA: string; memoryIdB: string }
+}): string {
+  return (
+    "Compare dispatch landed but recordCompared failed (inconsistentState: true). " +
+    "Confidence was decremented and a fact emitted, but the audit-marker write " +
+    "(Compare Notes + Compared With on both sides, issued via Promise.all) failed. " +
+    "Possible states: NEITHER side received its updates; OR one side succeeded " +
+    "and the other failed. Manual Notion repair required: INSPECT both sides " +
+    "first, then write only the missing pieces (do NOT blindly apply four updates " +
+    "— appending an NDJSON line that already landed creates a duplicate audit " +
+    "entry; re-adding to Compared With is harmless because Notion's relation set " +
+    "is set-semantic). Do NOT retry lore-memory action='compare' — retry would " +
+    "double-decrement.\n" +
+    `dispatchedFactId=${args.dispatchedFactId ?? "(none)"}\n` +
+    `decrementedMemoryId=${args.decrementedMemoryId}\n` +
+    `compareNotesEntryToWriteA=${args.compareNotesEntryToWriteA}\n` +
+    `compareNotesEntryToWriteB=${args.compareNotesEntryToWriteB}\n` +
+    `comparedWithRelationToWrite=${JSON.stringify(args.comparedWithRelationToWrite)}`
+  )
+}
+
+/**
+ * Type-narrow `affectedMemoryId` to a definitely-defined string for
+ * the actionable verdict branches. `validateAffectedMemoryId` runs
+ * upstream and rejects asymmetric verdicts that omit this field, so
+ * this helper is an assertion: it throws with a clear "internal
+ * invariant violated" message if a future refactor reorders guards
+ * such that an asymmetric branch reaches here without the field set.
+ *
+ * Cheaper than non-null assertions (`input.affectedMemoryId!`) because
+ * a future contributor reading the throw sees what went wrong rather
+ * than a TypeError on an undefined property access.
+ */
+function requireAffectedMemoryId(args: {
+  affectedMemoryId?: string
+  verdict: string
+}): string {
+  if (args.affectedMemoryId === undefined) {
+    throw new Error(
+      "Internal: requireAffectedMemoryId called without " +
+        `affectedMemoryId set (verdict='${args.verdict}'). ` +
+        "validateAffectedMemoryId should have caught this upstream.",
+    )
+  }
+  return args.affectedMemoryId
+}
+
+/**
+ * Project-set intersection check for the cross-project compare guard.
+ * `Project` is a multi-relation on Memories, so a pair is comparable
+ * when their project sets intersect — `[P, Q]` and `[Q, R]` share Q
+ * → allowed. A vault-wide memory (empty `projectIds`) intersects
+ * with NO project set; the guard rejects pairs with no shared
+ * project so the dispatch surface stays scoped.
+ */
+function shareProject(a: { projectIds: string[] }, b: { projectIds: string[] }): boolean {
+  if (a.projectIds.length === 0 || b.projectIds.length === 0) return false
+  const setB = new Set(b.projectIds)
+  return a.projectIds.some((id) => setB.has(id))
+}
+
+interface CompareResultInput {
+  verdict: CompareVerdict
+  memoryA: { id: string; title: string }
+  memoryB: { id: string; title: string }
+  affectedMemoryId?: string
+  factId?: string
+  alreadyJudged: boolean
+  /**
+   * `"A"` or `"B"` when this call was a partial-failure recovery
+   * (only that side's audit-marker write actually fired this time
+   * because the other side already carried the entry from a prior
+   * partial-success). `null` for fresh judgments where both sides
+   * wrote. Surfaces in the response text so the agent can tell the
+   * operator that the pair's audit state is now consistent (rather
+   * than silently treating the recovery like a fresh judgment).
+   */
+  recoveredSide?: "A" | "B" | null
+}
+
+/**
+ * Render the tool response for `lore-memory action='compare'`. The
+ * shape distinguishes the cases the agent needs to branch on:
+ * idempotent skip (`alreadyJudged: true`), symmetric verdict
+ * (compared-with updated only), actionable verdict with fact id,
+ * `supersedes` (which surfaces the same fields as `conflicts_with`
+ * but with the supersession framing), and partial-failure recovery
+ * (one side caught up to the other after a prior partial-success).
+ */
+function renderCompareResult(input: CompareResultInput): ToolResult {
+  const { verdict, memoryA, memoryB, factId, alreadyJudged, affectedMemoryId, recoveredSide } = input
+  if (alreadyJudged) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `Verdict: ${verdict} — already recorded for this pair (no-op).`,
+            `  A: "${memoryA.title}" (${memoryA.id})`,
+            `  B: "${memoryB.title}" (${memoryB.id})`,
+          ].join("\n"),
+        },
+      ],
+    }
+  }
+
+  const lines: string[] = []
+  if (verdict === "conflicts_with") {
+    const loserId = affectedMemoryId
+    const loser = loserId === memoryA.id ? memoryA : memoryB
+    lines.push(
+      `Verdict: conflicts_with — "${loser.title}" (${loser.id}) confidence halved.`,
+    )
+  } else if (verdict === "supersedes") {
+    const loserId = affectedMemoryId
+    const loser = loserId === memoryA.id ? memoryA : memoryB
+    lines.push(
+      `Verdict: supersedes — "${loser.title}" (${loser.id}) marked superseded; confidence halved.`,
+    )
+  } else {
+    lines.push(`Verdict: ${verdict} — Compared With and Compare Notes updated on both sides.`)
+  }
+  lines.push(`  A: "${memoryA.title}" (${memoryA.id})`)
+  lines.push(`  B: "${memoryB.title}" (${memoryB.id})`)
+  if (factId) {
+    lines.push(`Fact: ${factId}`)
+  }
+  if (recoveredSide) {
+    const recoveredId = recoveredSide === "A" ? memoryA.id : memoryB.id
+    lines.push(
+      `Audit recovery: only side ${recoveredSide} (${recoveredId}) wrote this call — the other side already carried a matching entry from a prior partial-success. The pair's audit state is now consistent on both sides.`,
+    )
+  }
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+  }
+}
+
+async function handleCompare(
+  services: LoreServices,
+  args: CompareArgs,
+): Promise<ToolResult> {
+  try {
+    // 1. Self-pair guard. Pure input check, no I/O.
+    if (args.memoryIdA === args.memoryIdB) {
+      throw new Error("Cannot compare a memory to itself.")
+    }
+
+    // 2. Validate direction BEFORE any Notion read. Acceptance criteria
+    //    require invalid affectedMemoryId to throw with zero side
+    //    effects — direction validation runs immediately after the
+    //    self-pair guard, before hydration.
+    validateAffectedMemoryId(args)
+
+    // 3. Hydrate both memories (parallel). Needed for project
+    //    intersection check, fact subjects, and Compare Notes
+    //    membership check.
+    const [memoryA, memoryB] = await Promise.all([
+      services.memories.getById(args.memoryIdA),
+      services.memories.getById(args.memoryIdB),
+    ])
+
+    // 4. Cross-project guard. Project intersection required —
+    //    pair-with-disjoint-projects has no shared scope to write the
+    //    fact under.
+    if (!shareProject(memoryA, memoryB)) {
+      throw new Error(
+        "Cannot compare memories with disjoint project sets. " +
+          "Project intersection required.",
+      )
+    }
+
+    // 5. Resolve loser/winner pair. Symmetric verdicts have no loser;
+    //    the actionable branches narrow via affectedMemoryId.
+    const isAsymmetric = ASYMMETRIC_VERDICTS.has(args.verdict)
+    const affectedId = isAsymmetric
+      ? requireAffectedMemoryId({
+          affectedMemoryId: args.affectedMemoryId,
+          verdict: args.verdict,
+        })
+      : null
+    const loser = isAsymmetric
+      ? affectedId === args.memoryIdA
+        ? memoryA
+        : memoryB
+      : null
+    const winner = isAsymmetric ? (loser === memoryA ? memoryB : memoryA) : null
+
+    const promptVersion = args.promptVersion ?? CONFLICT_JUDGE_PROMPT_VERSION
+
+    // 6. Idempotency gate — pair-scoped via local NDJSON parse, with
+    //    direction baked into the key for asymmetric verdicts. Reads
+    //    the winner's existing Compare Notes (or memoryA's notes for
+    //    symmetric verdicts) and checks for `(target, verdict, affected)`.
+    //
+    //    The `affected` field on the match is the load-bearing piece
+    //    the prior design missed: a corrected judgment with the same
+    //    pair/verdict but flipped `affectedMemoryId` (e.g.,
+    //    `(A, B, conflicts_with, affected=A)` after
+    //    `(A, B, conflicts_with, affected=B)`) MUST re-dispatch. With
+    //    direction in the key, the prior entry's `affected=B` does
+    //    not match the new query's `affected=A`, the gate clears, and
+    //    A is decremented.
+    //
+    //    Same-verdict idempotent re-calls (same direction) still
+    //    short-circuit here with zero side effects: no decrement,
+    //    no fact write, no Compare Notes append. Different-verdict
+    //    re-calls also fall through (a changed verdict is a
+    //    deliberate signal — verdict change is allowed).
+    //
+    //    **Symmetric vs. asymmetric gate scope.** For symmetric
+    //    verdicts the gate checks BOTH sides — only short-circuits
+    //    if BOTH already carry the entry. This makes a partial
+    //    audit-marker failure recoverable: if A's update succeeded
+    //    on a prior call but B's failed, the gate clears, and
+    //    `recordCompared`'s per-side idempotency lets the retry
+    //    catch B up without double-writing A. For asymmetric
+    //    verdicts the gate stays single-side (the winner's notes):
+    //    the destructive dispatch (decrement + fact emission) is
+    //    the dominant retry concern there, and the inspect-then-
+    //    upsert recovery procedure for actionable partial failures
+    //    is the documented path.
+    const gateHits = isAsymmetric
+      ? hasMatchingCompareNote(winner!.compareNotes, {
+          target: loser!.id,
+          verdict: args.verdict,
+          affected: affectedId,
+        })
+      : hasMatchingCompareNote(memoryA.compareNotes, {
+          target: memoryB.id,
+          verdict: args.verdict,
+          affected: affectedId,
+        }) &&
+        hasMatchingCompareNote(memoryB.compareNotes, {
+          target: memoryA.id,
+          verdict: args.verdict,
+          affected: affectedId,
+        })
+    if (gateHits) {
+      return renderCompareResult({
+        verdict: args.verdict,
+        memoryA,
+        memoryB,
+        affectedMemoryId: args.affectedMemoryId,
+        alreadyJudged: true,
+      })
+    }
+
+    // 7. Compose audit-trail entries and PREFLIGHT only the sides
+    //    that `recordCompared` would actually write. The preflight's
+    //    job is to catch overflow BEFORE a destructive
+    //    `recordContradiction` / `recordSupersedence` could fire and
+    //    leave a halved memory with no audit marker. But preflight
+    //    must mirror `recordCompared`'s per-side idempotent skip:
+    //    a side whose loaded snapshot already carries the matching
+    //    `(target, verdict, affected)` entry will be SKIPPED by
+    //    `recordCompared` and so does NOT need overflow validation
+    //    — and preflighting it on a near-cap side would erroneously
+    //    throw on a partial-failure recovery, blocking the missing
+    //    side's write even though `recordCompared` would have
+    //    handled the safe case correctly.
+    //
+    //    The two side-presence flags computed here are reused by the
+    //    response renderer (`recoveredSide`) so the agent can
+    //    surface "only side X wrote this call" when the retry was
+    //    a one-sided catch-up.
+    const judgedAt = new Date().toISOString()
+    const entryA = {
+      verdict: args.verdict,
+      target: args.memoryIdB,
+      affected: affectedId,
+      reason: args.reason,
+      judgedAt,
+      promptVersion,
+    }
+    const entryB = {
+      verdict: args.verdict,
+      target: args.memoryIdA,
+      affected: affectedId,
+      reason: args.reason,
+      judgedAt,
+      promptVersion,
+    }
+    const aAlreadyHasEntry = hasMatchingCompareNote(memoryA.compareNotes, {
+      target: memoryB.id,
+      verdict: args.verdict,
+      affected: affectedId,
+    })
+    const bAlreadyHasEntry = hasMatchingCompareNote(memoryB.compareNotes, {
+      target: memoryA.id,
+      verdict: args.verdict,
+      affected: affectedId,
+    })
+    if (!aAlreadyHasEntry) appendCompareNote(memoryA.compareNotes, entryA)
+    if (!bAlreadyHasEntry) appendCompareNote(memoryB.compareNotes, entryB)
+
+    // 8. Dispatch on actionable verdicts. Only fires after the
+    //    overflow preflight clears, so a destructive decrement + fact
+    //    write never lands without a corresponding audit-trail entry
+    //    being writable.
+    //
+    //    The supersedes-non-decision guard is the spec's "non-decision
+    //    affected target throws" — runs BEFORE the dispatch helper so
+    //    a non-decision pair never hits `decisions.supersede`.
+    let dispatchResult: { factId?: string } = {}
+
+    if (args.verdict === "supersedes" && loser!.kind !== "decision") {
+      throw new Error(
+        "verdict='supersedes' requires the affected (superseded) " +
+          "memory to have kind='decision'. For non-decision pairs, " +
+          "use 'compatible' + lore-memory action='update' to merge, " +
+          "or promote via lore-decision action='create' supersedesIds.",
+      )
+    }
+
+    if (args.verdict === "conflicts_with") {
+      dispatchResult = await recordContradiction(services, {
+        contradictedMemory: loser!,
+        sourceMemory: winner!,
+        judgeConfidence: args.judgeConfidence,
+      })
+    } else if (args.verdict === "supersedes") {
+      dispatchResult = await recordSupersedence(services, {
+        supersedingMemory: winner!,
+        supersededMemory: loser!,
+        judgeConfidence: args.judgeConfidence,
+      })
+    }
+
+    // 9. Audit-marker write (Compare Notes + Compared With on both
+    //    sides). The preflight in step 7 already validated both sides
+    //    will accept the append. `recordCompared` is per-side
+    //    idempotent (skips a side whose loaded snapshot already
+    //    carries the matching entry), so a partial-failure recovery
+    //    retry writes only the missing side without duplicating the
+    //    successful one. The returned `RecordComparedResult` tells us
+    //    which sides actually landed a write so the response text
+    //    can distinguish "fresh judgment" from "recovery completion."
+    //
+    //    Failure modes:
+    //    - Actionable verdict + recordCompared throws → dispatch
+    //      already landed, audit may be partial. Throw the structured
+    //      `inconsistentCompareStateMessage` so the operator inspects
+    //      both sides in Notion and writes only the missing pieces.
+    //      The diagnostic fields are interpolated INTO the message
+    //      text because `toolError` only forwards `error.message` —
+    //      typed `readonly` properties on a custom Error class would
+    //      be dropped.
+    //    - Symmetric verdict + recordCompared throws → no destructive
+    //      dispatch happened, but the per-side write may have left
+    //      one side updated and the other not. A naive retry is now
+    //      safe: the per-side idempotent skip in `recordCompared` AND
+    //      the both-sides gate at step 6 together ensure the retry
+    //      writes only the missing side. Rethrow the underlying error
+    //      so the operator (or agent) can see what failed and decide
+    //      whether to retry.
+    let recordResult: RecordComparedResult
+    try {
+      recordResult = await services.memories.recordCompared({
+        memoryA,
+        memoryB,
+        verdict: args.verdict,
+        affected: affectedId,
+        reason: args.reason,
+        judgedAt,
+        promptVersion,
+      })
+    } catch (err) {
+      if (isAsymmetric) {
+        throw new Error(
+          inconsistentCompareStateMessage({
+            dispatchedFactId: dispatchResult.factId,
+            decrementedMemoryId: loser!.id,
+            compareNotesEntryToWriteA: JSON.stringify(entryA),
+            compareNotesEntryToWriteB: JSON.stringify(entryB),
+            comparedWithRelationToWrite: {
+              memoryIdA: args.memoryIdA,
+              memoryIdB: args.memoryIdB,
+            },
+          }),
+          { cause: err },
+        )
+      }
+      // Symmetric verdict — no destructive dispatch happened. The
+      // per-side idempotent recordCompared + both-sides gate at
+      // step 6 make a retry safely repairing: the side that already
+      // landed is skipped on retry, only the missing side writes.
+      throw err
+    }
+
+    return renderCompareResult({
+      verdict: args.verdict,
+      memoryA,
+      memoryB,
+      affectedMemoryId: args.affectedMemoryId,
+      factId: dispatchResult.factId,
+      alreadyJudged: false,
+      recoveredSide:
+        recordResult.wroteA && recordResult.wroteB
+          ? null
+          : recordResult.wroteA
+            ? "A"
+            : recordResult.wroteB
+              ? "B"
+              : null,
+    })
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
 export async function handleExpand(
   services: LoreServices,
   args: { ids: string[] },
@@ -1340,6 +1857,16 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     title: z.string(),
     kind: z.enum(SUGGEST_KIND_VALUES),
   }),
+  z.object({
+    action: z.literal("compare"),
+    memoryIdA: z.string(),
+    memoryIdB: z.string(),
+    verdict: z.enum(COMPARE_VERDICTS),
+    affectedMemoryId: z.string().optional(),
+    reason: z.string().max(200),
+    judgeConfidence: z.number().min(0).max(1).optional(),
+    promptVersion: z.string().optional(),
+  }),
 ])
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
@@ -1351,19 +1878,27 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     {
       title: "Memory operations",
       description:
-        "Save, update, archive, batch-expand, or suggest a topic key for memories. Action-dispatched:\n\n" +
-        "- `action: 'save'` — create a new memory page in the vault. Runs a near-duplicate probe in parallel. When `topicKey` is set, save UPSERTS: if a memory exists with the same key AND identical project-set, the new content appends as a revision block instead of creating a new row.\n" +
+        "Save, update, archive, batch-expand, suggest a topic key, or record a compare verdict on a memory pair. Action-dispatched:\n\n" +
+        "- `action: 'save'` — create a new memory page; runs a near-duplicate probe in parallel. With `topicKey` set, upserts onto an existing memory with the same key AND project-set (appends a revision block instead of creating a new row).\n" +
         "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched.\n" +
         "- `action: 'archive'` — soft-delete a memory by ID (Notion archive flag).\n" +
         "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
-        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. No I/O. Pass the result to `action: 'save'` as `topicKey` to opt into upsert grouping. Notes and tasks return no suggestion.\n\n" +
+        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Notes and tasks return null.\n" +
+        "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {
         action: z
-          .enum(["save", "update", "archive", "expand", "suggest-topic-key"])
+          .enum([
+            "save",
+            "update",
+            "archive",
+            "expand",
+            "suggest-topic-key",
+            "compare",
+          ])
           .describe(
-            "Operation: save (create), update, archive, expand (batch body fetch), or suggest-topic-key (heuristic key generator).",
+            "Operation: save | update | archive | expand | suggest-topic-key | compare. See description for details.",
           ),
         // save
         title: z
@@ -1402,7 +1937,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "(save | update) Topic name within the project. Auto-created if missing on save. Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation (e.g. `Eval & Testing` vs `Evals & Testing`) silently collapse onto the existing canonical row to prevent fan-out.",
+            "(save | update) Topic name within the project. Auto-created if missing on save. Case/plural/punctuation variants silently collapse onto the canonical row to prevent fan-out.",
           ),
         forceNewTopic: z
           .boolean()
@@ -1452,10 +1987,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .max(SYNOPSIS_MAX)
           .optional()
           .describe(
-            "(save | update) 1–2 sentence synopsis surfaced under the title on " +
-              `recall/search/wake-up listings. Up to ${SYNOPSIS_MAX} chars. Keep it tight — ` +
-              "this is the snippet a triager reads to decide whether to expand the body. " +
-              "On update, omit to leave untouched; pass empty string to clear.",
+            `(save | update) 1-2 sentence synopsis surfaced under the title on recall/search/wake-up listings (≤${SYNOPSIS_MAX} chars). On update, omit to keep, pass empty string to clear.`,
           ),
         agent: z
           .string()
@@ -1473,21 +2005,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           )
           .optional()
           .describe(
-            "(action='save') Optional kebab-case path like 'decision/jwt-auth'. " +
-              "When provided, save upserts: if a memory with the same topicKey AND " +
-              "identical project-set exists, the new content appends as a revision " +
-              "block to the existing page (incrementing Revision Count) instead of " +
-              "creating a new row. Title bumps to latest; Kind / Project-set cannot " +
-              "change (rejected). Requires `kind` to be set to one of decision / " +
-              "runbook / incident / postmortem / policy — not valid on `kind: 'note'` " +
-              "(the catch-all default) and not valid on tasks. Use " +
-              "`action: 'suggest-topic-key'` for a heuristic key from (title, kind). " +
-              "See CLAUDE.md 'Topic keys for evolving memories'. " +
-              "(action='update') Re-key the memory's topic to this value. " +
-              "Must not collide with another live memory in the same " +
-              "project-set under the new key. Cannot be combined with " +
-              "`kind` in a single call. Appends a `## Re-keyed (date)` " +
-              "audit block to the body — does NOT increment Revision Count.",
+            "Kebab-case path like 'decision/jwt-auth'. On save: upserts when a memory " +
+              "exists with the same key AND identical project-set (appends a revision " +
+              "block, bumps Revision Count); requires `kind` ∈ {decision, runbook, " +
+              "incident, postmortem, policy}. On update: re-keys, appending a " +
+              "`## Re-keyed` audit block; cannot be combined with `kind`. " +
+              "See CLAUDE.md 'Topic keys for evolving memories'.",
           ),
         // update only
         supersedesIds: z
@@ -1506,6 +2029,50 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe("(action='update') Consequences text (replaces existing)."),
+        // compare
+        memoryIdA: z
+          .string()
+          .optional()
+          .describe(
+            "(action='compare') First memory ID. A/B are unordered labels; direction comes from `affectedMemoryId`.",
+          ),
+        memoryIdB: z
+          .string()
+          .optional()
+          .describe("(action='compare') Second memory ID."),
+        verdict: z
+          .enum(COMPARE_VERDICTS)
+          .optional()
+          .describe(
+            "(action='compare') Verdict on the pair. See CLAUDE.md 'Conflict verdicts'.",
+          ),
+        affectedMemoryId: z
+          .string()
+          .optional()
+          .describe(
+            "(action='compare') Required for asymmetric verdicts (`conflicts_with`, `supersedes`); names the loser. Must equal memoryIdA or memoryIdB.",
+          ),
+        reason: z
+          .string()
+          .max(200)
+          .optional()
+          .describe(
+            "(action='compare') Short explanation, ≤200 chars. Recorded in Compare Notes audit trail.",
+          ),
+        judgeConfidence: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(
+            "(action='compare') Optional 0..1 self-reported confidence. Below 0.7 the agent SHOULD ask the user first.",
+          ),
+        promptVersion: z
+          .string()
+          .optional()
+          .describe(
+            "(action='compare') Optional prompt version (default: current `CONFLICT_JUDGE_PROMPT_VERSION`).",
+          ),
       },
     },
     async (args) => {
@@ -1526,6 +2093,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           return handleExpand(services, parsed.data)
         case "suggest-topic-key":
           return handleSuggestTopicKey(parsed.data)
+        case "compare":
+          return handleCompare(services, parsed.data)
       }
     },
   )

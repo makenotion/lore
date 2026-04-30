@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
 import { registerQueryTools } from "./query.js"
-import { RekeyAuditError } from "../../core/memory.js"
+import { COMPARE_NOTES_MAX_CHARS, RekeyAuditError } from "../../core/memory.js"
 import type { Memory, Topic } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
@@ -4846,5 +4846,1264 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     // PartialUpdateError's wrapper-message preamble must NOT
     // appear; the handler propagated `RekeyAuditError` unchanged.
     expect(text).not.toMatch(/Content update for memory mem-1 persisted/)
+  })
+})
+
+describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
+  function makeServicesForCompare(
+    a: Memory,
+    b: Memory,
+    overrides: {
+      decrementConfidence?: ReturnType<typeof vi.fn>
+      recordCompared?: ReturnType<typeof vi.fn>
+      createWithDedup?: ReturnType<typeof vi.fn>
+      supersede?: ReturnType<typeof vi.fn>
+    } = {},
+  ) {
+    const getById = vi.fn(async (id: string) => {
+      if (id === a.id) return a
+      if (id === b.id) return b
+      throw new Error(`unknown id ${id}`)
+    })
+    const decrementConfidence =
+      overrides.decrementConfidence ?? vi.fn(async (_m: unknown) => 0.45)
+    const recordCompared =
+      overrides.recordCompared ?? vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const createWithDedup =
+      overrides.createWithDedup ??
+      vi.fn(async () => ({ fact: { id: "fact-1" }, deduped: false }))
+    const supersede = overrides.supersede ?? vi.fn(async () => undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById, decrementConfidence, recordCompared },
+      facts: { createWithDedup },
+      decisions: { supersede },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+    return {
+      services,
+      getById,
+      decrementConfidence,
+      recordCompared,
+      createWithDedup,
+      supersede,
+    }
+  }
+
+  it("happy path conflicts_with: halves the affected memory's confidence and emits a fact", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "Auth model A", projectIds: ["proj-a"] })
+    const b = makeMemory("page-b", { title: "Auth model B", projectIds: ["proj-a"] })
+    const { services, decrementConfidence, recordCompared, createWithDedup } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "Newer evidence",
+      judgeConfidence: 0.9,
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    // decrementConfidence fires on memory B (the loser).
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "page-b" })
+    // Fact subject = winner's title; object = loser's title.
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+      subject: "Auth model A",
+      predicate: "conflicts_with",
+      object: "Auth model B",
+    })
+    // Audit-marker write fires too.
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("conflicts_with")
+    expect(text).toContain("Auth model B")
+    expect(text).toContain("fact-1")
+  })
+
+  it("flips the affected side: same pair with affectedMemoryId=memoryIdA halves memoryA, NOT memoryB", async () => {
+    // Pins the directionality contract — order does NOT encode
+    // direction; the affectedMemoryId field does.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+    const { services, decrementConfidence, createWithDedup } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-a",
+      reason: "B wins",
+    } as never)
+
+    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "page-a" })
+    // Subject = winner (B), object = loser (A).
+    expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+      subject: "B",
+      object: "A",
+    })
+  })
+
+  it("rejects asymmetric verdict without affectedMemoryId BEFORE any Notion read", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { projectIds: ["proj"] })
+    const b = makeMemory("page-b", { projectIds: ["proj"] })
+    const { services, getById, decrementConfidence } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      reason: "missing affected",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("requires affectedMemoryId")
+    // Direction validation fires BEFORE hydration — getById never called.
+    expect(getById).not.toHaveBeenCalled()
+    expect(decrementConfidence).not.toHaveBeenCalled()
+  })
+
+  it("rejects asymmetric verdict whose affectedMemoryId names a third memory BEFORE any Notion read", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { projectIds: ["proj"] })
+    const b = makeMemory("page-b", { projectIds: ["proj"] })
+    const { services, getById } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-c-third-memory",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("must equal memoryIdA or memoryIdB")
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it("rejects symmetric verdict with affectedMemoryId set BEFORE any Notion read", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { projectIds: ["proj"] })
+    const b = makeMemory("page-b", { projectIds: ["proj"] })
+    const { services, getById } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      affectedMemoryId: "page-a",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("symmetric")
+    expect(text).toContain("affectedMemoryId must be omitted")
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it("supersedes verdict requires the affected memory's kind to be 'decision' (rejects non-decision)", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "Decision",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const b = makeMemory("page-b", {
+      title: "Note",
+      kind: "note",
+      projectIds: ["proj"],
+    })
+    const { services, decrementConfidence, recordCompared, createWithDedup } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "supersedes",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("kind='decision'")
+    // Throws AFTER hydration but BEFORE dispatch — no decrement,
+    // no fact write, no audit marker.
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("supersedes verdict on a decision-kind affected memory dispatches through decisions.supersede + fact + decrement", async () => {
+    // Reviewer #1 P1 #1 pinned: supersedes must route through the
+    // existing `lore-decision action='supersede'` semantics. This
+    // test asserts decisions.supersede(winner.id, loser.id) fires
+    // (otherwise the new decision's Supersedes relation is never
+    // updated and the old decision's Status stays at "accepted")
+    // alongside the fact emission and decrement.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "New decision",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const b = makeMemory("page-b", {
+      title: "Old decision",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const {
+      services,
+      decrementConfidence,
+      recordCompared,
+      createWithDedup,
+      supersede,
+    } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "supersedes",
+      affectedMemoryId: "page-b",
+      reason: "Old approach is wrong",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    // decisions.supersede actually runs — without it the response
+    // text claiming "marked superseded" would be a lie.
+    expect(supersede).toHaveBeenCalledTimes(1)
+    expect(supersede).toHaveBeenCalledWith("page-a", "page-b")
+    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
+      id: "page-b",
+    })
+    // Fact uses IDs (canonical decision-graph identifier) matching
+    // the existing `lore-decision action='supersede'` shape.
+    expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+      predicate: "supersedes_decision",
+      subject: "page-a",
+      object: "page-b",
+    })
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+  })
+
+  it("symmetric verdicts (scoped/related/compatible/not_conflict) skip decrement and fact emission", async () => {
+    for (const verdict of ["scoped", "related", "compatible", "not_conflict"] as const) {
+      const mockServer = createMockServer()
+      const a = makeMemory(`a-${verdict}`, { projectIds: ["proj"] })
+      const b = makeMemory(`b-${verdict}`, { projectIds: ["proj"] })
+      const { services, decrementConfidence, recordCompared, createWithDedup } =
+        makeServicesForCompare(a, b)
+
+      registerMemoryTools(mockServer.server, services as never)
+      const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+      const result = await compare({
+        memoryIdA: a.id,
+        memoryIdB: b.id,
+        verdict,
+        reason: "x",
+      } as never)
+
+      expect((result as { isError?: boolean }).isError).not.toBe(true)
+      expect(decrementConfidence).not.toHaveBeenCalled()
+      expect(createWithDedup).not.toHaveBeenCalled()
+      expect(recordCompared).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it("self-pair (memoryIdA === memoryIdB) returns an error before any Notion read", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { projectIds: ["proj"] })
+    const { services, getById } = makeServicesForCompare(a, a)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-a",
+      verdict: "scoped",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "Cannot compare a memory to itself",
+    )
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it("cross-project pair with disjoint project sets returns an error", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { projectIds: ["proj-A"] })
+    const b = makeMemory("page-b", { projectIds: ["proj-B"] })
+    const { services, decrementConfidence } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "disjoint project sets",
+    )
+    expect(decrementConfidence).not.toHaveBeenCalled()
+  })
+
+  it("idempotent re-compare: same pair + same actionable verdict + same direction short-circuits with zero side effects", async () => {
+    // Pre-populate memoryA's compareNotes (the WINNER's notes for an
+    // affectedMemoryId=memoryIdB conflicts_with) with a matching
+    // (target, verdict, affected) entry. The handler should detect
+    // it and return alreadyJudged: true without firing any side
+    // effect.
+    const priorEntry = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-b",
+      affected: "page-b",
+      reason: "previous run",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "Winner",
+      projectIds: ["proj"],
+      compareNotes: priorEntry,
+    })
+    const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
+    const { services, decrementConfidence, recordCompared, createWithDedup } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "newer run",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "already recorded",
+    )
+    // Zero side effects on the duplicate call.
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("flipped-direction re-compare on a same-verdict pair RE-DISPATCHES (does NOT short-circuit)", async () => {
+    // Reviewer #2 finding pinned. Walk-through:
+    //   1. (A, B, conflicts_with, affected=B) — B halved, A.notes
+    //      gets {target=B, affected=B}, B.notes gets {target=A,
+    //      affected=B}.
+    //   2. (A, B, conflicts_with, affected=A) — corrected direction.
+    //      Without direction in the idempotency key, the gate would
+    //      check B.notes for {target=A, verdict=conflicts_with}, find
+    //      it, and incorrectly short-circuit. With `affected` in the
+    //      key, the gate query asks for affected=A but finds
+    //      affected=B → no match → dispatch fires and A is halved.
+    //
+    // Pre-plant B.notes with the prior call's mirror entry
+    // (target=A, affected=B). The new call queries B.notes (winner
+    // for affected=A is B) for (target=A, affected=A). Mismatch on
+    // affected — gate clears.
+    const priorEntry = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-a",
+      affected: "page-b",
+      reason: "first call (B was loser)",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "A",
+      projectIds: ["proj"],
+    })
+    const b = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      compareNotes: priorEntry,
+    })
+    const { services, decrementConfidence, createWithDedup, recordCompared } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-a", // corrected direction
+      reason: "actually A loses",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    // A is halved this time, NOT B.
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
+      id: "page-a",
+    })
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+  })
+
+  it("symmetric idempotency holds under swapped argument order — both sides carry the entry, the swap short-circuits", async () => {
+    // Reviewer NIT pinned: after a successful first call (X, Y,
+    // scoped), BOTH sides carry the matching entry. A swapped-order
+    // re-call (Y, X, scoped) must short-circuit at the gate. The
+    // gate now checks BOTH sides for symmetric verdicts so this
+    // works regardless of which side becomes `memoryA` on the swap.
+    const entryOnX = JSON.stringify({
+      verdict: "scoped",
+      target: "page-y",
+      affected: null,
+      reason: "different scope",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const entryOnY = JSON.stringify({
+      verdict: "scoped",
+      target: "page-x",
+      affected: null,
+      reason: "different scope",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const mockServer = createMockServer()
+    const x = makeMemory("page-x", {
+      title: "X",
+      projectIds: ["proj"],
+      compareNotes: entryOnX,
+    })
+    const y = makeMemory("page-y", {
+      title: "Y",
+      projectIds: ["proj"],
+      compareNotes: entryOnY,
+    })
+    const { services, recordCompared } = makeServicesForCompare(x, y)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    // Second call with SWAPPED argument order: Y is now memoryIdA.
+    // The both-sides gate hits — short-circuits.
+    const result = await compare({
+      memoryIdA: "page-y",
+      memoryIdB: "page-x",
+      verdict: "scoped",
+      reason: "swap",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "already recorded",
+    )
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("symmetric partial-failure recovery: only one side carries the entry, retry catches up the missing side without duplicating the present side", async () => {
+    // The new reviewer's [P2] regression test. Models the
+    // first-call-A-succeeded-B-failed state directly: A's notes
+    // carry the matching entry, B's are empty. A retry MUST proceed
+    // (gate must NOT short-circuit) and recordCompared MUST skip A
+    // (already has the entry) and write B (missing the entry). The
+    // response surfaces `Audit recovery: only side B...` so the
+    // operator can confirm the pair's audit state is now consistent.
+    //
+    // To verify per-side idempotency at the service layer, this test
+    // uses a real `MemoryService.recordCompared` (not a mock) backed
+    // by a synthetic Notion `pages.update` recorder. The handler-
+    // level mocks are stubs only for memories.getById / facts /
+    // decisions / context — recordCompared runs the real per-side
+    // skip-or-write logic.
+    const partialEntryOnA = JSON.stringify({
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "first call landed A but not B",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const a = makeMemory("page-a", {
+      title: "A",
+      projectIds: ["proj"],
+      // The relation list also carries B's id from the prior
+      // partial-success — Compared With is set-semantic so the
+      // retry won't grow it past size 1.
+      comparedWith: ["page-b"],
+      compareNotes: partialEntryOnA,
+    })
+    const b = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      // B is the side that previously failed: empty notes, empty
+      // relation. The retry must catch B up.
+      comparedWith: [],
+      compareNotes: "",
+    })
+
+    // Build a mock client that records every `pages.update` call so
+    // we can verify per-side behavior: A is skipped (no update), B
+    // is written.
+    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> =
+      []
+    const mockClient = {
+      pages: {
+        update: vi.fn(
+          async (args: { page_id: string; properties: Record<string, unknown> }) => {
+            updates.push(args)
+            return undefined
+          },
+        ),
+      },
+    } as never
+
+    // Wire a real `MemoryService` for `recordCompared`. The other
+    // handler-level service stubs follow the existing pattern.
+    const { MemoryService } = await import("../../core/memory.js")
+    const realMemories = new MemoryService(mockClient, {
+      databaseId: "memories-db",
+      dataSourceId: "memories-ds",
+    })
+
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        // getById returns the partial-state snapshots above.
+        getById: vi.fn(async (id: string) => {
+          if (id === "page-a") return a
+          if (id === "page-b") return b
+          throw new Error(`unknown id ${id}`)
+        }),
+        // recordCompared is the REAL implementation, bound to the
+        // mock client. Per-side idempotency is what we're testing.
+        recordCompared: realMemories.recordCompared.bind(realMemories),
+        decrementConfidence: vi.fn(),
+      },
+      facts: { createWithDedup: vi.fn() },
+      decisions: { supersede: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "retry after first call's B-side failure",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+
+    // Exactly ONE pages.update fires — for B. A is skipped because
+    // its loaded snapshot already carries the matching entry.
+    expect(updates).toHaveLength(1)
+    expect(updates[0]!.page_id).toBe("page-b")
+
+    // B's update writes the missing audit entry AND adds A to its
+    // (previously empty) Compared With.
+    const bUpdate = updates[0]!
+    const bRelation = (bUpdate.properties["Compared With"] as {
+      relation: { id: string }[]
+    }).relation
+    expect(bRelation).toEqual([{ id: "page-a" }])
+    const bNotes = (bUpdate.properties["Compare Notes"] as {
+      rich_text: Array<{ text: { content: string } }>
+    }).rich_text.map((r) => r.text.content).join("")
+    const bEntry = JSON.parse(bNotes) as { target: string; verdict: string; affected: null }
+    expect(bEntry).toMatchObject({
+      target: "page-a",
+      verdict: "scoped",
+      affected: null,
+    })
+
+    // The response surfaces the recovery so the agent can tell the
+    // operator the pair's audit state is now consistent.
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("Audit recovery")
+    expect(text).toContain("only side B")
+    expect(text).toContain("page-b")
+  })
+
+  it("symmetric idempotent retry where BOTH sides carry the entry: zero pages.update calls, alreadyJudged response", async () => {
+    // The other half of the reviewer's regression coverage: a true
+    // idempotent re-call. The gate's both-sides check short-circuits
+    // before recordCompared runs at all.
+    const entryOnA = JSON.stringify({
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "x",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const entryOnB = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      affected: null,
+      reason: "x",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "A",
+      projectIds: ["proj"],
+      comparedWith: ["page-b"],
+      compareNotes: entryOnA,
+    })
+    const b = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      comparedWith: ["page-a"],
+      compareNotes: entryOnB,
+    })
+    const { services, recordCompared } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "already recorded",
+    )
+    // recordCompared never reached — the gate short-circuited.
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("verdict change on same pair (not_conflict → conflicts_with) IS allowed: fresh dispatch fires", async () => {
+    // Documents the "verdict change is allowed" contract — a prior
+    // not_conflict entry must NOT suppress a fresh conflicts_with
+    // judgment.
+    const priorEntry = JSON.stringify({
+      verdict: "not_conflict",
+      target: "page-b",
+      reason: "earlier",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "Winner",
+      projectIds: ["proj"],
+      compareNotes: priorEntry,
+    })
+    const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
+    const { services, decrementConfidence, createWithDedup, recordCompared } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "actually a conflict",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+  })
+
+  it("Compare Notes overflow preflight blocks destructive side effects on conflicts_with", async () => {
+    // Pad memoryB's existing notes (B is the WINNER for affectedMemoryId=A
+    // — wait, here memory_loser is A, so winner is B; we need memoryB's
+    // compareNotes to be checked AFTER the gate against memoryA's
+    // compareNotes for target=B. But the preflight runs against BOTH
+    // sides' appendCompareNote, so any side overflowing throws.
+    const sampleEntry = {
+      verdict: "conflicts_with",
+      target: "page-a",
+      reason: "x",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    }
+    const entryLen = JSON.stringify(sampleEntry).length
+    const padTo = COMPARE_NOTES_MAX_CHARS - entryLen + 1
+    const overflowing = "a".repeat(padTo)
+
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      compareNotes: overflowing,
+    })
+    const { services, decrementConfidence, recordCompared, createWithDedup } =
+      makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-a",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "Compare Notes overflow",
+    )
+    // NEITHER destructive call fires — the preflight is the gate.
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("post-dispatch recordCompared failure throws structured error with diagnostic fields embedded in the message", async () => {
+    // Reviewer #2 BLOCKING #2 pinned. `toolError` only forwards
+    // `error.message` — typed `readonly` fields on a custom Error
+    // class would be dropped before the agent ever sees them. So
+    // every diagnostic the operator needs to manually reconcile MUST
+    // appear in the message text itself. Pin every field by name in
+    // the rendered output so a future refactor that drops one breaks
+    // this test rather than silently regressing the operator UX.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+    const recordCompared = vi.fn(async () => {
+      throw new Error("notion 429 — Compare Notes write failed")
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-99" },
+      deduped: false,
+    }))
+    const { services } = makeServicesForCompare(a, b, {
+      recordCompared,
+      decrementConfidence,
+      createWithDedup,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    // Surface the documented partial-failure shape — operator needs
+    // to see the inspect-then-upsert recovery procedure.
+    expect(text).toContain("dispatch landed but recordCompared failed")
+    expect(text).toContain("inconsistentState: true")
+    expect(text).toMatch(/inspect/i)
+    expect(text).toMatch(/do NOT retry/i)
+    // Diagnostic fields the operator needs to reconcile — every one
+    // pinned by name + value so it can't silently drop.
+    expect(text).toContain("dispatchedFactId=fact-99")
+    expect(text).toContain("decrementedMemoryId=page-b")
+    expect(text).toContain("compareNotesEntryToWriteA=")
+    expect(text).toContain("compareNotesEntryToWriteB=")
+    expect(text).toContain("comparedWithRelationToWrite=")
+    // The NDJSON entries embedded in the message contain the pair
+    // ids the operator needs to know which lines should land on
+    // which page.
+    expect(text).toContain('"target":"page-b"')
+    expect(text).toContain('"target":"page-a"')
+    expect(text).toContain('"affected":"page-b"')
+    // Destructive side effects DID land.
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+  })
+
+  it("dispatch partial-failure (fact lands, decrement throws) surfaces step/factId/affectedMemoryId via tool error message", async () => {
+    // Latest reviewer P1: `CompareDispatchPartialFailureError` carries
+    // typed `step` / `affectedMemoryId` / `factId` properties, but
+    // `toolError` only renders `.message`. Pin that the message text
+    // itself carries those fields so the operator triaging the agent's
+    // response can manually reconcile without reading typed Error
+    // properties (which never reach the agent).
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+    const decrementConfidence = vi.fn(async (_m: unknown) => {
+      throw new Error("notion 429 — decrement failed")
+    })
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-mid-dispatch" },
+      deduped: false,
+    }))
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      decrementConfidence,
+      createWithDedup,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    // Diagnostic surface — every field interpolated by name+value.
+    expect(text).toContain("inconsistentState: true")
+    expect(text).toContain("step=fact")
+    expect(text).toContain("affectedMemoryId=page-b")
+    expect(text).toContain("factId=fact-mid-dispatch")
+    expect(text).toMatch(/do NOT retry/i)
+    // The fact landed; the decrement did not. Audit marker never got
+    // a chance to fire, so recordCompared was NOT called.
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("supersedes partial-failure (decisions.supersede lands, fact create throws) surfaces step=supersede + supersedingMemoryId", async () => {
+    // Mirror of the conflicts_with partial-failure test for the
+    // supersede path. `step=supersede` distinguishes "decisions.supersede
+    // landed but fact didn't" from "fact landed but decrement didn't"
+    // (`step=fact`); the operator's manual recovery procedure differs.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "New",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const b = makeMemory("page-b", {
+      title: "Old",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const supersede = vi.fn(async () => undefined)
+    const createWithDedup = vi.fn(async () => {
+      throw new Error("notion 429 — fact create failed")
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      supersede,
+      createWithDedup,
+      decrementConfidence,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "supersedes",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("step=supersede")
+    expect(text).toContain("affectedMemoryId=page-b")
+    expect(text).toContain("supersedingMemoryId=page-a")
+    expect(text).toContain("factId=(none)")
+    expect(text).toContain("inconsistentState: true")
+    expect(text).toMatch(/do NOT retry/i)
+    // decisions.supersede ran; fact create failed; decrement and
+    // audit marker never fired.
+    expect(supersede).toHaveBeenCalledTimes(1)
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("symmetric verdict failure rethrows the underlying error WITHOUT InconsistentCompareStateError wrapping", async () => {
+    // No destructive dispatch happened, so the operator can safely
+    // retry the symmetric compare and the gate will be clear.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+    const recordCompared = vi.fn(async () => {
+      throw new Error("notion 429 — Compare Notes write failed")
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-99" },
+      deduped: false,
+    }))
+    const { services } = makeServicesForCompare(a, b, {
+      recordCompared,
+      decrementConfidence,
+      createWithDedup,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    // Plain underlying error message — not the structured
+    // InconsistentCompareStateError. The agent retries, the gate
+    // is still clear, the symmetric retry simply lands.
+    expect(text).toContain("notion 429")
+    expect(text).not.toContain("dispatch landed but recordCompared failed")
+    // No destructive side effects on a symmetric verdict, so a
+    // retry is safe.
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("cross-project title collision is NOT suppressed: distinct pairs decrement independently", async () => {
+    // Two project-scoped pairs with identical titles. The pair-scoped
+    // Compare Notes gate must NOT suppress one decrement based on the
+    // other's existing audit entry. This was the bug in the prior
+    // findLiveByTriple-based design.
+    const mockServer = createMockServer()
+    const p1 = makeMemory("M_P1", { title: "Auth model", projectIds: ["P"] })
+    const p2 = makeMemory("M_P2", { title: "Login flow", projectIds: ["P"] })
+    const q1 = makeMemory("M_Q1", { title: "Auth model", projectIds: ["Q"] })
+    const q2 = makeMemory("M_Q2", { title: "Login flow", projectIds: ["Q"] })
+
+    const getById = vi.fn(async (id: string) => {
+      const all = [p1, p2, q1, q2].find((m) => m.id === id)
+      if (!all) throw new Error(`unknown ${id}`)
+      return all
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-x" },
+      deduped: false,
+    }))
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById, decrementConfidence, recordCompared },
+      facts: { createWithDedup },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    // First call against project-P pair.
+    await compare({
+      memoryIdA: "M_P1",
+      memoryIdB: "M_P2",
+      verdict: "conflicts_with",
+      affectedMemoryId: "M_P2",
+      reason: "x",
+    } as never)
+    // Second call against project-Q pair — different memories,
+    // identical titles. Must NOT be suppressed.
+    await compare({
+      memoryIdA: "M_Q1",
+      memoryIdB: "M_Q2",
+      verdict: "conflicts_with",
+      affectedMemoryId: "M_Q2",
+      reason: "x",
+    } as never)
+
+    // Both pairs decrement.
+    expect(decrementConfidence).toHaveBeenCalledTimes(2)
+    const decrementedIds = decrementConfidence.mock.calls.map(
+      (c) => (c[0] as { id: string }).id,
+    )
+    expect(decrementedIds.sort()).toEqual(["M_P2", "M_Q2"])
+  })
+
+  it("Zod schema rejects an unknown verdict, reason >200 chars, and judgeConfidence outside 0..1", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { projectIds: ["proj"] })
+    const b = makeMemory("page-b", { projectIds: ["proj"] })
+    const { services } = makeServicesForCompare(a, b)
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const unknownVerdict = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "bogus",
+      reason: "x",
+    } as never)
+    expect((unknownVerdict as { isError?: boolean }).isError).toBe(true)
+
+    const longReason = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "x".repeat(201),
+    } as never)
+    expect((longReason as { isError?: boolean }).isError).toBe(true)
+
+    const oobConfidence = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+      judgeConfidence: 1.5,
+    } as never)
+    expect((oobConfidence as { isError?: boolean }).isError).toBe(true)
+  })
+
+  it("symmetric one-sided recovery: already-written side at COMPARE_NOTES_MAX_CHARS does NOT block missing-side repair via preflight overflow", async () => {
+    // Reviewer's [P2] regression: the prior preflight unconditionally
+    // ran appendCompareNote on BOTH sides, so a near-cap A would
+    // throw `Compare Notes overflow` even though `recordCompared`
+    // would skip A and write only B. The corrected preflight mirrors
+    // per-side idempotency: a side that already carries the entry
+    // is NOT preflighted (it won't be written this call).
+    //
+    // Setup: A is a partial-success state where the prior call
+    // landed A's audit AND A's notes are now packed to within one
+    // entry of the cap by unrelated history. B's notes are empty —
+    // B is the side to repair.
+    const partialEntryOnA = JSON.stringify({
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "first call landed A but not B",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    // Pad A's notes with junk content placed BEFORE the partial
+    // entry so the entry is still findable by hasMatchingCompareNote
+    // at the end. Use newline-joined NDJSON-shaped lines so a
+    // future split("\n") parser doesn't choke on the padding.
+    const padLine = JSON.stringify({
+      verdict: "compatible",
+      target: "page-other",
+      affected: null,
+      reason: "p".repeat(100),
+      judgedAt: "2025-01-01T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const lines: string[] = []
+    let totalLength = 0
+    while (
+      totalLength + padLine.length + 1 < COMPARE_NOTES_MAX_CHARS - partialEntryOnA.length - 1
+    ) {
+      lines.push(padLine)
+      totalLength += padLine.length + 1
+    }
+    lines.push(partialEntryOnA)
+    const nearCapANotes = lines.join("\n")
+    expect(nearCapANotes.length).toBeLessThanOrEqual(COMPARE_NOTES_MAX_CHARS)
+    // Confirm a fresh appendCompareNote against this near-cap notes
+    // would actually overflow — pin the test's premise so the test
+    // fails loudly if a future change to padding leaves slack.
+    expect(nearCapANotes.length + padLine.length + 1).toBeGreaterThan(
+      COMPARE_NOTES_MAX_CHARS,
+    )
+
+    const a = makeMemory("page-a", {
+      title: "A",
+      projectIds: ["proj"],
+      comparedWith: ["page-b"],
+      compareNotes: nearCapANotes,
+    })
+    const b = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      comparedWith: [],
+      compareNotes: "",
+    })
+
+    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> = []
+    const mockClient = {
+      pages: {
+        update: vi.fn(
+          async (args: { page_id: string; properties: Record<string, unknown> }) => {
+            updates.push(args)
+            return undefined
+          },
+        ),
+      },
+    } as never
+    const { MemoryService } = await import("../../core/memory.js")
+    const realMemories = new MemoryService(mockClient, {
+      databaseId: "memories-db",
+      dataSourceId: "memories-ds",
+    })
+
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        getById: vi.fn(async (id: string) => {
+          if (id === "page-a") return a
+          if (id === "page-b") return b
+          throw new Error(`unknown id ${id}`)
+        }),
+        recordCompared: realMemories.recordCompared.bind(realMemories),
+        decrementConfidence: vi.fn(),
+      },
+      facts: { createWithDedup: vi.fn() },
+      decisions: { supersede: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "retry — A is at cap, B needs catching up",
+    } as never)
+
+    // The retry SUCCEEDS (no overflow error) because preflight
+    // skipped A — the side that wouldn't have been written anyway.
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    // Exactly ONE pages.update — for B. A is skipped by per-side
+    // idempotency.
+    expect(updates).toHaveLength(1)
+    expect(updates[0]!.page_id).toBe("page-b")
+    // Response surfaces the recovery so the operator can confirm.
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("Audit recovery")
+    expect(text).toContain("only side B")
+  })
+
+  it("preflight still fires on the missing side: a near-cap MISSING side correctly throws overflow before destructive dispatch", async () => {
+    // Companion to the recovery test above — pins that the preflight's
+    // safety guarantee is preserved. If the side that would actually
+    // be written is near-cap, the overflow throw fires BEFORE any
+    // destructive dispatch (decrement + fact emission) lands.
+    //
+    // Setup: B has no matching entry but its notes are packed so
+    // close to the cap that appending the upcoming entry would push
+    // past `COMPARE_NOTES_MAX_CHARS`. A fresh `conflicts_with` retry
+    // MUST throw on the B preflight before `recordContradiction` runs.
+    //
+    // The upcoming entry the handler will compose has a
+    // handler-generated `judgedAt` we can't predict, but every
+    // `conflicts_with` entry from the same pair shares the same
+    // verdict / target / affected / promptVersion / reason
+    // structure, so the entry length is bounded by the predictable
+    // shape. Use a generous cushion: pad B's notes to one character
+    // under the cap so even the shortest entry overflows.
+    const overCapBNotes = "a".repeat(COMPARE_NOTES_MAX_CHARS - 1)
+
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      compareNotes: overCapBNotes,
+    })
+
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-x" },
+      deduped: false,
+    }))
+    const { services } = makeServicesForCompare(a, b, {
+      decrementConfidence,
+      recordCompared,
+      createWithDedup,
+    })
+
+    const mockServer = createMockServer()
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
+      "Compare Notes overflow",
+    )
+    // No destructive dispatch fired — the preflight stopped it.
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(recordCompared).not.toHaveBeenCalled()
   })
 })

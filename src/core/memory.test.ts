@@ -7,6 +7,9 @@ import {
   appendCompareNote,
   COMPARE_NOTES_MAX_CHARS,
   RekeyAuditError,
+  hasMatchingCompareNote,
+  recordContradiction,
+  recordSupersedence,
   type RrfEntry,
 } from "./memory.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
@@ -6755,6 +6758,7 @@ describe("appendCompareNote (0.9.0/02)", () => {
   const sampleEntry = {
     verdict: "scoped",
     target: "page-a",
+    affected: null,
     reason: "different projects",
     judgedAt: "2026-04-30",
     promptVersion: "1",
@@ -7062,5 +7066,962 @@ describe("encodeCompareNotesRichText (0.9.0/02)", () => {
       },
     })
     expect(pageToMemory(page).compareNotes).toBe(notes)
+  })
+})
+
+describe("hasMatchingCompareNote (0.9.0/05)", () => {
+  it("returns false on an empty notes string (no entries to match)", () => {
+    expect(
+      hasMatchingCompareNote("", {
+        target: "page-a",
+        verdict: "scoped",
+        affected: null,
+      }),
+    ).toBe(false)
+  })
+
+  it("returns true when a line matches target, verdict, and affected (symmetric verdict, affected: null on both sides)", () => {
+    const notes = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      affected: null,
+      reason: "different projects",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "scoped",
+        affected: null,
+      }),
+    ).toBe(true)
+  })
+
+  it("returns true for asymmetric verdict when target+verdict+affected all match", () => {
+    const notes = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-a",
+      affected: "page-a",
+      reason: "A loses",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "conflicts_with",
+        affected: "page-a",
+      }),
+    ).toBe(true)
+  })
+
+  it("returns false when target+verdict match but affected differs (corrected-direction re-judgment must re-dispatch)", () => {
+    // The reviewer's #2 finding pinned. After
+    // `(A, B, conflicts_with, affected=B)` the entry on A's notes
+    // is `{target: B, affected: B}`. A corrected call
+    // `(A, B, conflicts_with, affected=A)` queries B's notes for
+    // `{target: A, affected: A}` — and B's notes also have
+    // `{target: A, affected: B}` (the same prior verdict mirrored on
+    // B's side). The mismatch on `affected` MUST surface as no-match
+    // so the dispatch fires and A's confidence finally halves.
+    const notes = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-a",
+      affected: "page-b",
+      reason: "B loses (prior call)",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "conflicts_with",
+        affected: "page-a", // corrected direction
+      }),
+    ).toBe(false)
+  })
+
+  it("returns false when target matches but verdict differs", () => {
+    // Documents the "verdict change is allowed" contract — a prior
+    // `not_conflict` entry must NOT suppress a fresh `conflicts_with`
+    // judgment on the same pair.
+    const notes = JSON.stringify({
+      verdict: "not_conflict",
+      target: "page-a",
+      affected: null,
+      reason: "unrelated",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "conflicts_with",
+        affected: "page-a",
+      }),
+    ).toBe(false)
+  })
+
+  it("returns false when verdict matches but target differs", () => {
+    // Pair-scoped: a `scoped` verdict against a different counterpart
+    // is a different pair entirely. The check must NOT collapse on
+    // verdict alone.
+    const notes = JSON.stringify({
+      verdict: "scoped",
+      target: "page-other",
+      affected: null,
+      reason: "different projects",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "scoped",
+        affected: null,
+      }),
+    ).toBe(false)
+  })
+
+  it("scans every line in a multi-entry NDJSON payload", () => {
+    const notes = [
+      JSON.stringify({ verdict: "scoped", target: "page-other", affected: null }),
+      JSON.stringify({ verdict: "related", target: "page-a", affected: null }),
+      JSON.stringify({ verdict: "compatible", target: "page-third", affected: null }),
+    ].join("\n")
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "related",
+        affected: null,
+      }),
+    ).toBe(true)
+  })
+
+  it("ignores blank lines without breaking the scan", () => {
+    const notes =
+      JSON.stringify({ verdict: "scoped", target: "page-a", affected: null }) +
+      "\n\n" +
+      JSON.stringify({ verdict: "related", target: "page-b", affected: null })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "scoped",
+        affected: null,
+      }),
+    ).toBe(true)
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-b",
+        verdict: "related",
+        affected: null,
+      }),
+    ).toBe(true)
+  })
+
+  it("returns false on a malformed line — does NOT throw and does NOT gate the write", () => {
+    // A malformed line must NOT short-circuit the lookup: the cost of
+    // missing the dedup is one extra audit-trail line; the cost of
+    // suppressing a legitimate dispatch is a silent no-op. So a parse
+    // error skips the line and continues scanning later lines.
+    const notes =
+      "not-json{" +
+      "\n" +
+      JSON.stringify({ verdict: "scoped", target: "page-a", affected: null })
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "page-a",
+        verdict: "scoped",
+        affected: null,
+      }),
+    ).toBe(true)
+  })
+
+  it("treats a legacy entry without an `affected` field as `affected: null` (matches symmetric lookups)", () => {
+    // Legacy entries written before this PR add the field. Coalesce
+    // missing → null so a legacy symmetric-verdict entry still
+    // matches a symmetric lookup and the gate fires correctly.
+    const legacyNotes = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      reason: "legacy",
+      judgedAt: "2026-04-30",
+      promptVersion: "1",
+    })
+    expect(
+      hasMatchingCompareNote(legacyNotes, {
+        target: "page-a",
+        verdict: "scoped",
+        affected: null,
+      }),
+    ).toBe(true)
+  })
+})
+
+describe("MemoryService.recordCompared (0.9.0/05)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeMemoryShape(
+    overrides: {
+      id?: string
+      comparedWith?: string[]
+      compareNotes?: string
+    } = {},
+  ) {
+    return {
+      id: overrides.id ?? "m1",
+      comparedWith: overrides.comparedWith ?? [],
+      compareNotes: overrides.compareNotes ?? "",
+    }
+  }
+
+  it("issues exactly two pages.update calls — one per side — with both Compared With and Compare Notes (symmetric verdict carries affected: null)", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a" }),
+      memoryB: makeMemoryShape({ id: "page-b" }),
+      verdict: "scoped",
+      affected: null,
+      reason: "different projects",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    expect(update).toHaveBeenCalledTimes(2)
+    const calls = update.mock.calls.map((c) => c[0] as {
+      page_id: string
+      properties: Record<string, unknown>
+    })
+    const sideA = calls.find((c) => c.page_id === "page-a")!
+    const sideB = calls.find((c) => c.page_id === "page-b")!
+
+    // Each side names its counterpart in Compared With.
+    expect((sideA.properties["Compared With"] as { relation: { id: string }[] }).relation).toEqual([
+      { id: "page-b" },
+    ])
+    expect((sideB.properties["Compared With"] as { relation: { id: string }[] }).relation).toEqual([
+      { id: "page-a" },
+    ])
+    // Each side carries an NDJSON entry naming the OTHER memory.
+    // Symmetric verdicts persist `affected: null` so the idempotency
+    // gate distinguishes symmetric from asymmetric judgments stored
+    // on the same pair.
+    const notesA = (sideA.properties["Compare Notes"] as {
+      rich_text: Array<{ text: { content: string } }>
+    }).rich_text.map((r) => r.text.content).join("")
+    const notesB = (sideB.properties["Compare Notes"] as {
+      rich_text: Array<{ text: { content: string } }>
+    }).rich_text.map((r) => r.text.content).join("")
+    expect(JSON.parse(notesA)).toMatchObject({
+      target: "page-b",
+      verdict: "scoped",
+      affected: null,
+    })
+    expect(JSON.parse(notesB)).toMatchObject({
+      target: "page-a",
+      verdict: "scoped",
+      affected: null,
+    })
+  })
+
+  it("persists the loser memory's id as `affected` on each side for asymmetric verdicts", async () => {
+    // Direction is part of the pair-scoped idempotency key — both
+    // sides record the loser's id so a corrected re-judgment with a
+    // flipped affected side bypasses the gate and re-dispatches.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a" }),
+      memoryB: makeMemoryShape({ id: "page-b" }),
+      verdict: "conflicts_with",
+      affected: "page-b",
+      reason: "B loses",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    const calls = update.mock.calls.map((c) => c[0] as {
+      page_id: string
+      properties: Record<string, unknown>
+    })
+    for (const call of calls) {
+      const notes = (call.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }).rich_text.map((r) => r.text.content).join("")
+      const entry = JSON.parse(notes) as { affected: string }
+      expect(entry.affected).toBe("page-b")
+    }
+  })
+
+  it("appends the verdict to existing Compare Notes without rewriting earlier entries", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const priorEntry = JSON.stringify({
+      verdict: "not_conflict",
+      target: "page-b",
+      affected: null,
+      reason: "earlier judgment",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a", compareNotes: priorEntry }),
+      memoryB: makeMemoryShape({ id: "page-b" }),
+      verdict: "conflicts_with",
+      affected: "page-b",
+      reason: "actual contradiction",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    const sideA = update.mock.calls
+      .map((c) => c[0] as { page_id: string; properties: Record<string, unknown> })
+      .find((c) => c.page_id === "page-a")!
+    const notes = (sideA.properties["Compare Notes"] as {
+      rich_text: Array<{ text: { content: string } }>
+    }).rich_text.map((r) => r.text.content).join("")
+    const lines = notes.split("\n")
+    expect(lines).toHaveLength(2)
+    expect(JSON.parse(lines[0]!)).toMatchObject({ verdict: "not_conflict" })
+    expect(JSON.parse(lines[1]!)).toMatchObject({ verdict: "conflicts_with" })
+  })
+
+  it("does NOT duplicate the counterpart in Compared With when the relation already includes it", async () => {
+    // A verdict change on a previously-judged pair (`not_conflict` →
+    // `conflicts_with`) replays through `recordCompared` with both
+    // memories' `comparedWith` already populated. The relation list
+    // should NOT grow with a duplicate id — Notion's relation column
+    // is set-semantic but the local compose step de-dupes anyway so
+    // an over-long array isn't sent over the wire.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a", comparedWith: ["page-b"] }),
+      memoryB: makeMemoryShape({ id: "page-b", comparedWith: ["page-a"] }),
+      verdict: "conflicts_with",
+      affected: "page-b",
+      reason: "different verdict on same pair",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    for (const call of update.mock.calls) {
+      const args = call[0] as { properties: Record<string, unknown> }
+      const relation = (args.properties["Compared With"] as {
+        relation: { id: string }[]
+      }).relation
+      // Each side's relation has exactly one entry naming the
+      // counterpart — not two.
+      expect(relation).toHaveLength(1)
+    }
+  })
+
+  it("throws via appendCompareNote when an over-cap append is composed (preflight contract)", async () => {
+    // recordCompared's docstring requires the caller to preflight via
+    // appendCompareNote BEFORE calling. If the caller skips the
+    // preflight, the destructive path inside recordCompared still
+    // catches the overflow — the error surfaces from the helper, NOT
+    // from a partial write at Notion. Verifies that no pages.update
+    // ever fires when the compose step throws.
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    // Pad memoryA's existing notes to within one entry of the cap.
+    const sampleEntry = {
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "x",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    }
+    const entryLen = JSON.stringify(sampleEntry).length
+    const padTo = COMPARE_NOTES_MAX_CHARS - entryLen + 1
+    const overflowing = "a".repeat(padTo)
+
+    await expect(
+      service.recordCompared({
+        memoryA: makeMemoryShape({ id: "page-a", compareNotes: overflowing }),
+        memoryB: makeMemoryShape({ id: "page-b" }),
+        verdict: "scoped",
+        affected: null,
+        reason: "x",
+        judgedAt: "2026-04-30T00:00:00.000Z",
+        promptVersion: "1",
+      }),
+    ).rejects.toThrow(/Compare Notes overflow/)
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("returns { wroteA: true, wroteB: true } on a fresh judgment where neither side has the entry", async () => {
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a" }),
+      memoryB: makeMemoryShape({ id: "page-b" }),
+      verdict: "scoped",
+      affected: null,
+      reason: "fresh",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    expect(result).toEqual({ wroteA: true, wroteB: true })
+    expect(update).toHaveBeenCalledTimes(2)
+  })
+
+  it("per-side idempotent: skips A's pages.update when A's loaded snapshot already carries a matching entry, writes B alone", async () => {
+    // The reviewer's [P2] regression at the service layer. Models a
+    // partial-success state where the prior call landed A's update
+    // but failed on B's. A retry MUST skip A (entry present) and
+    // write B (entry missing). Result: { wroteA: false, wroteB: true }.
+    const partialEntryOnA = JSON.stringify({
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "prior",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordCompared({
+      memoryA: makeMemoryShape({
+        id: "page-a",
+        compareNotes: partialEntryOnA,
+        comparedWith: ["page-b"],
+      }),
+      memoryB: makeMemoryShape({ id: "page-b" }),
+      verdict: "scoped",
+      affected: null,
+      reason: "retry — same target, verdict, affected",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    expect(result).toEqual({ wroteA: false, wroteB: true })
+    expect(update).toHaveBeenCalledTimes(1)
+    expect((update.mock.calls[0]![0] as { page_id: string }).page_id).toBe("page-b")
+  })
+
+  it("per-side idempotent (mirror): skips B and writes A when only B carried the entry", async () => {
+    const partialEntryOnB = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      affected: null,
+      reason: "prior",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a" }),
+      memoryB: makeMemoryShape({
+        id: "page-b",
+        compareNotes: partialEntryOnB,
+        comparedWith: ["page-a"],
+      }),
+      verdict: "scoped",
+      affected: null,
+      reason: "retry",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    expect(result).toEqual({ wroteA: true, wroteB: false })
+    expect(update).toHaveBeenCalledTimes(1)
+    expect((update.mock.calls[0]![0] as { page_id: string }).page_id).toBe("page-a")
+  })
+
+  it("per-side idempotent: returns { wroteA: false, wroteB: false } and issues ZERO updates when both sides already carry the entry", async () => {
+    // The handler-level both-sides gate normally short-circuits before
+    // reaching this method when both sides have the entry, but the
+    // service-level no-op behavior is the safety net. Both flags
+    // false signals "nothing actually written this call."
+    const entryOnA = JSON.stringify({
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "prior",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const entryOnB = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      affected: null,
+      reason: "prior",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordCompared({
+      memoryA: makeMemoryShape({
+        id: "page-a",
+        compareNotes: entryOnA,
+        comparedWith: ["page-b"],
+      }),
+      memoryB: makeMemoryShape({
+        id: "page-b",
+        compareNotes: entryOnB,
+        comparedWith: ["page-a"],
+      }),
+      verdict: "scoped",
+      affected: null,
+      reason: "service-level no-op — handler gate normally short-circuits this",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    expect(result).toEqual({ wroteA: false, wroteB: false })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("per-side idempotency keys on (target, verdict, affected) — a different verdict on the same pair triggers a fresh write on both sides", async () => {
+    // The skip key is (target, verdict, affected), not just target.
+    // A prior `not_conflict` entry must NOT cause a fresh
+    // `conflicts_with` retry to skip the side. Pin: existing
+    // not_conflict on A + empty B → fresh conflicts_with retry
+    // writes both sides.
+    const priorNotConflict = JSON.stringify({
+      verdict: "not_conflict",
+      target: "page-b",
+      affected: null,
+      reason: "earlier",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a", compareNotes: priorNotConflict }),
+      memoryB: makeMemoryShape({ id: "page-b" }),
+      verdict: "conflicts_with",
+      affected: "page-b",
+      reason: "actually a conflict",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    // Both sides write — A appends conflicts_with alongside the
+    // prior not_conflict; B writes its first entry.
+    expect(result).toEqual({ wroteA: true, wroteB: true })
+    expect(update).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("recordContradiction (0.9.0/05)", () => {
+  function memShape(
+    overrides: {
+      id?: string
+      title?: string
+      projectIds?: string[]
+      confidence?: "certain" | "likely" | "speculative"
+      confidenceScore?: number | null
+      lastReferencedAt?: string | null
+      createdAt?: string
+    } = {},
+  ) {
+    return {
+      id: overrides.id ?? "m1",
+      title: overrides.title ?? "Memory",
+      projectIds: overrides.projectIds ?? ["proj-a"],
+      confidence: overrides.confidence ?? ("certain" as const),
+      confidenceScore: overrides.confidenceScore ?? 0.9,
+      lastReferencedAt: overrides.lastReferencedAt ?? "2026-04-30",
+      createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
+    }
+  }
+
+  function makeMockServices(opts: {
+    decrementConfidence?: ReturnType<typeof vi.fn>
+    createWithDedup?: ReturnType<typeof vi.fn>
+    supersede?: ReturnType<typeof vi.fn>
+  } = {}) {
+    return {
+      memories: {
+        decrementConfidence:
+          opts.decrementConfidence ?? vi.fn(async (_m: unknown) => 0.45),
+      },
+      facts: {
+        createWithDedup:
+          opts.createWithDedup ??
+          vi.fn(async (_input: unknown) => ({
+            fact: { id: "fact-1" },
+            deduped: false,
+          })),
+      },
+      decisions: { supersede: opts.supersede ?? vi.fn(async () => undefined) },
+    }
+  }
+
+  it("emits a conflicts_with fact FIRST, then decrements the contradicted memory's confidence", async () => {
+    // Reorder is load-bearing for retry safety: the idempotent
+    // createWithDedup runs first; the non-idempotent decrement runs
+    // last so a fact-create failure leaves nothing destructive landed.
+    // Verified by recording call order via a shared timeline counter.
+    const calls: string[] = []
+    const decrementConfidence = vi.fn(async (_m: unknown) => {
+      calls.push("decrement")
+      return 0.45
+    })
+    const createWithDedup = vi.fn(async (_input: unknown) => {
+      calls.push("fact")
+      return { fact: { id: "fact-1" }, deduped: false }
+    })
+    const services = makeMockServices({ decrementConfidence, createWithDedup })
+
+    const result = await recordContradiction(services, {
+      contradictedMemory: memShape({ id: "loser", title: "Loser" }),
+      sourceMemory: memShape({ id: "winner", title: "Winner" }),
+      judgeConfidence: 0.9,
+    })
+
+    expect(calls).toEqual(["fact", "decrement"])
+    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "loser" })
+    expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+      subject: "Winner",
+      predicate: "conflicts_with",
+      object: "Loser",
+      sourceMemoryId: "winner",
+      confidence: "certain", // judgeConfidence 0.9 → certain (>= 0.85)
+    })
+    expect(result.factId).toBe("fact-1")
+  })
+
+  it("does NOT decrement when the fact create fails (retry-safe — nothing destructive landed)", async () => {
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async (_input: unknown) => {
+      throw new Error("notion 500 — fact create failed")
+    })
+    const services = makeMockServices({ decrementConfidence, createWithDedup })
+
+    await expect(
+      recordContradiction(services, {
+        contradictedMemory: memShape({ id: "loser", title: "L" }),
+        sourceMemory: memShape({ id: "winner", title: "W" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow("notion 500")
+    // Decrement never fires — retry is safe because no destructive
+    // write landed.
+    expect(decrementConfidence).not.toHaveBeenCalled()
+  })
+
+  it("throws CompareDispatchPartialFailureError when fact lands but decrement fails (partial-state)", async () => {
+    const decrementConfidence = vi.fn(async (_m: unknown) => {
+      throw new Error("notion 429 — decrement failed")
+    })
+    const createWithDedup = vi.fn(async (_input: unknown) => ({
+      fact: { id: "fact-99" },
+      deduped: false,
+    }))
+    const services = makeMockServices({ decrementConfidence, createWithDedup })
+
+    const promise = recordContradiction(services, {
+      contradictedMemory: memShape({ id: "loser", title: "L" }),
+      sourceMemory: memShape({ id: "winner", title: "W" }),
+      judgeConfidence: 0.9,
+    })
+    // Typed properties — preserved on the Error subclass for any
+    // structured consumer (e.g., a future operator-side reconciler).
+    await expect(promise).rejects.toMatchObject({
+      name: "CompareDispatchPartialFailureError",
+      step: "fact",
+      affectedMemoryId: "loser",
+      factId: "fact-99",
+    })
+    // Diagnostic fields ALSO interpolated into `.message` so they
+    // survive `toolError`'s message-only forwarding at the MCP
+    // boundary. Pin every field by name+value so a future refactor
+    // that drops them from the message string fails this test.
+    await expect(
+      recordContradiction(services, {
+        contradictedMemory: memShape({ id: "loser", title: "L" }),
+        sourceMemory: memShape({ id: "winner", title: "W" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/step=fact/)
+    await expect(
+      recordContradiction(services, {
+        contradictedMemory: memShape({ id: "loser", title: "L" }),
+        sourceMemory: memShape({ id: "winner", title: "W" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/affectedMemoryId=loser/)
+    await expect(
+      recordContradiction(services, {
+        contradictedMemory: memShape({ id: "loser", title: "L" }),
+        sourceMemory: memShape({ id: "winner", title: "W" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/factId=fact-99/)
+    await expect(
+      recordContradiction(services, {
+        contradictedMemory: memShape({ id: "loser", title: "L" }),
+        sourceMemory: memShape({ id: "winner", title: "W" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/inconsistentState: true/)
+  })
+
+  it("uses the project intersection when both memories belong to multiple projects", async () => {
+    const createWithDedup = vi.fn(async (_input: unknown) => ({
+      fact: { id: "fact-2" },
+      deduped: false,
+    }))
+    const services = makeMockServices({ createWithDedup })
+
+    await recordContradiction(services, {
+      contradictedMemory: memShape({ id: "loser", projectIds: ["P", "Q"] }),
+      sourceMemory: memShape({ id: "winner", projectIds: ["Q", "R"] }),
+      judgeConfidence: undefined,
+    })
+
+    // Intersection is [Q] in winner-first order.
+    expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+      projectIds: ["Q"],
+    })
+  })
+
+  describe("factConfidenceFromJudge boundary mapping", () => {
+    // Pin every threshold of the categorical mapping so a future
+    // refactor re-tuning the cutoffs (e.g., switching to >0.85 vs
+    // >=0.85) breaks the test rather than silently shifting which
+    // emitted facts land at which categorical.
+    it.each([
+      ["undefined", undefined, "likely"],
+      ["below speculative cutoff (0.0)", 0.0, "speculative"],
+      ["just below likely cutoff (0.59)", 0.59, "speculative"],
+      ["exactly at likely cutoff (0.6)", 0.6, "likely"],
+      ["just below certain cutoff (0.84)", 0.84, "likely"],
+      ["exactly at certain cutoff (0.85)", 0.85, "certain"],
+      ["above certain cutoff (1.0)", 1.0, "certain"],
+    ])(
+      "judgeConfidence %s maps to %s",
+      async (_label, judgeConfidence, expected) => {
+        const createWithDedup = vi.fn(async (_input: unknown) => ({
+          fact: { id: `fact-${expected}` },
+          deduped: false,
+        }))
+        const services = makeMockServices({ createWithDedup })
+
+        await recordContradiction(services, {
+          contradictedMemory: memShape({ id: "loser", title: "L" }),
+          sourceMemory: memShape({ id: "winner", title: "W" }),
+          judgeConfidence: judgeConfidence as number | undefined,
+        })
+
+        expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+          confidence: expected,
+        })
+      },
+    )
+  })
+})
+
+describe("recordSupersedence (0.9.0/05)", () => {
+  function memShape(
+    overrides: {
+      id?: string
+      title?: string
+      projectIds?: string[]
+      confidence?: "certain" | "likely" | "speculative"
+      confidenceScore?: number | null
+      lastReferencedAt?: string | null
+      createdAt?: string
+    } = {},
+  ) {
+    return {
+      id: overrides.id ?? "m1",
+      title: overrides.title ?? "Memory",
+      projectIds: overrides.projectIds ?? ["proj-a"],
+      confidence: overrides.confidence ?? ("certain" as const),
+      confidenceScore: overrides.confidenceScore ?? 0.9,
+      lastReferencedAt: overrides.lastReferencedAt ?? "2026-04-30",
+      createdAt: overrides.createdAt ?? "2026-04-29T00:00:00.000Z",
+    }
+  }
+
+  function makeMockServices(opts: {
+    decrementConfidence?: ReturnType<typeof vi.fn>
+    createWithDedup?: ReturnType<typeof vi.fn>
+    supersede?: ReturnType<typeof vi.fn>
+  } = {}) {
+    return {
+      memories: {
+        decrementConfidence:
+          opts.decrementConfidence ?? vi.fn(async (_m: unknown) => 0.45),
+      },
+      facts: {
+        createWithDedup:
+          opts.createWithDedup ??
+          vi.fn(async (_input: unknown) => ({
+            fact: { id: "fact-9" },
+            deduped: false,
+          })),
+      },
+      decisions: { supersede: opts.supersede ?? vi.fn(async () => undefined) },
+    }
+  }
+
+  it("calls decisions.supersede(winner.id, loser.id) before fact emission and decrement", async () => {
+    // The reviewer's #1 finding: prior implementation skipped this
+    // step, so the new decision's Supersedes relation was never
+    // updated and the old decision's Status stayed at "accepted." Pin
+    // the call order: supersede → fact → decrement.
+    const calls: string[] = []
+    const supersede = vi.fn(async () => {
+      calls.push("supersede")
+    })
+    const createWithDedup = vi.fn(async (_input: unknown) => {
+      calls.push("fact")
+      return { fact: { id: "fact-9" }, deduped: false }
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => {
+      calls.push("decrement")
+      return 0.45
+    })
+    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+
+    const result = await recordSupersedence(services, {
+      supersedingMemory: memShape({ id: "new-decision", title: "Use JWT" }),
+      supersededMemory: memShape({ id: "old-decision", title: "Use sessions" }),
+      judgeConfidence: 0.95,
+    })
+
+    expect(calls).toEqual(["supersede", "fact", "decrement"])
+    expect(supersede).toHaveBeenCalledWith("new-decision", "old-decision")
+    expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
+      id: "old-decision",
+    })
+    // Fact uses IDs (matching `lore-decision action='supersede'`'s
+    // existing shape) so the supersession edge in the decision graph
+    // is canonically identified by id, not title.
+    expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+      subject: "new-decision",
+      predicate: "supersedes_decision",
+      object: "old-decision",
+      sourceMemoryId: "new-decision",
+      confidence: "certain",
+    })
+    expect(result.factId).toBe("fact-9")
+  })
+
+  it("throws CompareDispatchPartialFailureError(step: 'supersede') when fact create fails after decisions.supersede landed — diagnostic fields embedded in message", async () => {
+    const supersede = vi.fn(async () => undefined)
+    const createWithDedup = vi.fn(async (_input: unknown) => {
+      throw new Error("notion 429 — fact create failed")
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+
+    await expect(
+      recordSupersedence(services, {
+        supersedingMemory: memShape({ id: "new", title: "N" }),
+        supersededMemory: memShape({ id: "old", title: "O" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toMatchObject({
+      name: "CompareDispatchPartialFailureError",
+      step: "supersede",
+      affectedMemoryId: "old",
+    })
+    // Message-side pins so the operator's view through the MCP
+    // boundary carries enough context to manually create the
+    // missing supersedes_decision fact.
+    await expect(
+      recordSupersedence(services, {
+        supersedingMemory: memShape({ id: "new", title: "N" }),
+        supersededMemory: memShape({ id: "old", title: "O" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/step=supersede/)
+    await expect(
+      recordSupersedence(services, {
+        supersedingMemory: memShape({ id: "new", title: "N" }),
+        supersededMemory: memShape({ id: "old", title: "O" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/affectedMemoryId=old/)
+    await expect(
+      recordSupersedence(services, {
+        supersedingMemory: memShape({ id: "new", title: "N" }),
+        supersededMemory: memShape({ id: "old", title: "O" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow(/supersedingMemoryId=new/)
+    expect(decrementConfidence).not.toHaveBeenCalled()
+  })
+
+  it("throws CompareDispatchPartialFailureError(step: 'fact') when decrement fails after supersede + fact landed", async () => {
+    const supersede = vi.fn(async () => undefined)
+    const createWithDedup = vi.fn(async (_input: unknown) => ({
+      fact: { id: "fact-99" },
+      deduped: false,
+    }))
+    const decrementConfidence = vi.fn(async (_m: unknown) => {
+      throw new Error("notion 429 — decrement failed")
+    })
+    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+
+    await expect(
+      recordSupersedence(services, {
+        supersedingMemory: memShape({ id: "new", title: "N" }),
+        supersededMemory: memShape({ id: "old", title: "O" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toMatchObject({
+      name: "CompareDispatchPartialFailureError",
+      step: "fact",
+      affectedMemoryId: "old",
+      factId: "fact-99",
+    })
+  })
+
+  it("does NOT call fact create or decrement when decisions.supersede itself fails", async () => {
+    const supersede = vi.fn(async () => {
+      throw new Error("notion 500 — supersede failed")
+    })
+    const createWithDedup = vi.fn(async (_input: unknown) => ({
+      fact: { id: "fact-99" },
+      deduped: false,
+    }))
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+
+    await expect(
+      recordSupersedence(services, {
+        supersedingMemory: memShape({ id: "new", title: "N" }),
+        supersededMemory: memShape({ id: "old", title: "O" }),
+        judgeConfidence: 0.9,
+      }),
+    ).rejects.toThrow("notion 500")
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(decrementConfidence).not.toHaveBeenCalled()
   })
 })
