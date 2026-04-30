@@ -34,6 +34,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
 | `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
 | `decay.ts` | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor`. The migration in `confidence-migration.ts` consumes `seedConfidenceScore` + `decayConfidenceScore` for baseline backfill |
+| `topic-key.ts` | `suggestTopicKey()` | Pure heuristic over (title, kind) → kebab-case `${family}/${noun-phrase}` key (issue 0.9.0/#07). No I/O, no Notion access. Backs `lore-memory action='suggest-topic-key'`. Family from a closed `Record<MemoryKind, string \| null>` — `note` and `task` map to `null`. Noun phrase is the title's first 4 tokens after NFKD ASCII fold + stoplist + preposition-break filtering, with `YYYY-MM-DD` dates pre-stripped, then truncated at a 48-char hyphen-aware boundary. Deterministic; same input always returns the same key |
 
 ## Service Class Pattern
 

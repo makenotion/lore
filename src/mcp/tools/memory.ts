@@ -30,6 +30,7 @@ import {
 } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
+import { suggestTopicKey, type TopicKeySuggestion } from "../../core/topic-key.js"
 import type { TaskSummary } from "../../types.js"
 
 type ToolResult = {
@@ -80,6 +81,54 @@ const KINDS = [
   "policy",
 ] as const
 
+/**
+ * Full `MemoryKind` set accepted by `lore-memory action='suggest-topic-key'`.
+ * Includes `task` (which `KINDS` deliberately excludes — task memories are
+ * written via `lore-task action='create'`, not `lore-memory`) because the
+ * suggester returns a no-suggestion verdict for task / note kinds rather
+ * than rejecting them, and an agent that has just received `kind: "task"`
+ * from upstream should be able to ask for a key without first having to
+ * special-case the kind. The flat `inputSchema`'s `kind` field uses this
+ * broader enum so the MCP-visible surface accepts any kind the tool can
+ * reason about; per-arm validation in the discriminated union narrows
+ * back to `KINDS` for save / update.
+ *
+ * `satisfies readonly MemoryKind[]` plus `_SuggestKindExhaustive` below
+ * mirror the `Record<MemoryKind, string | null>` exhaustiveness contract
+ * in `src/core/topic-key.ts` at this MCP boundary: adding a new
+ * `MemoryKind` without adding it here is a compile error, not a silent
+ * runtime rejection from Zod.
+ */
+const SUGGEST_KIND_VALUES = [
+  "note",
+  "decision",
+  "incident",
+  "runbook",
+  "postmortem",
+  "policy",
+  "task",
+] as const satisfies readonly MemoryKind[]
+
+/**
+ * Compile-time exhaustiveness assertion: `SUGGEST_KIND_VALUES` MUST
+ * cover every `MemoryKind`. The function below requires its argument
+ * type to extend `(typeof SUGGEST_KIND_VALUES)[number]`; calling it
+ * with `null as unknown as MemoryKind` forces `tsc` to verify that
+ * every `MemoryKind` is assignable to the union of literals — a
+ * subset relationship the `as const satisfies readonly MemoryKind[]`
+ * annotation above does NOT enforce on its own.
+ *
+ * Adding a new `MemoryKind` without updating `SUGGEST_KIND_VALUES`
+ * fails the assignment in this call, breaking the build. The runtime
+ * cost is one no-op function call that DCE strips at bundle time.
+ */
+function _assertSuggestKindCovers(
+  _kind: (typeof SUGGEST_KIND_VALUES)[number],
+): void {
+  // intentionally empty
+}
+_assertSuggestKindCovers(null as unknown as MemoryKind)
+
 const STATUSES = [
   "informational",
   "proposed",
@@ -99,7 +148,8 @@ const EXPAND_MAX_IDS = 20
 
 // -------------------------------------------------------------------------
 // Handlers — one per `lore-memory` action (save | update | archive |
-// expand). Routed by the polymorphic dispatcher's discriminated union.
+// expand | suggest-topic-key). Routed by the polymorphic dispatcher's
+// discriminated union.
 // -------------------------------------------------------------------------
 
 interface SaveArgs {
@@ -565,6 +615,37 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
   }
 }
 
+interface SuggestTopicKeyArgs {
+  title: string
+  kind: (typeof SUGGEST_KIND_VALUES)[number]
+}
+
+/**
+ * Render a `TopicKeySuggestion` as the two-line tool response
+ * documented in 0.9.0/07. Distinguishes "suggestion" from "no
+ * suggestion" cleanly so the agent can branch on the first line
+ * (`Suggested topic key:` vs `No suggestion`) without parsing the
+ * reason.
+ */
+function renderSuggestKeyResult(result: TopicKeySuggestion): ToolResult {
+  const lines =
+    result.key !== null
+      ? [`Suggested topic key: ${result.key}`, `Reason: ${result.reason}`]
+      : [`No suggestion — leave topicKey unset.`, `Reason: ${result.reason}`]
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+  }
+}
+
+function handleSuggestTopicKey(args: SuggestTopicKeyArgs): ToolResult {
+  try {
+    const result = suggestTopicKey({ title: args.title, kind: args.kind })
+    return renderSuggestKeyResult(result)
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
 async function handleArchive(
   services: LoreServices,
   args: { memoryId: string },
@@ -970,6 +1051,11 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     action: z.literal("expand"),
     ids: z.array(z.string().uuid()).min(1).max(EXPAND_MAX_IDS),
   }),
+  z.object({
+    action: z.literal("suggest-topic-key"),
+    title: z.string(),
+    kind: z.enum(SUGGEST_KIND_VALUES),
+  }),
 ])
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
@@ -981,23 +1067,26 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     {
       title: "Memory operations",
       description:
-        "Save, update, archive, or batch-expand memories. Action-dispatched:\n\n" +
+        "Save, update, archive, batch-expand, or suggest a topic key for memories. Action-dispatched:\n\n" +
         "- `action: 'save'` — create a new memory page in the vault. Runs a near-duplicate probe in parallel.\n" +
         "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched.\n" +
         "- `action: 'archive'` — soft-delete a memory by ID (Notion archive flag).\n" +
-        "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n\n" +
+        "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
+        "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. No I/O. Once topic-key upsert lands (0.9.0/06), the suggestion can be passed to `action: 'save'` as `topicKey`; until then it is informational. Notes and tasks return no suggestion.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {
         action: z
-          .enum(["save", "update", "archive", "expand"])
-          .describe("Operation: save (create), update, archive, or expand (batch body fetch)."),
+          .enum(["save", "update", "archive", "expand", "suggest-topic-key"])
+          .describe(
+            "Operation: save (create), update, archive, expand (batch body fetch), or suggest-topic-key (heuristic key generator).",
+          ),
         // save
         title: z
           .string()
           .optional()
           .describe(
-            "Required for action='save'; new title for action='update'. Short, descriptive.",
+            "Required for action='save' and action='suggest-topic-key'; new title for action='update'. Short, descriptive.",
           ),
         content: z
           .string()
@@ -1042,10 +1131,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .optional()
           .describe("(action='save') How this memory was captured. Default: conversation."),
         kind: z
-          .enum(KINDS)
+          .enum(SUGGEST_KIND_VALUES)
           .optional()
           .describe(
-            "(save | update) Memory kind (default: note on save). Use lore-decision for decisions.",
+            "(save | update | suggest-topic-key) Memory kind (default: note on save). " +
+              "Use lore-decision for decisions; lore-task for tasks. " +
+              "Required for action='suggest-topic-key', which accepts the full kind set; " +
+              "save and update reject 'task' (tasks are owned by lore-task).",
           ),
         status: z
           .enum(STATUSES)
@@ -1124,6 +1216,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           return handleArchive(services, parsed.data)
         case "expand":
           return handleExpand(services, parsed.data)
+        case "suggest-topic-key":
+          return handleSuggestTopicKey(parsed.data)
       }
     },
   )

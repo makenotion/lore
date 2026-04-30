@@ -382,6 +382,134 @@ describe("lore-memory polymorphic dispatcher", () => {
     } as never)
     expect(memoriesCreate).toHaveBeenCalled()
   })
+
+  // -----------------------------------------------------------------------
+  // lore-memory action='suggest-topic-key' (issue 0.9.0/07)
+  //
+  // Pure heuristic over (title, kind). No I/O, no service touch — the
+  // handler routes directly through `suggestTopicKey` from
+  // `src/core/topic-key.ts`. These dispatch tests pin: the action
+  // reaches the renderer, the response distinguishes suggestion vs.
+  // no-suggestion cleanly, and the discriminated union enforces both
+  // required fields against the broader 7-kind enum.
+  // -----------------------------------------------------------------------
+
+  it("dispatches action='suggest-topic-key' and renders the suggested key + reason", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "JWT auth model with refresh tokens",
+      kind: "decision",
+    } as never)
+    const text = extractText(result)
+    expect(text).toContain("Suggested topic key: decision/jwt-auth-model")
+    expect(text).toContain("Reason:")
+  })
+
+  it("renders the no-suggestion branch for kind='note'", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "Quick observation about caching",
+      kind: "note",
+    } as never)
+    const text = extractText(result)
+    expect(text).toContain("No suggestion")
+    expect(text.toLowerCase()).toContain("note")
+  })
+
+  it("renders the no-suggestion branch for kind='task'", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "Investigate PR #25750",
+      kind: "task",
+    } as never)
+    const text = extractText(result)
+    expect(text).toContain("No suggestion")
+    expect(text.toLowerCase()).toContain("task")
+  })
+
+  it("rejects action='suggest-topic-key' without title", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      kind: "decision",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-memory")
+    expect(extractText(result)).toContain("title")
+  })
+
+  it("rejects action='suggest-topic-key' without kind", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "JWT auth model",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-memory")
+    expect(extractText(result)).toContain("kind")
+  })
+
+  it("rejects action='suggest-topic-key' with unknown kind", async () => {
+    // Out-of-vocab kinds fail at the discriminated-union boundary
+    // rather than reaching `suggestTopicKey` — pins the Zod enum
+    // gate.
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "Some title",
+      kind: "fabrication",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-memory")
+  })
+
+  it("issues no Notion service calls on action='suggest-topic-key' (pure helper)", async () => {
+    // The handler is a pure heuristic — pin that no service method on
+    // the LoreServices stub fires when the dispatcher routes through
+    // it. Catches any future regression that re-couples the handler to
+    // service state (e.g. an over-eager session-memory record).
+    const memoriesCreate = vi.fn()
+    const memoriesUpdate = vi.fn()
+    const memoriesArchive = vi.fn()
+    const memoriesGetById = vi.fn()
+    const memoriesList = vi.fn()
+    const memoriesSearch = vi.fn()
+    const factsCreateWithDedup = vi.fn()
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server,
+      makeServices({
+        memoriesCreate,
+        memoriesUpdate,
+        memoriesArchive,
+        memoriesGetById,
+        memoriesList,
+        memoriesSearch,
+        factsCreateWithDedup,
+      }) as never,
+    )
+    await mock.get("lore-memory")({
+      action: "suggest-topic-key",
+      title: "Database migration for shard split",
+      kind: "runbook",
+    } as never)
+    expect(memoriesCreate).not.toHaveBeenCalled()
+    expect(memoriesUpdate).not.toHaveBeenCalled()
+    expect(memoriesArchive).not.toHaveBeenCalled()
+    expect(memoriesGetById).not.toHaveBeenCalled()
+    expect(memoriesList).not.toHaveBeenCalled()
+    expect(memoriesSearch).not.toHaveBeenCalled()
+    expect(factsCreateWithDedup).not.toHaveBeenCalled()
+  })
 })
 
 // -------------------------------------------------------------------------
