@@ -166,6 +166,134 @@ The rule of thumb: **write the categorical to express your stance; let the numer
 - When a new decision supersedes an older one → `lore-decide` with `supersedesIds` or `lore-supersede`. **Supersession also halves the superseded decision's `Confidence Score` (0.8.0+) — the earlier decision still exists for historical reading but retrieval ranks against it.**
 - When you identify work that needs to happen but is out of scope → `lore-task action='create'` (with `state: "open"` and an `entity` naming the subject)
 
+### Conflict verdicts (0.9.0+)
+
+`lore-memory action='compare'` accepts six verdicts on a memory
+pair. The vocabulary is frozen — the same wording matches
+engram's protocol so cross-system reasoning stays portable.
+
+`memoryIdA` and `memoryIdB` are unordered labels — the order
+does NOT encode direction. For asymmetric verdicts
+(`conflicts_with`, `supersedes`), pass `affectedMemoryId` to
+name the memory whose `Confidence Score` halves. For
+symmetric verdicts, omit `affectedMemoryId`.
+
+- **`conflicts_with` (asymmetric)** — A and B make incompatible
+  factual claims about the same subject in the same scope.
+  Pass `affectedMemoryId` naming the contradicted memory (the
+  one to lose confidence). Routes through `lore-correct`:
+  affected memory's `Confidence Score` halves, the
+  contradiction is recorded as a fact (subject = winner, object
+  = loser).
+- **`supersedes` (asymmetric)** — Decision-kind affected
+  targets ONLY. The other memory is the later, more accurate
+  statement; the affected (decision) memory should be retired.
+  Pass `affectedMemoryId` naming the superseded decision.
+  Routes through `lore-supersede`: affected memory's
+  `Confidence Score` halves, a `supersedes_decision` fact is
+  emitted. For non-decision affected targets, use `compatible`
+  and manually edit one body to incorporate the other via
+  `lore-memory action='update'` (no structured merge primitive
+  ships — `update` is a body-edit surface, not a merge engine),
+  OR promote to a formal decision via `lore-decision
+  action='create'` with `supersedesIds`. Calling `compare` with
+  `verdict: 'supersedes'` and a non-decision affected memory
+  throws.
+- **`scoped` (symmetric)** — A and B differ but the
+  differences are explained by scope (project, time,
+  environment). Recorded via `Compared With` and `Compare
+  Notes` (no confidence change). Omit `affectedMemoryId`.
+- **`related` (symmetric)** — A and B share a subject but make
+  non-overlapping claims. `Compared With` and `Compare Notes`
+  only. Omit `affectedMemoryId`.
+- **`compatible` (symmetric)** — A and B make near-identical
+  claims. Redundant but not in conflict. `Compared With` and
+  `Compare Notes` only. **Consider `lore-memory
+  action='update'` to merge one's body into the other if one
+  is clearly canonical.** Omit `affectedMemoryId`.
+- **`not_conflict` (symmetric)** — A and B are about unrelated
+  subjects. `Compared With` and `Compare Notes` only. Omit
+  `affectedMemoryId`. The candidate generator surfaced them by
+  shallow signal; the verdict closes the case.
+
+When `lore conflicts scan` returns candidate pairs, judge each
+pair using the verdict definitions above and call `lore-memory
+action='compare'` once per pair. The four non-actionable verdicts
+record "we've judged this, don't re-ask" — the next scan skips
+them.
+
+### Topic keys for evolving memories (0.9.0+)
+
+When saving a memory about a *recurring topic* — a governance
+decision that may revise, a runbook that gets refined, a policy
+that evolves — pass `topicKey` to `lore-memory action='save'`.
+The save upserts on `(Topic Key + Project-set equality)`: if a
+memory with that key AND identical project relation set already
+exists, the new content appends as a revision block to the
+existing page (incrementing `Revision Count`) rather than
+creating a new row.
+
+Use stable kebab-case paths grouped by family. The family
+prefixes match the closed `MemoryKind` set:
+
+- `decision/jwt-auth-model`, `decision/database-choice`
+- `runbook/database-migration`, `runbook/incident-response`
+- `incident/login-redirect-502`, `incident/payment-cascade`
+- `postmortem/payment-gateway-timeout`
+- `policy/code-review-min-reviewers`, `policy/data-retention`
+
+If unsure of the right key, call `lore-memory
+action='suggest-topic-key'` with the title and kind. The
+suggester returns a stable key derived from the title's noun
+phrase plus the kind family.
+
+**Do NOT use `topicKey` on `kind: 'note'` or `kind: 'task'`.**
+The suggester returns null for both — notes are the catch-all
+default and don't form recurring topics; tasks transition through
+lifecycle states, not revisions. The kind is preserved across
+upsert calls; saving with a different `kind` against an existing
+upsert chain is rejected at the save path. Topic keys are for
+*categories* of recurring writes, not for individual saves.
+
+When the upserted memory's body grows past ~5KB, consider calling
+`lore-decision action='create'` with `supersedesIds` referencing
+the upserted memory — promote the synthesis into a formal
+decision and let the upsert chain retire.
+
+### Passive learning extraction (0.9.0+)
+
+The Stop-triggered background autosave (see `src/hooks/AGENTS.md`)
+already spawns a detached `claude -p` sub-agent that reviews the
+session transcript and saves a session synopsis. In 0.9.0 the
+sub-agent prompt is extended (#08) so it ALSO identifies atomic
+learnings — single-fact discoveries that would help a future
+session — and saves each as its own memory alongside the
+synopsis.
+
+This is invisible to you in the foreground. You do NOT write a
+visible `## Key Learnings:` section in your responses; that
+would pollute user-facing output with boilerplate. Extraction
+happens out-of-band in the background sub-agent.
+
+**What this means for you:**
+
+- Continue calling `lore-remember` / `lore-decide` explicitly
+  for the things you specifically want preserved — the autosave
+  extraction is a safety net, not a replacement.
+- **Do not** double-save: if you already called
+  `lore-remember` for a discovery, the autosave prompt is
+  instructed to check for near-matches and skip its own write
+  when it finds one (best-effort, prompt-only — duplicates
+  are still possible).
+- **Do not** add a `## Key Learnings:` section at the end of
+  your responses. That's an engram-style convention; lore's
+  extraction is invisible.
+
+Operators who want to disable extraction set
+`LORE_DISABLE_LEARNING_EXTRACTION=1` or
+`hooks.learningExtraction: false` in `.lore.yaml`. Disabling
+turns the autosave back into the 0.8.x synopsis-only shape.
+
 ### Tasks
 
 - **Use `lore-task action='create'`** when work needs tracking across sessions — open PRs, blocked dependencies, follow-up investigations. Tasks are the canonical surface for tracked work; the description goes in the page body and the entity is structurally indexed.
@@ -246,7 +374,8 @@ When working in this project, you have access to `lore-*` MCP tools. Use them:
 - **When an entity is about to be edited**: call `lore-decision-context` with the entity name to surface governing decisions first.
 - **When saving general knowledge** (not a formal decision): call `lore-remember` for gotchas, workarounds, debugging insights.
 - **When learning facts**: call `lore-learn` to record entity relationships (e.g., "MemoryService uses dataSources.query")
-- **At session end**: the SessionEnd autosave hook fires a background save automatically — no manual call required
+- **When two memories appear in tension** (a scan surfaces them, or you notice the conflict mid-task): call `lore-memory action='compare'` with one of the six verdicts. See "Conflict verdicts" above.
+- **At session end**: the Stop autosave hook fires a background save automatically — no manual call required
 
 ### Scheduled digest synthesis
 
