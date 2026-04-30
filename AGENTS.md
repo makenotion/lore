@@ -260,6 +260,36 @@ When the upserted memory's body grows past ~5KB, consider calling
 the upserted memory — promote the synthesis into a formal
 decision and let the upsert chain retire.
 
+**Repair path: re-keying a misnamed first save.** Pass `topicKey`
+to `lore-memory action='update'` to switch the existing row's
+`Topic Key` without abandoning the page. The MCP handler
+preflights the re-key (collision check + non-empty `projectIds`)
+before any other content delta runs, so a rejection on
+`projectIds: []` or a collision under the existing project-set
+fails fast without partially persisting a content update. The
+re-key itself appends a `## Re-keyed (YYYY-MM-DD)` audit block
+to the body, deliberately distinct from the upsert's
+`## Revision N (date)` prefix so identity events stay
+distinguishable from content events. `Revision Count` is NOT
+bumped — re-keying is identity surgery, not content evolution.
+Combining `topicKey` with `kind` in a single update is rejected
+because the upsert chain is per-kind; if you genuinely need to
+change both, issue two separate calls.
+
+When `lore-memory action='update'` includes BOTH `topicKey` and
+a content delta (title/body/tags/etc.), the handler applies the
+content update first and the re-key second so the audit block
+lands as the LAST write to the body. If the post-update re-key
+fails (race with another agent grabbing the slot, transient
+Notion property-write failure), the handler raises a
+`PartialUpdateError` whose message names the partial state —
+the content update persisted on Notion; the re-key did not.
+Re-issue the re-key (without the content delta) once the
+underlying issue is resolved. A separate failure mode,
+`RekeyAuditError`, signals the inverse: the re-key persisted
+but the audit-block append failed. Both are
+`instanceof`-checkable.
+
 ### Passive learning extraction (0.9.0+)
 
 The Stop-triggered background autosave (see `src/hooks/AGENTS.md`)

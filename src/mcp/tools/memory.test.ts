@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
 import { registerQueryTools } from "./query.js"
+import { RekeyAuditError } from "../../core/memory.js"
 import type { Memory, Topic } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
@@ -4336,5 +4337,514 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     expect(text).toContain("topicKey")
     expect(create).not.toHaveBeenCalled()
     expect(upsertByTopicKey).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", () => {
+  // Conservative re-key path: an agent that picks the wrong topic
+  // key on first save can switch to the canonical key without
+  // abandoning the row. The MCP-layer tests pin the dispatch
+  // contract — `handleUpdate` must reject `topicKey + kind` BEFORE
+  // any I/O, preflight the re-key via `validateRekey` BEFORE any
+  // mutation, dispatch content delta + `rekeyTopicKey` in that
+  // order so the audit block isn't clobbered, skip
+  // `services.memories.update` entirely on a pure re-key, and
+  // wrap re-key failures during a combined update in a structured
+  // `PartialUpdateError`.
+
+  /**
+   * Default `validateRekey` mock used across the re-keying tests.
+   * Returns `willRekey: true` and a placeholder old key. Tests that
+   * want different preflight behavior pass their own
+   * `validateRekey` instead.
+   */
+  function defaultValidateRekey(oldTopicKey: string) {
+    return vi.fn().mockResolvedValue({
+      memory: makeMemory("mem-1", { topicKey: oldTopicKey, projectIds: ["P1"] }),
+      oldTopicKey,
+      willRekey: true,
+    })
+  }
+
+  it("re-keys a memory and renders the rename in the response footer", async () => {
+    const mockServer = createMockServer()
+    const rekeyResult = {
+      memory: makeMemory("mem-1", {
+        title: "Use JWT auth",
+        topicKey: "decision/jwt-auth-model",
+        projectIds: ["P1"],
+      }),
+      oldTopicKey: "decision/jwt-auth",
+    }
+    const validateRekey = defaultValidateRekey("decision/jwt-auth")
+    const rekeyTopicKey = vi.fn().mockResolvedValue(rekeyResult)
+    const update = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/jwt-auth-model",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(validateRekey).toHaveBeenCalledWith({
+      memoryId: "mem-1",
+      newTopicKey: "decision/jwt-auth-model",
+    })
+    expect(rekeyTopicKey).toHaveBeenCalledWith({
+      memoryId: "mem-1",
+      newTopicKey: "decision/jwt-auth-model",
+    })
+    // Pure re-key (no other fields set) → `services.memories.update`
+    // must NOT fire. Pin verifies the framing-fields-only delta
+    // after destructuring has zero residual keys.
+    expect(update).not.toHaveBeenCalled()
+    expect(text).toContain(
+      "Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'",
+    )
+    expect(text).toContain("Audit block appended to body.")
+  })
+
+  it("no-op when newTopicKey matches existing: skips rekeyTopicKey entirely and surfaces 'Topic key unchanged' acknowledgment", async () => {
+    // The preflight `validateRekey` returns `willRekey: false` when
+    // the new key matches the existing one. The handler must skip
+    // the actual `rekeyTopicKey` call (no body write, no property
+    // write) AND surface a `Topic key unchanged` line so the
+    // operator can see the call was received and recognized as a
+    // no-op rather than silently dropped.
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn().mockResolvedValue({
+      memory: makeMemory("mem-1", {
+        topicKey: "decision/jwt-auth",
+        projectIds: ["P1"],
+      }),
+      oldTopicKey: "decision/jwt-auth",
+      willRekey: false,
+    })
+    const rekeyTopicKey = vi.fn()
+    const update = vi.fn()
+    const getById = vi.fn().mockResolvedValue(
+      makeMemory("mem-1", {
+        title: "Use JWT auth",
+        topicKey: "decision/jwt-auth",
+        projectIds: ["P1"],
+      }),
+    )
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/jwt-auth",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(validateRekey).toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+    expect(text).toContain("Topic key unchanged: 'decision/jwt-auth'")
+    expect(text).not.toContain("Re-keyed:")
+    expect(text).not.toContain("Audit block appended")
+  })
+
+  it("rejects combined topicKey + kind BEFORE any I/O", async () => {
+    // The combined-update guard is the load-bearing identity rule:
+    // re-keying preserves the upsert-chain identity (kind is part
+    // of identity), so a `topicKey + kind` call would smuggle a
+    // kind change through the residual update path and split the
+    // chain across two kinds. Mock every Notion-touching service
+    // method and assert NONE fires — the throw lands at the handler
+    // boundary before the preflight, the rekey, or any update.
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn()
+    const rekeyTopicKey = vi.fn()
+    const update = vi.fn()
+    const getById = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new-key",
+      kind: "decision",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toMatch(/Cannot combine `topicKey` \(re-key\) with `kind`/)
+    expect(validateRekey).not.toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it("combined re-key + content update: preflight first, then content update, then re-key", async () => {
+    // Re-key + body update in one call. The preflight `validateRekey`
+    // fires BEFORE any mutation so collision/empty-projectIds
+    // failures surface without leaving a partial content update.
+    // After preflight passes, content update fires SECOND and the
+    // re-key fires THIRD — so the audit-block append by
+    // `rekeyTopicKey` lands as the LAST write to the body.
+    //
+    // Reversing the latter two (re-key, then content update) was
+    // the original spec but is load-bearing buggy:
+    // `MemoryService.update`'s `replace_content` rewrites the FULL
+    // body with the caller's `content` arg, which silently clobbers
+    // the `## Re-keyed (date)` audit block that `rekeyTopicKey` had
+    // just appended. The integration-style service test (in
+    // `memory.test.ts`) verifies the final markdown contains both
+    // the new content AND the audit block under this fixed order.
+    //
+    // Pinning all three call points keeps a future refactor that
+    // moves the preflight (or drops it) honest.
+    const mockServer = createMockServer()
+    const rekeyResult = {
+      memory: makeMemory("mem-1", {
+        title: "Use JWT auth",
+        topicKey: "decision/jwt-auth-model",
+        projectIds: ["P1"],
+      }),
+      oldTopicKey: "decision/jwt-auth",
+    }
+    const updated = makeMemory("mem-1", {
+      title: "Use JWT auth (revised)",
+      topicKey: "decision/jwt-auth-model",
+      projectIds: ["P1"],
+    })
+    const callOrder: string[] = []
+    const validateRekey = vi.fn().mockImplementation(async () => {
+      callOrder.push("validate")
+      return {
+        memory: makeMemory("mem-1", {
+          topicKey: "decision/jwt-auth",
+          projectIds: ["P1"],
+        }),
+        oldTopicKey: "decision/jwt-auth",
+        willRekey: true,
+      }
+    })
+    const update = vi.fn().mockImplementation(async () => {
+      callOrder.push("update")
+      return updated
+    })
+    const rekeyTopicKey = vi.fn().mockImplementation(async () => {
+      callOrder.push("rekey")
+      return rekeyResult
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/jwt-auth-model",
+      content: "New body content",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Order pin: preflight → content update → re-key. A future
+    // refactor that flips update/rekey would silently clobber the
+    // audit block; one that drops the preflight would re-introduce
+    // the partial-persist gap on collision/empty-projectIds.
+    expect(callOrder).toEqual(["validate", "update", "rekey"])
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ content: "New body content" }),
+    )
+    // Pin that the residual `update` call does NOT include
+    // `Revision Count` — the rekey path must not bump the counter,
+    // and the content-update path forwards only the user-supplied
+    // fields. Reading the entire arg shape here (rather than
+    // `expect.objectContaining`) so a future contributor that
+    // accidentally threads `revisionCount` through would break this
+    // test.
+    const updateArgs = update.mock.calls[0][1] as Record<string, unknown>
+    expect("revisionCount" in updateArgs).toBe(false)
+    expect("Revision Count" in updateArgs).toBe(false)
+    expect(text).toContain(
+      "Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'",
+    )
+  })
+
+  it("surfaces a collision error from validateRekey BEFORE any content update lands", async () => {
+    // The preflight catches collisions before the content delta
+    // runs, so the operator sees a clean rejection rather than a
+    // PartialUpdateError. This is the common case the preflight
+    // exists to address.
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn().mockRejectedValue(
+      new Error(
+        "Re-key target 'decision/new' is already in use by " +
+          "memory mem-collider in this project-set. " +
+          "Lore does not auto-merge — archive one or pick a different key.",
+      ),
+    )
+    const rekeyTopicKey = vi.fn()
+    const update = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new",
+      content: "New body that should NOT land",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("mem-collider")
+    expect(text).toMatch(/already in use/)
+    // The whole point of the preflight: the content update never
+    // runs when the re-key is structurally invalid against the
+    // current state.
+    expect(update).not.toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
+  })
+
+  it("partial-persist: content delta lands but re-key rejects post-update → throws PartialUpdateError", async () => {
+    // The race window the reviewer flagged: preflight passes (no
+    // collision against pre-update state), the content update
+    // succeeds, then `rekeyTopicKey` rejects (e.g., another agent
+    // grabbed the slot, the content update changed projectIds and
+    // exposed a fresh collision under the post-update set, or a
+    // transient Notion failure during the property write).
+    //
+    // The handler MUST surface this state via `PartialUpdateError`
+    // so the operator gets an unambiguous signal that the content
+    // mutation persisted while the re-key did not. A bare error
+    // would read like a fully-failed update; the structured error
+    // names the partial state.
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn().mockResolvedValue({
+      memory: makeMemory("mem-1", {
+        topicKey: "decision/old",
+        projectIds: ["P1"],
+      }),
+      oldTopicKey: "decision/old",
+      willRekey: true,
+    })
+    const updated = makeMemory("mem-1", {
+      title: "Updated title",
+      projectIds: ["P1"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    // Race: by the time `rekeyTopicKey` runs, a concurrent agent
+    // has grabbed the new key.
+    const rekeyTopicKey = vi.fn().mockRejectedValue(
+      new Error(
+        "Re-key target 'decision/new' is already in use by " +
+          "memory mem-racer in this project-set.",
+      ),
+    )
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new",
+      title: "Updated title",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // The content update DID land (preflight passed, update was
+    // called) before the re-key rejected.
+    expect(update).toHaveBeenCalled()
+    // The error message names the partial state explicitly so
+    // operators see "content update persisted, re-key did not"
+    // rather than a generic failure.
+    expect(text).toMatch(/Content update for memory mem-1 persisted/)
+    expect(text).toMatch(/re-key to 'decision\/new' failed/)
+    expect(text).toContain("mem-racer")
+  })
+
+  it("preflight skipped when topicKey is not provided: no preflight call, regular update flow", async () => {
+    // A plain content update without a topicKey must NOT call
+    // `validateRekey` — the preflight is exclusive to re-key
+    // calls. Pin verifies that adding the preflight didn't
+    // regress the cost of every regular update.
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn()
+    const rekeyTopicKey = vi.fn()
+    const updated = makeMemory("mem-1", { title: "New title" })
+    const update = vi.fn().mockResolvedValue(updated)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({ memoryId: "mem-1", title: "New title" } as never)
+
+    expect(validateRekey).not.toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
+    expect(update).toHaveBeenCalled()
+  })
+
+  it("combined re-key + content: RekeyAuditError propagates UNCHANGED — no false 'topic key unchanged' or retry-rekey guidance", async () => {
+    // Two distinct partial-state errors meet here: `RekeyAuditError`
+    // says "Topic Key property persisted, audit-block append
+    // failed" — the rekey structurally happened. `PartialUpdateError`
+    // says "content persisted, rekey did NOT happen" — the rekey
+    // did NOT happen.
+    //
+    // When `rekeyTopicKey` throws `RekeyAuditError` after a
+    // content delta has landed, wrapping it in
+    // `PartialUpdateError` would falsely tell the operator the
+    // topic key is unchanged AND instruct an unnecessary retry of
+    // the re-key. A retry would actually short-circuit through
+    // `validateRekey`'s no-op guard because the new key now
+    // matches the stored value — wasted operator effort and
+    // confused mental model.
+    //
+    // The handler MUST detect `RekeyAuditError` specifically and
+    // propagate it unchanged. Its own message accurately
+    // describes the rekey-side state ("Re-key persisted but
+    // audit-block append failed"); the operator who issued the
+    // combined call already knows the content delta was
+    // attempted in the same request.
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn().mockResolvedValue({
+      memory: makeMemory("mem-1", {
+        topicKey: "decision/old",
+        projectIds: ["P1"],
+      }),
+      oldTopicKey: "decision/old",
+      willRekey: true,
+    })
+    const updated = makeMemory("mem-1", {
+      title: "Updated title",
+      projectIds: ["P1"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    // Simulate the audit-failure-after-property-success scenario:
+    // `pages.update` for Topic Key succeeded, `pages.updateMarkdown`
+    // for the audit block failed, and `rekeyTopicKey` raised
+    // `RekeyAuditError` carrying the structured partial state.
+    const auditError = new RekeyAuditError(
+      "Re-key persisted ('decision/old' → 'decision/new') but " +
+        "audit-block append failed: simulated 502. The Topic Key " +
+        "column is updated; the body audit trail is missing. " +
+        "A retry will short-circuit as a no-op — the audit block " +
+        "cannot be recovered automatically. Inspect memory mem-1 " +
+        "on Notion to confirm and append the audit manually if " +
+        "needed.",
+      {
+        memoryId: "mem-1",
+        oldTopicKey: "decision/old",
+        newTopicKey: "decision/new",
+        cause: new Error("simulated 502"),
+      },
+    )
+    const rekeyTopicKey = vi.fn().mockRejectedValue(auditError)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new",
+      title: "Updated title",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // The content update DID land (preflight passed, update was
+    // called) AND the Topic Key property write succeeded — only
+    // the audit-block append failed. The response surfaces the
+    // RekeyAuditError's own message.
+    expect(update).toHaveBeenCalled()
+    expect(text).toMatch(/Re-key persisted/)
+    expect(text).toMatch(/audit-block append failed/)
+
+    // CRITICAL pins: the response must NOT claim the topic key is
+    // unchanged (the rekey actually happened) AND must NOT
+    // instruct the operator to re-issue the re-key (a retry
+    // would no-op via the validateRekey short-circuit).
+    expect(text).not.toMatch(/topic key is unchanged/)
+    expect(text).not.toMatch(/re-issue the re-key/)
+    // PartialUpdateError's wrapper-message preamble must NOT
+    // appear; the handler propagated `RekeyAuditError` unchanged.
+    expect(text).not.toMatch(/Content update for memory mem-1 persisted/)
   })
 })

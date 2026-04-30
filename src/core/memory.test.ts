@@ -6,6 +6,7 @@ import {
   tieBreakingRrfCompare,
   appendCompareNote,
   COMPARE_NOTES_MAX_CHARS,
+  RekeyAuditError,
   type RrfEntry,
 } from "./memory.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
@@ -1472,6 +1473,559 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     // title and this assertion would fail (the call would either
     // return the stale value or refetch via Notion).
     expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  /**
+   * Build a `pages.retrieve` response shaped like a memory with the
+   * given Topic Key + project set + revision count. Mirrors
+   * `findByTopicKey` test fixtures so both describe blocks read off
+   * the same page shape.
+   */
+  function buildMemoryPage(
+    id: string,
+    opts: {
+      title?: string
+      topicKey: string
+      projectIds: string[]
+      revisionCount?: number
+      archived?: boolean
+    },
+  ): PageObjectResponse {
+    const properties: Record<string, unknown> = {
+      Title: { type: "title", title: [{ plain_text: opts.title ?? id }] },
+      Project: {
+        type: "relation",
+        relation: opts.projectIds.map((pid) => ({ id: pid })),
+      },
+      "Topic Key": {
+        type: "rich_text",
+        rich_text: [{ plain_text: opts.topicKey }],
+      },
+    }
+    if (opts.revisionCount !== undefined) {
+      properties["Revision Count"] = { type: "number", number: opts.revisionCount }
+    }
+    return {
+      object: "page",
+      id,
+      created_time: "2026-04-20T00:00:00.000Z",
+      last_edited_time: "2026-04-20T00:00:00.000Z",
+      archived: opts.archived ?? false,
+      properties: properties as PageObjectResponse["properties"],
+      parent: { type: "database_id", database_id: db.databaseId },
+      url: `https://notion.so/${id}`,
+    } as PageObjectResponse
+  }
+
+  function makeRekeyClient(opts: {
+    targetMemory: PageObjectResponse
+    targetMarkdown: string
+    collisionPages?: PageObjectResponse[]
+  }) {
+    const retrieveSpy = vi.fn(async (_args: { page_id: string }) => opts.targetMemory)
+    const retrieveMarkdownSpy = vi.fn(
+      async (_args: { page_id: string }) => ({ markdown: opts.targetMarkdown }),
+    )
+    const querySpy = vi.fn(
+      async (_args: { data_source_id: string; filter?: unknown; start_cursor?: string }) => ({
+        results: opts.collisionPages ?? [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    )
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+    )
+    const updateMarkdownSpy = vi.fn(
+      async (_args: {
+        page_id: string
+        type: string
+        replace_content: { new_str: string; allow_deleting_content: boolean }
+      }) => ({}),
+    )
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    return { client, retrieveSpy, retrieveMarkdownSpy, querySpy, updateSpy, updateMarkdownSpy }
+  }
+
+  it("happy path: writes Topic Key and appends an audit block; Revision Count untouched", async () => {
+    const target = buildMemoryPage("mem-1", {
+      title: "Use JWT auth",
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 3,
+    })
+    const { client, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "Original body content.",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.rekeyTopicKey({
+      memoryId: "mem-1",
+      newTopicKey: "decision/jwt-auth-model",
+    })
+
+    expect(result.oldTopicKey).toBe("decision/jwt-auth")
+    expect(result.memory.topicKey).toBe("decision/jwt-auth-model")
+
+    // Property update wrote ONLY Topic Key (not Revision Count, not
+    // Last Referenced At, not Title). Pinning the exact key set so a
+    // future "always re-write all properties" refactor can't silently
+    // bump the counter.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const props = updateSpy.mock.calls[0]![0].properties as Record<string, unknown>
+    expect(Object.keys(props)).toEqual(["Topic Key"])
+    expect(props["Topic Key"]).toEqual({
+      rich_text: [{ text: { content: "decision/jwt-auth-model" } }],
+    })
+
+    // Body write appended the audit block to the existing content.
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    const body = updateMarkdownSpy.mock.calls[0]![0]
+    expect(body.type).toBe("replace_content")
+    const newStr = body.replace_content.new_str as string
+    expect(newStr).toContain("Original body content.")
+    // Audit block layout: leading empty line + `---` separator +
+    // blank line + heading + blank line + From/To pair. The spec's
+    // "audit block format is exact" criterion pins everything from
+    // the heading onwards.
+    expect(newStr).toMatch(
+      /\n---\n\n## Re-keyed \(\d{4}-\d{2}-\d{2}\)\n\n\*\*From:\*\* `decision\/jwt-auth`\n\*\*To:\*\* `decision\/jwt-auth-model`$/,
+    )
+  })
+
+  it("no-op when newTopicKey matches existing: no body write, no property write", async () => {
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+    })
+    const { client, updateSpy, updateMarkdownSpy, querySpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.rekeyTopicKey({
+      memoryId: "mem-1",
+      newTopicKey: "decision/jwt-auth",
+    })
+
+    expect(result.oldTopicKey).toBe("decision/jwt-auth")
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    // The collision-check `dataSources.query` is also not issued — the
+    // no-op short-circuit fires BEFORE the collision probe.
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("rejects re-key on a memory with empty projectIds (structural undefined identity)", async () => {
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: [],
+    })
+    const { client, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+    })
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+    ).rejects.toThrow(/empty projectIds/)
+
+    // Guard fires before any mutation.
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("rejects re-key when the new key collides with another live memory in the same project-set", async () => {
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: ["P1"],
+    })
+    const collider = buildMemoryPage("mem-collider", {
+      topicKey: "decision/new",
+      projectIds: ["P1"],
+    })
+    const { client, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+      collisionPages: [collider],
+    })
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+    ).rejects.toThrow(/already in use by memory mem-collider/)
+
+    // Collision check fires BEFORE any mutation — pin the no-write
+    // posture so a future refactor that re-orders the body write
+    // before the collision check breaks the test.
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("renders `(unset)` in the audit block when re-keying a memory with no prior topic key", async () => {
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "",
+      projectIds: ["P1"],
+    })
+    const { client, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+    })
+    const service = new MemoryService(client, db)
+
+    await service.rekeyTopicKey({
+      memoryId: "mem-1",
+      newTopicKey: "decision/fresh",
+    })
+
+    const newStr = updateMarkdownSpy.mock.calls[0]![0].replace_content.new_str as string
+    expect(newStr).toContain("**From:** `(unset)`")
+    expect(newStr).toContain("**To:** `decision/fresh`")
+  })
+
+  it("integration: a sequential `update` then `rekeyTopicKey` against a stateful client produces a final body containing BOTH new content and the audit block", async () => {
+    // Pin for the P1 fix: `handleUpdate` dispatches
+    // `services.memories.update` FIRST, then
+    // `services.memories.rekeyTopicKey`. This integration-style
+    // test wires a stateful fake Notion client whose `replace_content`
+    // writes mutate a tracked body string, so a subsequent
+    // `retrieveMarkdown` reflects the prior write — the same shape
+    // a real Notion API would expose.
+    //
+    // Without this ordering, `rekeyTopicKey`'s audit append (when
+    // run first) would be silently clobbered by
+    // `MemoryService.update`'s full-body `replace_content`. The MCP
+    // call-order test on its own is necessary but not sufficient
+    // because it mocks both service methods and never touches body
+    // state — that's the regression the prior coverage missed.
+    const memoryId = "mem-1"
+    const props: Record<string, unknown> = {
+      Title: { type: "title", title: [{ plain_text: "Use JWT auth" }] },
+      Project: { type: "relation", relation: [{ id: "P1" }] },
+      "Topic Key": {
+        type: "rich_text",
+        rich_text: [{ plain_text: "decision/old" }],
+      },
+    }
+    let body = "Original content."
+
+    const buildPageResponse = (): PageObjectResponse =>
+      ({
+        object: "page",
+        id: memoryId,
+        created_time: "2026-04-20T00:00:00.000Z",
+        last_edited_time: "2026-04-20T00:00:00.000Z",
+        archived: false,
+        properties: { ...props } as PageObjectResponse["properties"],
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      }) as PageObjectResponse
+
+    const client = {
+      pages: {
+        retrieve: vi.fn(async (_args: { page_id: string }) => buildPageResponse()),
+        retrieveMarkdown: vi.fn(
+          async (_args: { page_id: string }) => ({ markdown: body }),
+        ),
+        update: vi.fn(
+          async (args: {
+            page_id: string
+            properties: Record<string, unknown>
+          }) => {
+            for (const [k, v] of Object.entries(args.properties)) {
+              props[k] = v
+            }
+            return {}
+          },
+        ),
+        updateMarkdown: vi.fn(
+          async (args: {
+            page_id: string
+            type: string
+            replace_content?: { new_str: string }
+          }) => {
+            if (args.type === "replace_content" && args.replace_content) {
+              body = args.replace_content.new_str
+            }
+            return {}
+          },
+        ),
+      },
+      dataSources: {
+        query: vi.fn(
+          async (_args: {
+            data_source_id: string
+            filter?: unknown
+            start_cursor?: string
+          }) => ({ results: [], has_more: false, next_cursor: null }),
+        ),
+      },
+    } as unknown as Client
+
+    const service = new MemoryService(client, db)
+
+    // Mirror the dispatch order that the MCP `handleUpdate` uses
+    // for combined `topicKey + content` calls: content update
+    // FIRST, re-key SECOND.
+    await service.update(memoryId, { content: "New body content" })
+    await service.rekeyTopicKey({
+      memoryId,
+      newTopicKey: "decision/new",
+    })
+
+    expect(body).toContain("New body content")
+    expect(body).toMatch(/## Re-keyed \(\d{4}-\d{2}-\d{2}\)/)
+    expect(body).toContain("**From:** `decision/old`")
+    expect(body).toContain("**To:** `decision/new`")
+  })
+
+  it("property-write failure: throws the underlying error and leaves the body entirely untouched (no audit append)", async () => {
+    // Pin for the P2 fix's reverse ordering. With property-first /
+    // audit-second, a property-write rejection at the start of
+    // `rekeyTopicKey` throws BEFORE any body mutation. The page's
+    // body, the page's properties, and any retry-state are
+    // untouched — the error is the standard Notion error, NOT a
+    // `RekeyAuditError`. A retry runs the full pipeline cleanly:
+    // collision check is still valid, no body drift to undo, no
+    // duplicate audit blocks.
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: ["P1"],
+    })
+    const propertyError = new Error(
+      "Notion property update failed (validation_error)",
+    )
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => {
+        throw propertyError
+      },
+    )
+    const updateMarkdownSpy = vi.fn(
+      async (_args: {
+        page_id: string
+        type: string
+        replace_content: { new_str: string; allow_deleting_content: boolean }
+      }) => ({}),
+    )
+    const client = {
+      pages: {
+        retrieve: vi.fn(async () => target),
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })),
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+      dataSources: {
+        query: vi.fn(async () => ({ results: [], has_more: false, next_cursor: null })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+    ).rejects.toBe(propertyError)
+
+    // Property write was attempted exactly once; body write was
+    // NOT attempted — the audit block never lands on a row whose
+    // property update failed. Pinning the no-body-write posture so
+    // a future "always append audit, then property" reordering
+    // would break this test.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("audit-append failure after property success: throws RekeyAuditError carrying the partial-state details", async () => {
+    // Pin for P2's structured partial-state error. With
+    // property-first / audit-second, an audit-append failure
+    // after a successful property write leaves the row in a
+    // partial state: the Topic Key column is updated (the
+    // load-bearing identity change persisted) but the body audit
+    // trail is missing. `rekeyTopicKey` raises a distinct
+    // `RekeyAuditError` so the MCP layer (and any future operator
+    // tooling) can distinguish "rekey didn't happen" from "rekey
+    // happened but audit is missing." A retry will short-circuit
+    // through the no-op guard since the property now matches the
+    // new key — the audit block cannot be recovered automatically;
+    // operators inspect the error message for the remediation hint.
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: ["P1"],
+    })
+    const auditError = new Error("Notion body update failed (502)")
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+    )
+    const updateMarkdownSpy = vi.fn(
+      async (_args: {
+        page_id: string
+        type: string
+        replace_content: { new_str: string; allow_deleting_content: boolean }
+      }) => {
+        throw auditError
+      },
+    )
+    const client = {
+      pages: {
+        retrieve: vi.fn(async () => target),
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })),
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+      dataSources: {
+        query: vi.fn(async () => ({ results: [], has_more: false, next_cursor: null })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.rekeyTopicKey({
+        memoryId: "mem-1",
+        newTopicKey: "decision/new",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(RekeyAuditError)
+    const rekeyErr = caught as RekeyAuditError
+    expect(rekeyErr.memoryId).toBe("mem-1")
+    expect(rekeyErr.oldTopicKey).toBe("decision/old")
+    expect(rekeyErr.newTopicKey).toBe("decision/new")
+    expect(rekeyErr.cause).toBe(auditError)
+    expect(rekeyErr.message).toMatch(/Re-key persisted/)
+    expect(rekeyErr.message).toMatch(/audit-block append failed/)
+    expect(rekeyErr.message).toContain("decision/old")
+    expect(rekeyErr.message).toContain("decision/new")
+
+    // Both writes were attempted; property write succeeded
+    // (load-bearing identity change persisted), audit failed
+    // (cosmetic body trail missing).
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("validateRekey: returns willRekey=false on no-op (newKey === oldKey) without issuing collision query", async () => {
+    // The preflight short-circuits the no-op case BEFORE the
+    // collision query fires. Pin verifies the no-op path is one
+    // `getById` round-trip and zero `dataSources.query` calls.
+    // This matters because `handleUpdate`'s no-op branch reads
+    // `willRekey: false` and skips the actual `rekeyTopicKey`
+    // call — if validateRekey ever started doing the query
+    // anyway, the preflight would burn a round-trip on a path
+    // that's structurally guaranteed to be a no-op.
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/same",
+      projectIds: ["P1"],
+    })
+    const { client, querySpy, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.validateRekey({
+      memoryId: "mem-1",
+      newTopicKey: "decision/same",
+    })
+
+    expect(result.willRekey).toBe(false)
+    expect(result.oldTopicKey).toBe("decision/same")
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("validateRekey: throws on empty projectIds without issuing collision query (no mutation either way)", async () => {
+    // The empty-projectIds guard fires before the collision query.
+    // Pin both the throw AND the query short-circuit so a future
+    // re-order doesn't accidentally start querying first.
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: [],
+    })
+    const { client, querySpy, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+    })
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.validateRekey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+    ).rejects.toThrow(/empty projectIds/)
+    expect(querySpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("validateRekey: throws collision error naming the colliding memory; no mutation occurs", async () => {
+    // Same collision-detection contract as `rekeyTopicKey`'s own
+    // collision check, surfaced as a preflight so the MCP handler
+    // can fail fast before running an unrelated content update.
+    // Pin the no-mutation posture so callers can rely on
+    // validateRekey being structurally side-effect-free.
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: ["P1"],
+    })
+    const collider = buildMemoryPage("mem-collider", {
+      topicKey: "decision/new",
+      projectIds: ["P1"],
+    })
+    const { client, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+      collisionPages: [collider],
+    })
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.validateRekey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+    ).rejects.toThrow(/already in use by memory mem-collider/)
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("validateRekey: returns willRekey=true with current state for a clean re-key", async () => {
+    // Happy-path pin: a clean re-key resolves to
+    // `{ memory, oldTopicKey, willRekey: true }` after exactly one
+    // `getById` plus one `dataSources.query` (the collision check).
+    // No mutations.
+    const target = buildMemoryPage("mem-1", {
+      topicKey: "decision/old",
+      projectIds: ["P1"],
+    })
+    const { client, querySpy, updateSpy, updateMarkdownSpy } = makeRekeyClient({
+      targetMemory: target,
+      targetMarkdown: "body",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.validateRekey({
+      memoryId: "mem-1",
+      newTopicKey: "decision/new",
+    })
+
+    expect(result.willRekey).toBe(true)
+    expect(result.oldTopicKey).toBe("decision/old")
+    expect(result.memory.id).toBe("mem-1")
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
   })
 })
 

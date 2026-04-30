@@ -15,7 +15,7 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
 | `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
 | `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
-| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper — and `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set |
+| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper shared by #06's upsert and #14's re-key — `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set — and `rekeyTopicKey` (0.9.0/#14) — re-key path that appends a `## Re-keyed (date)` audit block, validates collision via `findByTopicKey`, and writes only the `Topic Key` column |
 | `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
@@ -281,6 +281,184 @@ DB would surprise every consumer reading the relation.
 A future Notion API addition of true `dual_property` self-relations
 (auto-mirrored at the data layer) would let consumers drop the
 explicit second-write call. Until then, two writes is correct.
+
+## Topic-key re-keying (`MemoryService.rekeyTopicKey`)
+
+`rekeyTopicKey` (0.9.0/#14) is the conservative repair path for
+the topic-key upsert chain. An agent that picks the wrong topic
+key on first save can switch to the canonical key without
+abandoning the row. Re-keying is **identity surgery, not content
+evolution** — the implementation pins three load-bearing
+distinctions:
+
+- **`Revision Count` is NOT bumped.** Revision Count tracks
+  topic content evolution across `lore-memory action='save'`
+  upserts. Re-keying changes the row's identity slot, not its
+  content. Bumping the counter on re-key would conflate identity
+  events with content events; downstream renderers that
+  distinguish "this topic has been refined N times" from "this
+  topic has been re-keyed once" would lose the signal.
+- **`Last Referenced At` is NOT touched.** Re-keying is a write,
+  not a read citation, same posture as #06's upsert. A re-key
+  followed by a `lore-query action='recall'` should bump the
+  read clock; the re-key alone should not.
+- **Audit block prefix is `## Re-keyed (date)`**, distinct from
+  #06's revision-block prefix `## Revision N (date)`. The two
+  prefixes are the parseable signal that lets a future
+  memory-history renderer separate identity events from content
+  events without parsing body text. A future contributor
+  tempted to "unify the prefixes" would silently break that
+  signal.
+
+**Validation is fail-fast and single-call-atomic.** Three guards
+fire BEFORE any Notion mutation, so a rejected call leaves the
+row entirely untouched:
+
+1. **No-op short-circuit.** Re-keying to the existing value is
+   a user-error, not an invariant violation. The helper
+   responds truthfully (`oldTopicKey === newTopicKey` in the
+   return shape) but issues zero Notion calls — no
+   `dataSources.query` for collision check, no
+   `pages.updateMarkdown`, no `pages.update`. Callers that
+   want to render a "no-op" footer compare the two fields in
+   the result.
+2. **Empty-set guard.** A memory with no projects has no
+   `(Topic Key, Project-set)` identity slot to re-key into.
+   Topic-key identity is project-set-keyed (mirrors #06's
+   upsert path); rejecting empty-projectIds is structurally
+   correct rather than arbitrary.
+3. **Collision check.** The new key must not already map to
+   another live memory in the same project-set. The check
+   delegates to `findByTopicKey` (which is deliberately
+   Kind-agnostic — see its docstring), so a re-key onto a slot
+   held by a task or decision under the same key surfaces as a
+   collision. The error names the colliding memory's ID so the
+   operator can act on it directly. Lore does NOT auto-merge
+   two topic chains; merge policy is non-trivial (which
+   `Revision Count` survives? whose title? whose `Confidence
+   Score`?) and 0.9.0 declines to invent.
+
+**Skip-self in collision check.** A memory whose `Topic Key`
+already equals `newTopicKey` would otherwise self-collide. The
+no-op short-circuit at step 1 catches the case where the OLD
+key already matches; the explicit `collision.id !==
+input.memoryId` guard inside step 3 catches the
+eventual-consistency window where `findByTopicKey`'s post-write
+index lag could surface the same row. Defense in depth —
+neither guard alone covers both cases.
+
+**Property write FIRST, audit-block append SECOND.** The
+reverse order (audit then property) was the original spec but
+creates a worse partial state on a transient failure: an
+audit-write success followed by a property-write failure
+leaves the body falsely claiming a re-key while the property
+holds the old key, AND a retry would append a SECOND audit
+block before the property write could succeed. With
+property-first, the failure modes are:
+
+1. **Property write fails.** Nothing was written. The memory
+   is unchanged. A retry runs the full pipeline cleanly. The
+   thrown error is the underlying Notion error, not a
+   `RekeyAuditError`.
+2. **Property write succeeds, audit append fails.** The
+   re-key persisted (the load-bearing identity change). Only
+   the cosmetic audit trail is missing. A retry observes
+   `oldTopicKey === newTopicKey` and short-circuits through
+   the no-op guard without re-attempting the audit. The audit
+   block is permanently lost — but the row's structural state
+   is correct and self-consistent. The thrown error is a
+   `RekeyAuditError` carrying `{memoryId, oldTopicKey,
+   newTopicKey, cause}` so callers can distinguish "re-key
+   didn't happen" from "re-key happened but audit is missing."
+
+`RekeyAuditError` is a named subclass of `Error` exported
+alongside `MemoryService` from `src/core/memory.ts`. The MCP
+layer's `toolError` rendering surfaces the message verbatim;
+future operator tooling can `instanceof RekeyAuditError` to
+branch on the partial-state case.
+
+**Body write uses `replace_content` with `new_str`.** The
+markdown is read first via `pages.retrieveMarkdown` (inside
+`getById`), the audit block is concatenated, then the full
+body is rewritten via the same `replace_content` path that
+`MemoryService.update` uses for content edits. Concurrent
+re-keys against the same memory could race past each other
+and clobber each other's audit blocks — same posture as #06's
+documented concurrent-upsert risk, fixed if real-vault data
+shows the race matters.
+
+**Property update is partial.** The `pages.update` call writes
+ONLY `Topic Key` (not `Revision Count`, not `Last Referenced
+At`, not `Title`). A direct partial-property update — not a
+`buildMemoryProps`-mediated write — keeps the title cache
+undisturbed and the system-managed columns untouched. Test
+fixtures pin the exact key set so a future "always re-write all
+properties" refactor can't silently bump the counter.
+
+The MCP dispatch layer (`src/mcp/tools/memory.ts:handleUpdate`)
+is responsible for five contract details that don't belong in
+the service helper:
+
+- **Reject `topicKey + kind` BEFORE any I/O.** Re-keying
+  preserves the upsert-chain identity (kind is part of
+  identity); a combined `topicKey + kind` update would smuggle
+  a kind change through the residual update path and silently
+  split the chain across two kinds. The handler throws at the
+  boundary; the service helper never sees the combined input.
+- **Preflight the re-key BEFORE applying any content delta.**
+  Calls `MemoryService.validateRekey` to validate
+  `(non-empty projectIds, no collision under current
+  project-set)` against the pre-update memory state. A
+  preflight rejection throws cleanly before the content update
+  runs, so the operator never sees a half-persisted state for
+  the common collision/empty-projectIds failure modes. The
+  preflight is non-mutating: one `getById` plus (only when the
+  new key differs from old) one `dataSources.query`.
+  `validateRekey` is exported as a service method so direct
+  callers (operator tooling, future MCP surfaces) can perform
+  the same pre-flight check without duplicating the validation
+  logic. The post-preflight `rekeyTopicKey` call still re-runs
+  the same validation as the authoritative pass.
+- **Apply content delta BEFORE re-key when both are present.**
+  `MemoryService.update`'s body write is a full-body
+  `replace_content`. Running re-key first and content update
+  second would silently clobber the audit block the re-key
+  just appended. The handler dispatches `services.memories.update`
+  first, then `services.memories.rekeyTopicKey` — making the
+  audit-block append the LAST write to the body and structurally
+  immune to clobbering. The combined-update test pins this order
+  via call-tracking AND a stateful integration fixture verifies
+  the final body contains both writes.
+- **Wrap post-update re-key failures in `PartialUpdateError`.**
+  Even with the preflight, the post-content-update re-key can
+  reject (a race with another agent grabbing the slot, a
+  transient Notion property-write failure, or a content delta
+  that changed `projectIds` and exposed a fresh collision under
+  the post-update set). When that happens AND a content delta
+  has already landed, the handler throws a `PartialUpdateError`
+  whose message names the partial state explicitly — content
+  update persisted, re-key did not. Operators get a clear
+  signal rather than a generic failure; future tooling can
+  branch via `instanceof PartialUpdateError`.
+  `PartialUpdateError` is the inverse of `RekeyAuditError`
+  (which signals "re-key persisted but audit missing"); the two
+  errors describe two distinct partial-state shapes.
+- **Skip `services.memories.update` on a pure re-key.** When
+  `topicKey` is the only non-framing field (no title/body/tags
+  /etc.), the handler must NOT call the general-purpose update
+  service path — that would issue a no-op `pages.retrieve` and
+  surface no signal but burn round-trips. The handler
+  destructures the framing fields (`action`, `memoryId`,
+  `topicKey`) and gates the residual update on `Object.values(
+  contentDelta).some((v) => v !== undefined)`.
+
+**No-op acknowledgment in the response.** When the preflight
+returns `willRekey: false` (the new key matches the existing
+one), the handler skips `rekeyTopicKey` entirely and surfaces a
+`Topic key unchanged: '<key>' (no-op).` line in the response.
+Silent suppression would leave the operator wondering whether
+the re-key was honored or dropped; the explicit acknowledgment
+closes the audit gap without writing to Notion.
 
 ## Memory Search
 

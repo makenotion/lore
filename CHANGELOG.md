@@ -15,6 +15,60 @@ log is the canonical source for those.
 heading below per Keep a Changelog v1.1.0 convention, e.g.
 `## [0.6.0] - 2026-04-27`. -->
 
+### Added
+
+- **`lore-memory action='update'` accepts `topicKey` for re-keying.**
+  An agent that picked the wrong topic key on first save can now
+  switch to the canonical key without abandoning the row. The kebab-
+  case format is identical to the (forthcoming) save-time `topicKey`
+  parameter. The handler preflights the re-key (collision check
+  against the current project-set, non-empty `projectIds`) before
+  applying any other content delta, so the most common failure modes
+  fail fast without leaving a half-persisted update. When the new
+  key matches the existing one, the response surfaces a
+  `Topic key unchanged: '<key>' (no-op).` line — the call is
+  acknowledged rather than silently dropped. A combined
+  `topicKey + kind` call is rejected at the handler boundary
+  before any Notion read because the upsert chain is per-kind.
+  Re-keying appends a `## Re-keyed (YYYY-MM-DD)` audit block to
+  the body (deliberately distinct from the upsert path's
+  `## Revision N (date)` prefix) and writes only the `Topic Key`
+  column — `Revision Count` and `Last Referenced At` are
+  intentionally untouched because re-keying is identity surgery,
+  not content evolution. (Issue 0.9.0/14.)
+
+- **New `MemoryService.validateRekey` public method.** Non-mutating
+  preflight that loads the memory, checks empty `projectIds`, and
+  runs the collision query against the current project-set.
+  Returns `{memory, oldTopicKey, willRekey}` (with `willRekey: false`
+  signaling the no-op short-circuit case). Throws the same
+  collision and empty-projectIds errors the authoritative
+  `rekeyTopicKey` raises, so direct callers can fail fast without
+  duplicating validation logic. The MCP `handleUpdate` consumes it
+  to gate combined `topicKey + content` updates.
+
+- **New error subclasses exported from `src/core/memory.ts`:**
+  - `RekeyAuditError` — raised by `MemoryService.rekeyTopicKey`
+    when the Topic Key property write succeeded but the body
+    audit-block append failed. Carries `{memoryId, oldTopicKey,
+    newTopicKey, cause}`. The re-key persisted; only the audit
+    trail is missing. A retry short-circuits via the no-op guard
+    because the property already matches the new key.
+  - `PartialUpdateError` — raised by the MCP `handleUpdate` when
+    a combined `topicKey + content` call has the content delta
+    persist successfully but the subsequent re-key reject (race
+    with another agent grabbing the slot, transient Notion
+    failure, or post-update `projectIds` change exposing a fresh
+    collision). Carries `{memoryId, contentApplied: true,
+    rekeyError}`. The content mutation is durable on Notion; the
+    re-key did not happen.
+
+  Both are `instanceof`-checkable for future operator tooling.
+  `RekeyAuditError` propagates unchanged from the combined-update
+  catch path so its accurate "rekey persisted, audit missing"
+  message isn't shadowed by `PartialUpdateError`'s "rekey did
+  not happen" wording.
+
 ### Fixed
 
 - **`lore-memory` (and every MCP tool that accepts `topicName`) no

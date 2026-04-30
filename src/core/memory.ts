@@ -385,6 +385,82 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
   }
 }
 
+/**
+ * Structured partial-state error raised by `MemoryService.rekeyTopicKey`
+ * when the `Topic Key` property write succeeded but the body
+ * audit-block append failed. Surfacing this as a distinct error type
+ * lets callers (the MCP layer's `toolError` rendering, future
+ * operator tooling) distinguish "re-key did not happen" from "re-key
+ * happened but the audit trail is missing." See `rekeyTopicKey`'s
+ * docstring for the full failure-mode rationale.
+ *
+ * The `instanceof RekeyAuditError` check is the canonical way to
+ * detect this state; the message string carries the operator-facing
+ * remediation hint.
+ */
+export class RekeyAuditError extends Error {
+  readonly memoryId: string
+  readonly oldTopicKey: string
+  readonly newTopicKey: string
+  readonly cause: unknown
+
+  constructor(
+    message: string,
+    details: {
+      memoryId: string
+      oldTopicKey: string
+      newTopicKey: string
+      cause: unknown
+    },
+  ) {
+    super(message)
+    this.name = "RekeyAuditError"
+    this.memoryId = details.memoryId
+    this.oldTopicKey = details.oldTopicKey
+    this.newTopicKey = details.newTopicKey
+    this.cause = details.cause
+  }
+}
+
+/**
+ * Structured partial-state error raised by the MCP-layer
+ * `lore-memory action='update'` handler when a combined
+ * `topicKey + content` update has the content delta land
+ * successfully but the subsequent re-key reject. The content
+ * mutation is durable on Notion; the re-key did not occur.
+ *
+ * Distinct from `RekeyAuditError`, which signals "re-key persisted
+ * but audit trail missing." A `PartialUpdateError` is the inverse:
+ * "content delta persisted, re-key did NOT happen." Callers that
+ * need to distinguish the two cases use `instanceof`.
+ *
+ * Common causes: a transient Notion property-write failure during
+ * `rekeyTopicKey`'s `pages.update`, a race where another agent
+ * grabbed the topic-key slot between preflight and the mutation,
+ * or a content-update that changed `projectIds` and exposed a new
+ * collision under the post-update set. The preflight in
+ * `handleUpdate` catches the most common validation failures
+ * (collision against pre-update state, empty-projectIds) before
+ * the content update runs; this error covers the residual cases
+ * where the preflight passed but the mutation still rejected.
+ */
+export class PartialUpdateError extends Error {
+  readonly memoryId: string
+  readonly contentApplied: true
+  readonly rekeyError: unknown
+
+  constructor(
+    message: string,
+    details: { memoryId: string; rekeyError: unknown },
+  ) {
+    super(message)
+    this.name = "PartialUpdateError"
+    this.memoryId = details.memoryId
+    this.contentApplied = true
+    this.rekeyError = details.rekeyError
+  }
+}
+
 export class MemoryService {
   /**
    * `getTitleById` is the hot path for UUID→title resolution in
@@ -939,6 +1015,245 @@ export class MemoryService {
       },
       revisionCount: nextRevision,
       upserted: true,
+    }
+  }
+
+  /**
+   * Re-key a memory's `Topic Key` to a new value (0.9.0/#14). The
+   * conservative repair path for #06's upsert chain — an agent that
+   * picks the wrong topic key on first save can switch to the canonical
+   * key without abandoning the row.
+   *
+   * Re-keying is identity surgery, not content evolution:
+   *
+   * - **No `Revision Count` bump.** Revision Count tracks topic content
+   *   evolution (N saves under the same identity meant the topic was
+   *   refined N times). Bumping on re-key would conflate identity
+   *   changes with content changes.
+   * - **No `Last Referenced At` write.** Re-keying is a write, not a
+   *   read citation, same posture as #06's upsert.
+   * - **Audit block format** (`## Re-keyed (YYYY-MM-DD)`) deliberately
+   *   differs from #06's revision-block prefix (`## Revision N`) so a
+   *   future memory-history renderer can distinguish identity events
+   *   from content events without parsing body text.
+   *
+   * Validation is strict and fail-fast — every guard fires before any
+   * Notion mutation, so a rejected call leaves the row entirely
+   * untouched. Two structurally undefined cases short-circuit:
+   *
+   * - **No-op short-circuit.** Re-keying to the existing value is a
+   *   user-error, not an invariant violation; respond truthfully but
+   *   write nothing.
+   * - **Empty-set guard.** Topic-key identity is `(Topic Key,
+   *   Project-set)`-keyed. A memory with no projects has no identity
+   *   slot to re-key into; rejecting is structurally correct (mirrors
+   *   #06's empty-project rejection on the upsert path).
+   *
+   * **Cross-kind collision detection is intentional.** The collision
+   * check delegates to `findByTopicKey`, which is deliberately
+   * Kind-agnostic (see its docstring) — a re-key onto a slot held by a
+   * task or decision under the same key surfaces as a collision and is
+   * rejected, even if the re-keyed memory is a different Kind. Lore
+   * does NOT auto-merge two topic chains; the operator handles the
+   * duplication manually (archive one, re-key the other).
+   *
+   * **Archived rows do NOT count as collisions.** `findByTopicKey`
+   * post-filters `!page.archived`, so a re-key onto a key held only
+   * by archived rows succeeds. Intentional per the spec ("must not
+   * collide with another **live** memory in the same project-set"):
+   * archived rows are out of the active upsert chain. Edge case to
+   * track: un-archiving the old row after a re-key would land two
+   * live members under the same `(Topic Key, Project-set)` slot.
+   * Operators that un-archive should re-check chain integrity via
+   * `lore-memory action='recall'`.
+   *
+   * **Skip-self in collision check.** A memory whose `Topic Key`
+   * already equals `newTopicKey` would otherwise self-collide. The
+   * no-op short-circuit at step 2 catches this when the OLD key
+   * already matches; the explicit `collision.id !== input.memoryId`
+   * guard at step 4 catches the eventual-consistency window where
+   * `findByTopicKey`'s post-write index lag could surface the same
+   * row. Defense in depth — neither guard alone covers both cases.
+   *
+   * **Property write FIRST, audit-block append SECOND.** The reverse
+   * order would create a worse partial state on a transient failure
+   * (audit succeeds → property fails → body falsely claims a re-key
+   * while the property holds the old key, and a retry duplicates the
+   * audit). With property-first, an audit-failure leaves the
+   * structural identity change in place and only the cosmetic audit
+   * trail at risk. The audit-failure path throws `RekeyAuditError`
+   * (a distinct subclass of `Error`) so callers can distinguish
+   * "re-key didn't happen" from "re-key happened but audit is
+   * missing." See the inline `try/catch` and the `RekeyAuditError`
+   * class docstring for the full rationale.
+   *
+   * **Body-write uses `replace_content` with `new_str`** to match
+   * the existing `update()` body-write pattern in this file. The
+   * markdown is read first via `pages.retrieveMarkdown` (inside
+   * `getById`), the audit block is concatenated, then the full body
+   * is rewritten. Concurrent re-keys against the same memory could
+   * race past each other and clobber each other's audit blocks —
+   * same posture as #06's documented concurrent-upsert risk, fixed
+   * if real-vault data shows the race matters.
+   */
+  /**
+   * Pre-validate a `rekeyTopicKey` call without performing any
+   * mutation. Returns the loaded memory + old topic key + a flag
+   * indicating whether the re-key would actually do work
+   * (`willRekey === false` for the no-op short-circuit case).
+   * Throws the same structured errors `rekeyTopicKey` would —
+   * empty-projectIds rejection, collision rejection — so callers
+   * can surface those failures BEFORE running unrelated mutations.
+   *
+   * The `lore-memory action='update'` MCP handler calls this
+   * before applying a residual content delta so a topicKey-only
+   * rejection (collision, empty-projectIds) doesn't leave the
+   * content update half-persisted with the operator looking at
+   * an error response.
+   *
+   * **Race window with subsequent `rekeyTopicKey`.** This method
+   * loads memory state once and runs the collision query against
+   * that snapshot. By the time the caller actually invokes
+   * `rekeyTopicKey`, another agent could have grabbed the slot,
+   * the row's projectIds could have changed (via a concurrent
+   * update), or a transient Notion failure could surface during
+   * the mutation. None of those cases retroactively invalidate
+   * the preflight; they're caught by `rekeyTopicKey`'s own
+   * validation pass and propagated through whatever exception
+   * the caller wraps them in (e.g. `PartialUpdateError` at the
+   * MCP layer when content has already landed).
+   */
+  async validateRekey(input: {
+    memoryId: string
+    newTopicKey: string
+  }): Promise<{ memory: Memory; oldTopicKey: string; willRekey: boolean }> {
+    const memory = await this.getById(input.memoryId)
+    const oldTopicKey = memory.topicKey
+
+    if (oldTopicKey === input.newTopicKey) {
+      return { memory, oldTopicKey, willRekey: false }
+    }
+
+    if (memory.projectIds.length === 0) {
+      throw new Error(
+        "Cannot re-key a memory with empty projectIds. " +
+          "Topic-key identity requires at least one project.",
+      )
+    }
+
+    const collision = await this.findByTopicKey({
+      topicKey: input.newTopicKey,
+      projectIds: memory.projectIds,
+    })
+    if (collision && collision.id !== input.memoryId) {
+      throw new Error(
+        `Re-key target '${input.newTopicKey}' is already in use by ` +
+          `memory ${collision.id} in this project-set. ` +
+          `Lore does not auto-merge — archive one or pick a different key.`,
+      )
+    }
+
+    return { memory, oldTopicKey, willRekey: true }
+  }
+
+  async rekeyTopicKey(input: {
+    memoryId: string
+    newTopicKey: string
+  }): Promise<{ memory: Memory; oldTopicKey: string }> {
+    // `validateRekey` re-runs the same loads and checks
+    // `rekeyTopicKey` performs inline. The duplication is
+    // intentional: callers that pre-validated via the MCP
+    // handler still go through the authoritative validation
+    // here so direct callers of `rekeyTopicKey` (anyone
+    // bypassing the handler) get the full safety net.
+    const { memory, oldTopicKey, willRekey } = await this.validateRekey(input)
+    if (!willRekey) {
+      return { memory, oldTopicKey }
+    }
+
+    // Property write FIRST, audit block SECOND. The reverse order
+    // (audit then property) was the original spec but creates a worse
+    // partial-state: an audit-write success followed by a property-
+    // write failure leaves the body falsely claiming a re-key while
+    // the property still holds the old key, AND a retry would append
+    // a SECOND audit block before the property write could succeed.
+    //
+    // With property-first, the failure modes are:
+    //
+    // 1. **Property write fails.** Nothing was written. The memory is
+    //    unchanged. A retry runs the full pipeline cleanly — collision
+    //    check is still valid, no body drift. The thrown error matches
+    //    a normal Notion error.
+    // 2. **Property write succeeds, audit append fails.** The re-key
+    //    persisted (the load-bearing identity change). Only the
+    //    cosmetic audit trail is missing. A retry would observe
+    //    `oldTopicKey === newTopicKey` (we already updated the
+    //    property), short-circuit through the no-op guard, and exit
+    //    without re-attempting the audit. The audit block is
+    //    permanently lost — but the row's structural state is
+    //    correct and self-consistent.
+    //
+    // The audit-append failure throws a structured `RekeyAuditError`
+    // so callers can distinguish "rekey didn't happen" from "rekey
+    // happened but audit is missing." The MCP response surfaces the
+    // distinction in the error message; operators triaging the
+    // failure see the new key persisted on Notion.
+    await this.client.pages.update({
+      page_id: input.memoryId,
+      // Direct partial-property update — mirrors `update()`'s
+      // targeted shape rather than going through `buildMemoryProps`
+      // (which always writes Title and would needlessly disturb the
+      // title cache). Re-keying touches `Topic Key` only; `Revision
+      // Count` and `Last Referenced At` are deliberately untouched.
+      properties: {
+        "Topic Key": {
+          rich_text: [{ text: { content: input.newTopicKey } }],
+        },
+      } as CreatePageParameters["properties"],
+    })
+
+    const today = todayUtc()
+    const auditBlock = [
+      "",
+      "---",
+      "",
+      `## Re-keyed (${today})`,
+      "",
+      `**From:** \`${oldTopicKey || "(unset)"}\``,
+      `**To:** \`${input.newTopicKey}\``,
+    ].join("\n")
+    const newBody = memory.content + auditBlock
+
+    try {
+      await this.client.pages.updateMarkdown({
+        page_id: input.memoryId,
+        type: "replace_content",
+        replace_content: {
+          new_str: newBody,
+          allow_deleting_content: true,
+        },
+      })
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err)
+      throw new RekeyAuditError(
+        `Re-key persisted ('${oldTopicKey || "(unset)"}' → ` +
+          `'${input.newTopicKey}') but audit-block append failed: ${cause}. ` +
+          `The Topic Key column is updated; the body audit trail is missing. ` +
+          `A retry will short-circuit as a no-op — the audit block cannot ` +
+          `be recovered automatically. Inspect memory ${input.memoryId} on ` +
+          `Notion to confirm and append the audit manually if needed.`,
+        {
+          memoryId: input.memoryId,
+          oldTopicKey,
+          newTopicKey: input.newTopicKey,
+          cause: err,
+        },
+      )
+    }
+
+    return {
+      memory: { ...memory, topicKey: input.newTopicKey, content: newBody },
+      oldTopicKey,
     }
   }
 

@@ -32,6 +32,7 @@ import {
 import { decodeTextEntities } from "../../notion/html-entities.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
 import { suggestTopicKey, type TopicKeySuggestion } from "../../core/topic-key.js"
+import { PartialUpdateError, RekeyAuditError } from "../../core/memory.js"
 import type { TaskSummary } from "../../types.js"
 
 type ToolResult = {
@@ -523,62 +524,220 @@ interface UpdateArgs {
   affectsIds?: string[]
   alternatives?: string
   consequences?: string
+  topicKey?: string
 }
 
 async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<ToolResult> {
   try {
+    // Reject illegal combinations BEFORE any I/O. Re-keying preserves
+    // identity (kind is part of identity); a combined `topicKey + kind`
+    // update would smuggle a kind change through the residual update
+    // path and silently split an upsert chain across two kinds.
+    // Operators that genuinely need both issue two separate calls.
+    if (args.topicKey !== undefined && args.kind !== undefined) {
+      throw new Error(
+        "Cannot combine `topicKey` (re-key) with `kind` change in a " +
+          "single update. Re-keying preserves identity; the kind belongs " +
+          "to the upsert chain. Issue two separate updates if you need " +
+          "both, or rethink whether the chain should change kind at all " +
+          "(it usually shouldn't).",
+      )
+    }
+
+    // Detect whether anything beyond the framing fields (`action`,
+    // `memoryId`, `topicKey`) was passed. A topicKey-only update is a
+    // pure re-key and must NOT call `services.memories.update` —
+    // pinned by the re-key acceptance criteria. Stripping via
+    // destructure keeps the gate honest: adding a future field to
+    // `UpdateArgs` automatically counts toward the content-delta
+    // check without re-listing every key. `action` is included in
+    // the strip set because Zod's discriminated-union output carries
+    // the discriminator literal verbatim, and a non-undefined value
+    // would otherwise flip the gate to true on every update call.
+    const argsRecord = args as unknown as Record<string, unknown>
+    const { action: _a, memoryId: _m, topicKey: _t, ...contentDelta } = argsRecord
+    void _a
+    void _m
+    void _t
+    const hasContentDelta = Object.values(contentDelta).some((v) => v !== undefined)
+
+    // Preflight the re-key BEFORE any content-delta mutation. If the
+    // re-key would reject (collision against current state, empty
+    // `projectIds`), we throw cleanly without leaving an update
+    // half-persisted. The validation is non-mutating — it loads the
+    // memory and runs the collision query against the current
+    // project-set, but writes nothing.
+    //
+    // The race window between preflight and the actual mutation is
+    // documented in `MemoryService.validateRekey`'s docstring: a
+    // concurrent grab of the new key, or a content-delta that
+    // changes `projectIds` and exposes a fresh collision under the
+    // post-update set, both fall through to the `try/catch` around
+    // the actual `rekeyTopicKey` call below — which surfaces a
+    // `PartialUpdateError` when content has already landed.
+    let preflight:
+      | { oldTopicKey: string; willRekey: boolean }
+      | undefined
+    if (args.topicKey !== undefined) {
+      const result = await services.memories.validateRekey({
+        memoryId: args.memoryId,
+        newTopicKey: args.topicKey,
+      })
+      preflight = {
+        oldTopicKey: result.oldTopicKey,
+        willRekey: result.willRekey,
+      }
+    }
+
     let projectIds: string[] | undefined
     let topicId: string | undefined
     let topicLabel: string | undefined
     const warnings: string[] = []
+    let updated: Memory | undefined
 
-    if (args.projectNames?.length || args.projectName) {
-      const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
-      projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
-      warnings.push(...resolved.warnings)
+    // Apply content delta FIRST. Re-key (when present) runs AFTER so
+    // the audit-block append is the LAST write to the body —
+    // otherwise `MemoryService.update`'s full-body `replace_content`
+    // would clobber the audit block that `rekeyTopicKey` just
+    // appended. Reversing the dispatch order here is what makes a
+    // combined `topicKey + content` call land both writes durably.
+    if (hasContentDelta) {
+      if (args.projectNames?.length || args.projectName) {
+        const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+        projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
+        warnings.push(...resolved.warnings)
+      }
+      if (args.topicName) {
+        let topicScope = projectIds
+        if (!topicScope || topicScope.length === 0) {
+          const current = await services.memories.getById(args.memoryId)
+          if (current.projectIds.length > 0) {
+            topicScope = current.projectIds
+          } else if (services.context.project) {
+            topicScope = [services.context.project.id]
+          }
+        }
+        if (!topicScope || topicScope.length === 0) {
+          throw new Error(
+            `Cannot set topicName="${args.topicName}": no project scope available. ` +
+              `The memory has no Project relation and no project was passed or auto-detected. ` +
+              `Pass projectName or projectNames.`,
+          )
+        }
+        const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
+          forceNew: args.forceNewTopic,
+        })
+        topicId = topic.id
+        topicLabel = topic.name
+      }
+
+      updated = await services.memories.update(args.memoryId, {
+        title: args.title,
+        content: args.content,
+        tags: args.tags,
+        keywords: args.keywords,
+        synopsis: args.synopsis,
+        projectIds,
+        topicId,
+        kind: args.kind as MemoryKind | undefined,
+        status: args.status as MemoryStatus | undefined,
+        confidence: args.confidence as MemoryConfidence | undefined,
+        reviewBy: args.reviewBy,
+        decidedAt: args.decidedAt,
+        supersedesIds: args.supersedesIds,
+        affectsIds: args.affectsIds,
+        alternatives: args.alternatives,
+        consequences: args.consequences,
+      })
     }
-    if (args.topicName) {
-      let topicScope = projectIds
-      if (!topicScope || topicScope.length === 0) {
-        const current = await services.memories.getById(args.memoryId)
-        if (current.projectIds.length > 0) {
-          topicScope = current.projectIds
-        } else if (services.context.project) {
-          topicScope = [services.context.project.id]
+
+    // Re-key SECOND. `rekeyTopicKey` reads the post-content body
+    // (via its internal `getById`) so the audit block is appended on
+    // top of any content the prior `MemoryService.update` wrote.
+    // Short-circuits as a no-op when the new key matches existing —
+    // pin verified by `MemoryService.rekeyTopicKey`'s tests.
+    //
+    // `PartialUpdateError` wraps the re-key failure when the
+    // content delta has already landed, so the operator gets a
+    // clear signal that part of the requested mutation persisted.
+    // The preflight above catches the most common failure modes
+    // (collision, empty-projectIds) before this point — a
+    // `PartialUpdateError` here means the preflight passed but
+    // the actual mutation rejected (race, transient Notion
+    // failure, post-update projectIds change exposing a fresh
+    // collision). When no content delta accompanied the re-key,
+    // the underlying error propagates unchanged because nothing
+    // was partially applied.
+    let rekeyed = false
+    let oldTopicKey: string | undefined
+    let topicKeyUnchanged = false
+    if (args.topicKey !== undefined) {
+      if (preflight && !preflight.willRekey) {
+        // No-op short-circuit path: the new key matches the
+        // existing one, so `rekeyTopicKey` would do nothing. Track
+        // the no-op state so the response can acknowledge the
+        // intent rather than silently dropping it. Skip the
+        // service call entirely — the preflight already loaded
+        // the memory and confirmed equality.
+        topicKeyUnchanged = true
+        oldTopicKey = preflight.oldTopicKey
+      } else {
+        try {
+          const result = await services.memories.rekeyTopicKey({
+            memoryId: args.memoryId,
+            newTopicKey: args.topicKey,
+          })
+          updated = result.memory
+          if (result.oldTopicKey !== args.topicKey) {
+            rekeyed = true
+            oldTopicKey = result.oldTopicKey
+          }
+        } catch (err) {
+          // `RekeyAuditError` describes a DIFFERENT partial state
+          // from `PartialUpdateError`: the Topic Key property
+          // already persisted (the load-bearing identity change
+          // landed) and only the audit-block append failed.
+          // Wrapping it in `PartialUpdateError` would falsely
+          // claim "the topic key is unchanged" and instruct an
+          // unnecessary retry — but a retry would short-circuit
+          // through `validateRekey`'s no-op guard because the new
+          // key now matches the stored value. Propagate
+          // `RekeyAuditError` unchanged; its own message
+          // accurately describes the rekey-side state, and the
+          // operator who issued the combined call already knows
+          // the content delta was attempted in the same request.
+          if (err instanceof RekeyAuditError) {
+            throw err
+          }
+          if (hasContentDelta) {
+            const cause = err instanceof Error ? err.message : String(err)
+            throw new PartialUpdateError(
+              `Content update for memory ${args.memoryId} persisted, ` +
+                `but the subsequent re-key to '${args.topicKey}' failed: ` +
+                `${cause}. The title/body/tags/etc. you supplied are now ` +
+                `on Notion; the topic key is unchanged. Inspect the row ` +
+                `and re-issue the re-key (without the content delta) once ` +
+                `the underlying issue is resolved.`,
+              {
+                memoryId: args.memoryId,
+                rekeyError: err,
+              },
+            )
+          }
+          throw err
         }
       }
-      if (!topicScope || topicScope.length === 0) {
-        throw new Error(
-          `Cannot set topicName="${args.topicName}": no project scope available. ` +
-            `The memory has no Project relation and no project was passed or auto-detected. ` +
-            `Pass projectName or projectNames.`,
-        )
-      }
-      const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
-        forceNew: args.forceNewTopic,
-      })
-      topicId = topic.id
-      topicLabel = topic.name
     }
 
-    const updated = await services.memories.update(args.memoryId, {
-      title: args.title,
-      content: args.content,
-      tags: args.tags,
-      keywords: args.keywords,
-      synopsis: args.synopsis,
-      projectIds,
-      topicId,
-      kind: args.kind as MemoryKind | undefined,
-      status: args.status as MemoryStatus | undefined,
-      confidence: args.confidence as MemoryConfidence | undefined,
-      reviewBy: args.reviewBy,
-      decidedAt: args.decidedAt,
-      supersedesIds: args.supersedesIds,
-      affectsIds: args.affectsIds,
-      alternatives: args.alternatives,
-      consequences: args.consequences,
-    })
+    if (!updated) {
+      // Degenerate input: neither a content delta nor a topicKey
+      // was passed (e.g. just `{ memoryId }`). Surface current
+      // state so the tool returns a sensible shape rather than
+      // throwing. Both content-update and re-key branches assign
+      // `updated` when they run, so this path only fires for the
+      // empty-args case.
+      updated = await services.memories.getById(args.memoryId)
+    }
 
     // Add-only re-emission of `mentions` facts (DEFERRED-03). An
     // update that surfaces a fresh entity in title / keywords /
@@ -686,6 +845,18 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
     }
 
     const lines = [`Updated memory: "${updated.title}" (${updated.id})`]
+    if (rekeyed && oldTopicKey !== undefined && args.topicKey !== undefined) {
+      lines.push(
+        `Re-keyed: '${oldTopicKey || "(unset)"}' → '${args.topicKey}'`,
+      )
+      lines.push(`Audit block appended to body.`)
+    } else if (topicKeyUnchanged && args.topicKey !== undefined) {
+      // Acknowledge the no-op so the operator can see the call was
+      // received and recognized as a no-op (the new key matched the
+      // existing one). Silent suppression would leave the operator
+      // wondering whether the re-key was honored or dropped.
+      lines.push(`Topic key unchanged: '${args.topicKey}' (no-op).`)
+    }
     if (topicLabel) {
       lines.push(`Topic: ${topicLabel}`)
     }
@@ -1150,6 +1321,11 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     affectsIds: z.array(z.string()).optional(),
     alternatives: z.string().optional(),
     consequences: z.string().optional(),
+    // Same kebab-case regex as `lore-memory action='save'`'s
+    // (forthcoming) topic-key parameter — the format contract is
+    // identical across save and update. See 0.9.0/#14 for the
+    // re-key semantics.
+    topicKey: z.string().regex(TOPIC_KEY_REGEX).optional(),
   }),
   z.object({
     action: z.literal("archive"),
@@ -1306,7 +1482,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
               "runbook / incident / postmortem / policy — not valid on `kind: 'note'` " +
               "(the catch-all default) and not valid on tasks. Use " +
               "`action: 'suggest-topic-key'` for a heuristic key from (title, kind). " +
-              "See CLAUDE.md 'Topic keys for evolving memories'.",
+              "See CLAUDE.md 'Topic keys for evolving memories'. " +
+              "(action='update') Re-key the memory's topic to this value. " +
+              "Must not collide with another live memory in the same " +
+              "project-set under the new key. Cannot be combined with " +
+              "`kind` in a single call. Appends a `## Re-keyed (date)` " +
+              "audit block to the body — does NOT increment Revision Count.",
           ),
         // update only
         supersedesIds: z
