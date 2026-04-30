@@ -1,12 +1,48 @@
 import { Command } from "commander"
 import { writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import { stringify as yamlStringify } from "yaml"
+import { Document, isMap } from "yaml"
 import { createClient } from "../../notion/client.js"
 import { createLimitedClient } from "../../notion/rate-limit.js"
 import { VaultManager } from "../../core/vault.js"
 import { resolveToken } from "../../config.js"
 import type { LoreConfig } from "../../types.js"
+
+/**
+ * Build the `.lore.yaml` text emitted by `lore init`. Pure so tests can
+ * assert the comment placement without spinning up the Notion-touching
+ * command path.
+ *
+ * The 0.9.0/08 `learningExtraction` knob is surfaced as a *commented*
+ * default inside the `hooks:` block — operators see the field exists
+ * without it changing behavior on a fresh install. The comment is
+ * attached to the `hooks` YAMLMap node (not concatenated onto the file
+ * tail) so it lands under `hooks:` regardless of future top-level key
+ * additions or yaml-lib output reordering.
+ */
+export function buildInitConfigYaml(pageId: string): string {
+  const config: LoreConfig = {
+    vault: { pageId },
+    projects: [],
+    hooks: {
+      autoSave: true,
+      wakeUp: true,
+      saveInterval: 5,
+    },
+  }
+
+  const doc = new Document(config)
+  const hooks = doc.get("hooks", true)
+  if (isMap(hooks)) {
+    // YAMLMap.comment renders after the map's last child at the map's
+    // own indent — i.e., as the final line inside the `hooks:` block.
+    // Leading space is required: yaml-lib prefixes `# ` so the rendered
+    // line reads `  # learningExtraction: true …`.
+    hooks.comment =
+      " learningExtraction: true  # 0.9.0/08 — autosave atomic-learning extraction"
+  }
+  return doc.toString()
+}
 
 export const initCommand = new Command("init")
   .description("Initialize a Lore vault in a Notion page")
@@ -32,19 +68,8 @@ export const initCommand = new Command("init")
       console.log(`  Memories DB: ${result.databases.memories}`)
       console.log(`  Facts DB:    ${result.databases.facts}`)
 
-      // Write .lore.yaml
-      const config: LoreConfig = {
-        vault: { pageId },
-        projects: [],
-        hooks: {
-          autoSave: true,
-          wakeUp: true,
-          saveInterval: 5,
-        },
-      }
-
       const configPath = resolve(process.cwd(), ".lore.yaml")
-      await writeFile(configPath, yamlStringify(config))
+      await writeFile(configPath, buildInitConfigYaml(pageId))
       console.log(`\nConfig written to ${configPath}`)
       console.log("\nNext steps:")
       console.log("  1. Add projects to .lore.yaml")

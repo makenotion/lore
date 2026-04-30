@@ -30,3 +30,10 @@ hooks:
   autoSave: true
   wakeUp: true
   saveInterval: 5
+  # learningExtraction (0.9.0/08): when true (default) the Stop-spawn autosave
+  # sub-agent identifies single-fact "atomic learnings" from the session and
+  # saves each as its own `note` memory, alongside the session synopsis it
+  # already writes. Set to false to reproduce the 0.8.x synopsis-only shape.
+  # Honors LORE_DISABLE_LEARNING_EXTRACTION=1 as well — either knob set to
+  # disabled wins.
+  # learningExtraction: true

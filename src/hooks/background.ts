@@ -41,12 +41,19 @@ import {
  * decision-create / task-create depending on what the session produced.
  * The save prompt teaches the polymorphic surface, so the spawned subagent
  * calls these names directly.
+ *
+ * `lore-query` is included so the atomic-learning extraction path (0.9.0/08)
+ * can dedup candidate learnings against the existing vault before saving —
+ * the prompt instructs the sub-agent to probe `lore-query action='search'`
+ * for each candidate (memory-shaped near-matches scoped to the project);
+ * the allowlist is what makes that probe callable.
  */
 export const DEFAULT_SAVE_ALLOWLIST = [
   "mcp__lore__lore-memory",
   "mcp__lore__lore-fact",
   "mcp__lore__lore-decision",
   "mcp__lore__lore-task",
+  "mcp__lore__lore-query",
 ].join(",")
 
 /**

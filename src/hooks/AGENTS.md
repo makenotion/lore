@@ -55,6 +55,70 @@ milliseconds and the user's next turn starts immediately.
 The spawned sub-agent has no prior context and receives the transcript
 inline through the prompt.
 
+### Atomic-learning extraction (0.9.0/08)
+
+The autosave prompt asks the spawned sub-agent to do two things in one
+spawn: write the session synopsis it has always written, AND identify
+*atomic learnings* — single-fact discoveries from the session ("bcrypt
+cost=12 is the right balance for our load.") — and save each as its own
+`note` memory. Extraction happens entirely inside the background
+sub-agent's reasoning. The foreground agent has no convention to learn
+and no `## Key Learnings:` section to enumerate; user-visible output is
+unchanged.
+
+Per-spawn cap: at most `PER_SPAWN_LEARNING_LIMIT` atomic learnings per
+autosave run (currently 5; see `prompts.ts`). A noisy session that
+surfaces 30 candidate facts must rank by durability and skip the long
+tail — the next session's autosave will catch anything truly important
+that the prior run dropped (transcripts overlap).
+
+Foreground/background dedup is **prompt-only**. The sub-agent is told
+to probe `lore-query action='search'` (scoped to the same project,
+seeded by the candidate's title or distinctive terms) for each
+candidate before saving, skipping near-matches. `action='search'` —
+not `action='ask'` — is the right probe: `ask` walks the fact / task
+graph by entity, so it would miss any foreground
+`lore-memory action='save'` row whose title doesn't already carry a
+matching fact edge. `lore-query` is therefore in the autosave's
+`DEFAULT_SAVE_ALLOWLIST`. Real-vault duplicates remain possible — a
+session-scoped dedup relation is the deferred follow-up; v1 accepts the
+occasional duplicate and lets `lore-correct` clean up.
+
+The block does not introduce a new `MemorySource` value. Atomic
+learnings inherit `source: "conversation"` (the existing autosave
+default). Differentiating learnings from other conversation-sourced
+memories at the schema level would surface a *mechanism* (autosave
+extracted this) rather than a *kind*, and the existing source values
+track mechanisms, not kinds.
+
+**Compaction interaction.** Claude Code compaction reduces the
+transcript visible to the autosave's `claude -p`. A session that hits
+compaction mid-work loses the pre-compaction transcript content, so any
+learnings buried in the compacted region won't be extracted by the
+post-Stop autosave. This is a known limitation of the autosave path —
+not a regression introduced by 0.9.0/08.
+
+#### Kill switches
+
+Two coordinated knobs disable the extraction block; either set to
+disabled wins (AND-of-permissive — both must be permissive for the
+block to ship).
+
+- `LORE_DISABLE_LEARNING_EXTRACTION=1` — env var, runtime override.
+  Anti-foot-gun: only the literal string `"1"` disables. Other
+  truthy-looking values (`"true"`, `"yes"`) fall through to the
+  permissive branch.
+- `hooks.learningExtraction: false` — `.lore.yaml`, persistent.
+  Defaults to `true` in `mergeHookDefaults`.
+
+When either knob disables extraction (env var set to `"1"` OR
+`hooks.learningExtraction` set to `false` — note that the two knobs
+have opposite polarities, so neither "both true" nor "both false"
+captures the disabling state), `helpers.ts` passes
+`{ extractLearnings: false }` to `buildBackgroundSavePrompt` and the
+prompt reproduces the 0.8.x synopsis-only shape byte-for-byte. Same
+posture as the existing `hooks.autoDigest: false` knob.
+
 ### Auto-digest (Stop-triggered, detached)
 
 After every accepted `Stop` event the hook also spawns a separate detached

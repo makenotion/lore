@@ -11,6 +11,7 @@ const hookConfigSchema = z
     autoSave: z.boolean().optional(),
     wakeUp: z.boolean().optional(),
     autoDigest: z.boolean().optional(),
+    learningExtraction: z.boolean().optional(),
     saveInterval: z.number().int().min(1).optional(),
   })
   .optional()

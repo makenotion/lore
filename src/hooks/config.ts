@@ -24,6 +24,14 @@ export interface HookConfig {
    */
   autoDigest: boolean
   /**
+   * Whether the Stop-spawn autosave sub-agent should extract atomic
+   * learnings in addition to the session synopsis (0.9.0/08). Honored by
+   * the prompt builder; the helper layer combines this with the
+   * `LORE_DISABLE_LEARNING_EXTRACTION` env override before passing the
+   * resolved boolean to `buildBackgroundSavePrompt`.
+   */
+  learningExtraction: boolean
+  /**
    * Name of the catch-all project (path `"."` or `""`) in this workspace, if
    * configured. The save prompts name it explicitly and tell the AI to avoid
    * defaulting to it for sub-project-specific work.
@@ -39,9 +47,9 @@ export interface HookConfig {
 /**
  * Merge a `.lore.yaml` hooks section with built-in defaults.
  *
- * `autoSave`, `wakeUp`, and `autoDigest` default to true: hooks are opt-out,
- * not opt-in, once the integration is installed. Users who want to suppress
- * any of them set the flag to `false` explicitly.
+ * `autoSave`, `wakeUp`, `autoDigest`, and `learningExtraction` default to
+ * true: hooks are opt-out, not opt-in, once the integration is installed.
+ * Users who want to suppress any of them set the flag to `false` explicitly.
  */
 export function mergeHookDefaults(
   hooks: LoreConfig["hooks"] | undefined,
@@ -53,6 +61,7 @@ export function mergeHookDefaults(
     autoSave: hooks?.autoSave ?? true,
     wakeUp: hooks?.wakeUp ?? true,
     autoDigest: hooks?.autoDigest ?? true,
+    learningExtraction: hooks?.learningExtraction ?? true,
     catchAllName,
     subProjects,
   }

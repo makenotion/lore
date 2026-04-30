@@ -371,12 +371,21 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
     if (sinceLast >= threshold) {
       const sessionContent = formatTranscriptSessionContent(transcript.messages)
       if (sessionContent) {
+        // Atomic-learning extraction (0.9.0/08) is disabled if EITHER knob
+        // says so — env var OR config — so both must be permissive for
+        // the section to ship. Same posture as `autoDigest`'s pair of
+        // knobs above; an operator who set the env var and then forgot
+        // can't be silently re-enabled by a config-default.
+        const learningExtractionEnabled =
+          process.env["LORE_DISABLE_LEARNING_EXTRACTION"] !== "1" &&
+          config.learningExtraction
         const prompt = buildBackgroundSavePrompt(
           config.subProjects,
           config.catchAllName,
           sessionContent,
           event.session_id,
-          deriveAgentName(event)
+          deriveAgentName(event),
+          { extractLearnings: learningExtractionEnabled },
         )
         // Only advance the save counter when a background process actually
         // started. Every non-`spawned` result — benign races (lock-held,

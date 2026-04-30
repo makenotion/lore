@@ -133,6 +133,67 @@ function indentUntrustedText(text: string): string {
 }
 
 /**
+ * Per-spawn cap for atomic learnings the autosave sub-agent may save in one
+ * run. Hard-coded into `buildLearningExtractionGuidance` via string
+ * interpolation so a snapshot/contains test pins the literal number — a
+ * const change is forced through review rather than landing silently.
+ *
+ * Empirically chosen: a noisy session can surface 30+ candidate facts; the
+ * cap forces ranking by durability and skips the long tail. The next
+ * session's autosave catches anything truly important the prior run dropped
+ * (transcript context overlaps), so a tight cap doesn't permanently lose
+ * signal — it just defers it.
+ */
+export const PER_SPAWN_LEARNING_LIMIT = 5
+
+/**
+ * Atomic-learning extraction block appended to `buildBackgroundSavePrompt`
+ * when the kill switches are permissive. Tells the sub-agent to identify
+ * single-fact discoveries from the session and save each as its own memory
+ * via `lore-memory action='save'`, alongside whatever session-level synopsis
+ * the existing extraction filter yields.
+ *
+ * Per `0.9.0/Phase-1/08`: extraction happens *invisibly* in the background
+ * sub-agent, not via a foreground `## Key Learnings:` convention. The
+ * earlier engram-style draft asked the foreground agent to enumerate
+ * learnings inline; the reviewer pushed back because that pollutes
+ * user-visible output and makes the memory store contingent on whatever the
+ * agent remembered to write down. The block below is the redesigned shape:
+ * structural in the background, no agent-compliance risk.
+ *
+ * Dedup against foreground saves is prompt-only: the sub-agent is told to
+ * probe `lore-query action='search'` before saving a candidate.
+ * `action='ask'` is the wrong probe — it walks the fact / task graph by
+ * entity, not the Memories DS — so it would miss any foreground
+ * `lore-memory action='save'` row whose title doesn't already have a
+ * matching fact edge. Real-vault duplicates are accepted as a v1 cost —
+ * `lore-correct` handles them and a session-scoped relation is the
+ * deferred follow-up.
+ */
+function buildLearningExtractionGuidance(): string {
+  return `In addition to a session-level synopsis, identify *atomic learnings* — single-fact discoveries from this session that would help a future session even without context. Examples:
+
+  - "bcrypt cost=12 is the right balance for server CPU at our load."
+  - "Postgres partman extension must be installed before partition tables."
+  - "Notion's dataSources.query rejects relation filters with empty arrays."
+
+For each atomic learning, call \`lore-memory action='save'\` with:
+  - title: short verb-or-noun-led phrase ≤ 80 chars
+  - content: 1-3 sentences with the fact + minimal context
+  - kind: "note"
+  - confidence: "likely" (use this for atomic learnings — bump to "certain" only when the session demonstrated the fact concretely; leaving the field unset would default to "certain", which overstates inference-derived facts)
+
+A learning must be:
+  1. **Atomic.** One fact, one memory. Compound observations split into multiple saves.
+  2. **Durable.** Useful beyond this specific bug or feature. "Fixed the off-by-one" is NOT durable; "binary-search variant XXXX needs <= comparison, not <" IS durable.
+  3. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly called \`lore-remember\` / \`lore-decide\` for it in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
+
+**Per-spawn cap: at most ${PER_SPAWN_LEARNING_LIMIT} atomic learnings per autosave run.** A noisy session that surfaces 30 candidate facts must rank by durability and skip the long tail. Picking the top ${PER_SPAWN_LEARNING_LIMIT} high-signal learnings is better than flooding the vault with 30 marginal rows; the next session's autosave will pick up anything truly important that this run dropped (the transcript context overlaps).
+
+If this session produced no atomic learnings (a routine task, status check, unblocking), skip the per-learning saves entirely. The session synopsis is independent: save it only if the extraction filter above identifies durable context — a routine session with no atomic learnings AND no synopsis-worthy signal still warrants the "No Lore context to save." escape hatch.`
+}
+
+/**
  * Build the background save prompt used by the Stop hook's autosave path.
  * The Stop hook spawns a detached `claude -p` sub-agent with no prior
  * context, so the transcript must be embedded in the prompt.
@@ -140,17 +201,28 @@ function indentUntrustedText(text: string): string {
  * The sub-agent runs with an allowlist of lore-* tools, so the prompt must
  * only reference tools that are actually in the allowlist (see
  * `spawnBackgroundSave` in `background.ts`).
+ *
+ * `options.extractLearnings` — when true (default) appends the
+ * atomic-learning extraction block. When false, the prompt reproduces the
+ * pre-0.9.0 synopsis-only shape byte-for-byte. Toggled by the dual kill
+ * switches (`LORE_DISABLE_LEARNING_EXTRACTION=1` env var or
+ * `hooks.learningExtraction: false` in `.lore.yaml`); see `helpers.ts`.
  */
 export function buildBackgroundSavePrompt(
   subProjects: string[],
   catchAllName: string | null,
   sessionContent: string,
   sessionId?: string,
-  agentName?: string
+  agentName?: string,
+  options?: { extractLearnings?: boolean },
 ): string {
   const identitySection = buildIdentityBlock(sessionId, agentName)
   const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)
   const filter = buildExtractionFilter()
+  const learningGuidance =
+    options?.extractLearnings !== false
+      ? `\n\n${buildLearningExtractionGuidance()}`
+      : ""
   const tools = buildToolGuidance()
 
   return `[Lore autosave] You are reviewing a Claude Code or Codex session in progress.
@@ -162,7 +234,7 @@ ${indentUntrustedText(sessionContent)}
 
 Assess whether this session produced context worth saving.${identitySection}${projectSection}
 
-${filter}
+${filter}${learningGuidance}
 
 ${tools}
 

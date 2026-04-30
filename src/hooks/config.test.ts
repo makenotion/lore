@@ -2,14 +2,26 @@ import { describe, expect, it } from "vitest"
 import { mergeHookDefaults } from "./config.js"
 
 describe("mergeHookDefaults", () => {
-  it("defaults wakeUp, autoSave, and autoDigest to true when no hooks section is provided", () => {
+  it("defaults wakeUp, autoSave, autoDigest, and learningExtraction to true when no hooks section is provided", () => {
     const config = mergeHookDefaults(undefined)
     expect(config.wakeUp).toBe(true)
     expect(config.autoSave).toBe(true)
     expect(config.autoDigest).toBe(true)
+    expect(config.learningExtraction).toBe(true)
     expect(config.saveInterval).toBe(5)
     expect(config.catchAllName).toBeNull()
     expect(config.subProjects).toEqual([])
+  })
+
+  it("respects hooks.learningExtraction: false without affecting autoSave / autoDigest (0.9.0/08)", () => {
+    // The atomic-learning extraction knob is orthogonal to autoSave —
+    // an operator can keep per-session synopses while pausing
+    // learning-fanout if vault noise gets out of hand. Same posture
+    // as the autoDigest regression below.
+    const config = mergeHookDefaults({ learningExtraction: false })
+    expect(config.learningExtraction).toBe(false)
+    expect(config.autoSave).toBe(true)
+    expect(config.autoDigest).toBe(true)
   })
 
   it("respects hooks.autoDigest: false without affecting autoSave", () => {

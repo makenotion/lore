@@ -1091,6 +1091,16 @@ export interface LoreConfig {
      * disables the auto-spawn without affecting the manual `lore digest` CLI.
      */
     autoDigest?: boolean
+    /**
+     * Atomic-learning extraction inside the Stop-spawn autosave sub-agent
+     * (0.9.0/08). When true (default) the sub-agent is asked to identify
+     * single-fact discoveries and save each as its own `note` memory, in
+     * addition to the session synopsis it already writes. When false, the
+     * autosave reproduces the 0.8.x synopsis-only shape. Honors
+     * `LORE_DISABLE_LEARNING_EXTRACTION=1` env override — either knob set
+     * to disabled wins (AND-of-permissive).
+     */
+    learningExtraction?: boolean
     /** Real user messages between structured AI-driven saves. Default: 5. */
     saveInterval?: number
   }

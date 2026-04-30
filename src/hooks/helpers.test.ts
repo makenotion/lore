@@ -56,11 +56,13 @@ const {
   execFileSyncMock,
   fireDigestIfStaleMock,
   scheduleAutoDigestSpawnMock,
+  buildBackgroundSavePromptMock,
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   execFileSyncMock: vi.fn(() => "/mock/bin/claude\n"),
   fireDigestIfStaleMock: vi.fn(async () => "no-project" as const),
   scheduleAutoDigestSpawnMock: vi.fn<(cwd: string) => void>(),
+  buildBackgroundSavePromptMock: vi.fn(),
 }))
 
 vi.mock("node:child_process", async () => {
@@ -76,6 +78,21 @@ vi.mock("./digest-scheduler.js", async () => {
     ...actual,
     fireDigestIfStale: fireDigestIfStaleMock,
     scheduleAutoDigestSpawn: scheduleAutoDigestSpawnMock,
+  }
+})
+
+// Mock the prompt builder so tests can inspect the resolved
+// `extractLearnings` flag without having to crack open the temp prompt
+// file the spawn pipeline writes. The actual builder is unit-tested in
+// `prompts.test.ts`; here we only care that helpers.ts threads the
+// kill-switch boolean through correctly. Default returns the canonical
+// marker string so the rest of the autosave pipeline (spawn, lock
+// acquisition) still has plausible bytes to write to the temp file.
+vi.mock("./prompts.js", async () => {
+  const actual = await vi.importActual<typeof import("./prompts.js")>("./prompts.js")
+  return {
+    ...actual,
+    buildBackgroundSavePrompt: buildBackgroundSavePromptMock,
   }
 })
 
@@ -117,6 +134,7 @@ function defaultConfig(overrides: Partial<HookConfig> = {}): HookConfig {
     autoSave: true,
     wakeUp: true,
     autoDigest: true,
+    learningExtraction: true,
     catchAllName: null,
     subProjects: [],
     ...overrides,
@@ -181,6 +199,9 @@ describe("handleStop", () => {
     spawnMock.mockReset()
     spawnMock.mockImplementation(() => fakeLiveChild())
     scheduleAutoDigestSpawnMock.mockReset()
+    buildBackgroundSavePromptMock.mockReset()
+    buildBackgroundSavePromptMock.mockImplementation(() => "[Lore autosave] mocked prompt body")
+    delete process.env["LORE_DISABLE_LEARNING_EXTRACTION"]
   })
 
   afterEach(() => {
@@ -192,6 +213,7 @@ describe("handleStop", () => {
     } catch {
       // Nothing to clean.
     }
+    delete process.env["LORE_DISABLE_LEARNING_EXTRACTION"]
   })
 
   it("never emits decision: block when the interval is reached", async () => {
@@ -235,6 +257,12 @@ describe("handleStop", () => {
     expect(allowed).toContain("lore-fact")
     expect(allowed).toContain("lore-decision")
     expect(allowed).toContain("lore-task")
+    // 0.9.0/08: the atomic-learning extraction prompt asks the sub-agent
+    // to probe `lore-query action='search'` for dedup; the allowlist must
+    // include lore-query so that probe is callable. (action='ask' is
+    // the wrong probe for memory dedup — entity-keyed graph walk vs.
+    // the memory-shaped similarity surface — see prompts.ts.)
+    expect(allowed).toContain("lore-query")
     // lore-journal is soft-deprecated and no longer invited from the prompt;
     // drop it from the allowlist too so implementation and prompt agree.
     expect(allowed).not.toContain("lore-journal")
@@ -446,6 +474,123 @@ describe("handleStop", () => {
     expect(spawnMock).not.toHaveBeenCalled()
     expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
     expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledWith(tmpDir)
+  })
+
+  // -----------------------------------------------------------------
+  // 0.9.0/08: atomic-learning extraction kill switches
+  //
+  // The helper resolves `extractLearnings` from two knobs and passes the
+  // result to `buildBackgroundSavePrompt`. The dual-knob shape mirrors
+  // `autoDigest`: either knob set to disabled wins (AND-of-permissive),
+  // and only the resolved boolean is exposed to the prompt builder.
+  // -----------------------------------------------------------------
+
+  function lastExtractLearnings(): boolean | undefined {
+    expect(buildBackgroundSavePromptMock).toHaveBeenCalled()
+    const call = buildBackgroundSavePromptMock.mock.calls.at(-1)!
+    // Signature: (subProjects, catchAllName, sessionContent, sessionId,
+    // agentName, options). The options arg is the 6th positional.
+    const options = call[5] as { extractLearnings?: boolean } | undefined
+    return options?.extractLearnings
+  }
+
+  it("passes extractLearnings: true to buildBackgroundSavePrompt by default", async () => {
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-learn-default",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig(),
+    )
+
+    expect(lastExtractLearnings()).toBe(true)
+  })
+
+  it("passes extractLearnings: false when LORE_DISABLE_LEARNING_EXTRACTION=1", async () => {
+    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "1"
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-learn-env-off",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig(),
+    )
+
+    expect(lastExtractLearnings()).toBe(false)
+  })
+
+  it("passes extractLearnings: false when hooks.learningExtraction is false", async () => {
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-learn-config-off",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ learningExtraction: false }),
+    )
+
+    expect(lastExtractLearnings()).toBe(false)
+  })
+
+  it("passes extractLearnings: false when both kill switches are set", async () => {
+    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "1"
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-learn-both-off",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ learningExtraction: false }),
+    )
+
+    expect(lastExtractLearnings()).toBe(false)
+  })
+
+  it("ignores LORE_DISABLE_LEARNING_EXTRACTION values other than '1'", async () => {
+    // Anti-foot-gun: a future operator who sets the env var to "0",
+    // "false", or "no" must still get the default extract-learnings
+    // behavior. Only the literal "1" disables — same shape as
+    // `LORE_AUTOSAVE` ("false" disables, anything else is permissive)
+    // but in the opposite polarity ("1" disables, anything else is
+    // permissive). The helper's check is `!== "1"`, so any non-"1"
+    // value falls through to the permissive branch.
+    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "true"
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-learn-env-non-one",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig(),
+    )
+
+    expect(lastExtractLearnings()).toBe(true)
+  })
+
+  it("env override beats hooks.learningExtraction: true in config", async () => {
+    process.env["LORE_DISABLE_LEARNING_EXTRACTION"] = "1"
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-learn-env-wins",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({ learningExtraction: true }),
+    )
+
+    expect(lastExtractLearnings()).toBe(false)
   })
 })
 
