@@ -36,6 +36,8 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     taskState: null,
     blockedBy: "",
     entity: "",
+    topicKey: "",
+    revisionCount: 1,
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,
@@ -333,6 +335,8 @@ function makeTaskSummary(
     // bare `overrides.title` so the override-or-default contract is
     // visible at the call site for future test authors.
     entity: overrides.entity ?? overrides.title,
+    topicKey: "",
+    revisionCount: 1,
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,

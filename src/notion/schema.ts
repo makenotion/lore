@@ -171,6 +171,22 @@ export function memoriesProperties(
     // `pageToMemory` returns `null` when missing so the RRF integration
     // (#08) can distinguish "never scored" from "scored zero."
     "Confidence Score": { number: { format: "number" } },
+    // Stable identifier for upsert grouping. Distinct from the `Topic`
+    // relation column above (which links to the Topics DB for faceted
+    // browsing) — `Topic Key` is *operationally* a per-row identifier
+    // used by `lore-memory action='save'` (0.9.0/#06) to dispatch
+    // between fresh-create and append-revision. Format constraint is
+    // kebab-case path like `decision/jwt-auth`, enforced at the save-
+    // path validation in #06; stored verbatim. Empty string and missing
+    // both mean "no upsert grouping" (the 0.8.x save behavior).
+    "Topic Key": { rich_text: {} },
+    // System-managed counter tracking how many times the memory has
+    // been touched via the topic-key upsert path (0.9.0/#06). Default
+    // for new rows is 1 (the create itself counts as revision 1).
+    // Pre-0.9.0 rows have a null `Revision Count` — `extractNumber`
+    // returns null, which `pageToMemory` coalesces to 1 so
+    // formatMemoryListItem (#10) treats legacy rows as single-revision.
+    "Revision Count": { number: { format: "number" } },
     "Review By": { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
     // transitions to a terminal state — either via `TaskService.close()`
@@ -508,6 +524,8 @@ export function buildMemoryProps(input: {
   taskState?: string
   blockedBy?: string
   entity?: string
+  topicKey?: string
+  revisionCount?: number
 }): PageProperties {
   const props: PageProperties = {
     Title: { title: [{ text: { content: input.title } }] },
@@ -606,6 +624,17 @@ export function buildMemoryProps(input: {
   }
   if (input.entity !== undefined) {
     props["Entity"] = { rich_text: [{ text: { content: input.entity } }] }
+  }
+  // `undefined` leaves the column untouched; explicit empty-string writes
+  // through (the agent-facing detach signal — see 0.9.0/#14). Empty
+  // string is structurally distinct from "never set" because Phase 1
+  // ships the schema before #06 wires upsert; until then every save
+  // passes `topicKey: undefined` and the column stays null on new rows.
+  if (input.topicKey !== undefined) {
+    props["Topic Key"] = { rich_text: [{ text: { content: input.topicKey } }] }
+  }
+  if (input.revisionCount !== undefined) {
+    props["Revision Count"] = { number: input.revisionCount }
   }
   return props
 }

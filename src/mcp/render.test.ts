@@ -52,6 +52,8 @@ function buildMemory(overrides: Partial<Memory> & { id: string; title: string })
     taskState: null,
     blockedBy: "",
     entity: "",
+    topicKey: "",
+    revisionCount: 1,
     createdAt: "2026-04-20T00:00:00Z",
     updatedAt: "2026-04-20T00:00:00Z",
     ...overrides,

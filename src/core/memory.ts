@@ -587,6 +587,118 @@ export class MemoryService {
   }
 
   /**
+   * Find at most one non-archived memory matching a `(Topic Key,
+   * Project-set)` pair, ordered by `Revision Count` desc with
+   * `Last Referenced At` desc as the tiebreaker. The shared lookup
+   * helper for the topic-key upsert path (#06) and the re-key repair
+   * path (#14) — both consume this so neither hard-depends on the
+   * other. Two short-circuit guards defend against accidental
+   * whole-vault matches: empty `topicKey` and empty `projectIds`
+   * both return null without issuing any Notion query.
+   *
+   * **Empty `topicKey` guard.** Per the schema contract, empty
+   * string and missing both mean "no upsert grouping" — there is
+   * no canonical row to find. Without this guard, a caller in #06
+   * that forgets to gate on `topicKey === ""` would issue
+   * `rich_text: { equals: "" }` to Notion, which matches every
+   * legacy row whose Topic Key column is empty (i.e. every
+   * pre-#06 memory). The JS post-filter would narrow to the
+   * project set and return the highest-`Revision Count` legacy
+   * memory — silently appending a revision onto an arbitrary
+   * unrelated row. The parameter type is `string` (not
+   * `string | undefined`), so the type system doesn't catch the
+   * call-site mistake; this guard does.
+   *
+   * **Project-set EQUALITY, not containment.** Notion's relation
+   * filter only supports `contains`, so the query OR-AND-composes
+   * one `contains` clause per project ID. The result set is then
+   * filtered client-side down to true equality — a memory whose
+   * Project relation is `["P1", "P2"]` is excluded from a query
+   * for `projectIds: ["P1"]` because the memory has extra projects
+   * the caller didn't ask for. Symmetric: a query for
+   * `["P1", "P2"]` against a memory in `["P1"]` returns null.
+   * Order-independent: set semantics, not list semantics.
+   *
+   * **Pagination.** A vault with many memories under the same Topic
+   * Key (project-set differs across rows so the helper returns null
+   * for each but the query yields >100 candidates) or repeated re-
+   * keying could overflow the default 100-row Notion page. Loop
+   * until `has_more` is false; without pagination the latest
+   * revision could hide on a non-first page and the helper would
+   * silently return a stale candidate.
+   *
+   * **Archived rows.** `dataSources.query` cannot filter on the
+   * `archived` page-metadata flag (it lives on PageObjectResponse,
+   * not as a DB column). The post-filter excludes archived rows
+   * client-side.
+   *
+   * **Cross-kind matching is intentional.** The Memories DB hosts
+   * notes, decisions, and tasks (the Kind column discriminates).
+   * The query does NOT filter on Kind — a `decision/jwt-auth` topic
+   * key matches against any memory in the project set carrying that
+   * key, regardless of Kind. This is what #14 (re-key) needs for
+   * collision detection: if a re-key would land on an existing
+   * task or decision, the helper must surface that collision so the
+   * re-key can reject. Callers that want kind-specific upsert
+   * semantics (#06's expected use case for plain memories) layer a
+   * Kind filter at their own boundary; the helper stays
+   * Kind-agnostic so the single primitive serves both consumers.
+   */
+  async findByTopicKey(input: {
+    topicKey: string
+    projectIds: string[]
+  }): Promise<Memory | null> {
+    if (input.topicKey === "") return null
+    if (input.projectIds.length === 0) return null
+
+    const allResults: PageObjectResponse[] = []
+    // First iteration runs with `start_cursor: undefined` (Notion
+    // treats this as "first page"). Subsequent iterations carry the
+    // returned `next_cursor` until `has_more` is false; the
+    // `?? undefined` guard normalizes a `next_cursor: null` from
+    // Notion into the loop-exit sentinel.
+    let cursor: string | undefined = undefined
+    do {
+      const page = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: {
+          and: [
+            { property: "Topic Key", rich_text: { equals: input.topicKey } },
+            ...input.projectIds.map((id) => ({
+              property: "Project",
+              relation: { contains: id },
+            })),
+          ],
+        } as QueryDataSourceParameters["filter"],
+        start_cursor: cursor,
+      })
+      for (const r of page.results) {
+        if (isFullPage(r)) allResults.push(r)
+      }
+      cursor = page.has_more ? page.next_cursor ?? undefined : undefined
+    } while (cursor !== undefined)
+
+    const inputSet = new Set(input.projectIds)
+    const matches = allResults
+      .filter((page) => !page.archived)
+      .map((page) => this.pageToMemory(page, ""))
+      .filter(
+        (m) =>
+          m.projectIds.length === inputSet.size &&
+          m.projectIds.every((id) => inputSet.has(id)),
+      )
+
+    matches.sort((a, b) => {
+      if (a.revisionCount !== b.revisionCount) {
+        return b.revisionCount - a.revisionCount
+      }
+      return (b.lastReferencedAt ?? "").localeCompare(a.lastReferencedAt ?? "")
+    })
+
+    return matches[0] ?? null
+  }
+
+  /**
    * Hydrate the markdown body for a memory whose properties are already
    * known. Sibling of `getById` that skips the `pages.retrieve` call —
    * issued exclusively for callers that just received the row from a
@@ -2144,5 +2256,14 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     taskState,
     blockedBy: extractRichText(props["Blocked By"]),
     entity: extractRichText(props["Entity"]),
+    topicKey: extractRichText(props["Topic Key"]),
+    // Legacy rows (pre-0.9.0) have a null `Revision Count` column.
+    // Coalesce to 1 — every existing row has been "saved once," so
+    // formatMemoryListItem (#10) treats the count as single-revision
+    // and surfaces no `rev` line. Distinct from the Confidence Score
+    // path (which preserves null to signal "never scored") because
+    // Revision Count carries no "uninitialized" semantic — every row
+    // has been written at least once by definition.
+    revisionCount: extractNumber(props["Revision Count"]) ?? 1,
   }
 }

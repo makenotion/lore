@@ -47,6 +47,8 @@ function makeMemory(overrides: Partial<Memory>): Memory {
     taskState: null,
     blockedBy: "",
     entity: "",
+    topicKey: "",
+    revisionCount: 1,
     createdAt: "2026-04-20T10:00:00.000Z",
     updatedAt: "2026-04-20T10:00:00.000Z",
     ...overrides,

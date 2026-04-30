@@ -37,6 +37,8 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
     // be fooled by a default that mirrors the title — callers who care
     // about a specific entity must override explicitly.
     entity: "test-entity",
+    topicKey: "",
+    revisionCount: 1,
     ...overrides,
   }
 }

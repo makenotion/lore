@@ -37,6 +37,8 @@ function makeTask(overrides: Partial<TaskSummary> = {}): TaskSummary {
     taskState: "open",
     blockedBy: "",
     entity: "PR-25750",
+    topicKey: "",
+    revisionCount: 1,
     ...overrides,
   }
 }
@@ -72,6 +74,8 @@ function makeMemory(overrides: Partial<Memory> = {}): Memory {
     taskState: null,
     blockedBy: "",
     entity: "",
+    topicKey: "",
+    revisionCount: 1,
     ...overrides,
   }
 }

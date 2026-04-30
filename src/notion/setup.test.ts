@@ -641,6 +641,34 @@ describe("migrateVaultSchema parallel retrieves", () => {
     expect(memoriesDiff!.missing).toContain("Last Referenced At")
   })
 
+  it("surfaces Topic Key as a missing property on a pre-0.9.0 Memories DB", async () => {
+    // A vault upgraded from <0.9.0 has no `Topic Key` column on its
+    // Memories DB. The drift detector must surface the column by name
+    // so an operator running `lore status` / `lore migrate` sees the
+    // nudge — and a future contributor can't silently rename or drop
+    // the property without this fixture failing first. Same posture as
+    // the Confidence Score / Last Referenced At pins from 0.8.0.
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff?.missing).toContain("Topic Key")
+  })
+
+  it("surfaces Revision Count as a missing property on a pre-0.9.0 Memories DB", async () => {
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+
+    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff?.missing).toContain("Revision Count")
+  })
+
   it("surfaces Done At as a missing property on a pre-#07 Memories DB", async () => {
     // A legacy vault retrieved through dataSources.retrieve returns the
     // pre-#07 Memories shape — Review By and Decided At present, Done At

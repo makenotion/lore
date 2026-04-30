@@ -600,6 +600,433 @@ describe("MemoryService.create / update — lastReferencedAt three-state semanti
   })
 })
 
+describe("Topic Key + Revision Count property round-trip (0.9.0/01)", () => {
+  it("returns empty string for topicKey on a pre-migration page with no Topic Key column", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Pre-migration" }] },
+    })
+    expect(pageToMemory(page).topicKey).toBe("")
+  })
+
+  it("returns 1 for revisionCount on a pre-migration page with no Revision Count column", () => {
+    // Legacy rows have null in the column — every existing row has been
+    // saved exactly once, so the coalesced default is 1. #10's render
+    // uses `>= 2` as the threshold for surfacing the count, so legacy
+    // rows surface no `rev` line.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Pre-migration" }] },
+    })
+    expect(pageToMemory(page).revisionCount).toBe(1)
+  })
+
+  it("returns 1 when Revision Count column is present-but-empty (null on Notion's side)", () => {
+    // Distinct from confidenceScore which preserves null — Revision
+    // Count carries no "uninitialized" semantic; the row exists, so
+    // it has been saved at least once.
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Cleared" }] },
+      "Revision Count": { type: "number", number: null },
+    })
+    expect(pageToMemory(page).revisionCount).toBe(1)
+  })
+
+  it("extracts a populated topicKey", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Decision" }] },
+      "Topic Key": {
+        type: "rich_text",
+        rich_text: [{ plain_text: "decision/jwt-auth-model" }],
+      },
+    })
+    expect(pageToMemory(page).topicKey).toBe("decision/jwt-auth-model")
+  })
+
+  it("extracts a populated revisionCount", () => {
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "Revised" }] },
+      "Revision Count": { type: "number", number: 5 },
+    })
+    expect(pageToMemory(page).revisionCount).toBe(5)
+  })
+
+  it("round-trips topicKey through buildMemoryProps + pageToMemory", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      topicKey: "runbook/database-migration",
+    }) as Record<string, { rich_text: Array<{ text: { content: string } }> }>
+
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Topic Key": {
+        type: "rich_text",
+        rich_text: built["Topic Key"].rich_text.map((seg) => ({
+          plain_text: seg.text.content,
+        })),
+      },
+    })
+    expect(pageToMemory(page).topicKey).toBe("runbook/database-migration")
+  })
+
+  it("round-trips revisionCount through buildMemoryProps + pageToMemory", () => {
+    const built = buildMemoryProps({ title: "x", revisionCount: 7 }) as Record<
+      string,
+      { number: number }
+    >
+    expect(built["Revision Count"]).toEqual({ number: 7 })
+
+    const page = buildPage({
+      Title: { type: "title", title: [{ plain_text: "x" }] },
+      "Revision Count": { type: "number", number: built["Revision Count"].number },
+    })
+    expect(pageToMemory(page).revisionCount).toBe(7)
+  })
+})
+
+describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  /** Build a minimum Memory page for fixture queries. */
+  function buildTopicKeyPage(
+    id: string,
+    opts: {
+      topicKey: string
+      projectIds: string[]
+      revisionCount?: number
+      lastReferencedAt?: string | null
+      archived?: boolean
+    },
+  ): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: id }] },
+        Project: {
+          type: "relation",
+          relation: opts.projectIds.map((pid) => ({ id: pid })),
+        },
+        "Topic Key": {
+          type: "rich_text",
+          rich_text: [{ plain_text: opts.topicKey }],
+        },
+        ...(opts.revisionCount !== undefined && {
+          "Revision Count": { type: "number", number: opts.revisionCount },
+        }),
+        ...(opts.lastReferencedAt !== undefined && {
+          "Last Referenced At": {
+            type: "date",
+            date: opts.lastReferencedAt === null ? null : { start: opts.lastReferencedAt },
+          },
+        }),
+      },
+      { id, archived: opts.archived ?? false },
+    )
+  }
+
+  /** Stub `dataSources.query` returning a fixed set of pages, optionally
+   *  paginated across multiple Notion pages. */
+  function makeQueryClient(pages: Array<{ results: PageObjectResponse[]; has_more?: boolean; next_cursor?: string | null }>) {
+    let callIndex = 0
+    const querySpy = vi.fn(async (_args: { data_source_id: string; filter?: unknown; start_cursor?: string }) => {
+      const result = pages[callIndex]
+      callIndex++
+      return {
+        results: result?.results ?? [],
+        has_more: result?.has_more ?? false,
+        next_cursor: result?.next_cursor ?? null,
+      }
+    })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    return { client, querySpy }
+  }
+
+  it("returns null without issuing any Notion query when projectIds is empty", async () => {
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/anything",
+      projectIds: [],
+    })
+
+    expect(result).toBeNull()
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("returns null without issuing any Notion query when topicKey is the empty string", async () => {
+    // Without this guard, `rich_text: { equals: "" }` matches every
+    // legacy row whose Topic Key column is empty (i.e. every
+    // pre-#06 memory). The project-set post-filter would narrow to
+    // the project's most-recently-referenced legacy memory — the
+    // helper would silently return an unrelated row that #06's
+    // upsert would then append a revision onto. Empty topicKey is
+    // the same class of foot-gun as empty projectIds; both must
+    // short-circuit before any Notion call.
+    const { client, querySpy } = makeQueryClient([])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "",
+      projectIds: ["P1"],
+    })
+
+    expect(result).toBeNull()
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+
+  it("returns the single matching memory under a one-project query", async () => {
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("mem-1", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 1,
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+    expect(result?.id).toBe("mem-1")
+  })
+
+  it("enforces project-set EQUALITY: a query for [P1] excludes a memory in [P1, P2]", async () => {
+    // Notion's relation filter only supports `contains`, so the query
+    // would naively match any memory whose Project relation includes
+    // P1. The JS post-filter narrows to true equality.
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("mem-extra", {
+            topicKey: "decision/foo",
+            projectIds: ["P1", "P2"],
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+    expect(result).toBeNull()
+  })
+
+  it("symmetric: a query for [P1, P2] excludes a memory in [P1]", async () => {
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("mem-fewer", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1", "P2"],
+    })
+    expect(result).toBeNull()
+  })
+
+  it("project-order independence: [P2, P1] matches a memory in [P1, P2]", async () => {
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("mem-both", {
+            topicKey: "decision/foo",
+            projectIds: ["P1", "P2"],
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P2", "P1"],
+    })
+    expect(result?.id).toBe("mem-both")
+  })
+
+  it("excludes archived rows: a vault with one archived match returns null", async () => {
+    // `dataSources.query` cannot filter on the page-metadata `archived`
+    // flag, so the JS post-filter handles it. Without this filter,
+    // archived candidates would surface as if they were live.
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("mem-archived", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            archived: true,
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+    expect(result).toBeNull()
+  })
+
+  it("orders by Revision Count desc — row with Revision Count 5 wins over Revision Count 3", async () => {
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("low-rev", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 3,
+          }),
+          buildTopicKeyPage("high-rev", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 5,
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+    expect(result?.id).toBe("high-rev")
+  })
+
+  it("tiebreaker by Last Referenced At desc when Revision Count is equal", async () => {
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("older", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 2,
+            lastReferencedAt: "2026-01-15",
+          }),
+          buildTopicKeyPage("newer", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 2,
+            lastReferencedAt: "2026-04-29",
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+    expect(result?.id).toBe("newer")
+  })
+
+  it("tiebreaker degenerates gracefully when both rows have null Last Referenced At — returns the first input", async () => {
+    // Two legacy rows (pre-touchOnRead, pre-#11 backfill) tie on
+    // Revision Count AND on a null Last Referenced At. The tiebreaker
+    // sort uses `(b.lastReferencedAt ?? "").localeCompare(a.lastReferencedAt ?? "")`
+    // which produces a stable 0 when both sides are null —
+    // Array.prototype.sort is stable in ES2019+, so original order
+    // wins. Pinning the behavior so a future refactor that switches
+    // to a non-stable comparator (or "fixes" the empty-string fallback
+    // to undefined) surfaces here.
+    const { client } = makeQueryClient([
+      {
+        results: [
+          buildTopicKeyPage("first", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 2,
+            lastReferencedAt: null,
+          }),
+          buildTopicKeyPage("second", {
+            topicKey: "decision/foo",
+            projectIds: ["P1"],
+            revisionCount: 2,
+            lastReferencedAt: null,
+          }),
+        ],
+      },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+    expect(result?.id).toBe("first")
+  })
+
+  it("sources data_source_id from this.db.dataSourceId — not a stale flat field", async () => {
+    // Pin the field reference: an injected DatabaseRef with a custom
+    // dataSourceId must flow into the dataSources.query call's
+    // `data_source_id` parameter. NOT this.databaseId (the v4-era
+    // database ID, structurally distinct).
+    const customDb: DatabaseRef = {
+      databaseId: "block-id",
+      dataSourceId: "ds-custom-9999",
+    }
+    const { client, querySpy } = makeQueryClient([{ results: [] }])
+    const service = new MemoryService(client, customDb)
+
+    await service.findByTopicKey({ topicKey: "decision/foo", projectIds: ["P1"] })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(querySpy.mock.calls[0]![0].data_source_id).toBe("ds-custom-9999")
+  })
+
+  it("paginates: aggregates results across multiple Notion pages and finds the highest-revision match", async () => {
+    // First Notion page returns rev=2 (a stale candidate); second
+    // page returns rev=5 (the live candidate). Without pagination
+    // the helper would return the rev=2 row and silently leak a
+    // stale revision into the upsert chain.
+    const firstPage = Array.from({ length: 100 }, (_, i) =>
+      buildTopicKeyPage(`older-${i}`, {
+        topicKey: "decision/foo",
+        projectIds: ["P1"],
+        revisionCount: 2,
+      }),
+    )
+    const secondPage = [
+      buildTopicKeyPage("latest", {
+        topicKey: "decision/foo",
+        projectIds: ["P1"],
+        revisionCount: 5,
+      }),
+    ]
+    const { client, querySpy } = makeQueryClient([
+      { results: firstPage, has_more: true, next_cursor: "cursor-1" },
+      { results: secondPage, has_more: false },
+    ])
+    const service = new MemoryService(client, db)
+
+    const result = await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+
+    expect(result?.id).toBe("latest")
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    // Second call uses the cursor returned from the first.
+    expect(querySpy.mock.calls[1]![0].start_cursor).toBe("cursor-1")
+  })
+})
+
 describe("MemoryService.search", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
@@ -3993,6 +4420,8 @@ describe("MemoryService.materializeContent", () => {
       taskState: null,
       blockedBy: "",
       entity: "",
+      topicKey: "",
+      revisionCount: 1,
     }
   }
 

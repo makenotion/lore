@@ -36,6 +36,8 @@ function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
     taskState: null,
     blockedBy: "",
     entity: "",
+    topicKey: "",
+    revisionCount: 1,
     createdAt: "2026-04-20T00:00:00.000Z",
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,

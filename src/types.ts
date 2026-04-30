@@ -488,6 +488,23 @@ export interface Memory {
    * against this column server-side.
    */
   entity: string
+  /**
+   * Stable identifier for upsert grouping (0.9.0/#01). Empty string
+   * when unset (legacy rows and pre-#06 saves). Distinct from the
+   * `Topic` relation column — Topic is a faceted-browsing axis,
+   * Topic Key groups revisions of the same canonical concept so
+   * `lore-memory action='save'` can append-revision instead of
+   * creating a new row. Format is kebab-case path like
+   * `decision/jwt-auth`, enforced at #06's save-path validation.
+   */
+  topicKey: string
+  /**
+   * System-managed counter incremented on every topic-key upsert
+   * (0.9.0/#06). Defaults to 1 for fresh rows and for legacy rows
+   * (`extractNumber` returns null, coalesced to 1 by `pageToMemory`).
+   * #10 surfaces the count on listings when ≥2.
+   */
+  revisionCount: number
 }
 
 export interface CreateMemoryInput {

@@ -235,6 +235,115 @@ describe("buildMemoryProps — confidenceScore + lastReferencedAt three-state se
   })
 })
 
+describe("memoriesProperties — Topic Key + Revision Count columns (0.9.0/01)", () => {
+  it("declares Topic Key as a rich_text column on a fresh-vault config", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Topic Key"]).toEqual({ rich_text: {} })
+  })
+
+  it("declares Revision Count as a number column on a fresh-vault config", () => {
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    expect(props["Revision Count"]).toEqual({ number: { format: "number" } })
+  })
+
+  it("declares both columns on the legacy two-arg overload (so drift detection picks them up)", () => {
+    // `verifyVaultDatabases` uses the two-arg overload on a vault that
+    // pre-dates self-relations. Both columns ship in both shapes so a
+    // legacy vault running `lore migrate` surfaces the missing columns
+    // on the same code path as a fresh `lore init`.
+    const props = memoriesProperties("p-ds", "t-ds")
+    expect(props["Topic Key"]).toEqual({ rich_text: {} })
+    expect(props["Revision Count"]).toEqual({ number: { format: "number" } })
+  })
+
+  it("places Topic Key immediately after Confidence Score so insertion order matches the spec", () => {
+    // The spec (0.9.0/#01) pins the insertion point so a parallel
+    // late-merger landing #02 (Compared With) on top of #01 — or vice
+    // versa — does a one-line rebase rather than guessing where the
+    // column belongs. Topic Key + Revision Count cluster between the
+    // numeric Confidence Score and the Review By date column,
+    // keeping scalar properties grouped together.
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    const confidenceScoreIdx = keys.indexOf("Confidence Score")
+    const topicKeyIdx = keys.indexOf("Topic Key")
+    expect(topicKeyIdx).toBe(confidenceScoreIdx + 1)
+  })
+
+  it("places Revision Count immediately after Topic Key", () => {
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    const topicKeyIdx = keys.indexOf("Topic Key")
+    const revisionCountIdx = keys.indexOf("Revision Count")
+    expect(revisionCountIdx).toBe(topicKeyIdx + 1)
+  })
+
+  it("places Revision Count before Review By so the date columns stay clustered", () => {
+    // SOFT pin (precedes, not adjacency) — distinct from the two pins
+    // above. PR #161 (issue 0.9.0/02) inserts `Compare Notes` between
+    // `Revision Count` and `Review By` in the same scalar block, so
+    // whichever PR lands second would fail a `reviewByIdx ===
+    // revisionCountIdx + 1` adjacency check. The Topic Key /
+    // Revision Count adjacency above stays rigid (those are paired by
+    // this issue and never separated by future inserts); the
+    // Revision Count → Review By relationship loosens to "precedes"
+    // because Phase 1 explicitly contemplates additional scalars
+    // landing between them.
+    const keys = Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))
+    const revisionCountIdx = keys.indexOf("Revision Count")
+    const reviewByIdx = keys.indexOf("Review By")
+    expect(revisionCountIdx).toBeLessThan(reviewByIdx)
+  })
+})
+
+describe("buildMemoryProps — topicKey emission (0.9.0/01)", () => {
+  it("omits Topic Key when the input is undefined (leaves the column untouched on update)", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Topic Key" in built).toBe(false)
+  })
+
+  it("emits a rich_text payload when topicKey is a non-empty string", () => {
+    const built = buildMemoryProps({
+      title: "x",
+      topicKey: "decision/jwt-auth-model",
+    }) as Record<string, { rich_text: Array<{ text: { content: string } }> }>
+    expect(built["Topic Key"]).toEqual({
+      rich_text: [{ text: { content: "decision/jwt-auth-model" } }],
+    })
+  })
+
+  it("emits an empty-string rich_text payload when topicKey is the empty string", () => {
+    // Empty string is structurally distinct from undefined: the agent
+    // explicitly cleared the key. #14 (re-keying) reads this signal.
+    const built = buildMemoryProps({ title: "x", topicKey: "" }) as Record<
+      string,
+      { rich_text: Array<{ text: { content: string } }> }
+    >
+    expect(built["Topic Key"]).toEqual({ rich_text: [{ text: { content: "" } }] })
+  })
+})
+
+describe("buildMemoryProps — revisionCount emission (0.9.0/01)", () => {
+  it("omits Revision Count when the input is undefined", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect("Revision Count" in built).toBe(false)
+  })
+
+  it("emits a number payload when revisionCount is provided", () => {
+    const built = buildMemoryProps({ title: "x", revisionCount: 3 }) as Record<
+      string,
+      { number: number }
+    >
+    expect(built["Revision Count"]).toEqual({ number: 3 })
+  })
+
+  it("emits 1 verbatim — the default for fresh upserts", () => {
+    const built = buildMemoryProps({ title: "x", revisionCount: 1 }) as Record<
+      string,
+      { number: number }
+    >
+    expect(built["Revision Count"]).toEqual({ number: 1 })
+  })
+})
+
 describe("factsProperties — mentions Predicate option (0.8.0/07)", () => {
   it("declares `mentions` as a Predicate select option", () => {
     // The auto-emitted `mentions` predicate (0.8.0/#07) lives on the

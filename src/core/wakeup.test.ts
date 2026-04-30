@@ -50,6 +50,8 @@ function buildMemory(overrides: Partial<Memory> & { createdAt: string }): Memory
     taskState: null,
     blockedBy: "",
     entity: "",
+    topicKey: "",
+    revisionCount: 1,
     updatedAt: overrides.createdAt,
     ...overrides,
   }
@@ -103,6 +105,8 @@ function buildTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummar
     taskState: "open",
     blockedBy: "",
     entity: overrides.entity ?? "",
+    topicKey: "",
+    revisionCount: 1,
     createdAt: "2026-04-01T00:00:00Z",
     updatedAt: "2026-04-01T00:00:00Z",
   }
@@ -479,6 +483,8 @@ describe("loadWakeUpData", () => {
         taskState: null,
         blockedBy: "",
         entity: "",
+        topicKey: "",
+        revisionCount: 1,
       },
     ]
     const overdueDecisions: DecisionSummary[] = [
