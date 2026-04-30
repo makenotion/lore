@@ -985,6 +985,195 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
   })
 })
 
+describe("lore-decision action='list' trust indicator (DEFERRED-01 follow-up to 0.8.0/#09)", () => {
+  // The same surface assertion shape used by `decisions.test.ts`'s
+  // synopsis suite (DEFERRED-01 from 0.7.0): line-index pins protect
+  // against an off-by-one rewrite that would silently shift the trust
+  // line into the wrong slot. Buckets — very-low / low / moderate —
+  // are pinned in `formatTrustLabel` (`src/types.ts`) and exercised
+  // exhaustively in `render.test.ts`; these tests pin the surface
+  // wiring (the line lands ABOVE synopsis, below heading, in the
+  // listing output).
+
+  function listServices(items: ReturnType<typeof makeDecision>[]) {
+    return {
+      decisions: { list: vi.fn().mockResolvedValue({ items, nextCursor: null }) },
+      projects: { findByName: vi.fn() },
+      facts: {},
+      topics: {},
+      context: { project: null },
+    }
+  }
+
+  it("renders the trust line between the heading and the synopsis on a low-confidence row", async () => {
+    // Order is load-bearing: a low-confidence decision's synopsis is
+    // itself suspect, so the signal must precede the synopsis content.
+    // Mirrors `formatMemoryListItem`'s placement in `render.ts` so the
+    // three surfaces (#09 + this DEFERRED-01) share one rendering
+    // contract.
+    const decision = makeDecision("dec-low", {
+      title: "Low-confidence decision",
+      synopsis: "All resolved projects are cached in-process for 60s.",
+      confidenceScore: 0.3,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### Low-confidence decision")
+    expect(headingIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[headingIdx + 1]).toBe("_low confidence_")
+    expect(lines[headingIdx + 2]).toBe(
+      "All resolved projects are cached in-process for 60s.",
+    )
+    // Bold meta line follows synopsis after trust, matching the
+    // four-row envelope (heading → trust → synopsis → meta).
+    expect(lines[headingIdx + 3]).toMatch(/^\*\*\[accepted\]/)
+  })
+
+  it("renders `_very low confidence_` when the stored score is below 0.2", () => {
+    // Keeps the bucket boundaries reachable from the surface — the
+    // detailed bucket assertions live in `render.test.ts`, but the
+    // listing surface pins one in-bucket case per band so a future
+    // contributor swapping the formatter sees regressions surface here
+    // too.
+    const decision = makeDecision("dec-vlow", {
+      title: "Heavily-decayed decision",
+      synopsis: "",
+      confidenceScore: 0.15,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    return handler({} as never).then((result) => {
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      const lines = text.split("\n")
+      const headingIdx = lines.findIndex((l) => l === "### Heavily-decayed decision")
+      expect(headingIdx).toBeGreaterThanOrEqual(0)
+      expect(lines[headingIdx + 1]).toBe("_very low confidence_")
+    })
+  })
+
+  it("renders `_moderate confidence_` when 0.4 ≤ score < 0.5", async () => {
+    const decision = makeDecision("dec-mod", {
+      title: "Borderline decision",
+      synopsis: "",
+      confidenceScore: 0.45,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### Borderline decision")
+    expect(lines[headingIdx + 1]).toBe("_moderate confidence_")
+  })
+
+  it("omits the trust line when confidenceScore is null (pre-migration vault stays byte-identical)", async () => {
+    // Acceptance criterion: rows with `confidenceScore: null` render
+    // identically to pre-DEFERRED-01. A vault that hasn't run
+    // `lore migrate --build-confidence-scores` should look unchanged
+    // until the migration populates scores. `toBe` rather than
+    // `toMatch` so any indentation drift, trailing whitespace, or
+    // extra newline shows up as a test failure rather than slipping
+    // past a regex that only checked the first line.
+    const decision = makeDecision("dec-null", {
+      title: "Pre-migration row",
+      synopsis: "",
+      confidenceScore: null,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toBe(
+      "Found 1 decision:\n\n" +
+        "### Pre-migration row\n" +
+        "**[accepted] | decided 2026-04-20 | ID: dec-null**\n",
+    )
+  })
+
+  it("omits the trust line when the score is at or above the display threshold", async () => {
+    // The strict less-than gate keeps 0.5 silent. A `<=` rewrite on
+    // the threshold predicate would fail this test, complementing the
+    // bucket-boundary tests in `render.test.ts`.
+    const decision = makeDecision("dec-healthy", {
+      title: "Healthy decision",
+      synopsis: "",
+      confidenceScore: 0.5,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("renders trust line above synopsis line on rows that have both", async () => {
+    // Pin the four-row envelope (heading → trust → synopsis → meta)
+    // explicitly so a future reordering of the trust insertion point
+    // (e.g. moving it below synopsis) trips this test.
+    const decision = makeDecision("dec-both", {
+      title: "Trust + synopsis",
+      synopsis: "Short gist.",
+      confidenceScore: 0.15,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### Trust + synopsis")
+    expect(lines[headingIdx]).toBe("### Trust + synopsis")
+    expect(lines[headingIdx + 1]).toBe("_very low confidence_")
+    expect(lines[headingIdx + 2]).toBe("Short gist.")
+    expect(lines[headingIdx + 3]).toMatch(/^\*\*\[accepted\]/)
+  })
+
+  it("respects `includeSynopsis: false` but still renders the trust line", async () => {
+    // Trust signal is system metadata; it is NOT gated by the
+    // synopsis-rendering toggle. Suppressing the synopsis line shouldn't
+    // suppress the trust signal — those are independent surfaces with
+    // independent rationale. Mirrors the same assertion in
+    // `render.test.ts` for `formatMemoryListItem`.
+    const decision = makeDecision("dec-no-syn", {
+      title: "No-synopsis low-trust",
+      synopsis: "This synopsis must not render.",
+      confidenceScore: 0.3,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, listServices([decision]) as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({ includeSynopsis: false } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("This synopsis must not render.")
+    expect(text).toContain("_low confidence_")
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex((l) => l === "### No-synopsis low-trust")
+    expect(lines[headingIdx + 1]).toBe("_low confidence_")
+    // Suppressing synopsis collapses to heading → trust → meta.
+    expect(lines[headingIdx + 2]).toMatch(/^\*\*\[accepted\]/)
+  })
+})
+
 describe("lore-decision action='supersede' — confidence decrement on old decision", () => {
   // Acceptance criteria from 0.8.0/06: superseding a decision halves
   // the old decision's `Confidence Score` (decay-realized first on

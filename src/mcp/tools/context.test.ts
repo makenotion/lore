@@ -1991,6 +1991,191 @@ describe("lore-wake-up — Part I: Tasks synopsis rendering (DEFERRED-01)", () =
   })
 })
 
+describe("lore-wake-up — Tasks trust indicator (DEFERRED-01 follow-up to 0.8.0/#09)", () => {
+  // Pinned at the surface (not just the render helper) so a future
+  // contributor swapping the wake-up Tasks renderer away from
+  // `formatWakeUpTaskRow` would see this test fail. Exhaustive
+  // bucket-band assertions live in `render.test.ts` via
+  // `formatTrustLabel`; here we pin the surface wiring (the line
+  // lands ABOVE the synopsis, indented by two spaces, italic-wrapped)
+  // and the bucket-agnostic posture (overdue / stale / active alike).
+
+  function daysAgo(n: number): string {
+    return new Date(Date.now() - n * 86_400_000).toISOString()
+  }
+  function daysAgoDate(n: number): string {
+    return daysAgo(n).split("T")[0]
+  }
+
+  it("renders the trust line as an indented italic between the title row and the synopsis line", async () => {
+    // Order is load-bearing: title → trust → synopsis → ID. Same
+    // discipline as `formatMemoryListItem` and the `lore-task
+    // action='list'` row formatter.
+    const task = makeTask({
+      id: "low-id",
+      title: "Low-trust row",
+      synopsis: "Triage gist text.",
+      confidenceScore: 0.3,
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Low-trust row**"))
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
+    expect(lines[titleIdx + 2]).toBe("  Triage gist text.")
+    expect(lines[titleIdx + 3]).toContain("ID: low-id — close if resolved:")
+  })
+
+  it("omits the trust line on a null-score row (pre-migration vault stays byte-identical)", async () => {
+    // Acceptance criterion: rows with `confidenceScore: null` render
+    // identically to pre-DEFERRED-01. The wake-up `## Tasks` section's
+    // full output is too dependent on surrounding sections (digest /
+    // Recent Memories / Active Facts) to assert on the entire response,
+    // so we slice exactly the two-line bullet for the row and match
+    // it as a single string.
+    const task = makeTask({
+      id: "null-id",
+      title: "Pre-migration row",
+      synopsis: "",
+      confidenceScore: null,
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Pre-migration row**"))
+    expect(`${lines[titleIdx]}\n${lines[titleIdx + 1]}`).toBe(
+      "- **Pre-migration row** [open]\n" +
+        "  ID: null-id — close if resolved: lore-task({ action: 'close', taskId: 'null-id' })",
+    )
+  })
+
+  it("omits the trust line when the score is at or above the display threshold", async () => {
+    // Strict-less-than gate at exactly 0.5. A `<=` rewrite on the
+    // threshold predicate would render `_moderate confidence_` here
+    // and trip this test, complementing the bucket-boundary tests in
+    // `render.test.ts`.
+    const task = makeTask({
+      id: "healthy-id",
+      title: "Healthy row",
+      synopsis: "",
+      confidenceScore: 0.5,
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Healthy row")
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("renders the trust line bucket-agnostically (overdue + stale + active rows alike)", async () => {
+    // Mirror of the wake-up synopsis bucket-agnostic test (Part I).
+    // One row per bucket so the assertion proves trust rendering is
+    // bucket-agnostic — the formatter must not accidentally treat one
+    // bucket as a special case.
+    const overdueTask = makeTask({
+      id: "overdue-id",
+      title: "Overdue low-trust",
+      synopsis: "",
+      confidenceScore: 0.3,
+      reviewBy: daysAgoDate(27),
+      updatedAt: daysAgo(2),
+    })
+    const staleTask = makeTask({
+      id: "stale-id",
+      title: "Stale very-low-trust",
+      synopsis: "",
+      confidenceScore: 0.15,
+      reviewBy: null,
+      updatedAt: daysAgo(45),
+    })
+    const activeTask = makeTask({
+      id: "active-id",
+      title: "Active moderate-trust",
+      synopsis: "",
+      confidenceScore: 0.45,
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      tasks: [overdueTask, staleTask, activeTask],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    for (const fixture of [
+      { title: "Overdue low-trust", trust: "_low confidence_" },
+      { title: "Stale very-low-trust", trust: "_very low confidence_" },
+      { title: "Active moderate-trust", trust: "_moderate confidence_" },
+    ]) {
+      const titleIdx = lines.findIndex((l) => l.includes(`**${fixture.title}**`))
+      expect(titleIdx).toBeGreaterThanOrEqual(0)
+      expect(lines[titleIdx + 1]).toBe(`  ${fixture.trust}`)
+    }
+  })
+
+  it("composes trust line above the synopsis line on rows that have both", async () => {
+    // Pin the four-row envelope (title → trust → synopsis → ID)
+    // explicitly so a future reordering of the trust insertion point
+    // (e.g. moving it below synopsis) trips this test on wake-up too.
+    const task = makeTask({
+      id: "both-id",
+      title: "Both trust and synopsis",
+      synopsis: "Synopsis text here.",
+      confidenceScore: 0.15,
+      reviewBy: null,
+      updatedAt: daysAgo(2),
+    })
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks: [task] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**Both trust and synopsis**"))
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
+    expect(lines[titleIdx + 2]).toBe("  Synopsis text here.")
+    expect(lines[titleIdx + 3]).toContain("ID: both-id — close if resolved:")
+  })
+})
+
 // ---------------------------------------------------------------------------
 // touch-on-read wiring (issue 0.8.0/05)
 //

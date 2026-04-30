@@ -31,7 +31,7 @@ import {
   DEFAULT_RECONCILE_MIN_SCORE,
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
-import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
+import { ACTIVE_TASK_STATES, SYNOPSIS_MAX, formatTrustLabel } from "../../types.js"
 import type { TaskState, TaskSummary } from "../../types.js"
 
 type ToolResult = {
@@ -75,6 +75,15 @@ function urgencyMarker(days: number): string {
  * a body fetch. Synopses are defensively truncated at `SYNOPSIS_MAX`
  * via the shared helper, mirroring `formatMemoryListItem`'s discipline
  * for over-cap rows that landed via legacy / migration paths.
+ *
+ * Trust indicator (DEFERRED-01 follow-up to 0.8.0/#09): when the row's
+ * stored `Confidence Score` is below `CONFIDENCE_DISPLAY_THRESHOLD`, an
+ * indented italic label lands between the title row and the synopsis,
+ * matching the placement in `formatMemoryListItem`. Null and above-
+ * threshold rows render byte-identically — pre-migration vaults look
+ * unchanged until `lore migrate --build-confidence-scores` populates
+ * scores. NOT gated by `includeSynopsis`: trust is system metadata,
+ * not synopsis content; the two surfaces are independent.
  */
 function formatTaskRow(
   t: TaskSummary,
@@ -97,8 +106,12 @@ function formatTaskRow(
   const includeSynopsis = options.includeSynopsis !== false
   const synopsisLine =
     includeSynopsis && t.synopsis.trim() ? `  ${truncateSynopsis(t.synopsis)}\n` : ""
+  const trustLabel =
+    t.confidenceScore !== null ? formatTrustLabel(t.confidenceScore) : null
+  const trustLine = trustLabel !== null ? `  _${trustLabel}_\n` : ""
   return (
     `- ${marker}**${t.title}** [${stateLabel}]${blocked}${overduePart}\n` +
+    trustLine +
     synopsisLine +
     `  ID: ${t.id}`
   )

@@ -14,7 +14,7 @@ import {
   syncDecisionReachability,
 } from "../decision-graph.js"
 import { displayId, resolveTitles, truncateSynopsis } from "../render.js"
-import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
+import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX, formatTrustLabel } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
@@ -379,6 +379,19 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
     const lines = [`Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`]
     for (const d of decisions) {
       lines.push(`### ${d.title}`)
+      // Trust indicator (DEFERRED-01 follow-up to 0.8.0/#09). Sits ABOVE
+      // the synopsis for the same reason `formatMemoryListItem` places it
+      // there: a low-confidence decision's synopsis is itself suspect, so
+      // the signal has to land before the reader parses the rule. The
+      // gate lives inside `formatTrustLabel` (returns `null` at or above
+      // `CONFIDENCE_DISPLAY_THRESHOLD`); the local `null` guard handles
+      // the structurally-different "pre-migration / unscored row" case so
+      // un-backfilled vaults stay byte-identical to pre-DEFERRED-01.
+      const trustLabel =
+        d.confidenceScore !== null ? formatTrustLabel(d.confidenceScore) : null
+      if (trustLabel !== null) {
+        lines.push(`_${trustLabel}_`)
+      }
       if (includeSynopsis && d.synopsis.trim()) {
         lines.push(truncateSynopsis(d.synopsis))
       }

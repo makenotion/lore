@@ -35,6 +35,7 @@ import {
   STALE_CONFIDENCE_DAYS,
   STALE_CONFIDENCE_LIMIT,
   STALE_TASK_DAYS,
+  formatTrustLabel,
   type Memory,
   type TaskSummary,
 } from "../../types.js"
@@ -200,6 +201,15 @@ function staleConfidenceMetaBuilder(today: string) {
  * line materially improves the matching surface for the closure-nudge
  * mechanisms that frame the rest of 0.7.0.
  *
+ * Trust indicator (DEFERRED-01 follow-up to 0.8.0/#09): a row whose
+ * stored `Confidence Score` is below `CONFIDENCE_DISPLAY_THRESHOLD`
+ * gains an indented italic label between the title row and the
+ * synopsis line, matching the placement in `formatMemoryListItem` and
+ * `formatTaskRow`. Wake-up's posture is "always render what helps
+ * triage" — there is no toggle. Pre-migration / unscored rows
+ * (`confidenceScore === null`) and above-threshold rows render
+ * byte-identically.
+ *
  * `overdueDays` is threaded in from the bucketing pass in `handleWakeUp`
  * rather than recomputed here — `taskDaysOverdue(task, today)` is the
  * load-bearing signal for both bucketing precedence and row-format
@@ -224,9 +234,13 @@ function formatWakeUpTaskRow(
         : ""
   const prefix = overdueDays !== null ? "⚠ " : ""
   const closeCta = `lore-task({ action: 'close', taskId: '${task.id}' })`
+  const trustLabel =
+    task.confidenceScore !== null ? formatTrustLabel(task.confidenceScore) : null
+  const trustLine = trustLabel !== null ? `  _${trustLabel}_\n` : ""
   const synopsisLine = task.synopsis.trim() ? `  ${truncateSynopsis(task.synopsis)}\n` : ""
   return (
     `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due}\n` +
+    trustLine +
     synopsisLine +
     `  ID: ${task.id} — close if resolved: ${closeCta}`
   )
