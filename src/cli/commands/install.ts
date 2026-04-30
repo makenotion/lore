@@ -7,7 +7,7 @@ import { createInterface } from "node:readline/promises"
 import { findConfigFile, loadConfig } from "../../config.js"
 import { loadCredentials } from "../../auth/oauth.js"
 
-type InstallClient = "claude" | "codex" | "both"
+export type InstallClient = "claude" | "codex" | "cursor" | "all"
 export type HookStatus = "current" | "stale" | "missing"
 
 /**
@@ -43,6 +43,68 @@ function buildClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
     cwd,
     env,
   }
+}
+
+/**
+ * Cursor's `.cursor/mcp.json` schema accepts the same `command` / `args` /
+ * `cwd` / `env` shape as Claude Code's `.mcp.json`. The two formats are
+ * documented as JSON-compatible; the only practical difference is the file
+ * location and the lack of session-end hook integration on the Cursor side.
+ *
+ * Source: Cursor MCP docs at https://docs.cursor.com/context/mcp.
+ * Verify against current Cursor docs if the schema needs updating.
+ */
+export interface CursorMcpEntry {
+  command: string
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+}
+
+export function buildCursorMcpEntry(mcpJsPath: string, cwd: string): CursorMcpEntry {
+  const env: Record<string, string> = {}
+  for (const key of LORE_MCP_ENV_VARS) {
+    env[key] = `\${${key}}`
+  }
+  return {
+    command: "node",
+    args: [mcpJsPath],
+    cwd,
+    env,
+  }
+}
+
+/**
+ * Resolve the on-disk path for Cursor's `mcp.json`. Cursor reads MCP servers
+ * from `<projectDir>/.cursor/mcp.json` (project-scoped, takes precedence) and
+ * `~/.cursor/mcp.json` (global, fallback) — mirroring Claude Code's
+ * project-vs-user split. `useGlobalScope` opts into the global file (driven
+ * by `--cursor-global`).
+ */
+export function resolveCursorMcpPath(projectDir: string, useGlobalScope: boolean): string {
+  return useGlobalScope
+    ? join(homedir(), ".cursor", "mcp.json")
+    : join(projectDir, ".cursor", "mcp.json")
+}
+
+/**
+ * Build the stderr note printed when `--cursor-global` is passed alongside
+ * a `--client` value that doesn't include Cursor. Returns `null` when the
+ * flag combination is meaningful (Cursor is in scope) so the caller can
+ * skip emitting noise. Soft-worded by design — an operator who scripted
+ * `--cursor-global` ahead of an `--client all` rollout shouldn't get a
+ * chiding message.
+ *
+ * Pure so unit tests can pin the exact wording and the Cursor / non-Cursor
+ * branch decisions without spinning up Commander.
+ */
+export function buildCursorGlobalIgnoredNotice(
+  cursorGlobal: boolean | undefined,
+  client: InstallClient,
+): string | null {
+  if (!cursorGlobal) return null
+  if (client === "cursor" || client === "all") return null
+  return `Note: --cursor-global has no effect under --client ${client} (Cursor not selected); ignored.`
 }
 
 function formatTomlArray(values: readonly string[]): string {
@@ -135,6 +197,24 @@ export function toPortablePath(absPath: string): string {
   const prefix = home.endsWith("/") ? home : home + "/"
   if (absPath.startsWith(prefix)) {
     return "${HOME}/" + absPath.slice(prefix.length)
+  }
+  return absPath
+}
+
+/**
+ * Display-format an absolute path, replacing the user's home directory with
+ * `~`. Anchors at the home prefix so a path like
+ * `/Users/foo/work/Users/foo/legacy` doesn't get its inner occurrence
+ * mangled — the unanchored `String.replace(homedir(), "~")` shortcut hits
+ * the first match, which may be the wrong one.
+ */
+export function displayHomePath(absPath: string): string {
+  const home = homedir()
+  if (home === "/" || home === "") return absPath
+  if (absPath === home) return "~"
+  const prefix = home.endsWith("/") ? home : home + "/"
+  if (absPath.startsWith(prefix)) {
+    return "~/" + absPath.slice(prefix.length)
   }
   return absPath
 }
@@ -498,7 +578,7 @@ export function containsTomlArrayOfTables(text: string): boolean {
 
 function assertTomlSupportsLoreRewrite(text: string, filePath: string): void {
   if (!containsTomlArrayOfTables(text)) return
-  const displayPath = filePath.replace(homedir(), "~")
+  const displayPath = displayHomePath(filePath)
   throw new Error(
     `${displayPath} contains TOML array-of-tables ([[...]]). ` +
       "lore install cannot safely rewrite that file yet; update the Lore sections manually instead.",
@@ -580,7 +660,7 @@ function upsertTomlTableKey(
   return joinTomlLines(lines)
 }
 
-interface InstallContext {
+export interface InstallContext {
   projectDir: string
   pkgRoot: string
   autosavePath: string
@@ -611,7 +691,7 @@ async function readWakeUpConfig(projectDir: string): Promise<boolean | null> {
     const config = await loadConfig(found.path)
     return config.hooks?.wakeUp ?? null
   } catch (err) {
-    const displayPath = found.path.replace(homedir(), "~")
+    const displayPath = displayHomePath(found.path)
     process.stderr.write(
       `[lore] Could not read hooks.wakeUp from ${displayPath}: ${err instanceof Error ? err.message : err}\n` +
         `[lore] Installer status may not reflect hooks.wakeUp — fix the config and re-run 'lore install'.\n`,
@@ -635,28 +715,21 @@ async function prepareInstallContext(
   const wakeupPath = join(pkgRoot, "hooks", "wakeup.sh")
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
-  const [hasAutosave, hasWakeup, hasMcpJs] = await Promise.all([
-    fileExists(autosavePath),
-    fileExists(wakeupPath),
-    fileExists(mcpJsPath),
-  ])
-
-  if (!hasAutosave || !hasWakeup || !hasMcpJs) {
-    const missing: string[] = []
-    if (!hasAutosave) missing.push("  hooks/autosave.sh")
-    if (!hasWakeup) missing.push("  hooks/wakeup.sh")
-    if (!hasMcpJs) missing.push("  dist/mcp.js")
-    console.error("Required files not found:")
-    for (const path of missing) console.error(path)
+  // Universal: every client (Claude, Codex, Cursor) needs the MCP entry
+  // pointing at dist/mcp.js. Hook scripts are required only by Claude /
+  // Codex; `runClaudeInstall` and `runCodexInstall` call
+  // `ensureHookPrerequisites` themselves at the start of their per-client
+  // path. That keeps `lore install --client cursor` from aborting on
+  // missing/non-writable hook files Cursor doesn't use, and routes a
+  // hook-script failure under `--client all` through the per-client
+  // captured-error path rather than aborting before any installer runs.
+  if (!(await fileExists(mcpJsPath))) {
+    console.error("Required file not found:")
+    console.error("  dist/mcp.js")
     console.error()
     console.error("Run 'npm run build' first.")
     process.exit(1)
   }
-
-  await Promise.all([
-    chmod(autosavePath, 0o755),
-    chmod(wakeupPath, 0o755),
-  ])
 
   const wakeUpConfig = await readWakeUpConfig(projectDir)
 
@@ -669,6 +742,36 @@ async function prepareInstallContext(
     skipPrompts,
     wakeUpConfig,
   }
+}
+
+/**
+ * Verify that the hook scripts Claude / Codex install registrations point
+ * at exist on disk and are executable. Throws when a hook script is
+ * missing so the failure surfaces through the per-client captured-error
+ * path under `--client all`. Idempotent — safe for both Claude and Codex
+ * runners to call (the chmod is a no-op once the bits are set).
+ *
+ * Cursor's runner does NOT call this — Cursor doesn't currently support
+ * session-end / Stop hooks, so the hook scripts are irrelevant for that
+ * branch.
+ */
+export async function ensureHookPrerequisites(context: InstallContext): Promise<void> {
+  const [hasAutosave, hasWakeup] = await Promise.all([
+    fileExists(context.autosavePath),
+    fileExists(context.wakeupPath),
+  ])
+  if (!hasAutosave || !hasWakeup) {
+    const missing: string[] = []
+    if (!hasAutosave) missing.push("hooks/autosave.sh")
+    if (!hasWakeup) missing.push("hooks/wakeup.sh")
+    throw new Error(
+      `Required hook scripts not found: ${missing.join(", ")}. Run 'npm run build' first.`,
+    )
+  }
+  await Promise.all([
+    chmod(context.autosavePath, 0o755),
+    chmod(context.wakeupPath, 0o755),
+  ])
 }
 
 async function printPrerequisites(projectDir: string): Promise<void> {
@@ -708,6 +811,7 @@ async function runClaudeInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
 ): Promise<void> {
+  await ensureHookPrerequisites(context)
   const encodedPath = encodeProjectPath(context.projectDir)
   const settingsPath = join(homedir(), ".claude", "projects", encodedPath, "settings.json")
   const settings = await readJsonSafe(settingsPath)
@@ -848,7 +952,7 @@ async function runClaudeInstall(
     }
   }
 
-  const settingsDisplay = settingsPath.replace(homedir(), "~")
+  const settingsDisplay = displayHomePath(settingsPath)
   console.log()
   console.log(`  Writing: ${settingsDisplay}`)
   await writeJsonFile(settingsPath, merged)
@@ -860,7 +964,7 @@ async function runClaudeInstall(
       lore: expectedMcpEntry,
     }
 
-    const mcpJsonDisplay = mcpJsonPath.replace(homedir(), "~")
+    const mcpJsonDisplay = displayHomePath(mcpJsonPath)
     console.log(`  Writing: ${mcpJsonDisplay}`)
     await writeJsonFile(mcpJsonPath, mergedMcpJson)
 
@@ -888,6 +992,7 @@ async function runCodexInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
 ): Promise<void> {
+  await ensureHookPrerequisites(context)
   const codexConfigPath = join(context.projectDir, ".codex", "config.toml")
   const codexHooksPath = join(context.projectDir, ".codex", "hooks.json")
   const codexConfig = await readTextSafe(codexConfigPath)
@@ -974,14 +1079,14 @@ async function runCodexInstall(
   }
 
   if (nextConfig !== codexConfig) {
-    const configDisplay = codexConfigPath.replace(homedir(), "~")
+    const configDisplay = displayHomePath(codexConfigPath)
     console.log()
     console.log(`  Writing: ${configDisplay}`)
     await writeTextFile(codexConfigPath, nextConfig)
   }
 
   if (!deepEqual(nextHooksJson, codexHooksJson)) {
-    const hooksDisplay = codexHooksPath.replace(homedir(), "~")
+    const hooksDisplay = displayHomePath(codexHooksPath)
     console.log(`  Writing: ${hooksDisplay}`)
     await writeJsonFile(codexHooksPath, nextHooksJson)
   }
@@ -1005,11 +1110,180 @@ async function runCodexInstall(
   console.log("  Codex only loads project-scoped .codex/* files for trusted projects.")
 }
 
-async function runInstall(opts: {
+/**
+ * Install Lore's Cursor integration. The caller is responsible for resolving
+ * `cursorMcpPath` via `resolveCursorMcpPath` (or any other path source) — this
+ * function only does the read/diff/write loop and the post-install messaging.
+ * Keeping path resolution outside lets `runInstall` honor `--cursor-global`
+ * once and lets tests target a tmpdir without stubbing `os.homedir`.
+ *
+ * `useGlobalScope` controls only the post-install messaging label
+ * (`global` vs `project`) and the absolute-path portability warning gate;
+ * `cursorMcpPath` is the actual write target.
+ */
+export async function runCursorInstall(
+  context: InstallContext,
+  rl: ReturnType<typeof createInterface> | null,
+  cursorMcpPath: string,
+  useGlobalScope: boolean,
+): Promise<void> {
+  const cursorMcpJson = await readJsonSafe(cursorMcpPath)
+  const mcpServers = (cursorMcpJson.mcpServers ?? {}) as Record<string, unknown>
+  const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
+
+  const portableMcpJsPath = toPortablePath(context.mcpJsPath)
+  const portablePkgRoot = toPortablePath(context.pkgRoot)
+  const expectedMcpEntry = buildCursorMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const mcpStatus: HookStatus = !existingMcp
+    ? "missing"
+    : deepEqual(existingMcp, expectedMcpEntry)
+      ? "current"
+      : "stale"
+
+  const scopeLabel = useGlobalScope ? "global" : "project"
+  const cursorMcpDisplay = displayHomePath(cursorMcpPath)
+
+  console.log("Cursor:")
+  console.log(`  Scope:             ${scopeLabel} (${cursorMcpDisplay})`)
+  console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
+
+  if (mcpStatus === "current") {
+    console.log("  Everything is already installed.")
+    return
+  }
+
+  console.log()
+  const proceed = await confirm(rl, "Install Lore Cursor integration for this project?")
+  if (!proceed) {
+    console.log("  Skipped.")
+    return
+  }
+
+  const mergedMcpJson: Record<string, unknown> = { ...cursorMcpJson }
+  mergedMcpJson.mcpServers = {
+    ...((cursorMcpJson.mcpServers as Record<string, unknown>) ?? {}),
+    lore: expectedMcpEntry,
+  }
+
+  console.log()
+  console.log(`  Writing: ${cursorMcpDisplay}`)
+  await writeJsonFile(cursorMcpPath, mergedMcpJson)
+
+  if (!useGlobalScope && !portableMcpJsPath.startsWith("${HOME}")) {
+    console.warn()
+    console.warn("  Warning: lore is installed outside your home directory")
+    console.warn(`    (${context.pkgRoot}).`)
+    console.warn("  The generated .cursor/mcp.json uses an absolute path and is not")
+    console.warn("  portable across machines - avoid committing it, or reinstall")
+    console.warn("  lore under ~/.lore so the path can use ${HOME}.")
+  }
+
+  console.log()
+  console.log(`  MCP server:        installed (${cursorMcpDisplay})`)
+  console.log(
+    "  Cursor does not currently support Stop hooks. The Stop-triggered\n" +
+      "  autosave and the detached auto-digest spawn will not run when lore is\n" +
+      "  invoked from Cursor. Lore tools work the same; only the background\n" +
+      "  session-close persistence differs.",
+  )
+  console.log("  Restart Cursor for changes to take effect.")
+}
+
+/**
+ * Per-assistant install runners injected into `runInstall`. Tests pass mocks
+ * to verify orchestration behavior (independent failure isolation, error
+ * aggregation, exit code) without touching the real filesystem; production
+ * uses `defaultInstallRunners`.
+ */
+export interface InstallRunners {
+  claude: (context: InstallContext, rl: ReturnType<typeof createInterface> | null) => Promise<void>
+  codex: (context: InstallContext, rl: ReturnType<typeof createInterface> | null) => Promise<void>
+  cursor: (
+    context: InstallContext,
+    rl: ReturnType<typeof createInterface> | null,
+    cursorMcpPath: string,
+    useGlobalScope: boolean,
+  ) => Promise<void>
+}
+
+export const defaultInstallRunners: InstallRunners = {
+  claude: runClaudeInstall,
+  codex: runCodexInstall,
+  cursor: runCursorInstall,
+}
+
+/**
+ * Options consumed by `dispatchInstall`. A subset of `runInstall`'s opts —
+ * the dispatcher only needs the routing target and the Cursor scope flag.
+ * Tighter than passing the public `runInstall` shape so tests don't need to
+ * synthesize fields the dispatcher won't read.
+ */
+export interface DispatchOpts {
   client: InstallClient
-  yes?: boolean
-  project?: string
-}): Promise<void> {
+  cursorGlobal?: boolean
+}
+
+/**
+ * Run the per-client install steps and aggregate errors. Pure-ish: takes a
+ * pre-built `context` and `rl` and dispatches into the supplied `runners`.
+ * Caller is responsible for prepping the context, opening/closing the
+ * readline, and acting on the returned errors (typically by calling
+ * `process.exit(1)`).
+ *
+ * Splitting this out from `runInstall` lets tests drive orchestration —
+ * "did all three runners get called when one threw?" — without needing
+ * `dist/mcp.js` and the hook scripts on disk.
+ */
+export async function dispatchInstall(
+  context: InstallContext,
+  rl: ReturnType<typeof createInterface> | null,
+  opts: DispatchOpts,
+  runners: InstallRunners,
+): Promise<Array<{ client: string; error: unknown }>> {
+  const errors: Array<{ client: string; error: unknown }> = []
+  const cursorMcpPath = resolveCursorMcpPath(context.projectDir, !!opts.cursorGlobal)
+  const runWithCapture = async (
+    client: string,
+    fn: () => Promise<void>,
+  ): Promise<void> => {
+    try {
+      await fn()
+    } catch (err) {
+      if (opts.client === "all") {
+        errors.push({ client, error: err })
+        console.error(`  ${client}: install failed (${formatInstallError(err)})`)
+      } else {
+        throw err
+      }
+    }
+  }
+
+  if (opts.client === "claude" || opts.client === "all") {
+    await runWithCapture("claude", () => runners.claude(context, rl))
+  }
+  if (opts.client === "all") console.log()
+  if (opts.client === "codex" || opts.client === "all") {
+    await runWithCapture("codex", () => runners.codex(context, rl))
+  }
+  if (opts.client === "all") console.log()
+  if (opts.client === "cursor" || opts.client === "all") {
+    await runWithCapture("cursor", () =>
+      runners.cursor(context, rl, cursorMcpPath, !!opts.cursorGlobal),
+    )
+  }
+
+  return errors
+}
+
+export async function runInstall(
+  opts: {
+    client: InstallClient
+    yes?: boolean
+    project?: string
+    cursorGlobal?: boolean
+  },
+  runners: InstallRunners = defaultInstallRunners,
+): Promise<void> {
   const context = await prepareInstallContext(opts)
 
   const title =
@@ -1017,7 +1291,9 @@ async function runInstall(opts: {
       ? "Claude Code Integration"
       : opts.client === "codex"
         ? "Codex Integration"
-        : "AI Assistant Integration"
+        : opts.client === "cursor"
+          ? "Cursor Integration"
+          : "AI Assistant Integration"
 
   console.log()
   console.log(`Lore — ${title}`)
@@ -1028,7 +1304,13 @@ async function runInstall(opts: {
   await printPrerequisites(context.projectDir)
   console.log()
 
-  if (opts.client === "codex" || opts.client === "both") {
+  // Codex preflight is gating only when Codex is the sole target — failing
+  // before the readline opens keeps the prompt session from spinning up for
+  // a config that's going to error anyway. Under `--client all`, the same
+  // assertion runs inside `runCodexInstall` and surfaces through the
+  // captured-errors path so a bad Codex config doesn't take down Claude or
+  // Cursor.
+  if (opts.client === "codex") {
     await preflightCodexInstall(context)
   }
 
@@ -1036,50 +1318,127 @@ async function runInstall(opts: {
     ? null
     : createInterface({ input: process.stdin, output: process.stdout })
 
+  let errors: Array<{ client: string; error: unknown }>
   try {
-    if (opts.client === "claude" || opts.client === "both") {
-      await runClaudeInstall(context, rl)
-    }
-    if (opts.client === "both") console.log()
-    if (opts.client === "codex" || opts.client === "both") {
-      await runCodexInstall(context, rl)
-    }
+    errors = await dispatchInstall(context, rl, opts, runners)
   } finally {
     rl?.close()
   }
+
+  if (errors.length > 0) {
+    // Default summary stays on the `client: message` line — the CLI's
+    // clean-output convention. Stack traces gate behind
+    // LORE_INSTALL_DEBUG=1 so an expected failure (malformed JSON / TOML,
+    // missing build artifact) doesn't drown the operator in V8 frames; an
+    // unexpected failure can be re-run with the env var to surface them.
+    const showStacks = process.env["LORE_INSTALL_DEBUG"] === "1"
+    console.error()
+    console.error(`Install completed with ${errors.length} failure(s):`)
+    for (const { client, error } of errors) {
+      console.error(`  ${client}: ${formatInstallError(error)}`)
+      if (showStacks && error instanceof Error && error.stack) {
+        console.error(
+          error.stack
+            .split("\n")
+            .slice(1)
+            .map((l) => `    ${l}`)
+            .join("\n"),
+        )
+      }
+    }
+    if (!showStacks) {
+      console.error()
+      console.error("  Re-run with LORE_INSTALL_DEBUG=1 to include stack traces.")
+    }
+    process.exit(1)
+  }
 }
 
+function formatInstallError(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
+}
+
+/**
+ * Map a `--client` argument to an `InstallClient`. Returns `null` for an
+ * unrecognized value so the caller can emit its own error and exit.
+ *
+ * Only `undefined` (option not passed at all) maps to the `"all"` default —
+ * an explicit empty string `--client ""` returns `null` so the caller can
+ * route to the unrecognized-value error path. Empty-string-means-default
+ * would be a silent dispatch that no operator could reasonably expect.
+ *
+ * `"both"` is accepted as a deprecated alias for `"all"` so 0.8.x scripts
+ * keep working through one minor version. Callers detect the deprecated
+ * spelling via `isDeprecatedInstallClient` and emit a warning before
+ * dispatching.
+ */
 export function parseInstallClient(value: string | undefined): InstallClient | null {
-  if (!value) return "both"
-  if (value === "claude" || value === "codex") {
+  if (value === undefined) return "all"
+  if (value === "claude" || value === "codex" || value === "cursor" || value === "all") {
     return value
   }
+  if (value === "both") return "all"
   return null
+}
+
+export function isDeprecatedInstallClient(value: string | undefined): boolean {
+  return value === "both"
 }
 
 export const installCommand = new Command("install")
   .description("Install Lore assistant integrations for the current project")
   .option(
     "--client <assistant>",
-    "assistant to configure: claude or codex; omit --client to install both",
+    "assistant to configure: claude, codex, cursor, or all (default: all)",
   )
   .option("--project <path>", "project directory (default: cwd)")
+  .option(
+    "--cursor-global",
+    "Cursor only: write to ~/.cursor/mcp.json instead of <projectDir>/.cursor/mcp.json (overrides --project for the Cursor branch)",
+  )
   .option("-y, --yes", "skip confirmation prompts")
-  .action(async (opts: { client?: string; project?: string; yes?: boolean }) => {
-    try {
-      const client = parseInstallClient(opts.client)
-      if (!client) {
-        console.error("Install failed: --client must be one of claude or codex.")
+  .action(
+    async (opts: {
+      client?: string
+      project?: string
+      yes?: boolean
+      cursorGlobal?: boolean
+    }) => {
+      try {
+        if (isDeprecatedInstallClient(opts.client)) {
+          // `console.warn` writes to stderr — kept distinct from the install
+          // body's stdout so CI scripts that capture stdout for diffing don't
+          // see deprecation noise mixed with install output.
+          console.warn(
+            "Warning: --client both is deprecated; use --client all (mapped automatically).",
+          )
+        }
+        const client = parseInstallClient(opts.client)
+        if (!client) {
+          console.error(
+            "Install failed: --client must be one of claude, codex, cursor, or all.",
+          )
+          process.exit(1)
+        }
+
+        const cursorGlobalNotice = buildCursorGlobalIgnoredNotice(
+          opts.cursorGlobal,
+          client,
+        )
+        if (cursorGlobalNotice) {
+          console.warn(cursorGlobalNotice)
+        }
+
+        await runInstall({
+          client,
+          project: opts.project,
+          yes: opts.yes,
+          cursorGlobal: opts.cursorGlobal,
+        })
+      } catch (err) {
+        console.error("Install failed:", err instanceof Error ? err.message : err)
         process.exit(1)
       }
-
-      await runInstall({
-        client,
-        project: opts.project,
-        yes: opts.yes,
-      })
-    } catch (err) {
-      console.error("Install failed:", err instanceof Error ? err.message : err)
-      process.exit(1)
-    }
-  })
+    },
+  )

@@ -18,7 +18,7 @@ debugging, manual search).
 | `commands/search.ts` | `lore search <query>` -- semantic search across memories |
 | `commands/mine.ts` | `lore mine [path]` -- index project files as memories |
 | `commands/status.ts` | `lore status` -- vault status + subcommands (projects, topics) |
-| `commands/install.ts` | `lore install` -- install Lore assistant hooks and MCP config into a project (both assistants by default) |
+| `commands/install.ts` | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`) |
 | `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
 | `commands/digest.ts` | `lore digest` -- gather digest data + spawn background synthesizer |
 | `commands/tasks.ts` | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`) |
@@ -123,7 +123,7 @@ title-shaped to link.
 | `lore status` | none | none | Show vault status, database counts, active projects, and per-project digest watermarks |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
-| `lore install` | none | `--client`, `--project`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex) |
+| `lore install` | none | `--client`, `--project`, `--cursor-global`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor` for Cursor-only; `--cursor-global` writes Cursor config under `~/.cursor/mcp.json`) |
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
@@ -456,15 +456,60 @@ obvious from the rendered output:
 
 `install` supports multiple assistant targets:
 
-- Default `lore install` updates both the Claude Code and Codex integration for
-  the current project, so rerunning it after an older Claude-only install will
-  add the missing Codex side.
+- Default `lore install` updates Claude Code, Codex, and Cursor for the
+  current project (`--client all`), so rerunning it after an older
+  single-assistant install will fill in the missing sides.
 - `--client claude` updates only Claude Code's `settings.json` hooks and the
   project's `.mcp.json`.
 - `--client codex` updates only the project's `.codex/config.toml` and
   `.codex/hooks.json`.
+- `--client cursor` updates only the project's `.cursor/mcp.json`
+  (or `~/.cursor/mcp.json` with `--cursor-global`).
+- `--client both` is a deprecated alias for `--client all`; the CLI emits
+  a warning and proceeds. Removal is plausible for 1.0.0.
 - Codex hooks require `features.codex_hooks = true` and only load in trusted
   projects, so preserve that behavior if you change the installer.
+- Cursor's MCP runtime does not currently support session-end / Stop hooks
+  the way Claude Code and Codex do. The installer writes only an MCP entry
+  and prints a one-line notice; the Stop-triggered autosave and the detached
+  auto-digest spawn (per `src/hooks/AGENTS.md`) do not activate under
+  Cursor. Recall / save / scan paths work identically.
+- Under `--client all`, each assistant installer runs independently —
+  failure of one does not abort the others. The CLI exits non-zero with a
+  per-client failure summary if any branch threw. The summary prints
+  `client: message` lines by default; set `LORE_INSTALL_DEBUG=1` to
+  include stack traces (an unexpected failure mode worth surfacing
+  without making the default operator output noisy).
+- Hook-script prerequisites (`hooks/autosave.sh`, `hooks/wakeup.sh`) are
+  per-client. Claude and Codex runners verify them at the start of their
+  branch; Cursor does not (Cursor's MCP runtime doesn't use them). A
+  missing or non-writable hook script does NOT block a Cursor-only
+  install, and under `--client all` it surfaces through the per-client
+  captured-error path so the Cursor branch still installs cleanly.
+
+Cursor's MCP file location is documented at
+<https://docs.cursor.com/context/mcp> — the installer reads the project-
+scoped `<projectDir>/.cursor/mcp.json` by default and the global
+`~/.cursor/mcp.json` under `--cursor-global`. The JSON shape is identical
+to Claude Code's `.mcp.json` (`command` / `args` / `cwd` / `env`); the
+installer reuses `LORE_MCP_ENV_VARS` so values resolve at runtime via the
+same `${VAR}` placeholders.
+
+#### `--cursor-global` precedence rules
+
+- **`--cursor-global` overrides `--project` for the Cursor branch.**
+  Running `lore install --client cursor --project ./other --cursor-global`
+  writes to `~/.cursor/mcp.json`, NOT `./other/.cursor/mcp.json`. The
+  `--project` flag still scopes the Claude / Codex branches; only the
+  Cursor branch is hoisted to home.
+- **Under `--client all`, `--cursor-global` applies only to the Cursor
+  branch.** Claude's `.mcp.json` and Codex's `.codex/config.toml` always
+  land project-scoped under the resolved `--project` directory regardless
+  of `--cursor-global`. There is no cross-host equivalent flag in 0.9.0.
+- **Under `--client claude` or `--client codex`, `--cursor-global` is
+  ignored** with a one-line stderr note (no error, no exit code change).
+  Operators who scripted `--cursor-global` in advance of an `--client all`
+  rollout aren't surprised by it.
 
 ### Agent identity via LORE_AGENT_NAME
 

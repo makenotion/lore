@@ -45,20 +45,32 @@ graph in one pass.
 lore install
 ```
 
-By default, `lore install` installs both assistant integrations and fills in any
-missing side from an older install.
+By default, `lore install` installs every supported assistant integration
+(`--client all`) and fills in any missing side from an older install.
 
 Use `--client` to install only one assistant:
 
 ```bash
 lore install --client claude
 lore install --client codex
+lore install --client cursor
+lore install --client cursor --cursor-global
 ```
 
 - `claude`: writes Claude Code settings plus `.mcp.json`
 - `codex`: writes `.codex/config.toml` plus `.codex/hooks.json`
+- `cursor`: writes `<projectDir>/.cursor/mcp.json`
+  (`--cursor-global` opts into `~/.cursor/mcp.json`)
+
+`--client both` still works as a deprecated alias for `--client all`; the
+CLI prints a warning and proceeds.
 
 Codex only loads project-scoped `.codex/*` files for trusted projects.
+
+Cursor's MCP runtime does not currently support session-end / Stop hooks,
+so the Cursor installer only writes the MCP entry; the Stop-triggered
+autosave and the detached auto-digest spawn run only under Claude Code or
+Codex. Recall / save / scan paths work identically across all three.
 
 ## Data Model
 
@@ -178,7 +190,7 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 | Command                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
 | `lore init <page-id>`          | Create vault databases in a Notion page and write `.lore.yaml`   |
-| `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex) |
+| `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor`, `--cursor-global` for Cursor-only setup) |
 | `lore auth`                    | Check authentication status                                      |
 | `lore auth --login`            | Authenticate via OAuth (opens browser)                           |
 | `lore search <query>`          | Semantic search across memories (`-p`, `-t`, `-n` flags)         |
