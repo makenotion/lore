@@ -64,5 +64,10 @@ export {
   catchAllProjectName,
 } from "./core/context.js"
 export type { ProjectResolution } from "./core/context.js"
-export type { OAuthCredentials, OAuthConfig } from "./auth/oauth.js"
-export { runOAuthFlow, loadCredentials, getAuthorizationUrl } from "./auth/oauth.js"
+export type { OAuthCredentials, OAuthConfig, VaultAccessResult } from "./auth/oauth.js"
+export {
+  runOAuthFlow,
+  loadCredentials,
+  getAuthorizationUrl,
+  verifyVaultAccess,
+} from "./auth/oauth.js"

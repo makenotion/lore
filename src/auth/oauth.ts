@@ -7,8 +7,15 @@
  * 3. Catch the redirect with the authorization code
  * 4. Exchange code for access token
  * 5. Persist token to ~/.lore/credentials.json
+ *
+ * Also exports `verifyVaultAccess`, the post-auth-resolution preflight
+ * that confirms a freshly-resolved token can read the configured vault
+ * page. The helper is auth-mode-agnostic — works against any
+ * `Client`, regardless of whether the token came from OAuth, ntn, or
+ * the legacy `LORE_NOTION_TOKEN` path.
  */
 
+import type { Client } from "@notionhq/client"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { exec } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
@@ -231,4 +238,106 @@ function openBrowser(url: string): void {
         ? `start "${url}"`
         : `xdg-open "${url}"`
   exec(cmd)
+}
+
+// ---------------------------------------------------------------------------
+// verifyVaultAccess — post-auth-resolution preflight
+// ---------------------------------------------------------------------------
+
+/**
+ * Outcome of a vault-access preflight. Three branches:
+ *
+ * - `ok` — the client successfully read the vault page.
+ * - `not-found` — the page exists but the client cannot read it
+ *   (most common case: operator authenticated against the wrong
+ *   workspace, or their Notion identity hasn't been granted access
+ *   to the team vault page).
+ * - `unknown-error` — Notion returned something other than 404 (5xx,
+ *   network error, etc.). Caller should retry or surface the raw
+ *   error.
+ */
+export type VaultAccessResult =
+  | { kind: "ok"; pageTitle: string | null }
+  | { kind: "not-found"; pageId: string; message: string }
+  | { kind: "unknown-error"; pageId: string; error: unknown }
+
+/**
+ * Probe whether the given client can read the given vault page.
+ * Used post-auth-resolution to verify the operator authenticated
+ * against the right workspace.
+ *
+ * Pure read — issues a single `pages.retrieve` call. Does not write,
+ * does not iterate child blocks, does not touch any database. Cheap
+ * enough to call on every login without being a startup-tax concern.
+ *
+ * The page title is returned on success so the caller can confirm the
+ * operator picked the *right* vault. `lore init`'s no-arg flow (#09)
+ * shows the title back so an operator who creates a vault in the
+ * wrong workspace catches the discrepancy and can re-run.
+ *
+ * The helper takes a `Client`, not a token, matching the rest of
+ * Lore's discipline: every Notion-touching path uses the rate-limited
+ * proxy from `services.ts`. A caller with only a raw token wraps via
+ * `createLimitedClient(createClient(token, baseUrl))` first.
+ */
+export async function verifyVaultAccess(
+  client: Client,
+  vaultPageId: string
+): Promise<VaultAccessResult> {
+  try {
+    const page = await client.pages.retrieve({ page_id: vaultPageId })
+    const title = extractPageTitle(page)
+    return { kind: "ok", pageTitle: title }
+  } catch (err) {
+    const { status, code } = err as { status?: number; code?: string }
+
+    // Notion's v5 SDK throws `APIResponseError` with a `code` field;
+    // 404 maps to `code: "object_not_found"`. We check both `status`
+    // and `code` so the helper is robust against future SDK shape
+    // changes — the same defense pattern as
+    // `notion/errors.ts:isMissingPropertyError`.
+    if (status === 404 || code === "object_not_found") {
+      return {
+        kind: "not-found",
+        pageId: vaultPageId,
+        message:
+          "Vault page not accessible. Most likely cause under " +
+          "ntn-first auth: you authenticated against the wrong " +
+          "workspace during ntn login, OR the vault page isn't " +
+          "shared with you (your Notion identity) in this " +
+          "workspace. ntn-issued tokens inherit your personal " +
+          "Notion permissions; if you can't open the page in " +
+          "Notion's UI, the token can't read it either.",
+      }
+    }
+
+    return { kind: "unknown-error", pageId: vaultPageId, error: err }
+  }
+}
+
+/**
+ * Best-effort title extraction from a `pages.retrieve` response.
+ * Returns null if the page object doesn't carry a title in the shape
+ * the helper expects (e.g., a database-row page rather than a regular
+ * page, where the title lives under a renamed property like "Name").
+ *
+ * Used for the success-branch message; not load-bearing — the
+ * preflight already succeeded by the time we extract the title.
+ *
+ * Deliberately does NOT delegate to `notion/extractors.ts:extractTitle`.
+ * That extractor expects a property under a *named* key (`Name`,
+ * `Title`, etc.) inside a query-result row; `pages.retrieve` against a
+ * regular page returns the title at the well-known key `title`. The
+ * shapes diverge enough that sharing extraction logic would couple
+ * unrelated concerns.
+ */
+export function extractPageTitle(page: unknown): string | null {
+  if (!page || typeof page !== "object") return null
+  const props = (page as { properties?: Record<string, unknown> }).properties
+  if (!props || typeof props !== "object") return null
+  const titleProp = (props as { title?: unknown }).title
+  if (!titleProp || typeof titleProp !== "object") return null
+  const titleArr = (titleProp as { title?: Array<{ plain_text?: string }> }).title
+  if (!Array.isArray(titleArr) || titleArr.length === 0) return null
+  return titleArr[0]?.plain_text ?? null
 }
