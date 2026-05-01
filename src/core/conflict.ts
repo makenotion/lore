@@ -62,12 +62,22 @@ export const CONFLICT_TAG_OVERLAP_THRESHOLD = 0.5
  * half a million pairs by accident.
  *
  * To opt OUT of any cap, callers pass `pairLimit:
- * Number.POSITIVE_INFINITY` (or its alias `Infinity`) explicitly —
- * `slice(0, Infinity)` is a no-op truncation. #09's `--exhaustive` flag
- * uses this exact path. The two-axis design (default 50 OR explicit
- * Infinity) is deliberate: an engineer reading the signature should never
- * have to guess what "unbounded" means; passing `{}` defaults to 50,
- * which silently defeats `--exhaustive` if someone's not careful.
+ * Number.POSITIVE_INFINITY` (or its alias `Infinity`) explicitly. #09's
+ * `--exhaustive` flag uses this exact path. The two-axis design (default
+ * 50 OR explicit Infinity) is deliberate: an engineer reading the
+ * signature should never have to guess what "unbounded" means; passing
+ * `{}` defaults to 50, which silently defeats `--exhaustive` if someone's
+ * not careful.
+ *
+ * **The cap genuinely bounds in-memory pair allocation.** The
+ * implementation maintains a sorted top-K accumulator (binary insert +
+ * tail truncation), so candidates that can't make the cut are skipped
+ * before signal-array allocation rather than collected and discarded
+ * post-sort. A high-overlap project that would produce N(N-1)/2 raw
+ * candidates allocates O(`pairLimit`) `ConflictCandidate` objects, not
+ * O(N²). The per-pair similarity computation is still O(N²) — that's
+ * inherent to lexical-pair comparison and only an index over the corpus
+ * could change it — but the cap closes the memory blow-up.
  */
 export const CONFLICT_PAIR_LIMIT = 50
 
@@ -114,14 +124,165 @@ export function findConflictCandidates(
     options.tagOverlapThreshold ?? CONFLICT_TAG_OVERLAP_THRESHOLD
   const cap = options.pairLimit ?? CONFLICT_PAIR_LIMIT
 
+  // **Two distinct accumulation paths**, one per cap shape:
+  //
+  // - **Finite cap** (the default + every non-`--exhaustive` call):
+  //   bounded top-K via binary-insert + tail-pop with a `<= minBar`
+  //   pre-allocation skip. In-flight footprint is O(cap); per-pair
+  //   work is O(log cap). Total: O(N² · log cap) CPU, O(cap) memory.
+  //
+  // - **Unbounded** (`pairLimit: Number.POSITIVE_INFINITY`, used only
+  //   by `lore conflicts scan --exhaustive`): push every passing
+  //   candidate, sort once at the end. Per-pair work is O(1); the
+  //   final sort is O(M log M) where M is the count of passing pairs.
+  //   Total: O(N² + M log M) CPU, O(M) memory.
+  //
+  // **Why the split is load-bearing.** The bounded path's binary-
+  // insert is O(log cap) for the search but the `splice` at the
+  // chosen index is O(cap) — so per-insertion is O(cap), not
+  // O(log cap). Under finite `cap`, that's fine: cap is small
+  // (50 default; 500 in `lore conflicts scan`). Under unbounded
+  // `cap`, the accumulator grows to M = O(N²) and the per-insert
+  // splice walks the full prefix on average — total work degrades
+  // to O(N² · M) = O(N⁴), which is dramatically worse than the
+  // collect-then-sort O(N² + M log M) the prior implementation had.
+  // The `--exhaustive` flag exists for vaults with extremely
+  // overlapping projects; quartic regression there would be
+  // pathological. The two paths share threshold + signal logic via
+  // a per-pair callback so the visible output stays byte-identical
+  // across paths (cross-checked by the equivalence test in
+  // `conflict.test.ts`).
+  const isUnbounded = !Number.isFinite(cap)
+
+  if (isUnbounded) {
+    return findConflictCandidatesUnbounded(memories, {
+      trigramThreshold,
+      tagOverlapThreshold,
+    })
+  }
+  return findConflictCandidatesBounded(memories, {
+    trigramThreshold,
+    tagOverlapThreshold,
+    cap,
+  })
+}
+
+interface PairLoopOptions {
+  trigramThreshold: number
+  tagOverlapThreshold: number
+}
+
+interface BoundedLoopOptions extends PairLoopOptions {
+  cap: number
+}
+
+/**
+ * Bounded top-K accumulator. Maintains a sorted-by-similarity-desc
+ * array of size at most `cap`. New candidates that can't make the cut
+ * are skipped before signal-array allocation, so the in-flight
+ * footprint is genuinely O(`cap`), independent of corpus density.
+ *
+ * Tie semantics: `<= minBar` skip drops strict-equal candidates when
+ * the accumulator is full; binary-insert places equal-similarity
+ * candidates AFTER existing same-similarity entries. Combined, ties at
+ * the boundary preserve i<j insertion order — same shape as the prior
+ * stable-sort + slice.
+ */
+function findConflictCandidatesBounded(
+  memories: Memory[],
+  options: BoundedLoopOptions,
+): ConflictCandidate[] {
+  const candidates: ConflictCandidate[] = []
+  let minBar = Number.NEGATIVE_INFINITY
+
+  walkPairs(memories, options, (a, b, similarity, buildSignals) => {
+    // Bar check BEFORE signal-array allocation. `<= minBar` (not
+    // `<`) drops strict-equal candidates when the accumulator is
+    // full so insertion order at the threshold is preserved — the
+    // first ties to arrive stay in, later ties are skipped.
+    if (candidates.length >= options.cap && similarity <= minBar) return
+
+    const signals = buildSignals()
+    if (signals.length === 0) return
+
+    // Binary-insert by similarity descending. The search returns the
+    // first index whose stored similarity is strictly less than the
+    // new candidate's; inserting AT that index puts the new candidate
+    // AFTER any existing equal-similarity entries.
+    let lo = 0
+    let hi = candidates.length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (candidates[mid].similarity >= similarity) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    candidates.splice(lo, 0, { memoryA: a, memoryB: b, similarity, signals })
+    if (candidates.length > options.cap) {
+      candidates.pop()
+    }
+    if (candidates.length > 0) {
+      minBar = candidates[candidates.length - 1].similarity
+    }
+  })
+
+  return candidates
+}
+
+/**
+ * Unbounded path used by `--exhaustive`. Pushes every passing
+ * candidate, then sorts once at the end. O(N²) push + O(M log M)
+ * sort where M is the count of passing pairs. Avoids the bounded
+ * path's per-insert `splice` cost which under unbounded `cap`
+ * would degrade to O(N⁴) total.
+ *
+ * `Array.prototype.sort` is stable since ES2019, so equal-similarity
+ * pairs preserve their `i < j` insertion order — same tie-shape as
+ * the bounded path produces.
+ */
+function findConflictCandidatesUnbounded(
+  memories: Memory[],
+  options: PairLoopOptions,
+): ConflictCandidate[] {
   const candidates: ConflictCandidate[] = []
 
-  // Flat O(n²) `i < j` loop with a per-pair project-intersection guard.
-  // A naive partition-by-project would emit cross-project-overlap pairs
-  // multiple times (memory in projects [A, B] paired against memory in
-  // [B, C] would surface once under group B and miss otherwise; grouping
-  // [A] and [B, C] separately would double-count). The flat shape emits
-  // each unordered pair exactly once.
+  walkPairs(memories, options, (a, b, similarity, buildSignals) => {
+    const signals = buildSignals()
+    if (signals.length === 0) return
+    candidates.push({ memoryA: a, memoryB: b, similarity, signals })
+  })
+
+  candidates.sort((x, y) => y.similarity - x.similarity)
+  return candidates
+}
+
+/**
+ * Shared `i < j` pair walk + per-pair filter / similarity / signal
+ * scaffolding. Calls `onCandidate` for each pair that passes the
+ * project-intersection + similarity-threshold gates. The `buildSignals`
+ * thunk is deferred so callers can run their own pre-allocation skip
+ * (the bounded path's `<= minBar` cut) BEFORE paying the signal-array
+ * allocation cost.
+ *
+ * **Why a flat `i < j` loop, not partition-by-project.** A naive
+ * partition-by-project would emit cross-project-overlap pairs multiple
+ * times (memory in projects [A, B] paired against memory in [B, C]
+ * would surface once under group B and miss otherwise; grouping [A]
+ * and [B, C] separately would double-count). The flat shape emits each
+ * unordered pair exactly once.
+ */
+function walkPairs(
+  memories: Memory[],
+  options: PairLoopOptions,
+  onCandidate: (
+    a: Memory,
+    b: Memory,
+    similarity: number,
+    buildSignals: () => string[],
+  ) => void,
+): void {
   for (let i = 0; i < memories.length; i++) {
     const a = memories[i]
     const aProjects = new Set(a.projectIds)
@@ -133,9 +294,7 @@ export function findConflictCandidates(
       // memory referenced twice (paginated branches in #09's loader
       // returning a row twice, a defensive dedup miss, etc.), the
       // index-based loop would emit a `(m, m)` pair at similarity 1.0
-      // and burn a candidate slot. Engram's FTS5 candidate set can't
-      // produce this; lore's in-memory generator is one comparison
-      // away from cannot-produce-a-self-pair-regardless-of-caller-bugs.
+      // and burn a candidate slot.
       if (a.id === b.id) continue
 
       let sharesProject = false
@@ -158,45 +317,36 @@ export function findConflictCandidates(
       const similarity = trigramJaccard(blobA, blobB)
       const tagSimilarity = tagOverlap(a.tags, b.tags)
 
-      const trigramHit = similarity >= trigramThreshold
-      const tagHit = tagSimilarity >= tagOverlapThreshold
+      const trigramHit = similarity >= options.trigramThreshold
+      const tagHit = tagSimilarity >= options.tagOverlapThreshold
       if (!trigramHit && !tagHit) continue
 
-      // Build signals in a fixed order — trigram first, tags second —
-      // so #05's compare tool and #09's scan output can render the
-      // first signal as the headline reason without re-sorting.
-      const signals: string[] = []
-      if (trigramHit) {
-        signals.push(`title trigram: ${similarity.toFixed(2)}`)
-      }
-      if (tagHit) {
-        const shared: string[] = []
-        for (const tag of b.tags) {
-          if (aTags.has(tag)) shared.push(tag)
+      // Defer signal construction so callers can apply their own
+      // pre-allocation skip first (the bounded path's `<= minBar`
+      // cut). Today's defaults make `tagHit && !shared`
+      // mathematically unreachable (Jaccard ≥ 0.5 forces |A ∩ B| ≥ 1),
+      // but a caller passing `tagOverlapThreshold: 0` could land
+      // empty signals — guard explicitly so the `ConflictCandidate`
+      // contract ("signals populated") holds by construction rather
+      // than by threshold-default math.
+      const buildSignals = (): string[] => {
+        const signals: string[] = []
+        if (trigramHit) {
+          signals.push(`title trigram: ${similarity.toFixed(2)}`)
         }
-        if (shared.length > 0) {
-          signals.push(`shared tags: ${shared.join(", ")}`)
+        if (tagHit) {
+          const shared: string[] = []
+          for (const tag of b.tags) {
+            if (aTags.has(tag)) shared.push(tag)
+          }
+          if (shared.length > 0) {
+            signals.push(`shared tags: ${shared.join(", ")}`)
+          }
         }
+        return signals
       }
 
-      // Structural guarantee: a candidate never lands with `signals: []`.
-      // Today's defaults (`tagOverlapThreshold = 0.5`) make `tagHit && !shared`
-      // mathematically unreachable (Jaccard ≥ 0.5 forces |A ∩ B| ≥ 1), but
-      // a caller passing `tagOverlapThreshold: 0` could land here without
-      // a structural signal — guard explicitly so the `ConflictCandidate`
-      // contract ("signals populated") holds by construction rather than
-      // by threshold-default math.
-      if (signals.length === 0) continue
-
-      candidates.push({ memoryA: a, memoryB: b, similarity, signals })
+      onCandidate(a, b, similarity, buildSignals)
     }
   }
-
-  // Stable sort by similarity desc; `Array.prototype.sort` has been
-  // guaranteed stable since ES2019, so equal-similarity pairs preserve
-  // their insertion order (which is `i < j` over the input).
-  candidates.sort((x, y) => y.similarity - x.similarity)
-  // `slice(0, Infinity)` is a no-op truncation in JavaScript, so passing
-  // `pairLimit: Infinity` returns the full sorted set unchanged.
-  return candidates.slice(0, cap)
 }

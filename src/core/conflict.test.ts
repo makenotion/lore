@@ -5,7 +5,9 @@ import {
   CONFLICT_TAG_OVERLAP_THRESHOLD,
   CONFLICT_TRIGRAM_THRESHOLD,
   findConflictCandidates,
+  type ConflictCandidate,
 } from "./conflict.js"
+import { tagOverlap, trigramJaccard } from "./similarity.js"
 
 /**
  * Conflict-candidate threshold tuning notes (for future contributors):
@@ -58,6 +60,58 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     updatedAt: "2026-04-20T00:00:00.000Z",
     ...overrides,
   }
+}
+
+/**
+ * Independent brute-force oracle for `findConflictCandidates`. Walks
+ * the same `i < j` pair grid using the same `trigramJaccard` /
+ * `tagOverlap` primitives but with an unconditional push-then-sort
+ * shape — no top-K accumulator, no per-pair skip optimization. The
+ * function under test is allowed to use either internal path; this
+ * oracle gives the equivalence test a reference frame that does NOT
+ * share the implementation's accumulator code, so a hypothetical bug
+ * in both internal paths would still surface as a diff.
+ *
+ * Defaults (no `pairLimit`) so the oracle returns the full set; the
+ * caller slices to compare against bounded runs.
+ */
+function bruteForceCandidates(memories: Memory[]): ConflictCandidate[] {
+  const out: ConflictCandidate[] = []
+  for (let i = 0; i < memories.length; i++) {
+    const a = memories[i]
+    const aProjects = new Set(a.projectIds)
+    const aTags = new Set(a.tags)
+    for (let j = i + 1; j < memories.length; j++) {
+      const b = memories[j]
+      if (a.id === b.id) continue
+      let sharesProject = false
+      for (const projectId of b.projectIds) {
+        if (aProjects.has(projectId)) {
+          sharesProject = true
+          break
+        }
+      }
+      if (!sharesProject) continue
+      const blobA = a.title + " " + a.keywords
+      const blobB = b.title + " " + b.keywords
+      const similarity = trigramJaccard(blobA, blobB)
+      const tagSimilarity = tagOverlap(a.tags, b.tags)
+      const trigramHit = similarity >= CONFLICT_TRIGRAM_THRESHOLD
+      const tagHit = tagSimilarity >= CONFLICT_TAG_OVERLAP_THRESHOLD
+      if (!trigramHit && !tagHit) continue
+      const signals: string[] = []
+      if (trigramHit) signals.push(`title trigram: ${similarity.toFixed(2)}`)
+      if (tagHit) {
+        const shared: string[] = []
+        for (const tag of b.tags) if (aTags.has(tag)) shared.push(tag)
+        if (shared.length > 0) signals.push(`shared tags: ${shared.join(", ")}`)
+      }
+      if (signals.length === 0) continue
+      out.push({ memoryA: a, memoryB: b, similarity, signals })
+    }
+  }
+  out.sort((x, y) => y.similarity - x.similarity)
+  return out
 }
 
 describe("findConflictCandidates", () => {
@@ -276,5 +330,132 @@ describe("findConflictCandidates", () => {
     expect(CONFLICT_TRIGRAM_THRESHOLD).toBe(0.25)
     expect(CONFLICT_TAG_OVERLAP_THRESHOLD).toBe(0.5)
     expect(CONFLICT_PAIR_LIMIT).toBe(50)
+  })
+
+  it("bounded top-K matches an INDEPENDENT brute-force oracle (does not just compare implementation against itself)", () => {
+    // Adversarial fixture: 12 memories whose pairwise similarities are
+    // mixed (not all 1.0), so a bounded top-K accumulator and a
+    // sort-then-slice pipeline could in principle diverge on tie
+    // semantics.
+    //
+    // The oracle is hand-rolled: it walks the same `i < j` pair grid,
+    // calls `trigramJaccard` and `tagOverlap` directly (the same
+    // primitives `findConflictCandidates` consumes, but composed
+    // INDEPENDENTLY of either internal accumulation path), pushes
+    // every passing pair, sorts stably, and slices. If
+    // `findConflictCandidates`'s top-K and unbounded paths share a
+    // bug, both internal paths would diverge from the oracle here —
+    // which is the test's whole point.
+    const memories = [
+      makeMemory({ id: "m0", title: "JWT auth model" }),
+      makeMemory({ id: "m1", title: "JWT auth model" }),
+      makeMemory({ id: "m2", title: "JWT auth design" }),
+      makeMemory({ id: "m3", title: "JWT auth design" }),
+      makeMemory({ id: "m4", title: "JWT auth proposal" }),
+      makeMemory({ id: "m5", title: "JWT auth proposal" }),
+      makeMemory({ id: "m6", title: "OAuth bearer model" }),
+      makeMemory({ id: "m7", title: "OAuth bearer model" }),
+      makeMemory({ id: "m8", title: "Session cookie model" }),
+      makeMemory({ id: "m9", title: "Session cookie model" }),
+      makeMemory({ id: "m10", title: "Different unrelated topic" }),
+      makeMemory({ id: "m11", title: "Yet another distinct subject" }),
+    ]
+    const oracle = bruteForceCandidates(memories)
+    const fingerprint = (c: ConflictCandidate): string =>
+      `${c.memoryA.id}-${c.memoryB.id}@${c.similarity.toFixed(3)}`
+
+    // Sub-cap: bounded top-K must match the oracle's top-K prefix.
+    for (const cap of [1, 3, 7, 15]) {
+      const bounded = findConflictCandidates(memories, { pairLimit: cap })
+      expect(bounded.map(fingerprint)).toEqual(
+        oracle.slice(0, cap).map(fingerprint),
+      )
+    }
+    // Unbounded: the dedicated push-then-sort path must match the
+    // oracle in full. This is the cross-check the prior version of
+    // this test was missing — the oracle is not the implementation.
+    const unbounded = findConflictCandidates(memories, {
+      pairLimit: Number.POSITIVE_INFINITY,
+    })
+    expect(unbounded.map(fingerprint)).toEqual(oracle.map(fingerprint))
+  })
+
+  it("bounded path bounds in-memory pair accumulation to O(cap) — N²-overlap input does not allocate N(N-1)/2 candidates", () => {
+    // 50 memories with identical titles produce C(50, 2) = 1225 raw
+    // candidates that all clear threshold. A collect-then-slice
+    // implementation would allocate 1225 ConflictCandidate objects
+    // before slicing to 50. The bounded accumulator is mathematically
+    // O(cap) — at any point during the loop, `candidates.length <=
+    // cap`. The result count remains 50, but the in-flight allocation
+    // is genuinely capped.
+    //
+    // We verify the contract structurally rather than by introspecting
+    // V8's heap: monkey-patch `Array.prototype.splice` for the duration
+    // of the call to count growth past the cap. With bounded
+    // accumulation, splice is called per-insertion and the observed
+    // running array length never exceeds `cap + 1` (the transient
+    // state between splice and pop).
+    const memories = Array.from({ length: 50 }, (_, i) =>
+      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+    )
+    let observedMaxLength = 0
+    const realSplice = Array.prototype.splice
+    Array.prototype.splice = function (
+      this: unknown[],
+      ...args: Parameters<typeof Array.prototype.splice>
+    ): unknown[] {
+      const result = realSplice.apply(this, args) as unknown[]
+      if (this.length > observedMaxLength) observedMaxLength = this.length
+      return result
+    } as typeof Array.prototype.splice
+    try {
+      const result = findConflictCandidates(memories, { pairLimit: 50 })
+      expect(result).toHaveLength(50)
+    } finally {
+      Array.prototype.splice = realSplice
+    }
+    // Allow `cap + 1` for the transient post-splice / pre-pop length.
+    expect(observedMaxLength).toBeLessThanOrEqual(51)
+    // Must be strictly less than the unbounded N(N-1)/2 = 1225.
+    expect(observedMaxLength).toBeLessThan(1225)
+  })
+
+  it("unbounded path uses push-then-sort, NOT per-insert splice (avoids O(N⁴) regression under --exhaustive)", () => {
+    // Splitting the implementation into bounded (top-K) and unbounded
+    // (push-then-sort) paths is the load-bearing decision behind
+    // `--exhaustive`'s performance: a unified top-K path would
+    // degenerate into N² × O(N²) = O(N⁴) work because every passing
+    // candidate would walk the full prefix on average. This test
+    // pins the path split structurally — `Array.prototype.splice`
+    // is the bounded path's per-insert primitive and MUST NOT be
+    // called on the unbounded path.
+    //
+    // The 50-memory / 1225-pair fixture from the bounded test would,
+    // if routed through the bounded path, call splice 1225 times.
+    // The unbounded path uses `push` instead, so we expect zero
+    // splice calls during candidate accumulation.
+    const memories = Array.from({ length: 50 }, (_, i) =>
+      makeMemory({ id: `m${i}`, title: "Identical subject string" }),
+    )
+    let spliceCallCount = 0
+    const realSplice = Array.prototype.splice
+    Array.prototype.splice = function (
+      this: unknown[],
+      ...args: Parameters<typeof Array.prototype.splice>
+    ): unknown[] {
+      spliceCallCount++
+      return realSplice.apply(this, args) as unknown[]
+    } as typeof Array.prototype.splice
+    try {
+      const result = findConflictCandidates(memories, {
+        pairLimit: Number.POSITIVE_INFINITY,
+      })
+      expect(result).toHaveLength(1225)
+    } finally {
+      Array.prototype.splice = realSplice
+    }
+    // Zero splice calls on the unbounded path. (`Array.prototype.sort`
+    // is called once at the end but doesn't go through splice.)
+    expect(spliceCallCount).toBe(0)
   })
 })

@@ -1537,15 +1537,42 @@ without touching this module. Acceptance criteria pin both halves
 `Memory` shape's archive flag (Notion page metadata) isn't on the
 shape this module sees at all.
 
-**Pair-limit semantics.** Default cap is `CONFLICT_PAIR_LIMIT = 50`
-applied as `slice(0, cap)`. To opt out of the cap entirely (the
+**Pair-limit semantics — two execution paths.** Default cap is
+`CONFLICT_PAIR_LIMIT = 50`. To opt out of the cap entirely (the
 path #09's `--exhaustive` flag uses), callers pass `pairLimit:
-Number.POSITIVE_INFINITY` — `slice(0, Infinity)` is a no-op
-truncation in JavaScript and returns the full sorted set. Do NOT
-special-case `Infinity` to "default to 50" in the truncation step;
-the natural slice behavior is correct, the test fixture pins both
-literals, and silently defeating `--exhaustive` would be
-observable.
+Number.POSITIVE_INFINITY` (or its alias `Infinity`).
+`findConflictCandidates` branches on `Number.isFinite(cap)` at
+entry and dispatches to one of two internal helpers:
+
+- **Finite cap** → `findConflictCandidatesBounded`. Maintains a
+  top-K accumulator via binary-insert + tail-pop with a `<= minBar`
+  pre-allocation skip. In-flight footprint is O(cap); per-pair
+  work is O(cap) for the splice (binary-search dominated only on
+  index lookup; the actual array shift is O(cap)). Total:
+  O(N² · cap) CPU, O(cap) memory. For `cap = 50` and `cap = 500`
+  this is well-bounded.
+- **Unbounded** → `findConflictCandidatesUnbounded`. Pushes every
+  passing candidate, sorts once at the end via
+  `Array.prototype.sort` (stable since ES2019, so equal-similarity
+  pairs preserve their `i < j` insertion order). Total:
+  O(N² + M log M) CPU, O(M) memory where M is the count of
+  passing pairs.
+
+**Why two paths, not one.** A unified top-K path under
+`cap = Infinity` would degenerate to O(N⁴) total work — every
+passing candidate walks the full prefix on average for the
+binary-insert splice. The split keeps `--exhaustive` honest at
+O(N² + M log M) while the bounded default genuinely caps memory
+at O(cap). Tie semantics are byte-identical across both paths
+(binary-insert with `>= similarity` advancing `lo` matches
+stable-sort i<j tie order); the equivalence test in
+`conflict.test.ts` cross-checks both internal paths against an
+INDEPENDENT brute-force oracle (push-then-sort over
+`trigramJaccard` / `tagOverlap` directly), not against each other.
+
+Do NOT special-case `Infinity` to "default to 50". Silently
+defeating `--exhaustive` would be observable to callers and the
+test fixture pins both literals.
 
 **Threshold tuning.** `CONFLICT_TRIGRAM_THRESHOLD = 0.25` and
 `CONFLICT_TAG_OVERLAP_THRESHOLD = 0.5` are starting points

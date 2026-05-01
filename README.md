@@ -235,6 +235,50 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
 | `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, etc.) |
+| `lore conflicts scan`          | Walk the vault and surface candidate conflict pairs for in-context judgment (`-p`, `-n`, `--include-bodies`, `--json`, `--exhaustive`). Read-only — emits prompt-ready output the calling agent dispatches back via `lore-memory action='compare'`. |
+
+### Conflict detection
+
+`lore conflicts scan` is a read-only operator-pulled scanner that
+walks the vault, identifies pairs of memories whose titles +
+keywords trigram-overlap (or whose tags overlap) above threshold,
+filters out pairs already judged via `Compared With`, and emits
+**prompt-ready output** the calling agent reads and dispatches
+back via `lore-memory action='compare'`. The CLI itself does NOT
+call any LLM and does NOT call the compare tool.
+
+The scan is bounded by two distinct caps:
+
+- `SCAN_RAW_CANDIDATE_CAP = 500` per project — coverage knob;
+  bounds the per-project candidate accumulator (top-K
+  accumulation, so a high-overlap project allocates O(500)
+  candidates, not O(N²)). Lifted by `--exhaustive`.
+- `--limit` (default 50) — prompt-budget knob; applied AFTER
+  dedup + Compared-With filter + sort, so it always budgets the
+  *useful* candidate set.
+
+Typical workflow:
+
+```bash
+# Surface a batch the agent can reason about:
+lore conflicts scan --project Mail --limit 50
+
+# Agent judges each pair via lore-memory action='compare'.
+
+# Re-run; already-judged pairs drop out, next batch surfaces:
+lore conflicts scan --project Mail --limit 50
+
+# Repeat until the scan returns zero, then optionally:
+lore conflicts scan --project Mail --exhaustive --limit 50
+# Lifts the 500-candidate per-project cap to confirm full
+# coverage on extremely overlapping projects.
+```
+
+`--json` swaps the markdown report for a JSON document carrying a
+top-level `compareContract` block (asymmetric vs symmetric verdict
+split, direction rules, back-reference to CLAUDE.md for canonical
+verdict definitions). Progress messages route to stderr so
+`--json` is pipe-clean.
 
 ## Hooks
 

@@ -22,6 +22,7 @@ debugging, manual search).
 | `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
 | `commands/digest.ts` | `lore digest` -- gather digest data + spawn background synthesizer |
 | `commands/tasks.ts` | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`) |
+| `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`) |
 
 ## Commander Patterns
 
@@ -127,6 +128,7 @@ title-shaped to link.
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
+| `lore conflicts scan` | none | `-p, --project`, `-n, --limit`, `--include-bodies`, `--json`, `--exhaustive` | Walk the vault, surface candidate conflict pairs for in-context judgment by the calling agent (read-only; emits prompt-ready output) |
 
 ## The migrate Command
 
@@ -593,6 +595,118 @@ then `JSON.stringify(absolutePath)` for the quoted script path. Running
 Codex currently targets POSIX shells only (macOS / Linux). `VAR=VALUE
 cmd` is not recognized by `cmd.exe`, so the prefix is not portable to
 Windows; revisit if Codex ships a Windows-native hook runner.
+
+## The conflicts Command
+
+`conflicts scan` (issue 0.9.0/#09) walks the vault, runs lexical
+candidate generation per project (delegating to
+`findConflictCandidates`), filters out pairs already judged via
+`Compared With`, and emits *prompt-ready* output the calling agent
+reads and dispatches back via `lore-memory action='compare'`.
+
+The CLI does NOT call any LLM and does NOT call the compare tool —
+it produces structured material the agent acts on. Engram's
+analog (`engram conflicts scan`) shells out to a fresh agent CLI
+via `ENGRAM_AGENT_CLI`; lore inverts the design because the MCP
+server is invoked *by* the current Claude session already, so the
+natural judge is the *current* session, not a subprocess.
+
+### Pipeline
+
+`list → generate → dedup → filter → sort → truncate → render`
+
+Order is load-bearing: filtering before truncation ensures
+`--limit` budgets the *useful* candidate set, not the raw set.
+An earlier draft of the spec applied filters after truncation and
+silently under-surfaced candidates when the top-similarity raw
+slice contained already-judged pairs.
+
+### Two cap knobs
+
+The scan uses two distinct caps that an operator must keep
+separate when reasoning about coverage:
+
+- **`SCAN_RAW_CANDIDATE_CAP = 500`** is the *coverage* knob —
+  passed into `findConflictCandidates` as `pairLimit` per project.
+  Bounds the per-project candidate **accumulator** (the generator
+  uses bounded top-K accumulation so a high-overlap project
+  allocates O(`pairLimit`) `ConflictCandidate` objects, not O(N²);
+  see `findConflictCandidates` in `src/core/conflict.ts`). The
+  per-pair similarity computation itself is still O(N²) — that's
+  inherent to lexical-pair comparison and only an index over the
+  corpus could change it — but the memory blow-up is closed.
+  Lifted by `--exhaustive` (which passes
+  `pairLimit: Number.POSITIVE_INFINITY` per #03's contract — NOT
+  an empty options object, which would default to
+  `CONFLICT_PAIR_LIMIT = 50`).
+- **`--limit` (default `CONFLICT_PAIR_LIMIT = 50`)** is the
+  *prompt budget* knob — applied AFTER dedup + comparedWith
+  filter + sort. Bounds the agent's per-run reasoning surface.
+
+Passing `--limit` to the generator (instead of
+`SCAN_RAW_CANDIDATE_CAP`) would pre-truncate before dedup and
+filtering, yielding a final surfaced set < `--limit` even when
+more useful candidates exist. The two-cap design is what the
+acceptance criteria pin via `findConflictCandidates`-spy
+assertions.
+
+### Bounded coverage limitation
+
+A project with more than `SCAN_RAW_CANDIDATE_CAP` lexical
+candidates has unjudged pairs ranked 501+ that the bounded scan
+never surfaces. Once an operator has judged every pair the
+bounded scan returns, the run keeps returning zero pairs even
+though similarity-ranked candidates 501+ remain unjudged. This
+is intentional CPU/memory safety for typical vaults; it's a
+real coverage gap on extremely overlapping projects.
+`--exhaustive` lifts the bound at the cost of unbounded O(n²)
+generation (a 5,000-memory project produces up to ~12.5M pairs).
+
+### Output shapes
+
+- **Markdown (default)** — prompt-ready for an interactive Claude
+  session. Header references the verdict vocabulary by name (six
+  values, defined in CLAUDE.md per #04 and in
+  `src/core/prompts/conflict-judge.ts` per #03). The 0.9.0 scan
+  does NOT inline the locked prompt verbatim — the calling agent
+  already has the operating-contract block in context.
+- **JSON (`--json`)** — for programmatic consumers. Carries a
+  top-level `compareContract` block with the asymmetric /
+  symmetric verdict split, the four direction rules, and a
+  back-reference to CLAUDE.md for canonical verdict definitions.
+  Self-describing so an agent piping `--json` into another tool
+  doesn't need prior context to produce correctly-shaped
+  `compare` calls.
+
+Progress messages route to **stderr** so `--json` is pipe-clean;
+result output goes to stdout regardless of format. The
+implementation injects a `log` sink rather than calling
+`console.error` / `process.stderr.write` directly, mirroring
+`runReconcile`'s injection-friendly shape so the unit test
+captures progress without process globals.
+
+### MemoryService.listForScan
+
+`listForScan({ projectIds, projectLabels?, includeBodies?,
+onProgress? })` is the dedicated walker for this surface.
+Distinct from `MemoryService.list` (which is recall-shaped):
+
+- **Strict-scoped** — uses `Project relation contains <id>`, NOT
+  `projectOrUnscopedFilter`. Unscoped repo-wide rows would fail
+  `findConflictCandidates`'s per-pair project intersection
+  anyway, so including them inflates O(n²) work for zero useful
+  output.
+- **Paginates aggressively** — page size 100, loops until
+  `has_more === false`. The conflict scanner needs every row in
+  the project, not the recency-truncated 100-row window `list`
+  returns.
+- **Body fetch is opt-in** — the candidate generator reads only
+  `title` / `keywords` / `tags` / `projectIds`. Default off
+  keeps the scan an O(N) properties walk; `--include-bodies`
+  fans out per-page `retrieveMarkdown` for renderer use only.
+- **Archived rows filtered client-side** — Notion's `archived`
+  flag lives on `PageObjectResponse`, not as a DB column. Same
+  posture as `findByTopicKey` / `listAllForBackfill`.
 
 ## The mine Command
 

@@ -2171,6 +2171,117 @@ export class MemoryService {
       .map((page) => this.pageToMemory(page as PageObjectResponse, ""))
   }
 
+  /**
+   * Project-grouped paginated walk for `lore conflicts scan` (0.9.0/#09).
+   * Returns `Memory[][]` aligned by index with the input `projectIds` —
+   * `result[i]` holds every non-archived memory whose `Project` relation
+   * contains `projectIds[i]`.
+   *
+   * **Why a dedicated method, not a re-shaped `list`.** `list` is
+   * recall-shaped: capped at 100 rows, sorted by edit time, scoped via
+   * `projectOrUnscopedFilter` so unscoped repo-wide rows surface alongside
+   * project-scoped ones. The conflict scanner needs the opposite: every
+   * row in a project (paginate to exhaustion), strict-scoped (an unscoped
+   * repo-wide row is NOT a candidate for "conflicts in project X"
+   * because it doesn't carry X's identity), and per-project grouping so
+   * `findConflictCandidates` runs in-project and the dedup step at #09
+   * can collapse cross-project duplicates.
+   *
+   * **Strict-scoped, not `projectOrUnscopedFilter`-shaped.** The
+   * conflict-candidate generator (`findConflictCandidates`) intersects
+   * `projectIds` per-pair internally, so an unscoped row paired against
+   * a project-scoped row would fail that intersection anyway and
+   * surface zero candidates. Including unscoped rows here would only
+   * inflate the per-project memory list (and the post-list
+   * `findConflictCandidates` O(n²) pair work) for zero useful output.
+   *
+   * **Archived rows.** Filtered client-side via `page.archived` —
+   * `dataSources.query` cannot filter on Notion's page-metadata
+   * `archived` flag (it lives on `PageObjectResponse`, not as a DB
+   * column). Same posture as `findByTopicKey` and `listAllForBackfill`.
+   *
+   * **Body fetch is opt-in via `includeBodies`.** The candidate
+   * generator reads only `title` / `keywords` / `tags` / `projectIds`
+   * — body content is irrelevant to lexical similarity. The CLI's
+   * `--include-bodies` flag is the only consumer that needs full
+   * markdown; default off keeps the scan an O(N) properties walk
+   * rather than an O(N) properties walk + O(N) per-page
+   * `retrieveMarkdown` round-trips. When the flag is on, body
+   * fetches fan out via `Promise.all` per project, governed by the
+   * shared rate-limited client.
+   *
+   * **Progress signal.** When `onProgress` is provided, the helper
+   * fires it once per Notion page received with the project label,
+   * 1-based page index, and running total so the CLI can stream
+   * `Scanning project 'core-app': page 3, 230 memories...` to stderr
+   * without coupling to `console.error`.
+   */
+  async listForScan(opts: {
+    projectIds: string[]
+    /** Optional human-readable labels aligned by index with `projectIds`
+     *  for `onProgress` rendering; defaults to the project ID when omitted. */
+    projectLabels?: string[]
+    includeBodies?: boolean
+    onProgress?: (info: {
+      projectId: string
+      projectLabel: string
+      pageIndex: number
+      runningTotal: number
+    }) => void
+  }): Promise<Memory[][]> {
+    const labels = opts.projectLabels ?? opts.projectIds
+    const result: Memory[][] = []
+
+    for (let i = 0; i < opts.projectIds.length; i++) {
+      const projectId = opts.projectIds[i]!
+      const label = labels[i] ?? projectId
+
+      const pages: PageObjectResponse[] = []
+      let cursor: string | undefined = undefined
+      let pageIndex = 0
+      do {
+        const response = await this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: {
+            property: "Project",
+            relation: { contains: projectId },
+          } as QueryDataSourceParameters["filter"],
+          page_size: 100,
+          start_cursor: cursor,
+        })
+        pageIndex++
+        for (const r of response.results) {
+          if (isFullPage(r) && !r.archived) {
+            pages.push(r as PageObjectResponse)
+          }
+        }
+        if (opts.onProgress) {
+          opts.onProgress({
+            projectId,
+            projectLabel: label,
+            pageIndex,
+            runningTotal: pages.length,
+          })
+        }
+        cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      } while (cursor !== undefined)
+
+      if (opts.includeBodies) {
+        const memories = await Promise.all(
+          pages.map(async (page) => {
+            const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
+            return this.pageToMemory(page, md.markdown)
+          }),
+        )
+        result.push(memories)
+      } else {
+        result.push(pages.map((page) => this.pageToMemory(page, "")))
+      }
+    }
+
+    return result
+  }
+
   async list(opts?: {
     projectId?: string
     topicId?: string

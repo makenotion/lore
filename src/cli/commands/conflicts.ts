@@ -1,0 +1,575 @@
+/**
+ * `lore conflicts scan` (issue 0.9.0/#09).
+ *
+ * Walks the vault, runs candidate generation per project (delegated to
+ * `findConflictCandidates`), filters out pairs already judged via
+ * `Compared With`, and emits *prompt-ready* output the calling agent can
+ * read and act on. The CLI does NOT call any LLM and does NOT call
+ * `lore-memory action='compare'` — it produces structured material that
+ * the agent reads and dispatches back via the compare tool.
+ *
+ * Engram's analog (`engram conflicts scan`) shells out to the user's
+ * agent CLI via `ENGRAM_AGENT_CLI`. Lore's MCP server is invoked *by*
+ * Claude Code already; the natural judge is the *current* Claude
+ * session, not a fresh subprocess. So the design is inverted: the
+ * scanner produces output the calling agent reads, judges, and
+ * dispatches back via `lore-memory action='compare'`. See
+ * `Phase-3/09-lore-conflicts-scan-cli.md` for the full design rationale,
+ * and `src/core/AGENTS.md` § "Locked LLM prompts" for the engram-borrow
+ * doctrine.
+ */
+
+import { Command } from "commander"
+import { randomUUID } from "node:crypto"
+import { initServices, type LoreServices } from "../../services.js"
+import {
+  CONFLICT_PAIR_LIMIT,
+  findConflictCandidates,
+  type ConflictCandidate,
+} from "../../core/conflict.js"
+import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
+import type { Memory } from "../../types.js"
+
+/**
+ * Raw-candidate cap passed into `findConflictCandidates`. INTENTIONALLY
+ * larger than `--limit` / `CONFLICT_PAIR_LIMIT` so the generator returns
+ * enough raw candidates to survive dedup + already-judged filtering with
+ * `--limit` worth of survivors. If the generator is given the same
+ * `--limit` the CLI surfaces, the post-filter set could be < `--limit`
+ * even when more useful candidates exist — the bug an earlier draft of
+ * this issue had.
+ *
+ * 500 is a starting point: comfortable above any realistic `--limit`
+ * value while bounded enough that the per-project candidate accumulator
+ * stays cheap. `findConflictCandidates` honors the cap as a true
+ * top-K bound (see its docstring) so a high-overlap project allocates
+ * O(`SCAN_RAW_CANDIDATE_CAP`) `ConflictCandidate` objects, NOT
+ * O(N²) — the per-pair similarity computation is still O(N²)
+ * (inherent to lexical-pair comparison) but the memory blow-up is
+ * closed. Tune if real-vault scans surface more lexical candidates
+ * than expected.
+ */
+export const SCAN_RAW_CANDIDATE_CAP = 500
+
+/** Parsed and validated CLI flags. */
+export interface ScanCliOptions {
+  projectName: string | undefined
+  limit: number
+  includeBodies: boolean
+  json: boolean
+  exhaustive: boolean
+}
+
+/**
+ * Validate CLI inputs. `--limit` must be a positive integer; `parseInt`'s
+ * silent NaN fallback would otherwise let a malformed flag degrade to
+ * `findConflictCandidates`'s default cap with no surface error.
+ */
+export function parseScanCliOptions(raw: {
+  project?: string
+  limit?: string
+  includeBodies?: boolean
+  json?: boolean
+  exhaustive?: boolean
+}):
+  | { ok: true; value: ScanCliOptions }
+  | { ok: false; message: string } {
+  let limit = CONFLICT_PAIR_LIMIT
+  if (raw.limit !== undefined) {
+    // Validate the raw string with a digit-only regex BEFORE numeric
+    // conversion. Looser approaches each have a silent-acceptance
+    // failure mode:
+    //
+    // - `parseInt("3.7", 10)` silently rounds to 3.
+    // - `parseInt("3abc", 10)` silently truncates to 3.
+    // - `Number("3.7")` returns 3.7 — `Number.isInteger` rejects, so
+    //   THIS case is caught — but `Number("1e3")` returns 1000, which
+    //   is a valid integer and silently passes `Number.isInteger`.
+    //   Exponent notation is the failure mode that motivates the
+    //   string-side check: an operator typing `--limit 1e3` expecting
+    //   an error gets a 1000-pair scan instead.
+    // - `Number("+5")` returns 5 — a leading-`+` would silently pass.
+    //
+    // The regex `/^[0-9]+$/` accepts only decimal-digit strings —
+    // rejects `"3.7"`, `"3abc"`, `"1e3"`, `"+5"`, `"-5"`, `""`,
+    // `"  5"`, and any non-decimal notation. `"007"` is accepted
+    // (leading zeros are unconventional but not ambiguous; no reason
+    // to reject what `parseInt` would accept).
+    if (!/^[0-9]+$/.test(raw.limit)) {
+      return {
+        ok: false,
+        message: `--limit must be a positive decimal integer, got "${raw.limit}"`,
+      }
+    }
+    const n = Number(raw.limit)
+    if (n < 1) {
+      return {
+        ok: false,
+        message: `--limit must be a positive integer, got ${n}`,
+      }
+    }
+    if (!Number.isSafeInteger(n)) {
+      // `Number("9999999999999999999")` returns 1e19 — past
+      // `Number.MAX_SAFE_INTEGER` (2^53 - 1). The regex accepts
+      // arbitrarily long decimal strings; the safe-integer check
+      // rejects what would silently lose precision.
+      return {
+        ok: false,
+        message: `--limit exceeds the safe integer range, got "${raw.limit}"`,
+      }
+    }
+    limit = n
+  }
+  return {
+    ok: true,
+    value: {
+      projectName: raw.project,
+      limit,
+      includeBodies: !!raw.includeBodies,
+      json: !!raw.json,
+      exhaustive: !!raw.exhaustive,
+    },
+  }
+}
+
+/** Per-pair output shape, shared by markdown and JSON renderers. */
+export interface ScanPair {
+  memoryA: ScanPairMemory
+  memoryB: ScanPairMemory
+  similarity: number
+  signals: string[]
+}
+
+export interface ScanPairMemory {
+  id: string
+  title: string
+  project: string
+  kind: string
+  confidence: string
+  confidenceScore: number | null
+  synopsis: string
+  keywords: string[]
+  /** Present only when --include-bodies. */
+  body?: string
+}
+
+export interface ScanReport {
+  scanId: string
+  scannedAt: string
+  promptVersion: string
+  pairs: ScanPair[]
+}
+
+/**
+ * Project context attached to each candidate so the renderer can name a
+ * specific project per pair. `findConflictCandidates` produces pairs
+ * scoped to a single project's memory list, so we stamp the project
+ * label at generation time and carry it through dedup / filter / sort.
+ */
+interface ProjectScopedCandidate {
+  candidate: ConflictCandidate
+  projectLabel: string
+}
+
+/**
+ * Project resolution for the scan: `projects[i].id` aligns with
+ * `projects[i].label`. Resolved by `resolveScanProjects` from the CLI
+ * options against `services.projects.list()`. Exported so the unit test
+ * can assert on the project-mismatch error path without standing up a
+ * full Notion stub for the scan pipeline.
+ */
+export interface ScanProjectRef {
+  id: string
+  label: string
+}
+
+export async function resolveScanProjects(
+  services: LoreServices,
+  projectName: string | undefined,
+): Promise<ScanProjectRef[]> {
+  if (projectName) {
+    const found = await services.projects.findByName(projectName)
+    if (!found) {
+      throw new Error(
+        `Project "${projectName}" not found. Run \`lore status\` to list configured projects.`,
+      )
+    }
+    return [{ id: found.id, label: found.name }]
+  }
+  // Scope all-projects scans to active projects. `lore status projects`
+  // uses `-a` to *opt in* to archived projects — the inverted default
+  // is the established convention; archived projects walking through
+  // the conflict-scan pipeline pays for paginated `Memory` walks
+  // against retired contexts that produce zero useful candidates.
+  const all = await services.projects.list("active")
+  return all.map((p) => ({ id: p.id, label: p.name }))
+}
+
+/**
+ * Run the scan pipeline end-to-end.
+ *
+ * Pipeline: `list → generate → dedup → filter → sort → truncate → render`.
+ *
+ * Order matters: filtering before truncation ensures `--limit` budgets
+ * the *useful* candidate set, not the raw set. An earlier draft of this
+ * issue documented the filter in prose but never folded it into the
+ * primary pipeline, leaving the runScan implementation incorrect.
+ */
+export async function runScan(
+  services: LoreServices,
+  opts: ScanCliOptions,
+  log: (msg: string) => void = (msg) => process.stderr.write(msg + "\n"),
+): Promise<ScanReport> {
+  const projects = await resolveScanProjects(services, opts.projectName)
+
+  // 1. List memories per project. `listForScan` strict-scopes by project
+  //    (an unscoped repo-wide row is NOT a candidate for "conflicts in
+  //    project X" because it doesn't carry X's identity); the candidate
+  //    generator then intersects projectIds per-pair anyway, so dropping
+  //    unscoped rows here costs nothing.
+  const memoriesByProject = await services.memories.listForScan({
+    projectIds: projects.map((p) => p.id),
+    projectLabels: projects.map((p) => p.label),
+    includeBodies: opts.includeBodies,
+    onProgress: ({ projectLabel, pageIndex, runningTotal }) => {
+      log(
+        `Scanning project '${projectLabel}': page ${pageIndex}, ${runningTotal} memories…`,
+      )
+    },
+  })
+
+  // 2. For each project, run findConflictCandidates with the raw cap
+  //    (NOT --limit). The generator's pairLimit is its internal
+  //    sort+truncate budget; passing --limit here would pre-truncate
+  //    before dedup and the already-judged filter run, leaving the
+  //    final surfaced set too small.
+  //
+  //    Under `--exhaustive`, pass `pairLimit: Number.POSITIVE_INFINITY`
+  //    — the explicit unbounded sentinel per `findConflictCandidates`'s
+  //    contract. Omitting the option entirely would default to
+  //    CONFLICT_PAIR_LIMIT = 50 — explicitly the wrong behavior for
+  //    `--exhaustive`. The cap exists for CPU/memory safety on large
+  //    vaults; the flag is for operators who've already judged the
+  //    bounded scan's output and want to confirm no remaining lexical
+  //    candidates exist beyond the cap.
+  const generatorPairLimit = opts.exhaustive
+    ? Number.POSITIVE_INFINITY
+    : SCAN_RAW_CANDIDATE_CAP
+  const rawCandidates: ProjectScopedCandidate[] = []
+  for (let i = 0; i < memoriesByProject.length; i++) {
+    const memories = memoriesByProject[i]!
+    const projectLabel = projects[i]!.label
+    for (const c of findConflictCandidates(memories, {
+      pairLimit: generatorPairLimit,
+    })) {
+      rawCandidates.push({ candidate: c, projectLabel })
+    }
+  }
+
+  // 3. Dedup pairs across projects. `listForScan` groups by project, so
+  //    a pair of memories sharing TWO projects (memory A in [X, Y] and
+  //    memory B in [X, Y]) gets paired once under X's group AND once
+  //    under Y's group — producing two ConflictCandidate entries for
+  //    the same pair. Dedup by unordered pair key so each pair appears
+  //    at most once in the output.
+  const seen = new Set<string>()
+  const dedupedCandidates: ProjectScopedCandidate[] = []
+  for (const entry of rawCandidates) {
+    const { memoryA, memoryB } = entry.candidate
+    const [lo, hi] =
+      memoryA.id < memoryB.id ? [memoryA.id, memoryB.id] : [memoryB.id, memoryA.id]
+    const key = `${lo}::${hi}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    dedupedCandidates.push(entry)
+  }
+
+  // 4. Apply the already-judged filter: drop pairs where either side
+  //    names the other in `comparedWith`. The candidate generator at
+  //    `conflict.ts` deliberately does NOT filter here — state-aware
+  //    filtering belongs to the caller (this CLI).
+  const filteredCandidates = dedupedCandidates.filter(({ candidate }) => {
+    return (
+      !candidate.memoryA.comparedWith.includes(candidate.memoryB.id) &&
+      !candidate.memoryB.comparedWith.includes(candidate.memoryA.id)
+    )
+  })
+
+  // 5. Sort across projects by similarity desc; truncate to `--limit`
+  //    (the surfaced cap, distinct from SCAN_RAW_CANDIDATE_CAP). This
+  //    is the only place the operator-facing limit applies — by the
+  //    time we get here, the candidate set is post-dedup, post-filter,
+  //    so `--limit` budgets the *useful* candidates.
+  filteredCandidates.sort(
+    (a, b) => b.candidate.similarity - a.candidate.similarity,
+  )
+  const surfaced = filteredCandidates.slice(0, opts.limit)
+
+  // 6. Build the wire-shape report.
+  const pairs: ScanPair[] = surfaced.map(({ candidate, projectLabel }) => ({
+    memoryA: toScanPairMemory(candidate.memoryA, projectLabel, opts.includeBodies),
+    memoryB: toScanPairMemory(candidate.memoryB, projectLabel, opts.includeBodies),
+    similarity: candidate.similarity,
+    signals: candidate.signals,
+  }))
+
+  return {
+    scanId: randomUUID(),
+    scannedAt: new Date().toISOString(),
+    promptVersion: CONFLICT_JUDGE_PROMPT_VERSION,
+    pairs,
+  }
+}
+
+function toScanPairMemory(
+  m: Memory,
+  projectLabel: string,
+  includeBody: boolean,
+): ScanPairMemory {
+  const out: ScanPairMemory = {
+    id: m.id,
+    title: m.title,
+    project: projectLabel,
+    kind: m.kind,
+    confidence: m.confidence,
+    confidenceScore: m.confidenceScore,
+    synopsis: m.synopsis,
+    keywords: m.keywords ? m.keywords.split(/\s+/).filter(Boolean) : [],
+  }
+  if (includeBody) out.body = m.content
+  return out
+}
+
+/**
+ * Render the scan as prompt-ready markdown for the calling agent. The
+ * header explicitly tells the agent the next move (call
+ * `lore-memory action='compare'`) and references the verdict
+ * vocabulary by name. The 0.9.0 scan does NOT inline the locked prompt
+ * verbatim — referencing CLAUDE.md is sufficient because the calling
+ * agent already has it in context.
+ */
+export function renderScanMarkdown(report: ScanReport): string {
+  const lines: string[] = []
+  const pluralizedPairs = report.pairs.length === 1 ? "pair" : "pairs"
+  lines.push(
+    `# Conflict scan — ${report.pairs.length} ${pluralizedPairs} surfaced`,
+  )
+  lines.push("")
+  lines.push(`**Scan ID:** \`${report.scanId}\``)
+  lines.push(`**Scanned at:** ${report.scannedAt}`)
+  lines.push(`**Prompt version:** ${report.promptVersion}`)
+  lines.push("")
+  lines.push(
+    `**Verdict vocabulary:** see CLAUDE.md "Conflict verdicts (0.9.0+)".`,
+  )
+  // One line for each prose paragraph rather than splitting mid-
+  // sentence: backtick boundaries inside soft wraps read awkwardly,
+  // and Markdown collapses the soft break into a space at render time
+  // anyway, so there's no width budget being saved.
+  lines.push(
+    "**Action:** judge each pair below; call `lore-memory action='compare'` once per pair with one of the six verdicts.",
+  )
+  lines.push("")
+  lines.push(
+    "**Direction:** for `conflicts_with` and `supersedes`, pass `affectedMemoryId` naming the loser memory whose Confidence Score should halve. For symmetric verdicts (`scoped`, `related`, `compatible`, `not_conflict`), omit `affectedMemoryId`. The A/B labels below are unordered — order does NOT encode direction.",
+  )
+  lines.push("")
+
+  if (report.pairs.length === 0) {
+    lines.push("---")
+    lines.push("")
+    lines.push("No candidate pairs to surface. Either the vault has no")
+    lines.push("similarity-overlapping memories, every overlap has already")
+    lines.push("been judged (`Compared With` populated on both sides), or")
+    lines.push("the bounded `--exhaustive`-less scan capped before reaching")
+    lines.push("them. Re-run with `--exhaustive` to lift the per-project")
+    lines.push("`SCAN_RAW_CANDIDATE_CAP = 500` raw-candidate ceiling.")
+    return lines.join("\n") + "\n"
+  }
+
+  lines.push("---")
+  lines.push("")
+
+  let i = 1
+  for (const pair of report.pairs) {
+    lines.push(
+      `## Pair ${i} — similarity ${pair.similarity.toFixed(2)}`,
+    )
+    lines.push("")
+    lines.push(...renderPairMemoryMarkdown("A", pair.memoryA))
+    lines.push("")
+    lines.push(...renderPairMemoryMarkdown("B", pair.memoryB))
+    lines.push("")
+    // Render signals as a bulleted list. `findConflictCandidates`
+    // produces fixed-shape signal strings today (`"title trigram:
+    // 0.78"`, `"shared tags: auth, jwt"`), but rendering one signal
+    // per bullet line means a future caller-controlled signal carrying
+    // a literal `;` (e.g., a phrase like `"refs PR #123; PR #456"`)
+    // can't ambiguate the inline `"; "` separator we'd otherwise use.
+    lines.push("**Signals:**")
+    for (const signal of pair.signals) {
+      lines.push(`- ${signal}`)
+    }
+    lines.push("")
+    lines.push("---")
+    lines.push("")
+    i++
+  }
+
+  // Trailing newline matches the 0-pair branch above so stdout output
+  // always ends `\n` regardless of pair count.
+  return lines.join("\n") + "\n"
+}
+
+function renderPairMemoryMarkdown(
+  label: "A" | "B",
+  m: ScanPairMemory,
+): string[] {
+  const lines: string[] = []
+  lines.push(`### Memory ${label}: "${m.title}"`)
+  lines.push(`- **ID:** \`${m.id}\``)
+  lines.push(`- **Project:** ${m.project}`)
+  lines.push(`- **Kind:** ${m.kind}`)
+  const scoreSuffix =
+    m.confidenceScore !== null
+      ? ` (score ${m.confidenceScore.toFixed(2)})`
+      : ""
+  lines.push(`- **Confidence:** ${m.confidence}${scoreSuffix}`)
+  if (m.synopsis) {
+    lines.push(`- **Synopsis:** ${m.synopsis}`)
+  }
+  if (m.keywords.length > 0) {
+    lines.push(`- **Keywords:** ${m.keywords.join(", ")}`)
+  }
+  if (m.body !== undefined) {
+    // Memory bodies can themselves contain fenced code blocks. A fixed
+    // triple-backtick fence around an arbitrary markdown body lets a
+    // body line containing ``` close the outer fence early and corrupt
+    // the prompt-ready report. Compute a fence one backtick longer
+    // than the longest backtick run in the body — CommonMark allows
+    // fences of any length ≥ 3, and the closing fence must match the
+    // opening fence's length, so an `n+1`-backtick outer fence
+    // safely contains any `n`-backtick inner content.
+    const fence = dynamicCodeFence(m.body)
+    lines.push("")
+    lines.push(`${fence}markdown`)
+    lines.push(m.body)
+    lines.push(fence)
+  }
+  return lines
+}
+
+/**
+ * Build a code-fence string of at least 3 backticks AND strictly longer
+ * than the longest backtick run anywhere in `content`. Returns just the
+ * backticks; the caller appends the language tag (e.g. `markdown`) to
+ * the opening fence and uses the same string verbatim as the closing
+ * fence. Pure helper; exported for unit testing.
+ */
+export function dynamicCodeFence(content: string): string {
+  let maxRun = 0
+  let currentRun = 0
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 0x60 /* backtick */) {
+      currentRun++
+      if (currentRun > maxRun) maxRun = currentRun
+    } else {
+      currentRun = 0
+    }
+  }
+  return "`".repeat(Math.max(3, maxRun + 1))
+}
+
+/**
+ * Render the scan as JSON for programmatic consumers. The JSON variant
+ * carries a `compareContract` block so an agent piping `--json` into
+ * another lore tool doesn't have to consult CLAUDE.md to figure out
+ * which ID is which. ~400 bytes per run; negligible cost for the
+ * contract clarity it buys.
+ */
+export function renderScanJson(report: ScanReport): string {
+  return (
+    JSON.stringify(
+      {
+        scanId: report.scanId,
+        scannedAt: report.scannedAt,
+        promptVersion: report.promptVersion,
+        compareContract: {
+          tool: "lore-memory",
+          action: "compare",
+          verdicts: {
+            asymmetric: ["conflicts_with", "supersedes"],
+            symmetric: ["scoped", "related", "compatible", "not_conflict"],
+          },
+          directionRules: [
+            "memoryA.id and memoryB.id are unordered labels — order does NOT encode direction.",
+            "For asymmetric verdicts, set `affectedMemoryId` to the loser memory whose Confidence Score should halve.",
+            "For symmetric verdicts, omit `affectedMemoryId` (rejected if set).",
+            "verdict='supersedes' requires the affectedMemoryId memory to have kind='decision'.",
+          ],
+          verdictDefinitions:
+            "see CLAUDE.md 'Conflict verdicts (0.9.0+)' for the canonical definitions",
+        },
+        pairs: report.pairs,
+      },
+      null,
+      2,
+    ) + "\n"
+  )
+}
+
+const scanSubcommand = new Command("scan")
+  .description("Walk the vault and surface candidate conflict pairs for in-context judgment")
+  .option(
+    "-p, --project <name>",
+    "Restrict scan to one project (defaults to all projects)",
+  )
+  .option(
+    "-n, --limit <n>",
+    `Max pairs to surface (default ${CONFLICT_PAIR_LIMIT})`,
+  )
+  .option("--include-bodies", "Include each memory's full body in the output")
+  .option("--json", "Emit JSON instead of human-readable markdown")
+  .option(
+    "--exhaustive",
+    `Bypass SCAN_RAW_CANDIDATE_CAP (${SCAN_RAW_CANDIDATE_CAP}) for full O(n²) coverage`,
+  )
+  .action(
+    async (raw: {
+      project?: string
+      limit?: string
+      includeBodies?: boolean
+      json?: boolean
+      exhaustive?: boolean
+    }) => {
+      try {
+        const parsed = parseScanCliOptions(raw)
+        if (!parsed.ok) {
+          console.error(`Conflict scan failed: ${parsed.message}`)
+          process.exit(1)
+          // Defensive `return` after `process.exit` so TypeScript's
+          // control-flow narrowing of `parsed.ok` doesn't lean on
+          // `process.exit`'s `never` return type — that narrowing
+          // works today but is fragile across tsconfig changes.
+          return
+        }
+        const services = await initServices()
+        const report = await runScan(services, parsed.value)
+        if (parsed.value.json) {
+          process.stdout.write(renderScanJson(report))
+        } else {
+          process.stdout.write(renderScanMarkdown(report))
+        }
+      } catch (err) {
+        console.error(
+          "Conflict scan failed:",
+          err instanceof Error ? err.message : err,
+        )
+        process.exit(1)
+      }
+    },
+  )
+
+export const conflictsCommand = new Command("conflicts")
+  .description("Conflict-detection workflow")
+  .addCommand(scanSubcommand)

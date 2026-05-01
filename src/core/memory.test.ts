@@ -8025,3 +8025,216 @@ describe("recordSupersedence (0.9.0/05)", () => {
     expect(decrementConfidence).not.toHaveBeenCalled()
   })
 })
+
+describe("MemoryService.listForScan (0.9.0/09)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  /** Build a Memory page with the minimum properties listForScan reads. */
+  function buildScanPage(
+    id: string,
+    opts: {
+      title?: string
+      projectIds: string[]
+      archived?: boolean
+    },
+  ): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: opts.title ?? `Memory ${id}` }] },
+        Project: {
+          type: "relation",
+          relation: opts.projectIds.map((pid) => ({ id: pid })),
+        },
+      },
+      { id, archived: opts.archived ?? false },
+    )
+  }
+
+  function makeQueryClient(pagesByCall: Array<{
+    results: PageObjectResponse[]
+    has_more?: boolean
+    next_cursor?: string | null
+  }>) {
+    let callIndex = 0
+    const querySpy = vi.fn(async (_args: {
+      data_source_id: string
+      filter?: unknown
+      start_cursor?: string
+      page_size?: number
+    }) => {
+      const result = pagesByCall[callIndex]
+      callIndex++
+      return {
+        results: result?.results ?? [],
+        has_more: result?.has_more ?? false,
+        next_cursor: result?.next_cursor ?? null,
+      }
+    })
+    return { querySpy }
+  }
+
+  it("returns one Memory[] per project, aligned by index with input projectIds", async () => {
+    const { querySpy } = makeQueryClient([
+      { results: [buildScanPage("m1", { projectIds: ["P1"] })] },
+      {
+        results: [
+          buildScanPage("m2", { projectIds: ["P2"] }),
+          buildScanPage("m3", { projectIds: ["P2"] }),
+        ],
+      },
+    ])
+    const client = { dataSources: { query: querySpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const grouped = await service.listForScan({ projectIds: ["P1", "P2"] })
+
+    expect(grouped).toHaveLength(2)
+    expect(grouped[0]!.map((m) => m.id)).toEqual(["m1"])
+    expect(grouped[1]!.map((m) => m.id)).toEqual(["m2", "m3"])
+  })
+
+  it("filters archived rows client-side (Notion query cannot filter archived flag)", async () => {
+    const { querySpy } = makeQueryClient([
+      {
+        results: [
+          buildScanPage("alive", { projectIds: ["P1"] }),
+          buildScanPage("archived-1", { projectIds: ["P1"], archived: true }),
+        ],
+      },
+    ])
+    const client = { dataSources: { query: querySpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const grouped = await service.listForScan({ projectIds: ["P1"] })
+
+    expect(grouped).toHaveLength(1)
+    expect(grouped[0]!.map((m) => m.id)).toEqual(["alive"])
+  })
+
+  it("paginates: aggregates results across multiple Notion pages per project", async () => {
+    // First Notion page (100 rows) returns has_more=true with a cursor.
+    // Without pagination, the second page's row would be silently dropped.
+    const firstPage = Array.from({ length: 100 }, (_, i) =>
+      buildScanPage(`m-${i}`, { projectIds: ["P1"] }),
+    )
+    const secondPage = [buildScanPage("m-late", { projectIds: ["P1"] })]
+    const { querySpy } = makeQueryClient([
+      { results: firstPage, has_more: true, next_cursor: "cursor-1" },
+      { results: secondPage, has_more: false },
+    ])
+    const client = { dataSources: { query: querySpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const grouped = await service.listForScan({ projectIds: ["P1"] })
+
+    expect(grouped[0]!.map((m) => m.id)).toContain("m-late")
+    expect(grouped[0]).toHaveLength(101)
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(querySpy.mock.calls[1]![0].start_cursor).toBe("cursor-1")
+  })
+
+  it("uses page_size: 100 and strict-scoped Project relation contains filter (NOT projectOrUnscopedFilter)", async () => {
+    // The strict filter shape is load-bearing: an unscoped row paired
+    // against a project-scoped row would fail findConflictCandidates'
+    // per-pair project intersection anyway, so including unscoped rows
+    // would inflate O(n²) pair work for zero useful output.
+    const { querySpy } = makeQueryClient([{ results: [] }])
+    const client = { dataSources: { query: querySpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.listForScan({ projectIds: ["P1"] })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(querySpy.mock.calls[0]![0].page_size).toBe(100)
+    expect(querySpy.mock.calls[0]![0].filter).toEqual({
+      property: "Project",
+      relation: { contains: "P1" },
+    })
+  })
+
+  it("skips pages.retrieveMarkdown when includeBodies is false (default)", async () => {
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const { querySpy } = makeQueryClient([
+      { results: [buildScanPage("m1", { projectIds: ["P1"] })] },
+    ])
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const grouped = await service.listForScan({ projectIds: ["P1"] })
+
+    expect(grouped[0]![0]!.content).toBe("")
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("fetches body via pages.retrieveMarkdown when includeBodies is true", async () => {
+    const retrieveMarkdownSpy = vi.fn(async (args: { page_id: string }) => ({
+      markdown: `body for ${args.page_id}`,
+    }))
+    const { querySpy } = makeQueryClient([
+      {
+        results: [
+          buildScanPage("m1", { projectIds: ["P1"] }),
+          buildScanPage("m2", { projectIds: ["P1"] }),
+        ],
+      },
+    ])
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const grouped = await service.listForScan({
+      projectIds: ["P1"],
+      includeBodies: true,
+    })
+
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(2)
+    expect(grouped[0]![0]!.content).toBe("body for m1")
+    expect(grouped[0]![1]!.content).toBe("body for m2")
+  })
+
+  it("fires onProgress once per Notion page received with project label and running total", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) =>
+      buildScanPage(`m-${i}`, { projectIds: ["P1"] }),
+    )
+    const secondPage = [buildScanPage("m-late", { projectIds: ["P1"] })]
+    const { querySpy } = makeQueryClient([
+      { results: firstPage, has_more: true, next_cursor: "cursor-1" },
+      { results: secondPage, has_more: false },
+    ])
+    const client = { dataSources: { query: querySpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const events: Array<{
+      projectId: string
+      projectLabel: string
+      pageIndex: number
+      runningTotal: number
+    }> = []
+    await service.listForScan({
+      projectIds: ["P1"],
+      projectLabels: ["Project One"],
+      onProgress: (info) => events.push(info),
+    })
+
+    expect(events).toEqual([
+      { projectId: "P1", projectLabel: "Project One", pageIndex: 1, runningTotal: 100 },
+      { projectId: "P1", projectLabel: "Project One", pageIndex: 2, runningTotal: 101 },
+    ])
+  })
+
+  it("returns an empty array when projectIds is empty without any Notion call", async () => {
+    const { querySpy } = makeQueryClient([])
+    const client = { dataSources: { query: querySpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const grouped = await service.listForScan({ projectIds: [] })
+
+    expect(grouped).toEqual([])
+    expect(querySpy).not.toHaveBeenCalled()
+  })
+})
