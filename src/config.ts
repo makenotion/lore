@@ -240,14 +240,19 @@ export async function resolveAuth(
   // `.lore.yaml` for their token.
   const legacyBaseUrlOverride = config?.auth?.baseUrl
 
-  // 1. NOTION_API_TOKEN env (canonical). `LORE_NOTION_BASE_URL` env
-  // override is the operator-controlled escape hatch; `auth.baseUrl`
-  // from repo config is intentionally ignored here.
+  // 1. NOTION_API_TOKEN env (canonical). Operator-controlled
+  // base-URL overrides are honored in priority order
+  // `LORE_NOTION_BASE_URL` → `NOTION_BASE_URL` → `NOTION_API_BASE_URL`
+  // (the latter two are ntn's documented native names — operators
+  // who switch envs via the ntn-shaped shell vars don't have to
+  // also export the Lore-namespaced alias). `auth.baseUrl` from
+  // repo config is intentionally ignored here.
   const fromApiTokenEnv = process.env["NOTION_API_TOKEN"]
   if (fromApiTokenEnv) {
+    const { resolveOperatorBaseUrl } = await import("./auth/oauth.js")
     return {
       token: fromApiTokenEnv,
-      baseUrl: process.env["LORE_NOTION_BASE_URL"],
+      baseUrl: resolveOperatorBaseUrl(),
       source: "env-notion-api-token",
     }
   }

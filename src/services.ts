@@ -6,6 +6,8 @@
  * from CLI → MCP layer.
  */
 
+import { access } from "node:fs/promises"
+import { resolve } from "node:path"
 import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
 import { createClient } from "./notion/client.js"
 import { createLimitedClient, DEFAULT_NOTION_CONCURRENCY } from "./notion/rate-limit.js"
@@ -151,6 +153,40 @@ export async function initServices(
   options: InitServicesOptions = {},
 ): Promise<LoreServices> {
   const workDir = cwd ?? process.cwd()
+
+  // 0.10.0: honor LORE_CONFIG_ROOT for MCP-spawned children.
+  // The install path (`buildMcpEnv` in `cli/commands/install.ts`)
+  // forwards this static value into the MCP entry so the spawned
+  // child resolves the right `.lore.yaml` without re-walking up
+  // from the host's spawn-time cwd (which may not match the
+  // operator's vault directory). Falls back to the upward search
+  // when the env var is unset, preserving the original CLI /
+  // hooks paths.
+  //
+  // Surface a friendly error when the env var points at a
+  // directory that lacks `.lore.yaml` so the operator sees
+  // guidance rather than the raw `ENOENT` from `loadConfig`.
+  //
+  // Whitespace-only values (e.g., `LORE_CONFIG_ROOT="   "` from a
+  // shell-rc misconfiguration) fall through to the upward search
+  // rather than `resolve("   ")` producing cwd-prefix garbage.
+  const rawRoot = process.env["LORE_CONFIG_ROOT"]
+  const explicitRoot = rawRoot?.trim() ? rawRoot.trim() : undefined
+  if (explicitRoot) {
+    const root = resolve(explicitRoot)
+    const configPath = resolve(root, ".lore.yaml")
+    try {
+      await access(configPath)
+    } catch {
+      throw new Error(
+        `LORE_CONFIG_ROOT=${root} but no .lore.yaml exists there. ` +
+          "Re-run `lore install` from the project directory or unset " +
+          "LORE_CONFIG_ROOT to fall back to the upward search.",
+      )
+    }
+    const config = await loadConfig(configPath)
+    return initServicesFromConfig(workDir, root, config, options)
+  }
 
   const found = await findConfigFile(workDir)
   if (!found) {

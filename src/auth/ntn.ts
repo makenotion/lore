@@ -234,19 +234,25 @@ function ntnAuthJsonPath(): string {
 
 /**
  * Resolve the Notion API base URL ntn would use for the active
- * environment. Reads `~/.config/notion/config.json` if present;
- * `LORE_NOTION_BASE_URL` env override always wins; final fallback
- * is undefined (the SDK uses its prod default).
+ * environment.
  *
- * The exact config.json shape is undocumented. Best-effort read with
- * a hard fallback. When DEFERRED-OFFICIAL-EXPORT ships, `ntn auth
+ * Priority order:
+ *   1. Operator env override (`LORE_NOTION_BASE_URL` →
+ *      `NOTION_BASE_URL` → `NOTION_API_BASE_URL`, see
+ *      `resolveOperatorBaseUrl` in `auth/oauth.ts`).
+ *   2. ntn's `~/.config/notion/config.json` `env` field
+ *      (`prod`/`dev`/`stg`) mapped to the canonical host.
+ *   3. `undefined` — the SDK applies its prod default.
+ *
+ * The config.json shape is undocumented. Best-effort read with a
+ * hard fallback. When DEFERRED-OFFICIAL-EXPORT ships, `ntn auth
  * token --json` likely returns the base URL alongside the token,
  * eliminating this read.
  */
 async function resolveNtnBaseUrl(): Promise<string | undefined> {
-  if (process.env["LORE_NOTION_BASE_URL"]) {
-    return process.env["LORE_NOTION_BASE_URL"]
-  }
+  const { resolveOperatorBaseUrl, ntnEnvBaseUrl } = await import("./oauth.js")
+  const fromEnv = resolveOperatorBaseUrl()
+  if (fromEnv) return fromEnv
   // TODO(ntn-export): Replace this config.json read with a value
   // pulled from `ntn auth token --json` when DEFERRED-OFFICIAL-EXPORT
   // ships.
@@ -255,9 +261,11 @@ async function resolveNtnBaseUrl(): Promise<string | undefined> {
     const raw = await readFile(configPath, "utf-8")
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const env = typeof parsed["env"] === "string" ? parsed["env"] : "prod"
-    if (env === "dev") return "https://api-dev.notion.com"
-    if (env === "stg") return "https://api-stg.notion.com"
-    return undefined
+    // Share the ntn-env → URL mapping table with `auth/oauth.ts`
+    // so the canonical URLs land in one place. Returning `undefined`
+    // for `prod` is intentional: prod is the SDK default, no
+    // override needed.
+    return env === "prod" ? undefined : ntnEnvBaseUrl(env)
   } catch {
     return undefined
   }
@@ -401,6 +409,27 @@ export type NtnLoginResult =
   | { kind: "exit-non-zero"; code: number }
   | { kind: "spawn-error"; error: unknown }
 
+export interface RunNtnLoginOptions {
+  /**
+   * Override `NOTION_ENV` in the spawn env. ntn's environment
+   * selector picks which Notion deployment the new token authorizes
+   * against (prod / dev / stg). When unset, ntn defaults to prod.
+   *
+   * Use case: `lore install` against a dev project (one whose
+   * `.lore.yaml` carries `auth.baseUrl: https://api-dev.notion.com`)
+   * derives the env from config and passes it here so the operator
+   * doesn't have to remember to export `NOTION_ENV=dev` before
+   * running `lore install`. Without this option, ntn would default
+   * to prod and the operator would mint a prod token for a dev
+   * vault — preflight then fails with a generic "vault not
+   * accessible" error that doesn't name the env mismatch.
+   *
+   * Pass `undefined` (default) to inherit `NOTION_ENV` from the
+   * operator's shell (or none at all → ntn's prod default).
+   */
+  env?: string
+}
+
 /**
  * Spawn `ntn login` interactively. Inherits stdio so the operator
  * interacts with ntn's prompts (workspace picker, browser
@@ -427,13 +456,22 @@ export type NtnLoginResult =
  * Returns a discriminated outcome so consumers can route on success
  * / exit-non-zero / spawn-error without try/catch ladders.
  */
-export async function runNtnLogin(): Promise<NtnLoginResult> {
+export async function runNtnLogin(
+  options: RunNtnLoginOptions = {},
+): Promise<NtnLoginResult> {
   return new Promise((resolve) => {
     try {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        NOTION_KEYRING: "0",
+      }
+      if (options.env) {
+        env["NOTION_ENV"] = options.env
+      }
       const child = spawn("ntn", ["login"], {
         stdio: "inherit",
         shell: false,
-        env: { ...process.env, NOTION_KEYRING: "0" },
+        env,
       })
       child.on("error", (error) => resolve({ kind: "spawn-error", error }))
       child.on("exit", (code) => {

@@ -167,6 +167,10 @@ const ENV_KEYS_TO_CLEAR = [
   "LORE_NOTION_TOKEN",
   "NOTION_WORKSPACE_ID",
   "LORE_NOTION_BASE_URL",
+  // ntn-native base-URL fallbacks consumed by `resolveOperatorBaseUrl`.
+  "NOTION_BASE_URL",
+  "NOTION_API_BASE_URL",
+  "NOTION_ENV",
   "LORE_SUPPRESS_DEPRECATIONS",
   "XDG_CONFIG_HOME",
   "LORE_HOOK_STATE_DIR",
@@ -245,6 +249,47 @@ describe("resolveAuth", () => {
 
     const result = await resolveAuth(undefined, SCRATCH)
     expect(result.baseUrl).toBe("https://api-dev.notion.com")
+  })
+
+  it("HONORS NOTION_BASE_URL (ntn-native) on the NOTION_API_TOKEN path when LORE_NOTION_BASE_URL is unset", async () => {
+    // ntn's documented native base-URL override. Operators who export
+    // NOTION_BASE_URL (the `ntn --help`-documented form) must see it
+    // honored — otherwise install-time preflight would resolve dev
+    // (via this path) but the shell rc would feel inconsistent.
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
+    process.env["NOTION_BASE_URL"] = "https://api-dev.notion.com"
+
+    const result = await resolveAuth(undefined, SCRATCH)
+    expect(result.baseUrl).toBe("https://api-dev.notion.com")
+  })
+
+  it("HONORS NOTION_API_BASE_URL (legacy ntn name) when neither LORE_NOTION_BASE_URL nor NOTION_BASE_URL is set", async () => {
+    // Same posture as NOTION_BASE_URL — `resolveOperatorBaseUrl`
+    // walks all three names in priority order, so the lowest-priority
+    // ntn name still gets honored when nothing higher is set.
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
+    process.env["NOTION_API_BASE_URL"] = "https://api-stg.notion.com"
+
+    const result = await resolveAuth(undefined, SCRATCH)
+    expect(result.baseUrl).toBe("https://api-stg.notion.com")
+  })
+
+  it("LORE_NOTION_BASE_URL still wins over the ntn-native names (priority order)", async () => {
+    // The Lore-namespaced override is the highest priority — when
+    // both are set, the operator's explicit Lore choice beats the
+    // ambient ntn-shaped value.
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["NOTION_API_TOKEN"] = "tok-from-env-api"
+    process.env["LORE_NOTION_BASE_URL"] = "https://lore-explicit.notion.com"
+    process.env["NOTION_BASE_URL"] = "https://ntn-fallback.notion.com"
+
+    const result = await resolveAuth(undefined, SCRATCH)
+    expect(result.baseUrl).toBe("https://lore-explicit.notion.com")
   })
 
   it("REJECTS auth.baseUrl from .lore.yaml on the ntn-auth-json path (security)", async () => {

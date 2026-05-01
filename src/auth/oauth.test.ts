@@ -1,6 +1,11 @@
 import type { Client } from "@notionhq/client"
 import { describe, expect, it } from "vitest"
-import { extractPageTitle, verifyVaultAccess } from "./oauth.js"
+import {
+  extractPageTitle,
+  ntnEnvFromBaseUrl,
+  resolveOperatorBaseUrl,
+  verifyVaultAccess,
+} from "./oauth.js"
 
 /**
  * Build a minimal stand-in for `Client` whose `pages.retrieve` is
@@ -111,11 +116,73 @@ describe("verifyVaultAccess", () => {
     expect(result.kind).toBe("not-found")
   })
 
-  it("returns { kind: 'unknown-error' } for non-404 throws so callers can decide retry/surface policy", async () => {
-    // Transient 5xx, network errors, validation errors against a
-    // malformed page id — none are a clean "you're in the wrong
-    // workspace" signal. The caller surfaces the raw error or
-    // retries; the helper deliberately does not.
+  it("returns { kind: 'unauthorized' } on 401 so the caller can route to re-auth, not vault-share-permission", async () => {
+    // 401 means the token itself is invalid/expired. The recovery is
+    // running ntn login again, NOT fixing workspace membership /
+    // page-share permissions. Distinct from `not-found` because the
+    // operator's actions to recover differ.
+    const authError = Object.assign(new Error("unauthorized"), { status: 401 })
+    const client = mockClient(() => {
+      throw authError
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("unauthorized")
+    if (result.kind === "unauthorized") {
+      expect(result.pageId).toBe("page-id")
+      expect(result.error).toBe(authError)
+    }
+  })
+
+  it("returns { kind: 'unauthorized' } on 403 (token lacks permission, distinct from token invalid)", async () => {
+    // 403 = token valid but lacks permission for THIS resource. Same
+    // bucket as 401 from the install's perspective: writing MCP config
+    // would land an immediately-broken install, so the gate is
+    // ready=false either way.
+    const forbidden = Object.assign(new Error("forbidden"), { status: 403 })
+    const client = mockClient(() => {
+      throw forbidden
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("unauthorized")
+  })
+
+  it("returns { kind: 'unauthorized' } when SDK code is 'unauthorized' / 'restricted_resource' (no status)", async () => {
+    // Defense pattern: future SDK shape changes that drop the numeric
+    // status but keep the textual code shouldn't silently demote a
+    // 401/403 into the unknown-error bucket.
+    const codeOnly = Object.assign(new Error("unauthorized"), { code: "unauthorized" })
+    const client = mockClient(() => {
+      throw codeOnly
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+    expect(result.kind).toBe("unauthorized")
+  })
+
+  it("returns { kind: 'rate-limited' } on 429 so the caller can distinguish throttling from generic transients", async () => {
+    // 429 is plausibly transient under sustained traffic but is
+    // auth-orthogonal — the install's gating policy may differ from
+    // a 5xx, so the discriminated branch lets the caller decide.
+    const throttled = Object.assign(new Error("rate limited"), { status: 429 })
+    const client = mockClient(() => {
+      throw throttled
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+    expect(result.kind).toBe("rate-limited")
+    if (result.kind === "rate-limited") {
+      expect(result.pageId).toBe("page-id")
+    }
+  })
+
+  it("returns { kind: 'unknown-error' } for genuine transient classes (5xx, network) so callers can decide retry/surface policy", async () => {
+    // Pure transient: 5xx server error or network failure. Distinct
+    // from the auth/throttle buckets — the recovery is "wait and try
+    // again", not "fix auth" or "back off harder."
     const serverError = Object.assign(new Error("internal server error"), {
       status: 500,
     })
@@ -200,5 +267,138 @@ describe("extractPageTitle", () => {
 
   it("returns null when title is not object-shaped", () => {
     expect(extractPageTitle({ properties: { title: "not-an-object" } })).toBeNull()
+  })
+})
+
+describe("resolveOperatorBaseUrl", () => {
+  // Lore honors ntn-native base-URL env vars (NOTION_BASE_URL,
+  // NOTION_API_BASE_URL) as fallbacks for LORE_NOTION_BASE_URL so an
+  // operator who sets the ntn-shaped variant (the `ntn --help`-
+  // documented form) gets the same base URL Lore would resolve under
+  // the Lore-namespaced name. Without the fallback chain, install-
+  // time preflight would resolve dev but the spawned MCP child would
+  // silently default to prod.
+
+  it("returns LORE_NOTION_BASE_URL when set (highest priority)", () => {
+    expect(
+      resolveOperatorBaseUrl({
+        LORE_NOTION_BASE_URL: "https://lore.dev.notion.com",
+        NOTION_BASE_URL: "https://ntn.dev.notion.com",
+        NOTION_API_BASE_URL: "https://api.dev.notion.com",
+      }),
+    ).toBe("https://lore.dev.notion.com")
+  })
+
+  it("falls back to NOTION_BASE_URL when LORE_NOTION_BASE_URL is unset", () => {
+    expect(
+      resolveOperatorBaseUrl({
+        NOTION_BASE_URL: "https://api-dev.notion.com",
+        NOTION_API_BASE_URL: "https://api-stg.notion.com",
+      }),
+    ).toBe("https://api-dev.notion.com")
+  })
+
+  it("falls back to NOTION_API_BASE_URL when neither Lore nor NOTION_BASE_URL is set", () => {
+    expect(
+      resolveOperatorBaseUrl({ NOTION_API_BASE_URL: "https://api-stg.notion.com" }),
+    ).toBe("https://api-stg.notion.com")
+  })
+
+  it("returns undefined when no base-URL env var is set (caller applies its own default)", () => {
+    expect(resolveOperatorBaseUrl({})).toBeUndefined()
+  })
+
+  it("treats empty-string env values as unset (skips to next priority level)", () => {
+    expect(
+      resolveOperatorBaseUrl({
+        LORE_NOTION_BASE_URL: "",
+        NOTION_BASE_URL: "https://api-dev.notion.com",
+      }),
+    ).toBe("https://api-dev.notion.com")
+  })
+
+  it("maps NOTION_ENV=dev to the canonical dev URL when no explicit URL var is set", () => {
+    // The ntn-native shorthand: `NOTION_ENV=dev` with no URL var
+    // should resolve to the canonical dev URL on the direct-token
+    // path (NOTION_API_TOKEN). Without this fallback, an operator
+    // who only sets NOTION_ENV would silently default to prod.
+    expect(resolveOperatorBaseUrl({ NOTION_ENV: "dev" })).toBe(
+      "https://api-dev.notion.com",
+    )
+  })
+
+  it("maps NOTION_ENV=stg to the canonical staging URL", () => {
+    expect(resolveOperatorBaseUrl({ NOTION_ENV: "stg" })).toBe(
+      "https://api-stg.notion.com",
+    )
+  })
+
+  it("maps NOTION_ENV=prod to the canonical prod URL", () => {
+    // Explicit `NOTION_ENV=prod` resolves to the canonical prod URL
+    // rather than falling through to undefined — the operator chose
+    // prod, the resolver should reflect that.
+    expect(resolveOperatorBaseUrl({ NOTION_ENV: "prod" })).toBe(
+      "https://api.notion.so",
+    )
+  })
+
+  it("returns undefined for unrecognized NOTION_ENV values (no silent fallback)", () => {
+    // A typo or future-env value that the canonical mapping doesn't
+    // know about should NOT silently route to prod. Returning
+    // undefined lets the caller (`getBaseUrl`) apply its own default.
+    expect(resolveOperatorBaseUrl({ NOTION_ENV: "qa" })).toBeUndefined()
+  })
+
+  it("explicit URL var still wins over NOTION_ENV mapping", () => {
+    // An operator setting both `NOTION_ENV=dev` AND
+    // `LORE_NOTION_BASE_URL=https://my-proxy.example` chose the
+    // explicit URL — the proxy takes precedence over the env's
+    // canonical mapping.
+    expect(
+      resolveOperatorBaseUrl({
+        NOTION_ENV: "dev",
+        LORE_NOTION_BASE_URL: "https://my-proxy.example",
+      }),
+    ).toBe("https://my-proxy.example")
+  })
+})
+
+describe("ntnEnvFromBaseUrl (URL → ntn env selector)", () => {
+  // Inverse of `ntnEnvBaseUrl`. Used by `lore install` to derive the
+  // ntn-login env target from `.lore.yaml`'s `auth.baseUrl` so a dev
+  // project's auto-login mints a dev token instead of ntn's prod
+  // default.
+
+  it("maps the canonical prod URL to env=prod", () => {
+    expect(ntnEnvFromBaseUrl("https://api.notion.so")).toBe("prod")
+  })
+
+  it("maps the canonical dev URL to env=dev", () => {
+    expect(ntnEnvFromBaseUrl("https://api-dev.notion.com")).toBe("dev")
+  })
+
+  it("maps the canonical staging URL to env=stg", () => {
+    expect(ntnEnvFromBaseUrl("https://api-stg.notion.com")).toBe("stg")
+  })
+
+  it("returns undefined for non-canonical URLs (corporate proxies, future envs)", () => {
+    // The install path treats `undefined` as "can't safely infer" —
+    // it refuses auto-login rather than minting a prod token for a
+    // proxy URL that's almost certainly NOT prod.
+    expect(ntnEnvFromBaseUrl("https://my-corporate-proxy.example")).toBeUndefined()
+    expect(ntnEnvFromBaseUrl("https://api.future-env.notion.com")).toBeUndefined()
+  })
+
+  it("returns undefined for undefined / empty string input", () => {
+    expect(ntnEnvFromBaseUrl(undefined)).toBeUndefined()
+    expect(ntnEnvFromBaseUrl("")).toBeUndefined()
+  })
+
+  it("is exact-match — does NOT match a URL with extra trailing path", () => {
+    // Defensive: a `.lore.yaml` carrying
+    // `auth.baseUrl: https://api-dev.notion.com/v1` would NOT round-
+    // trip cleanly through ntn's resolution anyway (ntn appends its
+    // own path). Refusing the inference is the right call.
+    expect(ntnEnvFromBaseUrl("https://api-dev.notion.com/v1")).toBeUndefined()
   })
 })

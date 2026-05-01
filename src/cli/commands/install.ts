@@ -2,10 +2,21 @@ import { Command } from "commander"
 import { readFile, writeFile, mkdir, access, chmod, rename, unlink } from "node:fs/promises"
 import { join, dirname, resolve } from "node:path"
 import { homedir } from "node:os"
+import { stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { createInterface } from "node:readline/promises"
-import { findConfigFile, loadConfig } from "../../config.js"
-import { loadCredentials } from "../../auth/oauth.js"
+import { findConfigFile, loadConfig, resolveAuth, type AuthSource, type ResolvedAuth } from "../../config.js"
+import type { LoreConfig } from "../../types.js"
+import { ntnEnvFromBaseUrl, verifyVaultAccess } from "../../auth/oauth.js"
+import {
+  checkNtnVersion,
+  getNtnVersion,
+  installNtn,
+  isNtnInstalled,
+  MIN_NTN_VERSION,
+  NTN_INSTALL_COMMAND,
+  runNtnLogin,
+} from "../../auth/ntn.js"
 
 export type InstallClient = "claude" | "codex" | "cursor" | "all"
 
@@ -35,11 +46,18 @@ export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
  *   consumer's `node_modules/.bin/lore` symlink that npm and Yarn 1
  *   create. Default for non-Yarn-PnP consumers.
  *
- * - `yarn` — `command: "yarn"`, `args: ["lore", "mcp"]`. Resolves
- *   through Yarn Berry / Yarn 4 PnP, which does NOT populate
+ * - `yarn` — `command: "yarn"`, `args: ["run", "-T", "lore", "mcp"]`.
+ *   Resolves through Yarn Berry / Yarn 4 PnP, which does NOT populate
  *   `node_modules/.bin` and therefore cannot satisfy the bare shape
- *   when a host launches `command: "lore"` directly. The `yarn`
- *   wrapper loads `.pnp.cjs` and resolves the bin via PnPAPI.
+ *   when a host launches `command: "lore"` directly. The `yarn run
+ *   -T` (top-level) form resolves the workspace-root binary even
+ *   when the host launches the MCP from a workspace subdirectory —
+ *   bare `yarn lore` only resolves bins in the cwd's package and
+ *   fails on subdirectory launches that monorepo hosts often
+ *   produce. `-T` is Yarn 4's flag spelling; pre-Berry Yarn 1
+ *   silently ignores unknown flags and falls back to top-level
+ *   resolution by default, so the same shape is portable across
+ *   versions.
  *
  * The legacy absolute-path shape (`node <pkgRoot>/dist/mcp.js`) is
  * orthogonal — selected via `legacyPaths`, not via this enum — and
@@ -48,11 +66,157 @@ export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
 export type BinDispatchShape = "bare" | "yarn"
 
 /**
- * Env variables the MCP server honors at runtime and that the installer
- * forwards into Claude and Codex project config. Emission is unconditional:
- * shared config must not depend on which developer ran `lore install` first.
+ * Runtime-resolved env keys forwarded into MCP entries as `${VAR}`
+ * placeholders the host (Claude / Cursor / Codex) substitutes from the
+ * operator's environment at MCP-spawn time. Each is conditional on the
+ * key being set in the install-time process env so the committed entry
+ * documents which auth source the operator was on at install time and
+ * an unintentional re-route through a stale env var doesn't happen.
+ *
+ * The set carries two families:
+ *
+ * - **Auth tokens** (`NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`) — the
+ *   canonical and legacy bearer-token sources `resolveAuth` walks.
+ * - **ntn-native environment selectors** (`NOTION_ENV`,
+ *   `NOTION_BASE_URL`, `NOTION_API_BASE_URL`) plus the
+ *   Lore-namespaced base-URL override (`LORE_NOTION_BASE_URL`).
+ *   Forwarded so a dev / staging operator's MCP child resolves
+ *   against the same Notion environment the install-time preflight
+ *   succeeded against — without these, an operator with
+ *   `NOTION_ENV=dev` (or a `NOTION_BASE_URL` override) in their
+ *   shell would pass the install preflight but the spawned MCP
+ *   child would silently default to prod. `resolveOperatorBaseUrl`
+ *   in `auth/oauth.ts` consumes the three base-URL names in
+ *   priority order.
+ *
+ * Static-value forwards (`LORE_CONFIG_ROOT`, `LORE_SUPPRESS_DEPRECATIONS`)
+ * are NOT in this list — they go through `staticEnv` because their
+ * values are literal strings, not references to the operator's env.
  */
-const LORE_MCP_ENV_VARS = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"] as const
+type RuntimeForwardedKey =
+  | "NOTION_API_TOKEN"
+  | "LORE_NOTION_TOKEN"
+  | "LORE_NOTION_BASE_URL"
+  | "NOTION_ENV"
+  | "NOTION_BASE_URL"
+  | "NOTION_API_BASE_URL"
+
+const RUNTIME_FORWARDED_KEYS: ReadonlyArray<RuntimeForwardedKey> = [
+  "NOTION_API_TOKEN",
+  "LORE_NOTION_TOKEN",
+  "LORE_NOTION_BASE_URL",
+  "NOTION_ENV",
+  "NOTION_BASE_URL",
+  "NOTION_API_BASE_URL",
+]
+
+export interface McpEnvBuild {
+  /**
+   * `${VAR}` placeholder entries the MCP host resolves at spawn time
+   * from the operator's env. Suitable for direct merge into Claude /
+   * Cursor `env: { ... }` blocks; Codex consumes the keys via
+   * `env_vars = [...]`.
+   */
+  env: Record<string, string>
+  /**
+   * Literal KEY=value entries always present:
+   *   - `LORE_CONFIG_ROOT`  — so the spawned MCP child resolves the
+   *     right `.lore.yaml` even when the host's spawn-time cwd does
+   *     not match the operator's vault directory.
+   *   - `LORE_SUPPRESS_DEPRECATIONS` — silences per-session
+   *     deprecation warnings in the spawned child; the parent CLI
+   *     emits them already.
+   * Claude / Cursor consumers merge these into `env` directly. Codex
+   * consumers prefix them onto its `bash -lc` launch command because
+   * its `env_vars = [...]` shape only carries name-only references.
+   */
+  staticEnv: Record<string, string>
+  /**
+   * Which runtime-forwarded keys were detected in the install-time
+   * env. Used by the install action to print a one-line note when a
+   * legacy forwarder (`LORE_NOTION_TOKEN`) was picked up so the
+   * operator sees a deprecation reminder. The exact wording stays
+   * command-agnostic until `lore auth --migrate` (issue #07) ships;
+   * see the call site for the active phrasing.
+   */
+  forwarded: RuntimeForwardedKey[]
+}
+
+export interface BuildMcpEnvOptions {
+  /**
+   * Skip the `LORE_CONFIG_ROOT` static entry. Used by the Yarn-PnP
+   * shape because committed `.mcp.json` / `.cursor/mcp.json` /
+   * `.codex/config.toml` files are workspace-shared across
+   * developers, and an absolute machine path (`/Users/foo/myrepo`)
+   * leaks one developer's checkout into the others'. Under PnP
+   * launches via `yarn run -T lore mcp`, the spawned MCP server's
+   * cwd is the workspace root — `findConfigFile(cwd)` walks
+   * upward from there and resolves `.lore.yaml` without help.
+   * Bare-bin (non-PnP) installs keep the static because the host's
+   * spawn cwd may not match the operator's vault directory.
+   */
+  omitConfigRoot?: boolean
+}
+
+/**
+ * Build the env map written into MCP entries (Claude / Cursor / Codex).
+ *
+ * Source-of-truth precedence matches `resolveAuth` (`src/config.ts`)
+ * so the MCP server resolves identically to the CLI: NOTION_API_TOKEN
+ * (env, canonical) > ntn-resolved (`auth.json`, no install-time
+ * forwarding required) > LORE_NOTION_TOKEN (env, soft-deprecated) >
+ * `auth.token` in `.lore.yaml` (soft-deprecated).
+ *
+ * Forwarding posture in 0.10.0:
+ * - **Conditional**: each `RUNTIME_FORWARDED_KEYS` entry forwards
+ *   only when the operator has that key set in their install-time
+ *   env. The MCP server re-runs `resolveAuth` at startup, so a
+ *   committed entry never carries a literal token value — only
+ *   `${VAR}` placeholders the host resolves at runtime from
+ *   operator env.
+ * - **Static `LORE_SUPPRESS_DEPRECATIONS=1`** always forwards (it's
+ *   a literal "1", not machine-specific).
+ * - **Static `LORE_CONFIG_ROOT`** forwards by default but omits
+ *   under `omitConfigRoot: true` (the PnP path; see
+ *   `BuildMcpEnvOptions`).
+ *
+ * Claude / Cursor consumers merge `staticEnv` into `env` directly.
+ * Codex prefixes `staticEnv` entries onto its `bash -lc` launch
+ * command (its `env_vars = [...]` shape can't carry literal values).
+ *
+ * `envSource` is injectable for test determinism; production callers
+ * use `process.env`.
+ */
+export function buildMcpEnv(
+  configRoot: string,
+  envSource: NodeJS.ProcessEnv = process.env,
+  options: BuildMcpEnvOptions = {},
+): McpEnvBuild {
+  const env: Record<string, string> = {}
+  const forwarded: RuntimeForwardedKey[] = []
+
+  for (const key of RUNTIME_FORWARDED_KEYS) {
+    const value = envSource[key]
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = `\${${key}}`
+      forwarded.push(key)
+    }
+  }
+
+  // Insertion order is observable: `Object.entries(staticEnv)` is
+  // what Codex's bash-prefix builder iterates, so the ordering of
+  // KEY=value pairs in the launch command tracks this object's
+  // insertion order. `LORE_CONFIG_ROOT` lands first (when present)
+  // so its absence on the PnP path doesn't reshuffle the surviving
+  // entries' positions.
+  const staticEnv: Record<string, string> = {}
+  if (!options.omitConfigRoot) {
+    staticEnv["LORE_CONFIG_ROOT"] = configRoot
+  }
+  staticEnv["LORE_SUPPRESS_DEPRECATIONS"] = "1"
+
+  return { env, staticEnv, forwarded }
+}
 
 function resolvePkgRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -64,7 +228,7 @@ function resolvePkgRoot(): string {
  * `node_modules/.bin/lore`, so the bare bin-dispatch shape
  * (`command: "lore"`) cannot resolve at host-launch time. Detection
  * here drives the install runner to emit the yarn-wrapped shape
- * (`command: "yarn", args: ["lore", "mcp"]`) instead.
+ * (`command: "yarn", args: ["run", "-T", "lore", "mcp"]`) instead.
  *
  * Marker file: `.pnp.cjs` (Yarn 4's PnP loader). `.pnp.loader.mjs` is
  * an alternate spelling some configurations produce; we accept either.
@@ -106,12 +270,15 @@ interface ClaudeMcpEntry {
   env: Record<string, string>
 }
 
-const LORE_MCP_ENV_PASSTHROUGH = (): Record<string, string> => {
-  const env: Record<string, string> = {}
-  for (const key of LORE_MCP_ENV_VARS) {
-    env[key] = `\${${key}}`
-  }
-  return env
+/**
+ * Merge the Claude / Cursor `env` block. Both hosts accept literal
+ * values alongside `${VAR}` placeholders, so static and runtime
+ * entries collapse into the single `env` map. Static wins on any
+ * collision (defensive — the two key sets shouldn't overlap by
+ * design).
+ */
+function mergeMcpEnvForClaudeOrCursor(build: McpEnvBuild): Record<string, string> {
+  return { ...build.env, ...build.staticEnv }
 }
 
 /**
@@ -119,8 +286,12 @@ const LORE_MCP_ENV_PASSTHROUGH = (): Record<string, string> => {
  * `{ command: "lore", args: ["mcp"], env: ... }` for `shape: "bare"`
  * (default), or `{ command: "yarn", args: ["lore", "mcp"], env: ... }`
  * for `shape: "yarn"` (Yarn Berry PnP consumers — see
- * `BinDispatchShape`). The Notion env-var passthrough block is
- * preserved either way.
+ * `BinDispatchShape`). The env block carries:
+ *   - Conditional `${NOTION_API_TOKEN}` / `${LORE_NOTION_TOKEN}` /
+ *     `${LORE_NOTION_BASE_URL}` placeholders for keys the operator
+ *     had set at install time.
+ *   - Always-on `LORE_CONFIG_ROOT` (literal vault directory) and
+ *     `LORE_SUPPRESS_DEPRECATIONS=1`.
  *
  * Hosts resolve `lore` through the consumer repo's
  * `node_modules/.bin/lore` symlink in the bare shape, or through
@@ -128,19 +299,25 @@ const LORE_MCP_ENV_PASSTHROUGH = (): Record<string, string> => {
  * committed config that is portable across every engineer's checkout
  * regardless of the absolute path of the consumer repo on disk.
  */
-export function buildClaudeMcpEntry(shape: BinDispatchShape = "bare"): ClaudeMcpEntry {
+export function buildClaudeMcpEntry(
+  shape: BinDispatchShape = "bare",
+  configRoot: string = process.cwd(),
+  envSource: NodeJS.ProcessEnv = process.env,
+): ClaudeMcpEntry {
+  const build = buildMcpEnv(configRoot, envSource, {
+    // PnP entries are committed to the workspace root and shared
+    // across developers; an absolute `LORE_CONFIG_ROOT` would leak
+    // one developer's machine path into everyone else's checkout.
+    // The `yarn run -T` launch always lands at workspace root, so
+    // the spawned MCP server's `findConfigFile(cwd)` walk resolves
+    // `.lore.yaml` without help.
+    omitConfigRoot: shape === "yarn",
+  })
+  const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
-    return {
-      command: "yarn",
-      args: ["lore", "mcp"],
-      env: LORE_MCP_ENV_PASSTHROUGH(),
-    }
+    return { command: "yarn", args: ["run", "-T", "lore", "mcp"], env }
   }
-  return {
-    command: "lore",
-    args: ["mcp"],
-    env: LORE_MCP_ENV_PASSTHROUGH(),
-  }
+  return { command: "lore", args: ["mcp"], env }
 }
 
 /**
@@ -148,13 +325,23 @@ export function buildClaudeMcpEntry(shape: BinDispatchShape = "bare"): ClaudeMcp
  * pre-0.11.0. Preserved through 0.11.x for the deprecation window;
  * `lore install --legacy-paths` opts back in. Targeted for removal in
  * 0.12.0 alongside the standalone `dist/mcp.js` tsup entry.
+ *
+ * The 0.10.0 ntn-first env shape applies on this path too — the MCP
+ * server's startup `resolveAuth` consults `LORE_CONFIG_ROOT` to find
+ * `.lore.yaml` regardless of which launch shape the host uses.
  */
-export function buildLegacyClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
+export function buildLegacyClaudeMcpEntry(
+  mcpJsPath: string,
+  cwd: string,
+  configRoot: string = process.cwd(),
+  envSource: NodeJS.ProcessEnv = process.env,
+): ClaudeMcpEntry {
+  const build = buildMcpEnv(configRoot, envSource)
   return {
     command: "node",
     args: [mcpJsPath],
     cwd,
-    env: LORE_MCP_ENV_PASSTHROUGH(),
+    env: mergeMcpEnvForClaudeOrCursor(build),
   }
 }
 
@@ -174,27 +361,33 @@ export interface CursorMcpEntry {
   env: Record<string, string>
 }
 
-export function buildCursorMcpEntry(shape: BinDispatchShape = "bare"): CursorMcpEntry {
+export function buildCursorMcpEntry(
+  shape: BinDispatchShape = "bare",
+  configRoot: string = process.cwd(),
+  envSource: NodeJS.ProcessEnv = process.env,
+): CursorMcpEntry {
+  const build = buildMcpEnv(configRoot, envSource, {
+    omitConfigRoot: shape === "yarn",
+  })
+  const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
-    return {
-      command: "yarn",
-      args: ["lore", "mcp"],
-      env: LORE_MCP_ENV_PASSTHROUGH(),
-    }
+    return { command: "yarn", args: ["run", "-T", "lore", "mcp"], env }
   }
-  return {
-    command: "lore",
-    args: ["mcp"],
-    env: LORE_MCP_ENV_PASSTHROUGH(),
-  }
+  return { command: "lore", args: ["mcp"], env }
 }
 
-export function buildLegacyCursorMcpEntry(mcpJsPath: string, cwd: string): CursorMcpEntry {
+export function buildLegacyCursorMcpEntry(
+  mcpJsPath: string,
+  cwd: string,
+  configRoot: string = process.cwd(),
+  envSource: NodeJS.ProcessEnv = process.env,
+): CursorMcpEntry {
+  const build = buildMcpEnv(configRoot, envSource)
   return {
     command: "node",
     args: [mcpJsPath],
     cwd,
-    env: LORE_MCP_ENV_PASSTHROUGH(),
+    env: mergeMcpEnvForClaudeOrCursor(build),
   }
 }
 
@@ -246,32 +439,140 @@ function formatTomlArray(values: readonly string[]): string {
  * `command = "yarn"` / `args = ["lore", "mcp"]` and lets Yarn's
  * PnPAPI resolve the bin.
  */
-export function buildCodexMcpSection(shape: BinDispatchShape = "bare"): string {
-  if (shape === "yarn") {
-    return [
-      "[mcp_servers.lore]",
-      'command = "yarn"',
-      'args = ["lore", "mcp"]',
-      `env_vars = ${formatTomlArray(LORE_MCP_ENV_VARS)}`,
-    ].join("\n")
+/**
+ * POSIX single-quote a value for safe interpolation into a `bash -lc`
+ * argument. Single quotes inhibit ALL shell expansion ($, backtick,
+ * `\`, history) — the only character that needs escaping inside
+ * single quotes is `'` itself, which the helper close-escape-reopens
+ * via `'\''`.
+ *
+ * Why not double quotes / `JSON.stringify`? Double quotes preserve
+ * spaces but do NOT inhibit `$` / backtick / `\` interpretation under
+ * `bash -lc`. A vault path like `/Users/foo/$bar/project` would have
+ * `$bar` parameter-expanded to empty before the assignment ran.
+ * Single-quoting closes that hole.
+ */
+export function shellQuoteSingle(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`
+}
+
+/**
+ * Quote a path that may carry the `${HOME}` portability marker for
+ * safe interpolation into a `bash -lc` argument. Two competing
+ * requirements:
+ *
+ * 1. **`${HOME}` MUST expand at bash time.** `toPortablePath` rewrites
+ *    `/Users/foo/...` into `${HOME}/...` so committed config is
+ *    portable across machines — bash receives the literal string
+ *    `${HOME}/.lore/dist/mcp.js`, expands `${HOME}` to the runtime
+ *    operator's home, then runs `node /Users/runtime/.lore/dist/mcp.js`.
+ *    Wrapping the entire path in single quotes turns `${HOME}` into a
+ *    literal four-character string and `node` can't find the file.
+ * 2. **Other shell metacharacters MUST NOT expand.** Same hazard
+ *    `shellQuoteSingle` already addresses for the static env prefix —
+ *    a path containing `$build_dir` or `` `whoami` `` must reach
+ *    `node` as a literal, not be re-interpreted by bash.
+ *
+ * Resolution: split on the `${HOME}` prefix. The prefix gets emitted
+ * **double-quoted** (so bash expands it) and the suffix gets emitted
+ * **single-quoted** (so bash treats every other metachar as literal).
+ * Bash's adjacent-string concatenation joins the two halves into a
+ * single argument, so `node "${HOME}"'/.../$bar/mcp.js'` becomes one
+ * argv entry pointing at `/Users/runtime/.../$bar/mcp.js`.
+ *
+ * Paths that don't carry the `${HOME}` marker (e.g., a Lore install
+ * outside the operator's home) fall through to plain
+ * `shellQuoteSingle` — there's no expansion to preserve.
+ */
+export function shellQuotePortablePath(path: string): string {
+  if (path === "${HOME}") {
+    return `"\${HOME}"`
   }
+  if (path.startsWith("${HOME}/")) {
+    const suffix = path.slice("${HOME}".length)
+    return `"\${HOME}"${shellQuoteSingle(suffix)}`
+  }
+  return shellQuoteSingle(path)
+}
+
+/**
+ * Compose a `bash -lc` launch command with the build's static
+ * `KEY=value` pairs prepended. Codex's TOML shape (`env_vars =
+ * [...]`) carries name-only references to runtime env, so static
+ * values like `LORE_CONFIG_ROOT` cannot live there; they go on the
+ * shell command line instead. Values are POSIX single-quoted (see
+ * `shellQuoteSingle`) so paths containing `$`, backticks, or `\` do
+ * NOT trigger shell expansion when bash re-evaluates the line.
+ */
+function codexLaunchCommand(staticEnv: Record<string, string>, command: string): string {
+  const prefix = Object.entries(staticEnv)
+    .map(([key, value]) => `${key}=${shellQuoteSingle(value)}`)
+    .join(" ")
+  return prefix ? `${prefix} ${command}` : command
+}
+
+/**
+ * Codex `env_vars = [...]` ordering follows `RUNTIME_FORWARDED_KEYS`
+ * declaration order (NOT `Object.keys(build.env)` insertion order).
+ * Pinning order on the source-of-truth array keeps the emitted TOML
+ * deterministic across refactors that might shuffle the build of
+ * `build.env`.
+ */
+function runtimeForwardedKeys(build: McpEnvBuild): string[] {
+  return RUNTIME_FORWARDED_KEYS.filter((key) => key in build.env)
+}
+
+export function buildCodexMcpSection(
+  shape: BinDispatchShape = "bare",
+  configRoot: string = process.cwd(),
+  envSource: NodeJS.ProcessEnv = process.env,
+): string {
+  const build = buildMcpEnv(configRoot, envSource, {
+    omitConfigRoot: shape === "yarn",
+  })
+  const baseCommand = shape === "yarn" ? "yarn run -T lore mcp" : "lore mcp"
+  const launchCommand = codexLaunchCommand(build.staticEnv, baseCommand)
   return [
     "[mcp_servers.lore]",
-    'command = "lore"',
-    'args = ["mcp"]',
-    `env_vars = ${formatTomlArray(LORE_MCP_ENV_VARS)}`,
+    'command = "bash"',
+    `args = ["-lc", ${JSON.stringify(launchCommand)}]`,
+    `env_vars = ${formatTomlArray(runtimeForwardedKeys(build))}`,
   ].join("\n")
 }
 
-export function buildLegacyCodexMcpSection(mcpJsPath: string): string {
+export function buildLegacyCodexMcpSection(
+  mcpJsPath: string,
+  configRoot: string = process.cwd(),
+  envSource: NodeJS.ProcessEnv = process.env,
+): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
-  const launchCommand = `node ${JSON.stringify(portableMcpJsPath)}`
+  const build = buildMcpEnv(configRoot, envSource)
+  // The mcp.js path is interpolated INTO the `bash -lc` arg string,
+  // so it must be quoted to inhibit shell re-interpretation — but
+  // with the wrinkle that `toPortablePath` may have rewritten the
+  // path into a `${HOME}/...` portability marker, and that marker
+  // MUST be allowed to expand at bash time (otherwise the committed
+  // config carries a literal four-character string `${HOME}` to
+  // node, which can't find the file). `shellQuotePortablePath`
+  // resolves the conflict by emitting `"${HOME}"'/<rest>'` —
+  // double-quoted prefix bash expands, single-quoted suffix bash
+  // treats as literal. Plain `shellQuoteSingle` would over-quote
+  // the prefix and break portable installs; `JSON.stringify` would
+  // under-quote the suffix and re-introduce the original injection
+  // hazard. The bin-dispatch path (`buildCodexMcpSection`) doesn't
+  // hit this because its tail is a literal command name, not a
+  // path — only the legacy `node <path>` shape needs the home-aware
+  // defense.
+  const launchCommand = codexLaunchCommand(
+    build.staticEnv,
+    `node ${shellQuotePortablePath(portableMcpJsPath)}`,
+  )
 
   return [
     "[mcp_servers.lore]",
     'command = "bash"',
     `args = ["-lc", ${JSON.stringify(launchCommand)}]`,
-    `env_vars = ${formatTomlArray(LORE_MCP_ENV_VARS)}`,
+    `env_vars = ${formatTomlArray(runtimeForwardedKeys(build))}`,
   ].join("\n")
 }
 
@@ -316,18 +617,52 @@ const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
  * fall back to `--legacy-paths` until Codex's hook runner exposes a
  * project-local PATH hook.
  */
+/**
+ * Build the bin-dispatch shell-string command Claude registers for a
+ * hook event. Two layered concerns:
+ *
+ * - **`cd "$CLAUDE_PROJECT_DIR"` prefix.** Claude Code's hook runner
+ *   fires hook commands with cwd set to whatever Claude Code's
+ *   process happens to have at fire time — frequently the binary's
+ *   install directory or the user's `~`, NOT the project root. Lore's
+ *   hook helpers walk upward from `process.cwd()` to find
+ *   `.lore.yaml`; without anchoring, a hook fired from the wrong cwd
+ *   resolves the wrong vault (or fails entirely on a fresh laptop).
+ *   Claude Code exposes the project-root path via `$CLAUDE_PROJECT_DIR`
+ *   for exactly this case. The literal `$` in the emitted command
+ *   stays unexpanded by Lore's writer (it's a JSON string-valued
+ *   field in `settings.json`); Claude's hook shell substitutes it at
+ *   fire time.
+ * - **Yarn-PnP shape.** `yarn run -T lore` (top-level) resolves the
+ *   workspace-root binary even when the hook fires from a nested
+ *   workspace package's cwd. Bare `yarn lore` resolves only against
+ *   the cwd's `package.json` and fails on subdirectory cwds —
+ *   exactly the case the `cd "$CLAUDE_PROJECT_DIR"` wrapper exposes.
+ */
 export function buildClaudeHookCommand(
   eventName: HookEventName,
   shape: BinDispatchShape = "bare",
 ): string {
-  return shape === "yarn" ? `yarn lore hooks ${eventName}` : `lore hooks ${eventName}`
+  const tail =
+    shape === "yarn" ? `yarn run -T lore hooks ${eventName}` : `lore hooks ${eventName}`
+  return `cd "$CLAUDE_PROJECT_DIR" && ${tail}`
 }
 
+/**
+ * Codex hook command. Codex's hook runner already exposes the
+ * project root via Codex's own context (`.codex/hooks.json` is
+ * trusted-project-scoped, and Codex's hook shell launches with the
+ * project as cwd by convention), so the `cd` prefix that Claude
+ * needs isn't required here. The yarn-PnP shape uses `yarn run -T`
+ * for the same workspace-root resolution reason that the Claude
+ * variant does.
+ */
 export function buildCodexHookCommand(
   eventName: HookEventName,
   shape: BinDispatchShape = "bare",
 ): string {
-  const tail = shape === "yarn" ? `yarn lore hooks ${eventName}` : `lore hooks ${eventName}`
+  const tail =
+    shape === "yarn" ? `yarn run -T lore hooks ${eventName}` : `lore hooks ${eventName}`
   return `${CODEX_AGENT_ENV_PREFIX}${tail}`
 }
 
@@ -546,12 +881,26 @@ export function detectClaudeHook(
 ): HookStatus {
   if (!entries) return "missing"
 
+  // Pattern matching all known Lore-owned bin-dispatch shapes. Same
+  // pattern `upsertClaudeHookCommand` uses for filter — so any entry
+  // the upsert would strip on reinstall surfaces here as something
+  // OTHER than `missing`, giving operators an accurate "update
+  // available" status before the rewrite. Without this match, an
+  // older `lore hooks <event>` (no cd anchor) would classify as
+  // `missing`, status would say "not installed", but the upsert
+  // would still strip it — confusing.
+  const allBinDispatchShapes =
+    /^(?:cd "\$CLAUDE_PROJECT_DIR" && )?(?:yarn (?:run -T )?)?lore hooks (?:wakeup|autosave|session-end)$/
+
   for (const entry of entries) {
     for (const hook of entry.hooks ?? []) {
       const cmd = hook.command
       if (typeof cmd !== "string") continue
-      // Bin-dispatch form: exact match against `lore hooks <event>`.
+      // Bin-dispatch form: exact match against the desired-write
+      // shape is `current`; match against any other Lore-owned
+      // bin-dispatch variant is `stale` (eligible for upgrade).
       if (binDispatchCommand && cmd === binDispatchCommand) return "current"
+      if (allBinDispatchShapes.test(cmd)) return "stale"
       // Legacy absolute-path form: identified by the script-name
       // suffix, then classified by whether the full path matches the
       // resolved legacy path for this `pkgRoot`.
@@ -588,13 +937,24 @@ function upsertClaudeHookCommand(
   newCommand: string,
   config: { matcher: string; timeout?: number; runOnce?: boolean },
 ): ClaudeHookEntry[] {
-  // Match BOTH bin-dispatch shapes — bare (`lore hooks <event>`) and
-  // yarn-wrapped (`yarn lore hooks <event>`) — so a Yarn-PnP-aware
-  // reinstall over a bare bin entry (or vice versa) doesn't leave
-  // both shapes in `Stop[]`. Same posture as the legacy `.sh` strip
-  // below.
+  // Recognize ALL Lore-owned bin-dispatch hook shapes so an upgrade
+  // path strips the old entry before writing the new one — preventing
+  // duplicate Lore hooks from accumulating in `Stop[]` /
+  // `UserPromptSubmit[]` across reinstalls. The shapes the pattern
+  // covers:
+  //   1. Pre-`cd` bare bin: `lore hooks <event>`
+  //   2. Pre-`cd` yarn-PnP bin: `yarn lore hooks <event>`
+  //   3. Current bare with cd-anchor: `cd "$CLAUDE_PROJECT_DIR" && lore hooks <event>`
+  //   4. Current yarn-PnP with cd-anchor + `run -T`:
+  //      `cd "$CLAUDE_PROJECT_DIR" && yarn run -T lore hooks <event>`
+  //   5. Transition: `cd "..." && yarn lore hooks <event>`
+  //      (cd added, yarn shape not yet upgraded)
+  // The two halves are independent: the cd-prefix is optional, the
+  // yarn variant has two acceptable command shapes (legacy `yarn
+  // lore` and current `yarn run -T lore`). Matching all combinations
+  // means any prior install can be cleanly upgraded.
   const binDispatchPattern =
-    /^(?:yarn )?lore hooks (?:wakeup|autosave|session-end)$/
+    /^(?:cd "\$CLAUDE_PROJECT_DIR" && )?(?:yarn (?:run -T )?)?lore hooks (?:wakeup|autosave|session-end)$/
   const filtered = (existing ?? []).filter(
     (entry) =>
       !entry.hooks?.some((hook) => {
@@ -760,11 +1120,26 @@ export function detectCodexHook(
 ): HookStatus {
   if (!entries) return "missing"
 
+  // Same shape-coverage rationale as `detectClaudeHook` — recognize
+  // pre-`yarn run -T` bin-dispatch entries as `stale` so the install
+  // summary surfaces "update available" before the upsert strips
+  // and rewrites them. Codex entries always carry the
+  // `LORE_AGENT_NAME=Codex ` env prefix; the strip helper handles
+  // any number of leading env assignments.
+  const allBinDispatchTails =
+    /^(?:yarn (?:run -T )?)?lore hooks (?:wakeup|autosave|session-end)$/
+
   for (const entry of entries) {
     for (const hook of entry.hooks ?? []) {
       const cmd = hook.command
       if (typeof cmd !== "string") continue
       if (binDispatchCommand && cmd === binDispatchCommand) return "current"
+      // Recognize Lore-owned bin-dispatch entries that don't match
+      // the desired-write shape — older `yarn lore` form, or any
+      // other valid pre-`run -T` shape. Strip the LORE_AGENT_NAME
+      // prefix first so the regex sees just the command tail.
+      const tail = stripShellEnvPrefix(cmd)
+      if (allBinDispatchTails.test(tail)) return "stale"
       if (commandTargetsScript(cmd, scriptName)) {
         return cmd === legacyExpectedCommand ? "legacy-current" : "stale"
       }
@@ -803,28 +1178,32 @@ function mergeCodexHookEntries(
 }
 
 /**
- * Remove every Codex hook entry whose command is one of the
- * bin-dispatch shapes (`LORE_AGENT_NAME=Codex lore hooks <event>` OR
- * `LORE_AGENT_NAME=Codex yarn lore hooks <event>`) for the given
- * event. The runner needs both stripped so flipping between any pair
- * of shapes (legacy ↔ bare-bin ↔ yarn-bin) leaves only the single
- * canonical entry behind.
+ * Remove every Codex hook entry whose command is a Lore-owned
+ * bin-dispatch shape — current AND prior — for the given event. The
+ * runner needs all variants stripped so flipping between shapes
+ * (legacy `.sh` ↔ pre-`run -T` bare ↔ pre-`run -T` yarn ↔ current
+ * `yarn run -T`) leaves only the single canonical entry behind.
+ *
+ * Detection uses the same regex-after-env-prefix-strip approach as
+ * `detectCodexHook` so the strip and the detect agree on what
+ * counts as Lore-owned.
  */
 function stripCodexBinDispatchHook(
   hooks: Record<string, CodexHookEntry[]>,
   eventName: HookEventName,
 ): Record<string, CodexHookEntry[]> {
-  const targets = new Set([
-    buildCodexHookCommand(eventName, "bare"),
-    buildCodexHookCommand(eventName, "yarn"),
-  ])
+  const tailPattern = new RegExp(
+    `^(?:yarn (?:run -T )?)?lore hooks ${eventName}$`,
+  )
   const next: Record<string, CodexHookEntry[]> = {}
   for (const [event, entries] of Object.entries(hooks)) {
     const filtered = entries.filter(
       (entry) =>
-        !entry.hooks?.some(
-          (hook) => typeof hook.command === "string" && targets.has(hook.command),
-        ),
+        !entry.hooks?.some((hook) => {
+          if (typeof hook.command !== "string") return false
+          const tail = stripShellEnvPrefix(hook.command)
+          return tailPattern.test(tail)
+        }),
     )
     if (filtered.length > 0) next[event] = filtered
   }
@@ -989,6 +1368,14 @@ function upsertTomlTableKey(
 export interface InstallContext {
   projectDir: string
   pkgRoot: string
+  /**
+   * Resolved `.lore.yaml` directory — `findConfigFile(projectDir).root`
+   * when a config exists, falling back to `projectDir` otherwise. This
+   * is the value forwarded into the MCP entry as `LORE_CONFIG_ROOT` so
+   * the spawned MCP server's `resolveAuth` walks the right `.lore.yaml`
+   * regardless of the host's spawn-time cwd.
+   */
+  configRoot: string
   autosavePath: string
   wakeupPath: string
   mcpJsPath: string
@@ -1013,10 +1400,13 @@ export interface InstallContext {
   /**
    * `--yarn-pnp` (auto-detected via `.pnp.cjs` marker). When `true`,
    * the install path emits the yarn-wrapped bin-dispatch shape
-   * (`command: "yarn", args: ["lore", "mcp"]` and
-   * `yarn lore hooks <event>`) so the host assistant can invoke the
-   * lore bin through Yarn Berry / Yarn 4 PnP, which does NOT populate
-   * `node_modules/.bin/`. Ignored when `legacyPaths === true` (legacy
+   * (`command: "yarn", args: ["run", "-T", "lore", "mcp"]` and
+   * `yarn run -T lore hooks <event>`) so the host assistant can
+   * invoke the lore bin through Yarn Berry / Yarn 4 PnP, which does
+   * NOT populate `node_modules/.bin/`. The `run -T` (top-level) flag
+   * resolves the workspace-root binary even when the host launches
+   * from a nested workspace package's cwd. Ignored when
+   * `legacyPaths === true` (legacy
    * shape predates the PnP question). Operators can force-disable via
    * `--no-yarn-pnp` if their consumer fixes PnP bin resolution
    * out-of-band.
@@ -1098,10 +1488,13 @@ async function prepareInstallContext(
   }
 
   const wakeUpConfig = await readWakeUpConfig(projectDir)
+  const found = await findConfigFile(projectDir)
+  const configRoot = found?.root ?? projectDir
 
   return {
     projectDir,
     pkgRoot,
+    configRoot,
     autosavePath,
     wakeupPath,
     mcpJsPath,
@@ -1148,29 +1541,535 @@ export async function ensureHookPrerequisites(context: InstallContext): Promise<
   ])
 }
 
-async function printPrerequisites(projectDir: string): Promise<void> {
+/**
+ * Display name for a `ResolvedAuth.source` discriminator.
+ *
+ * Local to install.ts even though `--status` (#06) emits a similar
+ * line — the two surfaces evolve separately and consolidation can
+ * happen later if their wording converges.
+ */
+function describeAuthSource(source: AuthSource): string {
+  switch (source) {
+    case "env-notion-api-token":
+      return "NOTION_API_TOKEN (env)"
+    case "ntn-auth-json":
+      return "ntn-issued (auth.json)"
+    case "env-lore-notion-token":
+      return "LORE_NOTION_TOKEN (env, legacy)"
+    case "config-auth-token":
+      return "auth.token in .lore.yaml (legacy)"
+  }
+}
+
+/**
+ * `[Y/n]`-style confirmation prompt with non-interactive guard.
+ *
+ * Returns `false` and prints non-interactive guidance when stdin is
+ * not a TTY — callers are expected to skip the action and surface a
+ * `--yes` recommendation. Empty input accepts the default (yes); any
+ * trimmed answer starting with `n` declines.
+ *
+ * Each call opens and closes its own readline interface so the
+ * prompt is independent of any rl the install action manages for
+ * its per-runner confirmations.
+ */
+async function confirmPrompt(message: string): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    console.error(
+      "Non-interactive context detected. Pass --yes to confirm prompts non-interactively.",
+    )
+    return false
+  }
+  const rl = createInterface({ input: stdin, output: stdout })
+  try {
+    const answer = await rl.question(message)
+    const normalized = answer.trim().toLowerCase()
+    if (normalized === "") return true
+    return !normalized.startsWith("n")
+  } finally {
+    rl.close()
+  }
+}
+
+interface EnsurePrerequisitesOptions {
+  yes?: boolean
+}
+
+interface NtnLoginRecovery {
+  /**
+   * Paste-ready shell command. The full prefix
+   * (`NOTION_KEYRING=0`) is always present so the resulting token
+   * lands in `auth.json` (file mode) rather than the macOS keychain
+   * — Lore can't read the keychain, so a recovery command without
+   * the env-var prefix would write to a place Lore can't see.
+   *
+   * `NOTION_ENV=<value>` is included when the env can be resolved
+   * (operator's shell or `.lore.yaml`'s `auth.baseUrl` mapped to a
+   * canonical env). When the operator must pick the env themselves
+   * (non-canonical baseUrl), the literal string `<env>` appears in
+   * the command and `manualEnvNote` carries the explanation.
+   */
+  command: string
+  /**
+   * Optional one-line note explaining the env source so the
+   * operator pasting the command knows whether they need to
+   * substitute anything. `undefined` for the canonical / prod
+   * default cases; populated for inferred-from-config and
+   * non-canonical cases.
+   */
+  manualEnvNote?: string
+}
+
+/**
+ * Build the paste-ready ntn-login recovery command for the current
+ * project + operator-env state. Three cases:
+ *
+ *   1. **Operator `NOTION_ENV` set** → use it verbatim. Explicit
+ *      shell choice always wins.
+ *   2. **`.lore.yaml`'s `auth.baseUrl` is canonical** → infer env
+ *      via `ntnEnvFromBaseUrl` and bake it into the command. The
+ *      `manualEnvNote` records the inference source so the operator
+ *      sees which signal Lore picked up.
+ *   3. **`auth.baseUrl` is non-canonical** (corporate proxy, etc.)
+ *      → emit `NOTION_ENV=<env>` literal placeholder and direct the
+ *      operator to pick the right env for their workspace.
+ *   4. **No signal** (no `NOTION_ENV`, no `auth.baseUrl`) → bare
+ *      `NOTION_KEYRING=0 ntn login`. ntn defaults to prod; that's
+ *      the right call when nothing in config or shell disagrees.
+ *
+ * The `NOTION_KEYRING=0` prefix is always emitted — without it the
+ * resulting token lands in the macOS keychain (ntn's default on
+ * darwin), which Lore can't read. Bare `ntn login` is the direct
+ * cause of the "I logged in, why doesn't Lore see my token?"
+ * footgun documented in the runbook.
+ */
+export function ntnLoginRecovery(
+  config: LoreConfig | undefined,
+  envSource: NodeJS.ProcessEnv = process.env,
+): NtnLoginRecovery {
+  const operatorEnv = envSource["NOTION_ENV"]
+  if (operatorEnv) {
+    return {
+      command: `NOTION_KEYRING=0 NOTION_ENV=${operatorEnv} ntn login`,
+    }
+  }
+  const baseUrl = config?.auth?.baseUrl
+  if (baseUrl) {
+    const inferred = ntnEnvFromBaseUrl(baseUrl)
+    if (inferred) {
+      return {
+        command: `NOTION_KEYRING=0 NOTION_ENV=${inferred} ntn login`,
+        manualEnvNote: `(${inferred} env inferred from .lore.yaml auth.baseUrl)`,
+      }
+    }
+    return {
+      command: "NOTION_KEYRING=0 NOTION_ENV=<env> ntn login",
+      manualEnvNote: `(.lore.yaml auth.baseUrl=${baseUrl} doesn't match a canonical ntn env — substitute <env> with the right selector for your workspace)`,
+    }
+  }
+  return { command: "NOTION_KEYRING=0 ntn login" }
+}
+
+/**
+ * Build a human-readable summary of the ntn environment selectors
+ * the operator currently has set in their shell. Returns `undefined`
+ * when no selectors are set (the implicit prod-default case — no
+ * line worth printing).
+ *
+ * The line shape is `<env or url> (<source-name>)` so an operator
+ * scanning prereqs output sees both the resolved value AND which
+ * env var carried it. Helps when an operator forgot they had
+ * `NOTION_BASE_URL` set in a stale shell rc.
+ */
+function describeNtnEnvSelectors(
+  envSource: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const env = envSource["NOTION_ENV"]
+  const baseUrl =
+    envSource["LORE_NOTION_BASE_URL"] ||
+    envSource["NOTION_BASE_URL"] ||
+    envSource["NOTION_API_BASE_URL"]
+  if (!env && !baseUrl) return undefined
+
+  const parts: string[] = []
+  if (env) parts.push(`NOTION_ENV=${env}`)
+  if (baseUrl) {
+    const sourceName = envSource["LORE_NOTION_BASE_URL"]
+      ? "LORE_NOTION_BASE_URL"
+      : envSource["NOTION_BASE_URL"]
+        ? "NOTION_BASE_URL"
+        : "NOTION_API_BASE_URL"
+    parts.push(`${sourceName}=${baseUrl}`)
+  }
+  return parts.join(", ")
+}
+
+/**
+ * Audit prerequisites for `lore install` and remediate when the
+ * operator opts in.
+ *
+ * Three probes:
+ *   1. **ntn installed**: probes via `isNtnInstalled` (memoized
+ *      `execFileSync ntn --version`). On miss, offers
+ *      `installNtn()` (curl-pipe-bash via the canonical
+ *      `NTN_INSTALL_COMMAND`); operator must confirm explicitly.
+ *   2. **ntn version**: non-blocking warning when
+ *      `checkNtnVersion()` returns `"too-old"`. Lore never
+ *      auto-upgrades — operators pin ntn versions for other tooling
+ *      and we don't override that.
+ *   3. **Auth source**: runs `resolveAuth(config, configRoot)` and
+ *      reports the resolved source. On no-source-resolved, offers
+ *      `runNtnLogin()` (which forces `NOTION_KEYRING=0` inside its
+ *      own spawn so `auth.json` lands in file mode); operator
+ *      confirms.
+ *
+ * Post-resolution preflight: when auth resolves AND `.lore.yaml`
+ * exists, runs `verifyVaultAccess` against the configured vault
+ * page. A `not-found` flips `ready` to false so the install action
+ * exits without writing MCP config — engineers running `lore
+ * install` and seeing a success message followed by a working
+ * assistant connection is the seamless-onboarding promise; a
+ * preflight failure that lands MCP config anyway breaks that
+ * promise. `unknown-error` (transient 5xx) is logged but lets the
+ * install proceed.
+ *
+ * `--yes` auto-confirms every prompt; non-TTY context with no
+ * `--yes` returns `ready: false` and prints non-interactive
+ * guidance.
+ *
+ * `runNtnLogin()` and `installNtn()` (in `src/auth/ntn.ts`) force
+ * `NOTION_KEYRING=0` inside their own spawn env, so the operator
+ * never has to set the env var themselves for the install path.
+ * Operators who later run `ntn login` directly (outside Lore)
+ * without the env var hit ntn's keychain default — the runbook
+ * (#05) documents this gotcha.
+ */
+export async function ensurePrerequisites(
+  context: InstallContext,
+  opts: EnsurePrerequisitesOptions = {},
+): Promise<{ ready: boolean }> {
   console.log("Checking prerequisites...")
 
-  const envToken = process.env["LORE_NOTION_TOKEN"]
-  if (envToken) {
-    console.log("  Auth: LORE_NOTION_TOKEN (environment variable)")
-  } else {
-    const creds = await loadCredentials()
-    if (creds?.access_token) {
-      console.log("  Auth: OAuth credentials")
+  // 1. ntn install state. Offer auto-install on miss. The local
+  // does not need to be reassigned post-install — the version check
+  // below calls `getNtnVersion` directly (which probes via the same
+  // memoized `execFileSync` and reflects the freshly installed
+  // binary after `installNtn` clears the cache on success).
+  const ntnInstalled = isNtnInstalled()
+  console.log(`  ntn installed:        ${ntnInstalled ? "✓" : "✗"}`)
+  if (!ntnInstalled) {
+    console.log("")
+    console.log("    ntn is required for Lore 0.10.x.")
+    console.log("    Lore can install it via the canonical command:")
+    console.log(`      ${NTN_INSTALL_COMMAND}`)
+    console.log("")
+    const ok = opts.yes ?? (await confirmPrompt("    Install ntn now? [Y/n] "))
+    if (!ok) {
+      console.log("    Skipping install. Re-run after installing ntn manually:")
+      console.log(`      ${NTN_INSTALL_COMMAND}`)
+      return { ready: false }
+    }
+    const installResult = await installNtn()
+    if (installResult.kind !== "success") {
+      console.error("    ntn install failed.")
+      console.error("    Check your network and shell, then re-run `lore install`.")
+      return { ready: false }
+    }
+    console.log("    ✓ ntn installed.")
+  }
+
+  // 2. Version check (non-blocking warning).
+  const versionStatus = checkNtnVersion()
+  const installedVersion = getNtnVersion()
+  if (versionStatus === "too-old") {
+    console.log(
+      `  ntn version:          ! ${installedVersion ?? "unknown"} (below tested minimum ${MIN_NTN_VERSION})`,
+    )
+    console.log("    Lore will proceed, but consider running `ntn update` if you")
+    console.log("    hit auth resolution issues.")
+  } else if (versionStatus === "ok") {
+    console.log(`  ntn version:          ✓ ${installedVersion ?? "unknown"}`)
+  }
+
+  // Surface ntn environment selectors so dev / staging operators see
+  // which env their install will resolve against. The MCP entry
+  // forwards these names (`RUNTIME_FORWARDED_KEYS`), and ntn's own
+  // `runNtnLogin` spawn inherits them via `process.env` spread —
+  // showing the resolved values up front prevents the "I thought I
+  // was logging into dev but the install captured prod" footgun.
+  const envSelectors = describeNtnEnvSelectors()
+  if (envSelectors) {
+    console.log(`  Notion environment:   ${envSelectors}`)
+  }
+
+  // 3. Auth resolution. Offer ntn login on no-source-resolved.
+  //
+  // The catch around `resolveAuth` is narrow on purpose: a malformed
+  // `.lore.yaml` is a different problem from "no auth token", and
+  // offering ntn login won't fix Zod validation errors. So
+  // `loadConfig` runs OUTSIDE the catch — its errors bubble up to
+  // the install action's outer catch, which renders them via
+  // `Install failed:`. Only `resolveAuth`'s no-token-resolved throw
+  // routes into the offer-login branch.
+  const found = await findConfigFile(context.projectDir)
+  let config: LoreConfig | undefined
+  if (found) {
+    config = await loadConfig(found.path)
+  }
+  let auth: ResolvedAuth | undefined
+  try {
+    auth = await resolveAuth(config, found?.root ?? context.configRoot)
+  } catch {
+    // Auth resolution failed — fall through to the offer-login branch.
+  }
+
+  if (auth) {
+    console.log(`  Auth source:          ✓ ${describeAuthSource(auth.source)}`)
+    if (
+      auth.source === "env-lore-notion-token" ||
+      auth.source === "config-auth-token"
+    ) {
+      // `lore auth --migrate` lands in #07. Until then, point operators
+      // at the manual ntn flow so the prompt names a working command.
+      console.log("                          (soft-deprecated; switch to ntn via `NOTION_KEYRING=0 ntn login`)")
+    }
+    return await preflightAndReport(auth, found, config)
+  }
+
+  // No auth resolved — derive the ntn-login env target before
+  // offering. Priority: operator's `NOTION_ENV` env var (if set in
+  // shell) wins; otherwise infer from `.lore.yaml`'s
+  // `auth.baseUrl`. A non-canonical `auth.baseUrl` (e.g., a corporate
+  // proxy) without an explicit `NOTION_ENV` means we can't safely
+  // pick an ntn env — refuse auto-login with a recovery message
+  // rather than mint a prod token for what's almost certainly NOT a
+  // prod project. Without this gate, `lore install -y` against a
+  // project whose `auth.baseUrl: https://api-dev.notion.com` would
+  // mint a prod token and fall into the generic vault-not-accessible
+  // path — exactly the dev-onboarding footgun an early review flagged.
+  const operatorEnv = process.env["NOTION_ENV"]
+  let resolvedNtnEnv: string | undefined
+  let resolvedNtnEnvSource: "operator-env" | "config-baseurl" | "default" = "default"
+  if (operatorEnv) {
+    resolvedNtnEnv = operatorEnv
+    resolvedNtnEnvSource = "operator-env"
+  } else if (config?.auth?.baseUrl) {
+    const inferred = ntnEnvFromBaseUrl(config.auth.baseUrl)
+    if (inferred) {
+      resolvedNtnEnv = inferred
+      resolvedNtnEnvSource = "config-baseurl"
     } else {
-      console.log("  Auth: not configured")
-      console.log("    Set LORE_NOTION_TOKEN or run 'lore auth --login'")
+      // Non-canonical baseUrl in config; can't infer env. Refuse to
+      // auto-login since "default = prod" is almost certainly wrong
+      // for a project whose config disagrees with prod.
+      console.log("  Auth source:          ✗ no token resolved")
+      console.error("")
+      console.error(`    .lore.yaml carries auth.baseUrl=${config.auth.baseUrl}, which doesn't`)
+      console.error("    match a known ntn environment. Lore can't safely pick a `NOTION_ENV`")
+      console.error("    target for `ntn login` from this — minting a prod token for a")
+      console.error("    non-prod project would land you on the generic vault-not-accessible")
+      console.error("    error after install.")
+      console.error("")
+      console.error("    Recovery: run `NOTION_ENV=<env> ntn login` directly with the right env")
+      console.error("    selector for your workspace, then re-run `lore install`.")
+      return { ready: false }
     }
   }
 
-  const configFound = await findConfigFile(projectDir)
-  if (configFound) {
-    console.log("  Vault: .lore.yaml found")
-  } else {
-    console.log("  Vault: .lore.yaml not found")
-    console.log("    Run 'lore init <page-id>' to create a vault")
+  console.log("  Auth source:          ✗ no token resolved")
+  console.log("")
+  if (resolvedNtnEnvSource === "config-baseurl") {
+    console.log(
+      `    .lore.yaml's auth.baseUrl maps to ntn env "${resolvedNtnEnv}" — Lore will`,
+    )
+    console.log(`    pass NOTION_ENV=${resolvedNtnEnv} to ntn login so the resulting token`)
+    console.log("    authorizes against the right Notion deployment.")
+    console.log("")
+  } else if (resolvedNtnEnvSource === "operator-env") {
+    console.log(
+      `    Using NOTION_ENV=${resolvedNtnEnv} from your shell — ntn login will mint a`,
+    )
+    console.log("    token for that environment.")
+    console.log("")
   }
+  console.log("    Lore needs a Notion bearer token. Lore can run `ntn login` for you")
+  console.log("    now (handles `NOTION_KEYRING=0` inside the spawn so the resulting")
+  console.log("    token lands in auth.json where Lore can read it).")
+  console.log("")
+  const promptLabel =
+    resolvedNtnEnv && resolvedNtnEnvSource !== "operator-env"
+      ? `    Run \`NOTION_ENV=${resolvedNtnEnv} ntn login\` now? [Y/n] `
+      : "    Run `ntn login` now? [Y/n] "
+  const okLogin = opts.yes ?? (await confirmPrompt(promptLabel))
+  if (!okLogin) {
+    // `lore auth --login` (issue #06) wraps this same flow with the
+    // version probe and post-login preflight; until it ships, point
+    // operators at the manual ntn invocation that already works. The
+    // `NOTION_KEYRING=0` prefix is required so the token lands in
+    // auth.json (file mode) instead of the macOS keychain.
+    const manualEnvPrefix = resolvedNtnEnv ? `NOTION_ENV=${resolvedNtnEnv} ` : ""
+    console.log(
+      `    Skipping. Run \`NOTION_KEYRING=0 ${manualEnvPrefix}ntn login\` directly when you're`,
+    )
+    console.log("    ready, then re-run `lore install`. The env var prefix is required so")
+    console.log("    the token lands in auth.json (where Lore reads from) instead of the")
+    console.log("    macOS keychain.")
+    return { ready: false }
+  }
+
+  const loginResult = await runNtnLogin(
+    resolvedNtnEnv ? { env: resolvedNtnEnv } : {},
+  )
+  if (loginResult.kind !== "success") {
+    console.error("    ntn login did not complete successfully.")
+    if (loginResult.kind === "exit-non-zero") {
+      console.error(`    ntn exited with code ${loginResult.code}`)
+    }
+    console.error("    Re-run `lore install` to retry.")
+    return { ready: false }
+  }
+  console.log("    ✓ ntn login completed.")
+  console.log("")
+
+  // Re-resolve after login. The config file location is unchanged
+  // (ntn login doesn't move `.lore.yaml`), so reuse the `config`
+  // and `found` values from the pre-login lookup. Same narrow-catch
+  // pattern as above — only `resolveAuth`'s no-token throw is
+  // swallowed so we can fall through to the "still failed after
+  // ntn login" diagnostic.
+  try {
+    auth = await resolveAuth(config, found?.root ?? context.configRoot)
+  } catch {
+    auth = undefined
+  }
+  if (auth) {
+    console.log(`  Auth source:          ✓ ${describeAuthSource(auth.source)}`)
+    return await preflightAndReport(auth, found, config)
+  }
+
+  console.error("    Auth resolution still failed after ntn login.")
+  // `lore auth --status` (issue #06) is the future diagnostic surface
+  // for the ntn-aware path; until it ships, the manual fallback is
+  // checking auth.json contents directly.
+  console.error("    Inspect `~/.config/notion/auth.json` to confirm a workspace token landed,")
+  console.error("    or re-run with `LORE_DEBUG=1` for verbose resolveAuth tracing.")
+  return { ready: false }
+}
+
+/**
+ * Run the post-resolution vault preflight (#03's `verifyVaultAccess`)
+ * and surface the result in install output. Gating policy is
+ * per-failure-mode:
+ *
+ * - `ok` → install proceeds; prints `Vault page: ✓ <title>`.
+ * - `not-found` → refuse to write MCP config. Most common cause:
+ *   operator authenticated against the wrong workspace, or the vault
+ *   page isn't shared with their identity.
+ * - `unauthorized` (401/403) → refuse to write MCP config. Token is
+ *   invalid/expired (401) or lacks permission for the page (403).
+ *   Recovery is re-auth, NOT a wait-and-retry — landing MCP config
+ *   here would put the operator one tool call away from a 401 they
+ *   can't easily diagnose.
+ * - `rate-limited` (429) → log a throttling warning and proceed.
+ *   Plausibly transient under sustained traffic; install-time
+ *   blocking would force the operator to retry the install instead
+ *   of letting the rate-limit window pass.
+ * - `unknown-error` (5xx, network) → log and proceed. Genuine
+ *   transients shouldn't block onboarding; the next `lore`
+ *   invocation will surface the issue clearly if it persists.
+ *
+ * Skips entirely when no `.lore.yaml` exists — auth resolved without
+ * a vault config is unusual but acceptable (e.g., post-`lore install`
+ * before `lore init`).
+ */
+async function preflightAndReport(
+  auth: ResolvedAuth,
+  found: { root: string; path: string } | null,
+  config: LoreConfig | undefined,
+): Promise<{ ready: boolean }> {
+  if (!found || !config) {
+    return { ready: true }
+  }
+
+  const { createClient } = await import("../../notion/client.js")
+  const { createLimitedClient } = await import("../../notion/rate-limit.js")
+  const client = createLimitedClient(createClient(auth.token, auth.baseUrl))
+  const result = await verifyVaultAccess(client, config.vault.pageId)
+
+  if (result.kind === "ok") {
+    console.log(`  Vault page:           ✓ ${result.pageTitle ?? config.vault.pageId}`)
+    return { ready: true }
+  }
+
+  if (result.kind === "not-found") {
+    // Recovery copy is env-aware: a project whose `.lore.yaml` says
+    // dev (or whose operator has `NOTION_ENV=dev` exported) gets a
+    // paste-ready `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`
+    // command. Bare `ntn login` would default to prod and write to
+    // the macOS keychain (which Lore can't read) — the exact
+    // misrecovery that produces "I logged in, why doesn't Lore see
+    // my token?" loops.
+    const recovery = ntnLoginRecovery(config)
+    console.error(`  Vault page:           ✗ not accessible (${config.vault.pageId})`)
+    console.error("")
+    console.error("    Most likely causes:")
+    console.error("      1. You authenticated against the wrong workspace during ntn login,")
+    console.error("         OR the auth.json on disk carries a token for the wrong env")
+    console.error("         (e.g., a prod token while this project's auth.baseUrl is dev).")
+    console.error("         Re-auth with the right env selector:")
+    console.error("")
+    console.error(`           ${recovery.command}`)
+    if (recovery.manualEnvNote) {
+      console.error(`           ${recovery.manualEnvNote}`)
+    }
+    console.error("")
+    console.error(`         then pick the workspace containing ${config.vault.pageId}.`)
+    console.error("      2. The vault page isn't shared with you (your Notion identity)")
+    console.error("         in this workspace. ntn-issued tokens inherit your personal")
+    console.error("         Notion permissions; if you can't open the page in Notion's UI,")
+    console.error("         the token can't read it either. Ask whoever owns the vault to")
+    console.error("         share it with you, or check that you're a member of the")
+    console.error("         workspace.")
+    console.error("")
+    console.error("    Refusing to write MCP config — fix vault access and re-run `lore install`.")
+    return { ready: false }
+  }
+
+  if (result.kind === "unauthorized") {
+    // Same env-aware recovery as `not-found`: 401/403 means the
+    // resolved token is wrong (invalid, expired, or for the wrong
+    // env). Bare `ntn login` would re-make the same mistake when
+    // the project is non-prod.
+    const recovery = ntnLoginRecovery(config)
+    console.error(`  Vault page:           ✗ unauthorized (${config.vault.pageId})`)
+    console.error("")
+    console.error("    The resolved token is invalid, expired, or for the wrong Notion")
+    console.error("    environment. Re-auth with the right env selector:")
+    console.error("")
+    console.error(`      ${recovery.command}`)
+    if (recovery.manualEnvNote) {
+      console.error(`      ${recovery.manualEnvNote}`)
+    }
+    console.error("")
+    console.error("    then re-run `lore install`.")
+    console.error("")
+    console.error("    Refusing to write MCP config — fix auth and re-run `lore install`.")
+    return { ready: false }
+  }
+
+  if (result.kind === "rate-limited") {
+    console.warn(`  Vault page:           ? rate-limited (${config.vault.pageId})`)
+    console.warn("    Notion's API throttled the preflight check. Lore will install")
+    console.warn("    anyway; if your first tool call also rate-limits, wait a minute")
+    console.warn("    and retry.")
+    return { ready: true }
+  }
+
+  // unknown-error: genuine 5xx / network blip. Warn but proceed.
+  console.warn(`  Vault page:           ? preflight returned an unexpected error (${config.vault.pageId})`)
+  console.warn("    Lore will install anyway; if the issue persists, re-run `lore install`")
+  console.warn("    or check Notion's status page.")
+  return { ready: true }
 }
 
 async function preflightCodexInstall(context: InstallContext): Promise<void> {
@@ -1201,6 +2100,7 @@ async function runClaudeInstall(
   const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
   const binAutosaveCommand = buildClaudeHookCommand("autosave", binShape)
   const binWakeupCommand = buildClaudeHookCommand("wakeup", binShape)
+  const configRoot = context.configRoot
 
   const hooks = (settings.hooks ?? {}) as Record<string, ClaudeHookEntry[]>
   const autosaveStatus = detectClaudeHook(
@@ -1237,8 +2137,12 @@ async function runClaudeInstall(
   const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const binMcpEntry = buildClaudeMcpEntry(binShape)
-  const legacyMcpEntry = buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const binMcpEntry = buildClaudeMcpEntry(binShape, configRoot)
+  const legacyMcpEntry = buildLegacyClaudeMcpEntry(
+    portableMcpJsPath,
+    portablePkgRoot,
+    configRoot,
+  )
   // Desired entry for the WRITE path (driven by --legacy-paths and
   // --yarn-pnp). Detection below recognizes the canonical-for-this-mode
   // bin-dispatch entry exactly: a PnP project with a bare bin entry on
@@ -1426,8 +2330,8 @@ async function runCodexInstall(
   const codexHooks = (codexHooksJson.hooks ?? {}) as Record<string, CodexHookEntry[]>
 
   const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
-  const binMcpSection = buildCodexMcpSection(binShape)
-  const legacyMcpSection = buildLegacyCodexMcpSection(context.mcpJsPath)
+  const binMcpSection = buildCodexMcpSection(binShape, context.configRoot)
+  const legacyMcpSection = buildLegacyCodexMcpSection(context.mcpJsPath, context.configRoot)
   const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
   const hooksFeatureValue = extractTomlKeyValue(codexConfig, "features", "codex_hooks")
@@ -1605,8 +2509,12 @@ export async function runCursorInstall(
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
   const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
-  const binMcpEntry = buildCursorMcpEntry(binShape)
-  const legacyMcpEntry = buildLegacyCursorMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const binMcpEntry = buildCursorMcpEntry(binShape, context.configRoot)
+  const legacyMcpEntry = buildLegacyCursorMcpEntry(
+    portableMcpJsPath,
+    portablePkgRoot,
+    context.configRoot,
+  )
   const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
@@ -1785,7 +2693,33 @@ export async function runInstall(
   console.log(`Project: ${context.projectDir}`)
   console.log()
 
-  await printPrerequisites(context.projectDir)
+  const prereqs = await ensurePrerequisites(context, { yes: opts.yes })
+  if (!prereqs.ready) {
+    process.exit(1)
+  }
+
+  // Detect legacy-forwarded env vars so the install summary can
+  // surface a deprecation reminder. Read here (not inside the
+  // runners) so the note prints once per install command, not once
+  // per host. Phrasing is command-agnostic until `lore auth --migrate`
+  // (issue #07) ships — naming a non-existent command would be a
+  // confidence-eroding way for new engineers to start.
+  const legacyForwarded = buildMcpEnv(context.configRoot).forwarded.filter(
+    (key): key is "LORE_NOTION_TOKEN" => key === "LORE_NOTION_TOKEN",
+  )
+  if (legacyForwarded.length > 0) {
+    console.log("")
+    console.log(
+      "  Note: LORE_NOTION_TOKEN is forwarded into the MCP entry. The legacy",
+    )
+    console.log(
+      "  env-var path still works in 0.10.x; switching to ntn-issued workspace",
+    )
+    console.log(
+      "  tokens (`NOTION_KEYRING=0 ntn login`, then unset LORE_NOTION_TOKEN) gets",
+    )
+    console.log("  you per-engineer rate limits and removes the shared 1Password coupling.")
+  }
   console.log()
 
   // Codex preflight is gating only when Codex is the sole target — failing
@@ -1896,22 +2830,24 @@ export function buildPrintConfigOutput(
   format: PrintConfigFormat,
   mcpJsPath: string,
   pkgRoot: string,
+  configRoot: string = process.cwd(),
   legacyPaths = false,
   binShape: BinDispatchShape = "bare",
+  envSource: NodeJS.ProcessEnv = process.env,
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const portablePkgRoot = toPortablePath(pkgRoot)
 
   if (format === "json") {
     const entry = legacyPaths
-      ? buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
-      : buildClaudeMcpEntry(binShape)
+      ? buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot, configRoot, envSource)
+      : buildClaudeMcpEntry(binShape, configRoot, envSource)
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
 
   const section = legacyPaths
-    ? buildLegacyCodexMcpSection(portableMcpJsPath)
-    : buildCodexMcpSection(binShape)
+    ? buildLegacyCodexMcpSection(portableMcpJsPath, configRoot, envSource)
+    : buildCodexMcpSection(binShape, configRoot, envSource)
   return section + "\n"
 }
 
@@ -1919,13 +2855,22 @@ export function buildPrintConfigOutput(
  * `--print-config` runtime path. Resolves `pkgRoot` and `mcpJsPath` via the
  * same helpers the install paths use, validates `dist/mcp.js` exists (the
  * printed `args[0]` would otherwise point at a non-existent file), and
- * writes the snippet to stdout. No filesystem writes — `--project` is
- * accepted upstream as a no-op and never reaches this function.
+ * writes the snippet to stdout. No filesystem writes — but `--project`
+ * (when present) resolves the configRoot embedded in the snippet's
+ * `LORE_CONFIG_ROOT` static so the printed entry points the spawned MCP
+ * server at the right `.lore.yaml`.
+ *
+ * On a legacy-forwarded source (operator has `LORE_NOTION_TOKEN` set),
+ * a one-line stderr note surfaces a deprecation reminder so the
+ * print-config path stays in lockstep with the file-write path's
+ * messaging. The phrasing is command-agnostic until
+ * `lore auth --migrate` (issue #07) ships.
  */
 async function runPrintConfig(
   format: PrintConfigFormat,
   legacyPaths: boolean,
   binShape: BinDispatchShape,
+  projectDir?: string,
 ): Promise<void> {
   const pkgRoot = resolvePkgRoot()
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
@@ -1936,9 +2881,23 @@ async function runPrintConfig(
     )
   }
 
+  const projectRoot = resolve(projectDir ?? process.cwd())
+  const found = await findConfigFile(projectRoot)
+  const configRoot = found?.root ?? projectRoot
+
   process.stdout.write(
-    buildPrintConfigOutput(format, mcpJsPath, pkgRoot, legacyPaths, binShape),
+    buildPrintConfigOutput(format, mcpJsPath, pkgRoot, configRoot, legacyPaths, binShape),
   )
+
+  // Mirror the file-write path's legacy-forwarded note so operators of
+  // unsupported hosts see the same migration recommendation.
+  const build = buildMcpEnv(configRoot)
+  if (build.forwarded.includes("LORE_NOTION_TOKEN")) {
+    process.stderr.write(
+      "Note: LORE_NOTION_TOKEN forwarded — soft-deprecated. Switch via " +
+        "`NOTION_KEYRING=0 ntn login`, then unset LORE_NOTION_TOKEN.\n",
+    )
+  }
 }
 
 export const installCommand = new Command("install")
@@ -1962,7 +2921,7 @@ export const installCommand = new Command("install")
   )
   .option(
     "--yarn-pnp",
-    "force the yarn-wrapped bin-dispatch shape ('yarn lore mcp', 'yarn lore hooks <event>'). Auto-detected from a .pnp.cjs marker; this flag pins it explicitly",
+    "force the yarn-wrapped bin-dispatch shape ('yarn run -T lore mcp', 'yarn run -T lore hooks <event>'). Auto-detected from a .pnp.cjs marker; this flag pins it explicitly",
   )
   .option(
     "--no-yarn-pnp",
@@ -2005,7 +2964,19 @@ export const installCommand = new Command("install")
           // resolved.
           const printBinShape: BinDispatchShape =
             opts.yarnPnp === true ? "yarn" : "bare"
-          await runPrintConfig(format, !!opts.legacyPaths, printBinShape)
+          // --project resolves the configRoot embedded in the
+          // printed snippet's LORE_CONFIG_ROOT so the MCP server
+          // spawned from a paste finds the right .lore.yaml. This
+          // is a behavior tweak from the prior "accepted but
+          // ignored" comment on --project: the file-write path was
+          // never meaningful, but the configRoot WAS — so honor it
+          // for that one purpose only.
+          await runPrintConfig(
+            format,
+            !!opts.legacyPaths,
+            printBinShape,
+            opts.project,
+          )
           return
         }
 

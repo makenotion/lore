@@ -26,11 +26,101 @@ const CREDENTIALS_DIR = join(homedir(), ".lore")
 const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json")
 
 /**
- * Resolve the Notion API base URL.
- * Set LORE_NOTION_BASE_URL to override (e.g., "https://api.dev.notion.com").
+ * Canonical Notion API base URLs per ntn environment selector. ntn's
+ * own `config.json` records env as `prod` / `dev` / `stg`, and these
+ * are the URLs ntn itself routes against. Mapping is shared between
+ * `resolveOperatorBaseUrl` (NOTION_ENV → URL) and ntn's own
+ * `resolveNtnBaseUrl` (config.json env → URL) so the two surfaces
+ * stay in lockstep — a future canonical-URL change lands in one
+ * place.
+ */
+const NTN_ENV_BASE_URLS: Record<string, string> = {
+  prod: "https://api.notion.so",
+  dev: "https://api-dev.notion.com",
+  stg: "https://api-stg.notion.com",
+}
+
+/**
+ * Map a `NOTION_ENV` selector to its canonical base URL. Returns
+ * `undefined` for unrecognized values (including empty string) so
+ * the caller can fall through to the next priority level. Exported
+ * for unit tests and for `auth/ntn.ts` to share the mapping table.
+ */
+export function ntnEnvBaseUrl(env: string | undefined): string | undefined {
+  if (!env) return undefined
+  return NTN_ENV_BASE_URLS[env]
+}
+
+/**
+ * Inverse of `ntnEnvBaseUrl` — map a canonical Notion API base URL
+ * back to its ntn env selector (`prod` / `dev` / `stg`). Returns
+ * `undefined` for unknown URLs (e.g., a corporate proxy or a
+ * future env Lore doesn't know about).
+ *
+ * Used by `lore install` to derive the ntn-login env target from
+ * `.lore.yaml`'s `auth.baseUrl` when the operator hasn't set
+ * `NOTION_ENV` in their shell — without this inference, an
+ * `lore install -y` against a dev project would mint a prod token
+ * (ntn's default) and the post-login preflight would fail with a
+ * confusing "vault not accessible" error.
+ */
+export function ntnEnvFromBaseUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  for (const [env, canonicalUrl] of Object.entries(NTN_ENV_BASE_URLS)) {
+    if (canonicalUrl === url) return env
+  }
+  return undefined
+}
+
+/**
+ * Resolve the Notion API base URL from the operator's environment.
+ *
+ * Priority order (highest first):
+ *   1. `LORE_NOTION_BASE_URL` — Lore-namespaced explicit override
+ *   2. `NOTION_BASE_URL` — ntn-native override; respected so a dev
+ *      operator who has the ntn-shaped env state in their shell
+ *      doesn't have to also export the Lore-namespaced alias
+ *   3. `NOTION_API_BASE_URL` — legacy ntn name; same posture
+ *   4. `NOTION_ENV` mapped via `ntnEnvBaseUrl` — covers operators
+ *      who set the env selector without an explicit URL var (the
+ *      ntn-native shorthand `NOTION_ENV=dev` should "just work" for
+ *      direct-token resolution paths, not just for ntn-auth-json
+ *      where ntn's own config.json carries the env).
+ *
+ * Returns `undefined` when no recognized signal is present so
+ * callers can apply their own fallback (`getBaseUrl` defaults to
+ * prod; `loadNtnToken` reads ntn's `config.json` for the env-derived
+ * default).
+ *
+ * Why so many fallbacks? `ntn login` writes auth.json based on
+ * `NOTION_ENV` at login time, so the env state IS encoded in
+ * `~/.config/notion/config.json` for the ntn-resolved path. But
+ * operators on the direct `NOTION_API_TOKEN` path bypass ntn
+ * entirely, and they frequently use the ntn-native names because
+ * that's what `ntn --help` documents — so any of the four signals
+ * has to land them on the right URL.
+ */
+export function resolveOperatorBaseUrl(
+  envSource: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return (
+    envSource["LORE_NOTION_BASE_URL"] ||
+    envSource["NOTION_BASE_URL"] ||
+    envSource["NOTION_API_BASE_URL"] ||
+    ntnEnvBaseUrl(envSource["NOTION_ENV"]) ||
+    undefined
+  )
+}
+
+/**
+ * Resolve the Notion API base URL with a prod default.
+ *
+ * Set `LORE_NOTION_BASE_URL`, `NOTION_BASE_URL`, or
+ * `NOTION_API_BASE_URL` to override (e.g.,
+ * `"https://api.dev.notion.com"`).
  */
 export function getBaseUrl(): string {
-  return process.env["LORE_NOTION_BASE_URL"] ?? "https://api.notion.so"
+  return resolveOperatorBaseUrl() ?? "https://api.notion.so"
 }
 
 export interface OAuthCredentials {
@@ -245,20 +335,36 @@ function openBrowser(url: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Outcome of a vault-access preflight. Three branches:
+ * Outcome of a vault-access preflight. One success shape and four
+ * failure shapes:
  *
  * - `ok` — the client successfully read the vault page.
- * - `not-found` — the page exists but the client cannot read it
- *   (most common case: operator authenticated against the wrong
+ * - `not-found` — the page does not exist for this token (most
+ *   common cause: operator authenticated against the wrong
  *   workspace, or their Notion identity hasn't been granted access
  *   to the team vault page).
- * - `unknown-error` — Notion returned something other than 404 (5xx,
- *   network error, etc.). Caller should retry or surface the raw
+ * - `unauthorized` — the token itself is invalid / expired (401),
+ *   or the token lacks permission for this resource (403). Distinct
+ *   from `not-found` because the recovery is "re-auth", not "fix
+ *   workspace / share permission."
+ * - `rate-limited` — the request was throttled (429). Likely
+ *   transient under sustained traffic but is auth-orthogonal so
+ *   callers can decide whether to gate or retry.
+ * - `unknown-error` — anything else (5xx, network error, etc.).
+ *   Genuine transient class — caller may retry or surface the raw
  *   error.
+ *
+ * The split exists because `lore install` (and other consumers)
+ * need to gate `ready` differently per failure mode: a 401/404
+ * means MCP config writes would land an immediately-broken
+ * install, while a 429/5xx is plausibly transient and shouldn't
+ * block onboarding.
  */
 export type VaultAccessResult =
   | { kind: "ok"; pageTitle: string | null }
   | { kind: "not-found"; pageId: string; message: string }
+  | { kind: "unauthorized"; pageId: string; error: unknown }
+  | { kind: "rate-limited"; pageId: string; error: unknown }
   | { kind: "unknown-error"; pageId: string; error: unknown }
 
 /**
@@ -309,6 +415,28 @@ export async function verifyVaultAccess(
           "Notion permissions; if you can't open the page in " +
           "Notion's UI, the token can't read it either.",
       }
+    }
+
+    // Unauthorized: 401 (token invalid/expired) and 403 (token
+    // valid but lacks permission for this resource). Both classify
+    // as auth failures distinct from "wrong workspace" — the
+    // recovery is re-auth, not vault-share-permission. The
+    // discrimination matters: install path treats this as
+    // ready=false, NOT a transient.
+    if (
+      status === 401 ||
+      status === 403 ||
+      code === "unauthorized" ||
+      code === "restricted_resource"
+    ) {
+      return { kind: "unauthorized", pageId: vaultPageId, error: err }
+    }
+
+    // Rate-limited: 429. Plausibly transient under sustained load,
+    // but the install path may want to surface a different message
+    // than a generic 5xx blip.
+    if (status === 429 || code === "rate_limited") {
+      return { kind: "rate-limited", pageId: vaultPageId, error: err }
     }
 
     return { kind: "unknown-error", pageId: vaultPageId, error: err }
