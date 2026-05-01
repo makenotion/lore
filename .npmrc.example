@@ -1,17 +1,30 @@
 # Copy to .npmrc (or merge into your existing .npmrc) when consuming
-# `@makenotion/lore` as a devDependency.
+# `@makenotion/lore` as a devDependency on npm or Yarn 1.
+# Yarn Berry / Yarn 4 consumers configure this in `.yarnrc.yml` instead
+# (see the "Using @makenotion/lore as a devDep" section in lore's
+# README).
 #
 # 1. Map the @makenotion scope to GitHub Packages so `npm install` /
 #    `yarn add -D @makenotion/lore` resolves there instead of the public
 #    npm registry.
 @makenotion:registry=https://npm.pkg.github.com
 
-# 2. Authenticate to GitHub Packages with a Personal Access Token (classic)
-#    or a fine-grained token that has at least `read:packages` scope. The
-#    package's visibility is INTERNAL inside the makenotion GitHub org —
-#    members can read it, no public access.
+# 2. Authenticate to GitHub Packages. The package's visibility is
+#    INTERNAL inside the makenotion GitHub org — members can read it,
+#    no public access.
 #
-#    Replace ${GITHUB_PACKAGES_TOKEN} with your token at runtime, OR set
-#    the env var in your shell so `npm` reads it without committing the
-#    secret. Do NOT commit a populated .npmrc.
+#    Easiest path (no PAT to manage):
+#
+#      gh auth refresh -h github.com -s read:packages
+#      export GITHUB_PACKAGES_TOKEN="$(gh auth token)"
+#
+#    Fallback path (Personal Access Token):
+#
+#      Create a Classic PAT with `read:packages` scope at
+#      https://github.com/settings/tokens/new, OR a fine-grained PAT
+#      scoped to Repository -> Packages: Read-only at
+#      https://github.com/settings/personal-access-tokens/new, then
+#      `export GITHUB_PACKAGES_TOKEN=<token>` in your shell rc.
+#
+#    Do NOT commit a populated .npmrc.
 //npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}

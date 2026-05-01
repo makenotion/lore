@@ -22,18 +22,56 @@ Internal repos can pin `@makenotion/lore` as a devDependency from
 GitHub Packages, then commit team-shared assistant config that works on
 every engineer's checkout without per-engineer absolute-path rewrites.
 
-1. **Configure your `.npmrc`.** Copy `.npmrc.example` from this repo and
-   point the `@makenotion` scope at GitHub Packages:
+#### Engineer setup (one-time, ~30 seconds)
 
+If you're already authed with the [`gh` CLI](https://cli.github.com/):
+
+```bash
+gh auth refresh -h github.com -s read:packages
+echo 'export GITHUB_PACKAGES_TOKEN="$(gh auth token)"' >> ~/.zshrc   # or ~/.bashrc
+source ~/.zshrc
+```
+
+That's it. `gh` already manages the token, you just expose it under the
+name `.yarnrc.yml` / `.npmrc` reads.
+
+<details>
+<summary>If you don't use the <code>gh</code> CLI (or your org disables OAuth tokens for packages)</summary>
+
+Create a Personal Access Token instead:
+
+1. Visit <https://github.com/settings/tokens/new> (Classic) or
+   <https://github.com/settings/personal-access-tokens/new>
+   (Fine-grained — preferred for least-privilege).
+2. Scope: **`read:packages`** (Classic) or **Repository → Packages:
+   Read-only** scoped to the package's source repo (Fine-grained).
+3. `export GITHUB_PACKAGES_TOKEN=<the-token>` in your shell rc.
+
+Both forms produce a token GitHub Packages accepts as a Bearer token.
+The PAT path is also what CI typically uses, via
+`secrets.GITHUB_TOKEN`.
+</details>
+
+#### Wiring the consumer repo (one-time, by whoever lands the migration)
+
+1. **Configure the registry mapping.** For Yarn 4 / Berry, add to
+   `.yarnrc.yml`:
+
+   ```yaml
+   npmScopes:
+     makenotion:
+       npmRegistryServer: "https://npm.pkg.github.com"
+       npmAuthToken: "${GITHUB_PACKAGES_TOKEN:-}"
    ```
-   @makenotion:registry=https://npm.pkg.github.com
-   //npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
-   ```
 
-   `GITHUB_PACKAGES_TOKEN` must have at least `read:packages` scope.
-   See `.npmrc.example` for details.
+   For npm / Yarn 1, copy `.npmrc.example` and adapt — see that file
+   for the details.
 
-2. **Add the devDep.** From the consumer repo:
+   The `${VAR:-}` default-value form is load-bearing: it lets unrelated
+   yarn invocations (`yarn lore mcp`, `yarn lint`, etc.) load the file
+   without a token. Only registry fetches need it.
+
+2. **Add the devDep.**
 
    ```bash
    yarn add -D @makenotion/lore        # or `npm install -D @makenotion/lore`
@@ -42,24 +80,31 @@ every engineer's checkout without per-engineer absolute-path rewrites.
 3. **Run `lore install` once locally.** From inside the consumer repo:
 
    ```bash
-   npx lore install
+   yarn lore install -y      # Yarn PnP consumers
+   npx lore install -y       # npm / Yarn 1 consumers
    ```
 
-   This writes the **bin-dispatch** config shape — `.mcp.json` with
-   `{ "command": "lore", "args": ["mcp"] }` and `.claude/settings.json`
-   hooks with `"command": "lore hooks <event>"`. The output contains no
-   absolute paths and no `${HOME}` placeholders, so the file is portable
-   across every engineer's machine. Host assistants resolve `lore`
-   through the consumer's `node_modules/.bin/lore` symlink.
+   This writes the **bin-dispatch** config shape:
+   - `.mcp.json` with `{ "command": "yarn", "args": ["lore", "mcp"] }`
+     for Yarn PnP, or `{ "command": "lore", "args": ["mcp"] }` for
+     npm / Yarn 1 (auto-detected via `.pnp.cjs`).
+   - `.claude/settings.json` hooks with `"command": "yarn lore hooks
+     <event>"` (PnP) or `"command": "lore hooks <event>"` (npm).
 
-4. **Commit the resulting diff.** The committed config now Just Works on
-   any teammate's fresh checkout: `yarn install` builds the bin symlink,
-   the host assistant resolves `lore` against it.
+   No absolute paths and no `${HOME}` placeholders — the file is
+   portable across every engineer's machine.
 
-   > **Don't have a global `lore` install on the same machine.** A global
-   > `npm install -g @makenotion/lore` would shadow the project-local
-   > devDep on PATH for shells that don't put `node_modules/.bin` ahead
-   > of global bins. Stick to one source of truth per machine.
+4. **Commit the resulting diff.** The committed config now Just Works
+   on any teammate's fresh checkout: `yarn install` resolves
+   `@makenotion/lore` from GitHub Packages (using each engineer's
+   `GITHUB_PACKAGES_TOKEN`), and the host assistant resolves `lore`
+   through Yarn's PnPAPI (or `node_modules/.bin/lore` for non-PnP
+   consumers).
+
+> **Don't have a global `lore` install on the same machine.** A global
+> `npm install -g @makenotion/lore` would shadow the project-local
+> devDep on PATH for shells that don't put `node_modules/.bin` ahead
+> of global bins. Stick to one source of truth per machine.
 
 #### Migrating from a `~/.lore` deployment
 
