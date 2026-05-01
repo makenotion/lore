@@ -225,7 +225,7 @@ async function main(): Promise<void> {
   const action = process.argv[2]
   switch (action) {
     case "autosave":
-      await autosave()
+      await runAutosave()
       break
     case "wakeup":
       await wakeup()
@@ -267,14 +267,26 @@ function isEntryPoint(): boolean {
 // Autosave — event router
 // ---------------------------------------------------------------------------
 
-async function autosave(): Promise<void> {
+/**
+ * Stop / autosave entry point. Two callers:
+ *   - Legacy `hooks/autosave.sh` shim: forwards stdin via
+ *     `LORE_AUTOSAVE_CONTENT` and invokes `node dist/hooks/helpers.js
+ *     autosave` (no `event` argument). The env var path stays for one
+ *     deprecation cycle.
+ *   - 0.11.0+ `lore hooks autosave`: reads stdin in the CLI subcommand
+ *     and passes it through `opts.event`. Skips the env var entirely.
+ *
+ * `opts.event` wins when both are set so a CLI caller can override a
+ * stale env var inherited from a parent process.
+ */
+export async function runAutosave(opts: { event?: string } = {}): Promise<void> {
   // Env var opt-out: LORE_AUTOSAVE=false disables for this session
   if (process.env["LORE_AUTOSAVE"] === "false") {
     process.stdout.write("{}\n")
     return
   }
 
-  const raw = process.env["LORE_AUTOSAVE_CONTENT"]
+  const raw = opts.event ?? process.env["LORE_AUTOSAVE_CONTENT"]
   if (!raw) {
     process.stderr.write("LORE_AUTOSAVE_CONTENT not set, skipping.\n")
     return
@@ -509,7 +521,7 @@ export function parseUserQueryFromEvent(raw: string | undefined): string | undef
   return trimmed
 }
 
-export async function wakeup(): Promise<void> {
+export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // Config opt-out: hooks.wakeUp: false suppresses context injection.
   // Check before service initialization so we avoid the Notion round-trip when disabled.
   const hookState = await loadHookState()
@@ -543,8 +555,12 @@ export async function wakeup(): Promise<void> {
   // seed a relevance search from the user's actual question instead of
   // dumping generic recents. Codex `SessionStart` and any other caller
   // that has no prompt yet leaves the env var unset; we fall through to
-  // the data-layer defaults.
-  const userQuery = parseUserQueryFromEvent(process.env["LORE_WAKEUP_EVENT"])
+  // the data-layer defaults. The 0.11.0 bin-dispatch caller (`lore hooks
+  // wakeup`) reads stdin itself and passes the payload via `opts.event`,
+  // skipping the env-var indirection.
+  const userQuery = parseUserQueryFromEvent(
+    opts.event ?? process.env["LORE_WAKEUP_EVENT"],
+  )
   const debug = process.env["LORE_DEBUG"] === "1"
   if (debug) {
     // Operator-facing log: report whether ranked output fired and which
