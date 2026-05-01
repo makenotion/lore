@@ -226,6 +226,45 @@ describe("install helpers", () => {
     expect(detectCodexHook(entries, "wakeup.sh", expected)).toBe("legacy-current")
   })
 
+  it("buildClaudeMcpEntry emits the yarn-wrapped shape under shape='yarn' (Yarn PnP consumers)", () => {
+    // 0.9.1 — Yarn Berry / Yarn 4 PnP consumers don't populate
+    // node_modules/.bin/lore, so `command: "lore"` would not resolve
+    // at host-launch time. The yarn-wrapped form delegates to Yarn's
+    // PnPAPI and works inside any PnP project.
+    expect(buildClaudeMcpEntry("yarn")).toEqual({
+      command: "yarn",
+      args: ["lore", "mcp"],
+      env: {
+        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
+        LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
+      },
+    })
+  })
+
+  it("buildClaudeHookCommand wraps with yarn under shape='yarn'", () => {
+    expect(buildClaudeHookCommand("autosave", "yarn")).toBe("yarn lore hooks autosave")
+    expect(buildClaudeHookCommand("wakeup", "yarn")).toBe("yarn lore hooks wakeup")
+  })
+
+  it("buildCodexHookCommand wraps with yarn under shape='yarn' (preserves env prefix)", () => {
+    // The LORE_AGENT_NAME=Codex prefix MUST stay intact so the
+    // detector and `stripShellEnvPrefix` continue to recognize the
+    // hook entry as Lore-owned across reinstalls.
+    expect(buildCodexHookCommand("wakeup", "yarn")).toBe(
+      "LORE_AGENT_NAME=Codex yarn lore hooks wakeup",
+    )
+    expect(buildCodexHookCommand("autosave", "yarn")).toBe(
+      "LORE_AGENT_NAME=Codex yarn lore hooks autosave",
+    )
+  })
+
+  it("buildCodexMcpSection emits the yarn-wrapped TOML shape under shape='yarn'", () => {
+    const section = buildCodexMcpSection("yarn")
+    expect(section).toContain('command = "yarn"')
+    expect(section).toContain('args = ["lore", "mcp"]')
+    expect(section).not.toContain('command = "lore"')
+  })
+
   it("buildClaudeMcpEntry emits portable bin-dispatch shape with no paths", () => {
     // 0.11.0 acceptance criterion: the default `.mcp.json` entry
     // contains no absolute paths and no `${HOME}` placeholders, so the
@@ -661,6 +700,7 @@ describe("runCursorInstall (integration)", () => {
       // happy-path semantics in the helpers under test.
       skipPrompts: true,
       legacyPaths: false,
+      yarnPnp: false,
       wakeUpConfig: null,
     }
   }
@@ -802,6 +842,7 @@ describe("runCursorInstall (integration)", () => {
     const ctx: InstallContext = {
       ...makeContext(projectDir, pkgRoot),
       legacyPaths: true,
+      yarnPnp: false,
     }
     await runCursorInstall(ctx, null, targetPath, false)
 
@@ -888,6 +929,7 @@ describe("ensureHookPrerequisites", () => {
       mcpJsPath: join(pkgRoot, "dist", "mcp.js"),
       skipPrompts: true,
       legacyPaths: true,
+      yarnPnp: false,
       wakeUpConfig: null,
     }
   }
@@ -942,6 +984,7 @@ describe("ensureHookPrerequisites", () => {
     const ctx: InstallContext = {
       ...makeLegacyContext(pkgRoot),
       legacyPaths: false,
+      yarnPnp: false,
     }
     await expect(ensureHookPrerequisites(ctx)).resolves.toBeUndefined()
   })
@@ -972,6 +1015,7 @@ describe("dispatchInstall (--client all orchestration)", () => {
       mcpJsPath: "/tmp/orchestration-fake-pkg/dist/mcp.js",
       skipPrompts: true,
       legacyPaths: false,
+      yarnPnp: false,
       wakeUpConfig: null,
     }
   }

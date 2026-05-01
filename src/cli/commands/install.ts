@@ -28,6 +28,26 @@ export type InstallClient = "claude" | "codex" | "cursor" | "all"
 export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
 
 /**
+ * The shape of the bin-dispatched command lore writes into committed
+ * config. Two valid shapes:
+ *
+ * - `bare` — `command: "lore"`, `args: ["mcp"]`. Resolves through the
+ *   consumer's `node_modules/.bin/lore` symlink that npm and Yarn 1
+ *   create. Default for non-Yarn-PnP consumers.
+ *
+ * - `yarn` — `command: "yarn"`, `args: ["lore", "mcp"]`. Resolves
+ *   through Yarn Berry / Yarn 4 PnP, which does NOT populate
+ *   `node_modules/.bin` and therefore cannot satisfy the bare shape
+ *   when a host launches `command: "lore"` directly. The `yarn`
+ *   wrapper loads `.pnp.cjs` and resolves the bin via PnPAPI.
+ *
+ * The legacy absolute-path shape (`node <pkgRoot>/dist/mcp.js`) is
+ * orthogonal — selected via `legacyPaths`, not via this enum — and
+ * remains unchanged through the deprecation window.
+ */
+export type BinDispatchShape = "bare" | "yarn"
+
+/**
  * Env variables the MCP server honors at runtime and that the installer
  * forwards into Claude and Codex project config. Emission is unconditional:
  * shared config must not depend on which developer ran `lore install` first.
@@ -36,6 +56,36 @@ const LORE_MCP_ENV_VARS = ["LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL"] as const
 
 function resolvePkgRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..")
+}
+
+/**
+ * Detect whether `projectDir` (or any ancestor up to `homedir()`) is a
+ * Yarn Berry / Yarn 4 PnP consumer. Yarn PnP installs do NOT populate
+ * `node_modules/.bin/lore`, so the bare bin-dispatch shape
+ * (`command: "lore"`) cannot resolve at host-launch time. Detection
+ * here drives the install runner to emit the yarn-wrapped shape
+ * (`command: "yarn", args: ["lore", "mcp"]`) instead.
+ *
+ * Marker file: `.pnp.cjs` (Yarn 4's PnP loader). `.pnp.loader.mjs` is
+ * an alternate spelling some configurations produce; we accept either.
+ *
+ * Walking up to home (not the filesystem root) avoids rare false
+ * positives from a system-level pnp file outside any user project.
+ * The walk is bounded — it stops the first time it sees a marker, hits
+ * `homedir()`, or runs out of parent directories.
+ */
+export async function detectYarnPnp(projectDir: string): Promise<boolean> {
+  let current = resolve(projectDir)
+  const stop = homedir()
+  while (true) {
+    for (const marker of [".pnp.cjs", ".pnp.loader.mjs"]) {
+      if (await fileExists(join(current, marker))) return true
+    }
+    if (current === stop) return false
+    const parent = dirname(current)
+    if (parent === current) return false
+    current = parent
+  }
 }
 
 function encodeProjectPath(absPath: string): string {
@@ -66,17 +116,26 @@ const LORE_MCP_ENV_PASSTHROUGH = (): Record<string, string> => {
 
 /**
  * Build the bin-dispatch `.mcp.json` entry for Lore. Emits
- * `{ command: "lore", args: ["mcp"], env: ... }` with the Notion env-var
- * passthrough block preserved so a developer who exports
- * `LORE_NOTION_TOKEN` in their shell still has the MCP server pick it
- * up at launch time.
+ * `{ command: "lore", args: ["mcp"], env: ... }` for `shape: "bare"`
+ * (default), or `{ command: "yarn", args: ["lore", "mcp"], env: ... }`
+ * for `shape: "yarn"` (Yarn Berry PnP consumers — see
+ * `BinDispatchShape`). The Notion env-var passthrough block is
+ * preserved either way.
  *
  * Hosts resolve `lore` through the consumer repo's
- * `node_modules/.bin/lore` symlink (yarn/npm-managed), so the written
- * config is portable across every engineer's checkout regardless of
- * the absolute path of the consumer repo on disk.
+ * `node_modules/.bin/lore` symlink in the bare shape, or through
+ * `yarn run lore` PnPAPI resolution in the yarn shape. Both produce
+ * committed config that is portable across every engineer's checkout
+ * regardless of the absolute path of the consumer repo on disk.
  */
-export function buildClaudeMcpEntry(): ClaudeMcpEntry {
+export function buildClaudeMcpEntry(shape: BinDispatchShape = "bare"): ClaudeMcpEntry {
+  if (shape === "yarn") {
+    return {
+      command: "yarn",
+      args: ["lore", "mcp"],
+      env: LORE_MCP_ENV_PASSTHROUGH(),
+    }
+  }
   return {
     command: "lore",
     args: ["mcp"],
@@ -115,7 +174,14 @@ export interface CursorMcpEntry {
   env: Record<string, string>
 }
 
-export function buildCursorMcpEntry(): CursorMcpEntry {
+export function buildCursorMcpEntry(shape: BinDispatchShape = "bare"): CursorMcpEntry {
+  if (shape === "yarn") {
+    return {
+      command: "yarn",
+      args: ["lore", "mcp"],
+      env: LORE_MCP_ENV_PASSTHROUGH(),
+    }
+  }
   return {
     command: "lore",
     args: ["mcp"],
@@ -173,14 +239,22 @@ function formatTomlArray(values: readonly string[]): string {
  * Build the bin-dispatch `[mcp_servers.lore]` block for
  * `.codex/config.toml`. Codex's MCP launcher resolves `command` against
  * the same PATH the legacy `bash -lc 'node ...'` wrapper relied on for
- * `node` resolution, so the bin-dispatch form
- * `command = "lore"` / `args = ["mcp"]` works the same way as long as
- * `lore` is on PATH. Under devDep consumption the consumer's
- * `node_modules/.bin/lore` is the resolution target — see the
- * `--legacy-paths` escape hatch in `runInstall` for `~/.lore`-deployed
- * operators.
+ * `node` resolution, so the bare form `command = "lore"` works as long
+ * as `lore` is on PATH (npm / Yarn 1 consumers via
+ * `node_modules/.bin/lore`). Yarn Berry PnP consumers don't populate
+ * `node_modules/.bin`, so they need `shape: "yarn"` which emits
+ * `command = "yarn"` / `args = ["lore", "mcp"]` and lets Yarn's
+ * PnPAPI resolve the bin.
  */
-export function buildCodexMcpSection(): string {
+export function buildCodexMcpSection(shape: BinDispatchShape = "bare"): string {
+  if (shape === "yarn") {
+    return [
+      "[mcp_servers.lore]",
+      'command = "yarn"',
+      'args = ["lore", "mcp"]',
+      `env_vars = ${formatTomlArray(LORE_MCP_ENV_VARS)}`,
+    ].join("\n")
+  }
   return [
     "[mcp_servers.lore]",
     'command = "lore"',
@@ -242,12 +316,19 @@ const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
  * fall back to `--legacy-paths` until Codex's hook runner exposes a
  * project-local PATH hook.
  */
-export function buildClaudeHookCommand(eventName: HookEventName): string {
-  return `lore hooks ${eventName}`
+export function buildClaudeHookCommand(
+  eventName: HookEventName,
+  shape: BinDispatchShape = "bare",
+): string {
+  return shape === "yarn" ? `yarn lore hooks ${eventName}` : `lore hooks ${eventName}`
 }
 
-export function buildCodexHookCommand(eventName: HookEventName): string {
-  return `${CODEX_AGENT_ENV_PREFIX}lore hooks ${eventName}`
+export function buildCodexHookCommand(
+  eventName: HookEventName,
+  shape: BinDispatchShape = "bare",
+): string {
+  const tail = shape === "yarn" ? `yarn lore hooks ${eventName}` : `lore hooks ${eventName}`
+  return `${CODEX_AGENT_ENV_PREFIX}${tail}`
 }
 
 export function buildLegacyCodexHookCommand(scriptPath: string): string {
@@ -507,7 +588,13 @@ function upsertClaudeHookCommand(
   newCommand: string,
   config: { matcher: string; timeout?: number; runOnce?: boolean },
 ): ClaudeHookEntry[] {
-  const binDispatchPattern = /^lore hooks (?:wakeup|autosave|session-end)$/
+  // Match BOTH bin-dispatch shapes — bare (`lore hooks <event>`) and
+  // yarn-wrapped (`yarn lore hooks <event>`) — so a Yarn-PnP-aware
+  // reinstall over a bare bin entry (or vice versa) doesn't leave
+  // both shapes in `Stop[]`. Same posture as the legacy `.sh` strip
+  // below.
+  const binDispatchPattern =
+    /^(?:yarn )?lore hooks (?:wakeup|autosave|session-end)$/
   const filtered = (existing ?? []).filter(
     (entry) =>
       !entry.hooks?.some((hook) => {
@@ -716,23 +803,27 @@ function mergeCodexHookEntries(
 }
 
 /**
- * Remove every Codex hook entry whose command is the bin-dispatch
- * shape `LORE_AGENT_NAME=Codex lore hooks <event>` for the given
- * event. The `lore install --legacy-paths` downgrade path needs this
- * so a prior bin-dispatch entry doesn't survive alongside the legacy
- * one we're about to write.
+ * Remove every Codex hook entry whose command is one of the
+ * bin-dispatch shapes (`LORE_AGENT_NAME=Codex lore hooks <event>` OR
+ * `LORE_AGENT_NAME=Codex yarn lore hooks <event>`) for the given
+ * event. The runner needs both stripped so flipping between any pair
+ * of shapes (legacy ↔ bare-bin ↔ yarn-bin) leaves only the single
+ * canonical entry behind.
  */
 function stripCodexBinDispatchHook(
   hooks: Record<string, CodexHookEntry[]>,
   eventName: HookEventName,
 ): Record<string, CodexHookEntry[]> {
-  const target = buildCodexHookCommand(eventName)
+  const targets = new Set([
+    buildCodexHookCommand(eventName, "bare"),
+    buildCodexHookCommand(eventName, "yarn"),
+  ])
   const next: Record<string, CodexHookEntry[]> = {}
   for (const [event, entries] of Object.entries(hooks)) {
     const filtered = entries.filter(
       (entry) =>
         !entry.hooks?.some(
-          (hook) => typeof hook.command === "string" && hook.command === target,
+          (hook) => typeof hook.command === "string" && targets.has(hook.command),
         ),
     )
     if (filtered.length > 0) next[event] = filtered
@@ -919,6 +1010,18 @@ export interface InstallContext {
    * standalone `dist/mcp.js` tsup entry.
    */
   legacyPaths: boolean
+  /**
+   * `--yarn-pnp` (auto-detected via `.pnp.cjs` marker). When `true`,
+   * the install path emits the yarn-wrapped bin-dispatch shape
+   * (`command: "yarn", args: ["lore", "mcp"]` and
+   * `yarn lore hooks <event>`) so the host assistant can invoke the
+   * lore bin through Yarn Berry / Yarn 4 PnP, which does NOT populate
+   * `node_modules/.bin/`. Ignored when `legacyPaths === true` (legacy
+   * shape predates the PnP question). Operators can force-disable via
+   * `--no-yarn-pnp` if their consumer fixes PnP bin resolution
+   * out-of-band.
+   */
+  yarnPnp: boolean
 }
 
 /**
@@ -952,12 +1055,28 @@ function wakeupStatusSuffix(wakeUpConfig: boolean | null): string {
 }
 
 async function prepareInstallContext(
-  opts: { yes?: boolean; project?: string; legacyPaths?: boolean },
+  opts: {
+    yes?: boolean
+    project?: string
+    legacyPaths?: boolean
+    yarnPnp?: boolean
+  },
 ): Promise<InstallContext> {
   const projectDir = resolve(opts.project ?? process.cwd())
   const pkgRoot = resolvePkgRoot()
   const skipPrompts = opts.yes || !process.stdin.isTTY
   const legacyPaths = !!opts.legacyPaths
+  // PnP auto-detection runs only on the bin-dispatch path. Under
+  // `--legacy-paths` the absolute-path shape doesn't depend on PATH
+  // resolution at all, so the question is moot. An explicit
+  // `opts.yarnPnp` override (true OR false) wins over auto-detection
+  // — set via `--yarn-pnp` / `--no-yarn-pnp` so an operator can pin
+  // either shape regardless of what the marker file says.
+  const yarnPnp = legacyPaths
+    ? false
+    : opts.yarnPnp !== undefined
+      ? opts.yarnPnp
+      : await detectYarnPnp(projectDir)
 
   const autosavePath = join(pkgRoot, "hooks", "autosave.sh")
   const wakeupPath = join(pkgRoot, "hooks", "wakeup.sh")
@@ -989,6 +1108,7 @@ async function prepareInstallContext(
     skipPrompts,
     wakeUpConfig,
     legacyPaths,
+    yarnPnp,
   }
 }
 
@@ -1073,12 +1193,14 @@ async function runClaudeInstall(
   const mcpJson = await readJsonSafe(mcpJsonPath)
 
   // Bin-dispatch is the canonical command shape for hooks. Detection
-  // recognizes both shapes so we can distinguish "stale" (truly drift)
-  // from "legacy-current" (legacy shape pointing at the right pkgRoot,
-  // upgrade candidate). The desired command for the WRITE path
-  // depends on `context.legacyPaths`.
-  const binAutosaveCommand = buildClaudeHookCommand("autosave")
-  const binWakeupCommand = buildClaudeHookCommand("wakeup")
+  // recognizes the legacy absolute-path shape and the bin-dispatch
+  // shape that matches `context.yarnPnp` so we can distinguish "stale"
+  // (truly drift) from "legacy-current" (legacy shape pointing at the
+  // right pkgRoot, upgrade candidate). The desired command for the
+  // WRITE path depends on `context.legacyPaths` and `context.yarnPnp`.
+  const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
+  const binAutosaveCommand = buildClaudeHookCommand("autosave", binShape)
+  const binWakeupCommand = buildClaudeHookCommand("wakeup", binShape)
 
   const hooks = (settings.hooks ?? {}) as Record<string, ClaudeHookEntry[]>
   const autosaveStatus = detectClaudeHook(
@@ -1115,13 +1237,13 @@ async function runClaudeInstall(
   const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const binMcpEntry = buildClaudeMcpEntry()
+  const binMcpEntry = buildClaudeMcpEntry(binShape)
   const legacyMcpEntry = buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
-  // Desired entry for the WRITE path (driven by --legacy-paths). Detection
-  // below recognizes both shapes regardless of `legacyPaths` so an
-  // operator on bin-dispatch who passes `--legacy-paths` correctly sees
-  // their bin-dispatch entry as `current` to be replaced — without
-  // detection covering both shapes the rewrite would silently no-op.
+  // Desired entry for the WRITE path (driven by --legacy-paths and
+  // --yarn-pnp). Detection below recognizes the canonical-for-this-mode
+  // bin-dispatch entry exactly: a PnP project with a bare bin entry on
+  // disk classifies as `stale` (write target shape mismatch) and gets
+  // rewritten to yarn-wrapped on reinstall. Same posture in reverse.
   const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
@@ -1303,13 +1425,14 @@ async function runCodexInstall(
   const codexHooksJson = await readJsonSafe(codexHooksPath)
   const codexHooks = (codexHooksJson.hooks ?? {}) as Record<string, CodexHookEntry[]>
 
-  const binMcpSection = buildCodexMcpSection()
+  const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
+  const binMcpSection = buildCodexMcpSection(binShape)
   const legacyMcpSection = buildLegacyCodexMcpSection(context.mcpJsPath)
   const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
   const hooksFeatureValue = extractTomlKeyValue(codexConfig, "features", "codex_hooks")
-  const binWakeupCommand = buildCodexHookCommand("wakeup")
-  const binAutosaveCommand = buildCodexHookCommand("autosave")
+  const binWakeupCommand = buildCodexHookCommand("wakeup", binShape)
+  const binAutosaveCommand = buildCodexHookCommand("autosave", binShape)
   const legacyWakeupCommand = buildLegacyCodexHookCommand(context.wakeupPath)
   const legacyAutosaveCommand = buildLegacyCodexHookCommand(context.autosavePath)
   const desiredWakeupCommand = context.legacyPaths ? legacyWakeupCommand : binWakeupCommand
@@ -1481,7 +1604,8 @@ export async function runCursorInstall(
 
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const binMcpEntry = buildCursorMcpEntry()
+  const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
+  const binMcpEntry = buildCursorMcpEntry(binShape)
   const legacyMcpEntry = buildLegacyCursorMcpEntry(portableMcpJsPath, portablePkgRoot)
   const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
@@ -1640,6 +1764,7 @@ export async function runInstall(
     project?: string
     cursorGlobal?: boolean
     legacyPaths?: boolean
+    yarnPnp?: boolean
   },
   runners: InstallRunners = defaultInstallRunners,
 ): Promise<void> {
@@ -1772,6 +1897,7 @@ export function buildPrintConfigOutput(
   mcpJsPath: string,
   pkgRoot: string,
   legacyPaths = false,
+  binShape: BinDispatchShape = "bare",
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const portablePkgRoot = toPortablePath(pkgRoot)
@@ -1779,13 +1905,13 @@ export function buildPrintConfigOutput(
   if (format === "json") {
     const entry = legacyPaths
       ? buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
-      : buildClaudeMcpEntry()
+      : buildClaudeMcpEntry(binShape)
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
 
   const section = legacyPaths
     ? buildLegacyCodexMcpSection(portableMcpJsPath)
-    : buildCodexMcpSection()
+    : buildCodexMcpSection(binShape)
   return section + "\n"
 }
 
@@ -1799,6 +1925,7 @@ export function buildPrintConfigOutput(
 async function runPrintConfig(
   format: PrintConfigFormat,
   legacyPaths: boolean,
+  binShape: BinDispatchShape,
 ): Promise<void> {
   const pkgRoot = resolvePkgRoot()
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
@@ -1809,7 +1936,9 @@ async function runPrintConfig(
     )
   }
 
-  process.stdout.write(buildPrintConfigOutput(format, mcpJsPath, pkgRoot, legacyPaths))
+  process.stdout.write(
+    buildPrintConfigOutput(format, mcpJsPath, pkgRoot, legacyPaths, binShape),
+  )
 }
 
 export const installCommand = new Command("install")
@@ -1831,6 +1960,14 @@ export const installCommand = new Command("install")
     "--legacy-paths",
     "emit the absolute-path 0.10.x config shape (node dist/mcp.js, hooks/*.sh) instead of the bin-dispatched 'lore mcp' / 'lore hooks <event>' default. Removal targeted for 0.12.0",
   )
+  .option(
+    "--yarn-pnp",
+    "force the yarn-wrapped bin-dispatch shape ('yarn lore mcp', 'yarn lore hooks <event>'). Auto-detected from a .pnp.cjs marker; this flag pins it explicitly",
+  )
+  .option(
+    "--no-yarn-pnp",
+    "force the bare bin-dispatch shape ('lore mcp', 'lore hooks <event>'), overriding .pnp.cjs auto-detection. Use when your PnP project shims node_modules/.bin out-of-band",
+  )
   .option("-y, --yes", "skip confirmation prompts")
   .action(
     async (opts: {
@@ -1840,6 +1977,7 @@ export const installCommand = new Command("install")
       yes?: boolean
       cursorGlobal?: boolean
       legacyPaths?: boolean
+      yarnPnp?: boolean
     }) => {
       try {
         if (opts.printConfig != null) {
@@ -1858,10 +1996,16 @@ export const installCommand = new Command("install")
           // when --print-config is set. The escape-hatch flag prints to stdout
           // regardless of which assistant the operator nominally targeted;
           // --project would have controlled the on-disk write directory but
-          // no file is written. --legacy-paths IS honored — it controls the
-          // shape of the printed snippet (bin-dispatch by default, legacy
-          // when set).
-          await runPrintConfig(format, !!opts.legacyPaths)
+          // no file is written. --legacy-paths and --yarn-pnp / --no-yarn-pnp
+          // ARE honored — they control the shape of the printed snippet so
+          // operators can copy-paste the right form for their consumer
+          // (bin-dispatch shape default; yarn-wrapped under --yarn-pnp; legacy
+          // absolute-path under --legacy-paths). Auto-detection from
+          // `.pnp.cjs` is skipped on this path because no project dir is
+          // resolved.
+          const printBinShape: BinDispatchShape =
+            opts.yarnPnp === true ? "yarn" : "bare"
+          await runPrintConfig(format, !!opts.legacyPaths, printBinShape)
           return
         }
 
@@ -1895,6 +2039,7 @@ export const installCommand = new Command("install")
           yes: opts.yes,
           cursorGlobal: opts.cursorGlobal,
           legacyPaths: opts.legacyPaths,
+          yarnPnp: opts.yarnPnp,
         })
       } catch (err) {
         console.error("Install failed:", err instanceof Error ? err.message : err)
