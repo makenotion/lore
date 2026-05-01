@@ -11,12 +11,76 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
-<!-- TODO(release): when cutting v0.6.0, append the release date to the
-heading below per Keep a Changelog v1.1.0 convention, e.g.
-`## [0.6.0] - 2026-04-27`. -->
+## [0.9.0] - 2026-05-01
+
+The 0.9.0 train ships four engram-borrow workstreams: lexical-conflict
+detection with agent-judged verdicts (Workstream A), topic-key upsert
+for evolving memories (Workstream B), background-autosave atomic-
+learning extraction (Workstream C), and broader multi-agent reach
+(Workstream D). Operating-contract documentation in `CLAUDE.md` is
+updated alongside the runtime changes (#04). The four version literals
+move atomically per the release-coordinator pattern (#13).
 
 ### Added
 
+#### Workstream A — Lexical-conflict detection with agent-judged verdicts
+
+- **Two new Memories columns: `Compared With` (single_property
+  self-relation) and `Compare Notes` (rich_text).** `Compared With`
+  symmetrically tracks every pair the agent has judged so the
+  candidate generator can skip already-resolved pairs without a
+  second round trip. `Compare Notes` records the verdict + reasoning
+  in NDJSON form for audit trails, chunked under Notion's per-block
+  rich-text cap. (Issue 0.9.0/02.)
+- **New `lore-memory action='compare'` verdict-recording dispatcher.**
+  Accepts six frozen verdicts — `conflicts_with`, `supersedes`,
+  `scoped`, `related`, `compatible`, `not_conflict` — over an unordered
+  memory pair. Asymmetric verdicts (`conflicts_with`, `supersedes`)
+  require an explicit `affectedMemoryId` to name the side that
+  loses confidence. Pair-scoped idempotency is enforced via a
+  `Compare Notes` membership check, not via global fact existence —
+  re-issuing the same verdict against the same pair short-circuits to
+  `alreadyJudged: true` with no writes. Actionable verdicts dispatch
+  through the existing `lore-correct` (`conflicts_with`) and
+  `lore-supersede` (`supersedes`) code paths so confidence-decrement
+  algebra and decision-status flips remain in one place. (Issue
+  0.9.0/05.)
+- **New `lore conflicts scan` CLI for on-demand candidate detection.**
+  Lexical-candidate generator surfaces memory pairs that share enough
+  signal to warrant comparison. Output includes a self-describing
+  `compareContract` JSON block naming the verdict vocabulary so an
+  agent receiving the candidates can pick a verdict without
+  out-of-band schema knowledge. (Issue 0.9.0/03 + 0.9.0/09.)
+
+#### Workstream B — Topic-key upsert for evolving memories
+
+- **Two new Memories columns: `Topic Key` (rich_text) and
+  `Revision Count` (number).** `Topic Key` is a stable kebab-case
+  identifier (`decision/jwt-auth-model`, `runbook/database-migration`)
+  that lets evolving memories upsert under one row. `Revision Count`
+  tracks how many times the upsert chain has appended. Both columns
+  ship in the fresh-vault config and the legacy two-arg overload so
+  drift detection on a vault upgraded from <0.9.0 surfaces them by
+  name. (Issue 0.9.0/01.)
+- **`lore-memory action='save'` upserts on `Topic Key` + project-set
+  equality.** A second save with the same key and identical project
+  relation set appends a `## Revision N (date)` block to the existing
+  page body and increments `Revision Count`, instead of creating a
+  fresh row. Structural invariants (kind, status, topic relation) are
+  validated BEFORE the body write — `kind` cannot change across
+  upsert calls; `status` and topic-relation are silently preserved.
+  Topic keys are rejected on `kind: 'note'` and `kind: 'task'`.
+  (Issue 0.9.0/06.)
+- **New `lore-memory action='suggest-topic-key'` heuristic helper.**
+  Returns a stable kebab-case key derived from the title's noun
+  phrase plus the kind family (`decision/`, `runbook/`, `incident/`,
+  `postmortem/`, `policy/`). Grounded in the actual `MemoryKind`
+  taxonomy — returns `null` for `note` and `task`. (Issue 0.9.0/07.)
+- **Revision-count rendering on `lore-query action='recall'` /
+  `'search'` and `lore-context action='wake-up'` listings.** A new
+  meta-line component below the synopsis shows `[topic-key, revN]`
+  when present. Renders independently of the 0.8.0/09 trust line so
+  the two annotations stay distinct. (Issue 0.9.0/10.)
 - **`lore-memory action='update'` accepts `topicKey` for re-keying.**
   An agent that picked the wrong topic key on first save can now
   switch to the canonical key without abandoning the row. The kebab-
@@ -68,6 +132,55 @@ heading below per Keep a Changelog v1.1.0 convention, e.g.
   catch path so its accurate "rekey persisted, audit missing"
   message isn't shadowed by `PartialUpdateError`'s "rekey did
   not happen" wording.
+
+- **Promotion-advisory footer on upsert responses.** When an upsert
+  pushes the row past a revision-count or body-length threshold, the
+  response appends an advisory line nudging the agent to consider
+  promoting the synthesis into a formal `lore-decide` (with
+  `supersedesIds` referencing the upserted memory). No
+  auto-promotion fires — the advisory is informational only and
+  emits exclusively on the upsert path, not on the create path or
+  the re-key path. (Issue 0.9.0/15.)
+
+#### Workstream C — Background-autosave learning extraction
+
+- **Stop-triggered background autosave extracts atomic learnings
+  alongside the session synopsis.** The detached `claude -p`
+  sub-agent prompt is extended to identify single-fact discoveries —
+  things that would help a future session — and save each as its
+  own memory. A per-spawn cap protects against runaway noise on
+  long sessions, and a kill switch (`LORE_DISABLE_LEARNING_EXTRACTION=1`
+  or `hooks.learningExtraction: false` in `.lore.yaml`) reverts the
+  autosave to its 0.8.x synopsis-only shape. No foreground convention
+  — extraction is deliberately invisible to the agent. (Issue
+  0.9.0/08.)
+
+#### Workstream D — Multi-agent reach
+
+- **`lore install --client cursor`** writes a Cursor-compatible MCP
+  config. The default lands at `<projectDir>/.cursor/mcp.json`
+  (project-scoped); `--cursor-global` opts into `~/.cursor/mcp.json`.
+  (Issue 0.9.0/11.)
+- **`lore install --print-config <json|toml>`** prints the config
+  payload to stdout instead of writing it to disk. Output is byte-
+  identical to what `--client claude` (json) and `--client codex`
+  (toml) would persist, so hosts not directly supported can copy-
+  paste the result into their own config files. (Issue 0.9.0/12.)
+
+#### Operating contract
+
+- **CLAUDE.md updated.** The conflict-verdict vocabulary, topic-key
+  guidance, and invisible learning-extraction posture are documented
+  alongside the runtime changes so agents reading project context
+  pick up the new surfaces without spelunking through PR history.
+  (Issue 0.9.0/04.)
+
+### Changed
+
+- **`.lore.yaml` config schema gains `hooks.learningExtraction`
+  (boolean, default `true`).** Surfaced as a commented-out default
+  in fresh `lore init` output and documented in `.lore.example.yaml`.
+  (Issue 0.9.0/08.)
 
 ### Fixed
 
@@ -132,6 +245,7 @@ heading below per Keep a Changelog v1.1.0 convention, e.g.
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/makenotion/lore/compare/v0.6.0...v0.9.0
 [0.6.0]: https://github.com/makenotion/lore/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/makenotion/lore/releases/tag/v0.5.1

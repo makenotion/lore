@@ -756,6 +756,82 @@ describe("migrateVaultSchema parallel retrieves", () => {
     expect(memoriesDiff!.missing).toContain("Compared With")
   })
 
+  it("surfaces all four 0.9.0 schema additions in one migrate pass against a 0.8.x snapshot", async () => {
+    // End-to-end coverage on top of the per-property pins above. Belt-
+    // and-suspenders against a merge train where one of #01 (Topic Key
+    // + Revision Count) or #02 (Compare Notes + Compared With) lands
+    // independently and the late-merger is rebased without picking up
+    // the other half of the schema delta. If `migrateVaultSchema`
+    // surfaces three of the four expected additions but misses the
+    // fourth, this test fails fast with the column-by-column assertion
+    // below — the per-property tests above each exercise their own
+    // fixture in isolation, so a regression where the four collide on
+    // ordering / iteration would slip past them but not past this one.
+    //
+    // Fixture is a 0.8.x-shaped Memories DS: every column documented
+    // through 0.8.0 is present, the four 0.9.0 columns are not. This
+    // matches what `dataSources.retrieve` returns on a vault that ran
+    // `lore migrate --build-confidence-scores` but has not yet seen
+    // 0.9.0.
+    const memoriesLive_0_8_x: Record<string, Record<string, unknown>> = {
+      // Pre-0.7.0
+      "Review By": { type: "date", date: {} },
+      "Decided At": { type: "date", date: {} },
+      // 0.7.0/01–04 (Synopsis); 0.7.0/07 (Done At)
+      Synopsis: { type: "rich_text", rich_text: {} },
+      "Done At": { type: "date", date: {} },
+      // 0.8.0/01 (Confidence Score); 0.8.0/02 (Last Referenced At)
+      "Confidence Score": { type: "number", number: { format: "number" } },
+      "Last Referenced At": { type: "date", date: {} },
+      // Self-relations from earlier rollouts; Compared With (0.9.0/02) absent
+      Supersedes: {
+        type: "relation",
+        relation: { single_property: {}, data_source_id: "m-ds" },
+      },
+      Affects: {
+        type: "relation",
+        relation: { single_property: {}, data_source_id: "m-ds" },
+      },
+    }
+    const stub = {
+      blocks: { children: { list: async () => ({ results: [] }) } },
+      databases: { retrieve: async () => ({}) },
+      dataSources: {
+        retrieve: async (args: { data_source_id: string }) => {
+          if (args.data_source_id === "m-ds") {
+            return { properties: memoriesLive_0_8_x }
+          }
+          return { properties: {} }
+        },
+        update: async () => ({}),
+      },
+    } as unknown as Client
+
+    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: true }), {
+      dryRun: true,
+    })
+    const memoriesDiff = diffs.find((d) => d.database === "memories")
+    expect(memoriesDiff).toBeDefined()
+
+    // All four 0.9.0 schema additions must surface in the same pass.
+    // Three scalar columns from #01 (`Topic Key`, `Revision Count`) and
+    // #02 (`Compare Notes`), one self-relation from #02 (`Compared With`).
+    expect(memoriesDiff!.missing).toContain("Topic Key")
+    expect(memoriesDiff!.missing).toContain("Revision Count")
+    expect(memoriesDiff!.missing).toContain("Compare Notes")
+    expect(memoriesDiff!.missing).toContain("Compared With")
+
+    // Sanity-pin: the 0.8.x columns we put in the fixture do NOT show up
+    // as missing — drift is additions-only and the four 0.9.0 columns
+    // are the only delta a 0.8.x → 0.9.0 migrate must apply to Memories.
+    expect(memoriesDiff!.missing).not.toContain("Confidence Score")
+    expect(memoriesDiff!.missing).not.toContain("Last Referenced At")
+    expect(memoriesDiff!.missing).not.toContain("Synopsis")
+    expect(memoriesDiff!.missing).not.toContain("Done At")
+    expect(memoriesDiff!.missing).not.toContain("Supersedes")
+    expect(memoriesDiff!.missing).not.toContain("Affects")
+  })
+
   it("preserves per-database error attribution on update failure", async () => {
     // Force every DB to surface a missing-property diff so Phase B issues an
     // update for each one. The `memories` update rejects — the thrown error
