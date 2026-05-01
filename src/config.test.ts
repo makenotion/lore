@@ -396,11 +396,10 @@ describe("resolveAuth", () => {
       source: "env-lore-notion-token",
     })
     expect(stderrText()).toContain("LORE_NOTION_TOKEN is soft-deprecated")
-    // Recommended migration command is the working manual flow
-    // (`NOTION_KEYRING=0 ntn login`); `lore auth --migrate` is mentioned
-    // as the future Phase 2 wrapper but operators in the 0.10.0 ship
-    // window need a command that exists today.
-    expect(stderrText()).toContain("NOTION_KEYRING=0 ntn login")
+    // Recommended migration command is `lore auth --migrate` (the
+    // canonical Phase-2 wrapper for env-source migration); the
+    // unset-and-rerun path is the manual fallback inside the same line.
+    expect(stderrText()).toContain("lore auth --migrate")
     expect(stderrText()).toContain("LORE_SUPPRESS_DEPRECATIONS=1")
   })
 
@@ -420,13 +419,13 @@ describe("resolveAuth", () => {
     })
     expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
     // Pin the branch-specific recommendation so a copy-paste swap of
-    // the env-vs-config message bodies is caught. Both branches
-    // recommend `NOTION_KEYRING=0 ntn login` (working) but the config
-    // branch additionally tells the operator to remove the auth.token
-    // field, while the env branch tells them to unset
-    // LORE_NOTION_TOKEN.
-    expect(stderrText()).toContain("remove auth.token")
-    expect(stderrText()).not.toContain("unset LORE_NOTION_TOKEN")
+    // the env-vs-config message bodies is caught. The config branch
+    // recommends `lore auth --login` (re-auth via ntn) plus a
+    // remove-auth.token instruction; the env branch recommends
+    // `lore auth --migrate` instead.
+    expect(stderrText()).toContain("lore auth --login")
+    expect(stderrText()).toContain("remove the auth.token field")
+    expect(stderrText()).not.toContain("lore auth --migrate")
   })
 
   it("priority: NOTION_API_TOKEN wins over ntn + LORE_NOTION_TOKEN + auth.token", async () => {
@@ -577,21 +576,25 @@ describe("resolveAuth", () => {
     setupNtnConfigHome() // ntn absent
     setupHookStateDir()
 
-    // Throw message points operators at commands that ACTUALLY work in
-    // the 0.10.0 ship window: `NOTION_KEYRING=0 ntn login` (recommended)
-    // and `NOTION_API_TOKEN` (alternative). The Phase-2-future
-    // `lore auth --login` wrapper is mentioned as a forward reference,
-    // not as the primary recommendation — because that command still
-    // routes through the parked-epic OAuth flow that doesn't issue
-    // ntn-readable tokens until #06 lands.
+    // Now that issue 0.10.0/06 has shipped `lore auth --login`, the
+    // throw message recommends the canonical wrapper as the primary
+    // path and `NOTION_API_TOKEN` as the alternative. The thrown
+    // message is forwarded to the operator by `lore auth --status` /
+    // `--login` / `--whoami`; it must NOT contain stale
+    // "Phase 2 will ship" copy that would contradict the wrapper
+    // those very commands provide.
     await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
       /No Notion auth configured/,
     )
     await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
-      /NOTION_KEYRING=0 ntn login/,
+      /lore auth --login/,
     )
     await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
       /NOTION_API_TOKEN/,
+    )
+    // The stale "Phase 2 will ship" copy must be gone.
+    await expect(resolveAuth(undefined, SCRATCH)).rejects.not.toThrow(
+      /once Phase 2/,
     )
   })
 
@@ -627,6 +630,20 @@ describe("resolveAuth", () => {
     )
     await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
       /Available: ws-1/,
+    )
+    // Recovery recommendation MUST point at `lore auth --login` (the
+    // canonical wrapper that forces NOTION_KEYRING=0). Bare
+    // `ntn login` on macOS defaults to keychain mode and writes
+    // nothing to auth.json, so a recovery hint that recommended it
+    // would loop the operator back into this same selector miss on
+    // the next run. Round-4 review blocker; pin against revert.
+    await expect(resolveAuth(undefined, SCRATCH)).rejects.toThrow(
+      /lore auth --login/,
+    )
+    // The bare-ntn-login wording must NOT appear standalone (the
+    // recommendation can't substitute it for the wrapper).
+    await expect(resolveAuth(undefined, SCRATCH)).rejects.not.toThrow(
+      /Run `ntn login` against/,
     )
   })
 

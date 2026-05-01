@@ -84,14 +84,15 @@ export async function loadNtnToken(
         result.reason === "malformed"
           ? "is malformed; ignoring"
           : "has unexpected shape (expected an object)"
-      // Recovery copy points at the manual `NOTION_KEYRING=0 ntn login`
-      // because that's the working command in the 0.10.0 ship window —
-      // Phase 2's `lore auth --login` wrapper (#06) will swap in once
-      // Phase 2 lands.
+      // Recovery copy points at `lore auth --login`, the canonical
+      // Phase-2 wrapper that auto-installs ntn (if missing), forces
+      // `NOTION_KEYRING=0` inside the spawn, and runs the post-login
+      // vault preflight. Operators who'd rather drive ntn directly
+      // can still run `NOTION_KEYRING=0 ntn login` manually.
       process.stderr.write(
         `[lore] auth.json at ${result.path} ${reason}. ` +
-          `Run \`NOTION_KEYRING=0 ntn login\` to refresh ` +
-          `(or \`lore auth --login\` once Phase 2 ships).\n`
+          `Run \`lore auth --login\` to refresh ` +
+          `(or \`NOTION_KEYRING=0 ntn login\` to drive ntn directly).\n`
       )
     }
     return null
@@ -117,8 +118,11 @@ export async function loadNtnToken(
             `workspace(s), but the requested workspaceId ` +
             `(${input.workspaceId}) is not among them. ` +
             `Available: ${workspaceEntries.map(([ws]) => ws).join(", ")}.\n` +
-            `[lore] Run \`ntn login\` against the right workspace, or ` +
-            `update auth.workspaceId in .lore.yaml.\n`
+            `[lore] Run \`lore auth --login\` against the right workspace, ` +
+            `or update auth.workspaceId in .lore.yaml. (\`lore auth --login\` ` +
+            `forces NOTION_KEYRING=0 inside the spawn so the resulting ` +
+            `token lands in auth.json where Lore can read it; bare ` +
+            `\`ntn login\` on macOS defaults to keychain mode.)\n`
         )
       }
       return null

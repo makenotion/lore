@@ -133,29 +133,35 @@ describe("loadNtnToken", () => {
     expect(await loadNtnToken({ workspaceId: "ws-missing" })).toBeNull()
     expect(stderrText()).toContain("not among them")
     expect(stderrText()).toContain("ws-1")
+    // Recovery hint points at `lore auth --login` (the canonical
+    // wrapper that forces NOTION_KEYRING=0); bare `ntn login` on
+    // macOS defaults to keychain mode and would loop the operator
+    // back into this same miss. Round-4 review blocker.
+    expect(stderrText()).toContain("lore auth --login")
+    expect(stderrText()).not.toMatch(/Run `ntn login` against/)
   })
 
   it("returns null gracefully when auth.json is malformed JSON", async () => {
     setupNtnConfigHome("not-json")
     expect(await loadNtnToken()).toBeNull()
     expect(stderrText()).toContain("malformed")
-    // Recovery copy points at the manual command first (it works in
-    // 0.10.0); `lore auth --login` is mentioned as the future Phase 2
-    // wrapper but appears AFTER the working command so an operator
-    // hitting this in the 0.10.0 ship window doesn't get bounced at a
-    // not-yet-rewritten command.
+    // Recovery copy now leads with `lore auth --login` (the canonical
+    // Phase-2 wrapper) and offers `NOTION_KEYRING=0 ntn login` as the
+    // manual fallback inside parens. Operators see the supported path
+    // first; the manual ntn invocation is the escape hatch.
+    expect(stderrText()).toContain("lore auth --login")
     expect(stderrText()).toContain("NOTION_KEYRING=0 ntn login")
-    const manualIdx = stderrText().indexOf("NOTION_KEYRING=0 ntn login")
     const wrapperIdx = stderrText().indexOf("lore auth --login")
-    expect(manualIdx).toBeGreaterThan(-1)
-    expect(manualIdx).toBeLessThan(wrapperIdx)
+    const manualIdx = stderrText().indexOf("NOTION_KEYRING=0 ntn login")
+    expect(wrapperIdx).toBeGreaterThan(-1)
+    expect(wrapperIdx).toBeLessThan(manualIdx)
   })
 
   it("returns null with unexpected-shape hint when auth.json is JSON null", async () => {
     setupNtnConfigHome("null")
     expect(await loadNtnToken()).toBeNull()
     expect(stderrText()).toContain("unexpected shape")
-    expect(stderrText()).toContain("NOTION_KEYRING=0 ntn login")
+    expect(stderrText()).toContain("lore auth --login")
   })
 
   it("returns null with unexpected-shape hint when auth.json is a JSON array", async () => {

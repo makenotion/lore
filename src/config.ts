@@ -313,12 +313,16 @@ export async function resolveAuth(
   // requested selector wasn't found, recommend logging in against the
   // right workspace. Otherwise drop the hint.
   const ntnHint = await buildNtnAmbiguityHint(ntnModule, ntnSelector)
+  // The thrown message is forwarded to the operator by `lore auth
+  // --status` / `--login` / `--whoami`; it must not contain stale
+  // "Phase 2 will ship" copy now that `lore auth --login` is the
+  // canonical wrapper. The ntn ambiguity hint is the actionable
+  // piece — keep it; otherwise point at the wrapper.
   throw new Error(
     "No Notion auth configured.\n" +
       (ntnHint ? ntnHint + "\n" : "") +
-      "Recommended: run `NOTION_KEYRING=0 ntn login` to issue a workspace token.\n" +
-      "Alternative: set NOTION_API_TOKEN with a Notion integration token.\n" +
-      "Note: `lore auth --login` will be the canonical wrapper once Phase 2 (#06) ships.",
+      "Recommended: run `lore auth --login` to authenticate via ntn.\n" +
+      "Alternative: set NOTION_API_TOKEN with a Notion integration token.",
   )
 }
 
@@ -346,11 +350,18 @@ async function buildNtnAmbiguityHint(
   const workspaces = await ntnModule.listNtnWorkspaces()
   if (workspaces.length === 0) return undefined
   if (selector && !workspaces.includes(selector)) {
+    // Recovery recommends `lore auth --login` (the canonical wrapper
+    // that forces NOTION_KEYRING=0 inside the spawn) NOT bare
+    // `ntn login` — on macOS bare `ntn login` defaults to keychain
+    // mode and writes nothing to auth.json, which leaves Lore
+    // unable to read the new token and re-fires this same hint on
+    // the next call.
     return (
       `ntn auth.json carries ${workspaces.length} workspace(s) but ` +
       `the requested workspaceId (${selector}) is not among them. ` +
-      `Available: ${workspaces.join(", ")}. Run \`ntn login\` against ` +
-      `the right workspace, or update auth.workspaceId in .lore.yaml.`
+      `Available: ${workspaces.join(", ")}. Run ` +
+      `\`lore auth --login\` against the right workspace, or update ` +
+      `auth.workspaceId in .lore.yaml.`
     )
   }
   if (!selector && workspaces.length > 1) {
@@ -409,19 +420,20 @@ async function emitDeprecationWarningOnce(
   }
 
   // The recommended commands are split by source so an operator
-  // upgrading from a pre-0.10.0 install gets a working migration path
-  // even before Phase 2 ships (`lore auth --migrate` will be the
-  // canonical wrapper from #07 onward; for now the manual ntn-login
-  // flow is the working command).
+  // hitting either legacy path sees the right migration target.
+  // `lore auth --login` is the canonical wrapper for re-authing
+  // through ntn; `lore auth --migrate` (Phase 2 issue 0.10.0/07)
+  // walks operators with `LORE_NOTION_TOKEN` set through the same
+  // flow with the legacy unset step layered on top — recommend it
+  // by name on the env path even when #07 hasn't merged yet, so
+  // the warning stays consistent across PR-merge order.
   const message =
     source === "env-lore-notion-token"
       ? "[lore] LORE_NOTION_TOKEN is soft-deprecated in 0.10.0.\n" +
-        "[lore] Migrate: run `NOTION_KEYRING=0 ntn login`, then unset LORE_NOTION_TOKEN.\n" +
-        "[lore] Phase 2 (#07) will replace the manual flow with `lore auth --migrate`.\n" +
+        "[lore] Migrate: run `lore auth --migrate` (or unset LORE_NOTION_TOKEN and run `lore auth --login`).\n" +
         "[lore] Set LORE_SUPPRESS_DEPRECATIONS=1 to silence this warning."
       : "[lore] auth.token in .lore.yaml is soft-deprecated in 0.10.0.\n" +
-        "[lore] Migrate: remove auth.token, run `NOTION_KEYRING=0 ntn login`.\n" +
-        "[lore] Phase 2 (#06) will replace the manual flow with `lore auth --login`.\n" +
+        "[lore] Migrate: run `lore auth --login` to re-auth via ntn, then remove the auth.token field.\n" +
         "[lore] Set LORE_SUPPRESS_DEPRECATIONS=1 to silence this warning."
 
   process.stderr.write(message + "\n")

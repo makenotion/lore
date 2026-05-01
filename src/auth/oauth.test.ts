@@ -131,7 +131,7 @@ describe("verifyVaultAccess", () => {
     expect(result.kind).toBe("unauthorized")
     if (result.kind === "unauthorized") {
       expect(result.pageId).toBe("page-id")
-      expect(result.error).toBe(authError)
+      expect(result.message).toContain("Notion rejected the bearer token")
     }
   })
 
@@ -202,24 +202,112 @@ describe("verifyVaultAccess", () => {
   it("does not retry on transient errors — surfaces immediately so the SDK's own retry layer owns that policy", async () => {
     // This pins the contract that *the helper itself* issues exactly
     // one `pages.retrieve` regardless of error class. It is NOT a test
-    // of the SDK's retry behavior — by the time a 429 reaches the
+    // of the SDK's retry behavior — by the time a 5xx reaches the
     // helper's catch block, the Notion SDK has already exhausted its
-    // own `Retry-After`-driven retry budget. The 429 is the cleanest
-    // proxy for "transient error that bubbled out of the SDK"; the
-    // assertion (calls === 1) would hold equally for a 500, a network
-    // disconnect, or any other thrown shape. A second retry layer
+    // own `Retry-After`-driven retry budget. A second retry layer
     // here would double the wall-clock cost of a genuine outage and
     // complicate the no-retry contract documented in the issue's
     // "Risk / notes."
     let calls = 0
     const client = mockClient(() => {
       calls++
-      throw Object.assign(new Error("rate limited"), { status: 429 })
+      throw Object.assign(new Error("internal server error"), { status: 500 })
     })
 
     await verifyVaultAccess(client, "page-id")
 
     expect(calls).toBe(1)
+  })
+
+  it("returns { kind: 'unauthorized' } on 401 — token rejected", async () => {
+    // 401 with `code: 'unauthorized'` is the SDK's signal that the
+    // bearer token is invalid / expired / revoked. Distinct from
+    // `not-found` because the remediation differs: re-auth, not
+    // re-share. Distinct from `unknown-error` because the cause is
+    // diagnosed (not-transient).
+    const apiError = Object.assign(new Error("unauthorized"), {
+      status: 401,
+      code: "unauthorized",
+    })
+    const client = mockClient(() => {
+      throw apiError
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("unauthorized")
+    if (result.kind === "unauthorized") {
+      expect(result.pageId).toBe("page-id")
+      expect(result.message).toMatch(/lore auth --login/)
+      expect(result.message).toMatch(/invalid|expired|revoked/i)
+    }
+  })
+
+  it("returns { kind: 'unauthorized' } on 403 (`restricted_resource`)", async () => {
+    // 403 maps to the same caller-action: re-auth via the wrapper.
+    // ntn-issued tokens inherit the engineer's identity, so re-auth
+    // picks up any access-policy update they need.
+    const apiError = Object.assign(new Error("restricted resource"), {
+      status: 403,
+      code: "restricted_resource",
+    })
+    const client = mockClient(() => {
+      throw apiError
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("unauthorized")
+  })
+
+  it("returns { kind: 'unauthorized' } on a code-only `unauthorized` (no numeric status)", async () => {
+    // Same belt-and-suspenders shape as the not-found code-only test
+    // — pin both check arms so a future SDK revision that drops
+    // `status` doesn't silently demote 401 to `unknown-error`.
+    const codeOnly = Object.assign(new Error("unauthorized"), {
+      code: "unauthorized",
+    })
+    const client = mockClient(() => {
+      throw codeOnly
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("unauthorized")
+  })
+
+  it("returns { kind: 'rate-limited' } on 429 — wait/retry, not investigate", async () => {
+    const apiError = Object.assign(new Error("rate limited"), {
+      status: 429,
+      code: "rate_limited",
+    })
+    const client = mockClient(() => {
+      throw apiError
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("rate-limited")
+    if (result.kind === "rate-limited") {
+      expect(result.pageId).toBe("page-id")
+      expect(result.message).toMatch(/throttled|wait/i)
+      // Specifically NOT a re-auth recommendation — that would
+      // mislead operators away from the wait/retry remediation.
+      expect(result.message).not.toMatch(/lore auth --login/)
+    }
+  })
+
+  it("returns { kind: 'rate-limited' } on a code-only `rate_limited`", async () => {
+    const codeOnly = Object.assign(new Error("rate limited"), {
+      code: "rate_limited",
+    })
+    const client = mockClient(() => {
+      throw codeOnly
+    })
+
+    const result = await verifyVaultAccess(client, "page-id")
+
+    expect(result.kind).toBe("rate-limited")
   })
 })
 

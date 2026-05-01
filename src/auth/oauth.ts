@@ -349,16 +349,19 @@ function openBrowser(url: string): void {
  *   common cause: operator authenticated against the wrong
  *   workspace, or their Notion identity hasn't been granted access
  *   to the team vault page).
- * - `unauthorized` — the token itself is invalid / expired (401),
- *   or the token lacks permission for this resource (403). Distinct
- *   from `not-found` because the recovery is "re-auth", not "fix
- *   workspace / share permission."
- * - `rate-limited` — the request was throttled (429). Likely
- *   transient under sustained traffic but is auth-orthogonal so
- *   callers can decide whether to gate or retry.
- * - `unknown-error` — anything else (5xx, network error, etc.).
- *   Genuine transient class — caller may retry or surface the raw
- *   error.
+ * - `unauthorized` — Notion returned 401 / 403 (`unauthorized` /
+ *   `restricted_resource`). The token is invalid, expired, or
+ *   revoked; a re-auth cycle is required. Distinct from `not-found`
+ *   because the remediation differs: `not-found` points at workspace
+ *   / share mismatch; `unauthorized` points at re-running
+ *   `lore auth --login`.
+ * - `rate-limited` — Notion returned 429 (`rate_limited`). Transient
+ *   throttling; operator should wait and retry. Distinct from
+ *   `unknown-error` because the remediation is "wait" rather than
+ *   "investigate."
+ * - `unknown-error` — Notion returned something other than the four
+ *   recognized cases (5xx, network error, unparseable response,
+ *   etc.). Caller surfaces the raw error.
  *
  * The split exists because `lore install` (and other consumers)
  * need to gate `ready` differently per failure mode: a 401/404
@@ -369,8 +372,8 @@ function openBrowser(url: string): void {
 export type VaultAccessResult =
   | { kind: "ok"; pageTitle: string | null }
   | { kind: "not-found"; pageId: string; message: string }
-  | { kind: "unauthorized"; pageId: string; error: unknown }
-  | { kind: "rate-limited"; pageId: string; error: unknown }
+  | { kind: "unauthorized"; pageId: string; message: string }
+  | { kind: "rate-limited"; pageId: string; message: string }
   | { kind: "unknown-error"; pageId: string; error: unknown }
 
 /**
@@ -403,9 +406,9 @@ export async function verifyVaultAccess(
   } catch (err) {
     const { status, code } = err as { status?: number; code?: string }
 
-    // Notion's v5 SDK throws `APIResponseError` with a `code` field;
-    // 404 maps to `code: "object_not_found"`. We check both `status`
-    // and `code` so the helper is robust against future SDK shape
+    // Notion's v5 SDK throws `APIResponseError` with a `code` field
+    // drawn from the `APIErrorCode` enum. We check both `status` and
+    // `code` so the helper is robust against future SDK shape
     // changes — the same defense pattern as
     // `notion/errors.ts:isMissingPropertyError`.
     if (status === 404 || code === "object_not_found") {
@@ -423,26 +426,34 @@ export async function verifyVaultAccess(
       }
     }
 
-    // Unauthorized: 401 (token invalid/expired) and 403 (token
-    // valid but lacks permission for this resource). Both classify
-    // as auth failures distinct from "wrong workspace" — the
-    // recovery is re-auth, not vault-share-permission. The
-    // discrimination matters: install path treats this as
-    // ready=false, NOT a transient.
     if (
       status === 401 ||
       status === 403 ||
       code === "unauthorized" ||
       code === "restricted_resource"
     ) {
-      return { kind: "unauthorized", pageId: vaultPageId, error: err }
+      return {
+        kind: "unauthorized",
+        pageId: vaultPageId,
+        message:
+          "Notion rejected the bearer token. The token is invalid, " +
+          "expired, or revoked — re-run `lore auth --login` to issue " +
+          "a fresh token. (`restricted_resource` / 403 also lands " +
+          "here: the integration backing the token doesn't have " +
+          "permission for this page; re-auth via the wrapper picks " +
+          "up the engineer's current Notion identity.)",
+      }
     }
 
-    // Rate-limited: 429. Plausibly transient under sustained load,
-    // but the install path may want to surface a different message
-    // than a generic 5xx blip.
     if (status === 429 || code === "rate_limited") {
-      return { kind: "rate-limited", pageId: vaultPageId, error: err }
+      return {
+        kind: "rate-limited",
+        pageId: vaultPageId,
+        message:
+          "Notion's API throttled this preflight (429). Wait a few " +
+          "seconds and retry — the bearer token is fine; the issue " +
+          "is request-rate volume on this token's bucket.",
+      }
     }
 
     return { kind: "unknown-error", pageId: vaultPageId, error: err }

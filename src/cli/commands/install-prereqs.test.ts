@@ -630,7 +630,7 @@ describe("ensurePrerequisites — vault preflight", () => {
     vi.mocked(verifyVaultAccess).mockResolvedValue({
       kind: "unauthorized",
       pageId: "page-123",
-      error: Object.assign(new Error("unauthorized"), { status: 401 }),
+      message: "Notion rejected the bearer token.",
     })
 
     const result = await ensurePrerequisites(makeContext(), { yes: true })
@@ -652,7 +652,7 @@ describe("ensurePrerequisites — vault preflight", () => {
     vi.mocked(verifyVaultAccess).mockResolvedValue({
       kind: "rate-limited",
       pageId: "page-123",
-      error: Object.assign(new Error("rate limited"), { status: 429 }),
+      message: "Notion's API throttled this preflight (429).",
     })
 
     const result = await ensurePrerequisites(makeContext(), { yes: true })
@@ -763,7 +763,7 @@ describe("ensurePrerequisites — env-aware preflight-failure recovery", () => {
     vi.mocked(verifyVaultAccess).mockResolvedValue({
       kind: "unauthorized",
       pageId: "dev-page-id",
-      error: Object.assign(new Error("unauthorized"), { status: 401 }),
+      message: "Notion rejected the bearer token.",
     })
 
     const result = await ensurePrerequisites(makeContext(), { yes: true })
