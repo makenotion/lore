@@ -66,3 +66,20 @@ export {
 export type { ProjectResolution } from "./core/context.js"
 export type { OAuthCredentials, OAuthConfig } from "./auth/oauth.js"
 export { runOAuthFlow, loadCredentials, getAuthorizationUrl } from "./auth/oauth.js"
+export type {
+  NtnTokenRecord,
+  LoadNtnTokenInput,
+  NtnLoginResult,
+  NtnInstallResult,
+} from "./auth/ntn.js"
+export {
+  loadNtnToken,
+  listNtnWorkspaces,
+  isNtnInstalled,
+  getNtnVersion,
+  checkNtnVersion,
+  runNtnLogin,
+  installNtn,
+  MIN_NTN_VERSION,
+  NTN_INSTALL_COMMAND,
+} from "./auth/ntn.js"
