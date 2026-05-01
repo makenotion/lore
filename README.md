@@ -16,6 +16,106 @@ loading and session saving.
 npm install makenotion/lore
 ```
 
+### Using `@makenotion/lore` as a devDep (internal consumers)
+
+Internal repos can pin `@makenotion/lore` as a devDependency from
+GitHub Packages, then commit team-shared assistant config that works on
+every engineer's checkout without per-engineer absolute-path rewrites.
+
+#### Engineer setup (one-time, ~30 seconds)
+
+If you're already authed with the [`gh` CLI](https://cli.github.com/):
+
+```bash
+gh auth refresh -h github.com -s read:packages
+echo 'export GITHUB_PACKAGES_TOKEN="$(gh auth token)"' >> ~/.zshrc   # or ~/.bashrc
+source ~/.zshrc
+```
+
+That's it. `gh` already manages the token, you just expose it under the
+name `.yarnrc.yml` / `.npmrc` reads.
+
+<details>
+<summary>If you don't use the <code>gh</code> CLI (or your org disables OAuth tokens for packages)</summary>
+
+Create a Personal Access Token instead:
+
+1. Visit <https://github.com/settings/tokens/new> (Classic) or
+   <https://github.com/settings/personal-access-tokens/new>
+   (Fine-grained — preferred for least-privilege).
+2. Scope: **`read:packages`** (Classic) or **Repository → Packages:
+   Read-only** scoped to the package's source repo (Fine-grained).
+3. `export GITHUB_PACKAGES_TOKEN=<the-token>` in your shell rc.
+
+Both forms produce a token GitHub Packages accepts as a Bearer token.
+The PAT path is also what CI typically uses, via
+`secrets.GITHUB_TOKEN`.
+</details>
+
+#### Wiring the consumer repo (one-time, by whoever lands the migration)
+
+1. **Configure the registry mapping.** For Yarn 4 / Berry, add to
+   `.yarnrc.yml`:
+
+   ```yaml
+   npmScopes:
+     makenotion:
+       npmRegistryServer: "https://npm.pkg.github.com"
+       npmAuthToken: "${GITHUB_PACKAGES_TOKEN:-}"
+   ```
+
+   For npm / Yarn 1, copy `.npmrc.example` and adapt — see that file
+   for the details.
+
+   The `${VAR:-}` default-value form is load-bearing: it lets unrelated
+   yarn invocations (`yarn lore mcp`, `yarn lint`, etc.) load the file
+   without a token. Only registry fetches need it.
+
+2. **Add the devDep.**
+
+   ```bash
+   yarn add -D @makenotion/lore        # or `npm install -D @makenotion/lore`
+   ```
+
+3. **Run `lore install` once locally.** From inside the consumer repo:
+
+   ```bash
+   yarn lore install -y      # Yarn PnP consumers
+   npx lore install -y       # npm / Yarn 1 consumers
+   ```
+
+   This writes the **bin-dispatch** config shape:
+   - `.mcp.json` with `{ "command": "yarn", "args": ["lore", "mcp"] }`
+     for Yarn PnP, or `{ "command": "lore", "args": ["mcp"] }` for
+     npm / Yarn 1 (auto-detected via `.pnp.cjs`).
+   - `.claude/settings.json` hooks with `"command": "yarn lore hooks
+     <event>"` (PnP) or `"command": "lore hooks <event>"` (npm).
+
+   No absolute paths and no `${HOME}` placeholders — the file is
+   portable across every engineer's machine.
+
+4. **Commit the resulting diff.** The committed config now Just Works
+   on any teammate's fresh checkout: `yarn install` resolves
+   `@makenotion/lore` from GitHub Packages (using each engineer's
+   `GITHUB_PACKAGES_TOKEN`), and the host assistant resolves `lore`
+   through Yarn's PnPAPI (or `node_modules/.bin/lore` for non-PnP
+   consumers).
+
+> **Don't have a global `lore` install on the same machine.** A global
+> `npm install -g @makenotion/lore` would shadow the project-local
+> devDep on PATH for shells that don't put `node_modules/.bin` ahead
+> of global bins. Stick to one source of truth per machine.
+
+#### Migrating from a `~/.lore` deployment
+
+Legacy `~/.lore` installs (where every engineer cloned lore to home and
+the committed config used absolute paths) still work — `lore install
+--legacy-paths` opts back into the 0.10.x absolute-path output for one
+release. Default `lore install` rewrites legacy entries to bin-dispatch
+and prints `MCP server: upgraded (legacy → bin-dispatch)` in the install
+summary. The 0.12.0 release will remove `--legacy-paths` and the
+absolute-path code path together.
+
 ### 2. Create a Notion Integration
 
 Go to [notion.so/my-integrations](https://www.notion.so/my-integrations),
