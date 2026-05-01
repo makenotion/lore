@@ -35,7 +35,7 @@ export type {
 } from "./types.js"
 
 export { findConfigFile, loadConfig, resolveToken, resolveAuth } from "./config.js"
-export type { ResolvedAuth } from "./config.js"
+export type { AuthSource, ResolvedAuth } from "./config.js"
 export { createClient } from "./notion/client.js"
 export { createVaultDatabases, verifyVaultDatabases } from "./notion/setup.js"
 export { VaultManager } from "./core/vault.js"
@@ -71,3 +71,20 @@ export {
   getAuthorizationUrl,
   verifyVaultAccess,
 } from "./auth/oauth.js"
+export type {
+  NtnTokenRecord,
+  LoadNtnTokenInput,
+  NtnLoginResult,
+  NtnInstallResult,
+} from "./auth/ntn.js"
+export {
+  loadNtnToken,
+  listNtnWorkspaces,
+  isNtnInstalled,
+  getNtnVersion,
+  checkNtnVersion,
+  runNtnLogin,
+  installNtn,
+  MIN_NTN_VERSION,
+  NTN_INSTALL_COMMAND,
+} from "./auth/ntn.js"

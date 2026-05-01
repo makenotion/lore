@@ -110,6 +110,18 @@ await client.pages.updateMarkdown({
 })
 ```
 
+### Bearer-token auth via the v5 SDK
+
+The `auth: token` parameter on `new Client({ auth, ... })` flows
+through to a `Bearer` header on every outbound request. For
+ntn-issued tokens (post-0.10.0 default), the token is the value
+read from `auth.json`'s workspace entry; for legacy
+`LORE_NOTION_TOKEN`, the token is the integration's static secret.
+Both are passed identically to the SDK; the SDK is auth-mode-blind.
+See the root `AGENTS.md` **Authentication** section and
+`src/auth/AGENTS.md` for how the token is resolved before reaching
+this layer.
+
 ## Property Extractors Pattern
 
 `extractors.ts` provides typed helper functions for pulling values out of
@@ -213,6 +225,17 @@ promise chains, future higher-order factories) or a change to the
 SDK's property shape could bypass the wrap without any type-level
 signal. The scar tissue is: a one-line test per new top-level or
 nested method saves the next regression.
+
+**Per-token, not per-integration.** Notion enforces rate limits per
+access token (confirmed with the public-connections team
+2026-05-01). Under the 0.10.0 ntn-first deployment, every
+operator's ntn-issued token has its own ~3-rps bucket. The
+`p-limit` gate in `rate-limit.ts` keeps a single Lore process
+under that ceiling; cross-process contention within one operator's
+token is bounded by `DEFAULT_NOTION_CONCURRENCY` × number of
+concurrent processes. A "lore proxy token" that aggregated requests
+across operators would re-collapse the per-token isolation —
+don't.
 
 ## Filter Type Casting
 

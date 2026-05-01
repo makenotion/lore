@@ -60,6 +60,13 @@ vault, and resolves the current project context.
 
 **Exception**: The `auth` command does not call `initServices()` because it
 only checks whether the token is available, without connecting to Notion.
+**Updated for 0.10.0**: `auth --status`, `auth --whoami`, and
+`auth --migrate` *do* connect to Notion (for vault preflight, identity
+lookup, and migration verification, respectively), but they construct
+their own client directly rather than going through `initServices`.
+`--status` runs `verifyVaultAccess` by default — operators run it rarely
+and the round-trip is acceptable for the diagnostic value; a future
+`--no-verify` opt-out is plausible if telemetry shows real friction.
 
 **Exception**: The `init` command creates its own client and `VaultManager`
 directly because it runs before a `.lore.yaml` exists.
@@ -118,17 +125,59 @@ title-shaped to link.
 | Command | Arguments | Key Options | Description |
 |---------|-----------|-------------|-------------|
 | `lore init <page-id>` | Notion page ID | `--token <token>` | Create vault databases, write `.lore.yaml` |
-| `lore auth` | none | none | Show authentication status and setup instructions |
+| `lore auth` | none | `--login`, `--status`, `--whoami`, `--logout`, `--migrate`, `-y, --yes` | One-command auth flow (`--login`: auto-installs ntn if missing, runs `ntn login`, runs post-flow vault preflight); auth status display (`--status`); identity lookup via `users.me` (`--whoami`); logout pointer to `ntn logout` (`--logout`); migration from `LORE_NOTION_TOKEN` to ntn (`--migrate`); `--yes` skips confirmation prompts for non-interactive automation |
 | `lore search <query>` | Search query | `-p`, `-t`, `-n` | Semantic search across memories |
 | `lore mine [path]` | Directory path | `-p`, `-t`, `--pattern`, `--dry-run`, `-n` | Index project files as memories |
 | `lore status` | none | none | Show vault status, database counts, active projects, and per-project digest watermarks |
 | `lore status projects` | none | `-a, --all` | List all projects |
 | `lore status topics [project]` | Project name | none | List topics in a project |
-| `lore install` | none | `--client`, `--project`, `--cursor-global`, `--print-config`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor` for Cursor-only; `--cursor-global` writes Cursor config under `~/.cursor/mcp.json`; `--print-config json\|toml` prints a paste-ready snippet for unsupported hosts) |
+| `lore install` | none | `--client`, `--project`, `--cursor-global`, `--print-config`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor` for Cursor-only; `--cursor-global` writes Cursor config under `~/.cursor/mcp.json`; `--print-config json\|toml` prints a paste-ready snippet for unsupported hosts). See **The install Command** below for the 0.10.0 ntn detection and MCP env-forwarding posture. |
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
 | `lore conflicts scan` | none | `-p, --project`, `-n, --limit`, `--include-bodies`, `--json`, `--exhaustive` | Walk the vault, surface candidate conflict pairs for in-context judgment by the calling agent (read-only; emits prompt-ready output) |
+
+## The auth Command
+
+`lore auth --login` is the recommended entry point for authentication
+under 0.10.0. It auto-installs ntn (if missing), shells out to `ntn
+login` with `NOTION_KEYRING=0` forced inside the spawn (so the token
+lands in `~/.config/notion/auth.json` where Lore can read it), and
+runs `verifyVaultAccess` post-flow. Operators who want to re-auth
+without re-installing run `lore auth --login` directly; new operators
+typically hit it via `lore install`'s prerequisites flow rather than
+calling it explicitly.
+
+The other subcommands:
+
+- `--status` reports ntn install state, active workspace, token
+  source (`NOTION_API_TOKEN` / ntn-resolved / `LORE_NOTION_TOKEN` /
+  `auth.token`), deprecation state of legacy paths, AND runs
+  `verifyVaultAccess` against the configured vault page. The
+  preflight is a Notion round-trip — that's why `--status`
+  bypasses `initServices` and constructs its own client. A future
+  `--no-verify` opt-out is plausible if operators report friction;
+  not in 0.10.0.
+- `--whoami` resolves the token, calls `users.me`, and prints the
+  bot identity. Useful for confirming the engineer is authenticated
+  against the expected workspace.
+- `--logout` directs operators at `ntn logout` (Lore doesn't manage
+  ntn's storage; printing the right command is more useful than
+  pretending Lore can revoke the token).
+- `--migrate` walks operators with `LORE_NOTION_TOKEN` set through
+  running `ntn login`, verifies the new token reaches the same
+  vault, and prints the unset instruction with shell-rc location
+  detection.
+
+`-y, --yes` skips confirmation prompts on `--login` /
+`--migrate` so non-interactive automation can pass through. The
+`auth.json` read happens in `loadNtnToken` from
+`src/auth/ntn.ts`; the workspace selection respects
+`NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml`
+when an operator's `auth.json` carries multiple workspaces. See
+the root `AGENTS.md` **Authentication** section for the full
+priority chain, and the [internal-rollout runbook](../../docs/internal-rollout.md)
+for the operator-facing onboarding flow.
 
 ## The migrate Command
 
@@ -455,6 +504,37 @@ obvious from the rendered output:
 5. Add the command to the table in this file and in the root `README.md`.
 
 ## The install Command
+
+### 0.10.0 ntn detection and MCP env forwarding
+
+The behavior below is the 0.10.0 target shape — implemented
+across #01 (`resolveAuth` rewrite + deprecation warnings), #02
+(ntn detection + auto-install + auto-login), #03
+(`verifyVaultAccess` preflight), and #08 (this section's MCP
+env-forwarding rewrite). Read this with the merge-train context
+in mind: claims about `LORE_CONFIG_ROOT` /
+`LORE_SUPPRESS_DEPRECATIONS=1` forwarding describe the post-#08
+shape; before #08 lands, install forwards only `LORE_NOTION_TOKEN`
+and `LORE_NOTION_BASE_URL` per the 0.9.x `LORE_MCP_ENV_VARS`
+constant.
+
+Install detects ntn install / login state and prompts on missing
+pieces (auto-install via `curl -fsSL https://ntn.dev | bash` with
+operator confirmation; `--yes` skips). The MCP server resolves
+auth on its own at startup via `resolveAuth` rather than relying
+on static token forwarding for ntn-source operators. Conditional
+`LORE_NOTION_TOKEN` forwarding is preserved when the legacy env
+var is set in the install-time environment (with a `lore auth
+--migrate` recommendation), so legacy operators don't lose access
+by upgrading. Always-forwarded values (post-#08): `LORE_CONFIG_ROOT`
+(so the MCP child resolves the right `.lore.yaml`) and
+`LORE_SUPPRESS_DEPRECATIONS=1` (silences per-session warnings
+from spawned children — emitted by #01's `resolveAuth`). Install
+runs `verifyVaultAccess` post-resolution and refuses to write MCP
+config on `not-found`, so operators don't end up with
+installed-but-broken state.
+
+### Assistant targets
 
 `install` supports multiple assistant targets:
 

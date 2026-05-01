@@ -86,7 +86,7 @@ export async function initServicesFromConfig(
   config: LoreConfig,
   options: InitServicesOptions = {},
 ): Promise<LoreServices> {
-  const auth = await resolveAuth(config)
+  const auth = await resolveAuth(config, configRoot)
   const rawClient = createClient(auth.token, auth.baseUrl)
   // Every downstream service shares the same rate-limited Proxy so fan-out
   // stays under Notion's public rps ceiling without per-call-site work.

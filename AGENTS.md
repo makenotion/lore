@@ -12,6 +12,7 @@
 | Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics |
 | CLI | [`src/cli/AGENTS.md`](src/cli/AGENTS.md) | Commander patterns, command reference, output formatting |
 | Hook runner | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md) | Stop autosave, Stop-triggered auto-digest, background spawn, lockfiles |
+| Auth layer | [`src/auth/AGENTS.md`](src/auth/AGENTS.md) | ntn-first auth, `auth.json` coupling, vault preflight, legacy OAuth helpers |
 
 ## Repo-Wide Reference
 
@@ -94,7 +95,8 @@ from v4 and earlier. Do not use v4 patterns.
 #### Configuration
 
 - Config lives in `.lore.yaml` with upward directory search from cwd
-- Token resolution chain: `config.auth.token` --> `LORE_NOTION_TOKEN` env var
+- Token resolution priority: `NOTION_API_TOKEN` env → ntn-resolved (`~/.config/notion/auth.json`) → `LORE_NOTION_TOKEN` env (soft-deprecated 0.10.0) → `auth.token` in `.lore.yaml` (soft-deprecated 0.10.0).
+  See the **Authentication** section below for the priority chain, deprecation timeline, and `auth.json` coupling.
 - Config is validated with Zod at load time
 - The `configRoot` (directory containing `.lore.yaml`) is the base for relative project paths
 
@@ -124,6 +126,7 @@ from v4 and earlier. Do not use v4 patterns.
 | `filter` type errors in queries | Complex filter needs cast | Cast to `QueryDataSourceParameters["filter"]` |
 | `Vault already initialized` | Running `lore init` twice | Use `lore status` to verify, or `VaultManager.load()` |
 | Codex does not load Lore tools | Project not trusted or hooks feature disabled | Trust the project, start a new Codex session, and ensure `.codex/config.toml` sets `features.codex_hooks = true` |
+| `No Notion auth configured` | Every source in the priority chain returned empty | Run `lore auth --login` (auto-installs ntn if missing) or set `NOTION_API_TOKEN`. See **Authentication** for the full chain. |
 
 ## Operating Contract
 
@@ -421,6 +424,134 @@ Always find the root cause. Never fix symptoms or add workarounds.
 - Read error messages carefully -- they often contain the answer.
 - One hypothesis at a time: smallest possible change, verify, then move on.
 - Say "I don't understand" rather than guessing.
+
+## Authentication
+
+Lore reads a Notion bearer token from one of four sources in priority
+order. **The first source available wins.** `resolveAuth` in
+`src/config.ts` is the single resolution point; every interface (MCP
+server, CLI, hooks) routes through it.
+
+### 1. `NOTION_API_TOKEN` env var (canonical)
+
+The standard env var that the Notion SDK and `ntn` itself both honor.
+Operators set this explicitly, or it lands automatically once
+`ntn auth token --eval` ships (DEFERRED-OFFICIAL-EXPORT). When set,
+nothing else in the chain runs.
+
+### 2. ntn-resolved (via `~/.config/notion/auth.json`)
+
+The 0.10.0 dogfood path. Internal Notion engineers run:
+
+```bash
+lore install
+```
+
+`lore install` auto-installs ntn if missing (with operator
+confirmation), runs `ntn login` if no auth resolves, and writes MCP
+config. Lore then reads `~/.config/notion/auth.json` directly to
+pick the workspace bearer token. **This is a temporary coupling to
+ntn's private storage** until `ntn` ships a supported token-export
+command. See [`src/auth/AGENTS.md`](src/auth/AGENTS.md) for the
+migration path (DEFERRED-OFFICIAL-EXPORT).
+
+ntn's default on macOS uses the system keychain, which Lore cannot
+read in 0.10.0 (DEFERRED-KEYCHAIN-READ). To work around that,
+**`runNtnLogin()` and `installNtn()` (in `src/auth/ntn.ts`) force
+`NOTION_KEYRING=0` in their spawn env**, so any ntn invocation Lore
+triggers writes to file mode. Engineers don't need
+`NOTION_KEYRING=0` in their shell rc for the Lore install path.
+
+The "direct ntn login outside Lore" gotcha: if an engineer runs
+`ntn login` directly (without the env var), ntn falls back to
+keychain mode and Lore can't read the resulting token. Recovery —
+re-run `lore auth --login` to refresh `auth.json`, or add
+`NOTION_KEYRING=0` to shell rc for permanent bidirectional
+consistency. See the [internal-rollout runbook](docs/internal-rollout.md)
+for the operator-facing version of this gotcha and the
+team-onboarding flow.
+
+Multi-workspace operators select via `NOTION_WORKSPACE_ID` env or
+`auth.workspaceId` in `.lore.yaml`. Single-workspace operators
+auto-pick.
+
+ntn-issued tokens **inherit the engineer's personal Notion
+permissions** — there is no separate "share the vault page with
+Notion Workers CLI" step. If the engineer can open the page in
+Notion's UI, their token can read it.
+
+#### ntn version policy
+
+Lore tests against `MIN_NTN_VERSION` (in `src/auth/ntn.ts`,
+currently `0.12.0`):
+
+- **Operators with ntn already installed** keep their existing
+  version. Lore prefers what's there. Below the minimum, Lore
+  prints a non-blocking warning citing the installed version and
+  the minimum; above the minimum, Lore proceeds silently.
+- **Operators without ntn** see `lore install` /
+  `lore auth --login` / `lore init` (no-arg) offer to install via
+  the canonical command (`curl -fsSL https://ntn.dev | bash`).
+  Confirmation prompt is required; `--yes` skips for
+  non-interactive automation.
+- **Lore never auto-upgrades.** Operators who pin ntn versions for
+  other tooling continue with that version; the warning is the
+  only nudge.
+
+### 3. `LORE_NOTION_TOKEN` env var (soft-deprecated 0.10.0)
+
+Pre-0.10.0 deployment used this env var, sourced from a shared
+1Password vault item. It still works in 0.10.x but emits a
+debounced one-time-per-session deprecation warning to stderr.
+`lore auth --migrate` walks operators through upgrading to ntn.
+
+**Hard removal**: plausibly 0.11.0 or 1.0.0, contingent on
+telemetry showing no internal team still relies on the env path.
+Not 0.10.0.
+
+### 4. `auth.token` in `.lore.yaml` (soft-deprecated 0.10.0)
+
+Rare in practice; same posture as `LORE_NOTION_TOKEN`. Same
+deprecation warning, same migration path.
+
+### Rate limits are per token
+
+**This changes how to think about pooling, caching, and proxy
+patterns.** Notion's rate limits are enforced **per access token**,
+not per integration. Confirmed with the public-connections team on
+**2026-05-01**. The 0.10.0 pivot to ntn-issued per-user tokens
+solves the rate-limit collision the shared-token deployment caused
+— N humans contending for one ~3-rps bucket fails as soon as
+anyone runs a parallel hook fire or `lore mine`. Under ntn-first,
+every operator gets their own bucket.
+
+Implications for future design:
+
+- **Don't route through a shared token for caching.** A "lore
+  proxy token" that aggregated requests would re-collapse the
+  per-token isolation. The right caching primitive is per-process
+  request-level, not cross-token aggregation.
+- **The bot identity is `Notion Workers CLI`, not `Lore`.**
+  ntn-issued tokens are tied to the `Notion Workers CLI`
+  integration. Notion's UI shows that bot as the editor for Lore
+  writes; audit / page-share dialogs key on that name. The
+  per-token rate-limit bucket is per-engineer.
+- **Page-access semantics inherit personal Notion permissions.**
+  This is a separate axis from rate limits. The OAuth flow
+  authorizes the bot under the engineer's identity, not as a
+  standalone bot, so engineers can read any page their account can
+  read — no extra "share with Notion Workers CLI" step required.
+
+### Where to look when auth is broken
+
+| Symptom | Where to look |
+|---------|---------------|
+| `No Notion auth configured` | `resolveAuth` in `src/config.ts` — walk the priority chain; check token sources in order |
+| `lore auth --status` shows ntn auth.json carrying multiple workspaces | Set `NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml` |
+| 401 mid-session | ntn-issued token expired. Run `lore auth --login` and restart the assistant to pick up the new token. (DEFERRED-MID-SESSION-REFRESH for the auto-recovery path that would eliminate the restart.) |
+| `auth.json` is malformed or absent | `loadNtnToken` in `src/auth/ntn.ts` returns null + stderr hint. Run `lore auth --login` to spawn ntn login with `NOTION_KEYRING=0` and refresh the file. |
+| ntn installed under keychain mode (engineer ran `ntn login` outside Lore) | `auth.json` doesn't carry the workspace token. Re-run `lore auth --login` to refresh, or add `NOTION_KEYRING=0` to shell rc for permanent consistency. |
+| Hook-spawned `claude -p` can't read vault | `spawnBackgroundSave` in `src/hooks/background.ts` runs the child in `event.cwd` with a minimal env (`PATH`, `HOME`, `LORE_AUTOSAVE=false`, plus `LORE_NOTION_TOKEN` / `LORE_NOTION_BASE_URL` when set). The child's `findConfigFile` walks upward from `cwd` to locate `.lore.yaml`. Verify `cwd` is correct and that the upward-search lands on the expected config. |
 
 ## Lore MCP Tools
 

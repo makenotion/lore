@@ -55,6 +55,45 @@ milliseconds and the user's next turn starts immediately.
 The spawned sub-agent has no prior context and receives the transcript
 inline through the prompt.
 
+### Auth handoff to the spawned `claude -p`
+
+The detached child resolves its own credentials at startup via the
+same `resolveAuth` path the parent uses, against `event.cwd`
+(`spawnBackgroundSave` passes `cwd` straight through to
+`child_process.spawn`). The child's `findConfigFile` walks upward
+from `cwd` to locate `.lore.yaml`; from there `resolveAuth` runs
+the priority chain. **No `LORE_CONFIG_ROOT` is forwarded** —
+config-root discovery is the same upward-search the parent did.
+
+This is **not** the same env contract as the long-running MCP
+server child that `lore install` writes config for: that one
+*does* receive `LORE_CONFIG_ROOT` (post-#08; see
+`src/cli/AGENTS.md`'s `## The install Command` →
+`### 0.10.0 ntn detection and MCP env forwarding`). The two
+spawn paths have different env contracts because they have
+different lifetimes — the hook autosave child runs once per
+Stop and inherits the parent's cwd, so upward search is
+sufficient; the MCP server child is launched by the host
+assistant from a cwd Lore can't predict, so the
+`.lore.yaml` location must be passed explicitly.
+
+The parent's env passthrough is deliberately minimal:
+`spawnBackgroundSave` builds a `safeEnv` with `PATH`, `HOME`,
+`LORE_AUTOSAVE: "false"` (so the child can't recursively trigger
+its own autosave), and conditionally `LORE_NOTION_TOKEN` /
+`LORE_NOTION_BASE_URL` when the parent has them set. The legacy
+token forwarding preserves access for operators still on
+`LORE_NOTION_TOKEN` while they migrate; under ntn-first the child
+ntn-resolves directly off `auth.json` because that file is on disk
+where the child can read it. If the parent refreshed ntn (e.g.,
+the operator re-ran `ntn login`) before spawning the child, the
+child sees the updated `auth.json` at startup.
+
+**Mid-process re-resolution is deferred** — once the child has
+resolved its credentials, it does not re-read `auth.json`. A 401
+mid-spawn surfaces as the Notion call failing; the next autosave
+fire after `lore auth --login` picks up the refreshed token.
+
 ### Atomic-learning extraction (0.9.0/08)
 
 The autosave prompt asks the spawned sub-agent to do two things in one

@@ -125,6 +125,11 @@ create an integration, and copy the token.
 export LORE_NOTION_TOKEN=ntn_...
 ```
 
+> **Notion-internal teams**: starting in 0.10.0 the recommended path
+> is `ntn`-issued per-user tokens (no 1Password trip, no shared
+> integration). See [`docs/internal-rollout.md`](docs/internal-rollout.md)
+> for the per-engineer onboarding flow and team-lead runbook.
+
 ### 3. Create a Vault
 
 Create a page in Notion and share it with your integration, then:

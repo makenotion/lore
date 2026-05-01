@@ -743,3 +743,17 @@ Historical bumps and what they signalled:
 
 If `initServices()` fails (no config, bad token, etc.), the process exits with
 code 1 and logs the error to stderr.
+
+### ntn-issued tokens may expire mid-session
+
+The MCP server is long-running — assistants connect to it and stay
+connected across many tool dispatches. If an ntn-issued token
+expires mid-session, the next Notion call returns 401. 0.10.0
+surfaces this as a tool-call error with copy "Run `lore auth
+--login` and restart your assistant." (`lore auth --login` forces
+`NOTION_KEYRING=0` in the ntn spawn and runs vault preflight,
+which a bare `ntn login` would skip.) There is no auto-refresh in
+this release — the connected assistant must reconnect to pick up
+the refreshed token from `auth.json`. (DEFERRED-MID-SESSION-REFRESH
+tracks the auto-recovery path that would eliminate the restart if
+rollout shows real friction.)
