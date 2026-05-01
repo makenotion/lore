@@ -3,7 +3,15 @@
  *
  * Runs as a stdio process. AI assistants connect to it and use tools
  * to save, search, and recall memories from a Notion-backed vault.
+ *
+ * Two entry points reach this code:
+ *   - Legacy: `node dist/mcp.js` (preserved for one release for `~/.lore`
+ *     consumers; the file's own `if (isEntryPoint())` guard runs `main`).
+ *   - Bin-dispatch: `lore mcp` (the default for 0.11.0+ installs). The
+ *     CLI command lazy-imports `startServer` from this module.
  */
+
+import { fileURLToPath } from "node:url"
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
@@ -22,7 +30,7 @@ import { registerTaskTools } from "./tools/tasks.js"
 export type { LoreServices } from "../services.js"
 export { initServices } from "../services.js"
 
-async function main(): Promise<void> {
+export async function startServer(): Promise<void> {
   // P3-01 collapsed the tool surface from 24 single-purpose tools to seven
   // polymorphic dispatchers (with the prior names retained as deprecated
   // aliases). The shape of every reconnecting client's tool list shifts
@@ -86,7 +94,19 @@ async function main(): Promise<void> {
   await server.connect(transport)
 }
 
-main().catch((err) => {
-  console.error("[lore] Fatal error:", err)
-  process.exit(1)
-})
+function isEntryPoint(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return fileURLToPath(import.meta.url) === entry
+  } catch {
+    return false
+  }
+}
+
+if (isEntryPoint()) {
+  startServer().catch((err) => {
+    console.error("[lore] Fatal error:", err)
+    process.exit(1)
+  })
+}

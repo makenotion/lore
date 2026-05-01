@@ -25,11 +25,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   }
 })
 import {
+  buildClaudeHookCommand,
   buildClaudeMcpEntry,
   buildCodexHookCommand,
   buildCodexMcpSection,
   buildCursorGlobalIgnoredNotice,
   buildCursorMcpEntry,
+  buildLegacyClaudeMcpEntry,
+  buildLegacyCodexHookCommand,
+  buildLegacyCodexMcpSection,
+  buildLegacyCursorMcpEntry,
   buildPrintConfigOutput,
   containsTomlArrayOfTables,
   deepEqual,
@@ -121,7 +126,12 @@ describe("install helpers", () => {
     expect(deepEqual({ a: [1, { b: "two" }] }, { a: [1, { b: "three" }] })).toBe(false)
   })
 
-  it("detects Claude hooks by the script Lore owns", () => {
+  it("detects legacy absolute-path Claude hooks against the resolved pkgRoot", () => {
+    // 0.11.0 detection taxonomy: a legacy hook entry that points at the
+    // resolved `pkgRoot` is `legacy-current`, an entry that points
+    // elsewhere is `stale`, and absence is `missing`. The bin-dispatch
+    // 4th arg is omitted here so detection treats the hook strictly as
+    // a legacy entry.
     const entries = [
       {
         matcher: "",
@@ -129,23 +139,45 @@ describe("install helpers", () => {
       },
     ]
 
-    expect(detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh")).toBe("current")
+    expect(detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh")).toBe(
+      "legacy-current",
+    )
     expect(detectClaudeHook(entries, "autosave.sh", "/tmp/elsewhere/hooks/autosave.sh")).toBe(
       "stale",
     )
     expect(detectClaudeHook(entries, "wakeup.sh", "/tmp/lore/hooks/wakeup.sh")).toBe("missing")
   })
 
-  it("detects Codex hooks without matching unrelated substrings", () => {
-    const currentCommand = buildCodexHookCommand("/tmp/lore hooks/autosave.sh")
-    const staleCommand = buildCodexHookCommand("/tmp/elsewhere/autosave.sh")
+  it("detects bin-dispatch Claude hook entries as current", () => {
+    const binCommand = buildClaudeHookCommand("autosave")
+    const entries = [
+      {
+        matcher: "",
+        hooks: [{ type: "command", command: binCommand }],
+      },
+    ]
+    // Legacy path doesn't match (no `.sh` suffix) but the bin-dispatch
+    // command does — `current`.
+    expect(
+      detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh", binCommand),
+    ).toBe("current")
+  })
+
+  it("detects legacy Codex hooks without matching unrelated substrings", () => {
+    // Pre-0.11.0 absolute-path Codex hook entries surface as
+    // `legacy-current` when they match the resolved pkgRoot, `stale`
+    // when they point elsewhere. Detection is shape-aware: the
+    // bin-dispatch form goes through the new `binDispatchCommand`
+    // arg, the legacy form through `legacyExpectedCommand`.
+    const currentCommand = buildLegacyCodexHookCommand("/tmp/lore/hooks/autosave.sh")
+    const staleCommand = buildLegacyCodexHookCommand("/tmp/elsewhere/autosave.sh")
     const entries = [
       {
         hooks: [{ type: "command" as const, command: currentCommand }],
       },
     ]
 
-    expect(detectCodexHook(entries, "autosave.sh", currentCommand)).toBe("current")
+    expect(detectCodexHook(entries, "autosave.sh", currentCommand)).toBe("legacy-current")
     expect(detectCodexHook(entries, "autosave.sh", staleCommand)).toBe("stale")
     expect(
       detectCodexHook(
@@ -156,16 +188,31 @@ describe("install helpers", () => {
     ).toBe("missing")
   })
 
-  it("prefixes Codex hook commands with LORE_AGENT_NAME=Codex", () => {
-    const command = buildCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
-    expect(command.startsWith("LORE_AGENT_NAME=Codex ")).toBe(true)
+  it("classifies a bin-dispatch Codex hook entry as current", () => {
+    const binCommand = buildCodexHookCommand("autosave")
+    const legacyCommand = buildLegacyCodexHookCommand("/tmp/lore/hooks/autosave.sh")
+    const entries = [{ hooks: [{ type: "command" as const, command: binCommand }] }]
+
+    expect(detectCodexHook(entries, "autosave.sh", legacyCommand, binCommand)).toBe("current")
+  })
+
+  it("prefixes Codex hook commands with LORE_AGENT_NAME=Codex (bin-dispatch and legacy)", () => {
+    expect(buildCodexHookCommand("wakeup")).toBe("LORE_AGENT_NAME=Codex lore hooks wakeup")
+    const legacy = buildLegacyCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
+    expect(legacy.startsWith("LORE_AGENT_NAME=Codex ")).toBe(true)
     // The quoted script path stays intact after the prefix so Codex can
     // invoke it verbatim as a shell string.
-    expect(command.endsWith("/wakeup.sh\"")).toBe(true)
+    expect(legacy.endsWith("/wakeup.sh\"")).toBe(true)
+  })
+
+  it("emits the bin-dispatch Claude hook command for each event name", () => {
+    expect(buildClaudeHookCommand("wakeup")).toBe("lore hooks wakeup")
+    expect(buildClaudeHookCommand("autosave")).toBe("lore hooks autosave")
+    expect(buildClaudeHookCommand("session-end")).toBe("lore hooks session-end")
   })
 
   it("flags a Codex hook entry missing the env prefix as stale", () => {
-    const expected = buildCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
+    const expected = buildLegacyCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
     // Pre-PF1-04 install shape: path-only command, no LORE_AGENT_NAME prefix.
     const legacyCommand = JSON.stringify("/tmp/lore/hooks/wakeup.sh")
 
@@ -173,10 +220,57 @@ describe("install helpers", () => {
     expect(detectCodexHook(entries, "wakeup.sh", expected)).toBe("stale")
   })
 
-  it("classifies a prefixed Codex hook entry as current when the expected matches", () => {
-    const expected = buildCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
+  it("classifies a prefixed legacy Codex hook entry as legacy-current when the path matches", () => {
+    const expected = buildLegacyCodexHookCommand("/tmp/lore/hooks/wakeup.sh")
     const entries = [{ hooks: [{ type: "command" as const, command: expected }] }]
-    expect(detectCodexHook(entries, "wakeup.sh", expected)).toBe("current")
+    expect(detectCodexHook(entries, "wakeup.sh", expected)).toBe("legacy-current")
+  })
+
+  it("buildClaudeMcpEntry emits portable bin-dispatch shape with no paths", () => {
+    // 0.11.0 acceptance criterion: the default `.mcp.json` entry
+    // contains no absolute paths and no `${HOME}` placeholders, so the
+    // committed file resolves identically on every engineer's machine.
+    const entry = buildClaudeMcpEntry()
+    expect(entry).toEqual({
+      command: "lore",
+      args: ["mcp"],
+      env: {
+        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
+        LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
+      },
+    })
+    // `cwd` is intentionally absent on the bin-dispatch path — pinning a
+    // specific cwd would defeat the portability gain.
+    expect("cwd" in entry).toBe(false)
+  })
+
+  it("buildCodexMcpSection emits the bin-dispatch TOML shape", () => {
+    const section = buildCodexMcpSection()
+    expect(section).toContain("[mcp_servers.lore]")
+    expect(section).toContain('command = "lore"')
+    expect(section).toContain('args = ["mcp"]')
+    // No bash wrapper, no node command, no absolute path on the
+    // default bin-dispatch path.
+    expect(section).not.toContain('command = "bash"')
+    expect(section).not.toContain("dist/mcp.js")
+  })
+
+  it("detectClaudeHook prefers bin-dispatch match over legacy-current when both are present", () => {
+    // A pathological config with both shapes registered shouldn't
+    // happen in practice, but if it does, detection picks the
+    // bin-dispatch entry first because it iterates entries in order
+    // and bin-dispatch is what `upsertClaudeHookCommand` writes today.
+    // The runner's strip-both-shapes pre-pass prevents the dual-entry
+    // shape from outliving any single install — but the detection
+    // primitive must not panic if it sees one in the wild.
+    const binCommand = buildClaudeHookCommand("autosave")
+    const entries = [
+      { matcher: "", hooks: [{ type: "command", command: binCommand }] },
+      { matcher: "", hooks: [{ type: "command", command: "/tmp/lore/hooks/autosave.sh" }] },
+    ]
+    expect(
+      detectClaudeHook(entries, "autosave.sh", "/tmp/lore/hooks/autosave.sh", binCommand),
+    ).toBe("current")
   })
 
   it("flags TOML array-of-tables as unsupported for Lore rewrites", () => {
@@ -193,8 +287,20 @@ describe("Cursor helpers", () => {
   // LORE_MCP_ENV_VARS. Tests pin the shape so a Cursor schema change shows
   // up here rather than as a silent runtime mismatch in a Cursor session.
 
-  it("builds a Cursor MCP entry with the same shape as the Claude entry", () => {
-    const entry = buildCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
+  it("builds a bin-dispatch Cursor MCP entry that matches the Claude entry shape", () => {
+    expect(buildCursorMcpEntry()).toEqual(buildClaudeMcpEntry())
+    expect(buildCursorMcpEntry()).toEqual({
+      command: "lore",
+      args: ["mcp"],
+      env: {
+        LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
+        LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
+      },
+    })
+  })
+
+  it("builds a legacy absolute-path Cursor MCP entry under buildLegacyCursorMcpEntry", () => {
+    const entry = buildLegacyCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
     expect(entry).toEqual({
       command: "node",
       args: ["${HOME}/.lore/dist/mcp.js"],
@@ -206,17 +312,17 @@ describe("Cursor helpers", () => {
     })
   })
 
-  it("re-running buildCursorMcpEntry produces deepEqual output for idempotency checks", () => {
+  it("re-running buildLegacyCursorMcpEntry produces deepEqual output for idempotency checks", () => {
     // The install path determines drift via `deepEqual(existing, expected)`,
     // so two builds with the same inputs must compare equal.
-    const a = buildCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
-    const b = buildCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
+    const a = buildLegacyCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
+    const b = buildLegacyCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
     expect(deepEqual(a, b)).toBe(true)
   })
 
-  it("detects drift when the MCP path moves", () => {
-    const previous = buildCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
-    const current = buildCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore-2")
+  it("detects drift when the legacy MCP path moves", () => {
+    const previous = buildLegacyCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore")
+    const current = buildLegacyCursorMcpEntry("${HOME}/.lore/dist/mcp.js", "${HOME}/.lore-2")
     expect(deepEqual(previous, current)).toBe(false)
   })
 
@@ -554,6 +660,7 @@ describe("runCursorInstall (integration)", () => {
       // `skipPrompts: true` and a null `rl` together produce non-interactive
       // happy-path semantics in the helpers under test.
       skipPrompts: true,
+      legacyPaths: false,
       wakeUpConfig: null,
     }
   }
@@ -568,9 +675,8 @@ describe("runCursorInstall (integration)", () => {
     const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
     const servers = written.mcpServers as Record<string, unknown>
     expect(servers).toBeDefined()
-    expect(servers.lore).toEqual(
-      buildCursorMcpEntry(toPortablePath(join(pkgRoot, "dist", "mcp.js")), toPortablePath(pkgRoot)),
-    )
+    // makeContext()'s legacyPaths is false → bin-dispatch shape.
+    expect(servers.lore).toEqual(buildCursorMcpEntry())
   })
 
   it("is idempotent on re-run — existing identical entry yields no diff", async () => {
@@ -634,8 +740,12 @@ describe("runCursorInstall (integration)", () => {
 
     const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
     const servers = written.mcpServers as Record<string, unknown>
-    const loreEntry = servers.lore as { args: string[] }
-    expect(loreEntry.args[0]).toBe(toPortablePath(join(pkgRoot, "dist", "mcp.js")))
+    const loreEntry = servers.lore as { command: string; args: string[] }
+    // makeContext()'s legacyPaths is false → bin-dispatch overwrite of
+    // the stale legacy entry. The args[0] flips from the absolute
+    // mcp.js path to the literal "mcp" subcommand argument.
+    expect(loreEntry.command).toBe("lore")
+    expect(loreEntry.args).toEqual(["mcp"])
   })
 
   it("prints the hook-not-supported notice after a successful install", async () => {
@@ -681,6 +791,58 @@ describe("runCursorInstall (integration)", () => {
     expect((written.mcpServers as Record<string, unknown>).lore).toBeDefined()
   })
 
+  it("writes the legacy absolute-path shape under legacyPaths=true", async () => {
+    // 0.11.0 acceptance criterion: `lore install --legacy-paths`
+    // preserves the 0.10.x absolute-path output for one release. The
+    // Cursor branch follows the same flag.
+    const projectDir = mkdtempSync(join(SCRATCH, "legacy-cursor-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "legacy-cursor-pkg-"))
+    const targetPath = join(projectDir, ".cursor", "mcp.json")
+
+    const ctx: InstallContext = {
+      ...makeContext(projectDir, pkgRoot),
+      legacyPaths: true,
+    }
+    await runCursorInstall(ctx, null, targetPath, false)
+
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const servers = written.mcpServers as Record<string, unknown>
+    const loreEntry = servers.lore as { command: string; args: string[]; cwd: string }
+    expect(loreEntry.command).toBe("node")
+    expect(loreEntry.args[0]).toBe(toPortablePath(join(pkgRoot, "dist", "mcp.js")))
+    expect(loreEntry.cwd).toBe(toPortablePath(pkgRoot))
+  })
+
+  it("rewrites a legacy-current entry to bin-dispatch on the default path", async () => {
+    // 0.11.0 acceptance criterion: `lore install` against a
+    // `legacy-current` config rewrites it to bin-dispatch and reports
+    // the upgrade in the install summary. The acceptance line target
+    // is the `MCP server: upgraded (legacy → bin-dispatch)` summary.
+    const projectDir = mkdtempSync(join(SCRATCH, "upgrade-cursor-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "upgrade-cursor-pkg-"))
+    const targetPath = join(projectDir, ".cursor", "mcp.json")
+
+    // Seed a legacy-current entry: matches what
+    // `buildLegacyCursorMcpEntry` would produce for this pkgRoot.
+    const seededEntry = buildLegacyCursorMcpEntry(
+      toPortablePath(join(pkgRoot, "dist", "mcp.js")),
+      toPortablePath(pkgRoot),
+    )
+    const fs = await import("node:fs/promises")
+    await fs.mkdir(join(projectDir, ".cursor"), { recursive: true })
+    writeFileSync(targetPath, JSON.stringify({ mcpServers: { lore: seededEntry } }, null, 2))
+
+    consoleLogSpy.mockClear()
+    await runCursorInstall(makeContext(projectDir, pkgRoot), null, targetPath, false)
+
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    expect((written.mcpServers as Record<string, unknown>).lore).toEqual(buildCursorMcpEntry())
+
+    const messages = consoleLogSpy.mock.calls.map((args) => args.join(" ")).join("\n")
+    expect(messages).toMatch(/MCP server:\s+legacy form \(will upgrade\)/)
+    expect(messages).toMatch(/MCP server:\s+upgraded \(legacy → bin-dispatch\)/)
+  })
+
   it("succeeds without hook scripts on disk — Cursor doesn't depend on autosave/wakeup", async () => {
     // The reviewer's blocking finding: `lore install --client cursor`
     // must NOT abort just because `hooks/autosave.sh` or `hooks/wakeup.sh`
@@ -711,7 +873,13 @@ describe("ensureHookPrerequisites", () => {
     rmSync(SCRATCH, { recursive: true, force: true })
   })
 
-  function makeContext(pkgRoot: string): InstallContext {
+  // 0.11.0 turned `ensureHookPrerequisites` into a no-op on the
+  // bin-dispatch default path — the bin-dispatch shape has no `.sh`
+  // dependency, so the existence checks only run under
+  // `--legacy-paths`. The prerequisite-verification tests therefore
+  // build a `legacyPaths: true` fixture explicitly. A separate test
+  // pins the no-op behavior on the default path.
+  function makeLegacyContext(pkgRoot: string): InstallContext {
     return {
       projectDir: pkgRoot,
       pkgRoot,
@@ -719,19 +887,20 @@ describe("ensureHookPrerequisites", () => {
       wakeupPath: join(pkgRoot, "hooks", "wakeup.sh"),
       mcpJsPath: join(pkgRoot, "dist", "mcp.js"),
       skipPrompts: true,
+      legacyPaths: true,
       wakeUpConfig: null,
     }
   }
 
-  it("throws a clear error naming the missing hook scripts", async () => {
+  it("throws a clear error naming the missing hook scripts under --legacy-paths", async () => {
     const pkgRoot = mkdtempSync(join(SCRATCH, "missing-"))
 
-    await expect(ensureHookPrerequisites(makeContext(pkgRoot))).rejects.toThrow(
+    await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).rejects.toThrow(
       /Required hook scripts not found.*autosave\.sh.*wakeup\.sh/,
     )
   })
 
-  it("throws when only one of the two hook scripts is missing", async () => {
+  it("throws when only one of the two hook scripts is missing under --legacy-paths", async () => {
     // Half-baked install state: autosave.sh present, wakeup.sh missing.
     // The error should name only the missing one so an operator can act.
     const pkgRoot = mkdtempSync(join(SCRATCH, "partial-"))
@@ -739,19 +908,19 @@ describe("ensureHookPrerequisites", () => {
     await fs.mkdir(join(pkgRoot, "hooks"), { recursive: true })
     writeFileSync(join(pkgRoot, "hooks", "autosave.sh"), "#!/bin/sh\n")
 
-    await expect(ensureHookPrerequisites(makeContext(pkgRoot))).rejects.toThrow(
+    await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).rejects.toThrow(
       /Required hook scripts not found.*wakeup\.sh/,
     )
   })
 
-  it("returns without throwing and chmods the scripts when both exist", async () => {
+  it("returns without throwing and chmods the scripts when both exist under --legacy-paths", async () => {
     const pkgRoot = mkdtempSync(join(SCRATCH, "ok-"))
     const fs = await import("node:fs/promises")
     await fs.mkdir(join(pkgRoot, "hooks"), { recursive: true })
     writeFileSync(join(pkgRoot, "hooks", "autosave.sh"), "#!/bin/sh\n", { mode: 0o644 })
     writeFileSync(join(pkgRoot, "hooks", "wakeup.sh"), "#!/bin/sh\n", { mode: 0o644 })
 
-    await expect(ensureHookPrerequisites(makeContext(pkgRoot))).resolves.toBeUndefined()
+    await expect(ensureHookPrerequisites(makeLegacyContext(pkgRoot))).resolves.toBeUndefined()
 
     // Chmod side-effect: scripts now executable. The exact mode bits depend
     // on the process umask, so we only assert the user-execute bit (0o100).
@@ -760,6 +929,21 @@ describe("ensureHookPrerequisites", () => {
     const wakeupStat = await stat(join(pkgRoot, "hooks", "wakeup.sh"))
     expect(autosaveStat.mode & 0o100).toBe(0o100)
     expect(wakeupStat.mode & 0o100).toBe(0o100)
+  })
+
+  it("is a no-op on the bin-dispatch default path even when scripts are missing", async () => {
+    // The bin-dispatch path doesn't depend on hooks/*.sh — the `lore`
+    // bin owns the hook entry points directly. The prereq verifier
+    // must skip its existence checks so a fresh devDep consumer
+    // (whose tarball ships dist/ but no hooks/) doesn't fail
+    // `lore install` on a phantom missing-script error.
+    const pkgRoot = mkdtempSync(join(SCRATCH, "bindispatch-noop-"))
+    // No mkdir(hooks/) — the directory doesn't exist at all.
+    const ctx: InstallContext = {
+      ...makeLegacyContext(pkgRoot),
+      legacyPaths: false,
+    }
+    await expect(ensureHookPrerequisites(ctx)).resolves.toBeUndefined()
   })
 })
 
@@ -787,6 +971,7 @@ describe("dispatchInstall (--client all orchestration)", () => {
       wakeupPath: "/tmp/orchestration-fake-pkg/hooks/wakeup.sh",
       mcpJsPath: "/tmp/orchestration-fake-pkg/dist/mcp.js",
       skipPrompts: true,
+      legacyPaths: false,
       wakeUpConfig: null,
     }
   }
@@ -908,22 +1093,22 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
   // so an operator pasting the snippet sees the same shape as a
   // first-class install.
 
-  it("emits parseable JSON wrapping the lore mcpServers entry for format='json'", () => {
+  it("emits the bin-dispatch JSON shape by default for format='json'", () => {
     const output = buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")
     const parsed = JSON.parse(output) as {
-      mcpServers: { lore: { command: string; args: string[]; cwd: string; env: Record<string, string> } }
+      mcpServers: { lore: { command: string; args: string[]; env: Record<string, string> } }
     }
-    expect(parsed.mcpServers.lore.command).toBe("node")
-    expect(parsed.mcpServers.lore.args).toEqual(["/lore/dist/mcp.js"])
-    expect(parsed.mcpServers.lore.cwd).toBe("/lore")
+    expect(parsed.mcpServers.lore.command).toBe("lore")
+    expect(parsed.mcpServers.lore.args).toEqual(["mcp"])
     expect(parsed.mcpServers.lore.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
     expect(output.endsWith("\n")).toBe(true)
   })
 
-  it("emits a TOML [mcp_servers.lore] section for format='toml'", () => {
+  it("emits the bin-dispatch TOML shape by default for format='toml'", () => {
     const output = buildPrintConfigOutput("toml", "/lore/dist/mcp.js", "/lore")
     expect(output.startsWith("[mcp_servers.lore]\n")).toBe(true)
-    expect(output).toContain('command = "bash"')
+    expect(output).toContain('command = "lore"')
+    expect(output).toContain('args = ["mcp"]')
     expect(output).toContain("env_vars = ")
     expect(output).toContain('"LORE_NOTION_TOKEN"')
     // Trailing newline lets `lore install --print-config toml >> file.toml`
@@ -931,53 +1116,76 @@ describe("buildPrintConfigOutput (issue 0.9.0/12)", () => {
     expect(output.endsWith("\n")).toBe(true)
   })
 
-  it("rewrites home-directory paths to ${HOME} in the JSON entry", () => {
+  it("contains no absolute paths and no ${HOME} placeholders in bin-dispatch JSON", () => {
+    // 0.11.0 acceptance criterion: the default print-config output
+    // resolves portably across machines because no path leaks into the
+    // emitted snippet. The bin name `lore` is resolved by the host
+    // assistant against the consumer repo's `node_modules/.bin/lore`,
+    // which yarn/npm manage as a symlink.
+    const output = buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")
+    expect(output).not.toContain("/lore/dist/mcp.js")
+    expect(output).not.toContain("${HOME}")
+  })
+
+  it("emits the legacy absolute-path JSON shape when legacyPaths=true", () => {
     const home = homedir()
     const output = buildPrintConfigOutput(
       "json",
       `${home}/.lore/dist/mcp.js`,
       `${home}/.lore`,
+      true,
     )
     const parsed = JSON.parse(output) as {
-      mcpServers: { lore: { args: string[]; cwd: string } }
+      mcpServers: { lore: { command: string; args: string[]; cwd: string } }
     }
+    expect(parsed.mcpServers.lore.command).toBe("node")
     expect(parsed.mcpServers.lore.args[0]).toBe("${HOME}/.lore/dist/mcp.js")
     expect(parsed.mcpServers.lore.cwd).toBe("${HOME}/.lore")
   })
 
-  it("rewrites home-directory paths to ${HOME} in the TOML section", () => {
+  it("emits the legacy bash-wrapped TOML shape when legacyPaths=true", () => {
     const home = homedir()
     const output = buildPrintConfigOutput(
       "toml",
       `${home}/.lore/dist/mcp.js`,
       `${home}/.lore`,
+      true,
     )
+    expect(output).toContain('command = "bash"')
     expect(output).toContain('"node \\"${HOME}/.lore/dist/mcp.js\\""')
   })
 
-  it("byte-matches the JSON entry that --client claude would write to .mcp.json", () => {
-    // The install path passes portable paths into buildClaudeMcpEntry and
-    // serializes the result with two-space indent. This test pins the print
-    // path against that exact shape so drift surfaces immediately.
+  it("byte-matches buildClaudeMcpEntry() under the bin-dispatch default", () => {
     const expected =
-      JSON.stringify(
-        { mcpServers: { lore: buildClaudeMcpEntry("/lore/dist/mcp.js", "/lore") } },
-        null,
-        2,
-      ) + "\n"
+      JSON.stringify({ mcpServers: { lore: buildClaudeMcpEntry() } }, null, 2) + "\n"
     expect(buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore")).toBe(expected)
   })
 
-  it("byte-matches the TOML section that --client codex would write to .codex/config.toml", () => {
-    // buildCodexMcpSection portable-encodes its input internally; passing the
-    // raw absolute path or the already-portable path produces the same
-    // string. The print path mirrors the install path so the snippet stays
-    // in lockstep on a future codex format change.
-    const expected = buildCodexMcpSection("/lore/dist/mcp.js") + "\n"
+  it("byte-matches buildLegacyClaudeMcpEntry under --legacy-paths", () => {
+    const expected =
+      JSON.stringify(
+        {
+          mcpServers: {
+            lore: buildLegacyClaudeMcpEntry("/lore/dist/mcp.js", "/lore"),
+          },
+        },
+        null,
+        2,
+      ) + "\n"
+    expect(buildPrintConfigOutput("json", "/lore/dist/mcp.js", "/lore", true)).toBe(expected)
+  })
+
+  it("byte-matches buildCodexMcpSection() under the bin-dispatch default", () => {
+    const expected = buildCodexMcpSection() + "\n"
     expect(buildPrintConfigOutput("toml", "/lore/dist/mcp.js", "/lore")).toBe(expected)
   })
 
-  it("ignores --client / --project context — output depends only on resolved paths", () => {
+  it("byte-matches buildLegacyCodexMcpSection under --legacy-paths", () => {
+    const expected = buildLegacyCodexMcpSection("/lore/dist/mcp.js") + "\n"
+    expect(buildPrintConfigOutput("toml", "/lore/dist/mcp.js", "/lore", true)).toBe(expected)
+  })
+
+  it("ignores --client / --project context — output depends only on resolved paths and legacyPaths", () => {
     // Neither --client nor --project flows into buildPrintConfigOutput. Two
     // calls with the same paths always produce the same snippet, regardless
     // of what the operator passed alongside --print-config.
@@ -1027,7 +1235,10 @@ describe("install command runtime — --print-config short-circuits other flags"
     const parsed = JSON.parse(output) as {
       mcpServers: { lore: { command: string } }
     }
-    expect(parsed.mcpServers.lore.command).toBe("node")
+    // 0.11.0+ default is bin-dispatch — `command: "lore"`. The
+    // legacy `command: "node"` shape only emits under
+    // `--legacy-paths`, which this test doesn't set.
+    expect(parsed.mcpServers.lore.command).toBe("lore")
     // The install path's pre-flight banner would precede any JSON output if
     // it had run — its absence is the proof that --client was a no-op.
     expect(output).not.toContain("Checking prerequisites")

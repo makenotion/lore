@@ -1,0 +1,17 @@
+# Copy to .npmrc (or merge into your existing .npmrc) when consuming
+# `@makenotion/lore` as a devDependency.
+#
+# 1. Map the @makenotion scope to GitHub Packages so `npm install` /
+#    `yarn add -D @makenotion/lore` resolves there instead of the public
+#    npm registry.
+@makenotion:registry=https://npm.pkg.github.com
+
+# 2. Authenticate to GitHub Packages with a Personal Access Token (classic)
+#    or a fine-grained token that has at least `read:packages` scope. The
+#    package's visibility is INTERNAL inside the makenotion GitHub org —
+#    members can read it, no public access.
+#
+#    Replace ${GITHUB_PACKAGES_TOKEN} with your token at runtime, OR set
+#    the env var in your shell so `npm` reads it without committing the
+#    secret. Do NOT commit a populated .npmrc.
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}

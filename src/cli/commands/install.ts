@@ -8,7 +8,24 @@ import { findConfigFile, loadConfig } from "../../config.js"
 import { loadCredentials } from "../../auth/oauth.js"
 
 export type InstallClient = "claude" | "codex" | "cursor" | "all"
-export type HookStatus = "current" | "stale" | "missing"
+
+/**
+ * Status of a single Lore-owned config entry on disk.
+ *
+ * - `current` — entry is in the bin-dispatch form (`lore mcp` /
+ *   `lore hooks <event>`), matching `buildClaudeMcpEntry()` /
+ *   `buildClaudeHookCommand()` / `buildCodexMcpSection()` /
+ *   `buildCodexHookCommand()` byte-for-byte.
+ * - `legacy-current` — entry is in the absolute-path form and matches
+ *   `buildLegacyClaudeMcpEntry(...)` / etc. for the resolved `pkgRoot`.
+ *   Default `lore install` (no `--legacy-paths`) reports this and
+ *   rewrites to bin-dispatch; `lore install --legacy-paths` treats it
+ *   as `current`.
+ * - `stale` — entry exists but matches neither shape (e.g., points at
+ *   a different `pkgRoot`, hand-edited args). Reinstall replaces it.
+ * - `missing` — no Lore entry at all.
+ */
+export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
 
 /**
  * Env variables the MCP server honors at runtime and that the installer
@@ -28,20 +45,57 @@ function encodeProjectPath(absPath: string): string {
 interface ClaudeMcpEntry {
   command: string
   args: string[]
-  cwd: string
+  /**
+   * Absolute (or `${HOME}`-prefixed) directory the legacy launcher cd's
+   * into before invoking `node dist/mcp.js`. Bin-dispatch entries omit
+   * this field — the host assistant's launch cwd (typically the project
+   * root) is correct for `.lore.yaml` discovery, and pinning a specific
+   * cwd would defeat the portability the bin-dispatch shape provides.
+   */
+  cwd?: string
   env: Record<string, string>
 }
 
-export function buildClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
+const LORE_MCP_ENV_PASSTHROUGH = (): Record<string, string> => {
   const env: Record<string, string> = {}
   for (const key of LORE_MCP_ENV_VARS) {
     env[key] = `\${${key}}`
   }
+  return env
+}
+
+/**
+ * Build the bin-dispatch `.mcp.json` entry for Lore. Emits
+ * `{ command: "lore", args: ["mcp"], env: ... }` with the Notion env-var
+ * passthrough block preserved so a developer who exports
+ * `LORE_NOTION_TOKEN` in their shell still has the MCP server pick it
+ * up at launch time.
+ *
+ * Hosts resolve `lore` through the consumer repo's
+ * `node_modules/.bin/lore` symlink (yarn/npm-managed), so the written
+ * config is portable across every engineer's checkout regardless of
+ * the absolute path of the consumer repo on disk.
+ */
+export function buildClaudeMcpEntry(): ClaudeMcpEntry {
+  return {
+    command: "lore",
+    args: ["mcp"],
+    env: LORE_MCP_ENV_PASSTHROUGH(),
+  }
+}
+
+/**
+ * Legacy absolute-path `.mcp.json` shape used by `~/.lore` consumers
+ * pre-0.11.0. Preserved through 0.11.x for the deprecation window;
+ * `lore install --legacy-paths` opts back in. Targeted for removal in
+ * 0.12.0 alongside the standalone `dist/mcp.js` tsup entry.
+ */
+export function buildLegacyClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEntry {
   return {
     command: "node",
     args: [mcpJsPath],
     cwd,
-    env,
+    env: LORE_MCP_ENV_PASSTHROUGH(),
   }
 }
 
@@ -57,20 +111,24 @@ export function buildClaudeMcpEntry(mcpJsPath: string, cwd: string): ClaudeMcpEn
 export interface CursorMcpEntry {
   command: string
   args: string[]
-  cwd: string
+  cwd?: string
   env: Record<string, string>
 }
 
-export function buildCursorMcpEntry(mcpJsPath: string, cwd: string): CursorMcpEntry {
-  const env: Record<string, string> = {}
-  for (const key of LORE_MCP_ENV_VARS) {
-    env[key] = `\${${key}}`
+export function buildCursorMcpEntry(): CursorMcpEntry {
+  return {
+    command: "lore",
+    args: ["mcp"],
+    env: LORE_MCP_ENV_PASSTHROUGH(),
   }
+}
+
+export function buildLegacyCursorMcpEntry(mcpJsPath: string, cwd: string): CursorMcpEntry {
   return {
     command: "node",
     args: [mcpJsPath],
     cwd,
-    env,
+    env: LORE_MCP_ENV_PASSTHROUGH(),
   }
 }
 
@@ -111,7 +169,27 @@ function formatTomlArray(values: readonly string[]): string {
   return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`
 }
 
-export function buildCodexMcpSection(mcpJsPath: string): string {
+/**
+ * Build the bin-dispatch `[mcp_servers.lore]` block for
+ * `.codex/config.toml`. Codex's MCP launcher resolves `command` against
+ * the same PATH the legacy `bash -lc 'node ...'` wrapper relied on for
+ * `node` resolution, so the bin-dispatch form
+ * `command = "lore"` / `args = ["mcp"]` works the same way as long as
+ * `lore` is on PATH. Under devDep consumption the consumer's
+ * `node_modules/.bin/lore` is the resolution target — see the
+ * `--legacy-paths` escape hatch in `runInstall` for `~/.lore`-deployed
+ * operators.
+ */
+export function buildCodexMcpSection(): string {
+  return [
+    "[mcp_servers.lore]",
+    'command = "lore"',
+    'args = ["mcp"]',
+    `env_vars = ${formatTomlArray(LORE_MCP_ENV_VARS)}`,
+  ].join("\n")
+}
+
+export function buildLegacyCodexMcpSection(mcpJsPath: string): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const launchCommand = `node ${JSON.stringify(portableMcpJsPath)}`
 
@@ -152,9 +230,41 @@ const CODEX_AGENT_ENV_PREFIX = "LORE_AGENT_NAME=Codex "
  * Linux) per the integration docs, so the hook installer targets that
  * baseline; revisit if Windows support ships.
  */
-export function buildCodexHookCommand(scriptPath: string): string {
+/**
+ * Build the bin-dispatch shell-string command for a Codex hook event.
+ * Codex executes `hooks.json` `type: "command"` entries through `/bin/sh`
+ * (the env-prefix shape `LORE_AGENT_NAME=Codex ...` depends on it), so
+ * the bin-dispatch form keeps the prefix and trades the quoted absolute
+ * `.sh` path for a `lore hooks <event>` invocation. PATH must include
+ * the consumer repo's `node_modules/.bin` for `lore` to resolve at
+ * hook-fire time — Claude Code and many shells set this up
+ * automatically; if Codex's hook context doesn't, operators may need to
+ * fall back to `--legacy-paths` until Codex's hook runner exposes a
+ * project-local PATH hook.
+ */
+export function buildClaudeHookCommand(eventName: HookEventName): string {
+  return `lore hooks ${eventName}`
+}
+
+export function buildCodexHookCommand(eventName: HookEventName): string {
+  return `${CODEX_AGENT_ENV_PREFIX}lore hooks ${eventName}`
+}
+
+export function buildLegacyCodexHookCommand(scriptPath: string): string {
   return CODEX_AGENT_ENV_PREFIX + JSON.stringify(toPortablePath(scriptPath))
 }
+
+/**
+ * Hook event names the bin-dispatch surface accepts. The closed set
+ * exists so `buildClaudeHookCommand` / `buildCodexHookCommand` can't be
+ * called with an arbitrary string — a typo'd event name would silently
+ * produce a hook command that the helper rejects at runtime, and the
+ * detector wouldn't recognize it as Lore-owned. The four values cover
+ * the entire deploy surface today: `wakeup` (UserPromptSubmit /
+ * SessionStart), `autosave` (Stop), and `session-end` (compatibility
+ * shim).
+ */
+export type HookEventName = "wakeup" | "autosave" | "session-end"
 
 /**
  * Structural equality for plain JSON-ish values. Used to decide whether an
@@ -297,12 +407,30 @@ async function confirm(
   return normalized === "y" || normalized === "yes"
 }
 
-function statusLabel(status: HookStatus): string {
-  return status === "current"
-    ? "already installed"
-    : status === "stale"
-      ? "update available"
-      : "not installed"
+function statusLabel(status: HookStatus, legacyPaths: boolean): string {
+  if (status === "current") return "already installed"
+  // Under `--legacy-paths`, a `legacy-current` entry IS the desired
+  // shape — it should read as already installed. Under bin-dispatch
+  // (default), the same entry is upgrade-eligible.
+  if (status === "legacy-current") {
+    return legacyPaths ? "already installed" : "legacy form (will upgrade)"
+  }
+  if (status === "stale") return "update available"
+  return "not installed"
+}
+
+/**
+ * Post-write status line for the install summary. Differentiates
+ * "rewrote a legacy-current entry to bin-dispatch" from a fresh write
+ * so an operator running `lore install` after upgrading from 0.10.x
+ * sees an explicit signal that their committed config diff is
+ * intentional, not a hand-rolled drift fix.
+ */
+function postWriteLabel(prevStatus: HookStatus, legacyPaths: boolean): string {
+  if (prevStatus === "legacy-current" && !legacyPaths) {
+    return "upgraded (legacy → bin-dispatch)"
+  }
+  return "installed"
 }
 
 export interface ClaudeHookEntry {
@@ -315,45 +443,107 @@ export interface ClaudeHookEntry {
   }>
 }
 
+/**
+ * Classify a Lore-owned Claude Code hook entry against the new
+ * bin-dispatch shape and the legacy absolute-path shape.
+ *
+ * `binDispatchCommand` is what `buildClaudeHookCommand(event)`
+ * produces (`lore hooks <event>`). `legacyExpectedPath` is the
+ * canonical legacy path for the resolved `pkgRoot`
+ * (`buildLegacyClaudeMcpEntry`-shaped). `scriptName` is the legacy
+ * script-file name (`autosave.sh` / `wakeup.sh` / `session-end.sh`)
+ * used to identify Lore-owned legacy entries even when the recorded
+ * absolute path no longer matches the current install (a Lore checkout
+ * that moved still classifies as `legacy-current` if the path resolves
+ * the same way today, or `stale` otherwise).
+ */
 export function detectClaudeHook(
   entries: ClaudeHookEntry[] | undefined,
   scriptName: string,
-  expectedPath: string,
+  legacyExpectedPath: string,
+  binDispatchCommand?: string,
 ): HookStatus {
   if (!entries) return "missing"
 
   for (const entry of entries) {
     for (const hook of entry.hooks ?? []) {
-      if (typeof hook.command === "string" && hook.command.endsWith(`/${scriptName}`)) {
-        return hook.command === expectedPath ? "current" : "stale"
+      const cmd = hook.command
+      if (typeof cmd !== "string") continue
+      // Bin-dispatch form: exact match against `lore hooks <event>`.
+      if (binDispatchCommand && cmd === binDispatchCommand) return "current"
+      // Legacy absolute-path form: identified by the script-name
+      // suffix, then classified by whether the full path matches the
+      // resolved legacy path for this `pkgRoot`.
+      if (cmd.endsWith(`/${scriptName}`)) {
+        return cmd === legacyExpectedPath ? "legacy-current" : "stale"
       }
     }
   }
   return "missing"
 }
 
-function mergeClaudeHookEntries(
+/**
+ * Upsert a Lore-owned Claude hook entry, accepting either the
+ * bin-dispatch shape (`lore hooks <event>`) or a legacy absolute-path
+ * shape on either side of the operation:
+ *
+ * - Filters existing entries by both shapes simultaneously: any entry
+ *   whose command ends with `/<scriptName>` (legacy) OR exactly matches
+ *   `lore hooks <event>` (bin-dispatch) is treated as Lore-owned and
+ *   removed before the new entry is appended.
+ * - Writes the new entry verbatim from `newCommand`, which the caller
+ *   selects based on `context.legacyPaths`.
+ *
+ * The two-shape filter is what lets `lore install --legacy-paths` rewrite
+ * a bin-dispatch entry back to legacy without leaving the bin-dispatch
+ * entry behind, and lets default `lore install` rewrite a legacy entry
+ * without leaving the legacy entry behind. Without the dual filter, an
+ * upgrade or downgrade would land BOTH shapes in `Stop[]` and Claude
+ * Code would fire both hooks back-to-back.
+ */
+function upsertClaudeHookCommand(
   existing: ClaudeHookEntry[] | undefined,
   scriptName: string,
-  newPath: string,
+  newCommand: string,
   config: { matcher: string; timeout?: number; runOnce?: boolean },
 ): ClaudeHookEntry[] {
+  const binDispatchPattern = /^lore hooks (?:wakeup|autosave|session-end)$/
   const filtered = (existing ?? []).filter(
     (entry) =>
-      !entry.hooks?.some(
-        (hook) => typeof hook.command === "string" && hook.command.endsWith(`/${scriptName}`),
-      ),
+      !entry.hooks?.some((hook) => {
+        if (typeof hook.command !== "string") return false
+        if (hook.command.endsWith(`/${scriptName}`)) return true
+        if (binDispatchPattern.test(hook.command)) return true
+        return false
+      }),
   )
   filtered.push({
     matcher: config.matcher,
     hooks: [{
       type: "command",
-      command: newPath,
+      command: newCommand,
       ...(config.timeout != null ? { timeout: config.timeout } : {}),
       ...(config.runOnce != null ? { runOnce: config.runOnce } : {}),
     }],
   })
   return filtered
+}
+
+/**
+ * Whether the on-disk hook status matches the desired install shape.
+ * Drives the "everything already installed" / "needs install" decision
+ * across both Claude and Codex runners.
+ *
+ * - Default install (bin-dispatch): only `current` (bin-dispatch shape)
+ *   counts as effectively current.
+ * - `--legacy-paths`: only `legacy-current` counts. A bin-dispatch
+ *   entry on disk is NOT effectively current under `--legacy-paths`,
+ *   so the runner rewrites it back to the legacy shape — that's the
+ *   intended downgrade semantic for an operator on `~/.lore` who
+ *   accidentally upgraded.
+ */
+function isEffectivelyCurrent(status: HookStatus, legacyPaths: boolean): boolean {
+  return legacyPaths ? status === "legacy-current" : status === "current"
 }
 
 export function removeClaudeScriptEntries(
@@ -464,36 +654,56 @@ function commandTargetsScript(command: string, scriptName: string): boolean {
   return normalized === scriptName || normalized.endsWith(`/${scriptName}`)
 }
 
+/**
+ * Classify a Lore-owned Codex hook entry. Mirrors `detectClaudeHook`'s
+ * dual-shape recognition:
+ *
+ * - `binDispatchCommand` matches `LORE_AGENT_NAME=Codex lore hooks <event>`
+ *   (the 0.11.0+ form `buildCodexHookCommand` produces).
+ * - `legacyExpectedCommand` matches the canonical legacy form
+ *   `LORE_AGENT_NAME=Codex "<absolute-path>/<script>.sh"` for the
+ *   resolved `pkgRoot`. `scriptName` identifies Lore-owned legacy
+ *   entries by tail.
+ */
 export function detectCodexHook(
   entries: CodexHookEntry[] | undefined,
   scriptName: string,
-  expectedCommand: string,
+  legacyExpectedCommand: string,
+  binDispatchCommand?: string,
 ): HookStatus {
   if (!entries) return "missing"
 
   for (const entry of entries) {
     for (const hook of entry.hooks ?? []) {
-      if (typeof hook.command === "string" && commandTargetsScript(hook.command, scriptName)) {
-        return hook.command === expectedCommand ? "current" : "stale"
+      const cmd = hook.command
+      if (typeof cmd !== "string") continue
+      if (binDispatchCommand && cmd === binDispatchCommand) return "current"
+      if (commandTargetsScript(cmd, scriptName)) {
+        return cmd === legacyExpectedCommand ? "legacy-current" : "stale"
       }
     }
   }
   return "missing"
 }
 
+/**
+ * Append a Codex hook entry. Caller is expected to have already
+ * stripped any prior Lore-owned entries (legacy and bin-dispatch) from
+ * the target event via `stripCodexScriptFromAllEvents` and
+ * `stripCodexBinDispatchHook` so this helper can stay a pure append.
+ *
+ * Pre-bin-dispatch this function did its own scriptName-based filter,
+ * but with two recognizable shapes the filter would need to know about
+ * both (and the runner already strips both before calling this), so the
+ * pre-pass moved out and the helper became a strict append.
+ */
 function mergeCodexHookEntries(
   existing: CodexHookEntry[] | undefined,
-  scriptName: string,
   command: string,
   config: { matcher?: string; timeout?: number; statusMessage?: string },
 ): CodexHookEntry[] {
-  const filtered = (existing ?? []).filter(
-    (entry) =>
-      !entry.hooks?.some(
-        (hook) => typeof hook.command === "string" && commandTargetsScript(hook.command, scriptName),
-      ),
-  )
-  filtered.push({
+  const next = [...(existing ?? [])]
+  next.push({
     ...(config.matcher ? { matcher: config.matcher } : {}),
     hooks: [{
       type: "command",
@@ -502,7 +712,32 @@ function mergeCodexHookEntries(
       ...(config.statusMessage ? { statusMessage: config.statusMessage } : {}),
     }],
   })
-  return filtered
+  return next
+}
+
+/**
+ * Remove every Codex hook entry whose command is the bin-dispatch
+ * shape `LORE_AGENT_NAME=Codex lore hooks <event>` for the given
+ * event. The `lore install --legacy-paths` downgrade path needs this
+ * so a prior bin-dispatch entry doesn't survive alongside the legacy
+ * one we're about to write.
+ */
+function stripCodexBinDispatchHook(
+  hooks: Record<string, CodexHookEntry[]>,
+  eventName: HookEventName,
+): Record<string, CodexHookEntry[]> {
+  const target = buildCodexHookCommand(eventName)
+  const next: Record<string, CodexHookEntry[]> = {}
+  for (const [event, entries] of Object.entries(hooks)) {
+    const filtered = entries.filter(
+      (entry) =>
+        !entry.hooks?.some(
+          (hook) => typeof hook.command === "string" && hook.command === target,
+        ),
+    )
+    if (filtered.length > 0) next[event] = filtered
+  }
+  return next
 }
 
 function removeCodexScriptEntries(
@@ -672,6 +907,18 @@ export interface InstallContext {
    * when no config exists yet or the flag is unset (hook default applies).
    */
   wakeUpConfig: boolean | null
+  /**
+   * `--legacy-paths` opt-in. When `true`, the install path emits the
+   * 0.10.x absolute-path shape (`node ${HOME}/.lore/dist/mcp.js`,
+   * `${HOME}/.lore/hooks/wakeup.sh`) and the prerequisite checks verify
+   * `hooks/*.sh` exist. When `false` (default for 0.11.0+), the install
+   * path emits the bin-dispatch shape (`lore mcp`, `lore hooks <event>`)
+   * and the prerequisite checks skip the `.sh` verification entirely
+   * because the bin-dispatch path doesn't depend on the legacy hook
+   * scripts. Removal targeted for 0.12.0 alongside `hooks/*.sh` and the
+   * standalone `dist/mcp.js` tsup entry.
+   */
+  legacyPaths: boolean
 }
 
 /**
@@ -705,24 +952,24 @@ function wakeupStatusSuffix(wakeUpConfig: boolean | null): string {
 }
 
 async function prepareInstallContext(
-  opts: { yes?: boolean; project?: string },
+  opts: { yes?: boolean; project?: string; legacyPaths?: boolean },
 ): Promise<InstallContext> {
   const projectDir = resolve(opts.project ?? process.cwd())
   const pkgRoot = resolvePkgRoot()
   const skipPrompts = opts.yes || !process.stdin.isTTY
+  const legacyPaths = !!opts.legacyPaths
 
   const autosavePath = join(pkgRoot, "hooks", "autosave.sh")
   const wakeupPath = join(pkgRoot, "hooks", "wakeup.sh")
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
-  // Universal: every client (Claude, Codex, Cursor) needs the MCP entry
-  // pointing at dist/mcp.js. Hook scripts are required only by Claude /
-  // Codex; `runClaudeInstall` and `runCodexInstall` call
-  // `ensureHookPrerequisites` themselves at the start of their per-client
-  // path. That keeps `lore install --client cursor` from aborting on
-  // missing/non-writable hook files Cursor doesn't use, and routes a
-  // hook-script failure under `--client all` through the per-client
-  // captured-error path rather than aborting before any installer runs.
+  // Sanity check that the package was built. The bin-dispatch path
+  // launches the MCP server via lazy-import from `dist/cli.js` (which
+  // tsup also bundles in the same `npm run build`); the legacy path
+  // invokes `dist/mcp.js` directly. Either entry's existence proves the
+  // build ran, so we keep the existing `dist/mcp.js` check as the
+  // tripwire — checking the legacy entry is harmless on the default
+  // path because both files ship together.
   if (!(await fileExists(mcpJsPath))) {
     console.error("Required file not found:")
     console.error("  dist/mcp.js")
@@ -741,6 +988,7 @@ async function prepareInstallContext(
     mcpJsPath,
     skipPrompts,
     wakeUpConfig,
+    legacyPaths,
   }
 }
 
@@ -751,11 +999,17 @@ async function prepareInstallContext(
  * path under `--client all`. Idempotent — safe for both Claude and Codex
  * runners to call (the chmod is a no-op once the bits are set).
  *
+ * No-op on the bin-dispatch default path (`context.legacyPaths === false`)
+ * because the bin-dispatch shape doesn't depend on `hooks/*.sh` — the
+ * `lore` bin owns the hook entry points directly. Only the
+ * `--legacy-paths` opt-in path needs the .sh prerequisites verified.
+ *
  * Cursor's runner does NOT call this — Cursor doesn't currently support
  * session-end / Stop hooks, so the hook scripts are irrelevant for that
- * branch.
+ * branch regardless of the install shape.
  */
 export async function ensureHookPrerequisites(context: InstallContext): Promise<void> {
+  if (!context.legacyPaths) return
   const [hasAutosave, hasWakeup] = await Promise.all([
     fileExists(context.autosavePath),
     fileExists(context.wakeupPath),
@@ -818,12 +1072,26 @@ async function runClaudeInstall(
   const mcpJsonPath = join(context.projectDir, ".mcp.json")
   const mcpJson = await readJsonSafe(mcpJsonPath)
 
+  // Bin-dispatch is the canonical command shape for hooks. Detection
+  // recognizes both shapes so we can distinguish "stale" (truly drift)
+  // from "legacy-current" (legacy shape pointing at the right pkgRoot,
+  // upgrade candidate). The desired command for the WRITE path
+  // depends on `context.legacyPaths`.
+  const binAutosaveCommand = buildClaudeHookCommand("autosave")
+  const binWakeupCommand = buildClaudeHookCommand("wakeup")
+
   const hooks = (settings.hooks ?? {}) as Record<string, ClaudeHookEntry[]>
-  const autosaveStatus = detectClaudeHook(hooks["Stop"], "autosave.sh", context.autosavePath)
+  const autosaveStatus = detectClaudeHook(
+    hooks["Stop"],
+    "autosave.sh",
+    context.autosavePath,
+    binAutosaveCommand,
+  )
   const wakeupStatus = detectClaudeHook(
     hooks["UserPromptSubmit"],
     "wakeup.sh",
     context.wakeupPath,
+    binWakeupCommand,
   )
 
   // Active SessionEnd registration was removed in 0.6.0. The cleanup planner
@@ -847,18 +1115,27 @@ async function runClaudeInstall(
   const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const expectedMcpEntry = buildClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const binMcpEntry = buildClaudeMcpEntry()
+  const legacyMcpEntry = buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
+  // Desired entry for the WRITE path (driven by --legacy-paths). Detection
+  // below recognizes both shapes regardless of `legacyPaths` so an
+  // operator on bin-dispatch who passes `--legacy-paths` correctly sees
+  // their bin-dispatch entry as `current` to be replaced — without
+  // detection covering both shapes the rewrite would silently no-op.
+  const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
-    : deepEqual(existingMcp, expectedMcpEntry)
+    : deepEqual(existingMcp, binMcpEntry)
       ? "current"
-      : "stale"
+      : deepEqual(existingMcp, legacyMcpEntry)
+        ? "legacy-current"
+        : "stale"
 
   console.log("Claude Code:")
-  console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
-  console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
+  console.log(`  MCP server:        ${statusLabel(mcpStatus, context.legacyPaths)}`)
+  console.log(`  Autosave hook:     ${statusLabel(autosaveStatus, context.legacyPaths)}`)
   console.log(
-    `  Wakeup hook:       ${statusLabel(wakeupStatus)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+    `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
   )
   if (hasSessionEndShim) console.log("  Session-end hook:  will remove")
   if (hasLegacyAutosave) console.log("  Legacy hook:       PostToolUse/Stop -> will migrate")
@@ -869,10 +1146,10 @@ async function runClaudeInstall(
   if (hasLegacyMcp) console.log("  Legacy MCP:        settings.json -> will migrate to .mcp.json")
 
   const allCurrent =
-    autosaveStatus === "current" &&
-    wakeupStatus === "current" &&
+    isEffectivelyCurrent(autosaveStatus, context.legacyPaths) &&
+    isEffectivelyCurrent(wakeupStatus, context.legacyPaths) &&
     !hasSessionEndShim &&
-    mcpStatus === "current" &&
+    isEffectivelyCurrent(mcpStatus, context.legacyPaths) &&
     !hasLegacyAutosave &&
     !hasLegacyWakeup &&
     !hasLegacySessionEndAutosave &&
@@ -896,21 +1173,35 @@ async function runClaudeInstall(
     ...((settings.hooks as Record<string, unknown>) ?? {}),
   }
 
-  if (autosaveStatus !== "current") {
-    mergedHooks["Stop"] = mergeClaudeHookEntries(
+  // `mergeClaudeHookEntries` filters by script-name suffix, which only
+  // recognizes the legacy `.sh` paths. When upgrading from
+  // legacy-current → bin-dispatch we run two passes: first strip the
+  // legacy script entry, then write the bin-dispatch command. When
+  // downgrading bin-dispatch → legacy under `--legacy-paths`, we strip
+  // any existing bin-dispatch entry (no `.sh` suffix), then write the
+  // legacy path. The shared helper below covers both directions.
+  const desiredAutosaveCommand = context.legacyPaths
+    ? context.autosavePath
+    : binAutosaveCommand
+  const desiredWakeupCommand = context.legacyPaths
+    ? context.wakeupPath
+    : binWakeupCommand
+
+  if (!isEffectivelyCurrent(autosaveStatus, context.legacyPaths)) {
+    mergedHooks["Stop"] = upsertClaudeHookCommand(
       hooks["Stop"],
       "autosave.sh",
-      context.autosavePath,
+      desiredAutosaveCommand,
       // Claude settings use hook timeouts in milliseconds.
       { matcher: "", timeout: 10000 },
     )
   }
 
-  if (wakeupStatus !== "current") {
-    mergedHooks["UserPromptSubmit"] = mergeClaudeHookEntries(
+  if (!isEffectivelyCurrent(wakeupStatus, context.legacyPaths)) {
+    mergedHooks["UserPromptSubmit"] = upsertClaudeHookCommand(
       hooks["UserPromptSubmit"],
       "wakeup.sh",
-      context.wakeupPath,
+      desiredWakeupCommand,
       // Claude settings use hook timeouts in milliseconds.
       { matcher: "", timeout: 10000, runOnce: true },
     )
@@ -957,18 +1248,18 @@ async function runClaudeInstall(
   console.log(`  Writing: ${settingsDisplay}`)
   await writeJsonFile(settingsPath, merged)
 
-  if (mcpStatus !== "current") {
+  if (!isEffectivelyCurrent(mcpStatus, context.legacyPaths)) {
     const mergedMcpJson: Record<string, unknown> = { ...mcpJson }
     mergedMcpJson.mcpServers = {
       ...((mcpJson.mcpServers as Record<string, unknown>) ?? {}),
-      lore: expectedMcpEntry,
+      lore: desiredMcpEntry,
     }
 
     const mcpJsonDisplay = displayHomePath(mcpJsonPath)
     console.log(`  Writing: ${mcpJsonDisplay}`)
     await writeJsonFile(mcpJsonPath, mergedMcpJson)
 
-    if (!portableMcpJsPath.startsWith("${HOME}")) {
+    if (context.legacyPaths && !portableMcpJsPath.startsWith("${HOME}")) {
       console.warn()
       console.warn("  Warning: lore is installed outside your home directory")
       console.warn(`    (${context.pkgRoot}).`)
@@ -979,9 +1270,21 @@ async function runClaudeInstall(
   }
 
   console.log()
-  if (mcpStatus !== "current") console.log("  MCP server:        installed (.mcp.json)")
-  if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
-  if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
+  if (!isEffectivelyCurrent(mcpStatus, context.legacyPaths)) {
+    console.log(
+      `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (.mcp.json)`,
+    )
+  }
+  if (!isEffectivelyCurrent(autosaveStatus, context.legacyPaths)) {
+    console.log(
+      `  Autosave hook:     ${postWriteLabel(autosaveStatus, context.legacyPaths)}`,
+    )
+  }
+  if (!isEffectivelyCurrent(wakeupStatus, context.legacyPaths)) {
+    console.log(
+      `  Wakeup hook:       ${postWriteLabel(wakeupStatus, context.legacyPaths)}`,
+    )
+  }
   if (hasSessionEndShim || hasLegacySessionEndAutosave)
     console.log("  Session-end hook:  removed (autosave covers Stop only)")
   if (hasLegacyMcp) console.log("  Legacy MCP:        removed from settings.json")
@@ -1000,39 +1303,69 @@ async function runCodexInstall(
   const codexHooksJson = await readJsonSafe(codexHooksPath)
   const codexHooks = (codexHooksJson.hooks ?? {}) as Record<string, CodexHookEntry[]>
 
-  const expectedMcpSection = buildCodexMcpSection(context.mcpJsPath)
+  const binMcpSection = buildCodexMcpSection()
+  const legacyMcpSection = buildLegacyCodexMcpSection(context.mcpJsPath)
+  const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
   const hooksFeatureValue = extractTomlKeyValue(codexConfig, "features", "codex_hooks")
-  const wakeupCommand = buildCodexHookCommand(context.wakeupPath)
-  const autosaveCommand = buildCodexHookCommand(context.autosavePath)
+  const binWakeupCommand = buildCodexHookCommand("wakeup")
+  const binAutosaveCommand = buildCodexHookCommand("autosave")
+  const legacyWakeupCommand = buildLegacyCodexHookCommand(context.wakeupPath)
+  const legacyAutosaveCommand = buildLegacyCodexHookCommand(context.autosavePath)
+  const desiredWakeupCommand = context.legacyPaths ? legacyWakeupCommand : binWakeupCommand
+  const desiredAutosaveCommand = context.legacyPaths ? legacyAutosaveCommand : binAutosaveCommand
 
   const mcpStatus: HookStatus = !existingMcpSection
     ? "missing"
-    : existingMcpSection.trim() === expectedMcpSection.trim()
+    : existingMcpSection.trim() === binMcpSection.trim()
       ? "current"
-      : "stale"
-  const hooksFeatureStatus: HookStatus =
+      : existingMcpSection.trim() === legacyMcpSection.trim()
+        ? "legacy-current"
+        : "stale"
+  // The Codex hooks feature has no legacy/bin-dispatch axis — it's a
+  // single boolean (`codex_hooks = true`). Re-using HookStatus here
+  // would surface a meaningless legacy-current state, so we keep the
+  // narrow three-value taxonomy for this row only.
+  const hooksFeatureStatus: "current" | "stale" | "missing" =
     hooksFeatureValue == null
       ? "missing"
       : hooksFeatureValue === "true"
         ? "current"
         : "stale"
-  const wakeupStatus = detectCodexHook(codexHooks["SessionStart"], "wakeup.sh", wakeupCommand)
-  const autosaveStatus = detectCodexHook(codexHooks["Stop"], "autosave.sh", autosaveCommand)
+  const wakeupStatus = detectCodexHook(
+    codexHooks["SessionStart"],
+    "wakeup.sh",
+    legacyWakeupCommand,
+    binWakeupCommand,
+  )
+  const autosaveStatus = detectCodexHook(
+    codexHooks["Stop"],
+    "autosave.sh",
+    legacyAutosaveCommand,
+    binAutosaveCommand,
+  )
 
   console.log("Codex:")
-  console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
-  console.log(`  Hooks feature:     ${statusLabel(hooksFeatureStatus)}`)
+  console.log(`  MCP server:        ${statusLabel(mcpStatus, context.legacyPaths)}`)
   console.log(
-    `  Wakeup hook:       ${statusLabel(wakeupStatus)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+    `  Hooks feature:     ${
+      hooksFeatureStatus === "current"
+        ? "already installed"
+        : hooksFeatureStatus === "stale"
+          ? "update available"
+          : "not installed"
+    }`,
   )
-  console.log(`  Autosave hook:     ${statusLabel(autosaveStatus)}`)
+  console.log(
+    `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
+  )
+  console.log(`  Autosave hook:     ${statusLabel(autosaveStatus, context.legacyPaths)}`)
 
   const allCurrent =
-    mcpStatus === "current" &&
+    isEffectivelyCurrent(mcpStatus, context.legacyPaths) &&
     hooksFeatureStatus === "current" &&
-    wakeupStatus === "current" &&
-    autosaveStatus === "current"
+    isEffectivelyCurrent(wakeupStatus, context.legacyPaths) &&
+    isEffectivelyCurrent(autosaveStatus, context.legacyPaths)
 
   if (allCurrent) {
     console.log("  Everything is already installed.")
@@ -1049,14 +1382,18 @@ async function runCodexInstall(
   let nextConfig = codexConfig
   nextConfig = removeTomlTableGroup(nextConfig, "mcp_servers.lore")
   nextConfig = upsertTomlTableKey(nextConfig, "features", "codex_hooks", "true")
-  nextConfig = appendTomlBlock(nextConfig, expectedMcpSection)
+  nextConfig = appendTomlBlock(nextConfig, desiredMcpSection)
 
+  // Strip both legacy `.sh`-named entries AND any prior bin-dispatch
+  // entries so a flip in either direction (legacy → bin or bin →
+  // legacy) leaves only the single canonical entry behind.
   let nextHookEvents = stripCodexScriptFromAllEvents(codexHooks, "wakeup.sh")
   nextHookEvents = stripCodexScriptFromAllEvents(nextHookEvents, "autosave.sh")
+  nextHookEvents = stripCodexBinDispatchHook(nextHookEvents, "wakeup")
+  nextHookEvents = stripCodexBinDispatchHook(nextHookEvents, "autosave")
   nextHookEvents["SessionStart"] = mergeCodexHookEntries(
     nextHookEvents["SessionStart"],
-    "wakeup.sh",
-    wakeupCommand,
+    desiredWakeupCommand,
     {
       matcher: "startup|resume",
       statusMessage: "Loading Lore context",
@@ -1064,8 +1401,7 @@ async function runCodexInstall(
   )
   nextHookEvents["Stop"] = mergeCodexHookEntries(
     nextHookEvents["Stop"],
-    "autosave.sh",
-    autosaveCommand,
+    desiredAutosaveCommand,
     {
       // Codex hook timeouts are expressed in seconds.
       timeout: 30,
@@ -1092,7 +1428,7 @@ async function runCodexInstall(
   }
 
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
-  if (!portableMcpJsPath.startsWith("${HOME}")) {
+  if (context.legacyPaths && !portableMcpJsPath.startsWith("${HOME}")) {
     console.warn()
     console.warn("  Warning: lore is installed outside your home directory")
     console.warn(`    (${context.pkgRoot}).`)
@@ -1102,10 +1438,22 @@ async function runCodexInstall(
   }
 
   console.log()
-  if (mcpStatus !== "current") console.log("  MCP server:        installed (.codex/config.toml)")
+  if (!isEffectivelyCurrent(mcpStatus, context.legacyPaths)) {
+    console.log(
+      `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (.codex/config.toml)`,
+    )
+  }
   if (hooksFeatureStatus !== "current") console.log("  Hooks feature:     enabled")
-  if (wakeupStatus !== "current") console.log("  Wakeup hook:       installed")
-  if (autosaveStatus !== "current") console.log("  Autosave hook:     installed")
+  if (!isEffectivelyCurrent(wakeupStatus, context.legacyPaths)) {
+    console.log(
+      `  Wakeup hook:       ${postWriteLabel(wakeupStatus, context.legacyPaths)}`,
+    )
+  }
+  if (!isEffectivelyCurrent(autosaveStatus, context.legacyPaths)) {
+    console.log(
+      `  Autosave hook:     ${postWriteLabel(autosaveStatus, context.legacyPaths)}`,
+    )
+  }
   console.log("  Start a new Codex session after trusting this project.")
   console.log("  Codex only loads project-scoped .codex/* files for trusted projects.")
 }
@@ -1133,21 +1481,25 @@ export async function runCursorInstall(
 
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const expectedMcpEntry = buildCursorMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const binMcpEntry = buildCursorMcpEntry()
+  const legacyMcpEntry = buildLegacyCursorMcpEntry(portableMcpJsPath, portablePkgRoot)
+  const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
     ? "missing"
-    : deepEqual(existingMcp, expectedMcpEntry)
+    : deepEqual(existingMcp, binMcpEntry)
       ? "current"
-      : "stale"
+      : deepEqual(existingMcp, legacyMcpEntry)
+        ? "legacy-current"
+        : "stale"
 
   const scopeLabel = useGlobalScope ? "global" : "project"
   const cursorMcpDisplay = displayHomePath(cursorMcpPath)
 
   console.log("Cursor:")
   console.log(`  Scope:             ${scopeLabel} (${cursorMcpDisplay})`)
-  console.log(`  MCP server:        ${statusLabel(mcpStatus)}`)
+  console.log(`  MCP server:        ${statusLabel(mcpStatus, context.legacyPaths)}`)
 
-  if (mcpStatus === "current") {
+  if (isEffectivelyCurrent(mcpStatus, context.legacyPaths)) {
     console.log("  Everything is already installed.")
     return
   }
@@ -1162,14 +1514,18 @@ export async function runCursorInstall(
   const mergedMcpJson: Record<string, unknown> = { ...cursorMcpJson }
   mergedMcpJson.mcpServers = {
     ...((cursorMcpJson.mcpServers as Record<string, unknown>) ?? {}),
-    lore: expectedMcpEntry,
+    lore: desiredMcpEntry,
   }
 
   console.log()
   console.log(`  Writing: ${cursorMcpDisplay}`)
   await writeJsonFile(cursorMcpPath, mergedMcpJson)
 
-  if (!useGlobalScope && !portableMcpJsPath.startsWith("${HOME}")) {
+  if (
+    context.legacyPaths &&
+    !useGlobalScope &&
+    !portableMcpJsPath.startsWith("${HOME}")
+  ) {
     console.warn()
     console.warn("  Warning: lore is installed outside your home directory")
     console.warn(`    (${context.pkgRoot}).`)
@@ -1179,7 +1535,9 @@ export async function runCursorInstall(
   }
 
   console.log()
-  console.log(`  MCP server:        installed (${cursorMcpDisplay})`)
+  console.log(
+    `  MCP server:        ${postWriteLabel(mcpStatus, context.legacyPaths)} (${cursorMcpDisplay})`,
+  )
   console.log(
     "  Cursor does not currently support Stop hooks. The Stop-triggered\n" +
       "  autosave and the detached auto-digest spawn will not run when lore is\n" +
@@ -1281,6 +1639,7 @@ export async function runInstall(
     yes?: boolean
     project?: string
     cursorGlobal?: boolean
+    legacyPaths?: boolean
   },
   runners: InstallRunners = defaultInstallRunners,
 ): Promise<void> {
@@ -1397,27 +1756,37 @@ export function parsePrintConfigFormat(value: string): PrintConfigFormat | null 
  * Render a paste-ready MCP config snippet as a string.
  *
  * Pure: takes resolved paths in, returns the snippet out. Reuses
- * `buildClaudeMcpEntry` / `buildCodexMcpSection` so the snippet stays
- * byte-identical to what `--client claude` writes to `.mcp.json` and what
- * `--client codex` writes to `.codex/config.toml`. Drift between the
- * printed shape and the on-disk shape is the failure mode this reuse
- * exists to prevent — operators paste the snippet expecting it to behave
- * the same as a first-class install.
+ * `buildClaudeMcpEntry` / `buildCodexMcpSection` (or their `Legacy`
+ * counterparts when `legacyPaths === true`) so the snippet stays
+ * byte-identical to what `--client claude` writes to `.mcp.json` and
+ * what `--client codex` writes to `.codex/config.toml` for the same
+ * `--legacy-paths` flag value. Drift between the printed shape and the
+ * on-disk shape is the failure mode this reuse exists to prevent.
+ *
+ * `mcpJsPath` and `pkgRoot` are unused on the bin-dispatch path —
+ * accepted for API compatibility with the legacy path, ignored when
+ * `legacyPaths === false`.
  */
 export function buildPrintConfigOutput(
   format: PrintConfigFormat,
   mcpJsPath: string,
   pkgRoot: string,
+  legacyPaths = false,
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const portablePkgRoot = toPortablePath(pkgRoot)
 
   if (format === "json") {
-    const entry = buildClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
+    const entry = legacyPaths
+      ? buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot)
+      : buildClaudeMcpEntry()
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
 
-  return buildCodexMcpSection(portableMcpJsPath) + "\n"
+  const section = legacyPaths
+    ? buildLegacyCodexMcpSection(portableMcpJsPath)
+    : buildCodexMcpSection()
+  return section + "\n"
 }
 
 /**
@@ -1427,7 +1796,10 @@ export function buildPrintConfigOutput(
  * writes the snippet to stdout. No filesystem writes — `--project` is
  * accepted upstream as a no-op and never reaches this function.
  */
-async function runPrintConfig(format: PrintConfigFormat): Promise<void> {
+async function runPrintConfig(
+  format: PrintConfigFormat,
+  legacyPaths: boolean,
+): Promise<void> {
   const pkgRoot = resolvePkgRoot()
   const mcpJsPath = join(pkgRoot, "dist", "mcp.js")
 
@@ -1437,7 +1809,7 @@ async function runPrintConfig(format: PrintConfigFormat): Promise<void> {
     )
   }
 
-  process.stdout.write(buildPrintConfigOutput(format, mcpJsPath, pkgRoot))
+  process.stdout.write(buildPrintConfigOutput(format, mcpJsPath, pkgRoot, legacyPaths))
 }
 
 export const installCommand = new Command("install")
@@ -1455,6 +1827,10 @@ export const installCommand = new Command("install")
     "--print-config <format>",
     "print a paste-ready MCP config snippet to stdout (no files written); format: json or toml",
   )
+  .option(
+    "--legacy-paths",
+    "emit the absolute-path 0.10.x config shape (node dist/mcp.js, hooks/*.sh) instead of the bin-dispatched 'lore mcp' / 'lore hooks <event>' default. Removal targeted for 0.12.0",
+  )
   .option("-y, --yes", "skip confirmation prompts")
   .action(
     async (opts: {
@@ -1463,6 +1839,7 @@ export const installCommand = new Command("install")
       printConfig?: string
       yes?: boolean
       cursorGlobal?: boolean
+      legacyPaths?: boolean
     }) => {
       try {
         if (opts.printConfig != null) {
@@ -1481,8 +1858,10 @@ export const installCommand = new Command("install")
           // when --print-config is set. The escape-hatch flag prints to stdout
           // regardless of which assistant the operator nominally targeted;
           // --project would have controlled the on-disk write directory but
-          // no file is written.
-          await runPrintConfig(format)
+          // no file is written. --legacy-paths IS honored — it controls the
+          // shape of the printed snippet (bin-dispatch by default, legacy
+          // when set).
+          await runPrintConfig(format, !!opts.legacyPaths)
           return
         }
 
@@ -1515,6 +1894,7 @@ export const installCommand = new Command("install")
           project: opts.project,
           yes: opts.yes,
           cursorGlobal: opts.cursorGlobal,
+          legacyPaths: opts.legacyPaths,
         })
       } catch (err) {
         console.error("Install failed:", err instanceof Error ? err.message : err)

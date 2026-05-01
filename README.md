@@ -16,6 +16,61 @@ loading and session saving.
 npm install makenotion/lore
 ```
 
+### Using `@makenotion/lore` as a devDep (internal consumers)
+
+Internal repos can pin `@makenotion/lore` as a devDependency from
+GitHub Packages, then commit team-shared assistant config that works on
+every engineer's checkout without per-engineer absolute-path rewrites.
+
+1. **Configure your `.npmrc`.** Copy `.npmrc.example` from this repo and
+   point the `@makenotion` scope at GitHub Packages:
+
+   ```
+   @makenotion:registry=https://npm.pkg.github.com
+   //npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
+   ```
+
+   `GITHUB_PACKAGES_TOKEN` must have at least `read:packages` scope.
+   See `.npmrc.example` for details.
+
+2. **Add the devDep.** From the consumer repo:
+
+   ```bash
+   yarn add -D @makenotion/lore        # or `npm install -D @makenotion/lore`
+   ```
+
+3. **Run `lore install` once locally.** From inside the consumer repo:
+
+   ```bash
+   npx lore install
+   ```
+
+   This writes the **bin-dispatch** config shape — `.mcp.json` with
+   `{ "command": "lore", "args": ["mcp"] }` and `.claude/settings.json`
+   hooks with `"command": "lore hooks <event>"`. The output contains no
+   absolute paths and no `${HOME}` placeholders, so the file is portable
+   across every engineer's machine. Host assistants resolve `lore`
+   through the consumer's `node_modules/.bin/lore` symlink.
+
+4. **Commit the resulting diff.** The committed config now Just Works on
+   any teammate's fresh checkout: `yarn install` builds the bin symlink,
+   the host assistant resolves `lore` against it.
+
+   > **Don't have a global `lore` install on the same machine.** A global
+   > `npm install -g @makenotion/lore` would shadow the project-local
+   > devDep on PATH for shells that don't put `node_modules/.bin` ahead
+   > of global bins. Stick to one source of truth per machine.
+
+#### Migrating from a `~/.lore` deployment
+
+Legacy `~/.lore` installs (where every engineer cloned lore to home and
+the committed config used absolute paths) still work — `lore install
+--legacy-paths` opts back into the 0.10.x absolute-path output for one
+release. Default `lore install` rewrites legacy entries to bin-dispatch
+and prints `MCP server: upgraded (legacy → bin-dispatch)` in the install
+summary. The 0.12.0 release will remove `--legacy-paths` and the
+absolute-path code path together.
+
 ### 2. Create a Notion Integration
 
 Go to [notion.so/my-integrations](https://www.notion.so/my-integrations),

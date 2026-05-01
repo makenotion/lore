@@ -9,6 +9,8 @@ import { migrateCommand } from "./commands/migrate.js"
 import { digestCommand } from "./commands/digest.js"
 import { tasksCommand } from "./commands/tasks.js"
 import { conflictsCommand } from "./commands/conflicts.js"
+import { mcpCommand } from "./commands/mcp.js"
+import { hooksCommand } from "./commands/hooks.js"
 
 const program = new Command()
 
@@ -24,5 +26,7 @@ program.addCommand(migrateCommand)
 program.addCommand(digestCommand)
 program.addCommand(tasksCommand)
 program.addCommand(conflictsCommand)
+program.addCommand(mcpCommand)
+program.addCommand(hooksCommand)
 
 program.parse()
