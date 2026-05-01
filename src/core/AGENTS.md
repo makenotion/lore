@@ -241,6 +241,53 @@ has no per-key uniqueness enforcement. Single-agent serial usage is
 the common case; if this becomes a real problem, a follow-up adds a
 brief lock via `src/hooks/lock.ts` or via the existing rate-limit gate.
 
+**Promotion advisory on the upsert response (0.9.0/#15)**. The
+return shape carries `promotionAdvisory: PromotionAdvisory | null`
+populated from `computePromotionAdvisory({ revisionCount,
+bodyLength, kind })` over the post-write state already in memory
+— no extra Notion calls. Two thresholds
+(`PROMOTE_REVISION_THRESHOLD = 5`, `PROMOTE_BODY_LENGTH_THRESHOLD =
+5000`) fire the advisory; either or both can land in `reasons`. The
+advisory is informational — **never blocks the save and never
+auto-promotes**. The MCP layer renders it as a response footer when
+non-null; the agent decides whether to act on the suggestion.
+Scoping discipline pins the advisory to the **append-revision
+branch only**: fresh-create upserts (`upserted === false`) and
+non-`topicKey` saves both return `promotionAdvisory: null`
+regardless of body length. The advisory is specifically about
+revision-chain accumulation — a one-shot write with a long body is
+a different signal that warrants a different surface (out of scope
+for 0.9.0). The 5KB body threshold is a *human-readability*
+heuristic, NOT a Notion structural cap; resisting a precise
+block-limit claim is deliberate because Notion's documented limits
+drift between releases. Both thresholds are exported consts so a
+future patch can tune without schema or behavioral changes.
+
+**The suggestion wording is kind-aware.** Topic-key chains are
+valid for `decision`, `runbook`, `incident`, `postmortem`, and
+`policy` kinds, but only `kind: 'decision'` memories can be
+referenced from `lore-decision action='create'` with
+`supersedesIds`: that handler resolves every supersedesIds entry
+through `DecisionService.getById`, which throws on non-decision
+kinds. A footer that handed a runbook/incident/postmortem/policy
+operator `supersedesIds: [<this-id>]` would be a ready-to-paste
+broken command. The decision-kind branch keeps the
+supersede-and-split wording (and embeds the `<this-memory-id>`
+placeholder for MCP-boundary substitution); non-decision kinds get
+the universally-valid split / archive path that doesn't depend on
+a decision-only API and carries no placeholder. The
+`upsertByTopicKey` flow forwards `input.kind` to the helper; the
+kind-mismatch guard upstream guarantees `input.kind ===
+existing.kind` so either is correct.
+
+The MCP boundary (`formatPromotionAdvisory` in
+`src/mcp/tools/memory.ts`) substitutes the just-saved memory's id
+at render time via `replaceAll("<this-memory-id>", memoryId)`. For
+the non-decision branch the call is a safe no-op because no
+placeholder appears in the suggestion. The service-layer return is
+id-agnostic by design — the kind / id split keeps the helper a
+pure value computation; the rendering layer owns formatting.
+
 ## Memories self-relation columns: symmetric-write contract
 
 The Memories DB exposes three `single_property` self-relations:

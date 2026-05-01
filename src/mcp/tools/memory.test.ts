@@ -4340,6 +4340,295 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
   })
 })
 
+describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () => {
+  // The advisory is a response-footer addition on the topic-key
+  // upsert path. The pure-function `computePromotionAdvisory` is
+  // tested in `src/core/memory.test.ts`; these tests pin the MCP
+  // boundary's render contract: footer present on advisory return,
+  // absent (no empty headers) on null return, and the
+  // `<this-memory-id>` placeholder substituted with the just-saved
+  // memory's id.
+
+  it("appends the advisory footer when the upsert returns a non-null advisory; substitutes the memory-id placeholder", async () => {
+    const mockServer = createMockServer()
+    const upserted = makeMemory("mem-existing", {
+      title: "JWT auth model",
+      projectIds: ["proj-a"],
+      topicKey: "decision/jwt-auth",
+      revisionCount: 5,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: upserted,
+      revisionCount: 5,
+      upserted: true,
+      promotionAdvisory: {
+        reasons: ["5 revisions accumulated", "body length 5832 chars"],
+        suggestion:
+          "Consider promoting via lore-decision action='create' " +
+          "with supersedesIds: [<this-memory-id>], or splitting " +
+          "the topic into narrower topicKeys.",
+      },
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "JWT auth model",
+      content: "...",
+      kind: "decision",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Promotion advisory:")
+    expect(text).toContain("- 5 revisions accumulated")
+    expect(text).toContain("- body length 5832 chars")
+    // The placeholder is substituted with the just-saved memory's id
+    // so the operator can copy-paste the promotion incantation
+    // directly. The literal `<this-memory-id>` must NOT appear.
+    expect(text).toContain("supersedesIds: [mem-existing]")
+    expect(text).not.toContain("<this-memory-id>")
+  })
+
+  it("omits the footer entirely when the upsert returns a null advisory (no empty headers)", async () => {
+    // Sub-threshold upsert: the service returns `promotionAdvisory:
+    // null` and the response renders the standard upsert footer
+    // without any "Promotion advisory:" header. Pinning the absence
+    // of empty headers is the spec's "omits the section entirely
+    // when null" acceptance criterion.
+    const mockServer = createMockServer()
+    const upserted = makeMemory("mem-existing", {
+      title: "JWT auth model",
+      projectIds: ["proj-a"],
+      topicKey: "decision/jwt-auth",
+      revisionCount: 2,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: upserted,
+      revisionCount: 2,
+      upserted: true,
+      promotionAdvisory: null,
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "JWT auth model",
+      content: "...",
+      kind: "decision",
+      topicKey: "decision/jwt-auth",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).not.toContain("Promotion advisory")
+    expect(text).not.toContain("revisions accumulated")
+    expect(text).not.toContain("body length")
+  })
+
+  it("omits the footer when topicKey is unset (non-upsert save path)", async () => {
+    // A save without `topicKey` runs the legacy create path. Even
+    // with a 6KB body, the response carries no advisory because the
+    // advisory is scoped to the upsert path. Spec acceptance
+    // criterion: "A save WITHOUT topicKey returns no advisory
+    // regardless of body length."
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-fresh", { projectIds: ["proj-a"] })
+    const create = vi.fn().mockResolvedValue(created)
+    const upsertByTopicKey = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    // 6KB body — would cross PROMOTE_BODY_LENGTH_THRESHOLD if the
+    // path applied. It does NOT, because non-topicKey saves don't
+    // run through `upsertByTopicKey` and the advisory is scoped to
+    // the upsert path.
+    const result = await remember({
+      title: "Long save",
+      content: "a".repeat(6000),
+    } as never)
+
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).not.toContain("Promotion advisory")
+  })
+
+  it("omits the footer on a fresh-create upsert (revision 1 of a new chain)", async () => {
+    // Fresh-create upsert: the service returns `promotionAdvisory:
+    // null` because the advisory is scoped to the append-revision
+    // branch only. Spec acceptance criterion: "A fresh-create upsert
+    // returns no advisory regardless of body length."
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-fresh", {
+      projectIds: ["proj-a"],
+      topicKey: "decision/foo",
+      revisionCount: 1,
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: created,
+      revisionCount: 1,
+      upserted: false,
+      promotionAdvisory: null,
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Foo",
+      content: "a".repeat(6000),
+      kind: "decision",
+      topicKey: "decision/foo",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Created (revision 1, topic key 'decision/foo')")
+    expect(text).not.toContain("Promotion advisory")
+  })
+
+  it("renders the non-decision-kind suggestion verbatim (no `supersedesIds`, no placeholder leak) for a runbook upsert", async () => {
+    // Topic-key chains support runbook/incident/postmortem/policy
+    // alongside decision (per the README's family table). Only the
+    // decision kind gets the `supersedesIds` suggestion because
+    // `lore-decision action='create'` resolves every supersedesIds
+    // entry through `DecisionService.getById`, which throws on
+    // non-decision kinds — the principal review on PR #166 caught
+    // that the original spec wording handed runbook operators a
+    // ready-to-paste BROKEN command. Pin the user-visible footer for
+    // a runbook upsert here so the MCP boundary's rendering can't
+    // regress to the decision-only wording without tripping CI.
+    const mockServer = createMockServer()
+    const upserted = makeMemory("mem-runbook", {
+      title: "DB migration runbook",
+      projectIds: ["proj-a"],
+      topicKey: "runbook/db-migration",
+      revisionCount: 5,
+      kind: "runbook",
+    })
+    const upsertByTopicKey = vi.fn().mockResolvedValue({
+      memory: upserted,
+      revisionCount: 5,
+      upserted: true,
+      // Suggestion below mirrors what the kind-aware
+      // `computePromotionAdvisory` returns for non-decision kinds.
+      // Service-layer tests in `src/core/memory.test.ts` pin the
+      // string-equality contract; this MCP test pins that the
+      // renderer passes the suggestion through verbatim and that
+      // `replaceAll("<this-memory-id>", ...)` is a safe no-op when
+      // the suggestion has no placeholder.
+      promotionAdvisory: {
+        reasons: ["5 revisions accumulated"],
+        suggestion:
+          "Consider splitting the topic into narrower topicKeys, " +
+          "or archiving this chain via lore-memory action='archive' " +
+          "and starting a fresh chain with a more specific topicKey.",
+      },
+    })
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        create: vi.fn(),
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      facts: { createWithDedup: vi.fn() },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "DB migration runbook",
+      content: "...",
+      kind: "runbook",
+      topicKey: "runbook/db-migration",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Promotion advisory:")
+    expect(text).toContain("- 5 revisions accumulated")
+    expect(text).toContain("splitting the topic into narrower topicKeys")
+    expect(text).toContain("archiving this chain")
+    // Critical: the user-facing CTA must NOT contain the broken
+    // decision-only path. A regression here means an operator pastes
+    // a `lore-decision action='create' supersedesIds: [<runbook-id>]`
+    // command and gets a `not a decision` rejection from
+    // `DecisionService.getById`.
+    expect(text).not.toContain("supersedesIds")
+    expect(text).not.toContain("lore-decision action='create'")
+    // No placeholder leak — `replaceAll` should no-op when the
+    // suggestion carries no placeholder, but pinning explicitly
+    // catches a future where a contributor mis-edits the
+    // non-decision wording to include the placeholder while
+    // forgetting to add the substitution.
+    expect(text).not.toContain("<this-memory-id>")
+  })
+})
+
 describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", () => {
   // Conservative re-key path: an agent that picks the wrong topic
   // key on first save can switch to the canonical key without

@@ -201,10 +201,17 @@ symmetric verdicts, omit `affectedMemoryId`.
   targets, use `compatible` and manually edit one body to
   incorporate the other via `lore-memory action='update'` (no
   structured merge primitive ships — `update` is a body-edit
-  surface, not a merge engine), OR promote to a formal decision
-  via `lore-decision action='create'` with `supersedesIds`.
-  Calling `compare` with `verdict: 'supersedes'` and a
-  non-decision affected memory throws.
+  surface, not a merge engine), OR promote the synthesis into a
+  formal decision via `lore-decision action='create'` and
+  archive the non-decision memory afterward via `lore-memory
+  action='archive'`. **`supersedesIds` cannot reference the
+  non-decision memory** — `lore-decision action='create'`
+  resolves every `supersedesIds` entry through
+  `DecisionService.getById`, which throws on non-decision kinds.
+  The supersession is therefore structural (archive + new
+  decision) rather than relational (linked via the
+  `Supersedes` relation). Calling `compare` with `verdict:
+  'supersedes'` and a non-decision affected memory throws.
 - **`scoped` (symmetric)** — A and B differ but the
   differences are explained by scope (project, time,
   environment). Recorded via `Compared With` and `Compare
@@ -261,10 +268,25 @@ upsert calls; saving with a different `kind` against an existing
 upsert chain is rejected at the save path. Topic keys are for
 *categories* of recurring writes, not for individual saves.
 
-When the upserted memory's body grows past ~5KB, consider calling
-`lore-decision action='create'` with `supersedesIds` referencing
-the upserted memory — promote the synthesis into a formal
-decision and let the upsert chain retire.
+When the upserted memory's body grows past ~5KB (or the chain
+hits 5+ revisions), the save response surfaces a **promotion
+advisory** with a kind-aware CTA the agent or operator can act
+on. **For `kind: 'decision'` chains**, the advisory suggests
+calling `lore-decision action='create'` with `supersedesIds`
+referencing the upserted memory — promote the synthesis into a
+fresh formal decision and let the upsert chain retire. **For
+non-decision chains** (`runbook`, `incident`, `postmortem`,
+`policy`), the advisory drops the `supersedesIds` clause —
+`lore-decision action='create'` resolves every supersedesIds
+entry through `DecisionService.getById`, which throws on
+non-decision kinds, so handing a non-decision operator that
+incantation would be a broken paste. The non-decision suggestion
+instead points at splitting into narrower topicKeys, or
+archiving the chain via `lore-memory action='archive'` and
+starting a fresh chain under a more specific topicKey. The
+advisory is informational only — the system never auto-promotes,
+and the save always succeeds whether or not the agent acts on
+the hint.
 
 **Repair path: re-keying a misnamed first save.** Pass `topicKey`
 to `lore-memory action='update'` to switch the existing row's

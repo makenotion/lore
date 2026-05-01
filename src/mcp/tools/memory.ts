@@ -39,6 +39,7 @@ import {
   recordContradiction,
   recordSupersedence,
   RekeyAuditError,
+  type PromotionAdvisory,
   type RecordComparedResult,
 } from "../../core/memory.js"
 import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
@@ -305,6 +306,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       memory: Memory
       revisionCount: number
       upserted: boolean
+      promotionAdvisory: PromotionAdvisory | null
     }> = args.topicKey
       ? services.memories.upsertByTopicKey({
           topicKey: args.topicKey,
@@ -342,7 +344,16 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
             agent: args.agent,
             session: args.session,
           })
-          .then((memory) => ({ memory, revisionCount: 1, upserted: false }))
+          .then((memory) => ({
+            memory,
+            revisionCount: 1,
+            upserted: false,
+            // Non-topicKey saves and fresh-create upserts never carry
+            // an advisory — the upsert path returns null on
+            // fresh-create, so the non-topicKey branch matches that
+            // posture for shape uniformity.
+            promotionAdvisory: null,
+          }))
 
     const [writeResult, nearDuplicates, relatedTasks] = await Promise.all([
       writePromise,
@@ -479,6 +490,24 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} attempted`,
       )
     }
+    // Promotion advisory (0.9.0/#15). Renders only when the upsert
+    // path returned a non-null advisory — fresh-create upserts and
+    // non-topicKey saves both surface as null upstream and produce no
+    // footer. The `<this-memory-id>` placeholder in the suggestion is
+    // substituted with the just-saved memory's id so the operator can
+    // copy-paste the promotion incantation directly.
+    //
+    // Loose `!= null` rather than strict `!== null`: the runtime type
+    // contract guarantees `PromotionAdvisory | null` (the writePromise
+    // type pin above is authoritative), but #06-era test fixtures cast
+    // through `as never` and don't supply `promotionAdvisory` at all,
+    // so they observe `undefined` here. Treating both as "no advisory"
+    // is correct under both shapes; production callers cannot supply
+    // `undefined` because TypeScript rejects it at the writePromise
+    // assignment.
+    if (writeResult.promotionAdvisory != null) {
+      lines.push("", ...formatPromotionAdvisory(writeResult.promotionAdvisory, memory.id))
+    }
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
@@ -486,6 +515,33 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
   } catch (err) {
     return toolError(err)
   }
+}
+
+/**
+ * Render the promotion advisory footer (issue 0.9.0/#15) for the
+ * upsert response. Surfaces "this topic chain is getting long,
+ * consider promoting" when revision count or body length crosses
+ * threshold. Informational only — never blocks the save, never
+ * auto-promotes.
+ *
+ * The `<this-memory-id>` placeholder in the core advisory's
+ * `suggestion` string is substituted with the just-saved memory's
+ * id at render time so the operator can copy-paste the incantation
+ * directly. The substitution lives at the MCP boundary rather than
+ * in `computePromotionAdvisory` for separation of concerns: the
+ * core helper is pure id-free value computation; the rendering
+ * layer owns formatting decisions including which placeholder
+ * substitutions to apply. `replaceAll` (not `replace`) so a future
+ * suggestion-string evolution that mentions the id more than once
+ * substitutes every occurrence rather than only the first.
+ */
+function formatPromotionAdvisory(advisory: PromotionAdvisory, memoryId: string): string[] {
+  const lines: string[] = ["Promotion advisory:"]
+  for (const reason of advisory.reasons) {
+    lines.push(`  - ${reason}`)
+  }
+  lines.push(`  ${advisory.suggestion.replaceAll("<this-memory-id>", memoryId)}`)
+  return lines
 }
 
 /**

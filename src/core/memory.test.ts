@@ -10,6 +10,9 @@ import {
   hasMatchingCompareNote,
   recordContradiction,
   recordSupersedence,
+  computePromotionAdvisory,
+  PROMOTE_BODY_LENGTH_THRESHOLD,
+  PROMOTE_REVISION_THRESHOLD,
   type RrfEntry,
 } from "./memory.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
@@ -1477,6 +1480,333 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     // return the stale value or refetch via Notion).
     expect(retrieveSpy).toHaveBeenCalledTimes(1)
   })
+
+  // -------------------------------------------------------------------
+  // Promotion advisory on upsert response (0.9.0/15)
+  // -------------------------------------------------------------------
+  // The advisory fires only on the append-revision branch and only
+  // when at least one threshold (`PROMOTE_REVISION_THRESHOLD = 5` OR
+  // `PROMOTE_BODY_LENGTH_THRESHOLD = 5000`) is met. Fresh-create and
+  // sub-threshold upserts return `null`. The values are starting
+  // points; if real-vault data warrants a retune, update the const
+  // and these test boundaries together.
+
+  it("returns promotionAdvisory: null when revision count and body length are both below threshold", async () => {
+    // Revision Count: 4 (existing 3 → 4) and an existing body well
+    // under 5KB; neither threshold crosses, no advisory fires.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 3,
+      kind: "decision",
+    })
+    const { client } = makeUpsertClient({
+      findResults: [existing],
+      existingBody: "short body",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "small revision",
+      kind: "decision",
+    })
+
+    expect(result.upserted).toBe(true)
+    expect(result.revisionCount).toBe(4)
+    expect(result.promotionAdvisory).toBeNull()
+  })
+
+  it("returns advisory with revisions reason only when revision count crosses but body length does not", async () => {
+    // Revision Count: 5 (existing 4 → 5) — crosses
+    // PROMOTE_REVISION_THRESHOLD; body stays small.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 4,
+      kind: "decision",
+    })
+    const { client } = makeUpsertClient({
+      findResults: [existing],
+      existingBody: "short body",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "small revision",
+      kind: "decision",
+    })
+
+    expect(result.revisionCount).toBe(5)
+    expect(result.promotionAdvisory).not.toBeNull()
+    expect(result.promotionAdvisory!.reasons).toContain("5 revisions accumulated")
+    expect(
+      result.promotionAdvisory!.reasons.some((r) => r.startsWith("body length")),
+    ).toBe(false)
+    // Suggestion is the frozen ready-to-paste form documented in #15.
+    // Test ID is the post-write memory's id; the MCP layer substitutes
+    // `<this-memory-id>` at render time, so the service-layer string
+    // carries the placeholder verbatim.
+    expect(result.promotionAdvisory!.suggestion).toBe(
+      "Consider promoting via lore-decision action='create' " +
+        "with supersedesIds: [<this-memory-id>], or splitting " +
+        "the topic into narrower topicKeys.",
+    )
+  })
+
+  it("returns advisory with body-length reason only when body crosses but revision count does not", async () => {
+    // Revision Count: 3 (existing 2 → 3); existing body crosses 5KB,
+    // so the assembled body (existing + revision block) certainly
+    // crosses too.
+    const longBody = "a".repeat(PROMOTE_BODY_LENGTH_THRESHOLD + 100)
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "runbook",
+    })
+    const { client } = makeUpsertClient({
+      findResults: [existing],
+      existingBody: longBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration",
+      content: "another step",
+      kind: "runbook",
+    })
+
+    expect(result.revisionCount).toBe(3)
+    expect(result.promotionAdvisory).not.toBeNull()
+    expect(
+      result.promotionAdvisory!.reasons.some((r) => r.startsWith("body length")),
+    ).toBe(true)
+    expect(result.promotionAdvisory!.reasons).not.toContain("3 revisions accumulated")
+    expect(
+      result.promotionAdvisory!.reasons.some((r) => r === "5 revisions accumulated"),
+    ).toBe(false)
+    // Runbook is a non-decision kind. The upsert path forwards
+    // `input.kind` to `computePromotionAdvisory`, which selects the
+    // non-decision suggestion that drops `supersedesIds`
+    // (DecisionService.getById would reject the non-decision id —
+    // see the principal review on 0.9.0/15). Pinned end-to-end
+    // through the upsert integration so a future contributor that
+    // forgets to thread `kind` doesn't silently regress the user-
+    // facing CTA back to the broken decision-only wording.
+    expect(result.promotionAdvisory!.suggestion).not.toContain("supersedesIds")
+    expect(result.promotionAdvisory!.suggestion).not.toContain("<this-memory-id>")
+    expect(result.promotionAdvisory!.suggestion).toContain(
+      "splitting the topic into narrower topicKeys",
+    )
+  })
+
+  it("returns advisory with BOTH reasons when both thresholds cross", async () => {
+    // Revision Count: 6 AND assembled body > 5KB — both reasons
+    // appear in the same advisory, in the documented order
+    // (revisions first, then body length).
+    const longBody = "a".repeat(PROMOTE_BODY_LENGTH_THRESHOLD + 200)
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 5,
+      kind: "runbook",
+    })
+    const { client } = makeUpsertClient({
+      findResults: [existing],
+      existingBody: longBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration",
+      content: "x",
+      kind: "runbook",
+    })
+
+    expect(result.revisionCount).toBe(6)
+    expect(result.promotionAdvisory).not.toBeNull()
+    expect(result.promotionAdvisory!.reasons).toEqual([
+      "6 revisions accumulated",
+      expect.stringMatching(/^body length \d+ chars$/),
+    ])
+  })
+
+  it("fresh-create upsert returns promotionAdvisory: null even when content is very long", async () => {
+    // No existing match → create path → `upserted: false`. Even if
+    // the caller passes a 6KB body, the spec deliberately scopes the
+    // advisory to the append-revision branch only. Long-single-save
+    // advisory is out of scope for 0.9.0.
+    const longContent = "a".repeat(PROMOTE_BODY_LENGTH_THRESHOLD + 1000)
+    const { client } = makeUpsertClient({ findResults: [] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+      title: "Foo",
+      content: longContent,
+      kind: "decision",
+    })
+
+    expect(result.upserted).toBe(false)
+    expect(result.revisionCount).toBe(1)
+    expect(result.promotionAdvisory).toBeNull()
+  })
+})
+
+describe("computePromotionAdvisory (0.9.0/15)", () => {
+  // Threshold-edge cases pin the inclusive (`>=`) semantics so a
+  // future contributor can't silently shift to strict-greater and
+  // quietly raise the firing point. These tests are purposefully
+  // value-by-value rather than parametrized so a regression names
+  // the exact boundary that drifted.
+  //
+  // Off-axis sentinel values are zero throughout so a single regex
+  // sweep catches every reference if the threshold ever needs
+  // retuning. The body-length reason renders the literal numeric
+  // value (no thousands separator) — matches the prose-code form
+  // in the spec at `0.9.0/Phase-3/15` and is asserted exactly so
+  // any future reformatting (`toLocaleString`, etc.) requires an
+  // intentional test update.
+
+  it("returns null when both inputs are well below threshold", () => {
+    expect(
+      computePromotionAdvisory({
+        revisionCount: 1,
+        bodyLength: 100,
+        kind: "decision",
+      }),
+    ).toBeNull()
+  })
+
+  it("returns null on zero-state inputs (defensive — guards against `>=` mis-firing on initialized-but-empty state)", () => {
+    // Defensive: a future caller that synthesizes the inputs from
+    // null-coalesced fields (`existing.revisionCount ?? 0`, an empty
+    // body) must not trigger the advisory. Pins the lower bound of
+    // the inclusive `>=` semantics.
+    expect(
+      computePromotionAdvisory({
+        revisionCount: 0,
+        bodyLength: 0,
+        kind: "decision",
+      }),
+    ).toBeNull()
+  })
+
+  it("returns null at exactly one-below-threshold on both axes (revision=4, body=4999)", () => {
+    expect(
+      computePromotionAdvisory({
+        revisionCount: PROMOTE_REVISION_THRESHOLD - 1,
+        bodyLength: PROMOTE_BODY_LENGTH_THRESHOLD - 1,
+        kind: "decision",
+      }),
+    ).toBeNull()
+  })
+
+  it("fires the revisions reason at exactly the threshold (inclusive `>=`)", () => {
+    const advisory = computePromotionAdvisory({
+      revisionCount: PROMOTE_REVISION_THRESHOLD,
+      bodyLength: 0,
+      kind: "decision",
+    })
+    expect(advisory).not.toBeNull()
+    expect(advisory!.reasons).toEqual(["5 revisions accumulated"])
+  })
+
+  it("fires the body-length reason at exactly the threshold (inclusive `>=`)", () => {
+    const advisory = computePromotionAdvisory({
+      revisionCount: 0,
+      bodyLength: PROMOTE_BODY_LENGTH_THRESHOLD,
+      kind: "decision",
+    })
+    expect(advisory).not.toBeNull()
+    expect(advisory!.reasons).toEqual([
+      `body length ${PROMOTE_BODY_LENGTH_THRESHOLD} chars`,
+    ])
+  })
+
+  it("orders reasons revisions-first, body-length-second when both fire", () => {
+    const advisory = computePromotionAdvisory({
+      revisionCount: 7,
+      bodyLength: 6000,
+      kind: "decision",
+    })
+    expect(advisory).not.toBeNull()
+    expect(advisory!.reasons).toEqual([
+      "7 revisions accumulated",
+      "body length 6000 chars",
+    ])
+  })
+
+  it("returns the decision-kind suggestion string with the placeholder intact", () => {
+    // The placeholder substitution happens at the MCP boundary — see
+    // `formatPromotionAdvisory` in `src/mcp/tools/memory.ts`. The
+    // service-layer return MUST carry the placeholder verbatim so the
+    // boundary substitution is observable to tests. Decision-kind
+    // memories are the ONLY topic-key-chain kind for which
+    // `lore-decision action='create' supersedesIds: [...]` is a valid
+    // ready-to-paste command (DecisionService.getById throws for
+    // non-decision kinds), so the placeholder lives in this branch
+    // alone.
+    const advisory = computePromotionAdvisory({
+      revisionCount: 5,
+      bodyLength: 0,
+      kind: "decision",
+    })
+    expect(advisory!.suggestion).toBe(
+      "Consider promoting via lore-decision action='create' " +
+        "with supersedesIds: [<this-memory-id>], or splitting " +
+        "the topic into narrower topicKeys.",
+    )
+  })
+
+  it.each([
+    ["runbook"],
+    ["incident"],
+    ["postmortem"],
+    ["policy"],
+  ] as const)(
+    "returns the non-decision suggestion (no supersedesIds, no placeholder) for kind=%s",
+    (kind) => {
+      // Non-decision kinds are valid topic-key chains (per the
+      // README's `runbook/database-migration`,
+      // `incident/login-redirect-502`, `postmortem/payment-gateway-timeout`,
+      // `policy/code-review-min-reviewers` examples) but
+      // `lore-decision action='create' supersedesIds: [<id>]` rejects
+      // a non-decision id at the `DecisionService.getById` resolver
+      // step — handing the operator a broken ready-to-paste command.
+      // The non-decision branch drops the supersedesIds wording and
+      // surfaces the universally-valid split / archive paths
+      // instead.
+      const advisory = computePromotionAdvisory({
+        revisionCount: 5,
+        bodyLength: 0,
+        kind,
+      })
+      expect(advisory!.suggestion).toBe(
+        "Consider splitting the topic into narrower topicKeys, " +
+          "or archiving this chain via lore-memory action='archive' " +
+          "and starting a fresh chain with a more specific topicKey.",
+      )
+      // The placeholder appears in the decision branch only — no
+      // substitution surface lives in the non-decision path. Pinning
+      // its absence here means the MCP boundary's `replaceAll` call
+      // becomes a no-op for these kinds without any worry that a
+      // partial replace could leak into the rendered footer.
+      expect(advisory!.suggestion).not.toContain("<this-memory-id>")
+      expect(advisory!.suggestion).not.toContain("supersedesIds")
+    },
+  )
 })
 
 describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {

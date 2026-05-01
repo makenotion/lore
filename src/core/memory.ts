@@ -480,6 +480,95 @@ export interface RecordComparedResult {
   wroteB: boolean
 }
 
+/**
+ * Revision count at which the upsert response footer surfaces a
+ * promotion advisory (0.9.0/#15). When `Revision Count` post-write
+ * meets this threshold, the topic chain has revised five times —
+ * enough that the operator should consider whether the upsert chain
+ * is still a single coherent topic or has accumulated several
+ * distinct sub-topics. Tunable; the value is a starting point and
+ * may need real-vault data to refine.
+ */
+export const PROMOTE_REVISION_THRESHOLD = 5
+
+/**
+ * Post-write body length (in characters of the assembled markdown)
+ * at which the upsert response footer surfaces a promotion advisory
+ * (0.9.0/#15). At ~5KB the page is unwieldy to read as a single
+ * artifact; the threshold is a *human-readability* heuristic, NOT a
+ * Notion structural cap. Notion's documented block-per-page limits
+ * drift between releases; a precise claim would invite operator
+ * confusion when the limit changes.
+ */
+export const PROMOTE_BODY_LENGTH_THRESHOLD = 5000
+
+/**
+ * Promotion advisory surfaced by `MemoryService.upsertByTopicKey`
+ * when an *append-revision* upsert (NOT a fresh create) crosses
+ * either the revision-count or body-length threshold. The advisory
+ * is informational: it never blocks the save and never auto-
+ * promotes. The MCP layer renders the advisory as a response footer
+ * so the agent or operator can decide whether to act.
+ *
+ * `reasons` is human-readable and may carry one or both threshold
+ * crossings. `suggestion` is the ready-to-paste promotion
+ * incantation — the wording is frozen (an `instanceof`-style stable
+ * contract for the MCP layer's footer rendering).
+ */
+export interface PromotionAdvisory {
+  reasons: string[]
+  suggestion: string
+}
+
+/**
+ * Pure helper that returns a `PromotionAdvisory` when at least one
+ * threshold is met, or `null` when neither is. The boundary semantics
+ * are inclusive (`>=`) so a value AT the threshold fires the
+ * advisory — pinned by tests so a future contributor can't silently
+ * shift to strict-greater and quietly raise the firing point.
+ *
+ * Both reasons surface in the order revision-count → body-length so
+ * the rendered footer reads consistently; multi-reason firings
+ * preserve that order.
+ *
+ * **Suggestion wording is kind-aware.** Topic-key chains are valid
+ * for `decision`, `runbook`, `incident`, `postmortem`, and `policy`
+ * kinds. Only `kind: 'decision'` memories can be superseded via
+ * `lore-decision action='create'` with `supersedesIds`:
+ * `DecisionService.getById` (the resolver the create handler runs
+ * for every supersedesIds entry) throws on non-decision kinds, so a
+ * footer that handed a runbook/incident/postmortem/policy operator
+ * `supersedesIds: [<this-id>]` would be a ready-to-paste BROKEN
+ * command. Decisions get the supersede-and-split wording; other
+ * kinds get the split-and-archive path that doesn't depend on a
+ * decision-only API. The `<this-memory-id>` placeholder appears in
+ * the decision-kind branch only and is replaced by the rendering
+ * layer.
+ */
+export function computePromotionAdvisory(input: {
+  revisionCount: number
+  bodyLength: number
+  kind: MemoryKind
+}): PromotionAdvisory | null {
+  const reasons: string[] = []
+  if (input.revisionCount >= PROMOTE_REVISION_THRESHOLD) {
+    reasons.push(`${input.revisionCount} revisions accumulated`)
+  }
+  if (input.bodyLength >= PROMOTE_BODY_LENGTH_THRESHOLD) {
+    reasons.push(`body length ${input.bodyLength} chars`)
+  }
+  if (reasons.length === 0) return null
+  const suggestion =
+    input.kind === "decision"
+      ? "Consider promoting via lore-decision action='create' " +
+        "with supersedesIds: [<this-memory-id>], or splitting " +
+        "the topic into narrower topicKeys."
+      : "Consider splitting the topic into narrower topicKeys, " +
+        "or archiving this chain via lore-memory action='archive' " +
+        "and starting a fresh chain with a more specific topicKey."
+  return { reasons, suggestion }
+}
+
 export class MemoryService {
   /**
    * `getTitleById` is the hot path for UUID→title resolution in
@@ -881,6 +970,7 @@ export class MemoryService {
     memory: Memory
     revisionCount: number
     upserted: boolean
+    promotionAdvisory: PromotionAdvisory | null
   }> {
     if (input.projectIds.length === 0) {
       throw new Error(
@@ -914,7 +1004,16 @@ export class MemoryService {
         topicKey: input.topicKey,
         revisionCount: 1,
       })
-      return { memory: created, revisionCount: 1, upserted: false }
+      // Fresh-create never returns a promotion advisory in 0.9.0. The
+      // advisory is specifically about revision-chain accumulation; a
+      // one-shot write with a long body is a different signal that
+      // warrants a different surface (out of scope for #15).
+      return {
+        memory: created,
+        revisionCount: 1,
+        upserted: false,
+        promotionAdvisory: null,
+      }
     }
 
     // Validate Kind BEFORE any Notion write. The kind-mismatch throw
@@ -985,11 +1084,12 @@ export class MemoryService {
       "",
       decodedContent,
     ].join("\n")
+    const assembledBody = existingBody.markdown + revisionBlock
     await this.client.pages.updateMarkdown({
       page_id: existing.id,
       type: "replace_content_range",
       replace_content_range: {
-        content: existingBody.markdown + revisionBlock,
+        content: assembledBody,
         content_range: "full_page",
         allow_deleting_content: true,
       },
@@ -1017,6 +1117,28 @@ export class MemoryService {
     this.titleCache.set(existing.id, decodedTitle || null)
     this.bumpWriteEpoch()
 
+    // Promotion advisory (0.9.0/#15). Fires only on the
+    // append-revision branch (fresh-create returned earlier with a
+    // null advisory). Reads post-write state already in memory:
+    // `nextRevision` is the value just written, `assembledBody.length`
+    // is the markdown body about to be persisted. No extra Notion
+    // calls. The MCP layer renders this in the save response footer
+    // when non-null; agents reading the response decide whether to
+    // promote — the system never auto-promotes.
+    //
+    // `kind` is forwarded to `computePromotionAdvisory` because the
+    // suggestion wording is kind-aware: only `kind: 'decision'`
+    // memories can be referenced from `lore-decision action='create'
+    // supersedesIds: [...]` (DecisionService.getById throws on
+    // non-decision kinds). The kind-mismatch guard above already
+    // rejected upserts where `input.kind !== existing.kind`, so the
+    // two values agree here; either is correct.
+    const promotionAdvisory = computePromotionAdvisory({
+      revisionCount: nextRevision,
+      bodyLength: assembledBody.length,
+      kind: input.kind,
+    })
+
     // Return the post-write memory shape so callers (auto-mentions,
     // session recording) read the new title / keywords / synopsis when
     // re-running entity extraction. `synopsis` and `keywords` fall
@@ -1034,6 +1156,7 @@ export class MemoryService {
       },
       revisionCount: nextRevision,
       upserted: true,
+      promotionAdvisory,
     }
   }
 
