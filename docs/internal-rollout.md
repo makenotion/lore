@@ -157,6 +157,61 @@ lore auth --migrate
 # instruction. Run the unset, source the rc, done.
 ```
 
+### Dev-environment onboarding (Mail-style)
+
+Engineers bootstrapping against `api-dev.notion.com` instead of prod
+pass `--ntn-env dev` to `lore init`. The flag sets `NOTION_ENV` for the
+spawned `ntn login`, so ntn writes `env: "dev"` into
+`~/.config/notion/config.json` and the post-login auth resolution
+surfaces the dev base URL automatically:
+
+```bash
+# Fresh dev onboarding (no prior ntn auth):
+cd ~/Developer/Mail
+lore init --ntn-env dev
+# Flow:
+#   1. tryResolveAuth fails (no auth yet) → ntn install/login
+#      recovery branch
+#   2. runNtnLogin spawns with NOTION_ENV=dev — operator picks dev
+#      workspace in the browser
+#   3. ntn writes auth.json + config.json (env: "dev")
+#   4. tryResolveAuth re-runs, returns ntn-resolved auth with
+#      baseUrl=https://api-dev.notion.com
+#   5. Vault page created against dev, .lore.yaml written
+
+# Already authed against prod, but want a separate dev vault?
+ntn logout
+NOTION_ENV=dev ntn login   # or: lore init --ntn-env dev (will
+                           #     spawn the login if no auth resolves)
+cd ~/Developer/Mail-dev
+lore init --ntn-env dev
+```
+
+#### Mismatch recovery: env-flag disagrees with resolved auth
+
+If `--ntn-env dev` is passed but the engineer's resolved auth points at
+prod (typically because they previously ran `ntn login` against prod
+without `NOTION_ENV=dev`), Lore exits 1 BEFORE creating any pages:
+
+```text
+--ntn-env dev requested, but resolved auth points at (prod default — api.notion.so).
+Auth source: ntn-auth-json
+
+Recovery options:
+  ntn logout && NOTION_ENV=dev ntn login
+  (then re-run lore init)
+```
+
+The fail-fast posture is deliberate: silently creating a vault in prod
+despite the explicit dev request would be worse than the friction of
+re-authing. The recovery copy is source-aware:
+
+| Auth source | Recovery copy |
+|-------------|---------------|
+| `ntn-auth-json` | `ntn logout && NOTION_ENV=<env> ntn login` |
+| `env-notion-api-token` | `Unset NOTION_API_TOKEN` (fall through to ntn) OR `export LORE_NOTION_BASE_URL=<endpoint>` |
+| `env-lore-notion-token` | `Unset LORE_NOTION_TOKEN` OR `export LORE_NOTION_BASE_URL=<endpoint>` |
+
 ### Step 3 — Verification
 
 ```bash
@@ -188,6 +243,7 @@ and confirm the workspace selector during the ntn flow it spawns.
 | Notion API returns 401 mid-session (assistant errors after working earlier in the same session) | ntn-issued token expired | Run `lore auth --login` and restart the assistant to pick up the new token. Auto-recovery (mid-session re-resolution) is DEFERRED-MID-SESSION-REFRESH. |
 | `lore auth --migrate` legacy preflight fails | Legacy `LORE_NOTION_TOKEN` doesn't reach the vault | Don't unset the env var; investigate the integration sharing |
 | `auth.json malformed` | ntn version mismatch, partial write, or storage corruption | Run `lore auth --login` to spawn ntn login with the right env and refresh the file. (Direct `NOTION_KEYRING=0 ntn login` is the manual fallback.) |
+| `--ntn-env dev requested, but resolved auth points at <baseUrl>` | Engineer ran `lore init --ntn-env dev` but their existing ntn auth resolves to a different env | Source-aware recovery printed inline: `ntn-auth-json` → `ntn logout && NOTION_ENV=dev ntn login`; env-token sources → unset the token OR set `LORE_NOTION_BASE_URL`. The gate is fail-fast by design — silent prod-vault creation despite explicit dev request would be worse than re-auth friction. |
 
 ### What if `ntn` isn't installed?
 

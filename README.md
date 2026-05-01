@@ -132,17 +132,54 @@ export LORE_NOTION_TOKEN=ntn_...
 
 ### 3. Create a Vault
 
-Create a page in Notion and share it with your integration, then:
+**For team / repo-scoped vaults** (the common case — one vault per
+repo, shared across the team), create a page in Notion at the location
+your team agrees on, share it with your integration, and pass its id to
+`lore init`:
 
 ```bash
 lore init <page-id>
 ```
 
-This creates the five databases inside the page (Projects, Topics, Memories,
-Entities, Facts) and writes a `.lore.yaml` config file. Existing vaults from
-before PF3-01 keep working without the Entities database; run
-`lore migrate --build-entities --yes` to add it and canonicalize the fact
-graph in one pass.
+This is the recommended path for shared use: the page lives at a
+deliberate location (a team workspace, a project sub-page) with
+deliberate sharing, and every engineer's `.lore.yaml` points at the
+same id.
+
+**For personal vaults / fresh-onboarding scratch use**, the no-arg
+flow creates a workspace-level page on your behalf using your
+ntn-issued token:
+
+```bash
+lore init                          # default title: "Lore Vault — <basename(cwd)>"
+lore init --name "Lore Vault Mail" # explicit title
+lore init --ntn-env dev            # spawn ntn login against the dev environment
+```
+
+The flow auto-installs ntn and runs `ntn login` (with `[Y/n]` prompts;
+`--yes` for non-interactive automation) when no auth resolves, creates
+the page at workspace level (under your Private area in Notion's UI),
+runs the `verifyVaultAccess` preflight, initializes the five databases,
+and writes `.lore.yaml`. The page title defaults to
+`Lore Vault — <basename(cwd)>` (e.g., `Lore Vault — Mail`) so multiple
+private vaults in the same workspace remain distinguishable; pass
+`--name` to override. Pass `--ntn-env <prod|dev|stg>` when bootstrapping
+against a non-prod Notion environment — the flag sets `NOTION_ENV` for
+the spawned `ntn login` so the resulting `auth.json` and `config.json`
+reflect the requested env.
+
+If your existing ntn auth points at a different environment than
+`--ntn-env`, Lore exits 1 with recovery copy (typically
+`ntn logout && NOTION_ENV=<env> ntn login`) rather than silently
+creating a vault in the wrong environment. See
+[`docs/internal-rollout.md`](docs/internal-rollout.md) for the
+per-engineer onboarding flow including the dev-environment example.
+
+Either path creates the five databases inside the page (Projects, Topics,
+Memories, Entities, Facts) and writes a `.lore.yaml` config file.
+Existing vaults from before PF3-01 keep working without the Entities
+database; run `lore migrate --build-entities --yes` to add it and
+canonicalize the fact graph in one pass.
 
 ### 4. Configure Your AI Assistant
 
@@ -330,7 +367,7 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 
 | Command                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
-| `lore init <page-id>`          | Create vault databases in a Notion page and write `.lore.yaml`   |
+| `lore init [page-id]`          | Create vault databases and write `.lore.yaml`. Pass `<page-id>` for team / repo-scoped vaults (recommended); omit to create a workspace-level page via the ntn-resolved token (personal / fresh onboarding). `--name <name>` overrides the default repo-derived title; `--yes` auto-confirms ntn install / login prompts |
 | `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor`, `--cursor-global` for Cursor-only setup; `--print-config json\|toml` prints a paste-ready snippet for unsupported MCP hosts) |
 | `lore auth`                    | Check authentication status                                      |
 | `lore auth --login`            | Authenticate via OAuth (opens browser)                           |

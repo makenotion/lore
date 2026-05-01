@@ -196,7 +196,7 @@ async function readWorkspaceEntries(): Promise<WorkspaceEntriesResult> {
   // without re-validating.
   const entries = Object.entries(parsed as Record<string, unknown>).filter(
     (entry): entry is [string, string] =>
-      typeof entry[1] === "string" && entry[1].length > 0,
+      typeof entry[1] === "string" && entry[1].length > 0
   )
 
   return { kind: "ok", entries }
@@ -417,11 +417,12 @@ export type NtnLoginResult =
  * - `dev`  → `api-dev.notion.com`
  * - `stg`  → `api-stg.notion.com`
  *
- * Single source of truth so a typo in one surface can't drift away
- * from another. The literal strings match ntn's accepted values
- * verbatim — the type is functionally an enum but expressed as a
- * string union so it round-trips through commander's argv parsing
- * without a custom coercer.
+ * Single source of truth for consumers (`lore init --ntn-env`,
+ * `lore install --ntn-env`, `lore auth --login --ntn-env`) so a typo
+ * in one surface can't drift away from another. The literal strings
+ * match ntn's accepted values verbatim — the type is functionally an
+ * enum but expressed as a string union so it round-trips through
+ * commander's argv parsing without a custom coercer.
  */
 export type NtnEnv = "prod" | "dev" | "stg"
 
@@ -457,6 +458,12 @@ export interface RunNtnLoginOpts {
  * `ntn login` directly (outside Lore) without the env var fall
  * through to ntn's default keychain mode; that scenario is
  * documented in the runbook (#05) as a known gotcha.
+ *
+ * `opts.env` (optional) propagates the dev / stg environment
+ * selection forward to ntn via `NOTION_ENV`. See `RunNtnLoginOpts`
+ * for the omit-vs-explicit semantics — this is intentionally a
+ * "set when caller asks for it" surface, not a "default to prod"
+ * surface.
  *
  * Used by `lore install` (#08), `lore init` no-arg (#09), `lore auth
  * --login` (#06), and `lore auth --migrate` (#07) when the operator
@@ -501,8 +508,11 @@ export async function runNtnLogin(opts: RunNtnLoginOpts = {}): Promise<NtnLoginR
  *
  * Returns the parsed enum on a recognized value, `null` on an
  * unrecognized string. Consumers that want hard-fail behavior treat
- * `null` as "reject and exit"; consumers that want soft-fail can
- * fall back to default ntn behavior.
+ * `null` as "reject and exit"; consumers that want soft-fail can fall
+ * back to default ntn behavior. The MCP / hooks paths don't expose
+ * this surface, so this helper is CLI-side only — exported here
+ * (rather than per-consumer) to keep the canonical-value list in one
+ * place.
  *
  * Returns `undefined` (NOT `null`) when the input itself is undefined,
  * so consumers can distinguish "operator didn't pass the flag" from

@@ -31,6 +31,7 @@ import {
   loadNtnToken,
   MIN_NTN_VERSION,
   NTN_INSTALL_COMMAND,
+  parseNtnEnv,
   resetNtnProbeCache,
   runNtnLogin,
 } from "./ntn.js"
@@ -73,7 +74,7 @@ beforeEach(() => {
     stderrChunks.push(
       typeof chunk === "string"
         ? chunk
-        : Buffer.from(chunk as Uint8Array).toString("utf8"),
+        : Buffer.from(chunk as Uint8Array).toString("utf8")
     )
     return true
   })
@@ -171,7 +172,7 @@ describe("loadNtnToken", () => {
 
   it("ignores non-string entries in auth.json (metadata sub-objects, numbers)", async () => {
     setupNtnConfigHome(
-      JSON.stringify({ "ws-1": "tok-1", _metadata: { version: 1 }, _count: 5 }),
+      JSON.stringify({ "ws-1": "tok-1", _metadata: { version: 1 }, _count: 5 })
     )
     // Single string-valued entry survives the filter → auto-pick.
     expect(await loadNtnToken()).toEqual({
@@ -228,11 +229,9 @@ describe("loadNtnToken", () => {
 
   it("resolves baseUrl from ntn config.json env=dev", async () => {
     const xdg = setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
-    writeFileSync(
-      join(xdg, "notion", "config.json"),
-      JSON.stringify({ env: "dev" }),
-      { mode: 0o600 },
-    )
+    writeFileSync(join(xdg, "notion", "config.json"), JSON.stringify({ env: "dev" }), {
+      mode: 0o600,
+    })
     const result = await loadNtnToken()
     expect(result).toEqual({
       token: "tok-1",
@@ -243,11 +242,9 @@ describe("loadNtnToken", () => {
 
   it("falls through to undefined baseUrl on missing or unknown config.json env", async () => {
     const xdg = setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
-    writeFileSync(
-      join(xdg, "notion", "config.json"),
-      JSON.stringify({ env: "prod" }),
-      { mode: 0o600 },
-    )
+    writeFileSync(join(xdg, "notion", "config.json"), JSON.stringify({ env: "prod" }), {
+      mode: 0o600,
+    })
     const result = await loadNtnToken()
     expect(result?.baseUrl).toBeUndefined()
   })
@@ -299,7 +296,7 @@ describe("listNtnWorkspaces", () => {
         "ws-empty": "",
         "ws-meta": { foo: "bar" },
         "ws-num": 42,
-      }),
+      })
     )
     expect(await listNtnWorkspaces()).toEqual(["ws-string"])
   })
@@ -498,6 +495,123 @@ describe("runNtnLogin", () => {
     const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
     expect(options.env["LORE_NTN_TEST_SENTINEL"]).toBe("passthrough-value")
     delete process.env["LORE_NTN_TEST_SENTINEL"]
+  })
+
+  it("does NOT set NOTION_ENV in the spawn env when called without an env opt (default / prod path)", async () => {
+    // Pin the omit-vs-explicit semantics: if a caller doesn't pass
+    // `env`, we leave the spawn env untouched so an inherited
+    // shell-rc `NOTION_ENV` (if any) flows through unchanged.
+    // Writing `NOTION_ENV=prod` unconditionally would clobber an
+    // operator who already opted into dev in their shell.
+    delete process.env["NOTION_ENV"]
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = runNtnLogin()
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
+    expect(options.env["NOTION_ENV"]).toBeUndefined()
+  })
+
+  it("preserves an inherited NOTION_ENV from process.env when called without an env opt", async () => {
+    // Operator who set `NOTION_ENV=dev` in their shell rc should see
+    // that value flow into the spawned ntn process even when the
+    // caller doesn't explicitly request dev. The spawn env's
+    // `...process.env` spread carries the inherited value; the lack
+    // of an explicit override leaves it intact.
+    process.env["NOTION_ENV"] = "dev"
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = runNtnLogin()
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
+    expect(options.env["NOTION_ENV"]).toBe("dev")
+    delete process.env["NOTION_ENV"]
+  })
+
+  it("sets NOTION_ENV=dev in the spawn env when called with { env: 'dev' }", async () => {
+    delete process.env["NOTION_ENV"]
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = runNtnLogin({ env: "dev" })
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
+    expect(options.env["NOTION_ENV"]).toBe("dev")
+    // NOTION_KEYRING=0 still lands alongside — env selection composes
+    // with the load-bearing keychain bypass, doesn't replace it.
+    expect(options.env["NOTION_KEYRING"]).toBe("0")
+  })
+
+  it("explicit { env: 'prod' } CLOBBERS an inherited NOTION_ENV=dev (operator-supplied override wins)", async () => {
+    // The flag is the explicit-override surface. An operator who has
+    // shell-rc dev but passes `--ntn-env prod` to a Lore command
+    // wants prod. Pin that the explicit value wins over the
+    // inherited shell value.
+    process.env["NOTION_ENV"] = "dev"
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = runNtnLogin({ env: "prod" })
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
+    expect(options.env["NOTION_ENV"]).toBe("prod")
+    delete process.env["NOTION_ENV"]
+  })
+
+  it("supports stg as a valid env selection", async () => {
+    delete process.env["NOTION_ENV"]
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = runNtnLogin({ env: "stg" })
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![2] as { env: Record<string, string> }
+    expect(options.env["NOTION_ENV"]).toBe("stg")
+  })
+})
+
+describe("parseNtnEnv", () => {
+  // Sourced from the same spawn-env-passthrough rationale above:
+  // the parser is the CLI-side surface that turns `--ntn-env <value>`
+  // into a typed `NtnEnv | null | undefined`. The three-state return
+  // (undefined = absent, null = invalid, NtnEnv = valid) lets
+  // consumers distinguish "operator didn't pass the flag" from
+  // "operator passed garbage" — important because the former is the
+  // "use ntn's default" path and the latter is fail-fast input
+  // error.
+  it("returns undefined when the input is undefined (flag not passed)", () => {
+    // We need this distinction so consumers can leave the spawn env
+    // untouched on the no-flag path; treating absence as a bad value
+    // would force every Lore command without `--ntn-env` into an
+    // error-handling branch.
+    expect(parseNtnEnv(undefined)).toBeUndefined()
+  })
+
+  it("accepts the three canonical values verbatim", () => {
+    expect(parseNtnEnv("prod")).toBe("prod")
+    expect(parseNtnEnv("dev")).toBe("dev")
+    expect(parseNtnEnv("stg")).toBe("stg")
+  })
+
+  it("returns null on unrecognized input so callers can fail fast (case-sensitive)", () => {
+    // Pin case-sensitivity: `Dev` / `DEV` / `production` / `staging`
+    // are NOT accepted. ntn's own `--env` flag is case-sensitive
+    // against the same three literals; mirroring the strictness
+    // avoids "looks right but ntn rejects it" surprises later in the
+    // login spawn.
+    expect(parseNtnEnv("Dev")).toBeNull()
+    expect(parseNtnEnv("DEV")).toBeNull()
+    expect(parseNtnEnv("production")).toBeNull()
+    expect(parseNtnEnv("staging")).toBeNull()
+    expect(parseNtnEnv("")).toBeNull()
+    expect(parseNtnEnv("garbage")).toBeNull()
   })
 })
 
