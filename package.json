@@ -1,5 +1,5 @@
 {
-  "name": "@notionhq/lore",
+  "name": "@makenotion/lore",
   "version": "0.9.0",
   "description": "AI memory system backed by Notion",
   "type": "module",
@@ -61,5 +61,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/makenotion/lore.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
   }
 }
