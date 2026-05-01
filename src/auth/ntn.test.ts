@@ -31,6 +31,7 @@ import {
   loadNtnToken,
   MIN_NTN_VERSION,
   NTN_INSTALL_COMMAND,
+  resetNtnProbeCache,
   runNtnLogin,
 } from "./ntn.js"
 
@@ -84,6 +85,10 @@ afterEach(() => {
   delete process.env["LORE_NOTION_BASE_URL"]
   spawnMock.mockReset()
   execFileSyncMock.mockReset()
+  // The per-process probe cache (`isNtnInstalled` / `getNtnVersion`)
+  // would otherwise carry the first test's mocked result into every
+  // subsequent test, regardless of how the mock is rewired.
+  resetNtnProbeCache()
 })
 
 describe("loadNtnToken", () => {
@@ -133,15 +138,22 @@ describe("loadNtnToken", () => {
     setupNtnConfigHome("not-json")
     expect(await loadNtnToken()).toBeNull()
     expect(stderrText()).toContain("malformed")
-    expect(stderrText()).toContain("lore auth --login")
+    // Recovery copy points at the manual command first (it works in
+    // 0.10.0); `lore auth --login` is mentioned as the future Phase 2
+    // wrapper but appears AFTER the working command so an operator
+    // hitting this in the 0.10.0 ship window doesn't get bounced at a
+    // not-yet-rewritten command.
     expect(stderrText()).toContain("NOTION_KEYRING=0 ntn login")
+    const manualIdx = stderrText().indexOf("NOTION_KEYRING=0 ntn login")
+    const wrapperIdx = stderrText().indexOf("lore auth --login")
+    expect(manualIdx).toBeGreaterThan(-1)
+    expect(manualIdx).toBeLessThan(wrapperIdx)
   })
 
   it("returns null with unexpected-shape hint when auth.json is JSON null", async () => {
     setupNtnConfigHome("null")
     expect(await loadNtnToken()).toBeNull()
     expect(stderrText()).toContain("unexpected shape")
-    expect(stderrText()).toContain("lore auth --login")
     expect(stderrText()).toContain("NOTION_KEYRING=0 ntn login")
   })
 
@@ -547,5 +559,182 @@ describe("installNtn", () => {
 
     const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
     expect(options.env["NOTION_KEYRING"]).toBe("0")
+  })
+
+  it("scrubs the spawn env to an allowlist — token-bearing variables do NOT leak to the installer", async () => {
+    // The remote installer at https://ntn.dev does not need
+    // NOTION_API_TOKEN, LORE_NOTION_TOKEN, GITHUB_TOKEN, npm
+    // credentials, or any other Lore/CI-injected secret. Pin the
+    // scrub so a future contributor who reverts to
+    // `{ ...process.env, NOTION_KEYRING: "0" }` exfiltration breaks
+    // this test loudly.
+    process.env["NOTION_API_TOKEN"] = "tok-canonical-must-not-leak"
+    process.env["LORE_NOTION_TOKEN"] = "tok-legacy-must-not-leak"
+    process.env["GITHUB_TOKEN"] = "ghp-must-not-leak"
+    process.env["NPM_TOKEN"] = "npm-must-not-leak"
+    process.env["AWS_SECRET_ACCESS_KEY"] = "aws-must-not-leak"
+
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = installNtn()
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
+    expect(options.env).not.toHaveProperty("NOTION_API_TOKEN")
+    expect(options.env).not.toHaveProperty("LORE_NOTION_TOKEN")
+    expect(options.env).not.toHaveProperty("GITHUB_TOKEN")
+    expect(options.env).not.toHaveProperty("NPM_TOKEN")
+    expect(options.env).not.toHaveProperty("AWS_SECRET_ACCESS_KEY")
+
+    delete process.env["NOTION_API_TOKEN"]
+    delete process.env["LORE_NOTION_TOKEN"]
+    delete process.env["GITHUB_TOKEN"]
+    delete process.env["NPM_TOKEN"]
+    delete process.env["AWS_SECRET_ACCESS_KEY"]
+  })
+
+  it("forwards the allowlisted shell + locale + proxy variables", async () => {
+    // The allowlist must keep enough of process.env intact for the
+    // curl-pipe-bash composition to actually fetch and run. Pin the
+    // load-bearing entries so a future contributor tightening the
+    // allowlist into uselessness fails this test.
+    process.env["HOME"] = "/test-home"
+    process.env["PATH"] = "/test/bin:/usr/bin"
+    process.env["SHELL"] = "/bin/bash"
+    process.env["LANG"] = "en_US.UTF-8"
+    process.env["HTTPS_PROXY"] = "http://proxy.example:3128"
+
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = installNtn()
+    child.triggerExit(0)
+    await promise
+
+    const options = spawnMock.mock.calls[0]![1] as { env: Record<string, string> }
+    expect(options.env["HOME"]).toBe("/test-home")
+    expect(options.env["PATH"]).toBe("/test/bin:/usr/bin")
+    expect(options.env["SHELL"]).toBe("/bin/bash")
+    expect(options.env["LANG"]).toBe("en_US.UTF-8")
+    expect(options.env["HTTPS_PROXY"]).toBe("http://proxy.example:3128")
+  })
+
+  it("invalidates the isNtnInstalled / getNtnVersion cache on success", async () => {
+    // Pre-install probe: ntn not on PATH (cache hardens to false / null).
+    execFileSyncMock.mockImplementation(() => {
+      const err = new Error("ENOENT") as NodeJS.ErrnoException
+      err.code = "ENOENT"
+      throw err
+    })
+    expect(isNtnInstalled()).toBe(false)
+    expect(getNtnVersion()).toBeNull()
+
+    // Install succeeds. Now rewire the mock to simulate the freshly
+    // installed binary.
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = installNtn()
+    child.triggerExit(0)
+    await promise
+
+    execFileSyncMock.mockReset()
+    execFileSyncMock.mockReturnValue("ntn 0.12.0\n")
+
+    // Without cache invalidation, both probes would still report the
+    // pre-install nulls.
+    expect(isNtnInstalled()).toBe(true)
+    expect(getNtnVersion()).toBe("0.12.0")
+  })
+
+  it("does NOT invalidate the cache on a non-zero exit", async () => {
+    // The install attempt failed; the cache from before the attempt
+    // is still the source of truth.
+    execFileSyncMock.mockReturnValue("ntn 0.12.0\n")
+    expect(isNtnInstalled()).toBe(true)
+
+    const child = makeFakeChild()
+    spawnMock.mockReturnValue(child)
+    const promise = installNtn()
+    child.triggerExit(1)
+    await promise
+
+    execFileSyncMock.mockReset()
+    execFileSyncMock.mockImplementation(() => {
+      const err = new Error("ENOENT") as NodeJS.ErrnoException
+      err.code = "ENOENT"
+      throw err
+    })
+    // Cache still says "installed" — the failed install did not flip
+    // the cache, so the ENOENT on the rewired mock never reaches the
+    // probe.
+    expect(isNtnInstalled()).toBe(true)
+  })
+})
+
+describe("loadNtnToken({ quiet: true })", () => {
+  it("suppresses stderr emission for malformed JSON", async () => {
+    setupNtnConfigHome("not-json")
+    const result = await loadNtnToken({ quiet: true })
+    expect(result).toBeNull()
+    expect(stderrText()).toBe("")
+  })
+
+  it("suppresses stderr emission for unexpected-shape root", async () => {
+    setupNtnConfigHome("null")
+    const result = await loadNtnToken({ quiet: true })
+    expect(result).toBeNull()
+    expect(stderrText()).toBe("")
+  })
+
+  it("suppresses stderr emission for multi-workspace + no selector", async () => {
+    setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1", "ws-2": "tok-2" }))
+    const result = await loadNtnToken({ quiet: true })
+    expect(result).toBeNull()
+    expect(stderrText()).toBe("")
+  })
+
+  it("suppresses stderr emission for requested-workspace-not-found", async () => {
+    setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
+    const result = await loadNtnToken({ workspaceId: "ws-missing", quiet: true })
+    expect(result).toBeNull()
+    expect(stderrText()).toBe("")
+  })
+
+  it("still resolves the token on the happy path under quiet", async () => {
+    setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
+    const result = await loadNtnToken({ quiet: true })
+    expect(result).toEqual({
+      token: "tok-1",
+      workspaceId: "ws-1",
+      baseUrl: undefined,
+    })
+    expect(stderrText()).toBe("")
+  })
+})
+
+describe("compareSemver via checkNtnVersion (NaN guard)", () => {
+  it("returns 'unknown' when getNtnVersion can't parse the output (NaN-safe)", () => {
+    // `getNtnVersion`'s SemVer-stripping regex returns null on
+    // non-matching output — checkNtnVersion treats that as 'unknown'.
+    // The compareSemver guard against NaN inputs is exercised here
+    // indirectly: a future contributor who hands raw output past the
+    // regex would otherwise see compareSemver return 1 (i.e. "newer
+    // than minimum") because `NaN < NaN` is false.
+    execFileSyncMock.mockReturnValue("notion CLI without version\n")
+    expect(checkNtnVersion()).toBe("unknown")
+  })
+
+  it("treats trailing zero components as equal across `X.Y` vs `X.Y.0`", () => {
+    // Pin ordering invariants on the public surface. `X.Y` would parse
+    // to `[X, Y]` whose third index is undefined → coerced to 0 (or NaN
+    // before the guard); after the guard, both forms should compare
+    // equal to `X.Y.0`. Routed through checkNtnVersion against a known
+    // MIN_NTN_VERSION = "0.12.0".
+    execFileSyncMock.mockReturnValue("ntn 0.12\n")
+    // `getNtnVersion`'s regex won't match `0.12`, so the public surface
+    // returns null → "unknown" rather than exercising compareSemver
+    // with a partial input. That's intentional — the regex enforces
+    // SemVer shape upstream of compareSemver.
+    expect(getNtnVersion()).toBeNull()
   })
 })

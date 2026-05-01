@@ -5,7 +5,7 @@ import { Document, isMap } from "yaml"
 import { createClient } from "../../notion/client.js"
 import { createLimitedClient } from "../../notion/rate-limit.js"
 import { VaultManager } from "../../core/vault.js"
-import { resolveToken } from "../../config.js"
+import { resolveAuth } from "../../config.js"
 import type { LoreConfig } from "../../types.js"
 
 /**
@@ -49,13 +49,36 @@ export const initCommand = new Command("init")
   .argument("<page-id>", "Notion page ID to use as the vault root")
   .option("--token <token>", "Notion integration token (or set LORE_NOTION_TOKEN)")
   .action(async (pageId: string, opts: { token?: string }) => {
-    const token = opts.token ?? (await resolveToken())
+    // No `.lore.yaml` exists yet on the init path — pass `process.cwd()`
+    // as the deprecation-marker keying input. #09 (no-arg `lore init`
+    // flow) replaces this fallback with the resolved config root once
+    // the new file lands.
+    //
+    // Two paths:
+    // - `--token` provided: operator hands us a literal token. We don't
+    //   know the base URL (the operator can set `LORE_NOTION_BASE_URL`
+    //   env if they need a non-prod endpoint).
+    // - Otherwise: route through `resolveAuth` which threads the
+    //   ntn-resolved baseUrl (dev/stg endpoint detection from ntn's
+    //   own config.json) into `createClient`. Without this, an
+    //   engineer using a dev-environment ntn token would silently
+    //   send their dev token to the prod API.
+    let token: string
+    let baseUrl: string | undefined
+    if (opts.token) {
+      token = opts.token
+      baseUrl = process.env["LORE_NOTION_BASE_URL"]
+    } else {
+      const auth = await resolveAuth(undefined, process.cwd())
+      token = auth.token
+      baseUrl = auth.baseUrl
+    }
     // Wrap the raw client so `lore init`'s database-creation fan-out
     // (four pages.create + assorted reads) stays under Notion's rps
     // ceiling just like the MCP/CLI hot paths. No config is loaded here
     // yet so use the default concurrency; operators with a custom value
     // in `.lore.yaml` pick it up on subsequent commands.
-    const client = createLimitedClient(createClient(token))
+    const client = createLimitedClient(createClient(token, baseUrl))
     const vault = new VaultManager(client, pageId)
 
     console.log("Creating Lore databases in Notion...")

@@ -36,6 +36,22 @@ export interface NtnTokenRecord {
 
 export interface LoadNtnTokenInput {
   workspaceId?: string
+  /**
+   * Suppress stderr emission for the recoverable failure modes
+   * (malformed JSON, unexpected shape, requested-workspace-not-present,
+   * multi-workspace-no-selector). The function still returns null in
+   * those cases — the caller takes responsibility for surfacing a
+   * user-visible hint at a moment of its choosing.
+   *
+   * `resolveAuth` (`src/config.ts`) sets this to true so that an
+   * operator who has both `auth.json` AND a legacy fallback (e.g.
+   * `LORE_NOTION_TOKEN`) does not see two contradictory stderr lines —
+   * "set NOTION_WORKSPACE_ID" from this module followed by
+   * "LORE_NOTION_TOKEN is soft-deprecated, run lore auth --migrate"
+   * from the deprecation emitter. Instead, `resolveAuth` surfaces the
+   * ntn ambiguity hint only at the throw site (no source resolved).
+   */
+  quiet?: boolean
 }
 
 /**
@@ -58,60 +74,30 @@ export async function loadNtnToken(
   // TODO(ntn-export): Replace this auth.json read with a shell-out to
   // `ntn auth token --plain` (or equivalent) when DEFERRED-OFFICIAL-EXPORT
   // ships. Function signature stays the same; consumers unchanged.
-  const path = ntnAuthJsonPath()
-  let raw: string
-  try {
-    raw = await readFile(path, "utf-8")
-  } catch {
-    // File doesn't exist (operator hasn't run ntn login yet, OR is
-    // using keychain mode without NOTION_KEYRING=0). Caller surfaces
-    // the recommendation.
+  const result = await readWorkspaceEntries()
+  const quiet = input.quiet === true
+
+  if (result.kind === "missing") return null
+  if (result.kind === "unusable") {
+    if (!quiet) {
+      const reason =
+        result.reason === "malformed"
+          ? "is malformed; ignoring"
+          : "has unexpected shape (expected an object)"
+      // Recovery copy points at the manual `NOTION_KEYRING=0 ntn login`
+      // because that's the working command in the 0.10.0 ship window —
+      // Phase 2's `lore auth --login` wrapper (#06) will swap in once
+      // Phase 2 lands.
+      process.stderr.write(
+        `[lore] auth.json at ${result.path} ${reason}. ` +
+          `Run \`NOTION_KEYRING=0 ntn login\` to refresh ` +
+          `(or \`lore auth --login\` once Phase 2 ships).\n`
+      )
+    }
     return null
   }
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    // Malformed file. Don't throw — return null and let the caller
-    // surface "no auth available." Recovery copy points at `lore auth
-    // --login` first because Lore forces NOTION_KEYRING=0 in the
-    // spawn env (the file-mode contract this reader relies on); a
-    // manual `NOTION_KEYRING=0 ntn login` is the fallback for
-    // operators who can't or don't want to go through Lore.
-    process.stderr.write(
-      `[lore] auth.json at ${path} is malformed; ignoring. ` +
-        `Run \`lore auth --login\` to refresh ` +
-        `(or \`NOTION_KEYRING=0 ntn login\` directly).\n`
-    )
-    return null
-  }
-
-  // Object-shape guard. `JSON.parse("null")` returns null;
-  // `JSON.parse("[1, 2]")` returns an array; `JSON.parse('"x"')`
-  // returns a string. All three parse successfully but break
-  // `Object.entries` (null) or produce nonsense workspace ids
-  // (array → digit-string keys; string → no entries). Treat any
-  // non-object root as "no usable file" and return null, same as
-  // the parse-failure path. Same recovery copy as above.
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    process.stderr.write(
-      `[lore] auth.json at ${path} has unexpected shape ` +
-        `(expected an object). Run \`lore auth --login\` to refresh ` +
-        `(or \`NOTION_KEYRING=0 ntn login\` directly).\n`
-    )
-    return null
-  }
-
-  // Filter to entries with non-empty string-valued tokens. ntn writes
-  // additional metadata under reserved keys in some versions — don't
-  // trip over those. The type predicate narrows the tuple's value
-  // position from `unknown` to `string` so downstream destructures
-  // know it's safe.
-  const workspaceEntries = Object.entries(parsed as Record<string, unknown>).filter(
-    (entry): entry is [string, string] =>
-      typeof entry[1] === "string" && entry[1].length > 0
-  )
+  const workspaceEntries = result.entries
 
   if (workspaceEntries.length === 0) {
     return null
@@ -125,26 +111,30 @@ export async function loadNtnToken(
       // Caller asked for a specific workspace and ntn doesn't have
       // it. Don't silently substitute another. Return null with a
       // stderr hint so the operator knows.
-      process.stderr.write(
-        `[lore] ntn auth.json carries ${workspaceEntries.length} ` +
-          `workspace(s), but the requested workspaceId ` +
-          `(${input.workspaceId}) is not among them. ` +
-          `Available: ${workspaceEntries.map(([ws]) => ws).join(", ")}.\n` +
-          `[lore] Run \`ntn login\` against the right workspace, or ` +
-          `update auth.workspaceId in .lore.yaml.\n`
-      )
+      if (!quiet) {
+        process.stderr.write(
+          `[lore] ntn auth.json carries ${workspaceEntries.length} ` +
+            `workspace(s), but the requested workspaceId ` +
+            `(${input.workspaceId}) is not among them. ` +
+            `Available: ${workspaceEntries.map(([ws]) => ws).join(", ")}.\n` +
+            `[lore] Run \`ntn login\` against the right workspace, or ` +
+            `update auth.workspaceId in .lore.yaml.\n`
+        )
+      }
       return null
     }
   } else if (workspaceEntries.length === 1) {
     pick = workspaceEntries[0]!
   } else {
     // Multiple workspaces, no selector. Surface the choice.
-    process.stderr.write(
-      `[lore] ntn auth.json carries ${workspaceEntries.length} ` +
-        `workspaces; specify one via NOTION_WORKSPACE_ID env or ` +
-        `auth.workspaceId in .lore.yaml.\n` +
-        `[lore] Available: ${workspaceEntries.map(([ws]) => ws).join(", ")}.\n`
-    )
+    if (!quiet) {
+      process.stderr.write(
+        `[lore] ntn auth.json carries ${workspaceEntries.length} ` +
+          `workspaces; specify one via NOTION_WORKSPACE_ID env or ` +
+          `auth.workspaceId in .lore.yaml.\n` +
+          `[lore] Available: ${workspaceEntries.map(([ws]) => ws).join(", ")}.\n`
+      )
+    }
     return null
   }
 
@@ -153,6 +143,63 @@ export async function loadNtnToken(
     workspaceId: pick[0],
     baseUrl: await resolveNtnBaseUrl(),
   }
+}
+
+/**
+ * Tagged result shape for `readWorkspaceEntries`. The discriminator lets
+ * `loadNtnToken` and `listNtnWorkspaces` apply the failure-mode policy
+ * each owns (stderr hint + null vs. silent empty array) without
+ * duplicating the parse / shape-guard / filter walk.
+ *
+ * - `missing`  — file absent or empty-after-filter (no string-valued
+ *                workspace entries). Silent in both consumers.
+ * - `unusable` — file present but unparseable or wrong root shape.
+ *                `loadNtnToken` emits a stderr hint (unless quiet),
+ *                `listNtnWorkspaces` returns [].
+ * - `ok`       — at least one string-valued workspace entry.
+ */
+type WorkspaceEntriesResult =
+  | { kind: "missing" }
+  | { kind: "unusable"; reason: "malformed" | "unexpected-shape"; path: string }
+  | { kind: "ok"; entries: Array<[string, string]> }
+
+async function readWorkspaceEntries(): Promise<WorkspaceEntriesResult> {
+  const path = ntnAuthJsonPath()
+  let raw: string
+  try {
+    raw = await readFile(path, "utf-8")
+  } catch {
+    // File doesn't exist (operator hasn't run ntn login yet, OR is
+    // using keychain mode without NOTION_KEYRING=0).
+    return { kind: "missing" }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { kind: "unusable", reason: "malformed", path }
+  }
+
+  // Object-shape guard. `JSON.parse("null")` returns null;
+  // `JSON.parse("[1, 2]")` returns an array; `JSON.parse('"x"')`
+  // returns a string. All three parse successfully but break
+  // `Object.entries` (null) or produce nonsense workspace ids.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { kind: "unusable", reason: "unexpected-shape", path }
+  }
+
+  // Filter to entries with non-empty string-valued tokens. ntn writes
+  // additional metadata under reserved keys in some versions — don't
+  // trip over those. The type predicate narrows the tuple's value
+  // position from `unknown` to `string` so consumers can destructure
+  // without re-validating.
+  const entries = Object.entries(parsed as Record<string, unknown>).filter(
+    (entry): entry is [string, string] =>
+      typeof entry[1] === "string" && entry[1].length > 0,
+  )
+
+  return { kind: "ok", entries }
 }
 
 /**
@@ -167,29 +214,11 @@ export async function loadNtnToken(
 export async function listNtnWorkspaces(): Promise<string[]> {
   // TODO(ntn-export): Replace this auth.json read with `ntn auth
   // workspaces --json` (or equivalent) when DEFERRED-OFFICIAL-EXPORT
-  // ships.
-  const path = ntnAuthJsonPath()
-  let raw: string
-  try {
-    raw = await readFile(path, "utf-8")
-  } catch {
-    return []
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return []
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return []
-  }
-  return Object.entries(parsed as Record<string, unknown>)
-    .filter(
-      (entry): entry is [string, string] =>
-        typeof entry[1] === "string" && entry[1].length > 0
-    )
-    .map(([workspaceId]) => workspaceId)
+  // ships. The shared `readWorkspaceEntries` helper localizes the
+  // single auth.json walk so both consumers swap together.
+  const result = await readWorkspaceEntries()
+  if (result.kind !== "ok") return []
+  return result.entries.map(([workspaceId]) => workspaceId)
 }
 
 /**
@@ -241,15 +270,27 @@ async function resolveNtnBaseUrl(): Promise<string | undefined> {
  *
  * Cheap synchronous probe with a 1-second timeout. Returns false on
  * any error (not-found, permission denied, etc.) — never throws.
+ *
+ * Memoized per-process — the result is cached after the first call and
+ * reused by subsequent calls in the same Lore invocation. Phase 2
+ * surfaces (`lore install`, `lore auth --status`) call this multiple
+ * times within one CLI invocation; without the cache each call would
+ * pay another `execFileSync`. `installNtn` resets the cache on success
+ * so a follow-up probe sees the freshly installed binary.
  */
 export function isNtnInstalled(): boolean {
+  if (cachedInstalled !== null) return cachedInstalled
   try {
     execFileSync("ntn", ["--version"], { stdio: "pipe", timeout: 1000 })
-    return true
+    cachedInstalled = true
   } catch {
-    return false
+    cachedInstalled = false
   }
+  return cachedInstalled
 }
+
+let cachedInstalled: boolean | null = null
+let cachedVersion: string | null | undefined = undefined
 
 /**
  * Lore's tested-against minimum `ntn` version. Below this, Lore warns
@@ -280,8 +321,12 @@ export const NTN_INSTALL_COMMAND = "curl -fsSL https://ntn.dev | bash"
  * Read the installed ntn version. Returns the parsed SemVer string
  * (e.g., "0.12.0") or null if `ntn` is not on PATH or returned an
  * unparseable response.
+ *
+ * Memoized per-process (same posture as `isNtnInstalled`). `installNtn`
+ * resets on success.
  */
 export function getNtnVersion(): string | null {
+  if (cachedVersion !== undefined) return cachedVersion
   try {
     const output = execFileSync("ntn", ["--version"], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -290,10 +335,22 @@ export function getNtnVersion(): string | null {
     })
     // `ntn --version` prints "ntn 0.12.0" (or with a build suffix).
     const match = output.trim().match(/(\d+\.\d+\.\d+)/)
-    return match ? match[1]! : null
+    cachedVersion = match ? match[1]! : null
   } catch {
-    return null
+    cachedVersion = null
   }
+  return cachedVersion
+}
+
+/**
+ * Drop the per-process `isNtnInstalled` / `getNtnVersion` caches.
+ * Called on a successful `installNtn` so a follow-up probe sees the
+ * freshly installed binary instead of the pre-install null result.
+ * Exported for tests; production code goes through `installNtn`.
+ */
+export function resetNtnProbeCache(): void {
+  cachedInstalled = null
+  cachedVersion = undefined
 }
 
 /**
@@ -317,14 +374,23 @@ export function checkNtnVersion(): "unknown" | "too-old" | "ok" {
  * Minimal SemVer comparison sufficient for `0.X.Y` style versions.
  * Returns -1 / 0 / 1. Doesn't handle pre-release suffixes; ntn's
  * release shape is stable major.minor.patch per the binary
- * inspection. Harden if ntn ever ships pre-releases.
+ * inspection.
+ *
+ * Non-finite components (e.g., a future caller that hands raw
+ * `ntn 0.13.0a` past `getNtnVersion`'s SemVer-stripping regex) are
+ * coerced to 0 before comparison so `NaN !== NaN` doesn't mis-rank
+ * the input as "newer" by skipping the equality check. Today this
+ * branch is unreachable through the public surface — `getNtnVersion`
+ * always returns a clean `\d+\.\d+\.\d+` substring or `null` — but
+ * the guard is one line and stops a future contributor from being
+ * surprised when they pass raw output.
  */
 function compareSemver(a: string, b: string): -1 | 0 | 1 {
   const pa = a.split(".").map(Number)
   const pb = b.split(".").map(Number)
   for (let i = 0; i < 3; i++) {
-    const ai = pa[i] ?? 0
-    const bi = pb[i] ?? 0
+    const ai = Number.isFinite(pa[i]) ? (pa[i] as number) : 0
+    const bi = Number.isFinite(pb[i]) ? (pb[i] as number) : 0
     if (ai !== bi) return ai < bi ? -1 : 1
   }
   return 0
@@ -397,13 +463,23 @@ export type NtnInstallResult =
  * installers don't auto-run the binary, but the env-forcing is
  * cheap defense in depth.
  *
+ * **Spawn env is scrubbed to an allowlist** rather than inheriting
+ * the full `process.env`. The remote installer at `https://ntn.dev`
+ * has no need to see `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
+ * `GITHUB_TOKEN`, npm credentials, or any other token-bearing
+ * variables that happen to live in the operator's shell. The
+ * allowlist (`buildInstallNtnEnv`) covers what the install script
+ * actually needs: shell + locale + proxy + `HOME`/`PATH`/`USER`/
+ * temp-dir variables, plus `NOTION_KEYRING=0`.
+ *
  * The function does NOT prompt for confirmation. Consumers must
  * confirm with the operator before calling — auto-installing
  * without explicit consent would surprise operators with a
  * curl-pipe-bash they didn't authorize.
  *
- * On success, the caller should re-run any version / install probe
- * (the just-installed binary is now on PATH).
+ * On success, drops the `isNtnInstalled` / `getNtnVersion` probe
+ * cache so a follow-up probe in the same process sees the freshly
+ * installed binary instead of the pre-install null result.
  */
 export async function installNtn(): Promise<NtnInstallResult> {
   return new Promise((resolve) => {
@@ -414,15 +490,76 @@ export async function installNtn(): Promise<NtnInstallResult> {
       const child = spawn(NTN_INSTALL_COMMAND, {
         stdio: "inherit",
         shell: true,
-        env: { ...process.env, NOTION_KEYRING: "0" },
+        env: buildInstallNtnEnv(),
       })
       child.on("error", (error) => resolve({ kind: "spawn-error", error }))
       child.on("exit", (code) => {
-        if (code === 0) resolve({ kind: "success" })
-        else resolve({ kind: "exit-non-zero", code: code ?? -1 })
+        if (code === 0) {
+          resetNtnProbeCache()
+          resolve({ kind: "success" })
+        } else {
+          resolve({ kind: "exit-non-zero", code: code ?? -1 })
+        }
       })
     } catch (error) {
       resolve({ kind: "spawn-error", error })
     }
   })
+}
+
+/**
+ * Allowlist of env-var names forwarded into the `installNtn` shell.
+ * Deliberately minimal — anything not on this list (most importantly,
+ * the various `*_TOKEN` / `*_KEY` / `*_SECRET` variables) is dropped
+ * before the spawn.
+ *
+ * Categories the allowlist covers:
+ * - Shell + path: `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`
+ * - Temp dirs: `TMPDIR`, `TMP`, `TEMP`
+ * - Locale: `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, `TERM`,
+ *   `COLORTERM`
+ * - Proxy: `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (lower- and
+ *   upper-case variants)
+ *
+ * Verified against ntn's own `https://ntn.dev` installer needs: it's
+ * a `curl ... | bash` script, so it needs the shell + path + proxy
+ * vars to fetch; it does not need any Notion / Lore / git / npm
+ * credentials.
+ */
+const INSTALL_NTN_ENV_ALLOWLIST: ReadonlyArray<string> = [
+  "HOME",
+  "PATH",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_MESSAGES",
+  "TERM",
+  "COLORTERM",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+]
+
+/**
+ * Build the spawn env for `installNtn`. Only allowlisted variables
+ * from `process.env` are forwarded; `NOTION_KEYRING=0` is appended
+ * unconditionally so any chained ntn invocation lands in file mode.
+ */
+function buildInstallNtnEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const key of INSTALL_NTN_ENV_ALLOWLIST) {
+    const value = process.env[key]
+    if (typeof value === "string") env[key] = value
+  }
+  env["NOTION_KEYRING"] = "0"
+  return env
 }
