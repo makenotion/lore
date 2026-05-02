@@ -11,6 +11,43 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-user attribution on every Memory write
+  (DEFERRED-ATTRIBUTION).** The `Author` Memories column finally
+  carries engineer identity now that ntn-issued tokens make it
+  reliably resolvable. New `src/auth/identity.ts` resolves the
+  display name once at MCP server startup via `LORE_USER_NAME` env
+  override (synchronous, wins over `users.me`) → `users.me().bot.
+  owner.user.name` fallback. `lore-memory action='save'`,
+  `lore-decision action='create'`, and `lore-task action='create'`
+  default `author` from the resolved identity when the caller
+  omits it; an explicit `author` argument always wins. The
+  topic-key upsert path's append-revision branch also stamps
+  `author` (REPLACE-on-every-save, mirroring Title / Synopsis /
+  Keywords / Source) so legacy unattributed rows pick up an
+  author when the next revision lands. The Stop hook's autosave
+  prompt-builder injects an `Author: <name>` line alongside the
+  existing `Agent: <name>` line and instructs the spawned
+  `claude -p` to pass `author:` verbatim. `lore install`'s MCP
+  config and `spawnBackgroundSave` both forward `LORE_USER_NAME`
+  to the spawned child's env so explicit overrides survive the
+  hop. Memory listings (`lore-query action='recall'` / `'search'`,
+  `lore-context action='wake-up'`) surface attribution as
+  `by <name>` between tags and the revision marker on the meta
+  line; rows without an attributed author render byte-identically
+  to pre-DEFERRED-ATTRIBUTION output.
+
+  **Operational note:** Lore now makes one `users.me` API call at
+  every Lore process startup unless `LORE_USER_NAME` is set —
+  including one-shot CLI invocations (`lore status`,
+  `lore digest --dry-run`, etc.) that don't write Memories. The
+  resolver is per-process memoized; long-running surfaces (the
+  MCP server) pay the cost once at startup. Operators on slow
+  networks who want the synchronous path export `LORE_USER_NAME`
+  in shell rc; failures collapse to `{ author: null }` and never
+  block startup.
+
 ## [0.10.0] - 2026-05-01
 
 The 0.10.0 train ships ntn-First Auth: per-engineer Notion bearer

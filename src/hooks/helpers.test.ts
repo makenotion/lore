@@ -105,6 +105,7 @@ import {
 } from "./lock.js"
 import {
   deriveAgentName,
+  deriveAuthorName,
   handleAutoDigest,
   handleStop,
   handleSessionEnd,
@@ -271,6 +272,64 @@ describe("handleStop", () => {
     expect(allowed).not.toContain("lore-learn")
     expect(allowed).not.toContain("lore-decide")
     expect(allowed).not.toContain("lore-task-create")
+  })
+
+  it("forwards LORE_USER_NAME into the spawned child's env when set (DEFERRED-ATTRIBUTION)", async () => {
+    // The detached `claude -p` runs the spawned MCP server which
+    // resolves identity at startup via `resolveAuthorIdentity`. Without
+    // forwarding `LORE_USER_NAME`, the child's env-override path
+    // doesn't fire and the resolver pays a `users.me` round-trip per
+    // autosave. Pin both the conditional forward (set → forwarded) AND
+    // the absence of unrelated env leakage.
+    process.env["LORE_USER_NAME"] = "Hesham Salman"
+    try {
+      writeTranscript(transcriptPath, 3)
+      await handleStop(
+        {
+          session_id: "sess-attrib-env",
+          transcript_path: transcriptPath,
+          cwd: tmpDir,
+        },
+        defaultConfig(),
+      )
+
+      expect(spawnMock).toHaveBeenCalledTimes(1)
+      const [, , options] = spawnMock.mock.calls[0] as [
+        string,
+        string[],
+        { env: Record<string, string> },
+      ]
+      expect(options.env["LORE_USER_NAME"]).toBe("Hesham Salman")
+    } finally {
+      delete process.env["LORE_USER_NAME"]
+    }
+  })
+
+  it("does NOT include LORE_USER_NAME in the child env when unset (no empty-string injection)", async () => {
+    // The dominant case: ntn-resolved-identity engineer who hasn't set
+    // the override. `LORE_USER_NAME` must be absent from the child's
+    // env so the spawned MCP child's `resolveAuthorIdentity` falls
+    // through cleanly to `users.me`. An accidentally-injected empty
+    // string would short-circuit the env-override branch with the
+    // "no LORE_USER_NAME, fall to users.me" path bypassed.
+    delete process.env["LORE_USER_NAME"]
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-no-attrib-env",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig(),
+    )
+
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [, , options] = spawnMock.mock.calls[0] as [
+      string,
+      string[],
+      { env: Record<string, string> },
+    ]
+    expect("LORE_USER_NAME" in options.env).toBe(false)
   })
 
   it("does not spawn when the interval has not been reached", async () => {
@@ -991,5 +1050,46 @@ describe("deriveAgentName", () => {
     process.env["CLAUDECODE"] = "1"
     process.env["LORE_AGENT_NAME"] = "Codex"
     expect(deriveAgentName({})).toBe("Codex")
+  })
+})
+
+describe("deriveAuthorName (DEFERRED-ATTRIBUTION)", () => {
+  // Parallel to `deriveAgentName` but for the Memory `Author` column.
+  // The hook helper has no Notion client at prompt-build time, so it
+  // resolves only the `LORE_USER_NAME` env override; the spawned MCP
+  // child does the `users.me` fallback independently. Pin the env-trim
+  // semantics so a `LORE_USER_NAME="   "` shell-rc misconfiguration
+  // doesn't stamp whitespace as the Author.
+
+  const savedEnv = { ...process.env }
+  afterEach(() => {
+    process.env = { ...savedEnv }
+  })
+
+  it("returns the explicit env override when LORE_USER_NAME is set", () => {
+    delete process.env["LORE_USER_NAME"]
+    process.env["LORE_USER_NAME"] = "Hesham Salman"
+    expect(deriveAuthorName({})).toBe("Hesham Salman")
+  })
+
+  it("trims surrounding whitespace on the override", () => {
+    delete process.env["LORE_USER_NAME"]
+    process.env["LORE_USER_NAME"] = "  Hesham Salman  "
+    expect(deriveAuthorName({})).toBe("Hesham Salman")
+  })
+
+  it("returns undefined when LORE_USER_NAME is unset", () => {
+    delete process.env["LORE_USER_NAME"]
+    expect(deriveAuthorName({})).toBeUndefined()
+  })
+
+  it("returns undefined when LORE_USER_NAME is whitespace-only (treated as unset)", () => {
+    // A `LORE_USER_NAME="   "` shell-rc misconfiguration must NOT stamp
+    // whitespace into the prompt's identity block — the spawned MCP
+    // child's `users.me` fallback would then have to fight a confident-
+    // but-empty override.
+    delete process.env["LORE_USER_NAME"]
+    process.env["LORE_USER_NAME"] = "   "
+    expect(deriveAuthorName({})).toBeUndefined()
   })
 })

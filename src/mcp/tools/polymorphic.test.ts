@@ -234,6 +234,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       countClosedSince: vi.fn(async () => null),
     },
     sessionMemories: { record: vi.fn(), get: vi.fn(() => null) },
+    identity: { author: null },
   }
 }
 
@@ -1426,11 +1427,14 @@ describe("MCP tool surface", () => {
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
-    // Per-tool full-config ceiling. Currently `lore-decision` is the
-    // largest at ~3500 chars rendered; budget is set at 5000 to keep
-    // ~40% headroom for a future action without inviting a paragraph
-    // of unstructured commentary in any param description.
-    const PER_TOOL_CONFIG_LIMIT = 5000
+    // Per-tool full-config ceiling. `lore-memory` is the current
+    // largest at ~5000 chars rendered (its 6 actions plus the 0.9.0
+    // topic-key + compare workstreams pushed it past `lore-decision`).
+    // 0.10.0/DEFERRED-ATTRIBUTION added the `author` parameter to the
+    // save action; budget bumped from 5000 → 5200 to absorb that and
+    // leave ~30% headroom for a future action without inviting a
+    // paragraph of unstructured commentary in any param description.
+    const PER_TOOL_CONFIG_LIMIT = 5200
     const polymorphic = [
       "lore-context",
       "lore-memory",

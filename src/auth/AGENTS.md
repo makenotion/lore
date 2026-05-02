@@ -21,6 +21,36 @@ resolution-mode-specific helpers `resolveAuth` calls into.
 |------|---------------|
 | `oauth.ts` | Two roles: legacy OAuth helpers from 0.9.x (`runOAuthFlow`, `loadCredentials`, `getAuthorizationUrl`, `exchangeCode`, `getBaseUrl`) for the BYO-integration rollback path; AND the new `verifyVaultAccess` post-resolution preflight (#03). OAuth-flow primitives are no longer the canonical auth path under ntn-first; they remain reachable for legacy operators in 0.10.0 and removal is plausibly 1.0.0 contingent on telemetry. The filename reflects historical content; renaming is a separate cleanup. |
 | `ntn.ts` | ntn integration module (#02). `loadNtnToken` reads `~/.config/notion/auth.json` for token resolution; `runNtnLogin` shells out to `ntn login` interactively; `installNtn` auto-installs via `curl -fsSL https://ntn.dev \| bash`; `getNtnVersion` / `checkNtnVersion` report the installed version. Exports `MIN_NTN_VERSION` and `NTN_INSTALL_COMMAND`. |
+| `identity.ts` | Engineer-identity resolver for the per-user attribution path (DEFERRED-ATTRIBUTION). `resolveAuthorIdentity(client)` is memoized per-process: `LORE_USER_NAME` env override (synchronous, wins) → `users.me().bot.owner.user.name` fallback → `null`. Failures collapse to `{ author: null }` and never throw — the Author column is advisory; an unattributed memory beats a save that fails because identity resolution hit a transient blip. Public surface is `resolveAuthorIdentity` + `resetIdentityCache` (tests); the JSON-shape walker is private (tests reach every failure-mode branch via mocked `client.users.me`). |
+
+## Identity resolution vs. `renderWhoamiIdentity` — deliberate divergence
+
+`src/cli/commands/auth.ts:renderWhoamiIdentity` walks the same
+`users.me` shape with three fallbacks: `bot.owner.user.name` →
+`bot.owner.user.id` → `<bot in <workspace_name>>`.
+`src/auth/identity.ts:resolveAuthorIdentity` (via its private
+JSON walker) walks ONLY the first (`bot.owner.user.name`) and
+returns `null` when missing.
+
+The divergence is intentional and load-bearing:
+
+- **`renderWhoamiIdentity`** drives `lore auth --whoami`, a CLI
+  diagnostic where the operator wants *some* identity string back —
+  even the bot's workspace label is more useful than `<unknown>` in
+  that surface. Falling back through the three layers is correct
+  there because the consumer is a human reading the output.
+- **`resolveAuthorIdentity`** drives the `Author` Memory column. The
+  column is per-engineer attribution; falling back to `bot.owner.
+  user.id` (a UUID) would stamp every row with an opaque hex string,
+  and falling back to `bot.workspace_name` would re-fragment
+  attribution to per-team granularity (the same workspace label
+  every engineer in the team would resolve). Returning `null`
+  preserves the empty-Author signal so an operator can fix the
+  resolution path (export `LORE_USER_NAME`) rather than discover
+  they've been writing UUIDs into a column meant for human bylines.
+
+A future engineer reconciling the two paths should NOT make them
+match — the difference is the contract.
 
 ## The auth.json read is a temporary coupling
 

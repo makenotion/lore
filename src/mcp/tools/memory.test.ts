@@ -117,6 +117,7 @@ describe("lore-remember session recording", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -151,6 +152,7 @@ describe("lore-remember session recording", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -184,6 +186,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -221,6 +224,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -256,6 +260,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -306,6 +311,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -371,6 +377,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -425,6 +432,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -464,6 +472,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -500,6 +509,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -535,6 +545,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -562,6 +573,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1424,6 +1436,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1456,6 +1469,7 @@ describe("lore-expand", () => {
       memories: { getById: vi.fn().mockResolvedValue(makeMemory("m")) },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1513,6 +1527,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1554,6 +1569,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1587,6 +1603,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1680,6 +1697,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1736,6 +1754,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1774,6 +1793,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1810,6 +1830,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1847,6 +1868,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1909,6 +1931,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1973,6 +1996,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2028,6 +2052,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2064,6 +2089,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2107,6 +2133,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2156,6 +2183,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2207,6 +2235,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2254,6 +2283,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2309,6 +2339,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2396,6 +2427,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2443,6 +2475,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2494,6 +2527,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2570,6 +2604,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2622,6 +2657,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2665,6 +2701,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2711,6 +2748,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2751,6 +2789,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2806,6 +2845,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2853,6 +2893,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2893,6 +2934,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2935,6 +2977,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2981,6 +3024,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3038,6 +3082,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3073,6 +3118,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3103,6 +3149,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3132,6 +3179,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3155,6 +3203,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3178,6 +3227,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3710,6 +3760,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
       memories: { getById, touchOnRead },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3740,6 +3791,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
       memories: { getById, touchOnRead },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3764,6 +3816,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
       memories: { getById, touchOnRead },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3917,6 +3970,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3971,6 +4025,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4009,6 +4064,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4046,6 +4102,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4097,6 +4154,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4143,6 +4201,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4180,6 +4239,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4215,6 +4275,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4268,6 +4329,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4320,6 +4382,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4382,6 +4445,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4437,6 +4501,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4478,6 +4543,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4528,6 +4594,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4596,6 +4663,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4677,6 +4745,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4740,6 +4809,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4781,6 +4851,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4862,6 +4933,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4922,6 +4994,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4987,6 +5060,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5029,6 +5103,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5106,6 +5181,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5171,6 +5247,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
     return {
       services,
@@ -5722,6 +5799,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -6146,6 +6224,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       facts: { createWithDedup },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -6310,6 +6389,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -6394,5 +6474,64 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(decrementConfidence).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DEFERRED-ATTRIBUTION (0.10.0): Author column attribution surfaces on save
+//
+// `services.identity.author` is the engineer-identity resolved at MCP server
+// startup. Each save handler defaults `author` from it when the caller omits
+// `args.author`; an explicit `args.author` always wins.
+// ---------------------------------------------------------------------------
+
+describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION)", () => {
+  function setUpSaveHarness(identityAuthor: string | null) {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-attrib", { projectIds: [] })
+    const create = vi.fn().mockResolvedValue(created)
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: identityAuthor },
+    }
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    return { handler: mockServer.getActionHandler("lore-memory", "save"), create }
+  }
+
+  it("stamps services.identity.author on memories.create when args.author is omitted", async () => {
+    const { handler, create } = setUpSaveHarness("Hesham Salman")
+    await handler({ title: "Saved", content: "body" } as never)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ author: "Hesham Salman" }),
+    )
+  })
+
+  it("explicit args.author wins over services.identity.author (caller override)", async () => {
+    const { handler, create } = setUpSaveHarness("ServerSideName")
+    await handler({
+      title: "Saved",
+      content: "body",
+      author: "Override",
+    } as never)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: "Override" }))
+  })
+
+  it("collapses to author: undefined when args.author is omitted AND identity is null", async () => {
+    // The buildMemoryProps truthy gate skips the Author write when
+    // input.author is undefined; column stays empty rather than
+    // stamping a placeholder. Pinning `undefined` rather than `null`
+    // is load-bearing — the create payload travels through
+    // decodeMemoryTextFields where `null` and `undefined` follow
+    // different branches.
+    const { handler, create } = setUpSaveHarness(null)
+    await handler({ title: "Saved", content: "body" } as never)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: undefined }))
   })
 })

@@ -821,6 +821,13 @@ export interface CreateDecisionInput {
    * internal migrations.
    */
   synopsis?: string
+  /**
+   * Engineer-identity attribution stamped on the Memory `Author`
+   * column (DEFERRED-ATTRIBUTION). The MCP tool layer defaults to
+   * `services.identity.author` when the caller omits this; service-
+   * layer callers (migrations, internal tooling) pass through verbatim.
+   */
+  author?: string
   agent?: string
   session?: string
 }
@@ -900,6 +907,12 @@ export interface CreateTaskInput {
    * accepts any string for legacy data and internal migrations.
    */
   synopsis?: string
+  /**
+   * Engineer-identity attribution stamped on the Memory `Author`
+   * column (DEFERRED-ATTRIBUTION). Same posture as `CreateDecisionInput`
+   * — MCP tool defaults from `services.identity.author`.
+   */
+  author?: string
   agent?: string
   session?: string
 }

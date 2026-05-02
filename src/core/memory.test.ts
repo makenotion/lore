@@ -1244,6 +1244,160 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     })
   })
 
+  // -------------------------------------------------------------------
+  // DEFERRED-ATTRIBUTION (0.10.0): Author stamping on the upsert path.
+  //
+  // Fresh-create routes through `create()` and inherits its author
+  // handling. The append-revision branch is the load-bearing case the
+  // PR review flagged: legacy unattributed rows must pick up an author
+  // when the next revision carries one, AND a fresh revision by a
+  // different engineer must overwrite the prior chain author rather
+  // than silently preserve it. The "REPLACE on every save" policy
+  // matches Title / Synopsis / Keywords / Source.
+  // -------------------------------------------------------------------
+
+  function buildExistingMemoryPageWithAuthor(
+    id: string,
+    opts: { topicKey: string; projectIds: string[]; author?: string },
+  ): PageObjectResponse {
+    const page = buildExistingMemoryPage(id, {
+      topicKey: opts.topicKey,
+      projectIds: opts.projectIds,
+      kind: "decision",
+      revisionCount: 1,
+    })
+    if (opts.author !== undefined) {
+      ;(page.properties as Record<string, unknown>)["Author"] = {
+        type: "rich_text",
+        rich_text: [{ plain_text: opts.author }],
+      }
+    }
+    return page
+  }
+
+  it("append-revision: input.author overwrites the prior Author column on the property update", async () => {
+    // Engineer B revises a topic that engineer A authored. The
+    // attribution flips to B because the upsert path's "latest write
+    // wins" policy covers the human attribution column. Returned
+    // shape echoes the post-write author so the MCP layer's auto-
+    // mentions emitter reads the new value.
+    const existing = buildExistingMemoryPageWithAuthor("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      author: "Engineer A",
+    })
+    const { client, updateSpy } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "...",
+      kind: "decision",
+      author: "Engineer B",
+    })
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Author"]).toEqual({
+      rich_text: [{ text: { content: "Engineer B" } }],
+    })
+    expect(result.memory.author).toBe("Engineer B")
+  })
+
+  it("append-revision: legacy unattributed row picks up Author when input.author is supplied", async () => {
+    // The reviewer's specific concern: a row created pre-DEFERRED-
+    // ATTRIBUTION has Author=""; the next upsert backfills it rather
+    // than leaving the column permanently empty. The post-write
+    // returned shape reflects the new author.
+    const existing = buildExistingMemoryPageWithAuthor("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      // No author — pre-DEFERRED-ATTRIBUTION shape.
+    })
+    const { client, updateSpy } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "...",
+      kind: "decision",
+      author: "Hesham Salman",
+    })
+
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Author"]).toEqual({
+      rich_text: [{ text: { content: "Hesham Salman" } }],
+    })
+    expect(result.memory.author).toBe("Hesham Salman")
+  })
+
+  it("append-revision: input.author === undefined preserves the existing Author (service-layer no-clobber)", async () => {
+    // Service-layer callers (migrations, internal tooling) that omit
+    // `author` must NOT clobber the prior chain author with null. This
+    // is distinct from the MCP boundary — the tool handler always
+    // resolves to either an explicit override or `services.identity.
+    // author`, both of which are forwarded as the input. A bare-call
+    // without `author` is a service-layer signal of "preserve."
+    const existing = buildExistingMemoryPageWithAuthor("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      author: "Engineer A",
+    })
+    const { client, updateSpy } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "...",
+      kind: "decision",
+      // No `author` field — service-layer caller signals "preserve."
+    })
+
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Author"]).toEqual({
+      rich_text: [{ text: { content: "Engineer A" } }],
+    })
+    expect(result.memory.author).toBe("Engineer A")
+  })
+
+  it("fresh-create: stamps input.author onto the new page's Author column", async () => {
+    // Symmetric to append-revision: the fresh-create branch routes
+    // through `create()`, which forwards `author` into
+    // `buildMemoryProps`. Pin the contract here too so a future
+    // refactor that drops `author` from the upsert→create forward
+    // breaks the test.
+    const { client, createSpy } = makeUpsertClient({ findResults: [] })
+    const service = new MemoryService(client, db)
+
+    await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "We chose JWT.",
+      kind: "decision",
+      author: "Hesham Salman",
+    })
+
+    const createArgs = createSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(createArgs.properties["Author"]).toEqual({
+      rich_text: [{ text: { content: "Hesham Salman" } }],
+    })
+  })
+
   it("throws on kind mismatch BEFORE any Notion write — pages.retrieveMarkdown and pages.updateMarkdown are never called", async () => {
     // The acceptance criterion: a kind-mismatched upsert must throw
     // before the body read/write so a rejected upsert leaves the

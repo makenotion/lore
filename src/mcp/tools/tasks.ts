@@ -137,6 +137,7 @@ interface CreateArgs {
   tags?: string[]
   keywords?: string
   synopsis?: string
+  author?: string
   agent?: string
   session?: string
 }
@@ -193,6 +194,12 @@ async function handleCreate(
         tags: args.tags,
         keywords: args.keywords,
         synopsis: args.synopsis,
+        // DEFERRED-ATTRIBUTION: explicit caller override wins; otherwise
+        // default to the engineer-identity resolved at server startup.
+        // `services.identity` is required on the type — null `author`
+        // means neither `LORE_USER_NAME` nor `users.me` produced a
+        // usable name; collapse to undefined so the column stays empty.
+        author: args.author ?? services.identity.author ?? undefined,
         agent: args.agent,
         session: args.session,
       }),
@@ -632,6 +639,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
     synopsis: z.string().max(SYNOPSIS_MAX).optional(),
+    author: z.string().optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
   }),
@@ -818,6 +826,12 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
               "and what 'done' looks like — distinct from `subject` (short title) and " +
               `\`description\` (the body). Up to ${SYNOPSIS_MAX} chars. ` +
               "On update, omit to leave untouched; pass empty string to clear.",
+          ),
+        author: z
+          .string()
+          .optional()
+          .describe(
+            "(action='create') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`.",
           ),
         agent: z
           .string()

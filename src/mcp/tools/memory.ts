@@ -197,6 +197,7 @@ interface SaveArgs {
   tags?: string[]
   keywords?: string
   synopsis?: string
+  author?: string
   agent?: string
   session?: string
   topicKey?: string
@@ -302,6 +303,19 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // not summed. The kind=note guard above already short-circuited
     // the unsafe-defaulting case; from here either path is contract-
     // valid.
+    // Per-user attribution (DEFERRED-ATTRIBUTION). Caller can override
+    // explicitly via `args.author`; otherwise default to the engineer
+    // identity resolved at server startup. `services.identity` is
+    // required on the type so a future refactor that forgets to
+    // populate it fails at typecheck rather than silently dropping
+    // attribution; `identity.author` is null when neither
+    // `LORE_USER_NAME` nor `users.me` produced a usable name, and the
+    // `?? undefined` collapse routes both no-override AND null-identity
+    // through the buildMemoryProps truthy gate so the column stays
+    // empty rather than stamping a placeholder.
+    const resolvedAuthor =
+      args.author ?? services.identity.author ?? undefined
+
     const writePromise: Promise<{
       memory: Memory
       revisionCount: number
@@ -321,6 +335,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           tags: args.tags,
           keywords: args.keywords,
           synopsis: args.synopsis,
+          author: resolvedAuthor,
           agent: args.agent,
           session: args.session,
           reviewBy: args.reviewBy,
@@ -341,6 +356,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
             tags: args.tags,
             keywords: args.keywords,
             synopsis: args.synopsis,
+            author: resolvedAuthor,
             agent: args.agent,
             session: args.session,
           })
@@ -1863,6 +1879,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
     synopsis: z.string().max(SYNOPSIS_MAX).optional(),
+    author: z.string().optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
     topicKey: z
@@ -2044,6 +2061,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .optional()
           .describe(
             `(save | update) 1-2 sentence synopsis surfaced under the title on recall/search/wake-up listings (≤${SYNOPSIS_MAX} chars). On update, omit to keep, pass empty string to clear.`,
+          ),
+        author: z
+          .string()
+          .optional()
+          .describe(
+            "(action='save') Engineer display name. Defaults to LORE_USER_NAME env or `users.me` on the active token.",
           ),
         agent: z
           .string()

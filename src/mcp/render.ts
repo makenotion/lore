@@ -229,6 +229,17 @@ export interface MemoryListItem {
    * pattern as `confidenceScore` (0.8.0/09).
    */
   revisionCount: number
+  /**
+   * Engineer-attribution display name (DEFERRED-ATTRIBUTION). Empty
+   * string for pre-attribution rows and for any save where neither
+   * `LORE_USER_NAME` nor `users.me` resolved a usable name. The
+   * default meta builder surfaces it as `by <name>` between tags and
+   * the revision marker when non-empty; empty rows render
+   * byte-identically to pre-DEFERRED-ATTRIBUTION. `Memory`,
+   * `DecisionSummary`, and `TaskSummary` all carry the field
+   * structurally.
+   */
+  author: string
 }
 
 export interface FormatMemoryListItemOptions {
@@ -358,12 +369,18 @@ export function renderTrustLine(
  * out so wake-up's section-specific builders can fall back to it for the
  * non-Recent-Memories surfaces if they ever need to.
  *
- * Field order: `source | kind | status | tags | rev | date`. `kind` and
- * `status` are filtered when they equal their catch-all defaults
- * (`note`, `informational`); `tags` is filtered when empty; `rev N` is
- * filtered when `revisionCount < REVISION_DISPLAY_THRESHOLD`. `rev` is
- * placed before `date` so the reader scans "identity → state → tags →
- * revision count → recency."
+ * Field order: `source | kind | status | tags | by author | rev | date`.
+ * `kind` and `status` are filtered when they equal their catch-all
+ * defaults (`note`, `informational`); `tags` is filtered when empty;
+ * `by <author>` is filtered when `author` is empty (DEFERRED-ATTRIBUTION);
+ * `rev N` is filtered when `revisionCount < REVISION_DISPLAY_THRESHOLD`.
+ * `rev` is placed before `date` so the reader scans "identity → state →
+ * tags → author → revision count → recency."
+ *
+ * The `by ` prefix is load-bearing: a bare name in the pipe-joined field
+ * list reads ambiguously next to tags. Prefixing makes the attribution
+ * scannable at a glance and disambiguates from a free-form keyword that
+ * happens to be a name.
  */
 export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
   return [
@@ -371,6 +388,7 @@ export function defaultMemoryMetaBuilder(memory: MemoryListItem): string {
     memory.kind !== "note" ? memory.kind : null,
     memory.status !== "informational" ? memory.status : null,
     memory.tags.length > 0 ? memory.tags.join(", ") : null,
+    memory.author.length > 0 ? `by ${memory.author}` : null,
     renderRevisionMarker(memory.revisionCount),
     memory.updatedAt.split("T")[0],
   ]

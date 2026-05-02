@@ -81,13 +81,26 @@ The parent's env passthrough is deliberately minimal:
 `spawnBackgroundSave` builds a `safeEnv` with `PATH`, `HOME`,
 `LORE_AUTOSAVE: "false"` (so the child can't recursively trigger
 its own autosave), and conditionally `LORE_NOTION_TOKEN` /
-`LORE_NOTION_BASE_URL` when the parent has them set. The legacy
-token forwarding preserves access for operators still on
-`LORE_NOTION_TOKEN` while they migrate; under ntn-first the child
-ntn-resolves directly off `auth.json` because that file is on disk
-where the child can read it. If the parent refreshed ntn (e.g.,
+`LORE_NOTION_BASE_URL` / `LORE_USER_NAME` when the parent has them
+set. The legacy token forwarding preserves access for operators
+still on `LORE_NOTION_TOKEN` while they migrate; under ntn-first the
+child ntn-resolves directly off `auth.json` because that file is on
+disk where the child can read it. If the parent refreshed ntn (e.g.,
 the operator re-ran `ntn login`) before spawning the child, the
 child sees the updated `auth.json` at startup.
+
+`LORE_USER_NAME` (DEFERRED-ATTRIBUTION) is forwarded so the spawned
+MCP child resolves engineer identity via the synchronous env path
+rather than paying a `users.me` round-trip on every autosave fire.
+**The dominant case is unset, not set**: ntn-first engineers don't
+typically export `LORE_USER_NAME` because they expect ntn-resolved
+identity to "just work." For those operators, the spawned MCP child
+falls through to `users.me` at startup, costing one extra Notion
+round-trip per autosave fire. Realistic latency: <100ms; under load
+each autosave is one entry in the rate-limit gate's queue. Operators
+on slow networks (or who otherwise want the resolution off the hot
+path) export `LORE_USER_NAME` in shell rc and the spawned child's
+synchronous env path resolves identity for free.
 
 **Mid-process re-resolution is deferred** — once the child has
 resolved its credentials, it does not re-read `auth.json`. A 401

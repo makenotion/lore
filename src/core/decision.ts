@@ -80,6 +80,7 @@ export class DecisionService {
         affectsIds: input.affectsIds,
         alternatives: input.alternatives,
         consequences: input.consequences,
+        author: input.author,
         agent: input.agent,
         tags: input.tags,
         keywords: input.keywords,

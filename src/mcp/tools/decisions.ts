@@ -127,6 +127,7 @@ interface CreateArgs {
   tags?: string[]
   keywords?: string
   synopsis?: string
+  author?: string
   agent?: string
   session?: string
 }
@@ -184,6 +185,14 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
         tags: args.tags,
         keywords: args.keywords,
         synopsis: args.synopsis,
+        // DEFERRED-ATTRIBUTION: caller override wins; otherwise stamp
+        // the engineer-identity resolved at server startup.
+        // `services.identity` is required on the type — a null
+        // `author` field means neither `LORE_USER_NAME` nor
+        // `users.me` produced a usable name; the `?? undefined`
+        // collapse routes that case through the buildMemoryProps
+        // truthy gate so the column stays empty.
+        author: args.author ?? services.identity.author ?? undefined,
         agent: args.agent,
         session: args.session,
       }),
@@ -716,6 +725,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
     synopsis: z.string().max(SYNOPSIS_MAX).optional(),
+    author: z.string().optional(),
     agent: z.string().optional(),
     session: z.string().optional(),
   }),
@@ -867,6 +877,12 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
             "(action='create') 1–2 sentence synopsis of the governing rule — distinct from " +
               "`decision` (the title) and `rationale` (the body). Surfaces under the title on " +
               `recall/search/wake-up listings. Up to ${SYNOPSIS_MAX} chars.`,
+          ),
+        author: z
+          .string()
+          .optional()
+          .describe(
+            "(action='create') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`.",
           ),
         agent: z
           .string()

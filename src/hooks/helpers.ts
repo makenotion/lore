@@ -93,6 +93,35 @@ export function deriveAgentName(_event: HookEvent): string | undefined {
   return undefined
 }
 
+/**
+ * Derive the human-author name for the autosave background spawn
+ * (DEFERRED-ATTRIBUTION). Parallel to `deriveAgentName` but for the
+ * `Author` Memory column rather than `Agent`.
+ *
+ * The autosave hook spawns a detached `claude -p` sub-agent that
+ * connects to its own MCP server, which independently resolves
+ * identity at startup via `resolveAuthorIdentity` (LORE_USER_NAME env →
+ * `users.me`). We *also* surface the env-override here at prompt-build
+ * time so the spawned sub-agent's prompt can carry the canonical
+ * `Author: ...` line for textual context — and so an engineer who set
+ * `LORE_USER_NAME` in their shell rc gets attribution even if the
+ * spawned MCP server's `users.me` round-trip later fails.
+ *
+ * Returns undefined when no override is set; callers omit the Author
+ * line in that case rather than stamping a placeholder. The spawned
+ * MCP server's `users.me` fallback can still resolve the engineer
+ * identity — but only if the parent forwards the credentials needed
+ * for the call (see `spawnBackgroundSave`'s env-passthrough rules).
+ *
+ * Exported for unit-test coverage; not part of the module's public
+ * surface for production callers.
+ */
+export function deriveAuthorName(_event: HookEvent): string | undefined {
+  const override = process.env["LORE_USER_NAME"]
+  if (override && override.trim()) return override.trim()
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // State management — per-session save count in $TMPDIR
 // ---------------------------------------------------------------------------
@@ -397,7 +426,10 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
           sessionContent,
           event.session_id,
           deriveAgentName(event),
-          { extractLearnings: learningExtractionEnabled },
+          {
+            extractLearnings: learningExtractionEnabled,
+            authorName: deriveAuthorName(event),
+          },
         )
         // Only advance the save counter when a background process actually
         // started. Every non-`spawned` result — benign races (lock-held,

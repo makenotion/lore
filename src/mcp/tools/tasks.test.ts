@@ -97,6 +97,7 @@ function services(overrides: Record<string, unknown> = {}) {
       getById: vi.fn().mockResolvedValue(makeTask("t1", { doneAt: null })),
     },
     sessionMemories: { record: vi.fn() },
+    identity: { author: null },
     context: { project: null },
     ...overrides,
   }
@@ -1598,6 +1599,53 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     // receive the auto-detected project id.
     expect(svc.tasks.list).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "ctx-proj" }),
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DEFERRED-ATTRIBUTION (0.10.0): Author column attribution on lore-task.
+//
+// Tasks write to the Memories DB (Kind = task) — same Author column as
+// memories and decisions. Pin the precedence: explicit args.author wins,
+// services.identity.author is the default, null collapses to undefined.
+// ---------------------------------------------------------------------------
+
+describe("lore-task action='create' — Author attribution (DEFERRED-ATTRIBUTION)", () => {
+  function setUpHarness(identityAuthor: string | null) {
+    const created = makeTask("t-attrib")
+    const svc = services({ identity: { author: identityAuthor } })
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    return { handler: mockServer.getHandler("lore-task"), svc }
+  }
+
+  it("stamps services.identity.author on tasks.create when args.author is omitted", async () => {
+    const { handler, svc } = setUpHarness("Hesham Salman")
+    await handler({ action: "create", subject: "Rotate keys" } as never)
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ author: "Hesham Salman" }),
+    )
+  })
+
+  it("explicit args.author wins over services.identity.author", async () => {
+    const { handler, svc } = setUpHarness("ServerSideName")
+    await handler({
+      action: "create",
+      subject: "Rotate keys",
+      author: "Override",
+    } as never)
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ author: "Override" }),
+    )
+  })
+
+  it("collapses to author: undefined when no override and identity.author is null", async () => {
+    const { handler, svc } = setUpHarness(null)
+    await handler({ action: "create", subject: "Rotate keys" } as never)
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ author: undefined }),
     )
   })
 })

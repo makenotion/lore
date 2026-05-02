@@ -961,6 +961,7 @@ export class MemoryService {
     synopsis?: string
     keywords?: string
     tags?: string[]
+    author?: string
     agent?: string
     session?: string
     reviewBy?: string
@@ -997,6 +998,7 @@ export class MemoryService {
         tags: input.tags,
         keywords: input.keywords,
         synopsis: input.synopsis,
+        author: input.author,
         agent: input.agent,
         session: input.session,
         reviewBy: input.reviewBy,
@@ -1099,6 +1101,21 @@ export class MemoryService {
     // synopsis / keywords / source replace if provided, confidence
     // bumps if provided. Kind / Status / topicId / projectIds /
     // lastReferencedAt / confidenceScore are NOT in this update.
+    //
+    // Author is REPLACE-on-every-save (DEFERRED-ATTRIBUTION) when the
+    // input carries one: the engineer making this revision becomes the
+    // author of the chain. Symmetric reasoning to title / synopsis /
+    // keywords / source — the upsert path's "latest write wins" policy
+    // covers human attribution. The MCP tool layer always passes
+    // `services.identity.author` as the default when no explicit
+    // override is given, so an in-process MCP save under ntn-resolved
+    // identity always backfills the column. Falls back to existing on
+    // input.author === undefined so a service-layer caller (migration,
+    // internal tooling) that omits it preserves the prior value rather
+    // than clobbering with null. Empty string from the input is treated
+    // as "leave alone" via the `buildMemoryProps` truthy gate, matching
+    // the `agent` field's posture.
+    const authorForUpdate = input.author ?? existing.author
     await this.client.pages.update({
       page_id: existing.id,
       properties: buildMemoryProps({
@@ -1108,6 +1125,7 @@ export class MemoryService {
         keywords: decodedKeywords,
         source: input.source,
         confidence: input.confidence ?? existing.confidence,
+        author: authorForUpdate,
       }) as CreatePageParameters["properties"],
     })
 
@@ -1144,6 +1162,10 @@ export class MemoryService {
     // re-running entity extraction. `synopsis` and `keywords` fall
     // back to existing when caller omitted them, matching the
     // buildMemoryProps `if (input.X !== undefined)` gate behavior.
+    // `author` reflects the post-write state — `authorForUpdate`
+    // already collapses input/existing per DEFERRED-ATTRIBUTION's
+    // overwrite-when-provided rule, so the returned shape reads the
+    // value Notion holds after the update.
     return {
       memory: {
         ...existing,
@@ -1153,6 +1175,7 @@ export class MemoryService {
         keywords: decodedKeywords ?? existing.keywords,
         source: input.source ?? existing.source,
         confidence: input.confidence ?? existing.confidence,
+        author: authorForUpdate,
       },
       revisionCount: nextRevision,
       upserted: true,

@@ -2082,9 +2082,12 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     expect(build.forwarded).toContain("NOTION_API_BASE_URL")
   })
 
-  it("forwards all six runtime keys when the operator has the full ntn-dev shell environment", () => {
+  it("forwards all seven runtime keys when the operator has the full ntn-dev shell environment", () => {
     // Pathological-but-real: a dev operator with everything set.
-    // All six keys forward as `${VAR}` placeholders.
+    // All seven keys forward as `${VAR}` placeholders. Includes
+    // LORE_USER_NAME (DEFERRED-ATTRIBUTION) — operators who set the
+    // attribution override at install time keep it on the spawned
+    // MCP child without an extra `users.me` round-trip.
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "api-tok",
       LORE_NOTION_TOKEN: "lore-tok",
@@ -2092,6 +2095,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       NOTION_ENV: "dev",
       NOTION_BASE_URL: "https://api-dev.notion.com",
       NOTION_API_BASE_URL: "https://api-dev.notion.com",
+      LORE_USER_NAME: "Hesham Salman",
     }
     const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
     expect(build.env).toEqual({
@@ -2101,6 +2105,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       NOTION_ENV: "${NOTION_ENV}",
       NOTION_BASE_URL: "${NOTION_BASE_URL}",
       NOTION_API_BASE_URL: "${NOTION_API_BASE_URL}",
+      LORE_USER_NAME: "${LORE_USER_NAME}",
     })
     // Order pinned via runtimeForwardedKeys (matches RUNTIME_FORWARDED_KEYS).
     expect(build.forwarded).toEqual([
@@ -2110,7 +2115,54 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       "NOTION_ENV",
       "NOTION_BASE_URL",
       "NOTION_API_BASE_URL",
+      "LORE_USER_NAME",
     ])
+  })
+
+  it("forwards LORE_USER_NAME when the operator has the attribution override set (DEFERRED-ATTRIBUTION)", () => {
+    // The operator-controlled escape hatch parallel to LORE_AGENT_NAME.
+    // Without forwarding, an MCP child resolves identity via `users.me`
+    // and the operator's explicit override never reaches the column.
+    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "hsalman" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
+    expect(build.env["LORE_USER_NAME"]).toBe("${LORE_USER_NAME}")
+    expect(build.forwarded).toContain("LORE_USER_NAME")
+  })
+
+  it("does NOT include LORE_USER_NAME in the legacy-deprecated note filter", () => {
+    // Only LORE_NOTION_TOKEN is soft-deprecated. LORE_USER_NAME is a
+    // first-class operator override under DEFERRED-ATTRIBUTION; an
+    // engineer who sets it shouldn't see a migration recommendation
+    // pointing them at ntn.
+    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "hsalman" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
+    expect(build.forwarded).not.toContain("LORE_NOTION_TOKEN")
+  })
+
+  it("threads LORE_USER_NAME into Claude / Cursor / Codex installer output as `${LORE_USER_NAME}`", () => {
+    // Per-host coverage that the reviewer flagged: the runtime-forward
+    // is only useful if the three install paths actually emit it. Pin
+    // each host's output shape so a future RUNTIME_FORWARDED_KEYS edit
+    // that drops LORE_USER_NAME from the chain breaks the test.
+    const env: NodeJS.ProcessEnv = { LORE_USER_NAME: "hsalman" }
+
+    const claudeEntry = buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, env)
+    expect(claudeEntry.env).toMatchObject({
+      LORE_USER_NAME: "${LORE_USER_NAME}",
+    })
+
+    const cursorEntry = buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, env)
+    expect(cursorEntry.env).toMatchObject({
+      LORE_USER_NAME: "${LORE_USER_NAME}",
+    })
+
+    const codexSection = buildCodexMcpSection("bare", TEST_CONFIG_ROOT, env)
+    expect(codexSection).toContain('"LORE_USER_NAME"')
+    // Codex's `env_vars = [...]` is a name-only allowlist; the host
+    // resolves the value at MCP-spawn time from the operator's env.
+    // The string match here pins both that LORE_USER_NAME shows up in
+    // the array AND that it's quoted (so a future formatting refactor
+    // can't accidentally emit it as a literal value).
   })
 
   it("does NOT include the new ntn-native keys in the legacy-deprecated note filter", () => {

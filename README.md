@@ -500,6 +500,7 @@ environment variable, then OAuth credentials at `~/.lore/credentials.json`.
 |----------|--------|
 | `LORE_NOTION_TOKEN` | Notion integration token (used when `auth.token` is absent from `.lore.yaml`) |
 | `LORE_AGENT_NAME` | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`) |
+| `LORE_USER_NAME` | Override the `Author:` field on saved memories with a human display name. When unset, Lore resolves the engineer identity from `users.me` on the active ntn-issued token. |
 | `LORE_AUTO_DIGEST=false` | Suppress the Stop-triggered auto-digest scheduler (CLI `lore digest` still works) |
 | `LORE_NO_HYPERLINKS=1` | Skip OSC 8 clickable hyperlinks in `lore search` and `lore status` output, even under TTY. Same fallback as the non-TTY path. `=0`, `=false`, and empty string are treated as not set |
 | `NO_COLOR=1` | Honored alongside `LORE_NO_HYPERLINKS` to skip OSC 8 emission |

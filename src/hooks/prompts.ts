@@ -36,20 +36,36 @@ export function buildProjectSelectionGuidance(
 
 /**
  * Identity block injected into both save prompts so every lore-* call made by
- * the AI carries the hook event's `session_id` and a derived agent name.
- * Without this, memories land with `Session: ""` and `Agent: "unknown"`, which
- * breaks session grouping and per-agent filtering.
+ * the AI carries the hook event's `session_id`, a derived agent name, AND
+ * (per DEFERRED-ATTRIBUTION) an engineer-author name when one is available.
+ * Without this, memories land with `Session: ""`, `Agent: "unknown"`, and
+ * `Author: ""` — which breaks session grouping, per-agent filtering, and
+ * per-engineer attribution.
+ *
+ * The author signal is double-routed: the spawned `claude -p`'s MCP server
+ * already resolves identity at startup via `resolveAuthorIdentity` so saves
+ * pick up the engineer name automatically. Surfacing `Author: ...` in the
+ * prompt is the textual carrier for cases where the MCP-side resolution
+ * fails (transient `users.me` blip) AND the load-bearing path for explicit
+ * `LORE_USER_NAME` overrides — the prompt instructs the agent to pass
+ * `author:` verbatim, parallel to how `agent:` flows from `LORE_AGENT_NAME`.
  */
-function buildIdentityBlock(sessionId?: string, agentName?: string): string {
-  if (!sessionId && !agentName) return ""
+function buildIdentityBlock(
+  sessionId?: string,
+  agentName?: string,
+  authorName?: string,
+): string {
+  if (!sessionId && !agentName && !authorName) return ""
 
   const lines: string[] = [""]
   if (sessionId) lines.push(`Session ID: ${sessionId}`)
   if (agentName) lines.push(`Agent: ${agentName}`)
+  if (authorName) lines.push(`Author: ${authorName}`)
 
   const parts: string[] = []
   if (sessionId) parts.push(`session: "${sessionId}"`)
   if (agentName) parts.push(`agent: "${agentName}"`)
+  if (authorName) parts.push(`author: "${authorName}"`)
   lines.push(
     `Pass ${parts.join(" and ")} verbatim on every lore-* tool call so saves are grouped correctly.`
   )
@@ -207,6 +223,11 @@ If this session produced no atomic learnings (a routine task, status check, unbl
  * pre-0.9.0 synopsis-only shape byte-for-byte. Toggled by the dual kill
  * switches (`LORE_DISABLE_LEARNING_EXTRACTION=1` env var or
  * `hooks.learningExtraction: false` in `.lore.yaml`); see `helpers.ts`.
+ *
+ * `options.authorName` — engineer-author display name to inject into
+ * the identity block (DEFERRED-ATTRIBUTION). Resolved by the caller
+ * (`deriveAuthorName` in `helpers.ts`) from `LORE_USER_NAME` env;
+ * absence is the no-op pre-DEFERRED-ATTRIBUTION shape.
  */
 export function buildBackgroundSavePrompt(
   subProjects: string[],
@@ -214,9 +235,9 @@ export function buildBackgroundSavePrompt(
   sessionContent: string,
   sessionId?: string,
   agentName?: string,
-  options?: { extractLearnings?: boolean },
+  options?: { extractLearnings?: boolean; authorName?: string },
 ): string {
-  const identitySection = buildIdentityBlock(sessionId, agentName)
+  const identitySection = buildIdentityBlock(sessionId, agentName, options?.authorName)
   const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)
   const filter = buildExtractionFilter()
   const learningGuidance =

@@ -228,6 +228,23 @@ export function spawnBackgroundSave(
   if (notionToken) safeEnv["LORE_NOTION_TOKEN"] = notionToken
   const notionBaseUrl = process.env["LORE_NOTION_BASE_URL"]
   if (notionBaseUrl) safeEnv["LORE_NOTION_BASE_URL"] = notionBaseUrl
+  // DEFERRED-ATTRIBUTION: forward the operator's `LORE_USER_NAME`
+  // override so the spawned MCP child resolves identity via the
+  // synchronous env path (cheap) rather than paying a `users.me`
+  // round-trip on every autosave-triggered process startup. Same
+  // posture as `LORE_NOTION_TOKEN` / `LORE_NOTION_BASE_URL` —
+  // operator-controlled scalar values that survive the hop into the
+  // detached child without leaking sensitive credentials beyond what
+  // the parent already had. `LORE_AGENT_NAME` is deliberately NOT
+  // forwarded here: the existing agent-name flow carries it via the
+  // prompt text (`Agent: <name>` line + `Pass agent: "..." verbatim`
+  // instruction), and the spawned MCP child's `users.me`-equivalent
+  // for agent identity (CLAUDE_CODE_* markers) falls through to
+  // `Claude Code` regardless. Operator-set `LORE_AGENT_NAME` reaches
+  // the saved memory through args.agent at the MCP boundary, not
+  // through the child's own `deriveAgentName`.
+  const userName = process.env["LORE_USER_NAME"]
+  if (userName) safeEnv["LORE_USER_NAME"] = userName
 
   // Redirect stderr to a per-key log so crashes are recoverable without
   // someone actively watching stderr. Truncate per save: each spawn is

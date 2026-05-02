@@ -20,6 +20,7 @@ import { DecisionService } from "./core/decision.js"
 import { TaskService } from "./core/task.js"
 import { EntityService } from "./core/entity.js"
 import { resolveProject } from "./core/context.js"
+import { resolveAuthorIdentity, type ResolvedIdentity } from "./auth/identity.js"
 import {
   DRIFT_DEBOUNCE_DAYS,
   driftMarkerAgeDays,
@@ -80,6 +81,23 @@ export interface LoreServices {
    * one-shot CLI/hook contexts.
    */
   sessionMemories: SessionMemoryTracker
+  /**
+   * Engineer identity to stamp on every Memory `Author` column
+   * (DEFERRED-ATTRIBUTION). Resolved once at startup via
+   * `resolveAuthorIdentity` — `LORE_USER_NAME` env override first, then
+   * `users.me().bot.owner.user.name` as the fallback for ntn-issued
+   * tokens. `author === null` when neither source produced a usable
+   * value; tools that read it default to omitting the Author write
+   * rather than stamping an empty string.
+   *
+   * Required (not optional) so a future refactor that forgets to
+   * populate it in a new init seam fails the typecheck rather than
+   * silently no-opping attribution. Test fixtures using
+   * `as unknown as LoreServices` casts must supply
+   * `{ author: null }` (or an explicit value) at construction; the
+   * cast pattern itself doesn't preclude the requirement.
+   */
+  identity: ResolvedIdentity
 }
 
 export async function initServicesFromConfig(
@@ -120,6 +138,12 @@ export async function initServicesFromConfig(
 
   const resolution = await resolveProject(cwd, configRoot, config, projects)
 
+  // Resolve engineer identity once at startup so every save in this
+  // process stamps the same author. Best-effort — `resolveAuthorIdentity`
+  // never throws; a `users.me` failure degrades to `{ author: null }`
+  // and the Author column stays empty for this session.
+  const identity = await resolveAuthorIdentity(client)
+
   return {
     vault,
     projects,
@@ -138,6 +162,7 @@ export async function initServicesFromConfig(
     config,
     configRoot,
     sessionMemories: new SessionMemoryTracker(),
+    identity,
   }
 }
 

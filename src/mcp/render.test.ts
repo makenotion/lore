@@ -1149,3 +1149,91 @@ describe("defaultMemoryMetaBuilder — revision count marker (issue 0.9.0/10)", 
     expect(meta).not.toContain("2026-01-01")
   })
 })
+
+describe("defaultMemoryMetaBuilder — author segment (DEFERRED-ATTRIBUTION)", () => {
+  // The new `by <name>` segment between tags and the rev marker, shipped
+  // in 0.10.0/DEFERRED-ATTRIBUTION. The existing four-cell-matrix tests
+  // pin the empty-author byte-identity claim; these tests pin the
+  // positive case — what the listing actually renders when an engineer
+  // attributed the row.
+
+  it("renders `by <name>` between tags and the date when author is non-empty", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "OAuth handshake notes",
+      source: "manual",
+      tags: ["auth"],
+      author: "Hesham Salman",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    expect(defaultMemoryMetaBuilder(memory)).toBe(
+      "manual | auth | by Hesham Salman | 2026-04-20",
+    )
+  })
+
+  it("places `by <name>` before `rev N` so high-revision rows read identity → tags → author → revisions → date", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Topic",
+      source: "manual",
+      tags: ["auth"],
+      author: "Hesham Salman",
+      revisionCount: 4,
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    const meta = defaultMemoryMetaBuilder(memory)
+    expect(meta).toBe("manual | auth | by Hesham Salman | rev 4 | 2026-04-20")
+    // The position is load-bearing — moving `by ...` before tags would
+    // collide with sources like "agent_diary" that read as identity
+    // markers; moving it after `rev N` would break the "who is this
+    // about" → "how recent" reading flow.
+    expect(meta.indexOf("by Hesham Salman")).toBeLessThan(meta.indexOf("rev 4"))
+    expect(meta.indexOf("auth")).toBeLessThan(meta.indexOf("by Hesham Salman"))
+  })
+
+  it("omits the segment entirely on empty author (pre-DEFERRED-ATTRIBUTION rows render byte-identically)", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "OAuth handshake notes",
+      source: "manual",
+      tags: ["auth"],
+      author: "",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    expect(defaultMemoryMetaBuilder(memory)).toBe("manual | auth | 2026-04-20")
+    expect(defaultMemoryMetaBuilder(memory)).not.toContain("by ")
+  })
+
+  it("renders `by <name>` even when tags are empty so the segment appears between source and date", () => {
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Topic",
+      source: "manual",
+      tags: [],
+      author: "Hesham Salman",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    expect(defaultMemoryMetaBuilder(memory)).toBe(
+      "manual | by Hesham Salman | 2026-04-20",
+    )
+  })
+
+  it("preserves the author name verbatim — names with `|` characters render as-is and inherit the existing pipe-collision concern", () => {
+    // Tags can carry arbitrary strings post-validation; the author
+    // segment has the same constraint. A pathological
+    // `LORE_USER_NAME="x | y"` (or a Notion display name with literal
+    // pipes — extremely rare) would split into a phantom segment. The
+    // limitation is documented; the renderer does not escape. Pinning
+    // the pass-through behavior here so a future "let's escape pipes"
+    // refactor surfaces the contract decision visibly.
+    const memory = buildMemory({
+      id: "mem-1",
+      title: "Topic",
+      source: "manual",
+      tags: [],
+      author: "name with | pipe",
+      updatedAt: "2026-04-20T00:00:00.000Z",
+    })
+    expect(defaultMemoryMetaBuilder(memory)).toContain("by name with | pipe")
+  })
+})

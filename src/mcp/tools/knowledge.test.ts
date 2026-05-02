@@ -643,6 +643,7 @@ describe("lore-fact action='create' — tracking-predicate Zod rejection", () =>
         decisions: { getById: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
+        identity: { author: null },
       },
       createWithDedup,
     }
@@ -704,6 +705,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
       },
+      identity: { author: null },
       ...overrides,
     }
   }
@@ -939,6 +941,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
       },
+      identity: { author: null },
     })
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
@@ -1053,6 +1056,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
       },
+      identity: { author: null },
       entities: entitiesBehavior.skipService
         ? null
         : {
@@ -1733,6 +1737,7 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
         decisions: { getById: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
+        identity: { author: null },
       },
       factsGetById,
       factsInvalidate,
@@ -2001,6 +2006,7 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
         decisions: { getById: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
+        identity: { author: null },
       },
       update,
       retrieve,

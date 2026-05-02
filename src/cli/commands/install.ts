@@ -75,7 +75,7 @@ export type BinDispatchShape = "bare" | "yarn"
  * documents which auth source the operator was on at install time and
  * an unintentional re-route through a stale env var doesn't happen.
  *
- * The set carries two families:
+ * The set carries three families:
  *
  * - **Auth tokens** (`NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`) — the
  *   canonical and legacy bearer-token sources `resolveAuth` walks.
@@ -90,6 +90,15 @@ export type BinDispatchShape = "bare" | "yarn"
  *   child would silently default to prod. `resolveOperatorBaseUrl`
  *   in `auth/oauth.ts` consumes the three base-URL names in
  *   priority order.
+ * - **Per-user attribution override** (`LORE_USER_NAME`) — engineer
+ *   display name stamped on Memory `Author` (DEFERRED-ATTRIBUTION).
+ *   Forwarded so an operator with `LORE_USER_NAME` set at install
+ *   time keeps the override on the spawned MCP child — without this,
+ *   the child's `resolveAuthorIdentity` would fall through to
+ *   `users.me` and stamp a different name (or `null` if the
+ *   ntn-issued token's `users.me` shape doesn't carry an owner).
+ *   Same shape as the auth-token forwarding: install-time `${VAR}`
+ *   placeholder, host resolves from operator env at MCP spawn.
  *
  * Static-value forwards (`LORE_CONFIG_ROOT`, `LORE_SUPPRESS_DEPRECATIONS`)
  * are NOT in this list — they go through `staticEnv` because their
@@ -102,6 +111,7 @@ type RuntimeForwardedKey =
   | "NOTION_ENV"
   | "NOTION_BASE_URL"
   | "NOTION_API_BASE_URL"
+  | "LORE_USER_NAME"
 
 const RUNTIME_FORWARDED_KEYS: ReadonlyArray<RuntimeForwardedKey> = [
   "NOTION_API_TOKEN",
@@ -110,6 +120,7 @@ const RUNTIME_FORWARDED_KEYS: ReadonlyArray<RuntimeForwardedKey> = [
   "NOTION_ENV",
   "NOTION_BASE_URL",
   "NOTION_API_BASE_URL",
+  "LORE_USER_NAME",
 ]
 
 export interface McpEnvBuild {

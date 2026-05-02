@@ -128,6 +128,7 @@ describe("registerDecisionTools", () => {
         record: vi.fn(),
         get: vi.fn(),
       },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -198,6 +199,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -265,6 +267,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -316,6 +319,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -376,6 +380,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -420,6 +425,7 @@ describe("registerDecisionTools", () => {
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record, get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -812,6 +818,7 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -843,6 +850,7 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1219,6 +1227,7 @@ describe("lore-decision action='supersede' — confidence decrement on old decis
         projects: { findByName: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
+        identity: { author: null },
       },
       memoriesDecrement,
     }
@@ -1372,6 +1381,7 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1436,6 +1446,7 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1482,6 +1493,7 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1595,5 +1607,68 @@ describe("lore-decision action='context' trust indicator (0.9.0/DEFERRED-07)", (
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).not.toContain("confidence_")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DEFERRED-ATTRIBUTION (0.10.0): Author column attribution on lore-decision.
+//
+// Decisions write to the Memories DB (Kind = decision); the same Author
+// column carries the engineer-identity. Mirror the memory.test.ts coverage
+// so a future refactor that drops `args.author ?? services.identity.author`
+// from this handler fails the test.
+// ---------------------------------------------------------------------------
+
+describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBUTION)", () => {
+  function setUpCreateHarness(identityAuthor: string | null) {
+    const mockServer = createMockServer()
+    const created = makeDecision("dec-attrib", { projectIds: [] })
+    const create = vi.fn().mockResolvedValue(created)
+    const services = {
+      decisions: { create, getById: vi.fn(), supersede: vi.fn() },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      memories: {
+        decrementConfidence: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: identityAuthor },
+    }
+    registerDecisionTools(mockServer.server, services as never)
+    return {
+      handler: mockServer.getActionHandler("lore-decision", "create"),
+      create,
+    }
+  }
+
+  it("stamps services.identity.author on decisions.create when args.author is omitted", async () => {
+    const { handler, create } = setUpCreateHarness("Hesham Salman")
+    await handler({ decision: "Use bcrypt", rationale: "Fast enough" } as never)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ author: "Hesham Salman" }),
+    )
+  })
+
+  it("explicit args.author wins over services.identity.author", async () => {
+    const { handler, create } = setUpCreateHarness("ServerSideName")
+    await handler({
+      decision: "Use bcrypt",
+      rationale: "Fast enough",
+      author: "Override",
+    } as never)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: "Override" }))
+  })
+
+  it("collapses to author: undefined when no override and identity.author is null", async () => {
+    const { handler, create } = setUpCreateHarness(null)
+    await handler({ decision: "Use bcrypt", rationale: "Fast enough" } as never)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: undefined }))
   })
 })

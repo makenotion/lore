@@ -105,10 +105,74 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toContain(`agent: "Codex"`)
   })
 
-  it("omits the identity block when no session/agent are supplied", () => {
+  it("renders the author name and verbatim-pass instruction when authorName is supplied (DEFERRED-ATTRIBUTION)", () => {
+    // The author signal is double-routed: the spawned MCP child's
+    // server-side `resolveAuthorIdentity` resolves identity at startup,
+    // AND the prompt carries `Author:` text so an explicit
+    // `LORE_USER_NAME` override survives even on a `users.me` blip.
+    // Pin both halves: the labeled line + the verbatim-pass clause.
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "transcript",
+      "sess-xyz",
+      "Codex",
+      { authorName: "Hesham Salman" },
+    )
+    expect(prompt).toContain("Author: Hesham Salman")
+    expect(prompt).toContain(`author: "Hesham Salman"`)
+    // The verbatim-pass clause is the single line agents read; it must
+    // mention all three identity fields when all three are supplied so
+    // the spawned subagent stamps every save uniformly.
+    expect(prompt).toMatch(
+      /Pass session: "sess-xyz" and agent: "Codex" and author: "Hesham Salman" verbatim/,
+    )
+  })
+
+  it("omits Author when authorName is undefined but keeps other identity fields intact", () => {
+    // The dominant 0.10.0 ntn-first user hasn't set LORE_USER_NAME and
+    // relies on the spawned MCP child's `users.me` fallback. The prompt
+    // identity block must continue to fire on session/agent alone so
+    // existing flows are byte-stable.
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "transcript",
+      "sess-xyz",
+      "Codex",
+    )
+    expect(prompt).toContain("Session ID: sess-xyz")
+    expect(prompt).toContain("Agent: Codex")
+    expect(prompt).not.toContain("Author:")
+    expect(prompt).not.toContain(`author:`)
+  })
+
+  it("renders Author block alone when no session or agent are supplied", () => {
+    // Edge case — operator with LORE_USER_NAME set but no Claude/Codex
+    // session context (e.g. a one-off CLI driver). The block must still
+    // emit because the contract is "render whatever identity inputs
+    // resolve."
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "transcript",
+      undefined,
+      undefined,
+      { authorName: "Hesham Salman" },
+    )
+    expect(prompt).toContain("Author: Hesham Salman")
+    expect(prompt).not.toContain("Session ID:")
+    expect(prompt).not.toContain("Agent:")
+    // The verbatim-pass clause's "Pass ... verbatim" still fires with
+    // just the author segment so the prompt stays self-consistent.
+    expect(prompt).toContain(`Pass author: "Hesham Salman" verbatim`)
+  })
+
+  it("omits the identity block when no session/agent/author are supplied", () => {
     const prompt = buildBackgroundSavePrompt([], null, "transcript")
     expect(prompt).not.toContain("Session ID:")
     expect(prompt).not.toContain("Agent:")
+    expect(prompt).not.toContain("Author:")
   })
 
   it("places the identity block before the extraction filter", () => {
