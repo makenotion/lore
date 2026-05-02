@@ -33,7 +33,10 @@ import { decodeTextEntities } from "../../notion/html-entities.js"
 import { defaultMemoryMetaBuilder, formatMemoryListItem } from "../render.js"
 import { suggestTopicKey, type TopicKeySuggestion } from "../../core/topic-key.js"
 import {
+  appendCompareDispatchLedgerEntry,
   appendCompareNote,
+  buildCompareDispatchLedgerEntry,
+  hasCompareDispatchLedgerEntry,
   hasMatchingCompareNote,
   PartialUpdateError,
   recordContradiction,
@@ -1113,8 +1116,10 @@ function validateAffectedMemoryId(input: CompareArgs): void {
  *   `grep` for in agent transcripts.
  *
  * The agent surfaces this back to the operator instead of pretending
- * the call succeeded; recovery is manual (inspect then upsert) since
- * retrying `lore-memory action='compare'` would double-decrement.
+ * the call succeeded. A same-input retry is safe because the
+ * confidence decrement now carries an atomic compare-dispatch ledger;
+ * the embedded fields remain useful when repeated retries hit the
+ * same Notion-side failure and an operator needs to inspect manually.
  */
 function inconsistentCompareStateMessage(args: {
   dispatchedFactId: string | undefined
@@ -1125,15 +1130,18 @@ function inconsistentCompareStateMessage(args: {
 }): string {
   return (
     "Compare dispatch landed but recordCompared failed (inconsistentState: true). " +
-    "Confidence was decremented and a fact emitted, but the audit-marker write " +
-    "(Compare Notes + Compared With on both sides, issued via Promise.all) failed. " +
+    "Compare dispatch state landed or was already present, but the " +
+    "audit-marker write (Compare Notes + Compared With on both sides, " +
+    "issued via Promise.all) failed. " +
     "Possible states: NEITHER side received its updates; OR one side succeeded " +
-    "and the other failed. Manual Notion repair required: INSPECT both sides " +
-    "first, then write only the missing pieces (do NOT blindly apply four updates " +
-    "— appending an NDJSON line that already landed creates a duplicate audit " +
-    "entry; re-adding to Compared With is harmless because Notion's relation set " +
-    "is set-semantic). Do NOT retry lore-memory action='compare' — retry would " +
-    "double-decrement.\n" +
+    "and the other failed. Retrying the same lore-memory action='compare' is " +
+    "safe: the affected memory carries a compare_dispatch ledger marker when " +
+    "the confidence update lands, and recordCompared skips any side whose " +
+    "final audit entry is already present. If repeated retries fail, INSPECT " +
+    "both sides first, then write only the missing audit pieces (do NOT blindly " +
+    "apply four updates — appending an NDJSON line that already landed creates " +
+    "a duplicate audit entry; re-adding to Compared With is harmless because " +
+    "Notion's relation set is set-semantic).\n" +
     `dispatchedFactId=${args.dispatchedFactId ?? "(none)"}\n` +
     `decrementedMemoryId=${args.decrementedMemoryId}\n` +
     `compareNotesEntryToWriteA=${args.compareNotesEntryToWriteA}\n` +
@@ -1188,6 +1196,7 @@ interface CompareResultInput {
   memoryB: { id: string; title: string }
   affectedMemoryId?: string
   factId?: string
+  decremented?: boolean
   alreadyJudged: boolean
   /**
    * `"A"` or `"B"` when this call was a partial-failure recovery
@@ -1211,7 +1220,16 @@ interface CompareResultInput {
  * (one side caught up to the other after a prior partial-success).
  */
 function renderCompareResult(input: CompareResultInput): ToolResult {
-  const { verdict, memoryA, memoryB, factId, alreadyJudged, affectedMemoryId, recoveredSide } = input
+  const {
+    verdict,
+    memoryA,
+    memoryB,
+    factId,
+    decremented,
+    alreadyJudged,
+    affectedMemoryId,
+    recoveredSide,
+  } = input
   if (alreadyJudged) {
     return {
       content: [
@@ -1232,13 +1250,17 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     const loserId = affectedMemoryId
     const loser = loserId === memoryA.id ? memoryA : memoryB
     lines.push(
-      `Verdict: conflicts_with — "${loser.title}" (${loser.id}) confidence halved.`,
+      `Verdict: conflicts_with — "${loser.title}" (${loser.id}) ${
+        decremented === false ? "confidence already halved" : "confidence halved"
+      }.`,
     )
   } else if (verdict === "supersedes") {
     const loserId = affectedMemoryId
     const loser = loserId === memoryA.id ? memoryA : memoryB
     lines.push(
-      `Verdict: supersedes — "${loser.title}" (${loser.id}) marked superseded; confidence halved.`,
+      `Verdict: supersedes — "${loser.title}" (${loser.id}) marked superseded; ${
+        decremented === false ? "confidence already halved" : "confidence halved"
+      }.`,
     )
   } else {
     lines.push(`Verdict: ${verdict} — Compared With and Compare Notes updated on both sides.`)
@@ -1312,9 +1334,8 @@ async function handleCompare(
     const promptVersion = args.promptVersion ?? CONFLICT_JUDGE_PROMPT_VERSION
 
     // 6. Idempotency gate — pair-scoped via local NDJSON parse, with
-    //    direction baked into the key for asymmetric verdicts. Reads
-    //    the winner's existing Compare Notes (or memoryA's notes for
-    //    symmetric verdicts) and checks for `(target, verdict, affected)`.
+    //    direction baked into the key for asymmetric verdicts. Both
+    //    sides must carry the final audit entry before we no-op.
     //
     //    The `affected` field on the match is the load-bearing piece
     //    the prior design missed: a corrected judgment with the same
@@ -1331,34 +1352,23 @@ async function handleCompare(
     //    re-calls also fall through (a changed verdict is a
     //    deliberate signal — verdict change is allowed).
     //
-    //    **Symmetric vs. asymmetric gate scope.** For symmetric
-    //    verdicts the gate checks BOTH sides — only short-circuits
-    //    if BOTH already carry the entry. This makes a partial
-    //    audit-marker failure recoverable: if A's update succeeded
-    //    on a prior call but B's failed, the gate clears, and
-    //    `recordCompared`'s per-side idempotency lets the retry
-    //    catch B up without double-writing A. For asymmetric
-    //    verdicts the gate stays single-side (the winner's notes):
-    //    the destructive dispatch (decrement + fact emission) is
-    //    the dominant retry concern there, and the inspect-then-
-    //    upsert recovery procedure for actionable partial failures
-    //    is the documented path.
-    const gateHits = isAsymmetric
-      ? hasMatchingCompareNote(winner!.compareNotes, {
-          target: loser!.id,
-          verdict: args.verdict,
-          affected: affectedId,
-        })
-      : hasMatchingCompareNote(memoryA.compareNotes, {
-          target: memoryB.id,
-          verdict: args.verdict,
-          affected: affectedId,
-        }) &&
-        hasMatchingCompareNote(memoryB.compareNotes, {
-          target: memoryA.id,
-          verdict: args.verdict,
-          affected: affectedId,
-        })
+    //    The destructive actionable branch is retry-safe because the
+    //    affected memory gets a `compare_dispatch` ledger marker in
+    //    the same update as the Confidence Score decrement. That lets
+    //    actionable verdicts use the same both-sides audit gate as
+    //    symmetric verdicts: a retry after one audit side landed
+    //    catches up the missing side without double-decrementing.
+    const aAlreadyHasEntry = hasMatchingCompareNote(memoryA.compareNotes, {
+      target: memoryB.id,
+      verdict: args.verdict,
+      affected: affectedId,
+    })
+    const bAlreadyHasEntry = hasMatchingCompareNote(memoryB.compareNotes, {
+      target: memoryA.id,
+      verdict: args.verdict,
+      affected: affectedId,
+    })
+    const gateHits = aAlreadyHasEntry && bAlreadyHasEntry
     if (gateHits) {
       return renderCompareResult({
         verdict: args.verdict,
@@ -1404,18 +1414,41 @@ async function handleCompare(
       judgedAt,
       promptVersion,
     }
-    const aAlreadyHasEntry = hasMatchingCompareNote(memoryA.compareNotes, {
-      target: memoryB.id,
-      verdict: args.verdict,
-      affected: affectedId,
-    })
-    const bAlreadyHasEntry = hasMatchingCompareNote(memoryB.compareNotes, {
-      target: memoryA.id,
-      verdict: args.verdict,
-      affected: affectedId,
-    })
-    if (!aAlreadyHasEntry) appendCompareNote(memoryA.compareNotes, entryA)
-    if (!bAlreadyHasEntry) appendCompareNote(memoryB.compareNotes, entryB)
+    let preflightNotesA = memoryA.compareNotes
+    let preflightNotesB = memoryB.compareNotes
+    let legacyPartialAuditWithoutLedger = false
+    let forceRecordA = false
+    let forceRecordB = false
+    if (isAsymmetric) {
+      const ledgerEntry = buildCompareDispatchLedgerEntry({
+        verdict: args.verdict as "conflicts_with" | "supersedes",
+        sourceMemoryId: winner!.id,
+        affectedMemoryId: loser!.id,
+      })
+      const loserHasLedger = hasCompareDispatchLedgerEntry(loser!.compareNotes, {
+        dispatchKey: ledgerEntry.dispatchKey,
+        step: "confidence_decrement",
+      })
+      legacyPartialAuditWithoutLedger =
+        (aAlreadyHasEntry || bAlreadyHasEntry) && !loserHasLedger
+      if (!loserHasLedger) {
+        if (loser!.id === memoryA.id) {
+          preflightNotesA = appendCompareDispatchLedgerEntry(
+            preflightNotesA,
+            ledgerEntry,
+          )
+          forceRecordA = aAlreadyHasEntry
+        } else {
+          preflightNotesB = appendCompareDispatchLedgerEntry(
+            preflightNotesB,
+            ledgerEntry,
+          )
+          forceRecordB = bAlreadyHasEntry
+        }
+      }
+    }
+    if (!aAlreadyHasEntry) appendCompareNote(preflightNotesA, entryA)
+    if (!bAlreadyHasEntry) appendCompareNote(preflightNotesB, entryB)
 
     // 8. Dispatch on actionable verdicts. Only fires after the
     //    overflow preflight clears, so a destructive decrement + fact
@@ -1425,7 +1458,12 @@ async function handleCompare(
     //    The supersedes-non-decision guard is the spec's "non-decision
     //    affected target throws" — runs BEFORE the dispatch helper so
     //    a non-decision pair never hits `decisions.supersede`.
-    let dispatchResult: { factId?: string } = {}
+    let dispatchResult: {
+      factId?: string
+      affectedMemoryId?: string
+      affectedCompareNotes?: string
+      decremented?: boolean
+    } = {}
 
     if (args.verdict === "supersedes" && loser!.kind !== "decision") {
       throw new Error(
@@ -1436,18 +1474,33 @@ async function handleCompare(
       )
     }
 
-    if (args.verdict === "conflicts_with") {
-      dispatchResult = await recordContradiction(services, {
+    if (legacyPartialAuditWithoutLedger) {
+      dispatchResult = {
+        affectedMemoryId: loser!.id,
+        affectedCompareNotes:
+          loser!.id === memoryA.id ? preflightNotesA : preflightNotesB,
+        decremented: false,
+      }
+    } else if (args.verdict === "conflicts_with") {
+      const result = await recordContradiction(services, {
         contradictedMemory: loser!,
         sourceMemory: winner!,
         judgeConfidence: args.judgeConfidence,
       })
+      dispatchResult = {
+        ...result,
+        affectedMemoryId: loser!.id,
+      }
     } else if (args.verdict === "supersedes") {
-      dispatchResult = await recordSupersedence(services, {
+      const result = await recordSupersedence(services, {
         supersedingMemory: winner!,
         supersededMemory: loser!,
         judgeConfidence: args.judgeConfidence,
       })
+      dispatchResult = {
+        ...result,
+        affectedMemoryId: loser!.id,
+      }
     }
 
     // 9. Audit-marker write (Compare Notes + Compared With on both
@@ -1462,13 +1515,11 @@ async function handleCompare(
     //
     //    Failure modes:
     //    - Actionable verdict + recordCompared throws → dispatch
-    //      already landed, audit may be partial. Throw the structured
-    //      `inconsistentCompareStateMessage` so the operator inspects
-    //      both sides in Notion and writes only the missing pieces.
-    //      The diagnostic fields are interpolated INTO the message
-    //      text because `toolError` only forwards `error.message` —
-    //      typed `readonly` properties on a custom Error class would
-    //      be dropped.
+    //      already landed, audit may be partial. The retry is safe
+    //      because the affected memory now carries the dispatch ledger
+    //      and `recordCompared` is per-side idempotent. The structured
+    //      message still embeds the audit entries for operators who
+    //      need to inspect repeated failures.
     //    - Symmetric verdict + recordCompared throws → no destructive
     //      dispatch happened, but the per-side write may have left
     //      one side updated and the other not. A naive retry is now
@@ -1477,16 +1528,28 @@ async function handleCompare(
     //      writes only the missing side. Rethrow the underlying error
     //      so the operator (or agent) can see what failed and decide
     //      whether to retry.
+    const memoryAForRecord =
+      dispatchResult.affectedMemoryId === memoryA.id &&
+      dispatchResult.affectedCompareNotes !== undefined
+        ? { ...memoryA, compareNotes: dispatchResult.affectedCompareNotes }
+        : memoryA
+    const memoryBForRecord =
+      dispatchResult.affectedMemoryId === memoryB.id &&
+      dispatchResult.affectedCompareNotes !== undefined
+        ? { ...memoryB, compareNotes: dispatchResult.affectedCompareNotes }
+        : memoryB
     let recordResult: RecordComparedResult
     try {
       recordResult = await services.memories.recordCompared({
-        memoryA,
-        memoryB,
+        memoryA: memoryAForRecord,
+        memoryB: memoryBForRecord,
         verdict: args.verdict,
         affected: affectedId,
         reason: args.reason,
         judgedAt,
         promptVersion,
+        forceWriteA: forceRecordA,
+        forceWriteB: forceRecordB,
       })
     } catch (err) {
       if (isAsymmetric) {
@@ -1517,6 +1580,7 @@ async function handleCompare(
       memoryB,
       affectedMemoryId: args.affectedMemoryId,
       factId: dispatchResult.factId,
+      decremented: dispatchResult.decremented,
       alreadyJudged: false,
       recoveredSide:
         recordResult.wroteA && recordResult.wroteB

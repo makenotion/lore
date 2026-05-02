@@ -6,8 +6,11 @@ import {
   pageToMemory,
   tieBreakingRrfCompare,
   appendCompareNote,
+  appendCompareDispatchLedgerEntry,
+  buildCompareDispatchLedgerEntry,
   COMPARE_NOTES_MAX_CHARS,
   RekeyAuditError,
+  hasCompareDispatchLedgerEntry,
   hasMatchingCompareNote,
   recordContradiction,
   recordSupersedence,
@@ -8970,6 +8973,57 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
       }),
     ).toBe(true)
   })
+
+  it("ignores compare_dispatch ledger lines for final audit matching", () => {
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "winner",
+      affectedMemoryId: "loser",
+    })
+    const notes = appendCompareDispatchLedgerEntry("", ledger)
+
+    expect(
+      hasMatchingCompareNote(notes, {
+        target: "winner",
+        verdict: "conflicts_with",
+        affected: "loser",
+      }),
+    ).toBe(false)
+    expect(
+      hasCompareDispatchLedgerEntry(notes, {
+        dispatchKey: ledger.dispatchKey,
+        step: "confidence_decrement",
+      }),
+    ).toBe(true)
+  })
+})
+
+describe("compare dispatch ledger (issue #239)", () => {
+  it("uses source, affected, verdict, and step as the retry marker key", () => {
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "supersedes",
+      sourceMemoryId: "new-decision",
+      affectedMemoryId: "old-decision",
+    })
+    const notes = appendCompareDispatchLedgerEntry("", ledger)
+
+    expect(
+      hasCompareDispatchLedgerEntry(notes, {
+        dispatchKey: ledger.dispatchKey,
+        step: "confidence_decrement",
+      }),
+    ).toBe(true)
+    expect(
+      hasCompareDispatchLedgerEntry(notes, {
+        dispatchKey: buildCompareDispatchLedgerEntry({
+          verdict: "supersedes",
+          sourceMemoryId: "other-decision",
+          affectedMemoryId: "old-decision",
+        }).dispatchKey,
+        step: "confidence_decrement",
+      }),
+    ).toBe(false)
+  })
 })
 
 describe("MemoryService.recordCompared (0.9.0/05)", () => {
@@ -9312,6 +9366,61 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     expect(update).not.toHaveBeenCalled()
   })
 
+  it("forceWrite persists a ledger on a side that already has the final audit without duplicating the audit line", async () => {
+    const entryOnB = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-a",
+      affected: "page-b",
+      reason: "prior",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordCompared({
+      memoryA: makeMemoryShape({ id: "page-a" }),
+      memoryB: makeMemoryShape({
+        id: "page-b",
+        comparedWith: ["page-a"],
+        compareNotes: appendCompareDispatchLedgerEntry(entryOnB, ledger),
+      }),
+      verdict: "conflicts_with",
+      affected: "page-b",
+      reason: "repair",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+      forceWriteB: true,
+    })
+
+    expect(result).toEqual({ wroteA: true, wroteB: true })
+    expect(update).toHaveBeenCalledTimes(2)
+    const sideB = update.mock.calls
+      .map((c) => c[0] as { page_id: string; properties: Record<string, unknown> })
+      .find((c) => c.page_id === "page-b")!
+    const notesB = (sideB.properties["Compare Notes"] as {
+      rich_text: Array<{ text: { content: string } }>
+    }).rich_text.map((r) => r.text.content).join("")
+    const lines = notesB.split("\n").map((line) => JSON.parse(line) as {
+      entryType?: string
+      verdict?: string
+    })
+    expect(
+      lines.filter(
+        (line) =>
+          line.entryType !== "compare_dispatch" &&
+          line.verdict === "conflicts_with",
+      ),
+    ).toHaveLength(1)
+    expect(lines.some((line) => line.entryType === "compare_dispatch")).toBe(true)
+  })
+
   it("per-side idempotency keys on (target, verdict, affected) — a different verdict on the same pair triggers a fresh write on both sides", async () => {
     // The skip key is (target, verdict, affected), not just target.
     // A prior `not_conflict` entry must NOT cause a fresh
@@ -9416,6 +9525,13 @@ describe("recordContradiction (0.9.0/05)", () => {
 
     expect(calls).toEqual(["fact", "decrement"])
     expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({ id: "loser" })
+    const decrementCall = decrementConfidence.mock.calls[0] as unknown as [
+      unknown,
+      { compareNotes: string },
+    ]
+    const decrementOpts = decrementCall[1]
+    expect(decrementOpts.compareNotes).toContain('"entryType":"compare_dispatch"')
+    expect(decrementOpts.compareNotes).toContain('"affected":"loser"')
     expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
       subject: "Winner",
       predicate: "conflicts_with",
@@ -9424,6 +9540,7 @@ describe("recordContradiction (0.9.0/05)", () => {
       confidence: "certain", // judgeConfidence 0.9 → certain (>= 0.85)
     })
     expect(result.factId).toBe("fact-1")
+    expect(result.decremented).toBe(true)
   })
 
   it("does NOT decrement when the fact create fails (retry-safe — nothing destructive landed)", async () => {
@@ -9500,6 +9617,40 @@ describe("recordContradiction (0.9.0/05)", () => {
         judgeConfidence: 0.9,
       }),
     ).rejects.toThrow(/inconsistentState: true/)
+  })
+
+  it("retry after a landed decrement marker skips decrement and still returns the deduped fact", async () => {
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "winner",
+      affectedMemoryId: "loser",
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async (_input: unknown) => ({
+      fact: { id: "fact-existing" },
+      deduped: true,
+    }))
+    const services = makeMockServices({ decrementConfidence, createWithDedup })
+
+    const result = await recordContradiction(services, {
+      contradictedMemory: {
+        ...memShape({ id: "loser", title: "L" }),
+        compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+      },
+      sourceMemory: memShape({ id: "winner", title: "W" }),
+      judgeConfidence: 0.9,
+    })
+
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      factId: "fact-existing",
+      decremented: false,
+    })
+    const recordedLedger = JSON.parse(result.affectedCompareNotes) as {
+      dispatchKey: string
+    }
+    expect(recordedLedger.dispatchKey).toBe(ledger.dispatchKey)
   })
 
   it("uses the project intersection when both memories belong to multiple projects", async () => {
@@ -9632,6 +9783,13 @@ describe("recordSupersedence (0.9.0/05)", () => {
     expect(decrementConfidence.mock.calls[0]![0]).toMatchObject({
       id: "old-decision",
     })
+    const decrementCall = decrementConfidence.mock.calls[0] as unknown as [
+      unknown,
+      { compareNotes: string },
+    ]
+    const decrementOpts = decrementCall[1]
+    expect(decrementOpts.compareNotes).toContain('"entryType":"compare_dispatch"')
+    expect(decrementOpts.compareNotes).toContain('"affected":"old-decision"')
     // Fact uses IDs (matching `lore-decision action='supersede'`'s
     // existing shape) so the supersession edge in the decision graph
     // is canonically identified by id, not title.
@@ -9643,6 +9801,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
       confidence: "certain",
     })
     expect(result.factId).toBe("fact-9")
+    expect(result.decremented).toBe(true)
   })
 
   it("throws CompareDispatchPartialFailureError(step: 'supersede') when fact create fails after decisions.supersede landed — diagnostic fields embedded in message", async () => {
@@ -9713,6 +9872,38 @@ describe("recordSupersedence (0.9.0/05)", () => {
       step: "fact",
       affectedMemoryId: "old",
       factId: "fact-99",
+    })
+  })
+
+  it("retry after a landed supersedes decrement marker completes without double-decrementing", async () => {
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "supersedes",
+      sourceMemoryId: "new",
+      affectedMemoryId: "old",
+    })
+    const supersede = vi.fn(async () => undefined)
+    const createWithDedup = vi.fn(async (_input: unknown) => ({
+      fact: { id: "fact-existing" },
+      deduped: true,
+    }))
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const services = makeMockServices({ supersede, createWithDedup, decrementConfidence })
+
+    const result = await recordSupersedence(services, {
+      supersedingMemory: memShape({ id: "new", title: "N" }),
+      supersededMemory: {
+        ...memShape({ id: "old", title: "O" }),
+        compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+      },
+      judgeConfidence: 0.9,
+    })
+
+    expect(supersede).toHaveBeenCalledWith("new", "old")
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      factId: "fact-existing",
+      decremented: false,
     })
   })
 

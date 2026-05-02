@@ -2080,7 +2080,7 @@ export class MemoryService {
       Memory,
       "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
     >,
-    opts?: { today?: string },
+    opts?: { today?: string; compareNotes?: string },
   ): Promise<number> {
     const today = opts?.today ?? todayUtc()
     // Mirror `touchOnRead`'s structure: gate only on the null-score
@@ -2105,12 +2105,18 @@ export class MemoryService {
       )
     }
     const next = decrementConfidenceScore(current)
+    const properties: CreatePageParameters["properties"] = {
+      "Confidence Score": { number: next },
+      "Last Referenced At": { date: { start: today } },
+    }
+    if (opts?.compareNotes !== undefined) {
+      properties["Compare Notes"] = {
+        rich_text: encodeCompareNotesRichText(opts.compareNotes),
+      }
+    }
     await this.client.pages.update({
       page_id: memory.id,
-      properties: {
-        "Confidence Score": { number: next },
-        "Last Referenced At": { date: { start: today } },
-      },
+      properties,
     })
     return next
   }
@@ -2181,9 +2187,27 @@ export class MemoryService {
     reason: string
     judgedAt: string
     promptVersion: string
+    /**
+     * Force a side's `pages.update` even when the final audit line
+     * already exists. Used only by legacy asymmetric partial-repair:
+     * a pre-ledger final audit line proves the old decrement landed,
+     * but the affected side may still need the new dispatch ledger
+     * appended without appending a duplicate final audit line.
+     */
+    forceWriteA?: boolean
+    forceWriteB?: boolean
   }): Promise<RecordComparedResult> {
-    const { memoryA, memoryB, verdict, affected, reason, judgedAt, promptVersion } =
-      input
+    const {
+      memoryA,
+      memoryB,
+      verdict,
+      affected,
+      reason,
+      judgedAt,
+      promptVersion,
+      forceWriteA = false,
+      forceWriteB = false,
+    } = input
     const entryA: CompareNoteEntry = {
       verdict,
       target: memoryB.id,
@@ -2218,8 +2242,12 @@ export class MemoryService {
     })
 
     const writes: Promise<unknown>[] = []
-    if (!aHasEntry) {
-      const nextNotesA = appendCompareNote(memoryA.compareNotes, entryA)
+    const shouldWriteA = !aHasEntry || forceWriteA
+    const shouldWriteB = !bHasEntry || forceWriteB
+    if (shouldWriteA) {
+      const nextNotesA = aHasEntry
+        ? memoryA.compareNotes
+        : appendCompareNote(memoryA.compareNotes, entryA)
       const nextComparedWithA = memoryA.comparedWith.includes(memoryB.id)
         ? memoryA.comparedWith
         : [...memoryA.comparedWith, memoryB.id]
@@ -2237,8 +2265,10 @@ export class MemoryService {
         }),
       )
     }
-    if (!bHasEntry) {
-      const nextNotesB = appendCompareNote(memoryB.compareNotes, entryB)
+    if (shouldWriteB) {
+      const nextNotesB = bHasEntry
+        ? memoryB.compareNotes
+        : appendCompareNote(memoryB.compareNotes, entryB)
       const nextComparedWithB = memoryB.comparedWith.includes(memoryA.id)
         ? memoryB.comparedWith
         : [...memoryB.comparedWith, memoryA.id]
@@ -2259,8 +2289,8 @@ export class MemoryService {
 
     await Promise.all(writes)
     return {
-      wroteA: !aHasEntry,
-      wroteB: !bHasEntry,
+      wroteA: shouldWriteA,
+      wroteB: shouldWriteB,
     }
   }
 
@@ -3740,6 +3770,17 @@ export interface CompareNoteEntry {
   promptVersion: string
 }
 
+type CompareDispatchVerdict = "conflicts_with" | "supersedes"
+
+export interface CompareDispatchLedgerEntry {
+  entryType: "compare_dispatch"
+  dispatchKey: string
+  step: "confidence_decrement"
+  verdict: CompareDispatchVerdict
+  source: string
+  affected: string
+}
+
 /**
  * Append one NDJSON entry to an existing `Compare Notes` string. Returns
  * the new string; throws when the appended length would exceed
@@ -3752,10 +3793,7 @@ export interface CompareNoteEntry {
  * entries) so a future `split("\n")` parser produces one entry per line
  * without an empty trailing element.
  */
-export function appendCompareNote(
-  existing: string,
-  entry: CompareNoteEntry,
-): string {
+function appendCompareNotesEntry(existing: string, entry: unknown): string {
   const line = JSON.stringify(entry)
   const next = existing.length === 0 ? line : existing + "\n" + line
   if (next.length > COMPARE_NOTES_MAX_CHARS) {
@@ -3768,6 +3806,51 @@ export function appendCompareNote(
     )
   }
   return next
+}
+
+export function appendCompareNote(
+  existing: string,
+  entry: CompareNoteEntry,
+): string {
+  return appendCompareNotesEntry(existing, entry)
+}
+
+export function compareDispatchKey(input: {
+  verdict: CompareDispatchVerdict
+  sourceMemoryId: string
+  affectedMemoryId: string
+}): string {
+  // Unit separator keeps the key unambiguous even if an id ever carries
+  // punctuation that would collide with a human-readable delimiter.
+  return [
+    "compare-dispatch",
+    input.verdict,
+    input.sourceMemoryId,
+    input.affectedMemoryId,
+    "confidence_decrement",
+  ].join("\u001f")
+}
+
+export function buildCompareDispatchLedgerEntry(input: {
+  verdict: CompareDispatchVerdict
+  sourceMemoryId: string
+  affectedMemoryId: string
+}): CompareDispatchLedgerEntry {
+  return {
+    entryType: "compare_dispatch",
+    dispatchKey: compareDispatchKey(input),
+    step: "confidence_decrement",
+    verdict: input.verdict,
+    source: input.sourceMemoryId,
+    affected: input.affectedMemoryId,
+  }
+}
+
+export function appendCompareDispatchLedgerEntry(
+  existing: string,
+  entry: CompareDispatchLedgerEntry,
+): string {
+  return appendCompareNotesEntry(existing, entry)
 }
 
 // ---------------------------------------------------------------------------
@@ -3819,10 +3902,12 @@ export function hasMatchingCompareNote(
     if (line.trim().length === 0) continue
     try {
       const entry = JSON.parse(line) as {
+        entryType?: string
         target?: string
         verdict?: string
         affected?: string | null
       }
+      if (entry.entryType === "compare_dispatch") continue
       // `affected` may be missing on legacy entries written before
       // this PR (none yet exist in production but a future schema
       // migration could resurrect old payloads). Coalesce `undefined`
@@ -3839,6 +3924,33 @@ export function hasMatchingCompareNote(
       }
     } catch {
       // Skip malformed line; do not let it gate the write.
+    }
+  }
+  return false
+}
+
+export function hasCompareDispatchLedgerEntry(
+  notesNdjson: string,
+  match: { dispatchKey: string; step: "confidence_decrement" },
+): boolean {
+  if (notesNdjson.length === 0) return false
+  for (const line of notesNdjson.split("\n")) {
+    if (line.trim().length === 0) continue
+    try {
+      const entry = JSON.parse(line) as {
+        entryType?: string
+        dispatchKey?: string
+        step?: string
+      }
+      if (
+        entry.entryType === "compare_dispatch" &&
+        entry.dispatchKey === match.dispatchKey &&
+        entry.step === match.step
+      ) {
+        return true
+      }
+    } catch {
+      // Skip malformed lines; they cannot prove a decrement landed.
     }
   }
   return false
@@ -3884,7 +3996,7 @@ export interface CompareDispatchServices {
         Memory,
         "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
       >,
-      opts?: { today?: string },
+      opts?: { today?: string; compareNotes?: string },
     ): Promise<number>
   }
   facts: {
@@ -3927,8 +4039,8 @@ export interface CompareDispatchServices {
  * means the fact was emitted but the decrement failed (and for the
  * supersede path, the decision-supersede may have already run too);
  * `supersede` means `decisions.supersede` succeeded but the fact-
- * create failed. Distinguishing them matters for manual reconciliation
- * — operator's recovery procedure differs by what actually landed.
+ * create failed. Distinguishing them matters for retry diagnostics —
+ * the next safe step differs by what actually landed.
  */
 export class CompareDispatchPartialFailureError extends Error {
   readonly step: "fact" | "supersede"
@@ -3954,19 +4066,18 @@ export class CompareDispatchPartialFailureError extends Error {
 
 /**
  * Dispatch helper for `verdict: 'conflicts_with'`. Emits the
- * `conflicts_with` fact FIRST, then halves the contradicted (loser)
- * memory's `Confidence Score`. Order matters for retry safety:
+ * `conflicts_with` fact, then halves the contradicted (loser)
+ * memory's `Confidence Score` with an idempotency marker written in
+ * the same Notion update as the score. Order matters for retry safety:
  *
  * - `createWithDedup` is idempotent on the triple hash — a retry that
  *   races with a successful first call no-ops at the dedup probe.
- * - `decrementConfidence` is non-idempotent (it halves the current
- *   stored score every call), so it runs LAST. If the fact landed and
- *   the decrement throws, the helper raises a
- *   `CompareDispatchPartialFailureError` carrying the dispatched fact
- *   id and the affected memory id; the MCP handler interpolates these
- *   into the tool-error message so the operator can manually reconcile
- *   without re-firing compare (which would re-fact no-op + re-decrement,
- *   double-halving the score).
+ * - `decrementConfidence` is non-idempotent without a marker, so the
+ *   affected memory's `Compare Notes` gets a `compare_dispatch` ledger
+ *   line in the same `pages.update` as the score write. If the SDK call
+ *   fails after Notion applied the update, the retry sees the marker and
+ *   skips the second decrement; if the update never landed, the marker
+ *   is absent and the retry applies the decrement once.
  *
  * The fact's `subject = source memory's title`, `object = contradicted
  * memory's title` — `lore-query action='ask'` retrieves it via the
@@ -3984,9 +4095,8 @@ export class CompareDispatchPartialFailureError extends Error {
  * NOT via the fact body — the Facts schema has no body column in
  * 0.9.0, and adding one would require its own schema migration.
  *
- * **Idempotency is the caller's responsibility.** The pair-scoped
- * `hasMatchingCompareNote` gate runs upstream in the MCP handler;
- * this function unconditionally fires the fact create + decrement.
+ * The pair-scoped final-audit gate runs upstream in the MCP handler;
+ * this helper owns only the destructive dispatch idempotency.
  */
 export async function recordContradiction(
   services: CompareDispatchServices,
@@ -4000,11 +4110,30 @@ export async function recordContradiction(
       | "confidenceScore"
       | "lastReferencedAt"
       | "createdAt"
-    >
+    > &
+      Partial<Pick<Memory, "compareNotes">>
     sourceMemory: Pick<Memory, "id" | "title" | "projectIds">
     judgeConfidence: number | undefined
   },
-): Promise<{ factId: string }> {
+): Promise<{
+  factId: string
+  affectedCompareNotes: string
+  decremented: boolean
+}> {
+  const ledgerEntry = buildCompareDispatchLedgerEntry({
+    verdict: "conflicts_with",
+    sourceMemoryId: input.sourceMemory.id,
+    affectedMemoryId: input.contradictedMemory.id,
+  })
+  const currentCompareNotes = input.contradictedMemory.compareNotes ?? ""
+  const alreadyDecremented = hasCompareDispatchLedgerEntry(currentCompareNotes, {
+    dispatchKey: ledgerEntry.dispatchKey,
+    step: "confidence_decrement",
+  })
+  const affectedCompareNotes = alreadyDecremented
+    ? currentCompareNotes
+    : appendCompareDispatchLedgerEntry(currentCompareNotes, ledgerEntry)
+
   const sharedProjects = intersectProjects(
     input.sourceMemory.projectIds,
     input.contradictedMemory.projectIds,
@@ -4020,37 +4149,44 @@ export async function recordContradiction(
     sourceMemoryId: input.sourceMemory.id,
     confidence: factConfidenceFromJudge(input.judgeConfidence),
   })
-  // Step 2: halve the loser's Confidence Score. Non-idempotent — if
-  // this throws after step 1 landed, the MCP handler surfaces a
-  // structured partial-failure error so the operator can manually
-  // halve the score in Notion without re-firing compare.
-  try {
-    await services.memories.decrementConfidence(input.contradictedMemory)
-  } catch (err) {
-    throw new CompareDispatchPartialFailureError({
-      // Diagnostic fields are interpolated INTO the message string so
-      // they survive the MCP boundary — `toolError` (src/mcp/helpers.ts)
-      // forwards `.message` only, dropping typed `readonly` props.
-      // Field names match the corresponding properties on the error
-      // class so an operator triaging logs can grep either source.
-      message:
-        "conflicts_with dispatch: fact emitted but decrementConfidence " +
-        "failed (inconsistentState: true). The contradicted memory's " +
-        "Confidence Score was NOT halved. Manually halve the score in " +
-        "Notion using the diagnostic fields below (do NOT retry " +
-        "lore-memory action='compare' — the fact would no-op via dedup " +
-        "but a retry-then-success on decrement would still halve once " +
-        "correctly).\n" +
-        `step=fact\n` +
-        `affectedMemoryId=${input.contradictedMemory.id}\n` +
-        `factId=${result.fact.id}`,
-      step: "fact",
-      affectedMemoryId: input.contradictedMemory.id,
-      factId: result.fact.id,
-      cause: err,
-    })
+  if (!alreadyDecremented) {
+    // Step 2: halve the loser's Confidence Score. The Compare Notes
+    // ledger line is written in the same `pages.update`; that marker is
+    // the retry-side proof that the decrement already landed.
+    try {
+      await services.memories.decrementConfidence(input.contradictedMemory, {
+        compareNotes: affectedCompareNotes,
+      })
+    } catch (err) {
+      throw new CompareDispatchPartialFailureError({
+        // Diagnostic fields are interpolated INTO the message string so
+        // they survive the MCP boundary — `toolError` (src/mcp/helpers.ts)
+        // forwards `.message` only, dropping typed `readonly` props.
+        // Field names match the corresponding properties on the error
+        // class so an operator triaging logs can grep either source.
+        message:
+          "conflicts_with dispatch: fact emitted but decrementConfidence " +
+          "failed (inconsistentState: true). Retry the same " +
+          "lore-memory action='compare' after the transient failure is " +
+          "cleared; if the confidence update landed, the compare_dispatch " +
+          "ledger marker on the affected memory will prevent a second " +
+          "decrement. Diagnostic fields:\n" +
+          `step=fact\n` +
+          `affectedMemoryId=${input.contradictedMemory.id}\n` +
+          `factId=${result.fact.id}\n` +
+          `dispatchKey=${ledgerEntry.dispatchKey}`,
+        step: "fact",
+        affectedMemoryId: input.contradictedMemory.id,
+        factId: result.fact.id,
+        cause: err,
+      })
+    }
   }
-  return { factId: result.fact.id }
+  return {
+    factId: result.fact.id,
+    affectedCompareNotes,
+    decremented: !alreadyDecremented,
+  }
 }
 
 /**
@@ -4058,7 +4194,8 @@ export async function recordContradiction(
  * existing `lore-decision action='supersede'` semantics — updates the
  * new decision's `Supersedes` relation, flips the old decision's
  * `Status` to `superseded`, emits the `supersedes_decision` fact, and
- * halves the superseded memory's `Confidence Score`. Caller has
+ * halves the superseded memory's `Confidence Score` with the same
+ * compare-dispatch ledger used by `recordContradiction`. Caller has
  * already gated on `superseded.kind === 'decision'`.
  *
  * Order mirrors `recordContradiction` for retry safety:
@@ -4066,13 +4203,17 @@ export async function recordContradiction(
  * 1. `decisions.supersede` — atomic-by-ordering inside `DecisionService`
  *    (writes `Supersedes` first, `Status` second). Failure here leaves
  *    the system in a "new points at old; old still accepted" state per
- *    `DecisionService.supersede`'s docstring; safe to retry.
+ *    `DecisionService.supersede`'s docstring; safe to retry. Retries
+ *    still pay this round-trip because gating on loaded `Status` would
+ *    drop the repair path where the relation landed but later steps did
+ *    not.
  * 2. `createWithDedup` — idempotent on the triple hash. If this fails
  *    after step 1 landed, the helper raises a
  *    `CompareDispatchPartialFailureError(step: "supersede")`.
- * 3. `decrementConfidence` — non-idempotent. If this fails after
- *    steps 1-2 landed, the helper raises a
- *    `CompareDispatchPartialFailureError(step: "fact")`.
+ * 3. `decrementConfidence` — protected by the affected memory's
+ *    `compare_dispatch` ledger marker. If this fails after steps 1-2
+ *    landed, retrying the same compare either applies the decrement
+ *    once or observes the marker and skips it.
  *
  * Direction is encoded by the `superseding` / `superseded` parameter
  * names — NOT by positional order — so a flipped scan order can't
@@ -4095,10 +4236,29 @@ export async function recordSupersedence(
       | "confidenceScore"
       | "lastReferencedAt"
       | "createdAt"
-    >
+    > &
+      Partial<Pick<Memory, "compareNotes">>
     judgeConfidence: number | undefined
   },
-): Promise<{ factId: string }> {
+): Promise<{
+  factId: string
+  affectedCompareNotes: string
+  decremented: boolean
+}> {
+  const ledgerEntry = buildCompareDispatchLedgerEntry({
+    verdict: "supersedes",
+    sourceMemoryId: input.supersedingMemory.id,
+    affectedMemoryId: input.supersededMemory.id,
+  })
+  const currentCompareNotes = input.supersededMemory.compareNotes ?? ""
+  const alreadyDecremented = hasCompareDispatchLedgerEntry(currentCompareNotes, {
+    dispatchKey: ledgerEntry.dispatchKey,
+    step: "confidence_decrement",
+  })
+  const affectedCompareNotes = alreadyDecremented
+    ? currentCompareNotes
+    : appendCompareDispatchLedgerEntry(currentCompareNotes, ledgerEntry)
+
   // Step 1: update the decision graph (Supersedes relation + Status).
   // Without this the response saying "marked superseded" would be
   // false; the new decision's Supersedes relation would never be set
@@ -4132,21 +4292,18 @@ export async function recordSupersedence(
       // `toolError`-survives-message-only contract as the
       // conflicts_with throw above. `factId` is `(none)` here
       // because the fact create is exactly the step that failed.
-      // `supersedingMemoryId` is named because the operator's
-      // recovery action ("manually create the supersedes_decision
-      // fact") needs the subject side too.
+      // `supersedingMemoryId` is named because the retry/recovery
+      // action needs the subject side too.
       message:
         "supersedes dispatch: decisions.supersede landed (Supersedes " +
         "relation + Status updated) but the supersedes_decision fact " +
         "create failed (inconsistentState: true). The graph edge is " +
         "missing; lore-query action='ask' won't surface the " +
-        "supersession on the affected entity. Manually create the " +
-        "fact in Notion or via lore-fact action='create' using the " +
-        "diagnostic fields below (do NOT retry lore-memory " +
-        "action='compare' — decisions.supersede is idempotent on " +
-        "relation set semantics but a retry-then-success on the fact " +
-        "would still emit it once correctly via createWithDedup's " +
-        "global triple-hash dedup).\n" +
+        "supersession on the affected entity yet. Retry the same " +
+        "lore-memory action='compare' after the transient failure is " +
+        "cleared; decisions.supersede is idempotent on relation-set " +
+        "semantics, so the retry can complete the fact and confidence " +
+        "work safely. Diagnostic fields:\n" +
         `step=supersede\n` +
         `affectedMemoryId=${input.supersededMemory.id}\n` +
         `supersedingMemoryId=${input.supersedingMemory.id}\n` +
@@ -4158,28 +4315,39 @@ export async function recordSupersedence(
     })
   }
 
-  // Step 3: halve the superseded memory's Confidence Score.
-  try {
-    await services.memories.decrementConfidence(input.supersededMemory)
-  } catch (err) {
-    throw new CompareDispatchPartialFailureError({
-      message:
-        "supersedes dispatch: decisions.supersede and the " +
-        "supersedes_decision fact landed, but decrementConfidence on " +
-        "the superseded memory failed (inconsistentState: true). The " +
-        "Confidence Score was NOT halved. Manually halve the score in " +
-        "Notion using the diagnostic fields below (do NOT retry " +
-        "lore-memory action='compare').\n" +
-        `step=fact\n` +
-        `affectedMemoryId=${input.supersededMemory.id}\n` +
-        `factId=${result.fact.id}`,
-      step: "fact",
-      affectedMemoryId: input.supersededMemory.id,
-      factId: result.fact.id,
-      cause: err,
-    })
+  if (!alreadyDecremented) {
+    // Step 3: halve the superseded memory's Confidence Score. The
+    // Compare Notes ledger line is written atomically with the score.
+    try {
+      await services.memories.decrementConfidence(input.supersededMemory, {
+        compareNotes: affectedCompareNotes,
+      })
+    } catch (err) {
+      throw new CompareDispatchPartialFailureError({
+        message:
+          "supersedes dispatch: decisions.supersede and the " +
+          "supersedes_decision fact landed, but decrementConfidence on " +
+          "the superseded memory failed (inconsistentState: true). Retry " +
+          "the same lore-memory action='compare' after the transient " +
+          "failure is cleared; if the confidence update landed, the " +
+          "compare_dispatch ledger marker on the affected memory will " +
+          "prevent a second decrement. Diagnostic fields:\n" +
+          `step=fact\n` +
+          `affectedMemoryId=${input.supersededMemory.id}\n` +
+          `factId=${result.fact.id}\n` +
+          `dispatchKey=${ledgerEntry.dispatchKey}`,
+        step: "fact",
+        affectedMemoryId: input.supersededMemory.id,
+        factId: result.fact.id,
+        cause: err,
+      })
+    }
   }
-  return { factId: result.fact.id }
+  return {
+    factId: result.fact.id,
+    affectedCompareNotes,
+    decremented: !alreadyDecremented,
+  }
 }
 
 /**

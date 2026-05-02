@@ -514,13 +514,16 @@ export interface Memory {
    */
   comparedWith: string[]
   /**
-   * Append-only NDJSON audit trail for compare verdicts. One JSON line
-   * per call to `lore-memory action='compare'`:
+   * Append-only NDJSON audit trail for compare verdicts. Final audit
+   * lines use one JSON line per call to `lore-memory action='compare'`:
    * `{"verdict": ..., "target": ..., "reason": ..., "judgedAt": ...,
-   * "promptVersion": ...}`. Empty string for legacy rows. Capped via
-   * `COMPARE_NOTES_MAX_CHARS` in `src/core/memory.ts`; the helper
-   * `appendCompareNote` throws on overflow rather than truncating so
-   * over-compared memories surface to the operator.
+   * "promptVersion": ...}`. Actionable verdicts may also append
+   * internal `{"entryType":"compare_dispatch", ...}` ledger lines
+   * so retries can prove a Confidence Score decrement already landed.
+   * Empty string for legacy rows. Capped via `COMPARE_NOTES_MAX_CHARS`
+   * in `src/core/memory.ts`; the append helpers throw on overflow
+   * rather than truncating so over-compared memories surface to the
+   * operator.
    */
   compareNotes: string
 }

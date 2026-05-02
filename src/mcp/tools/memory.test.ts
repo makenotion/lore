@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
 import { registerQueryTools } from "./query.js"
-import { COMPARE_NOTES_MAX_CHARS, RekeyAuditError } from "../../core/memory.js"
+import {
+  appendCompareDispatchLedgerEntry,
+  buildCompareDispatchLedgerEntry,
+  COMPARE_NOTES_MAX_CHARS,
+  RekeyAuditError,
+} from "../../core/memory.js"
 import type { Memory, Topic } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
@@ -5708,14 +5713,20 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
   })
 
   it("idempotent re-compare: same pair + same actionable verdict + same direction short-circuits with zero side effects", async () => {
-    // Pre-populate memoryA's compareNotes (the WINNER's notes for an
-    // affectedMemoryId=memoryIdB conflicts_with) with a matching
-    // (target, verdict, affected) entry. The handler should detect
-    // it and return alreadyJudged: true without firing any side
-    // effect.
-    const priorEntry = JSON.stringify({
+    // Pre-populate both final audit entries from the previous call.
+    // The handler should detect the pair is fully recorded and return
+    // alreadyJudged: true without firing any side effect.
+    const priorEntryA = JSON.stringify({
       verdict: "conflicts_with",
       target: "page-b",
+      affected: "page-b",
+      reason: "previous run",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const priorEntryB = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-a",
       affected: "page-b",
       reason: "previous run",
       judgedAt: "2026-04-29T00:00:00.000Z",
@@ -5725,9 +5736,13 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const a = makeMemory("page-a", {
       title: "Winner",
       projectIds: ["proj"],
-      compareNotes: priorEntry,
+      compareNotes: priorEntryA,
     })
-    const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
+    const b = makeMemory("page-b", {
+      title: "Loser",
+      projectIds: ["proj"],
+      compareNotes: priorEntryB,
+    })
     const { services, decrementConfidence, recordCompared, createWithDedup } =
       makeServicesForCompare(a, b)
 
@@ -5750,6 +5765,277 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(decrementConfidence).not.toHaveBeenCalled()
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("retry after fact-created/decrement-landed state skips a second decrement and writes final audit", async () => {
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "Winner", projectIds: ["proj"] })
+    const b = makeMemory("page-b", {
+      title: "Loser",
+      projectIds: ["proj"],
+      compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-existing" },
+      deduped: true,
+    }))
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      decrementConfidence,
+      createWithDedup,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "retry after uncertain decrement response",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+    const recordComparedCall = recordCompared.mock.calls[0] as unknown as [
+      { memoryB: { compareNotes: string } },
+    ]
+    const recordedLedger = JSON.parse(recordComparedCall[0].memoryB.compareNotes) as {
+      dispatchKey: string
+    }
+    expect(recordedLedger.dispatchKey).toBe(ledger.dispatchKey)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("confidence already halved")
+  })
+
+  it("actionable one-sided audit recovery uses the decrement ledger and catches up the missing side", async () => {
+    const finalEntryOnWinner = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-b",
+      affected: "page-b",
+      reason: "prior call wrote A only",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const a = makeMemory("page-a", {
+      title: "Winner",
+      projectIds: ["proj"],
+      comparedWith: ["page-b"],
+      compareNotes: finalEntryOnWinner,
+    })
+    const b = makeMemory("page-b", {
+      title: "Loser",
+      projectIds: ["proj"],
+      compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+    })
+
+    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> = []
+    const mockClient = {
+      pages: {
+        update: vi.fn(async (args: { page_id: string; properties: Record<string, unknown> }) => {
+          updates.push(args)
+          return undefined
+        }),
+      },
+    } as never
+    const { MemoryService } = await import("../../core/memory.js")
+    const realMemories = new MemoryService(mockClient, {
+      databaseId: "memories-db",
+      dataSourceId: "memories-ds",
+    })
+
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        getById: vi.fn(async (id: string) => {
+          if (id === "page-a") return a
+          if (id === "page-b") return b
+          throw new Error(`unknown id ${id}`)
+        }),
+        recordCompared: realMemories.recordCompared.bind(realMemories),
+        decrementConfidence: vi.fn(),
+      },
+      facts: {
+        createWithDedup: vi.fn(async () => ({
+          fact: { id: "fact-existing" },
+          deduped: true,
+        })),
+      },
+      decisions: { supersede: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "retry catches B up",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(services.memories.decrementConfidence).not.toHaveBeenCalled()
+    expect(updates).toHaveLength(1)
+    expect(updates[0]!.page_id).toBe("page-b")
+    const notes = (
+      updates[0]!.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
+    const firstLine = JSON.parse(notes.split("\n")[0]!) as { dispatchKey: string }
+    expect(firstLine.dispatchKey).toBe(ledger.dispatchKey)
+    expect(notes).toContain('"verdict":"conflicts_with"')
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("Audit recovery")
+    expect(text).toContain("only side B")
+  })
+
+  it("legacy one-sided actionable audit without ledger repairs missing side without decrementing again", async () => {
+    const finalEntryOnWinner = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-b",
+      affected: "page-b",
+      reason: "pre-ledger partial success",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "Winner",
+      projectIds: ["proj"],
+      comparedWith: ["page-b"],
+      compareNotes: finalEntryOnWinner,
+    })
+    const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-should-not-run" },
+      deduped: true,
+    }))
+    const recordCompared = vi.fn(async () => ({ wroteA: false, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      decrementConfidence,
+      createWithDedup,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "repair old one-sided audit",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+    const recordComparedCall = recordCompared.mock.calls[0] as unknown as [
+      { memoryB: { compareNotes: string } },
+    ]
+    const recordedLedger = JSON.parse(recordComparedCall[0].memoryB.compareNotes) as {
+      dispatchKey: string
+    }
+    expect(recordedLedger.dispatchKey).toBe(ledger.dispatchKey)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("confidence already halved")
+    expect(text).toContain("Audit recovery")
+    expect(text).toContain("only side B")
+  })
+
+  it("legacy partial with affected-side audit persists the ledger without duplicating the final audit", async () => {
+    const finalEntryOnAffected = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-a",
+      affected: "page-b",
+      reason: "pre-ledger partial success",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "Winner", projectIds: ["proj"] })
+    const b = makeMemory("page-b", {
+      title: "Loser",
+      projectIds: ["proj"],
+      comparedWith: ["page-a"],
+      compareNotes: finalEntryOnAffected,
+    })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-should-not-run" },
+      deduped: true,
+    }))
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      decrementConfidence,
+      createWithDedup,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "repair old affected-side audit",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+    const recordComparedCall = recordCompared.mock.calls[0] as unknown as [
+      { memoryB: { compareNotes: string }; forceWriteB: boolean },
+    ]
+    expect(recordComparedCall[0].forceWriteB).toBe(true)
+    const lines = recordComparedCall[0].memoryB.compareNotes
+      .split("\n")
+      .map((line) => JSON.parse(line) as { entryType?: string; dispatchKey?: string })
+    expect(lines).toHaveLength(2)
+    expect(lines.some((line) => line.dispatchKey === ledger.dispatchKey)).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("confidence already halved")
   })
 
   it("flipped-direction re-compare on a same-verdict pair RE-DISPATCHES (does NOT short-circuit)", async () => {
@@ -6171,12 +6457,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
-    // Surface the documented partial-failure shape — operator needs
-    // to see the inspect-then-upsert recovery procedure.
+    // Surface the documented partial-failure shape — operator gets
+    // retry-safe guidance plus manual-inspection diagnostics.
     expect(text).toContain("dispatch landed but recordCompared failed")
     expect(text).toContain("inconsistentState: true")
     expect(text).toMatch(/inspect/i)
-    expect(text).toMatch(/do NOT retry/i)
+    expect(text).toMatch(/Retrying the same lore-memory action='compare' is safe/i)
     // Diagnostic fields the operator needs to reconcile — every one
     // pinned by name + value so it can't silently drop.
     expect(text).toContain("dispatchedFactId=fact-99")
@@ -6192,6 +6478,11 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain('"affected":"page-b"')
     // Destructive side effects DID land.
     expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    const decrementCall = decrementConfidence.mock.calls[0] as unknown as [
+      unknown,
+      { compareNotes: string },
+    ]
+    expect(decrementCall[1].compareNotes).toContain('"entryType":"compare_dispatch"')
     expect(createWithDedup).toHaveBeenCalledTimes(1)
   })
 
@@ -6237,7 +6528,8 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("step=fact")
     expect(text).toContain("affectedMemoryId=page-b")
     expect(text).toContain("factId=fact-mid-dispatch")
-    expect(text).toMatch(/do NOT retry/i)
+    expect(text).toContain("dispatchKey=")
+    expect(text).toMatch(/Retry the same/)
     // The fact landed; the decrement did not. Audit marker never got
     // a chance to fire, so recordCompared was NOT called.
     expect(createWithDedup).toHaveBeenCalledTimes(1)
@@ -6292,13 +6584,120 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(text).toContain("supersedingMemoryId=page-a")
     expect(text).toContain("factId=(none)")
     expect(text).toContain("inconsistentState: true")
-    expect(text).toMatch(/do NOT retry/i)
+    expect(text).toMatch(/Retry the same/)
     // decisions.supersede ran; fact create failed; decrement and
     // audit marker never fired.
     expect(supersede).toHaveBeenCalledTimes(1)
     expect(createWithDedup).toHaveBeenCalledTimes(1)
     expect(decrementConfidence).not.toHaveBeenCalled()
     expect(recordCompared).not.toHaveBeenCalled()
+  })
+
+  it("retry after decision-superseded/fact-create-failed state completes fact and confidence work", async () => {
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "New",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const b = makeMemory("page-b", {
+      title: "Old",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const supersede = vi.fn(async () => undefined)
+    const createWithDedup = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("notion 429 — fact create failed"))
+      .mockResolvedValueOnce({ fact: { id: "fact-recovered" }, deduped: false })
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      supersede,
+      createWithDedup,
+      decrementConfidence,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const first = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "supersedes",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+    expect((first as { isError?: boolean }).isError).toBe(true)
+
+    const second = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "supersedes",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((second as { isError?: boolean }).isError).not.toBe(true)
+    expect(supersede).toHaveBeenCalledTimes(2)
+    expect(createWithDedup).toHaveBeenCalledTimes(2)
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+    const text = (second as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("fact-recovered")
+  })
+
+  it("supersedes retry with landed decrement ledger skips the second confidence decrement", async () => {
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "supersedes",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", {
+      title: "New",
+      kind: "decision",
+      projectIds: ["proj"],
+    })
+    const b = makeMemory("page-b", {
+      title: "Old",
+      kind: "decision",
+      projectIds: ["proj"],
+      compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+    })
+    const supersede = vi.fn(async () => undefined)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-existing" },
+      deduped: true,
+    }))
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const recordCompared = vi.fn(async () => ({ wroteA: true, wroteB: true }))
+    const { services } = makeServicesForCompare(a, b, {
+      supersede,
+      createWithDedup,
+      decrementConfidence,
+      recordCompared,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "supersedes",
+      affectedMemoryId: "page-b",
+      reason: "retry after uncertain decrement response",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(supersede).toHaveBeenCalledTimes(1)
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    expect(decrementConfidence).not.toHaveBeenCalled()
+    expect(recordCompared).toHaveBeenCalledTimes(1)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toContain("confidence already halved")
   })
 
   it("symmetric verdict failure rethrows the underlying error WITHOUT InconsistentCompareStateError wrapping", async () => {
