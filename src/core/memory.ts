@@ -2544,7 +2544,16 @@ export class MemoryService {
       start_cursor: opts?.startCursor,
     })
 
-    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    // `dataSources.query` cannot filter on the page-metadata `archived`
+    // flag (it lives on `PageObjectResponse`, not as a DB column), so
+    // soft-deleted rows would otherwise leak into recall, wake-up, and
+    // any caller using `list()`. Same posture as `findByTopicKey` and
+    // `listAllForBackfill`. `nextCursor` reflects Notion's pre-filter
+    // cursor — a page that loses every row to the archived filter
+    // still surfaces a cursor so callers can continue pagination.
+    const pages = response.results
+      .filter(isFullPage)
+      .filter((page) => !page.archived) as PageObjectResponse[]
     const nextCursor =
       response.has_more && response.next_cursor ? response.next_cursor : undefined
 
@@ -2813,7 +2822,9 @@ export class MemoryService {
       page_size: limit,
     })
 
-    return response.results.filter(isFullPage) as PageObjectResponse[]
+    return response.results
+      .filter(isFullPage)
+      .filter((page) => !page.archived) as PageObjectResponse[]
   }
 
   /**
@@ -2863,17 +2874,25 @@ export class MemoryService {
     // what the workspace has since been upgraded to: classic `database_id`
     // parents, and data-source-backed `data_source_id` parents. Match either
     // against our `DatabaseRef`.
-    const memoryPages = (response.results as PageObjectResponse[]).filter((page) => {
-      if (!("parent" in page)) return false
-      const parent = page.parent
-      if (parent.type === "database_id") {
-        return parent.database_id === this.db.databaseId
-      }
-      if (parent.type === "data_source_id") {
-        return parent.data_source_id === this.db.dataSourceId
-      }
-      return false
-    })
+    const memoryPages = (response.results as PageObjectResponse[])
+      .filter((page) => {
+        if (!("parent" in page)) return false
+        const parent = page.parent
+        if (parent.type === "database_id") {
+          return parent.database_id === this.db.databaseId
+        }
+        if (parent.type === "data_source_id") {
+          return parent.data_source_id === this.db.dataSourceId
+        }
+        return false
+      })
+      // Drop archived rows before the property post-filters below so an
+      // archived row never costs a `Project`/`Topic`/`Tags` extraction it
+      // would be discarded for. Same posture as `MemoryService.list` and
+      // sibling DS-scoped paths — `archived` is page metadata, not a
+      // queryable property, so the post-filter is the only way to honor
+      // soft-deletes if the API ever returns them.
+      .filter((page) => !page.archived)
 
     // Apply additional filters (project, topic, tags, kind, status). The
     // search API has no property-filter support, so these are post-filters.

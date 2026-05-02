@@ -2663,6 +2663,48 @@ describe("MemoryService.search", () => {
     expect(results.map((m) => m.id).sort()).toEqual(["db-hit", "ds-hit"])
   })
 
+  it("semantic mode excludes archived pages before property post-filters run", async () => {
+    // `client.search` exposes no archived filter — soft-deleted pages
+    // would otherwise leak into recall, wake-up's related-memories
+    // pass, and every other `MemoryService.search` caller. Pin the
+    // post-filter at the same layer where the parent-shape narrowing
+    // happens so an archived row never costs a `Project`/`Topic`/
+    // `Tags` extraction it would be discarded for. Same posture as
+    // `MemoryService.list`.
+    const livePage = buildSearchPage("live-row", "live row", {
+      parentType: "data_source_id",
+    })
+    const archivedPage = buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: "archived row" }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id: "archived-row",
+        archived: true,
+        parent: { type: "data_source_id", data_source_id: db.dataSourceId },
+      } as Partial<PageObjectResponse>,
+    )
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      search: vi.fn(async () => ({ results: [livePage, archivedPage] })),
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", mode: "semantic" })
+
+    expect(results.map((m) => m.id)).toEqual(["live-row"])
+    // Materialization runs only on the surviving live row — an archived
+    // row never pays a `retrieveMarkdown` round-trip it would be dropped
+    // from.
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(retrieveMarkdownSpy).toHaveBeenCalledWith({ page_id: "live-row" })
+  })
+
   it("semantic mode applies kind/status as client-side post-filters (search API has no property filters)", async () => {
     // Regression-safety pin for P3-04: callers passing `kind` / `status`
     // in semantic mode still get post-filtering, since `client.search`
@@ -2726,7 +2768,11 @@ describe("MemoryService.search — contains mode", () => {
     return { client, querySpy, searchSpy, retrieveMarkdownSpy }
   }
 
-  function buildContainsPage(id: string, title: string): PageObjectResponse {
+  function buildContainsPage(
+    id: string,
+    title: string,
+    opts: { archived?: boolean } = {},
+  ): PageObjectResponse {
     return buildPage(
       {
         Title: { type: "title", title: [{ plain_text: title }] },
@@ -2737,6 +2783,7 @@ describe("MemoryService.search — contains mode", () => {
       },
       {
         id,
+        archived: opts.archived ?? false,
         parent: {
           type: "data_source_id",
           data_source_id: db.dataSourceId,
@@ -2890,6 +2937,27 @@ describe("MemoryService.search — contains mode", () => {
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
   })
 
+  it("excludes archived rows from the contains-mode result set", async () => {
+    // `dataSources.query` cannot filter on the page-metadata `archived`
+    // flag, so the JS post-filter handles it — same posture as
+    // `MemoryService.list`. Without this, soft-deleted memories leak
+    // into recall, wake-up's related-memories pass, and every other
+    // `MemoryService.search` caller via the contains and hybrid paths.
+    const { client } = makeQueryClient([
+      buildContainsPage("c-live", "live row"),
+      buildContainsPage("c-archived", "archived row", { archived: true }),
+    ])
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "row",
+      mode: "contains",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["c-live"])
+  })
+
   it("text-clause OR composes with surrounding kind/tags filters under `and`", async () => {
     // Pins the structural shape: when surrounding server-side filters
     // (kind / tags) are present, the text-clause OR sits inside the `and`
@@ -2927,7 +2995,11 @@ describe("MemoryService.search — contains mode", () => {
 describe("MemoryService.search — hybrid mode", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
-  function buildHybridPage(id: string, title: string): PageObjectResponse {
+  function buildHybridPage(
+    id: string,
+    title: string,
+    opts: { archived?: boolean } = {},
+  ): PageObjectResponse {
     return buildPage(
       {
         Title: { type: "title", title: [{ plain_text: title }] },
@@ -2938,6 +3010,7 @@ describe("MemoryService.search — hybrid mode", () => {
       },
       {
         id,
+        archived: opts.archived ?? false,
         parent: {
           type: "data_source_id",
           data_source_id: db.dataSourceId,
@@ -2945,6 +3018,45 @@ describe("MemoryService.search — hybrid mode", () => {
       } as Partial<PageObjectResponse>,
     )
   }
+
+  it("hybrid mode excludes archived rows from BOTH branches transitively", async () => {
+    // Hybrid composes the raw `fetchContainsPages` and `fetchSemanticPages`
+    // (per the "Fetch/sort pipeline split" doc in core/CLAUDE.md). If
+    // the archived filter only landed on one branch, RRF merging would
+    // surface archived rows from the other. Pin both branches at once.
+    const querySpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("c-live", "live contains"),
+        buildHybridPage("c-archived", "archived contains", { archived: true }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const searchSpy = vi.fn(async () => ({
+      results: [
+        buildHybridPage("s-live", "live semantic"),
+        buildHybridPage("s-archived", "archived semantic", { archived: true }),
+      ],
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+    })
+
+    const ids = new Set(results.map((m) => m.id))
+    expect(ids.has("c-live")).toBe(true)
+    expect(ids.has("s-live")).toBe(true)
+    expect(ids.has("c-archived")).toBe(false)
+    expect(ids.has("s-archived")).toBe(false)
+  })
 
   it("is the default mode and returns contains-only results when contains saturates", async () => {
     // Three contains hits is the threshold; the parallel semantic call
@@ -5259,6 +5371,104 @@ describe("MemoryService.list — pagination", () => {
     expect(querySpy.mock.calls[0][0]).toMatchObject({
       start_cursor: "resume-from-here",
     })
+  })
+})
+
+describe("MemoryService.list — archived filter", () => {
+  // Pins the archived post-filter — see `MemoryService.list` for the rationale.
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildListPage(
+    id: string,
+    title: string,
+    overrides: Partial<PageObjectResponse> = {},
+  ): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      { id, ...overrides } as Partial<PageObjectResponse>,
+    )
+  }
+
+  function createClient(response: {
+    results: PageObjectResponse[]
+    has_more?: boolean
+    next_cursor?: string | null
+  }) {
+    const querySpy = vi.fn(async (_args: Record<string, unknown>) => ({
+      results: response.results,
+      has_more: response.has_more ?? false,
+      next_cursor: response.next_cursor ?? null,
+    }))
+    const retrieveMarkdownSpy = vi.fn(async (args: { page_id: string }) => ({
+      markdown: `body for ${args.page_id}`,
+    }))
+    return {
+      client: {
+        dataSources: { query: querySpy },
+        pages: { retrieveMarkdown: retrieveMarkdownSpy },
+      } as unknown as Client,
+      querySpy,
+      retrieveMarkdownSpy,
+    }
+  }
+
+  it("excludes archived rows in includeContent: false mode", async () => {
+    const { client } = createClient({
+      results: [
+        buildListPage("mem-live", "live one"),
+        buildListPage("mem-archived", "archived one", { archived: true }),
+      ],
+    })
+    const service = new MemoryService(client, db)
+
+    const { items } = await service.list({ includeContent: false })
+
+    expect(items).toHaveLength(1)
+    expect(items[0].id).toBe("mem-live")
+  })
+
+  it("excludes archived rows in default content-hydrating mode and skips their markdown fetch", async () => {
+    // Filtering BEFORE the per-page `retrieveMarkdown` fan-out matters:
+    // a soft-deleted vault should not pay N+1 round-trips for rows the
+    // caller will never see.
+    const { client, retrieveMarkdownSpy } = createClient({
+      results: [
+        buildListPage("mem-live", "live one"),
+        buildListPage("mem-archived", "archived one", { archived: true }),
+      ],
+    })
+    const service = new MemoryService(client, db)
+
+    const { items } = await service.list()
+
+    expect(items).toHaveLength(1)
+    expect(items[0].id).toBe("mem-live")
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(retrieveMarkdownSpy).toHaveBeenCalledWith({ page_id: "mem-live" })
+  })
+
+  it("preserves nextCursor when every row on the page is archived", async () => {
+    // The cursor reflects Notion's pre-filter pagination: a page that
+    // loses every row to the archived filter must still surface a
+    // cursor so callers can continue past it. Recomputing the cursor
+    // from the post-filter list would mis-signal end-of-data.
+    const { client } = createClient({
+      results: [buildListPage("mem-archived", "archived one", { archived: true })],
+      has_more: true,
+      next_cursor: "notion-cursor-after-archived-page",
+    })
+    const service = new MemoryService(client, db)
+
+    const { items, nextCursor } = await service.list({ includeContent: false })
+
+    expect(items).toHaveLength(0)
+    expect(nextCursor).toBe("notion-cursor-after-archived-page")
   })
 })
 
