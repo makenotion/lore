@@ -33,7 +33,7 @@ import {
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
-import type { TaskState, TaskSummary } from "../../types.js"
+import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -54,6 +54,10 @@ const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
  * many overdue tasks still surfaces some active ones above the cap.
  */
 const DEFAULT_TASKS_LIMIT = 10
+const TASK_LIST_FETCH_MULTIPLIER = 4
+const TASK_LIST_DEEP_WALK_MIN_LIMIT = 26
+const TASK_LIST_PAGE_SIZE = 100
+const MAX_TASK_LIST_PAGES = 10
 
 const OVERDUE_SEVERE_DAYS = 14
 const OVERDUE_MILD_DAYS = 1
@@ -458,16 +462,20 @@ async function handleList(
       projectId = services.context.project.id
     }
 
-    // Pull a generous slice (4× cap, capped at 100) so a single
-    // bucket dominating the fetched window doesn't silently truncate
-    // the other. With 2× and a vault tilted overdue (e.g. 18 overdue
-    // + 2 active among 20 fetched), Active would render as `2 of 2`
-    // when the live set has hundreds — the "hidden N" suffix only
-    // counts within the fetched window, not the upstream universe.
-    // 4× absorbs realistic bucket-skew on the Mail vault's 271 open
-    // loops without paying a second query. Saturated past that, the
-    // operator should narrow with `entity` or raise `limit`.
-    const fetchLimit = Math.min((args.limit ?? DEFAULT_TASKS_LIMIT) * 4, 100)
+    const cap = args.limit ?? DEFAULT_TASKS_LIMIT
+    const deepWalk = cap >= TASK_LIST_DEEP_WALK_MIN_LIMIT
+    const pageSize = deepWalk
+      ? TASK_LIST_PAGE_SIZE
+      : Math.min(cap * TASK_LIST_FETCH_MULTIPLIER, TASK_LIST_PAGE_SIZE)
+    const maxPages = deepWalk ? MAX_TASK_LIST_PAGES : 1
+    const maxFetchedRows = pageSize * maxPages
+
+    // Bucket headings render inventory counts, so larger explicit
+    // requests drain cursor pages before bucketing. Small triage calls
+    // keep the historical 4x window and render lower-bound counts if
+    // that window saturates. The hard page cap keeps broad closed-history
+    // queries from becoming unbounded Notion walks; if the cap fires,
+    // every total rendered below is a lower bound.
     const states: TaskState[] = args.state
       ? [args.state as TaskState]
       : ACTIVE_TASK_STATES
@@ -480,30 +488,55 @@ async function handleList(
     // exactly that string. Canonicalization here would change the
     // user's filter shape without their knowledge; canonical-aware
     // recall is `lore-query action='ask'`'s job.
-    const { items: tasks, nextCursor, capped } = await services.tasks.list({
+    const listOpts = {
       projectId,
       entities: args.entity ? [args.entity] : undefined,
       states,
       dueBefore: args.dueBefore,
-      limit: fetchLimit,
-      startCursor: args.startCursor,
-    })
+    } satisfies Omit<ListTasksOpts, "limit" | "startCursor">
+
+    const tasks: TaskSummary[] = []
+    let nextCursor = args.startCursor
+    let pagesFetched = 0
+    // "Exact total" means exact for the completed cursor walk. Notion
+    // does not provide snapshot isolation across page requests, so a
+    // concurrent edit can still move a task between cursor steps.
+    do {
+      // If any cursor step fails, the outer catch returns a tool error
+      // and discards accumulated rows. Rendering a partial walk would
+      // make exact/lower-bound claims from an unknown slice.
+      const page = await services.tasks.list({
+        ...listOpts,
+        limit: pageSize,
+        ...(nextCursor ? { startCursor: nextCursor } : {}),
+      })
+      tasks.push(...page.items)
+      nextCursor = page.nextCursor
+      pagesFetched += 1
+    } while (nextCursor && pagesFetched < maxPages)
+    // `TaskService.list` can hit its internal live-page refill cap on
+    // an intermediate cursor step while this MCP walker still continues.
+    // Only the final cursor state decides whether the aggregate walk is
+    // lower-bound.
+    const saturated = Boolean(nextCursor)
 
     if (tasks.length === 0) {
       const filterHint = args.entity ? ` matching "${args.entity}"` : ""
+      const emptyText = saturated
+        ? `No tasks found${filterHint} in the first ${maxFetchedRows} fetched rows; more matching tasks may exist.`
+        : `No tasks found${filterHint}.`
       const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
       return {
         content: [
           {
             type: "text",
-            text: `No tasks found${filterHint}.${warn}${paginationFooter(nextCursor, { truncated: capped })}`,
+            text: `${emptyText}${warn}${paginationFooter(nextCursor, { truncated: saturated })}`,
           },
         ],
       }
     }
 
     const today = new Date().toISOString().split("T")[0]
-    const cap = args.limit ?? DEFAULT_TASKS_LIMIT
 
     // Bucket by overdue/active. `state` filter covers closed work
     // (done / cancelled) — those rows go straight into the Active
@@ -523,18 +556,26 @@ async function handleList(
     const hidesFetchedRows =
       overdueAll.length > overdue.length || activeAll.length > active.length
     const footerCursor = hidesFetchedRows ? undefined : nextCursor
-    const footerTruncated = (capped ?? false) || hidesFetchedRows
+    const footerTruncated = hidesFetchedRows || saturated
     const includeSynopsis = args.includeSynopsis !== false
+    const bound = saturated ? "≥" : ""
+    const countLabel = (count: number): string => `${bound}${count}`
+    const bucketHeading = (
+      title: string,
+      rows: TaskSummary[],
+      allRows: TaskSummary[],
+    ): string => {
+      const hidden = allRows.length - rows.length
+      const hiddenLabel = saturated ? `≥${hidden}` : `${hidden}`
+      return hidden > 0
+        ? `### ${title} (${rows.length} shown of ${countLabel(allRows.length)}, hiding ${hiddenLabel})`
+        : `### ${title} (${countLabel(allRows.length)})`
+    }
 
     const sections: string[] = []
     if (overdueAll.length > 0) {
-      const hidden = overdueAll.length - overdue.length
-      const heading =
-        hidden > 0
-          ? `### Overdue (${overdue.length} shown of ${overdueAll.length}, hiding ${hidden})`
-          : `### Overdue (${overdueAll.length})`
       sections.push(
-        `${heading}\n\n` +
+        `${bucketHeading("Overdue", overdue, overdueAll)}\n\n` +
           overdue.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n"),
       )
     }
@@ -545,26 +586,45 @@ async function handleList(
       // lifecycles. The heading title-cases the requested state
       // ("Done" / "Cancelled") rather than always saying "Active",
       // so the section label matches the filter the agent passed.
-      const hidden = activeAll.length - active.length
-      const heading =
-        hidden > 0
-          ? `### ${args.state ? args.state[0].toUpperCase() + args.state.slice(1) : "Active"} (${active.length} shown of ${activeAll.length}, hiding ${hidden})`
-          : `### ${args.state ? args.state[0].toUpperCase() + args.state.slice(1) : "Active"} (${activeAll.length})`
+      const sectionTitle = args.state
+        ? args.state[0].toUpperCase() + args.state.slice(1)
+        : "Active"
       sections.push(
-        `${heading}\n\n` +
+        `${bucketHeading(sectionTitle, active, activeAll)}\n\n` +
           active.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n"),
       )
     }
 
+    const footers: string[] = []
+    if (saturated) {
+      const nextStep = deepWalk
+        ? "The deepest bounded walk already ran; narrow with `projectName`, `entity`, `state`, or `dueBefore` for exact totals."
+        : `Use \`limit >= ${TASK_LIST_DEEP_WALK_MIN_LIMIT}\` for a deeper bounded walk, or narrow with ` +
+          "`projectName`, `entity`, `state`, or `dueBefore` for exact totals."
+      footers.push(
+        `More matching tasks exist after the first ${maxFetchedRows} fetched rows; ` +
+          `totals are lower bounds. ${nextStep}`,
+      )
+    }
+
     const total = tasks.length
+    const totalLabel =
+      saturated || total !== 1 ? `${countLabel(total)} tasks` : "1 task"
+    const totalSemantics = saturated
+      ? `lower-bound total; listing capped at ${maxFetchedRows}`
+      : "exact total"
     const filterSuffix = args.entity ? ` touching "${args.entity}"` : ""
+    const footer = footers.length > 0 ? `\n\n${footers.join("\n")}` : ""
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+    const pagination = paginationFooter(footerCursor, {
+      truncated: footerTruncated,
+    })
 
     return {
       content: [
         {
           type: "text",
-          text: `${total} task${total === 1 ? "" : "s"}${filterSuffix}:\n\n${sections.join("\n\n")}${warn}${paginationFooter(footerCursor, { truncated: footerTruncated })}`,
+          text: `${totalLabel} (${totalSemantics})${filterSuffix}:\n\n${sections.join("\n\n")}${footer}${warn}${pagination}`,
         },
       ],
     }
@@ -705,11 +765,8 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "(no 2000-char rich_text limit) and the subject is structurally " +
         "indexed.\n\n" +
         "CRITICAL CLOSURE RULE: close tasks (action='close') as soon as " +
-        "work completes. A closed task is the source of truth for " +
-        "\"done\"; an unclosed task lingers in every future session's " +
-        "wake-up Tasks section, eating prompt budget on dead work. Bias " +
-        "toward closure — re-open is free; a forgotten-open task costs " +
-        "prompt budget permanently.\n\n" +
+        "work completes. Closed tasks are the source of truth for \"done\"; " +
+        "unclosed tasks keep surfacing in wake-up.\n\n" +
         "Action-dispatched:\n\n" +
         "- `action: 'create'` — open a new task. Use `entity` when the task is about " +
         "a specific subject other facts/decisions also reference; `lore-query` " +
@@ -718,12 +775,13 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "description, or scoping. Any field omitted is left untouched. Pass " +
         "`dueDate: \"\"` to clear the due date.\n" +
         "- `action: 'close'` — mark done (or cancelled — distinguished for metrics).\n" +
-        "- `action: 'list'` — list tasks (`Kind = task` memories) with Overdue " +
-        "and Active sections.\n" +
-        "- `action: 'reconcile'` — operator-pulled batch reconciliation. " +
-        "Scans active tasks, searches recent memories for resolution-shaped " +
-        "matches against task entity / title / synopsis, scores candidates, " +
-        "and returns a ranked candidate-closure list with inline close " +
+        "- `action: 'list'` — list task memories with Overdue and Active " +
+        "sections. Labels totals as exact or lower-bound; " +
+        `small limits fetch ${TASK_LIST_FETCH_MULTIPLIER}×limit, while ` +
+        `limit >= ${TASK_LIST_DEEP_WALK_MIN_LIMIT} uses a deeper bounded walk ` +
+        `capped at ${TASK_LIST_PAGE_SIZE * MAX_TASK_LIST_PAGES} fetched rows.\n` +
+        "- `action: 'reconcile'` — scan active tasks for resolution-shaped " +
+        "memory matches and return ranked closure candidates with close " +
         "incantations. Read-only; never auto-closes.",
       inputSchema: {
         action: z
@@ -869,7 +927,9 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .int()
           .optional()
           .describe(
-            `(action='list') Per-section cap (default ${DEFAULT_TASKS_LIMIT}). Capped at 200. ` +
+            `(action='list') Per-section render cap (default ${DEFAULT_TASKS_LIMIT}). ` +
+              `Small caps fetch ${TASK_LIST_FETCH_MULTIPLIER}×limit; ` +
+              `limit >= ${TASK_LIST_DEEP_WALK_MIN_LIMIT} requests a deep walk. Capped at 200. ` +
               `(action='reconcile') Maximum candidate closures to surface ` +
               `(default ${DEFAULT_RECONCILE_LIMIT}). Capped at ${MAX_RECONCILE_LIMIT}.`,
           ),

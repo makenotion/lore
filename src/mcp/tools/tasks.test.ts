@@ -870,7 +870,7 @@ describe("lore-tasks", () => {
     expect(text).toContain("t-active")
   })
 
-  it("threads startCursor and marks capped task-list pages as truncated", async () => {
+  it("threads startCursor through the bounded walk and marks capped task-list pages as truncated", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
     })
@@ -890,13 +890,258 @@ describe("lore-tasks", () => {
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
+    expect(svc.tasks.list).toHaveBeenCalledTimes(1)
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ startCursor: "resume-here" }),
+      expect.objectContaining({ startCursor: "resume-here", limit: 40 }),
     )
     expect(text).toContain("t-capped")
+    expect(text).toContain(
+      "≥1 tasks (lower-bound total; listing capped at 40):",
+    )
     expect(text).toMatch(
       /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
     )
+  })
+
+  it("paginates multiple saturated windows before reporting bucket totals", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    const firstOverduePage = Array.from({ length: 100 }, (_, i) =>
+      makeTask(`t-overdue-${i + 1}`, {
+        title: `Overdue ${i + 1}`,
+        reviewBy: "2026-01-01",
+        entity: "PR-1",
+      }),
+    )
+    const secondOverduePage = Array.from({ length: 100 }, (_, i) =>
+      makeTask(`t-overdue-${i + 101}`, {
+        title: `Overdue ${i + 101}`,
+        reviewBy: "2026-01-01",
+        entity: "PR-1",
+      }),
+    )
+    svc.tasks.list = vi
+      .fn()
+      .mockResolvedValueOnce({ items: firstOverduePage, nextCursor: "cursor-2" })
+      .mockResolvedValueOnce({ items: secondOverduePage, nextCursor: "cursor-3" })
+      .mockResolvedValueOnce({
+        items: [
+          makeTask("t-active-after-prefix", {
+            title: "Active after overdue prefix",
+            reviewBy: "2099-01-01",
+            entity: "PR-2",
+          }),
+        ],
+      })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", limit: 30 } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ limit: 100, projectId: "proj-1" }),
+    )
+    expect(svc.tasks.list).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        limit: 100,
+        projectId: "proj-1",
+        startCursor: "cursor-2",
+      }),
+    )
+    expect(svc.tasks.list).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        limit: 100,
+        projectId: "proj-1",
+        startCursor: "cursor-3",
+      }),
+    )
+    expect(text).toContain("201 tasks (exact total):")
+    expect(text).toContain("### Overdue (30 shown of 200, hiding 170)")
+    expect(text).toContain("### Active (1)")
+    expect(text).toContain("t-active-after-prefix")
+  })
+
+  it("treats an exhausted MCP walk as exact even when an intermediate service page is capped", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [
+          makeTask("t-intermediate-cap", {
+            title: "Intermediate service cap",
+            reviewBy: "2099-01-01",
+          }),
+        ],
+        nextCursor: "cursor-2",
+        capped: true,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          makeTask("t-final-page", {
+            title: "Final page task",
+            reviewBy: "2099-01-01",
+          }),
+        ],
+        nextCursor: undefined,
+        capped: false,
+      })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", limit: 30 } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledTimes(2)
+    expect(svc.tasks.list).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ startCursor: "cursor-2", limit: 100 }),
+    )
+    expect(text).toContain("2 tasks (exact total):")
+    expect(text).toContain("### Active (2)")
+    expect(text).not.toContain("lower-bound")
+    expect(text).not.toContain("More matching tasks exist")
+    expect(text).not.toContain("truncated")
+    expect(text).not.toContain("≥")
+  })
+
+  it("keeps small-limit triage calls bounded and marks saturated counts lower-bound", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: Array.from({ length: 20 }, (_, i) =>
+        makeTask(`t-overdue-small-${i + 1}`, {
+          title: `Overdue small ${i + 1}`,
+          reviewBy: "2026-01-01",
+          entity: "PR-1",
+        }),
+      ),
+      nextCursor: "cursor-hidden-active",
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", limit: 5 } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledTimes(1)
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 20, projectId: "proj-1" }),
+    )
+    expect(text).toContain(
+      "≥20 tasks (lower-bound total; listing capped at 20):",
+    )
+    expect(text).toContain("### Overdue (5 shown of ≥20, hiding ≥15)")
+    expect(text).toContain(
+      "More matching tasks exist after the first 20 fetched rows; totals are lower bounds.",
+    )
+    expect(text).toContain("Use `limit >= 26` for a deeper bounded walk")
+    expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
+    expect(text).not.toContain("### Active")
+  })
+
+  it("caps broad closed-state walks and marks counts as lower bounds", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn(async () => {
+      const call = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls.length
+      return {
+        items: Array.from({ length: 100 }, (_, i) =>
+          makeTask(`t-done-${call}-${i + 1}`, {
+            title: `Done ${call}-${i + 1}`,
+            taskState: "done",
+            reviewBy: "2026-01-01",
+          }),
+        ),
+        nextCursor: `cursor-${call + 1}`,
+      }
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "list",
+      state: "done",
+      limit: 30,
+      includeSynopsis: false,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledTimes(10)
+    expect(svc.tasks.list).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ states: ["done"], limit: 100 }),
+    )
+    expect(svc.tasks.list).toHaveBeenNthCalledWith(
+      10,
+      expect.objectContaining({ startCursor: "cursor-10", limit: 100 }),
+    )
+    expect(text).toContain(
+      "≥1000 tasks (lower-bound total; listing capped at 1000):",
+    )
+    expect(text).toContain("### Done (30 shown of ≥1000, hiding ≥970)")
+    expect(text).toContain(
+      "More matching tasks exist after the first 1000 fetched rows; totals are lower bounds.",
+    )
+    expect(text).toContain(
+      "The deepest bounded walk already ran; narrow with `projectName`, `entity`, `state`, or `dueBefore` for exact totals.",
+    )
+    expect(text).not.toContain("Use `limit >= 26`")
+    expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
+  })
+
+  it("does not mark the tenth page as saturated when the cursor exhausts exactly at the cap boundary", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn(async () => {
+      const call = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls.length
+      return {
+        items: Array.from({ length: 100 }, (_, i) =>
+          makeTask(`t-boundary-${call}-${i + 1}`, {
+            title: `Boundary ${call}-${i + 1}`,
+            taskState: "done",
+            reviewBy: "2026-01-01",
+          }),
+        ),
+        nextCursor: call < 10 ? `cursor-${call + 1}` : undefined,
+      }
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "list",
+      state: "done",
+      limit: 30,
+      includeSynopsis: false,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledTimes(10)
+    expect(text).toContain("1000 tasks (exact total):")
+    expect(text).toContain("### Done (30 shown of 1000, hiding 970)")
+    expect(text).not.toContain("lower-bound")
+    expect(text).not.toContain("More matching tasks exist")
+    expect(text).not.toContain("≥")
   })
 
   it("does not emit a nextCursor when per-section hiding leaves fetched rows unrendered", async () => {
@@ -920,9 +1165,68 @@ describe("lore-tasks", () => {
     const result = await handler({ action: "list", limit: 2 } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain("hiding 1")
+    expect(text).toContain("hiding ≥1")
     expect(text).not.toContain("after-hidden-row")
     expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
+  })
+
+  it("surfaces pagination failures without rendering partial first-page rows", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi
+      .fn()
+      .mockResolvedValueOnce({
+        items: [
+          makeTask("t-first-page", {
+            title: "First page task",
+            reviewBy: "2099-01-01",
+          }),
+        ],
+        nextCursor: "cursor-2",
+      })
+      .mockRejectedValueOnce(new Error("notion 503"))
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", limit: 30 } as never)
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    const text = wrapped.content[0].text
+
+    expect(wrapped.isError).toBe(true)
+    expect(text).toContain("Error: notion 503")
+    expect(text).not.toContain("First page task")
+  })
+
+  it("renders cancelled task listings under a Cancelled section", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-cancelled", {
+          title: "Dropped task",
+          taskState: "cancelled",
+          reviewBy: "2026-01-01",
+        }),
+      ],
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", state: "cancelled" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ states: ["cancelled"] }),
+    )
+    expect(text).toContain("1 task (exact total):")
+    expect(text).toContain("### Cancelled (1)")
+    expect(text).not.toContain("Closure:")
   })
 
   it("renders 'No tasks found' when the listing is empty", async () => {
@@ -938,6 +1242,38 @@ describe("lore-tasks", () => {
 
     expect(text).toContain("No tasks found")
     expect(text).toContain("PR #99")
+  })
+
+  it("marks empty saturated task-list walks as lower-bound instead of exact zero", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [],
+      nextCursor: "cursor-archived-only",
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "list",
+      entity: "PR",
+      limit: 5,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledTimes(1)
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 20, entities: ["PR"] }),
+    )
+    expect(text).toContain(
+      'No tasks found matching "PR" in the first 20 fetched rows; more matching tasks may exist.',
+    )
+    expect(text).toMatch(
+      /```json\n\{"nextCursor":"cursor-archived-only","truncated":true\}\n```/,
+    )
   })
 
   it("wraps the singular `entity` input into a one-element entities array — does not canonicalize", async () => {
@@ -975,6 +1311,7 @@ describe("lore-tasks", () => {
 
     const callArgs = (svc.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(callArgs.entities).toBeUndefined()
+    expect(callArgs.states).toEqual(["open", "in-progress", "blocked"])
   })
 })
 
@@ -1148,7 +1485,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
     // in the future that `taskDaysOverdue` returns null on every wall-clock
     // day this suite runs, keeping `due 2099-01-01` deterministic.
     expect(text).toBe(
-      "1 task:\n\n" +
+      "1 task (exact total):\n\n" +
         "### Active (1)\n\n" +
         "- **Plain task** [open] (due 2099-01-01)\n" +
         "  ID: t-plain",
@@ -1181,7 +1518,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toBe(
-      "1 task:\n\n" +
+      "1 task (exact total):\n\n" +
         "### Active (1)\n\n" +
         "- **Whitespace task** [open] (due 2099-01-01)\n" +
         "  ID: t-ws",
@@ -1390,7 +1727,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toBe(
-      "1 task:\n\n" +
+      "1 task (exact total):\n\n" +
         "### Active (1)\n\n" +
         "- **Pre-migration row** [open] (due 2099-01-01)\n" +
         "  ID: t-null",
