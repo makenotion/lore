@@ -161,7 +161,9 @@ export interface OAuthCredentials {
 }
 
 export interface OAuthConfig {
+  /** Drives both the browser authorization URL and token exchange. */
   clientId: string
+  /** Used only in the token exchange Basic auth header; never sent to the browser. */
   clientSecret: string
   redirectPort?: number
 }
@@ -172,7 +174,7 @@ export interface OAuthConfig {
  */
 export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredentials> {
   const port = config.redirectPort ?? 0 // 0 = OS picks a free port
-  const { code, actualPort } = await startCallbackServer(port)
+  const { code, actualPort } = await startCallbackServer(port, config.clientId)
 
   const redirectUri = `http://localhost:${actualPort}/callback`
 
@@ -279,9 +281,18 @@ async function exchangeCode(params: {
  * Returns a promise that resolves with the authorization code.
  */
 function startCallbackServer(
-  port: number
+  port: number,
+  clientId: string
 ): Promise<{ code: string; actualPort: number }> {
   return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const clearCallbackTimeout = () => {
+      if (timeout) {
+        clearTimeout(timeout)
+        timeout = undefined
+      }
+    }
+
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       const url = new URL(req.url ?? "/", `http://localhost:${port}`)
 
@@ -294,6 +305,7 @@ function startCallbackServer(
           res.end(
             `<html><body><h2>Authorization failed</h2><p>${error}</p><p>You can close this tab.</p></body></html>`
           )
+          clearCallbackTimeout()
           server.close()
           reject(new Error(`OAuth authorization denied: ${error}`))
           return
@@ -304,9 +316,10 @@ function startCallbackServer(
           res.end(
             "<html><body><h2>Authorized</h2><p>Lore has been authorized. You can close this tab.</p></body></html>"
           )
-          server.close()
           const addr = server.address()
           const actualPort = typeof addr === "object" && addr ? addr.port : port
+          clearCallbackTimeout()
+          server.close()
           resolve({ code, actualPort })
           return
         }
@@ -321,20 +334,21 @@ function startCallbackServer(
       if (typeof addr === "object" && addr) {
         // Open browser to the authorization URL
         const redirectUri = `http://localhost:${addr.port}/callback`
-        const authUrl = getAuthorizationUrl(
-          process.env["LORE_OAUTH_CLIENT_ID"] ?? "",
-          redirectUri
-        )
+        // Keep browser authorization and token exchange bound to one config value.
+        const authUrl = getAuthorizationUrl(clientId, redirectUri)
         openBrowser(authUrl)
         console.log(`\nOpening browser for Notion authorization...`)
         console.log(`If the browser doesn't open, visit:\n  ${authUrl}\n`)
       }
     })
 
-    server.on("error", reject)
+    server.on("error", (error) => {
+      clearCallbackTimeout()
+      reject(error)
+    })
 
     // Timeout after 5 minutes
-    setTimeout(
+    timeout = setTimeout(
       () => {
         server.close()
         reject(new Error("OAuth callback timed out after 5 minutes"))
