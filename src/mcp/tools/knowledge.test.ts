@@ -3,7 +3,7 @@ import type { Client, PageObjectResponse } from "@notionhq/client"
 import { describe, expect, it, vi } from "vitest"
 import { registerKnowledgeTools } from "./knowledge.js"
 import { registerQueryTools } from "./query.js"
-import type { Decision, Fact, Memory, Project } from "../../types.js"
+import type { Decision, Fact, Memory, Project, TaskSummary } from "../../types.js"
 import { MemoryService } from "../../core/memory.js"
 
 function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
@@ -60,6 +60,44 @@ function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
     createdAt: "2026-04-20T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
+    ...overrides,
+  }
+}
+
+function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary {
+  return {
+    id,
+    title: `Task ${id}`,
+    projectIds: [],
+    topicId: null,
+    source: "manual",
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
+    confidenceScore: null,
+    reviewBy: null,
+    doneAt: null,
+    decidedAt: null,
+    lastReferencedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    synopsis: "",
+    session: "",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    updatedAt: "2026-04-20T00:00:00.000Z",
+    taskState: "open",
+    blockedBy: "",
+    entity: "",
+    topicKey: "",
+    revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
     ...overrides,
   }
 }
@@ -1421,11 +1459,13 @@ describe("lore-audit projectName resolution", () => {
     const mockServer = createMockServer()
     const queryOverdueFacts = vi.fn()
     const queryOverdueDecisions = vi.fn()
+    const queryOverdueTasks = vi.fn()
 
     const services = {
       projects: { findByName: vi.fn().mockResolvedValue(null) },
       facts: { queryOverdue: queryOverdueFacts },
       decisions: { queryOverdue: queryOverdueDecisions },
+      tasks: { queryOverdue: queryOverdueTasks },
       context: { project: { id: "proj-ambient", name: "Ambient" } },
     }
 
@@ -1439,6 +1479,209 @@ describe("lore-audit projectName resolution", () => {
     expect(text).toContain('Project "Typo" not found')
     expect(queryOverdueFacts).not.toHaveBeenCalled()
     expect(queryOverdueDecisions).not.toHaveBeenCalled()
+    expect(queryOverdueTasks).not.toHaveBeenCalled()
+  })
+})
+
+describe("lore-query action='audit' overdue tasks", () => {
+  function auditServices(opts?: {
+    facts?: Fact[]
+    decisions?: Decision[]
+    tasks?: TaskSummary[]
+    projectId?: string | null
+  }) {
+    return {
+      projects: {
+        findByName: vi.fn().mockResolvedValue(
+          opts?.projectId
+            ? { id: opts.projectId, name: "Named Project", path: "named" }
+            : null,
+        ),
+      },
+      facts: { queryOverdue: vi.fn().mockResolvedValue(opts?.facts ?? []) },
+      decisions: {
+        queryOverdue: vi.fn().mockResolvedValue(opts?.decisions ?? []),
+      },
+      tasks: { queryOverdue: vi.fn().mockResolvedValue(opts?.tasks ?? []) },
+      context: { project: null },
+    }
+  }
+
+  it("renders overdue tasks when no facts or decisions are overdue", async () => {
+    const task = makeTask("task-overdue", {
+      title: "Refresh Notion auth runbook",
+      taskState: "blocked",
+      blockedBy: "owner review",
+      entity: "Auth docs",
+      reviewBy: "2026-01-01",
+    })
+    const services = auditServices({ tasks: [task] })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## Overdue Tasks (1)")
+    expect(text).toContain(
+      "- **Refresh Notion auth runbook** [blocked, blocked by owner review] | entity Auth docs",
+    )
+    expect(text).toContain("Review by: 2026-01-01")
+    expect(text).toContain("ID: task-overdue")
+    expect(text).not.toContain("No overdue facts, decisions, or tasks found.")
+    expect(text).toContain("Task — close")
+    expect(text).toContain("Task — update due date")
+    expect(text).toContain("Task — unblock")
+    expect(text).toContain("Task — cancel")
+  })
+
+  it("renders facts, decisions, and tasks together with the requested project scope", async () => {
+    const fact = makeFact("fact-overdue", {
+      subject: "AuditSurface",
+      predicate: "uses",
+      object: "ReviewBy",
+      reviewBy: "2026-01-01",
+    })
+    const decision = makeDecision("decision-overdue", {
+      title: "Keep review dates visible",
+      reviewBy: "2026-01-02",
+    })
+    const task = makeTask("task-overdue", {
+      title: "Close reviewed work",
+      reviewBy: "2026-01-03",
+    })
+    const services = auditServices({
+      facts: [fact],
+      decisions: [decision],
+      tasks: [task],
+      projectId: "proj-named",
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({ projectName: "Named Project" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## Overdue Facts (1)")
+    expect(text).toContain("## Overdue Decisions (1)")
+    expect(text).toContain("## Overdue Tasks (1)")
+    expect(text.indexOf("## Overdue Facts")).toBeLessThan(
+      text.indexOf("## Overdue Decisions"),
+    )
+    expect(text.indexOf("## Overdue Decisions")).toBeLessThan(
+      text.indexOf("## Overdue Tasks"),
+    )
+    expect(services.facts.queryOverdue).toHaveBeenCalledWith({ projectId: "proj-named" })
+    expect(services.decisions.queryOverdue).toHaveBeenCalledWith({
+      projectId: "proj-named",
+    })
+    expect(services.tasks.queryOverdue).toHaveBeenCalledWith({ projectId: "proj-named" })
+  })
+
+  it("reports no overdue sources only when facts, decisions, and tasks are empty", async () => {
+    const services = auditServices()
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toBe("No overdue facts, decisions, or tasks found.")
+  })
+
+  it("warns and still renders facts when overdue task lookup fails", async () => {
+    const fact = makeFact("fact-overdue", {
+      subject: "AuditSurface",
+      predicate: "uses",
+      object: "ReviewBy",
+      reviewBy: "2026-01-01",
+    })
+    const services = auditServices({ facts: [fact] })
+    services.tasks.queryOverdue = vi.fn().mockRejectedValue(new Error("transient 5xx"))
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## Overdue Facts (1)")
+    expect(text).toContain("AuditSurface")
+    expect(text).toContain("Warnings:")
+    expect(text).toContain("Tasks lookup failed: transient 5xx")
+  })
+
+  it("does not claim tasks were checked when overdue task lookup fails with no other overdue sources", async () => {
+    const services = auditServices()
+    services.tasks.queryOverdue = vi.fn().mockRejectedValue(new Error("transient 5xx"))
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "No overdue facts or decisions found. Overdue tasks could not be checked.",
+    )
+    expect(text).toContain("Warnings: Tasks lookup failed: transient 5xx")
+  })
+
+  it("warns and skips task rows that do not satisfy the overdue invariant", async () => {
+    const valid = makeTask("task-valid", {
+      title: "Close reviewed work",
+      reviewBy: "2026-01-03",
+    })
+    const malformed = makeTask("task-malformed", {
+      title: "Future task from stale query result",
+      reviewBy: "2099-01-01",
+    })
+    const services = auditServices({ tasks: [malformed, valid] })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("## Overdue Tasks (1)")
+    expect(text).toContain("Close reviewed work")
+    expect(text).not.toContain("Future task from stale query result")
+    expect(text).toContain(
+      "Warnings: Task task-malformed: failed to compute overdue days, skipping",
+    )
+  })
+
+  it("returns a warning-only empty audit when all overdue task rows are malformed", async () => {
+    const malformed = makeTask("task-malformed", {
+      title: "Future task from stale query result",
+      reviewBy: "2099-01-01",
+    })
+    const services = auditServices({ tasks: [malformed] })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain(
+      "No overdue facts or decisions found. Overdue tasks could not be rendered.",
+    )
+    expect(text).toContain(
+      "Warnings: Task task-malformed: failed to compute overdue days, skipping",
+    )
+    expect(text).not.toContain("## Overdue Tasks")
   })
 })
 
@@ -2579,6 +2822,7 @@ describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEF
       projects: { findByName: vi.fn() },
       facts: { queryOverdue: vi.fn().mockResolvedValue([]) },
       decisions: { queryOverdue: vi.fn().mockResolvedValue(decisions) },
+      tasks: { queryOverdue: vi.fn().mockResolvedValue([]) },
       context: { project: null },
     }
   }
@@ -2659,6 +2903,7 @@ describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRE
       projects: { findByName: vi.fn() },
       facts: { queryOverdue: vi.fn().mockResolvedValue(facts) },
       decisions: { queryOverdue: vi.fn().mockResolvedValue([]) },
+      tasks: { queryOverdue: vi.fn().mockResolvedValue([]) },
       context: { project: null },
     }
   }

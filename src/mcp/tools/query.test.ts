@@ -42,7 +42,10 @@ function makeAskServices(overrides: Record<string, unknown> = {}) {
     },
     decisions: { getById: vi.fn() },
     memories: { getTitleById: vi.fn().mockResolvedValue(null) },
-    tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+    tasks: {
+      list: vi.fn().mockResolvedValue({ items: [] }),
+      queryOverdue: vi.fn().mockResolvedValue([]),
+    },
     context: {
       project: {
         id: "proj-1",
@@ -116,12 +119,12 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
   })
 
   it("does not render the framing block on non-ask actions even when project resolves", async () => {
-    // Acceptance criterion (#18): `recall`, `search`, `open-loops`, and
-    // `audit` do NOT render the framing block. `includeContext` lives
-    // only on the `ask` arm; other arms strip the field and never
-    // reach the framing renderer. This pins the narrow scope so a
-    // future contributor doesn't accidentally fan the block out across
-    // every read-path action and inflate output tokens.
+    // Acceptance criterion (#18): `recall`, `search`, and `audit` do
+    // NOT render the framing block. `includeContext` lives only on the
+    // `ask` arm; other arms strip the field and never reach the framing
+    // renderer. This pins the narrow scope so a future contributor
+    // doesn't accidentally fan the block out across every read-path
+    // action and inflate output tokens.
     const mockServer = createMockServer()
     const services = {
       ...makeAskServices(),
@@ -145,7 +148,6 @@ describe("lore-query polymorphic dispatcher — ask arm forwards includeContext"
     const cases = [
       { action: "recall", args: {} },
       { action: "search", args: { query: "auth" } },
-      { action: "open-loops", args: {} },
       { action: "audit", args: {} },
     ] as const
 

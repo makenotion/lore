@@ -798,6 +798,105 @@ describe("taskDaysStale", () => {
   })
 })
 
+describe("TaskService.queryOverdue", () => {
+  it("paginates beyond the first 100 rows when no limit is supplied", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      taskPage(`t1-${i}`, { reviewBy: "2026-01-01" }),
+    )
+    const page2 = Array.from({ length: 50 }, (_, i) =>
+      taskPage(`t2-${i}`, { reviewBy: "2026-02-01" }),
+    )
+    const client = createMockClient()
+    const querySpy = client.dataSources.query as ReturnType<typeof vi.fn>
+    const responses = [
+      { results: page1, has_more: true, next_cursor: "c1" },
+      { results: page2, has_more: false, next_cursor: null },
+    ]
+    let i = 0
+    querySpy.mockImplementation(() => {
+      const response = responses[Math.min(i, responses.length - 1)]
+      i += 1
+      return Promise.resolve(response)
+    })
+    const service = new TaskService(client, DB)
+
+    const results = await service.queryOverdue()
+
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(results).toHaveLength(150)
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
+  })
+
+  it("stops paginating once the limit is reached", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      taskPage(`t-${i}`, { reviewBy: "2026-01-01" }),
+    )
+    const client = createMockClient()
+    const querySpy = client.dataSources.query as ReturnType<typeof vi.fn>
+    querySpy.mockResolvedValue({
+      results: page1,
+      has_more: true,
+      next_cursor: "c1",
+    })
+    const service = new TaskService(client, DB)
+
+    const results = await service.queryOverdue({ limit: 10 })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    expect(results).toHaveLength(10)
+  })
+
+  it("skips archived pages returned by the data source query", async () => {
+    const archived = {
+      ...taskPage("t-archived", { reviewBy: "2026-01-01" }),
+      archived: true,
+    } as PageObjectResponse
+    const live = taskPage("t-live", { reviewBy: "2026-01-02" })
+    const client = createMockClient({
+      queryResults: [archived, live],
+    })
+    const service = new TaskService(client, DB)
+
+    const results = await service.queryOverdue()
+
+    expect(results).toHaveLength(1)
+    expect(results[0].id).toBe("t-live")
+  })
+
+  it("clamps page_size to min(limit, 100) when limit is small", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.queryOverdue({ limit: 5 })
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    expect(queryArgs.page_size).toBe(5)
+  })
+
+  it("clamps page_size to Notion's 100-row ceiling when no limit is supplied", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.queryOverdue()
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    expect(queryArgs.page_size).toBe(100)
+  })
+
+  it("clamps page_size to 100 when limit exceeds Notion's ceiling", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.queryOverdue({ limit: 500 })
+
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    expect(queryArgs.page_size).toBe(100)
+  })
+})
+
 describe("TaskService.countActive", () => {
   it("buckets each active row into total/overdue/stale/in-progress/blocked", async () => {
     // Three rows: one overdue, one stale (>30d untouched, no due), one

@@ -224,6 +224,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       update: opts.tasksUpdate ?? vi.fn(),
       close: opts.tasksClose ?? vi.fn(async () => undefined),
       list: opts.tasksList ?? vi.fn(async () => ({ items: [] })),
+      queryOverdue: vi.fn(async () => []),
       countActive: vi.fn(async () => ({
         total: 0,
         overdue: 0,

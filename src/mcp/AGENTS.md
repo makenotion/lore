@@ -346,7 +346,7 @@ structural overlap with the rest of the read-path surface.
 | `recall` | List recent memories with server-side filters; cursor-paginated | Yes |
 | `search` | Memory search — DS-scoped contains, workspace-wide semantic, or parallel hybrid (default). `mode` selects; see "`lore-query action='search'` mode parameter (P3-04)" below | Yes |
 | `ask` | Query facts and tasks about an entity, grouped into Governance / Structure / Tasks buckets | Yes |
-| `audit` | List facts and decisions past their review-by date | Yes |
+| `audit` | List facts, decisions, and tasks past their review-by date | Yes |
 
 For tracked work (open / blocked / done), use `lore-task action='list'`
 rather than `lore-query`. The pre-#23 `open-loops` action and the

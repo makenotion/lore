@@ -952,14 +952,31 @@ export async function handleAudit(
       projectId = services.context.project.id
     }
 
-    const [overdueFacts, overdueDecisions] = await Promise.all([
+    const warnings: string[] = []
+    const [overdueFacts, overdueDecisions, overdueTasks] = await Promise.all([
       services.facts.queryOverdue({ projectId }),
       services.decisions.queryOverdue({ projectId }),
+      services.tasks.queryOverdue({ projectId }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        warnings.push(`Tasks lookup failed: ${message}`)
+        return [] as TaskSummary[]
+      }),
     ])
 
-    if (overdueFacts.length === 0 && overdueDecisions.length === 0) {
+    const formatWarnings = () =>
+      warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+
+    if (
+      overdueFacts.length === 0 &&
+      overdueDecisions.length === 0 &&
+      overdueTasks.length === 0
+    ) {
+      const text =
+        warnings.length > 0
+          ? "No overdue facts or decisions found. Overdue tasks could not be checked."
+          : "No overdue facts, decisions, or tasks found."
       return {
-        content: [{ type: "text", text: "No overdue facts or decisions found." }],
+        content: [{ type: "text", text: text + formatWarnings() }],
       }
     }
 
@@ -1023,6 +1040,45 @@ export async function handleAudit(
       sections.push(`## Overdue Decisions (${overdueDecisions.length})\n\n${decisionLines}`)
     }
 
+    if (overdueTasks.length > 0) {
+      // Audit is the comprehensive overdue-review surface. Wake-up keeps its
+      // smaller triage view via `tasks.list` and buckets overdue/stale/active.
+      const taskRows = overdueTasks.flatMap((t) => {
+        const days = taskDaysOverdue(t, today)
+        if (days === null) {
+          warnings.push(`Task ${t.id}: failed to compute overdue days, skipping`)
+          return []
+        }
+        const stateLabel = t.taskState ?? "open"
+        const blocked = t.blockedBy ? `, blocked by ${t.blockedBy}` : ""
+        const entity = t.entity ? ` | entity ${t.entity}` : ""
+        const trustLine = renderTrustLine(t.confidenceScore ?? null, "  ")
+        const trustRow = trustLine !== null ? `${trustLine}\n` : ""
+        return [
+          `- **${t.title}** [${stateLabel}${blocked}]${entity}\n` +
+            trustRow +
+            `  Review by: ${t.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
+            `  ID: ${t.id}`,
+        ]
+      })
+      if (taskRows.length > 0) {
+        sections.push(`## Overdue Tasks (${taskRows.length})\n\n${taskRows.join("\n")}`)
+      }
+    }
+
+    if (sections.length === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              "No overdue facts or decisions found. Overdue tasks could not be rendered." +
+              formatWarnings(),
+          },
+        ],
+      }
+    }
+
     const actions = [
       "",
       "Actions:",
@@ -1030,6 +1086,10 @@ export async function handleAudit(
       "- **Fact — extend**: `lore-fact` with `action: 'extend'` and a new review date",
       "- **Decision — mark reviewed**: `lore-decision` with `action: 'review'`",
       "- **Decision — supersede**: `lore-decision` with `action: 'supersede'` and a replacement",
+      "- **Task — close**: `lore-task` with `action: 'close'` and `state: 'done'` if completed",
+      "- **Task — update due date**: `lore-task` with `action: 'update'` and `dueDate`",
+      "- **Task — unblock**: `lore-task` with `action: 'update'`, a non-blocked `state`, and `blockedBy: ''`",
+      "- **Task — cancel**: `lore-task` with `action: 'close'` and `state: 'cancelled'` if abandoned",
       "- **No change**: leave as-is if still under review",
     ]
 
@@ -1037,7 +1097,7 @@ export async function handleAudit(
       content: [
         {
           type: "text",
-          text: sections.join("\n\n") + "\n" + actions.join("\n"),
+          text: sections.join("\n\n") + "\n" + actions.join("\n") + formatWarnings(),
         },
       ],
     }

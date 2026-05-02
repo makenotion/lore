@@ -289,16 +289,15 @@ lower-token starting point than a long stream of individual memories.
 ## MCP Tools
 
 Lore exposes seven polymorphic tools, each multiplexing several actions
-behind one MCP registration. The 24 prior single-purpose tool names remain
-registered as deprecated aliases that delegate to the same handlers — see
-`src/mcp/AGENTS.md` for the full alias map.
+behind one MCP registration. Historical single-purpose aliases were removed
+in 0.6.0; use the polymorphic tools below.
 
 ### `lore-context` — vault context
 
 | Action     | Description |
 | ---------- | ----------- |
 | `status`   | Show vault status, database counts, and active project |
-| `wake-up`  | Load latest digest, recent memories, open loops, decisions needing attention, and memories related to those open loops |
+| `wake-up`  | Load latest digest, recent memories, active tasks, active facts, and decisions needing attention |
 | `digest`   | Gather raw activity data for synthesis into a `source: "digest"` memory |
 
 ### `lore-memory` — memory mutations + batch hydration
@@ -316,34 +315,33 @@ registered as deprecated aliases that delegate to the same handlers — see
 | ------------ | ----------- |
 | `recall`     | List recent memories with optional filters |
 | `search`     | Semantic search across memories using Notion's search API |
-| `ask`        | Query facts about an entity (as subject or object) |
-| `open-loops` | List active open loops (tracking-predicate facts) |
-| `audit`      | List overdue facts and decisions past their review date |
+| `ask`        | Query facts and tasks about an entity |
+| `audit`      | List overdue facts, decisions, and tasks past their review date |
 
 ### `lore-fact` — knowledge graph mutations
 
 | Action       | Description |
 | ------------ | ----------- |
-| `create`     | Add a subject-predicate-object fact triple. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task-create` instead. |
+| `create`     | Add a subject-predicate-object fact triple. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task action='create'` instead. |
 | `invalidate` | Invalidate a fact (sets Valid Until date, preserves history) |
 | `extend`     | Push a fact's review-by date forward |
 
 After P3-02, `lore-query action='ask'` also surfaces tasks touching the
-entity, and `lore-query action='open-loops'` is deprecated in favour of
-`lore-tasks` (un-migrated vaults still see legacy tracking facts).
+entity. For tracked work queues, use `lore-task action='list'`.
 
-### Tasks
+### `lore-task` — tracked work
 
 `Kind = task` memories supersede the legacy tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`). The description lives in the page body (no rich_text length cap) and the subject is structurally indexed, so structural queries actually work.
 
-| Tool                | Description                                                            |
-| ------------------- | ---------------------------------------------------------------------- |
-| `lore-task-create`  | Create a task with subject, description, state, blocker, and due date  |
-| `lore-task-update`  | Update a task's state, blocker, due date, subject, or description      |
-| `lore-task-close`   | Mark a task done (or cancelled — distinguished for metrics)            |
-| `lore-tasks`        | List tasks with Overdue/Active sections; filters by entity, state, due |
+| Action      | Description                                                            |
+| ----------- | ---------------------------------------------------------------------- |
+| `create`    | Create a task with subject, description, state, blocker, and due date  |
+| `update`    | Update a task's state, blocker, due date, subject, or description      |
+| `close`     | Mark a task done (or cancelled — distinguished for metrics)            |
+| `list`      | List tasks with Overdue/Active sections; filters by entity, state, due |
+| `reconcile` | Surface likely task closures from recent memory evidence               |
 
-Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-tracking-to-tasks --yes`. Subsuming this family into a polymorphic `lore-task` dispatcher is tracked as PF3-06.
+The old single-purpose task aliases were removed in 0.6.0; use the polymorphic `lore-task` dispatcher.
 
 ### `lore-decision` — decision lifecycle
 
@@ -376,7 +374,7 @@ Migrate existing tracking-predicate facts to tasks via `lore migrate --migrate-t
 | `lore status`                  | Show vault status, database counts, and active projects          |
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
-| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--migrate-tracking-to-tasks`, `--fix-fact-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, etc.) |
+| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, etc.) |
 | `lore conflicts scan`          | Walk the vault and surface candidate conflict pairs for in-context judgment (`-p`, `-n`, `--include-bodies`, `--json`, `--exhaustive`). Read-only — emits prompt-ready output the calling agent dispatches back via `lore-memory action='compare'`. |
 
 ### Conflict detection

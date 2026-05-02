@@ -56,7 +56,7 @@ const INTENT_DESCRIPTION =
  * hand-constructed argument literals each `handleX` builds, which means
  * a regression that re-introduces `intent` on a non-`search` arm of this
  * schema would slip past every handler-level test. See `polymorphic.test.ts`
- * for the negative-pin tests on `recall` / `ask` / `open-loops` / `audit`.
+ * for the negative-pin tests on `recall` / `ask` / `audit`.
  */
 export const queryDispatchSchema = z.discriminatedUnion("action", [
   z.object({
@@ -122,7 +122,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         "- `action: 'recall'` — list recent memories with optional filters (server-side via `dataSources.query`). Title-tier rows by default; `includeContent: true` to fetch bodies. Cursor-paginated.\n" +
         "- `action: 'search'` — memory search; `mode: contains | semantic | hybrid` (default `hybrid`). `contains` is DS-scoped substring with server-side filters; `semantic` is workspace-wide vector ranking over titles + bodies; `hybrid` runs both in parallel and prefers contains when it saturates (≥ 3 hits). Title-tier by default.\n" +
         "- `action: 'ask'` — query facts and tasks about an entity. Returns Governance / Structure / Tasks buckets capped at 5 each (raise via `limit`). Prepends a project framing block by default (`includeContext: false` to suppress).\n" +
-        "- `action: 'audit'` — list facts and decisions past their review-by date.\n\n" +
+        "- `action: 'audit'` — list facts, decisions, and tasks past their review-by date.\n\n" +
         "For tracked work (open / blocked / done), use `lore-task action='list'` rather than `lore-query`.",
       inputSchema: {
         action: z

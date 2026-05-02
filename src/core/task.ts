@@ -583,8 +583,15 @@ export class TaskService {
    * Active tasks past their due date. Mirrors
    * `DecisionService.queryOverdue` so wake-up / `lore-query action='audit'`
    * can compose all three sources without per-service branching.
+   *
+   * Paginates to exhaustion (or to `limit`). A single-shot query against
+   * Notion silently truncates at the default 100-row page, which would make
+   * `lore-query action='audit'` under-report overdue tracked work.
    */
-  async queryOverdue(opts?: { projectId?: string }): Promise<TaskSummary[]> {
+  async queryOverdue(opts?: {
+    projectId?: string
+    limit?: number
+  }): Promise<TaskSummary[]> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "task" } },
@@ -600,14 +607,27 @@ export class TaskService {
       filters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: { and: filters } as QueryDataSourceParameters["filter"],
-      sorts: [{ property: "Review By", direction: "ascending" }],
-    })
+    const limit = opts?.limit
+    const items: TaskSummary[] = []
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: { and: filters } as QueryDataSourceParameters["filter"],
+        sorts: [{ property: "Review By", direction: "ascending" }],
+        page_size: Math.min(limit ?? 100, 100),
+        start_cursor: cursor,
+      })
 
-    const pages = livePages(response.results)
-    return pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task))
+      for (const page of livePages(response.results)) {
+        items.push(toTaskSummary(pageToMemory(page, "") as Task))
+        if (limit !== undefined && items.length >= limit) break
+      }
+      if (limit !== undefined && items.length >= limit) break
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return items
   }
 }
 
