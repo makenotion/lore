@@ -1627,7 +1627,7 @@ export async function handleRecall(
 
     const withContent = args.includeContent === true
 
-    const { items: memories, nextCursor } = await services.memories.list({
+    const { items: memories, nextCursor, capped } = await services.memories.list({
       projectId,
       topicId,
       source: args.source,
@@ -1645,7 +1645,10 @@ export async function handleRecall(
         : "No recent memories found."
       return {
         content: [
-          { type: "text", text: `${header}${paginationFooter(nextCursor)}` },
+          {
+            type: "text",
+            text: `${header}${paginationFooter(nextCursor, { truncated: capped })}`,
+          },
         ],
       }
     }
@@ -1670,7 +1673,7 @@ export async function handleRecall(
       content: [
         {
           type: "text",
-          text: `${memories.length} recent memories:\n\n${text}${bodiesFooter}${paginationFooter(nextCursor)}`,
+          text: `${memories.length} recent memories:\n\n${text}${bodiesFooter}${paginationFooter(nextCursor, { truncated: capped })}`,
         },
       ],
     }
@@ -1764,10 +1767,16 @@ export async function handleSearch(
 
     let searchResults: Memory[]
     let explain: SearchExplain[] = []
-    if (wantExplain) {
+    let searchCapped = false
+    if (wantExplain && typeof services.memories.searchWithExplain === "function") {
       const out = await services.memories.searchWithExplain(searchInput)
       searchResults = out.memories
       explain = out.explain
+      searchCapped = out.capped ?? false
+    } else if (typeof services.memories.searchWithMeta === "function") {
+      const out = await services.memories.searchWithMeta(searchInput)
+      searchResults = out.memories
+      searchCapped = out.capped ?? false
     } else {
       searchResults = await services.memories.search(searchInput)
     }
@@ -1780,11 +1789,22 @@ export async function handleSearch(
     const results = searchResults.slice(0, finalLimit)
     const explainSlice = explain.slice(0, finalLimit)
 
+    if (searchCapped) {
+      warnings.push(
+        "Search scan reached the live-row refill cap; more matching memories may exist.",
+      )
+    }
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
+    const cappedFooter = paginationFooter(undefined, { truncated: searchCapped })
 
     if (results.length === 0) {
       return {
-        content: [{ type: "text", text: `No memories found for: "${args.query}"${warn}` }],
+        content: [
+          {
+            type: "text",
+            text: `No memories found for: "${args.query}"${warn}${cappedFooter}`,
+          },
+        ],
       }
     }
 
@@ -1810,7 +1830,7 @@ export async function handleSearch(
       content: [
         {
           type: "text",
-          text: `Found ${results.length} memories for "${args.query}":\n\n${text}${bodiesFooter}${explainFooter}${warn}`,
+          text: `Found ${results.length} memories for "${args.query}":\n\n${text}${bodiesFooter}${explainFooter}${warn}${cappedFooter}`,
         },
       ],
     }

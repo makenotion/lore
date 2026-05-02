@@ -207,6 +207,10 @@ export interface WakeUpServices {
   }
   decisions: {
     list(opts?: ListDecisionsOpts): Promise<{ items: DecisionSummary[]; nextCursor?: string }>
+    queryOverdueWindow?(opts?: {
+      projectId?: string
+      limit?: number
+    }): Promise<{ items: DecisionSummary[]; capped: boolean }>
     queryOverdue(opts?: {
       projectId?: string
       limit?: number
@@ -300,6 +304,8 @@ export interface WakeUpData {
   proposedDecisions: DecisionSummary[]
   /** Active decisions past their review-by date (project-scoped). */
   overdueDecisions: DecisionSummary[]
+  /** True when the overdue-decision scan hit its safety cap. */
+  overdueDecisionsCapped: boolean
   /**
    * Memories relevance-matched against the entities surfaced in active
    * tasks via one semantic search (Notion's vector index scores both
@@ -455,7 +461,7 @@ export async function loadWakeUpData(
     { items: latestDigestList },
     { items: knowledgeFacts },
     { items: proposedDecisions },
-    overdueDecisions,
+    overdueDecisionWindow,
     { items: tasks },
     taskCandidates,
     staleConfidence,
@@ -464,7 +470,7 @@ export async function loadWakeUpData(
     { items: Memory[] },
     { items: Fact[]; hasMore: boolean },
     { items: DecisionSummary[] },
-    DecisionSummary[],
+    { items: DecisionSummary[]; capped: boolean },
     { items: TaskSummary[] },
     Memory[],
     Memory[],
@@ -503,8 +509,8 @@ export async function loadWakeUpData(
       ? services.decisions.list({ projectId, status: "proposed", limit: 20 })
       : Promise.resolve({ items: [] as DecisionSummary[] }),
     projectId && includeDecisions
-      ? services.decisions.queryOverdue({ projectId })
-      : Promise.resolve([] as DecisionSummary[]),
+      ? queryOverdueDecisionWindow(services.decisions, { projectId })
+      : Promise.resolve({ items: [] as DecisionSummary[], capped: false }),
     projectId && tasksFetchLimit > 0
       ? services.tasks.list({
           projectId,
@@ -522,6 +528,7 @@ export async function loadWakeUpData(
       : Promise.resolve([] as Memory[]),
     staleConfidenceQuery,
   ])
+  const overdueDecisions = overdueDecisionWindow.items
 
   const latestDigest = latestDigestList[0] ?? null
   const digest = isFreshDigest(latestDigest, freshnessDays, now) ? latestDigest : null
@@ -621,11 +628,22 @@ export async function loadWakeUpData(
     knowledgeFacts,
     proposedDecisions,
     overdueDecisions,
+    overdueDecisionsCapped: overdueDecisionWindow.capped,
     relatedMemories,
     tasks,
     taskMemories,
     staleConfidence,
   }
+}
+
+async function queryOverdueDecisionWindow(
+  decisions: WakeUpServices["decisions"],
+  opts: { projectId?: string },
+): Promise<{ items: DecisionSummary[]; capped: boolean }> {
+  if (typeof decisions.queryOverdueWindow === "function") {
+    return decisions.queryOverdueWindow(opts)
+  }
+  return { items: await decisions.queryOverdue(opts), capped: false }
 }
 
 /**

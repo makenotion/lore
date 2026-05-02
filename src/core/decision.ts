@@ -29,12 +29,21 @@ import type {
 import { buildMemoryProps } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
-import { isFullPage } from "../notion/extractors.js"
+import {
+  collectLivePages,
+  LIVE_PAGE_REFILL_MAX_ROWS,
+  warnLivePageCapFired,
+} from "../notion/live-pages.js"
 import { pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
 
 /** Days to push `Review By` forward when `reviewCompleted` is called with no explicit date. */
 const DEFAULT_REVIEW_EXTENSION_DAYS = 90
+
+export interface OverdueDecisionWindow {
+  items: DecisionSummary[]
+  capped: boolean
+}
 
 /** Decision id → Decision cache. Shorter TTL than the project/topic
  *  name caches because decisions mutate (supersession, review-completion)
@@ -194,15 +203,16 @@ export class DecisionService {
 
   /**
    * List decisions matching the given filters. Returns summaries with no
-   * markdown body — O(1) Notion API calls regardless of result count. This is
-   * the index tier that decision-path tools
+   * markdown body. Archived rows are filtered client-side; when they occupy
+   * result slots, the method keeps paginating until `limit` live rows are
+   * collected or Notion is exhausted. This is the index tier that decision-path tools
    * (`lore-decision action='list'`, `lore-context action='wake-up'`'s
    * decisions section, `lore-query action='audit'`'s overdue decisions)
    * rely on for agent-ingestion performance.
    */
   async list(
     opts?: ListDecisionsOpts
-  ): Promise<{ items: DecisionSummary[]; nextCursor?: string }> {
+  ): Promise<{ items: DecisionSummary[]; nextCursor?: string; capped: boolean }> {
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "decision" } },
     ]
@@ -234,21 +244,31 @@ export class DecisionService {
 
     const filter = filters.length > 1 ? { and: filters } : filters[0]
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
-      page_size: Math.min(opts?.limit ?? 20, 100),
-      start_cursor: opts?.startCursor,
+    const limit = Math.min(opts?.limit ?? 20, 100)
+    if (limit <= 0) {
+      return { items: [], nextCursor: opts?.startCursor, capped: false }
+    }
+
+    const result = await collectLivePages({
+      limit,
+      startCursor: opts?.startCursor,
+      source: "DecisionService.list",
+      query: ({ page_size, start_cursor }) =>
+        this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: filter as QueryDataSourceParameters["filter"],
+          sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+          page_size,
+          start_cursor,
+        }),
     })
 
-    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-    const nextCursor =
-      response.has_more && response.next_cursor ? response.next_cursor : undefined
-
     return {
-      items: pages.map((page) => toDecisionSummary(pageToMemory(page, "") as Decision)),
-      nextCursor,
+      items: result.pages.map((page) =>
+        toDecisionSummary(pageToMemory(page, "") as Decision),
+      ),
+      nextCursor: result.nextCursor,
+      capped: result.capped,
     }
   }
 
@@ -337,18 +357,22 @@ export class DecisionService {
    * state (proposed or accepted). Superseded/deprecated/rejected decisions
    * are excluded — they don't need review attention.
    *
-   * Paginates to exhaustion (or to `limit`). A single-shot query against
-   * Notion silently truncates at the default 100-row page; on a vault
-   * with more than 100 overdue decisions, the rows beyond the first page
-   * never come back. Sort order is `Review By asc`, so truncation drops
-   * the *least* overdue tail — but the gap is real: an operator who runs
-   * `lore-query action='audit'` and counts the rendered rows would
-   * believe that is the complete set.
+   * Uses the shared live-row refill cap. Callers that need to tell users the
+   * scan hit that cap should use `queryOverdueWindow`; this compatibility
+   * wrapper returns only the visible summaries.
    */
   async queryOverdue(opts?: {
     projectId?: string
     limit?: number
   }): Promise<DecisionSummary[]> {
+    const { items } = await this.queryOverdueWindow(opts)
+    return items
+  }
+
+  async queryOverdueWindow(opts?: {
+    projectId?: string
+    limit?: number
+  }): Promise<OverdueDecisionWindow> {
     const today = todayISO()
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "decision" } },
@@ -364,26 +388,35 @@ export class DecisionService {
       filters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
-    const limit = opts?.limit
-    const items: DecisionSummary[] = []
-    let cursor: string | undefined = undefined
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: { and: filters } as QueryDataSourceParameters["filter"],
-        sorts: [{ property: "Review By", direction: "ascending" }],
-        page_size: Math.min(limit ?? 100, 100),
-        start_cursor: cursor,
+    const limit = opts?.limit ?? LIVE_PAGE_REFILL_MAX_ROWS
+    if (limit <= 0) return { items: [], capped: false }
+    const result = await collectLivePages({
+      limit,
+      source: "DecisionService.queryOverdue",
+      query: ({ page_size, start_cursor }) =>
+        this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: { and: filters } as QueryDataSourceParameters["filter"],
+          sorts: [{ property: "Review By", direction: "ascending" }],
+          page_size,
+          start_cursor,
+        }),
+    })
+    if (result.capped) {
+      warnLivePageCapFired({
+        source: "DecisionService.queryOverdue",
+        pages: result.pageCount,
+        accumulated: result.pages.length,
+        limit,
       })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        items.push(toDecisionSummary(pageToMemory(page, "") as Decision))
-        if (limit !== undefined && items.length >= limit) break
-      }
-      if (limit !== undefined && items.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
-    } while (cursor)
+    }
 
-    return items
+    return {
+      items: result.pages.map((page) =>
+        toDecisionSummary(pageToMemory(page, "") as Decision),
+      ),
+      capped: result.capped,
+    }
   }
 
   /** Reset the in-process decision cache. Used by tests and by the

@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import {
   formatDispatchError,
+  paginationFooter,
   toolError,
   debugLogPartialFailures,
   debugLogContradictionFailure,
@@ -953,15 +954,45 @@ export async function handleAudit(
     }
 
     const warnings: string[] = []
-    const [overdueFacts, overdueDecisions, overdueTasks] = await Promise.all([
+    const overdueDecisionQuery =
+      typeof services.decisions.queryOverdueWindow === "function"
+        ? services.decisions.queryOverdueWindow({ projectId })
+        : services.decisions
+            .queryOverdue({ projectId })
+            .then((items) => ({ items, capped: false }))
+    const overdueTaskQuery =
+      typeof services.tasks.queryOverdueWindow === "function"
+        ? services.tasks.queryOverdueWindow({ projectId })
+        : services.tasks
+            .queryOverdue({ projectId })
+            .then((items) => ({ items, capped: false }))
+
+    let taskLookupFailed = false
+    const [overdueFacts, overdueDecisionWindow, overdueTaskWindow] = await Promise.all([
       services.facts.queryOverdue({ projectId }),
-      services.decisions.queryOverdue({ projectId }),
-      services.tasks.queryOverdue({ projectId }).catch((err) => {
+      overdueDecisionQuery,
+      overdueTaskQuery.catch((err) => {
+        taskLookupFailed = true
         const message = err instanceof Error ? err.message : String(err)
         warnings.push(`Tasks lookup failed: ${message}`)
-        return [] as TaskSummary[]
+        return { items: [] as TaskSummary[], capped: false }
       }),
     ])
+    const overdueDecisions = overdueDecisionWindow.items
+    const overdueTasks = overdueTaskWindow.items
+    if (overdueDecisionWindow.capped) {
+      warnings.push(
+        "Overdue decision scan reached the live-row refill cap; more overdue decisions may exist.",
+      )
+    }
+    if (overdueTaskWindow.capped) {
+      warnings.push(
+        "Overdue task scan reached the live-row refill cap; more overdue tasks may exist.",
+      )
+    }
+    const cappedFooter = paginationFooter(undefined, {
+      truncated: overdueDecisionWindow.capped || overdueTaskWindow.capped,
+    })
 
     const formatWarnings = () =>
       warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
@@ -972,11 +1003,16 @@ export async function handleAudit(
       overdueTasks.length === 0
     ) {
       const text =
-        warnings.length > 0
+        taskLookupFailed
           ? "No overdue facts or decisions found. Overdue tasks could not be checked."
           : "No overdue facts, decisions, or tasks found."
       return {
-        content: [{ type: "text", text: text + formatWarnings() }],
+        content: [
+          {
+            type: "text",
+            text: text + formatWarnings() + cappedFooter,
+          },
+        ],
       }
     }
 
@@ -1097,7 +1133,12 @@ export async function handleAudit(
       content: [
         {
           type: "text",
-          text: sections.join("\n\n") + "\n" + actions.join("\n") + formatWarnings(),
+          text:
+            sections.join("\n\n") +
+            "\n" +
+            actions.join("\n") +
+            formatWarnings() +
+            cappedFooter,
         },
       ],
     }

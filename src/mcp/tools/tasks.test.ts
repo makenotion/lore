@@ -870,6 +870,61 @@ describe("lore-tasks", () => {
     expect(text).toContain("t-active")
   })
 
+  it("threads startCursor and marks capped task-list pages as truncated", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [makeTask("t-capped", { reviewBy: "2099-01-01", entity: "PR-1" })],
+      nextCursor: "keep-paging",
+      capped: true,
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "list",
+      startCursor: "resume-here",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ startCursor: "resume-here" }),
+    )
+    expect(text).toContain("t-capped")
+    expect(text).toMatch(
+      /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
+    )
+  })
+
+  it("does not emit a nextCursor when per-section hiding leaves fetched rows unrendered", async () => {
+    const svc = services({
+      context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
+    })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-1", { reviewBy: "2026-01-01", entity: "PR-1" }),
+        makeTask("t-2", { reviewBy: "2026-01-02", entity: "PR-2" }),
+        makeTask("t-3", { reviewBy: "2026-01-03", entity: "PR-3" }),
+      ],
+      nextCursor: "after-hidden-row",
+      capped: false,
+    })
+
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", limit: 2 } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("hiding 1")
+    expect(text).not.toContain("after-hidden-row")
+    expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
+  })
+
   it("renders 'No tasks found' when the listing is empty", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },

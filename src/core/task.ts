@@ -43,7 +43,12 @@ import { buildMemoryProps } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
-import { isFullPage } from "../notion/extractors.js"
+import { isLiveFullPage } from "../notion/extractors.js"
+import {
+  collectLivePages,
+  LIVE_PAGE_REFILL_MAX_ROWS,
+  warnLivePageCapFired,
+} from "../notion/live-pages.js"
 import { pageToMemory } from "./memory.js"
 
 /**
@@ -104,6 +109,11 @@ export class TaskCreatePartialFailureError extends Error {
     this.bodyWriteError = details.bodyWriteError
     this.cleanupError = details.cleanupError
   }
+}
+
+export interface OverdueTaskWindow {
+  items: TaskSummary[]
+  capped: boolean
 }
 
 export class TaskService {
@@ -241,13 +251,15 @@ export class TaskService {
 
   /**
    * List tasks matching the given filters. Returns summaries with no
-   * markdown body — single Notion page query, regardless of result
-   * count. Defaults to `ACTIVE_TASK_STATES` so callers asking for "the
-   * task list" don't accidentally see closed work.
+   * markdown body. Defaults to `ACTIVE_TASK_STATES` so callers asking
+   * for "the task list" don't accidentally see closed work. Archived
+   * rows are filtered client-side; when they consume a Notion page
+   * slot, the method keeps paginating until `limit` live rows are
+   * collected or Notion is exhausted.
    */
   async list(
     opts?: ListTasksOpts
-  ): Promise<{ items: TaskSummary[]; nextCursor?: string }> {
+  ): Promise<{ items: TaskSummary[]; nextCursor?: string; capped: boolean }> {
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "task" } },
     ]
@@ -297,27 +309,35 @@ export class TaskService {
 
     const filter = filters.length > 1 ? { and: filters } : filters[0]
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-      // Sort by `Review By` ascending so most-overdue / soonest-due rows
-      // float to the top — same default `lore-query action='audit'`
-      // uses, and the right answer for a triage list.
-      sorts: [
-        { property: "Review By", direction: "ascending" },
-        { timestamp: "created_time", direction: "descending" },
-      ],
-      page_size: Math.min(opts?.limit ?? 20, 100),
-      start_cursor: opts?.startCursor,
+    const limit = Math.min(opts?.limit ?? 20, 100)
+    if (limit <= 0) {
+      return { items: [], nextCursor: opts?.startCursor, capped: false }
+    }
+
+    const result = await collectLivePages({
+      limit,
+      startCursor: opts?.startCursor,
+      source: "TaskService.list",
+      query: ({ page_size, start_cursor }) =>
+        this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: filter as QueryDataSourceParameters["filter"],
+          // Sort by `Review By` ascending so most-overdue / soonest-due rows
+          // float to the top — same default `lore-query action='audit'`
+          // uses, and the right answer for a triage list.
+          sorts: [
+            { property: "Review By", direction: "ascending" },
+            { timestamp: "created_time", direction: "descending" },
+          ],
+          page_size,
+          start_cursor,
+        }),
     })
 
-    const pages = livePages(response.results)
-    const nextCursor =
-      response.has_more && response.next_cursor ? response.next_cursor : undefined
-
     return {
-      items: pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task)),
-      nextCursor,
+      items: result.pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task)),
+      nextCursor: result.nextCursor,
+      capped: result.capped,
     }
   }
 
@@ -566,7 +586,7 @@ export class TaskService {
           page_size: 100,
           start_cursor: cursor,
         })
-        total += livePages(response.results).length
+        total += response.results.filter(isLiveFullPage).length
         cursor =
           response.has_more && response.next_cursor
             ? response.next_cursor
@@ -580,18 +600,23 @@ export class TaskService {
   }
 
   /**
-   * Active tasks past their due date. Mirrors
-   * `DecisionService.queryOverdue` so wake-up / `lore-query action='audit'`
-   * can compose all three sources without per-service branching.
-   *
-   * Paginates to exhaustion (or to `limit`). A single-shot query against
-   * Notion silently truncates at the default 100-row page, which would make
-   * `lore-query action='audit'` under-report overdue tracked work.
+   * Active tasks past their due date. Uses the shared live-row refill cap so
+   * archive-heavy vaults do not walk Notion unboundedly. Callers that need to
+   * tell users the scan hit that cap should use `queryOverdueWindow`; this
+   * compatibility wrapper returns only the visible summaries.
    */
   async queryOverdue(opts?: {
     projectId?: string
     limit?: number
   }): Promise<TaskSummary[]> {
+    const { items } = await this.queryOverdueWindow(opts)
+    return items
+  }
+
+  async queryOverdueWindow(opts?: {
+    projectId?: string
+    limit?: number
+  }): Promise<OverdueTaskWindow> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
       { property: "Kind", select: { equals: "task" } },
@@ -607,34 +632,34 @@ export class TaskService {
       filters.push(projectOrUnscopedFilter(opts.projectId))
     }
 
-    const limit = opts?.limit
-    const items: TaskSummary[] = []
-    let cursor: string | undefined = undefined
-    do {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: { and: filters } as QueryDataSourceParameters["filter"],
-        sorts: [{ property: "Review By", direction: "ascending" }],
-        page_size: Math.min(limit ?? 100, 100),
-        start_cursor: cursor,
+    const limit = opts?.limit ?? LIVE_PAGE_REFILL_MAX_ROWS
+    if (limit <= 0) return { items: [], capped: false }
+    const result = await collectLivePages({
+      limit,
+      source: "TaskService.queryOverdue",
+      query: ({ page_size, start_cursor }) =>
+        this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: { and: filters } as QueryDataSourceParameters["filter"],
+          sorts: [{ property: "Review By", direction: "ascending" }],
+          page_size,
+          start_cursor,
+        }),
+    })
+    if (result.capped) {
+      warnLivePageCapFired({
+        source: "TaskService.queryOverdue",
+        pages: result.pageCount,
+        accumulated: result.pages.length,
+        limit,
       })
+    }
 
-      for (const page of livePages(response.results)) {
-        items.push(toTaskSummary(pageToMemory(page, "") as Task))
-        if (limit !== undefined && items.length >= limit) break
-      }
-      if (limit !== undefined && items.length >= limit) break
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
-    } while (cursor)
-
-    return items
+    return {
+      items: result.pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task)),
+      capped: result.capped,
+    }
   }
-}
-
-function livePages(results: Array<Parameters<typeof isFullPage>[0]>): PageObjectResponse[] {
-  return (results.filter(isFullPage) as PageObjectResponse[]).filter(
-    (page) => !page.archived,
-  )
 }
 
 function toTaskSummary(task: Task): TaskSummary {

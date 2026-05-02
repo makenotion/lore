@@ -365,7 +365,7 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
       projectId = services.context.project.id
     }
 
-    const { items: decisions, nextCursor } = await services.decisions.list({
+    const { items: decisions, nextCursor, capped } = await services.decisions.list({
       projectId,
       status: args.status as DecisionStatus | undefined,
       reviewBefore: args.reviewBefore,
@@ -379,7 +379,10 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
         : "No decisions found."
       return {
         content: [
-          { type: "text", text: `${header}${paginationFooter(nextCursor)}` },
+          {
+            type: "text",
+            text: `${header}${paginationFooter(nextCursor, { truncated: capped })}`,
+          },
         ],
       }
     }
@@ -409,7 +412,10 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
 
     return {
       content: [
-        { type: "text", text: `${lines.join("\n")}${paginationFooter(nextCursor)}` },
+        {
+          type: "text",
+          text: `${lines.join("\n")}${paginationFooter(nextCursor, { truncated: capped })}`,
+        },
       ],
     }
   } catch (err) {

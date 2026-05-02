@@ -37,10 +37,12 @@ function taskPage(
     blockedBy?: string
     entity?: string
     reviewBy?: string
+    archived?: boolean
   }
 ): PageObjectResponse {
   return makePage({
     id,
+    archived: overrides?.archived ?? false,
     properties: {
       Title: { type: "title", title: [{ plain_text: overrides?.title ?? `Task ${id}` }] } as unknown,
       Kind: { type: "select", select: { name: "task" } } as unknown,
@@ -412,6 +414,87 @@ describe("TaskService.list", () => {
     const { items } = await service.list({})
 
     expect(items.map((item) => item.id)).toEqual(["live-task"])
+  })
+
+  it("filters archived rows and refills the requested limit across pages", async () => {
+    const client = createMockClient()
+    const query = client.dataSources.query as ReturnType<typeof vi.fn>
+    query.mockReset()
+    query
+      .mockResolvedValueOnce({
+        results: [
+          taskPage("archived-before", { archived: true }),
+          taskPage("live-1"),
+          taskPage("archived-between", { archived: true }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          taskPage("live-2"),
+          taskPage("archived-after", { archived: true }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        results: [taskPage("live-3")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TaskService(client, DB)
+
+    const { items, nextCursor } = await service.list({ limit: 3 })
+
+    expect(items.map((item) => item.id)).toEqual(["live-1", "live-2", "live-3"])
+    expect(nextCursor).toBeUndefined()
+    expect(query).toHaveBeenCalledTimes(3)
+    expect(query.mock.calls[1]![0].start_cursor).toBe("cursor-1")
+    expect(query.mock.calls[2]![0].start_cursor).toBe("cursor-2")
+    expect(query.mock.calls[0]![0].page_size).toBe(100)
+    expect(query.mock.calls[1]![0].page_size).toBe(100)
+    expect(query.mock.calls[2]![0].page_size).toBe(100)
+  })
+
+  it("returns an opaque refill cursor instead of skipping live rows from a partially consumed page", async () => {
+    const client = createMockClient()
+    const query = client.dataSources.query as ReturnType<typeof vi.fn>
+    query.mockReset()
+    query.mockImplementation(({ start_cursor }: { start_cursor?: string }) => {
+      if (start_cursor === undefined) {
+        return Promise.resolve({
+          results: [
+            taskPage("live-1"),
+            taskPage("live-2"),
+            taskPage("live-3"),
+            taskPage("live-4"),
+          ],
+          has_more: true,
+          next_cursor: "notion-cursor-after-current-page",
+        })
+      }
+      return Promise.resolve({
+        results: [taskPage("live-5")],
+        has_more: false,
+        next_cursor: null,
+      })
+    })
+    const service = new TaskService(client, DB)
+
+    const first = await service.list({ limit: 2 })
+    const second = await service.list({
+      limit: 2,
+      startCursor: first.nextCursor,
+    })
+
+    expect(first.items.map((item) => item.id)).toEqual(["live-1", "live-2"])
+    expect(first.nextCursor).toBeDefined()
+    expect(first.nextCursor).not.toBe("notion-cursor-after-current-page")
+    expect(second.items.map((item) => item.id)).toEqual(["live-3", "live-4"])
+    expect(second.nextCursor).toBe("notion-cursor-after-current-page")
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(query.mock.calls[1]![0].start_cursor).toBeUndefined()
   })
 })
 
@@ -863,7 +946,7 @@ describe("TaskService.queryOverdue", () => {
     expect(results[0].id).toBe("t-live")
   })
 
-  it("clamps page_size to min(limit, 100) when limit is small", async () => {
+  it("uses page_size 100 even when limit is small", async () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
@@ -871,7 +954,7 @@ describe("TaskService.queryOverdue", () => {
 
     const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
       .calls[0][0]
-    expect(queryArgs.page_size).toBe(5)
+    expect(queryArgs.page_size).toBe(100)
   })
 
   it("clamps page_size to Notion's 100-row ceiling when no limit is supplied", async () => {
@@ -1108,6 +1191,20 @@ describe("TaskService.countClosedSince", () => {
     expect(filter).not.toContain('"Task State","select":{"equals":"blocked"}')
   })
 
+  it("does not count archived terminal tasks as closed", async () => {
+    const client = createMockClient({
+      queryResults: [
+        taskPage("closed-live", { state: "done" }),
+        taskPage("closed-archived", { state: "done", archived: true }),
+      ],
+    })
+    const service = new TaskService(client, DB)
+
+    const total = await service.countClosedSince("2026-03-30")
+
+    expect(total).toBe(1)
+  })
+
   it("returns null when the column doesn't exist (pre-#07 vault)", async () => {
     // Notion raises a `validation_error` whose message names the
     // missing property; `isMissingPropertyError` matches it and the
@@ -1179,6 +1276,81 @@ describe("TaskService.queryOverdue", () => {
     const results = await service.queryOverdue()
 
     expect(results.map((item) => item.id)).toEqual(["live-overdue"])
+  })
+
+  it("filters archived rows while paginating overdue tasks", async () => {
+    const client = createMockClient()
+    const query = client.dataSources.query as ReturnType<typeof vi.fn>
+    query.mockReset()
+    query
+      .mockResolvedValueOnce({
+        results: [
+          taskPage("archived-before", {
+            archived: true,
+            reviewBy: "2026-01-01",
+          }),
+          taskPage("live-1", { reviewBy: "2026-01-01" }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          taskPage("archived-between", {
+            archived: true,
+            reviewBy: "2026-01-02",
+          }),
+          taskPage("live-2", { reviewBy: "2026-01-02" }),
+          taskPage("archived-after", {
+            archived: true,
+            reviewBy: "2026-01-03",
+          }),
+        ],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new TaskService(client, DB)
+
+    const results = await service.queryOverdue()
+
+    expect(results.map((item) => item.id)).toEqual(["live-1", "live-2"])
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(query.mock.calls[1]![0].start_cursor).toBe("cursor-1")
+  })
+
+  it("caps the default overdue-task window and exposes capped metadata", async () => {
+    const responses = Array.from({ length: 6 }, (_, i) => ({
+      results: [taskPage(`task-${i}`, { reviewBy: "2026-01-01" })],
+      has_more: i < 5,
+      next_cursor: i < 5 ? `cursor-${i + 1}` : null,
+    }))
+    let i = 0
+    const client = createMockClient()
+    const query = client.dataSources.query as ReturnType<typeof vi.fn>
+    query.mockReset()
+    query.mockImplementation(() => {
+      const response = responses[Math.min(i, responses.length - 1)]
+      i += 1
+      return Promise.resolve(response)
+    })
+    const service = new TaskService(client, DB)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    try {
+      const result = await service.queryOverdueWindow()
+
+      expect(result.items.map((item) => item.id)).toEqual([
+        "task-0",
+        "task-1",
+        "task-2",
+        "task-3",
+        "task-4",
+      ])
+      expect(result.capped).toBe(true)
+      expect(query).toHaveBeenCalledTimes(5)
+    } finally {
+      stderrSpy.mockRestore()
+    }
   })
 })
 

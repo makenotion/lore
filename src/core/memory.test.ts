@@ -3503,6 +3503,36 @@ describe("MemoryService.search — contains mode", () => {
     expect(args["data_source_id"]).toBe(db.dataSourceId)
   })
 
+  it("surfaces the live-page refill cap through searchWithExplain", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [buildContainsPage("archived", "archived hit", { archived: true })],
+      has_more: true,
+      next_cursor: "more-archived",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    try {
+      const result = await service.searchWithExplain({
+        query: "archived",
+        mode: "contains",
+        limit: 3,
+        includeContent: false,
+      })
+
+      expect(result.memories).toEqual([])
+      expect(result.capped).toBe(true)
+      expect(querySpy).toHaveBeenCalledTimes(5)
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
   it("filters by Title OR Keywords OR Synopsis contains for non-empty queries", async () => {
     const { client, querySpy } = makeQueryClient([])
     const service = new MemoryService(client, db)
@@ -3604,7 +3634,7 @@ describe("MemoryService.search — contains mode", () => {
     ])
   })
 
-  it("sorts by last_edited_time desc and applies the requested limit as page_size", async () => {
+  it("sorts by last_edited_time desc and requests a full page for refill efficiency", async () => {
     const { client, querySpy } = makeQueryClient([])
     const service = new MemoryService(client, db)
 
@@ -3614,7 +3644,7 @@ describe("MemoryService.search — contains mode", () => {
     expect(args["sorts"]).toEqual([
       { timestamp: "last_edited_time", direction: "descending" },
     ])
-    expect(args["page_size"]).toBe(7)
+    expect(args["page_size"]).toBe(100)
   })
 
   it("honors includeContent: false on the materialization step", async () => {
@@ -3653,6 +3683,56 @@ describe("MemoryService.search — contains mode", () => {
     })
 
     expect(results.map((m) => m.id)).toEqual(["c-live"])
+  })
+
+  it("refills contains-mode results past archived rows across pages", async () => {
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [
+          buildContainsPage("c-archived-before", "archived before", { archived: true }),
+          buildContainsPage("c-live-1", "live one"),
+          buildContainsPage("c-archived-between", "archived between", {
+            archived: true,
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          buildContainsPage("c-live-2", "live two"),
+          buildContainsPage("c-archived-after", "archived after", { archived: true }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        results: [buildContainsPage("c-live-3", "live three")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = {
+      dataSources: { query: querySpy },
+      search: vi.fn(async () => ({ results: [] })),
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "row",
+      mode: "contains",
+      limit: 3,
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["c-live-1", "c-live-2", "c-live-3"])
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    expect(querySpy.mock.calls[1][0].start_cursor).toBe("cursor-1")
+    expect(querySpy.mock.calls[2][0].start_cursor).toBe("cursor-2")
+    expect(querySpy.mock.calls[0][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[1][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[2][0].page_size).toBe(100)
   })
 
   it("text-clause OR composes with surrounding kind/tags filters under `and`", async () => {
@@ -6068,7 +6148,10 @@ describe("MemoryService.list — pagination", () => {
     })
     const service = new MemoryService(client, db)
 
-    const { items, nextCursor } = await service.list({ includeContent: false })
+    const { items, nextCursor } = await service.list({
+      limit: 1,
+      includeContent: false,
+    })
 
     expect(items).toHaveLength(1)
     expect(nextCursor).toBe("notion-cursor-abc")
@@ -6178,22 +6261,171 @@ describe("MemoryService.list — archived filter", () => {
     expect(retrieveMarkdownSpy).toHaveBeenCalledWith({ page_id: "mem-live" })
   })
 
-  it("preserves nextCursor when every row on the page is archived", async () => {
-    // The cursor reflects Notion's pre-filter pagination: a page that
-    // loses every row to the archived filter must still surface a
-    // cursor so callers can continue past it. Recomputing the cursor
-    // from the post-filter list would mis-signal end-of-data.
-    const { client } = createClient({
-      results: [buildListPage("mem-archived", "archived one", { archived: true })],
-      has_more: true,
-      next_cursor: "notion-cursor-after-archived-page",
-    })
+  it("continues past an all-archived page before returning live rows", async () => {
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [buildListPage("mem-archived", "archived one", { archived: true })],
+        has_more: true,
+        next_cursor: "notion-cursor-after-archived-page",
+      })
+      .mockResolvedValueOnce({
+        results: [buildListPage("mem-live", "live one")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })) },
+    } as unknown as Client
     const service = new MemoryService(client, db)
 
-    const { items, nextCursor } = await service.list({ includeContent: false })
+    const { items, nextCursor } = await service.list({
+      limit: 1,
+      includeContent: false,
+    })
 
-    expect(items).toHaveLength(0)
-    expect(nextCursor).toBe("notion-cursor-after-archived-page")
+    expect(items.map((item) => item.id)).toEqual(["mem-live"])
+    expect(nextCursor).toBeUndefined()
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(querySpy.mock.calls[1][0].start_cursor).toBe(
+      "notion-cursor-after-archived-page",
+    )
+  })
+
+  it("refills list results past archived rows across pages", async () => {
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [
+          buildListPage("mem-archived-before", "archived before", { archived: true }),
+          buildListPage("mem-live-1", "live one"),
+          buildListPage("mem-archived-between", "archived between", {
+            archived: true,
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          buildListPage("mem-live-2", "live two"),
+          buildListPage("mem-archived-after", "archived after", { archived: true }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        results: [buildListPage("mem-live-3", "live three")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { items, nextCursor } = await service.list({
+      limit: 3,
+      includeContent: false,
+    })
+
+    expect(items.map((item) => item.id)).toEqual([
+      "mem-live-1",
+      "mem-live-2",
+      "mem-live-3",
+    ])
+    expect(nextCursor).toBeUndefined()
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    expect(querySpy.mock.calls[1][0].start_cursor).toBe("cursor-1")
+    expect(querySpy.mock.calls[2][0].start_cursor).toBe("cursor-2")
+    expect(querySpy.mock.calls[0][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[1][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[2][0].page_size).toBe(100)
+  })
+
+  it("returns an opaque refill cursor instead of skipping live rows from a partially consumed page", async () => {
+    const querySpy = vi.fn(async ({ start_cursor }: Record<string, unknown>) => {
+      if (start_cursor === undefined) {
+        return {
+          results: [
+            buildListPage("mem-live-1", "live one"),
+            buildListPage("mem-live-2", "live two"),
+            buildListPage("mem-live-3", "live three"),
+            buildListPage("mem-live-4", "live four"),
+          ],
+          has_more: true,
+          next_cursor: "notion-cursor-after-current-page",
+        }
+      }
+      return {
+        results: [buildListPage("mem-live-5", "live five")],
+        has_more: false,
+        next_cursor: null,
+      }
+    })
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const first = await service.list({ limit: 2, includeContent: false })
+    const second = await service.list({
+      limit: 2,
+      includeContent: false,
+      startCursor: first.nextCursor,
+    })
+
+    expect(first.items.map((item) => item.id)).toEqual(["mem-live-1", "mem-live-2"])
+    expect(first.nextCursor).toBeDefined()
+    expect(first.nextCursor).not.toBe("notion-cursor-after-current-page")
+    expect(second.items.map((item) => item.id)).toEqual(["mem-live-3", "mem-live-4"])
+    expect(second.nextCursor).toBe("notion-cursor-after-current-page")
+    expect(querySpy).toHaveBeenCalledTimes(2)
+    expect(querySpy.mock.calls[1][0].start_cursor).toBeUndefined()
+  })
+
+  it("bounds refill walks and logs when the cap fires before saturation", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [buildListPage("mem-archived", "archived", { archived: true })],
+      has_more: true,
+      next_cursor: "more-archived",
+    }))
+    const client = {
+      dataSources: { query: querySpy },
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "body" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      const { items, nextCursor, capped } = await service.list({
+        limit: 3,
+        includeContent: false,
+      })
+
+      expect(items).toEqual([])
+      expect(nextCursor).toBe("more-archived")
+      expect(capped).toBe(true)
+      expect(querySpy).toHaveBeenCalledTimes(5)
+      const lines = stderrSpy.mock.calls.map((call) => String(call[0]))
+      expect(lines.some((line) => line.includes("live-page-refill-cap-fired"))).toBe(
+        true,
+      )
+      expect(lines.some((line) => line.includes("source=MemoryService.list"))).toBe(
+        true,
+      )
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
   })
 })
 
@@ -7995,13 +8227,13 @@ describe("MemoryService.queryStaleConfidence", () => {
     ])
   })
 
-  it("applies the requested limit as page_size", async () => {
+  it("requests a full page for refill efficiency", async () => {
     const { client, querySpy } = makeQueryClient([])
     const service = new MemoryService(client, db)
 
     await service.queryStaleConfidence({ limit: 5, today: TODAY })
 
-    expect(querySpy.mock.calls[0][0]["page_size"]).toBe(5)
+    expect(querySpy.mock.calls[0][0]["page_size"]).toBe(100)
   })
 
   it("filters out archived rows client-side", async () => {
@@ -8027,6 +8259,68 @@ describe("MemoryService.queryStaleConfidence", () => {
     const memories = await service.queryStaleConfidence({ limit: 5, today: TODAY })
 
     expect(memories.map((m) => m.id)).toEqual(["live-1"])
+  })
+
+  it("refills stale-confidence results past archived rows across pages", async () => {
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        object: "list" as const,
+        results: [
+          buildStalePage("archived-before", {
+            confidenceScore: 0.1,
+            archived: true,
+          }),
+          buildStalePage("live-1", { confidenceScore: 0.2 }),
+          buildStalePage("archived-between", {
+            confidenceScore: 0.1,
+            archived: true,
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+        type: "page_or_database" as const,
+        page_or_database: {},
+      })
+      .mockResolvedValueOnce({
+        object: "list" as const,
+        results: [
+          buildStalePage("live-2", { confidenceScore: 0.3 }),
+          buildStalePage("archived-after", {
+            confidenceScore: 0.4,
+            archived: true,
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+        type: "page_or_database" as const,
+        page_or_database: {},
+      })
+      .mockResolvedValueOnce({
+        object: "list" as const,
+        results: [buildStalePage("live-3", { confidenceScore: 0.45 })],
+        has_more: false,
+        next_cursor: null,
+        type: "page_or_database" as const,
+        page_or_database: {},
+      })
+    const client = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memories = await service.queryStaleConfidence({
+      limit: 3,
+      today: TODAY,
+    })
+
+    expect(memories.map((m) => m.id)).toEqual(["live-1", "live-2", "live-3"])
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    expect(querySpy.mock.calls[1][0].start_cursor).toBe("cursor-1")
+    expect(querySpy.mock.calls[2][0].start_cursor).toBe("cursor-2")
+    expect(querySpy.mock.calls[0][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[1][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[2][0].page_size).toBe(100)
   })
 
   it("degrades to [] on `validation_error` from a pre-migration vault missing the Confidence Score column", async () => {

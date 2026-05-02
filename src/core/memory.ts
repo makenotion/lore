@@ -68,6 +68,7 @@ import {
 import { todayUtc } from "./task.js"
 import {
   isFullPage,
+  isLiveFullPage,
   extractTitle,
   extractRichText,
   extractSelect,
@@ -76,6 +77,7 @@ import {
   extractDate,
   extractNumber,
 } from "../notion/extractors.js"
+import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  *  30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -190,6 +192,11 @@ type HybridTraceEntry = {
   semanticRank: number | null
   rrfScore: number | null
   confidenceFactor: number
+}
+
+type SearchPagesResult = {
+  pages: PageObjectResponse[]
+  capped: boolean
 }
 
 /**
@@ -1082,14 +1089,13 @@ export class MemoryService {
         start_cursor: cursor,
       })
       for (const r of page.results) {
-        if (isFullPage(r)) allResults.push(r)
+        if (isLiveFullPage(r)) allResults.push(r)
       }
       cursor = page.has_more ? page.next_cursor ?? undefined : undefined
     } while (cursor !== undefined)
 
     const inputSet = new Set(input.projectIds)
     const matches = allResults
-      .filter((page) => !page.archived)
       .map((page) => this.pageToMemory(page, ""))
       .filter(
         (m) =>
@@ -2303,8 +2309,7 @@ export class MemoryService {
         page_size: 100,
         start_cursor: cursor,
       })
-      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-        if (page.archived) continue
+      for (const page of response.results.filter(isLiveFullPage)) {
         yield this.pageToMemory(page, "")
       }
       cursor = response.has_more ? response.next_cursor ?? undefined : undefined
@@ -2458,11 +2463,11 @@ export class MemoryService {
    * same way they surface in Recent Memories.
    *
    * Sorted by score ascending so most-decayed rows surface first;
-   * neglected-but-fresh-score rows fall to the end of the list. Page
-   * size = `opts.limit`; archived rows are filtered client-side
-   * (matches the established Memories DS pattern). No body fetch —
-   * the wake-up subsection renders title + synopsis + trust label +
-   * meta only, never bodies.
+   * neglected-but-fresh-score rows fall to the end of the list. Notion
+   * page size = 100 so archive-heavy windows can refill efficiently;
+   * archived rows are filtered client-side (matches the established Memories
+   * DS pattern). No body fetch — the wake-up subsection renders title +
+   * synopsis + trust label + meta only, never bodies.
    */
   async queryStaleConfidence(opts: {
     /** Omit for vault-wide wake-up; matches `MemoryService.list` shape. */
@@ -2516,23 +2521,37 @@ export class MemoryService {
     // wake-up itself stays decorative. Transient 5xx / rate-limit /
     // network errors do NOT match `isMissingPropertyError` and still
     // propagate so a real outage isn't masked.
-    let response
+    const limit = opts.limit
+    if (limit <= 0) return []
+
+    let result: Awaited<ReturnType<typeof collectLivePages>>
     try {
-      response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter,
-        sorts: [{ property: "Confidence Score", direction: "ascending" }],
-        page_size: opts.limit,
+      result = await collectLivePages({
+        limit,
+        source: "MemoryService.queryStaleConfidence",
+        query: ({ page_size, start_cursor }) =>
+          this.client.dataSources.query({
+            data_source_id: this.db.dataSourceId,
+            filter,
+            sorts: [{ property: "Confidence Score", direction: "ascending" }],
+            page_size,
+            start_cursor,
+          }),
       })
     } catch (err) {
       if (isMissingPropertyError(err)) return []
       throw err
     }
+    if (result.capped) {
+      warnLivePageCapFired({
+        source: "MemoryService.queryStaleConfidence",
+        pages: result.pageCount,
+        accumulated: result.pages.length,
+        limit,
+      })
+    }
 
-    return response.results
-      .filter(isFullPage)
-      .filter((page) => !page.archived)
-      .map((page) => this.pageToMemory(page as PageObjectResponse, ""))
+    return result.pages.map((page) => this.pageToMemory(page, ""))
   }
 
   /**
@@ -2615,9 +2634,7 @@ export class MemoryService {
         })
         pageIndex++
         for (const r of response.results) {
-          if (isFullPage(r) && !r.archived) {
-            pages.push(r as PageObjectResponse)
-          }
+          if (isLiveFullPage(r)) pages.push(r)
         }
         if (opts.onProgress) {
           opts.onProgress({
@@ -2682,7 +2699,7 @@ export class MemoryService {
      * contents under the assumption the query shape is unchanged.
      */
     startCursor?: string
-  }): Promise<{ items: Memory[]; nextCursor?: string }> {
+  }): Promise<{ items: Memory[]; nextCursor?: string; capped: boolean }> {
     const filters: Array<Record<string, unknown>> = []
 
     if (opts?.projectId) {
@@ -2754,41 +2771,40 @@ export class MemoryService {
           ? filters[0]
           : undefined
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-      sorts: [{ timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" }],
-      page_size: Math.min(opts?.limit ?? 20, 100),
-      start_cursor: opts?.startCursor,
-    })
+    const limit = Math.min(opts?.limit ?? 20, 100)
+    if (limit <= 0) {
+      return { items: [], nextCursor: opts?.startCursor, capped: false }
+    }
 
-    // `dataSources.query` cannot filter on the page-metadata `archived`
-    // flag (it lives on `PageObjectResponse`, not as a DB column), so
-    // soft-deleted rows would otherwise leak into recall, wake-up, and
-    // any caller using `list()`. Same posture as `findByTopicKey` and
-    // `listAllForBackfill`. `nextCursor` reflects Notion's pre-filter
-    // cursor — a page that loses every row to the archived filter
-    // still surfaces a cursor so callers can continue pagination.
-    const pages = response.results
-      .filter(isFullPage)
-      .filter((page) => !page.archived) as PageObjectResponse[]
-    const nextCursor =
-      response.has_more && response.next_cursor ? response.next_cursor : undefined
+    const result = await collectLivePages({
+      limit,
+      startCursor: opts?.startCursor,
+      source: "MemoryService.list",
+      query: ({ page_size, start_cursor }) =>
+        this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: filter as QueryDataSourceParameters["filter"],
+          sorts: [{ timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" }],
+          page_size,
+          start_cursor,
+        }),
+    })
 
     if (opts?.includeContent === false) {
       return {
-        items: pages.map((page) => this.pageToMemory(page, "")),
-        nextCursor,
+        items: result.pages.map((page) => this.pageToMemory(page, "")),
+        nextCursor: result.nextCursor,
+        capped: result.capped,
       }
     }
 
     const items = await Promise.all(
-      pages.map(async (page) => {
+      result.pages.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
         return this.pageToMemory(page, md.markdown)
       })
     )
-    return { items, nextCursor }
+    return { items, nextCursor: result.nextCursor, capped: result.capped }
   }
 
   /**
@@ -2831,13 +2847,20 @@ export class MemoryService {
     return memories
   }
 
+  async searchWithMeta(input: SearchMemoriesInput): Promise<{
+    memories: Memory[]
+    capped: boolean
+  }> {
+    const { memories, capped } = await this.runSearch(input)
+    return { memories, capped }
+  }
+
   /**
-   * Same pipeline as `search`, plus a per-row diagnostic trace aligned by
-   * index (`explain[i]` describes `memories[i]`). Two methods rather than
-   * one overloaded return type because every existing caller of `search`
-   * — including `loadWakeUpData` — assumes a `Memory[]` shape structurally;
-   * forcing union-narrowing on every call site to support an opt-in trace
-   * is an outsized typing tax for a feature most callers don't ask for.
+   * Same pipeline as `searchWithMeta`, plus a per-row diagnostic trace aligned
+   * by index (`explain[i]` describes `memories[i]`). Separate methods rather
+   * than one overloaded return type keep `search()`'s `Memory[]` contract
+   * stable for existing callers while letting MCP renderers opt into cap
+   * metadata and score traces independently.
    *
    * Branch-field semantics follow the spec in `SearchExplain`. The
    * resolved mode (after `LORE_FORCE_SEMANTIC_SEARCH=1` is applied)
@@ -2851,6 +2874,7 @@ export class MemoryService {
   async searchWithExplain(input: SearchMemoriesInput): Promise<{
     memories: Memory[]
     explain: SearchExplain[]
+    capped: boolean
   }> {
     return this.runSearch(input)
   }
@@ -2863,7 +2887,7 @@ export class MemoryService {
    */
   private async runSearch(
     input: SearchMemoriesInput,
-  ): Promise<{ memories: Memory[]; explain: SearchExplain[] }> {
+  ): Promise<{ memories: Memory[]; explain: SearchExplain[]; capped: boolean }> {
     const requested: SearchMode = input.mode ?? "hybrid"
     const mode: SearchMode =
       process.env["LORE_FORCE_SEMANTIC_SEARCH"] === "1" ? "semantic" : requested
@@ -2882,27 +2906,33 @@ export class MemoryService {
     let pages: PageObjectResponse[]
     let explainBranch: SearchExplain["branch"]
     let hybridTrace: Map<string, HybridTraceEntry> | null = null
+    let capped: boolean
 
     if (mode === "contains") {
       // `searchByContainsPages` deliberately ignores `input.intent`; it
       // reads only `input.query` for the substring filter. Appending
       // intent into a contains substring would narrow recall in the
       // opposite direction the disambiguator exists to fix.
-      pages = await this.searchByContainsPages(input)
+      const result = await this.searchByContainsPages(input)
+      pages = result.pages
+      capped = result.capped
       explainBranch = "contains-only"
     } else if (mode === "semantic") {
-      pages = await this.searchBySemanticPages(input, intent)
+      const result = await this.searchBySemanticPages(input, intent)
+      pages = result.pages
+      capped = result.capped
       explainBranch = "semantic-only"
     } else {
       const hybrid = await this.searchByHybridPages(input, limit, intent)
       pages = hybrid.pages
       explainBranch = hybrid.branch
       hybridTrace = hybrid.trace
+      capped = hybrid.capped
     }
 
-    const capped = pages.slice(0, limit)
-    const memories = await this.materializeMemories(capped, input.includeContent)
-    const explain = capped.map((page, i): SearchExplain => {
+    const selectedPages = pages.slice(0, limit)
+    const memories = await this.materializeMemories(selectedPages, input.includeContent)
+    const explain = selectedPages.map((page, i): SearchExplain => {
       const factor = confidenceFactor(
         extractNumber(page.properties["Confidence Score"]),
       )
@@ -2941,7 +2971,7 @@ export class MemoryService {
         confidenceFactor: trace?.confidenceFactor ?? factor,
       }
     })
-    return { memories, explain }
+    return { memories, explain, capped }
   }
 
   /**
@@ -2961,8 +2991,9 @@ export class MemoryService {
    * per path. See `src/core/AGENTS.md` "Confidence dynamics" for the
    * pipeline contract.
    *
-   * Returns raw `PageObjectResponse[]` so the caller can dedupe with other
-   * paths' output before materializing markdown bodies.
+   * Returns raw `PageObjectResponse[]` plus cap metadata so the caller can
+   * dedupe with other paths' output before materializing markdown bodies and
+   * still report when archived-row refill stopped early.
    *
    * **Body matches are not searched** — Notion's `dataSources.query` filter
    * surface only exposes property predicates, not page-body text. Callers
@@ -2971,7 +3002,7 @@ export class MemoryService {
    */
   private async fetchContainsPages(
     input: SearchMemoriesInput,
-  ): Promise<PageObjectResponse[]> {
+  ): Promise<SearchPagesResult> {
     const limit = Math.min(input.limit ?? 10, 100)
     const filters: Array<Record<string, unknown>> = []
 
@@ -3031,26 +3062,32 @@ export class MemoryService {
           ? filters[0]
           : undefined
 
-    const response = await this.client.dataSources.query({
-      data_source_id: this.db.dataSourceId,
-      filter: filter as QueryDataSourceParameters["filter"],
-      // No relevance ranking is available on `dataSources.query`; sort by
-      // recency so the most recently touched matches surface first.
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
-      page_size: limit,
-    })
+    if (limit <= 0) return { pages: [], capped: false }
 
-    // Notion's `archived` flag lives on `PageObjectResponse`, NOT as a DB
-    // column, so `dataSources.query` returns archived rows by default.
-    // Mirror the client-side exclusion every other paginating walker
-    // applies (`findByTopicKey`, `listAllForBackfill`, `listForScan`,
-    // `MemoryService.list` via `pageToMemory`-side filtering): an archived
-    // memory should never surface as a search hit. Without this, an
-    // archived row at the top of the recency list could occupy a result
-    // slot that a live row would otherwise fill.
-    return (response.results.filter(isFullPage) as PageObjectResponse[]).filter(
-      (page) => !page.archived,
-    )
+    const result = await collectLivePages({
+      limit,
+      source: "MemoryService.fetchContainsPages",
+      query: ({ page_size, start_cursor }) =>
+        this.client.dataSources.query({
+          data_source_id: this.db.dataSourceId,
+          filter: filter as QueryDataSourceParameters["filter"],
+          // No relevance ranking is available on `dataSources.query`; sort by
+          // recency so the most recently touched matches surface first.
+          sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+          page_size,
+          start_cursor,
+        }),
+    })
+    if (result.capped) {
+      warnLivePageCapFired({
+        source: "MemoryService.fetchContainsPages",
+        pages: result.pageCount,
+        accumulated: result.pages.length,
+        limit,
+      })
+    }
+
+    return { pages: result.pages, capped: result.capped }
   }
 
   /**
@@ -3317,9 +3354,12 @@ export class MemoryService {
    */
   private async searchByContainsPages(
     input: SearchMemoriesInput,
-  ): Promise<PageObjectResponse[]> {
-    const pages = await this.fetchContainsPages(input)
-    return rerankByConfidence(pages, "contains")
+  ): Promise<SearchPagesResult> {
+    const result = await this.fetchContainsPages(input)
+    return {
+      pages: rerankByConfidence(result.pages, "contains"),
+      capped: result.capped,
+    }
   }
 
   /**
@@ -3331,9 +3371,9 @@ export class MemoryService {
   private async searchBySemanticPages(
     input: SearchMemoriesInput,
     intent: string | null,
-  ): Promise<PageObjectResponse[]> {
+  ): Promise<SearchPagesResult> {
     const pages = await this.fetchSemanticPages(input, intent)
-    return rerankByConfidence(pages, "semantic")
+    return { pages: rerankByConfidence(pages, "semantic"), capped: false }
   }
 
   /**
@@ -3391,6 +3431,7 @@ export class MemoryService {
     pages: PageObjectResponse[]
     branch: "contains-saturated" | "rrf"
     trace: Map<string, HybridTraceEntry>
+    capped: boolean
   }> {
     // Hybrid composes the **raw** fetch helpers, not the confidence-aware
     // public wrappers. Calling `searchByContainsPages` /
@@ -3425,7 +3466,9 @@ export class MemoryService {
     }
 
     const containsPages =
-      containsResult.status === "fulfilled" ? containsResult.value : []
+      containsResult.status === "fulfilled" ? containsResult.value.pages : []
+    const containsCapped =
+      containsResult.status === "fulfilled" ? containsResult.value.capped : false
     const semanticPages =
       semanticResult.status === "fulfilled" ? semanticResult.value : []
 
@@ -3463,7 +3506,12 @@ export class MemoryService {
           ),
         })
       })
-      return { pages: containsPages, branch: "contains-saturated", trace }
+      return {
+        pages: containsPages,
+        branch: "contains-saturated",
+        trace,
+        capped: containsCapped,
+      }
     }
 
     // Under-saturation: RRF over both branches. Cross-branch agreement
@@ -3537,7 +3585,12 @@ export class MemoryService {
         confidenceFactor: entry.confidenceFactor,
       })
     }
-    return { pages: ranked.map((entry) => entry.page), branch: "rrf", trace }
+    return {
+      pages: ranked.map((entry) => entry.page),
+      branch: "rrf",
+      trace,
+      capped: containsCapped,
+    }
   }
 
   /**

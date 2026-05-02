@@ -32,9 +32,15 @@ export function toolError(err: unknown): ToolResult {
  * it unambiguously even when list items contain colons, brackets, or other
  * JSON-looking syntax in their titles or bodies.
  */
-export function paginationFooter(nextCursor: string | undefined): string {
-  if (!nextCursor) return ""
-  return `\n\n---\n\n\`\`\`json\n${JSON.stringify({ nextCursor })}\n\`\`\``
+export function paginationFooter(
+  nextCursor: string | undefined,
+  opts: { truncated?: boolean } = {},
+): string {
+  if (!nextCursor && !opts.truncated) return ""
+  return `\n\n---\n\n\`\`\`json\n${JSON.stringify({
+    ...(nextCursor ? { nextCursor } : {}),
+    ...(opts.truncated ? { truncated: true } : {}),
+  })}\n\`\`\``
 }
 
 /**

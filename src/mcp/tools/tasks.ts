@@ -17,6 +17,7 @@ import type { LoreServices } from "../server.js"
 import {
   debugLogPartialFailures,
   formatDispatchError,
+  paginationFooter,
   toolError,
 } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
@@ -431,6 +432,7 @@ interface ListArgs {
   state?: (typeof TASK_STATES)[number]
   dueBefore?: string
   limit?: number
+  startCursor?: string
   includeSynopsis?: boolean
 }
 
@@ -478,12 +480,13 @@ async function handleList(
     // exactly that string. Canonicalization here would change the
     // user's filter shape without their knowledge; canonical-aware
     // recall is `lore-query action='ask'`'s job.
-    const { items: tasks } = await services.tasks.list({
+    const { items: tasks, nextCursor, capped } = await services.tasks.list({
       projectId,
       entities: args.entity ? [args.entity] : undefined,
       states,
       dueBefore: args.dueBefore,
       limit: fetchLimit,
+      startCursor: args.startCursor,
     })
 
     if (tasks.length === 0) {
@@ -491,7 +494,10 @@ async function handleList(
       const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
       return {
         content: [
-          { type: "text", text: `No tasks found${filterHint}.${warn}` },
+          {
+            type: "text",
+            text: `No tasks found${filterHint}.${warn}${paginationFooter(nextCursor, { truncated: capped })}`,
+          },
         ],
       }
     }
@@ -514,6 +520,10 @@ async function handleList(
 
     const overdue = overdueAll.slice(0, cap)
     const active = activeAll.slice(0, cap)
+    const hidesFetchedRows =
+      overdueAll.length > overdue.length || activeAll.length > active.length
+    const footerCursor = hidesFetchedRows ? undefined : nextCursor
+    const footerTruncated = (capped ?? false) || hidesFetchedRows
     const includeSynopsis = args.includeSynopsis !== false
 
     const sections: string[] = []
@@ -554,7 +564,7 @@ async function handleList(
       content: [
         {
           type: "text",
-          text: `${total} task${total === 1 ? "" : "s"}${filterSuffix}:\n\n${sections.join("\n\n")}${warn}`,
+          text: `${total} task${total === 1 ? "" : "s"}${filterSuffix}:\n\n${sections.join("\n\n")}${warn}${paginationFooter(footerCursor, { truncated: footerTruncated })}`,
         },
       ],
     }
@@ -670,6 +680,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     state: z.enum(TASK_STATES).optional(),
     dueBefore: z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format").optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    startCursor: z.string().min(1).optional(),
     includeSynopsis: z.boolean().optional(),
   }),
   z.object({
@@ -848,6 +859,11 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .describe(
             "(action='list') Only return tasks with a Review By date on or before this YYYY-MM-DD.",
           ),
+        startCursor: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("(action='list') Opaque pagination cursor from a previous response."),
         limit: z
           .number()
           .int()

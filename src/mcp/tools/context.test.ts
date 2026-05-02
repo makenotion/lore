@@ -226,6 +226,7 @@ interface WakeServicesOverrides {
    * subsection (0.9.0/DEFERRED-07 trust-indicator coverage).
    */
   overdueDecisions?: DecisionSummary[]
+  overdueDecisionsCapped?: boolean
 }
 
 function makeWakeServices(overrides: WakeServicesOverrides = {}) {
@@ -293,6 +294,10 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
         return { items: [] }
       }),
       queryOverdue: vi.fn(async () => overrides.overdueDecisions ?? []),
+      queryOverdueWindow: vi.fn(async () => ({
+        items: overrides.overdueDecisions ?? [],
+        capped: overrides.overdueDecisionsCapped ?? false,
+      })),
     },
     tasks: {
       // Honor the caller's `limit` so fixtures larger than the data
@@ -3017,6 +3022,19 @@ describe("lore-wake-up — Decisions Requiring Attention trust indicator (0.9.0/
     )
     expect(titleIdx).toBeGreaterThanOrEqual(0)
     expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
+  })
+
+  it("surfaces a capped overdue-decision scan even when no rows were returned", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ overdueDecisionsCapped: true })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("### Overdue for Review (≥0)")
+    expect(text).toContain("live-row refill cap")
   })
 
   it("omits the trust line on a null-score decision (pre-migration vault)", async () => {

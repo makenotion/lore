@@ -17,6 +17,12 @@ export function isFullPage(
   return obj.object === "page" && "properties" in obj
 }
 
+export function isLiveFullPage(
+  obj: QueryDataSourceResponse["results"][number]
+): obj is PageObjectResponse {
+  return isFullPage(obj) && !obj.archived
+}
+
 // ---------------------------------------------------------------------------
 // Property extractors
 // ---------------------------------------------------------------------------

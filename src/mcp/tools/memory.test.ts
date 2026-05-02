@@ -827,6 +827,34 @@ describe("lore-recall cursor pagination", () => {
     expect(text).toContain("No matching memories on this page.")
     expect(text).toMatch(/```json\n\{"nextCursor":"keep-paging"\}\n```/)
   })
+
+  it("marks the pagination footer as truncated when the live-row refill cap fires", async () => {
+    const mockServer = createMockServer()
+    const memoriesList = vi.fn().mockResolvedValue({
+      items: [],
+      nextCursor: "keep-paging",
+      capped: true,
+    })
+
+    const services = {
+      topics: { findByName: vi.fn() },
+      memories: { list: memoriesList },
+      projects: { findByName: vi.fn() },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const recall = mockServer.getActionHandler("lore-query", "recall")
+
+    const result = await recall({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("No matching memories on this page.")
+    expect(text).toMatch(
+      /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
+    )
+  })
 })
 
 describe("lore-search projectName resolution", () => {
@@ -3573,6 +3601,35 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     const traceIdx = text.indexOf("## Score trace")
     expect(synopsisIdx).toBeGreaterThan(-1)
     expect(traceIdx).toBeGreaterThan(synopsisIdx)
+  })
+
+  it("surfaces truncated contains-search windows even when no rows were returned", async () => {
+    const mockServer = createMockServer()
+    const memoriesSearchWithMeta = vi.fn().mockResolvedValue({
+      memories: [],
+      capped: true,
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        search: vi.fn(),
+        searchWithMeta: memoriesSearchWithMeta,
+        list: vi.fn(),
+      },
+      context: { project: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const search = mockServer.getActionHandler("lore-query", "search")
+
+    const result = await search({ query: "archived", mode: "contains" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain('No memories found for: "archived"')
+    expect(text).toContain("live-row refill cap")
+    expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
   })
 
   it("includeSynopsis=false restores byte-identical pre-#03 search output", async () => {

@@ -27,10 +27,17 @@ function makePage(overrides: MockablePage): PageObjectResponse {
 
 function decisionPage(
   id: string,
-  overrides?: { supersedesIds?: string[]; kind?: MemoryKind; status?: string; reviewBy?: string }
+  overrides?: {
+    supersedesIds?: string[]
+    kind?: MemoryKind
+    status?: string
+    reviewBy?: string
+    archived?: boolean
+  }
 ): PageObjectResponse {
   return makePage({
     id,
+    archived: overrides?.archived ?? false,
     properties: {
       Title: { type: "title", title: [{ plain_text: `Decision ${id}` }] } as unknown,
       Kind: {
@@ -327,6 +334,97 @@ describe("DecisionService.list — index tier, no body fetch", () => {
     }
   })
 
+  it("filters archived rows and refills the requested limit across pages", async () => {
+    const client = createMockClient()
+    const query = client.dataSources.query as ReturnType<typeof vi.fn>
+    query.mockReset()
+    query
+      .mockResolvedValueOnce({
+        results: [
+          decisionPage("archived-before", { archived: true }),
+          decisionPage("dec-live-1"),
+          decisionPage("archived-between", { archived: true }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          decisionPage("dec-live-2"),
+          decisionPage("archived-after", { archived: true }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        results: [decisionPage("dec-live-3")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new DecisionService(client, DB)
+
+    const { items, nextCursor } = await service.list({ limit: 3 })
+
+    expect(items.map((item) => item.id)).toEqual([
+      "dec-live-1",
+      "dec-live-2",
+      "dec-live-3",
+    ])
+    expect(nextCursor).toBeUndefined()
+    expect(query).toHaveBeenCalledTimes(3)
+    expect(query.mock.calls[1]![0].start_cursor).toBe("cursor-1")
+    expect(query.mock.calls[2]![0].start_cursor).toBe("cursor-2")
+    expect(query.mock.calls[0]![0].page_size).toBe(100)
+    expect(query.mock.calls[1]![0].page_size).toBe(100)
+    expect(query.mock.calls[2]![0].page_size).toBe(100)
+  })
+
+  it("returns an opaque refill cursor instead of skipping live rows from a partially consumed page", async () => {
+    const client = createMockClient()
+    const query = client.dataSources.query as ReturnType<typeof vi.fn>
+    query.mockReset()
+    query.mockImplementation(({ start_cursor }: { start_cursor?: string }) => {
+      if (start_cursor === undefined) {
+        return Promise.resolve({
+          results: [
+            decisionPage("dec-live-1"),
+            decisionPage("dec-live-2"),
+            decisionPage("dec-live-3"),
+            decisionPage("dec-live-4"),
+          ],
+          has_more: true,
+          next_cursor: "notion-cursor-after-current-page",
+        })
+      }
+      return Promise.resolve({
+        results: [decisionPage("dec-live-5")],
+        has_more: false,
+        next_cursor: null,
+      })
+    })
+    const service = new DecisionService(client, DB)
+
+    const first = await service.list({ limit: 2 })
+    const second = await service.list({
+      limit: 2,
+      startCursor: first.nextCursor,
+    })
+
+    expect(first.items.map((item) => item.id)).toEqual([
+      "dec-live-1",
+      "dec-live-2",
+    ])
+    expect(first.nextCursor).toBeDefined()
+    expect(first.nextCursor).not.toBe("notion-cursor-after-current-page")
+    expect(second.items.map((item) => item.id)).toEqual([
+      "dec-live-3",
+      "dec-live-4",
+    ])
+    expect(second.nextCursor).toBe("notion-cursor-after-current-page")
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(query.mock.calls[1]![0].start_cursor).toBeUndefined()
+  })
+
   it("exposes nextCursor when the Notion response reports has_more", async () => {
     const client = createMockClient({
       queryResults: [decisionPage("dec-1")],
@@ -335,7 +433,7 @@ describe("DecisionService.list — index tier, no body fetch", () => {
     })
     const service = new DecisionService(client, DB)
 
-    const { items, nextCursor } = await service.list()
+    const { items, nextCursor } = await service.list({ limit: 1 })
 
     expect(items).toHaveLength(1)
     expect(nextCursor).toBe("notion-cursor-abc")
@@ -546,6 +644,67 @@ describe("DecisionService.queryOverdue", () => {
     expect(results[0]).not.toHaveProperty("content")
   })
 
+  it("filters archived rows and refills the requested limit across pages", async () => {
+    const querySpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [
+          decisionPage("archived-before", {
+            archived: true,
+            reviewBy: "2026-01-01",
+          }),
+          decisionPage("dec-live-1", { reviewBy: "2026-01-01" }),
+          decisionPage("archived-between", {
+            archived: true,
+            reviewBy: "2026-01-02",
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          decisionPage("dec-live-2", { reviewBy: "2026-01-02" }),
+          decisionPage("archived-after", {
+            archived: true,
+            reviewBy: "2026-01-03",
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        results: [decisionPage("dec-live-3", { reviewBy: "2026-01-03" })],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = {
+      pages: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        update: vi.fn(),
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(),
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new DecisionService(client, DB)
+
+    const results = await service.queryOverdue({ limit: 3 })
+
+    expect(results.map((item) => item.id)).toEqual([
+      "dec-live-1",
+      "dec-live-2",
+      "dec-live-3",
+    ])
+    expect(querySpy).toHaveBeenCalledTimes(3)
+    expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "cursor-1" })
+    expect(querySpy.mock.calls[2][0]).toMatchObject({ start_cursor: "cursor-2" })
+    expect(querySpy.mock.calls[0][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[1][0].page_size).toBe(100)
+    expect(querySpy.mock.calls[2][0].page_size).toBe(100)
+  })
+
   it("paginates beyond the first 100 rows when no limit is supplied", async () => {
     // Pre-fix behavior: a single dataSources.query with no page_size
     // and no cursor loop silently truncated at Notion's default 100-row
@@ -589,6 +748,48 @@ describe("DecisionService.queryOverdue", () => {
     expect(querySpy.mock.calls[1][0]).toMatchObject({ start_cursor: "c1" })
   })
 
+  it("caps the default overdue-decision window and exposes capped metadata", async () => {
+    const responses = Array.from({ length: 6 }, (_, i) => ({
+      results: [decisionPage(`d-${i}`, { reviewBy: "2026-01-01" })],
+      has_more: i < 5,
+      next_cursor: i < 5 ? `c-${i + 1}` : null,
+    }))
+    let i = 0
+    const querySpy = vi.fn().mockImplementation(() => {
+      const r = responses[Math.min(i, responses.length - 1)]
+      i += 1
+      return Promise.resolve(r)
+    })
+    const client = {
+      pages: {
+        create: vi.fn(),
+        retrieve: vi.fn(),
+        update: vi.fn(),
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(),
+      },
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const service = new DecisionService(client, DB)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    try {
+      const result = await service.queryOverdueWindow()
+
+      expect(result.items.map((item) => item.id)).toEqual([
+        "d-0",
+        "d-1",
+        "d-2",
+        "d-3",
+        "d-4",
+      ])
+      expect(result.capped).toBe(true)
+      expect(querySpy).toHaveBeenCalledTimes(5)
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
   it("stops paginating once the limit is reached", async () => {
     // Limit-reached-mid-page: caller asked for 10, Notion's first
     // response carried 100 rows. A second query MUST NOT fire.
@@ -618,15 +819,16 @@ describe("DecisionService.queryOverdue", () => {
     expect(results).toHaveLength(10)
   })
 
-  it("clamps page_size to min(limit, 100) when limit is small", async () => {
-    // Avoid pulling 100 rows when the caller only wants a handful.
+  it("uses page_size 100 even when limit is small", async () => {
+    // Pull a full page so archived rows do not force extra round-trips
+    // under archive-heavy filters.
     const client = createMockClient()
     const service = new DecisionService(client, DB)
 
     await service.queryOverdue({ limit: 5 })
 
     const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    expect(queryArgs.page_size).toBe(5)
+    expect(queryArgs.page_size).toBe(100)
   })
 
   it("clamps page_size to Notion's 100-row ceiling when no limit is supplied", async () => {

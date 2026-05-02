@@ -2817,12 +2817,15 @@ describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEF
   // By row so the audit reader sees the signal before the staleness
   // detail.
 
-  function auditServices(decisions: Decision[]) {
+  function auditServices(decisions: Decision[], capped = false) {
     return {
       projects: { findByName: vi.fn() },
       facts: { queryOverdue: vi.fn().mockResolvedValue([]) },
-      decisions: { queryOverdue: vi.fn().mockResolvedValue(decisions) },
       tasks: { queryOverdue: vi.fn().mockResolvedValue([]) },
+      decisions: {
+        queryOverdue: vi.fn().mockResolvedValue(decisions),
+        queryOverdueWindow: vi.fn().mockResolvedValue({ items: decisions, capped }),
+      },
       context: { project: null },
     }
   }
@@ -2886,6 +2889,21 @@ describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEF
 
     expect(text).toContain("Healthy overdue decision")
     expect(text).not.toContain("confidence_")
+  })
+
+  it("surfaces capped overdue decision scans in audit output", async () => {
+    const mockServer = createMockServer()
+    const services = auditServices([], true)
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("No overdue facts, decisions, or tasks found.")
+    expect(text).toContain("live-row refill cap")
+    expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
   })
 })
 

@@ -904,6 +904,37 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
     expect(lines[headingIdx + 2]).toMatch(/^\*\*\[accepted\]/)
   })
 
+  it("marks the pagination footer as truncated when the live-row refill cap fires", async () => {
+    const decision = makeDecision("dec-capped", {
+      title: "Capped decision page",
+      synopsis: "Visible row from a capped refill window.",
+    })
+    const mockServer = createMockServer()
+    const services = {
+      decisions: {
+        list: vi.fn().mockResolvedValue({
+          items: [decision],
+          nextCursor: "keep-paging",
+          capped: true,
+        }),
+      },
+      projects: { findByName: vi.fn() },
+      facts: {},
+      topics: {},
+      context: { project: null },
+    }
+    registerDecisionTools(mockServer.server, services as never)
+
+    const handler = mockServer.getActionHandler("lore-decision", "list")
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("### Capped decision page")
+    expect(text).toMatch(
+      /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
+    )
+  })
+
   it("omits the synopsis line on rows with empty synopsis (byte-identical pre-DEFERRED-01 path)", async () => {
     const decision = makeDecision("dec-empty", {
       title: "Plain decision",

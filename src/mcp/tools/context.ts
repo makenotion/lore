@@ -406,6 +406,7 @@ async function handleWakeUp(
       knowledgeFacts,
       proposedDecisions,
       overdueDecisions,
+      overdueDecisionsCapped,
       relatedMemories,
       tasks,
       taskMemories,
@@ -578,7 +579,11 @@ async function handleWakeUp(
       }
     }
 
-    if (proposedDecisions.length > 0 || overdueDecisions.length > 0) {
+    if (
+      proposedDecisions.length > 0 ||
+      overdueDecisions.length > 0 ||
+      overdueDecisionsCapped
+    ) {
       sections.push("## Decisions Requiring Attention\n")
       // Trust indicator (0.9.0/DEFERRED-07). Bullet-shaped surface,
       // so the indented italic continuation matches the wake-up Tasks
@@ -597,8 +602,11 @@ async function handleWakeUp(
         }
         sections.push("")
       }
-      if (overdueDecisions.length > 0) {
-        sections.push(`### Overdue for Review (${overdueDecisions.length})\n`)
+      if (overdueDecisions.length > 0 || overdueDecisionsCapped) {
+        const overdueCount = overdueDecisionsCapped
+          ? `≥${overdueDecisions.length}`
+          : `${overdueDecisions.length}`
+        sections.push(`### Overdue for Review (${overdueCount})\n`)
         for (const d of overdueDecisions) {
           const days = d.reviewBy
             ? Math.floor(
@@ -613,6 +621,11 @@ async function handleWakeUp(
           if (trustLine !== null) {
             sections.push(trustLine)
           }
+        }
+        if (overdueDecisionsCapped) {
+          sections.push(
+            "_Overdue decision scan reached the live-row refill cap; more overdue decisions may exist._",
+          )
         }
         sections.push("")
       }
