@@ -9,6 +9,11 @@
  * `[lore]` stderr lines tell a background-save failure apart from a
  * digest failure without having to grep the PID).
  *
+ * The spawned binary defaults to `claude -p` for Claude Code installs and
+ * to `codex exec --full-auto` for Codex installs via the hook config
+ * resolver. Operators can override the command/args through
+ * `hooks.backgroundAgent` or `LORE_BACKGROUND_COMMAND`.
+ *
  * Lives in its own module because `helpers.ts` runs `main()` when the file
  * is the Node entry point, which would happen at import time for any test
  * or CLI that referenced the spawn directly. Keeping the spawn here lets
@@ -25,7 +30,7 @@ import {
   unlinkSync,
 } from "node:fs"
 import { tmpdir, homedir } from "node:os"
-import { join } from "node:path"
+import { join, isAbsolute } from "node:path"
 import { RUNTIME_FORWARDED_KEYS } from "../auth/forwarded-env.js"
 import {
   activeSaveCount,
@@ -35,6 +40,12 @@ import {
   releaseSessionLock,
   tryAcquireSessionLock,
 } from "./lock.js"
+import {
+  ALLOWED_TOOLS_PLACEHOLDER,
+  DEFAULT_BACKGROUND_ARGS,
+  DEFAULT_BACKGROUND_COMMAND,
+  type BackgroundAgentConfig,
+} from "./config.js"
 
 /**
  * Tool allowlist for the catch-all background save agent. Broad on purpose
@@ -66,21 +77,40 @@ export const DEFAULT_SAVE_ALLOWLIST = [
  */
 export const DIGEST_ALLOWLIST = ["mcp__lore__lore-memory"].join(",")
 
-export function findClaudeBinary(): string | null {
+export function findBackgroundBinary(name: string): string | null {
+  if (isAbsolute(name)) {
+    return existsSync(name) ? name : null
+  }
   try {
-    return execFileSync("which", ["claude"], { encoding: "utf-8" }).trim() || null
+    return execFileSync("which", [name], { encoding: "utf-8" }).trim() || null
   } catch {
     // which failed — try common install locations
   }
   const candidates = [
-    join(homedir(), ".local", "bin", "claude"),
-    "/usr/local/bin/claude",
-    "/opt/homebrew/bin/claude",
+    join(homedir(), ".local", "bin", name),
+    `/usr/local/bin/${name}`,
+    `/opt/homebrew/bin/${name}`,
   ]
   for (const c of candidates) {
     if (existsSync(c)) return c
   }
   return null
+}
+
+/** @deprecated Use findBackgroundBinary(command). */
+export function findClaudeBinary(): string | null {
+  return findBackgroundBinary(DEFAULT_BACKGROUND_COMMAND)
+}
+
+export function renderAgentArgs(
+  args: readonly string[],
+  allowedTools: string,
+): string[] {
+  return args.map((arg) =>
+    arg.includes(ALLOWED_TOOLS_PLACEHOLDER)
+      ? arg.split(ALLOWED_TOOLS_PLACEHOLDER).join(allowedTools)
+      : arg,
+  )
 }
 
 export interface SpawnBackgroundSaveOptions {
@@ -96,6 +126,12 @@ export interface SpawnBackgroundSaveOptions {
    * Lets operators distinguish failures across paths without grepping PIDs.
    */
   logLabel?: string
+  /**
+   * Resolved background-agent command and args. Production callers pass
+   * the value from `mergeHookDefaults`; omitted callers keep the
+   * historical Claude-shaped default.
+   */
+  agent?: BackgroundAgentConfig
 }
 
 /**
@@ -173,10 +209,18 @@ export function spawnBackgroundSave(
 ): SpawnResult {
   const allowedTools = options.allowedTools ?? DEFAULT_SAVE_ALLOWLIST
   const logLabel = options.logLabel ?? "background save"
+  const agentConfig: BackgroundAgentConfig = options.agent ?? {
+    command: DEFAULT_BACKGROUND_COMMAND,
+    args: [...DEFAULT_BACKGROUND_ARGS],
+  }
 
-  const claudeBin = findClaudeBinary()
-  if (!claudeBin) {
-    process.stderr.write(`[lore] ${logLabel}: claude binary not found, skipping\n`)
+  const binary = findBackgroundBinary(agentConfig.command)
+  if (!binary) {
+    process.stderr.write(
+      `[lore] ${logLabel}: background command "${agentConfig.command}" not found on PATH, skipping. ` +
+        `Install the binary or override hooks.backgroundAgent.command in .lore.yaml ` +
+        `(or set LORE_BACKGROUND_COMMAND).\n`,
+    )
     return { kind: "binary-missing" }
   }
 
@@ -242,15 +286,7 @@ export function spawnBackgroundSave(
     return { kind: "tempfile-failed" }
   }
 
-  const args = [
-    "-p",
-    "--allowedTools",
-    allowedTools,
-    "--dangerously-skip-permissions",
-    "--no-session-persistence",
-    "--model",
-    "sonnet",
-  ]
+  const args = renderAgentArgs(agentConfig.args, allowedTools)
 
   // Minimal env — only what the background process needs. Auth /
   // workspace / environment selectors flow through the shared
@@ -297,7 +333,7 @@ export function spawnBackgroundSave(
   // any future post-spawn throw.
   let child: ChildProcess | undefined
   try {
-    child = spawn(claudeBin, args, {
+    child = spawn(binary, args, {
       cwd,
       detached: true,
       stdio: [stdinFd, "ignore", stderrSink],

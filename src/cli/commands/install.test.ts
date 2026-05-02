@@ -54,6 +54,7 @@ import {
   parseInstallClient,
   parsePrintConfigFormat,
   removeClaudeScriptEntries,
+  resolveBackgroundAgentForInstall,
   resolveCursorMcpPath,
   runCursorInstall,
   stripLoreOwnedSessionEndEntries,
@@ -1288,6 +1289,263 @@ describe("ensureHookPrerequisites", () => {
       yarnPnp: false,
     }
     await expect(ensureHookPrerequisites(ctx)).resolves.toBeUndefined()
+  })
+})
+
+describe("resolveBackgroundAgentForInstall (issue #194)", () => {
+  // The Codex installer surfaces an explicit warning at install time when
+  // the configured background-agent binary isn't on PATH. The resolver
+  // pulls together two inputs: the project's `.lore.yaml` (or absence
+  // thereof) and the install-time env (LORE_BACKGROUND_COMMAND). These
+  // tests pin the resolution path; the warn-output integration is
+  // exercised through the runner.
+
+  const SCRATCH = mkdtempSync(join(tmpdir(), "lore-install-bgagent-test-"))
+  afterAll(() => {
+    rmSync(SCRATCH, { recursive: true, force: true })
+  })
+
+  function makeContext(projectDir: string): InstallContext {
+    return {
+      projectDir,
+      pkgRoot: projectDir,
+      configRoot: projectDir,
+      autosavePath: join(projectDir, "hooks", "autosave.sh"),
+      wakeupPath: join(projectDir, "hooks", "wakeup.sh"),
+      mcpJsPath: join(projectDir, "dist", "mcp.js"),
+      skipPrompts: true,
+      legacyPaths: false,
+      yarnPnp: false,
+      wakeUpConfig: null,
+    }
+  }
+
+  it("defaults to `claude` when neither `.lore.yaml` nor env override is set", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "default-"))
+    const result = await resolveBackgroundAgentForInstall(
+      makeContext(projectDir),
+      {},
+    )
+    expect(result.command).toBe("claude")
+    expect(result.presetMatched).toBe(true)
+    // Default args carry the placeholder — the lore allowlist passes
+    // through to the spawned Claude.
+    expect(result.argsContainAllowedToolsPlaceholder).toBe(true)
+    // `present` reads the real filesystem — assert only on `command`
+    // here so the test isn't sensitive to whether claude is installed
+    // on the runner.
+  })
+
+  it("honors the `LORE_BACKGROUND_COMMAND` env override", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "env-override-"))
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
+      LORE_BACKGROUND_COMMAND: "codex",
+    })
+    expect(result.command).toBe("codex")
+    // Codex picks up the preset, which deliberately omits the placeholder.
+    expect(result.presetMatched).toBe(true)
+    expect(result.argsContainAllowedToolsPlaceholder).toBe(false)
+  })
+
+  it("flags `presetMatched: false` for unknown commands so the install warning fires", async () => {
+    // The unknown-command path is the second of three install-time
+    // warning bands. An operator on a hypothetical claude rebrand or
+    // a custom binary name needs to know they got the Claude-shaped
+    // fallthrough rather than a bespoke preset for their binary.
+    const projectDir = mkdtempSync(join(SCRATCH, "unknown-cmd-"))
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
+      LORE_BACKGROUND_COMMAND: "claude-next",
+    })
+    expect(result.command).toBe("claude-next")
+    expect(result.presetMatched).toBe(false)
+    // Args fell through to Claude shape, which carries the placeholder.
+    expect(result.argsContainAllowedToolsPlaceholder).toBe(true)
+  })
+
+  it("flags `argsContainAllowedToolsPlaceholder: false` when explicit args drop the token", async () => {
+    // The third install-time warning band: an explicit `args` override
+    // that doesn't include `{{allowedTools}}`. Operators on such a
+    // shape must configure the agent's allowlist out-of-band.
+    const projectDir = mkdtempSync(join(SCRATCH, "no-placeholder-"))
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      [
+        "vault:",
+        "  pageId: test-page-id",
+        "hooks:",
+        "  backgroundAgent:",
+        "    command: claude",
+        "    args: ['-p', '--model', 'sonnet']",
+        "",
+      ].join("\n"),
+    )
+    const result = await resolveBackgroundAgentForInstall(
+      makeContext(projectDir),
+      {},
+    )
+    expect(result.argsContainAllowedToolsPlaceholder).toBe(false)
+  })
+
+  it("honors `.lore.yaml` hooks.backgroundAgent.command override", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "yaml-override-"))
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      [
+        "vault:",
+        "  pageId: test-page-id",
+        "hooks:",
+        "  backgroundAgent:",
+        "    command: my-custom-agent",
+        "",
+      ].join("\n"),
+    )
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {})
+    expect(result.command).toBe("my-custom-agent")
+  })
+
+  it("env override beats `.lore.yaml` override", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "env-vs-yaml-"))
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      [
+        "vault:",
+        "  pageId: test-page-id",
+        "hooks:",
+        "  backgroundAgent:",
+        "    command: from-yaml",
+        "",
+      ].join("\n"),
+    )
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
+      LORE_BACKGROUND_COMMAND: "from-env",
+    })
+    expect(result.command).toBe("from-env")
+  })
+
+  it("falls through to defaults when `.lore.yaml` is malformed", async () => {
+    // Malformed YAML must NOT throw out of the install path — the
+    // wakeUp-config reader already emits a stderr line for this; the
+    // installer continues with defaults so an operator with a typo'd
+    // `.lore.yaml` can still reinstall (and see the warning that may
+    // help them notice the typo).
+    const projectDir = mkdtempSync(join(SCRATCH, "malformed-"))
+    writeFileSync(join(projectDir, ".lore.yaml"), "vault:\n  pageId: 123\n  : oops\n")
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {})
+    expect(result.command).toBe("claude")
+  })
+
+  it("reports `present: true` for an absolute path that exists", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "abspath-"))
+    const fakeBin = join(projectDir, "fake-agent")
+    writeFileSync(fakeBin, "#!/bin/sh\n", { mode: 0o755 })
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
+      LORE_BACKGROUND_COMMAND: fakeBin,
+    })
+    expect(result.command).toBe(fakeBin)
+    expect(result.present).toBe(true)
+  })
+
+  it("reports `present: false` for an absolute path that does not exist", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "abspath-missing-"))
+    const missing = join(projectDir, "does-not-exist")
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
+      LORE_BACKGROUND_COMMAND: missing,
+    })
+    expect(result.command).toBe(missing)
+    expect(result.present).toBe(false)
+  })
+
+  it("reports `present: false` for a binary name not on PATH", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "name-missing-"))
+    const result = await resolveBackgroundAgentForInstall(makeContext(projectDir), {
+      LORE_BACKGROUND_COMMAND: "__lore_nonexistent_binary_xyz_1234__",
+    })
+    expect(result.present).toBe(false)
+  })
+
+  it("agentNameOverride: 'Codex' surfaces codex command at install time (PR review fix)", async () => {
+    // The Codex installer prefixes hook commands with `LORE_AGENT_NAME=
+    // Codex`, so the runtime resolver derives `command: codex` even
+    // when the user's install-time shell doesn't have it set. The
+    // install-time output should mirror that — without the override
+    // here, an operator running `lore install --client codex` from a
+    // clean shell would see `Background agent: claude` in the install
+    // status block while the hooks resolve to codex at fire time.
+    const projectDir = mkdtempSync(join(SCRATCH, "codex-override-"))
+    const result = await resolveBackgroundAgentForInstall(
+      makeContext(projectDir),
+      {}, // empty env — no LORE_AGENT_NAME, no LORE_BACKGROUND_COMMAND
+      "Codex",
+    )
+    expect(result.command).toBe("codex")
+    expect(result.presetMatched).toBe(true)
+  })
+
+  it("agentNameOverride is overridden by an explicit LORE_BACKGROUND_COMMAND in env", async () => {
+    // Tier 1 (env LORE_BACKGROUND_COMMAND) still beats tier 3 (agent
+    // derivation). An operator who exports `LORE_BACKGROUND_COMMAND=
+    // claude` in their shell rc and runs `lore install --client codex`
+    // should see claude at install time — their explicit override wins.
+    const projectDir = mkdtempSync(join(SCRATCH, "codex-override-beaten-"))
+    const result = await resolveBackgroundAgentForInstall(
+      makeContext(projectDir),
+      { LORE_BACKGROUND_COMMAND: "claude" },
+      "Codex",
+    )
+    expect(result.command).toBe("claude")
+  })
+
+  it("agentNameOverride is overridden by an explicit `.lore.yaml` command", async () => {
+    // Tier 2 (yaml command) still beats tier 3 (agent derivation). A
+    // project that committed `command: claude` in `.lore.yaml` should
+    // see claude even on a Codex install — committed config wins over
+    // the host-default derivation.
+    const projectDir = mkdtempSync(join(SCRATCH, "yaml-beats-codex-"))
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      [
+        "vault:",
+        "  pageId: test-page-id",
+        "hooks:",
+        "  backgroundAgent:",
+        "    command: claude",
+        "",
+      ].join("\n"),
+    )
+    const result = await resolveBackgroundAgentForInstall(
+      makeContext(projectDir),
+      {},
+      "Codex",
+    )
+    expect(result.command).toBe("claude")
+  })
+
+  it("recognizes presets via basename when command is an absolute path (PR review fix)", async () => {
+    // The reviewer caught an absolute-path preset miss. An operator on
+    // `command: /opt/homebrew/bin/codex` (or similar) MUST pick up the
+    // codex preset — basename matching is the fix. Verify both the
+    // preset-matched flag AND the args carry the codex shape.
+    const projectDir = mkdtempSync(join(SCRATCH, "abs-codex-preset-"))
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      [
+        "vault:",
+        "  pageId: test-page-id",
+        "hooks:",
+        "  backgroundAgent:",
+        "    command: /opt/homebrew/bin/codex",
+        "",
+      ].join("\n"),
+    )
+    const result = await resolveBackgroundAgentForInstall(
+      makeContext(projectDir),
+      {},
+    )
+    expect(result.command).toBe("/opt/homebrew/bin/codex")
+    expect(result.presetMatched).toBe(true)
+    expect(result.args).toEqual(["exec", "--full-auto"])
+    // Codex preset omits the placeholder by design.
+    expect(result.argsContainAllowedToolsPlaceholder).toBe(false)
   })
 })
 

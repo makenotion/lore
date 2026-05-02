@@ -33,7 +33,12 @@ import type {
 import type { DatabaseRef } from "../types.js"
 import { SYNOPSIS_MAX } from "../types.js"
 import { extractTitle, isFullPage } from "../notion/extractors.js"
-import { findClaudeBinary } from "../hooks/background.js"
+import { findBackgroundBinary, renderAgentArgs } from "../hooks/background.js"
+import {
+  DEFAULT_BACKGROUND_ARGS,
+  DEFAULT_BACKGROUND_COMMAND,
+  type BackgroundAgentConfig,
+} from "../hooks/config.js"
 import { BODY_SIZE_CAP_BYTES } from "./memory-encoding.js"
 
 /**
@@ -151,9 +156,21 @@ export interface BackfillOptions {
   synthesizer?: SynthesizerFn
   /** Test seam: override the `pages.retrieveMarkdown` body fetch with a fake. */
   bodyFetcher?: BodyFetcherFn
-  /** Test seam: override the `claude` PATH preflight check. Returns
-   *  `true` when the binary is available. */
+  /** Test seam: override the PATH preflight check. Returns `true` when
+   *  the configured binary is available. */
   pathPreflight?: () => boolean
+  /**
+   * Resolved background-agent shape (issue #194). Threads
+   * `hooks.backgroundAgent.{command,args}` from the operator's
+   * `.lore.yaml` plus the `LORE_BACKGROUND_COMMAND` env override into
+   * the synthesizer spawn so a Codex-only operator running
+   * `lore migrate --backfill-synopses` (without `--synopsis-backend
+   * placeholder`) gets the same redirected binary the autosave / digest
+   * paths use. When omitted, the synthesizer falls through to the
+   * historical `claude -p` defaults — preserving back-compat for
+   * existing Claude Code operators byte-for-byte.
+   */
+  agent?: BackgroundAgentConfig
 }
 
 /**
@@ -304,53 +321,75 @@ function truncateAtWordBoundary(text: string, maxLen: number): string {
 }
 
 /**
- * Production synthesizer: pipe the prompt to `claude -p` over stdin,
- * read stdout, throw on non-zero exit / empty stdout / spawn error.
+ * Production synthesizer factory: returns a `SynthesizerFn` bound to a
+ * resolved `BackgroundAgentConfig`. Pipes the prompt to the configured
+ * binary over stdin, reads stdout, throws on non-zero exit / empty
+ * stdout / spawn error.
  *
  * Stdin-piping (rather than putting the prompt in argv) keeps the body
  * content out of the process list — the same posture
  * `spawnBackgroundSave` uses for the autosave / digest paths.
+ *
+ * The synthesizer does NOT need a tool allowlist — it produces a single
+ * synopsis string and never calls MCP tools — so `{{allowedTools}}`
+ * placeholders inside `agent.args` are substituted with the empty
+ * string. Operators whose CLI requires the placeholder absent should
+ * drop it from their `args` override rather than relying on this
+ * substitution (an empty arg lands in argv unmodified, which most CLIs
+ * tolerate as a value-only positional).
+ *
+ * Exported for the migrate CLI; tests inject a fake via
+ * `BackfillOptions.synthesizer` and don't need this factory.
  */
-async function spawnClaudeSynthesizer(input: SynthesizerInput): Promise<string> {
-  const claudeBin = findClaudeBinary()
-  if (!claudeBin) {
-    throw new Error("claude binary not found on PATH")
-  }
-  const prompt = buildSynopsisSynthesisPrompt(input)
+export function makeBackgroundSynthesizer(
+  agent: BackgroundAgentConfig,
+): SynthesizerFn {
+  return async function spawnSynthesizer(
+    input: SynthesizerInput,
+  ): Promise<string> {
+    const binary = findBackgroundBinary(agent.command)
+    if (!binary) {
+      throw new Error(
+        `background command "${agent.command}" not found on PATH — install ` +
+          `the binary, override hooks.backgroundAgent.command in .lore.yaml, ` +
+          `or re-run with --synopsis-backend placeholder (synopsis-backfill only).`,
+      )
+    }
+    const prompt = buildSynopsisSynthesisPrompt(input)
+    const resolvedArgs = renderAgentArgs(agent.args, "")
 
-  return await new Promise((resolve, reject) => {
-    const child = spawn(
-      claudeBin,
-      ["-p", "--no-session-persistence", "--model", "sonnet"],
-      { stdio: ["pipe", "pipe", "pipe"] }
-    )
-    let stdout = ""
-    let stderr = ""
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8")
-    })
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8")
-    })
-    child.on("error", reject)
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(
-          new Error(
-            `claude exited with code ${code ?? "unknown"}: ${stderr.trim() || "<no stderr>"}`
+    return await new Promise((resolve, reject) => {
+      const child = spawn(binary, resolvedArgs, {
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+      let stdout = ""
+      let stderr = ""
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8")
+      })
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8")
+      })
+      child.on("error", reject)
+      child.on("close", (code) => {
+        if (code !== 0) {
+          reject(
+            new Error(
+              `${agent.command} exited with code ${code ?? "unknown"}: ${stderr.trim() || "<no stderr>"}`,
+            ),
           )
-        )
-        return
-      }
-      if (stdout.trim().length === 0) {
-        reject(new Error("claude returned empty stdout"))
-        return
-      }
-      resolve(stdout)
+          return
+        }
+        if (stdout.trim().length === 0) {
+          reject(new Error(`${agent.command} returned empty stdout`))
+          return
+        }
+        resolve(stdout)
+      })
+      child.stdin.write(prompt)
+      child.stdin.end()
     })
-    child.stdin.write(prompt)
-    child.stdin.end()
-  })
+  }
 }
 
 export interface CandidatePage {
@@ -479,21 +518,36 @@ export async function backfillSynopses(
     return report
   }
 
+  // Resolve the configured background-agent shape (issue #194). When
+  // `options.agent` is set the operator's `.lore.yaml` /
+  // `LORE_BACKGROUND_COMMAND` override drives the binary lookup and the
+  // arg shape. Falls through to historical claude-shaped defaults when
+  // unset so callers that haven't been threaded through the config layer
+  // (older tests, direct service calls) keep working byte-for-byte.
+  const agent: BackgroundAgentConfig = options.agent ?? {
+    command: DEFAULT_BACKGROUND_COMMAND,
+    args: [...DEFAULT_BACKGROUND_ARGS],
+  }
+
   // PATH preflight runs only on the apply path AND only for the claude
-  // backend. The placeholder backend doesn't need claude at all; the
-  // plan-only path doesn't either (operators without claude installed
+  // backend. The placeholder backend doesn't need a synthesizer binary at
+  // all; the plan-only path doesn't either (operators without the binary
   // can still run the cheap candidate-count preview).
   if (backend === "claude") {
-    const preflight = options.pathPreflight ?? (() => findClaudeBinary() !== null)
+    const preflight =
+      options.pathPreflight ?? (() => findBackgroundBinary(agent.command) !== null)
     if (!preflight()) {
       throw new Error(
-        "claude binary not found on PATH — install the claude CLI or re-run with " +
-          "`--synopsis-backend placeholder` to write the sentinel value to legacy rows."
+        `background command "${agent.command}" not found on PATH — install ` +
+          "the binary, override hooks.backgroundAgent.command in .lore.yaml, " +
+          "or re-run with `--synopsis-backend placeholder` (synopsis-backfill " +
+          "only — writes a sentinel value to legacy rows without invoking the " +
+          "agent CLI).",
       )
     }
   }
 
-  const synthesizer = options.synthesizer ?? spawnClaudeSynthesizer
+  const synthesizer = options.synthesizer ?? makeBackgroundSynthesizer(agent)
   const bodyFetcher: BodyFetcherFn =
     options.bodyFetcher ??
     (async (pageId: string) => {

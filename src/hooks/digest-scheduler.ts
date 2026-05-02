@@ -39,6 +39,7 @@ import {
 } from "../core/digest.js"
 import { buildDigestPrompt } from "./prompts.js"
 import { DIGEST_ALLOWLIST, isBenignRace, spawnBackgroundSave } from "./background.js"
+import type { BackgroundAgentConfig } from "./config.js"
 import {
   clearDigestMarker,
   digestMarkerAgeDays,
@@ -50,6 +51,15 @@ export interface DigestSchedulerState {
   config: LoreConfig
   configRoot: string
   autoDigest: boolean
+  /**
+   * Resolved background-agent shape (issue #194). When omitted, the
+   * scheduler falls through to the spawn primitive's built-in default
+   * (`claude -p`). Production callers pass the value from the merged
+   * `HookConfig` so a `.lore.yaml` override or `LORE_BACKGROUND_COMMAND`
+   * env knob applies to digest spawns the same way it applies to autosave
+   * spawns.
+   */
+  backgroundAgent?: BackgroundAgentConfig
 }
 
 export type SchedulerOutcome =
@@ -202,6 +212,7 @@ export async function fireDigestIfStale(
   const result = spawn(cwd, prompt, lockKey, {
     logLabel: "digest",
     allowedTools: DIGEST_ALLOWLIST,
+    agent: state.backgroundAgent,
   })
 
   if (result.kind === "spawned") return "fired"

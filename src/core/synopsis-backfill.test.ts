@@ -370,9 +370,32 @@ describe("backfillSynopses — claude apply path", () => {
         bodyFetcher,
         pathPreflight,
       })
-    ).rejects.toThrow(/claude binary not found/)
+    ).rejects.toThrow(/background command "claude" not found/)
 
-    expect(pathPreflight).toHaveBeenCalledTimes(1)
+    // Issue #194: a custom backgroundAgent surfaces in the failure
+    // message so an operator who configured `command: codex` and
+    // forgot to install the binary sees their configured name in the
+    // error rather than the default. The PATH preflight gets the
+    // resolved command name through the closure.
+    await expect(
+      backfillSynopses(client, DB, {
+        apply: true,
+        backend: "claude",
+        synthesizer,
+        bodyFetcher,
+        pathPreflight,
+        agent: {
+          command: "codex",
+          args: ["exec", "--full-auto"],
+        },
+      }),
+    ).rejects.toThrow(/background command "codex" not found/)
+
+    // Two backfillSynopses calls above (default + custom agent), each
+    // running its own preflight. Both the bodyFetcher and synthesizer
+    // must remain untouched on either call — the preflight throws
+    // before any candidate body fetch.
+    expect(pathPreflight).toHaveBeenCalledTimes(2)
     expect(bodyFetcher).not.toHaveBeenCalled()
     expect(synthesizer).not.toHaveBeenCalled()
     expect(client.pages.update).not.toHaveBeenCalled()

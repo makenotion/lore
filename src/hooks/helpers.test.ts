@@ -96,7 +96,11 @@ vi.mock("./prompts.js", async () => {
   }
 })
 
-import type { HookConfig } from "./config.js"
+import {
+  DEFAULT_BACKGROUND_ARGS,
+  DEFAULT_BACKGROUND_COMMAND,
+  type HookConfig,
+} from "./config.js"
 import {
   getStateDir,
   lockPath,
@@ -138,6 +142,10 @@ function defaultConfig(overrides: Partial<HookConfig> = {}): HookConfig {
     wakeUp: true,
     autoDigest: true,
     learningExtraction: true,
+    backgroundAgent: {
+      command: DEFAULT_BACKGROUND_COMMAND,
+      args: [...DEFAULT_BACKGROUND_ARGS],
+    },
     catchAllName: null,
     subProjects: [],
     ...overrides,
@@ -274,6 +282,87 @@ describe("handleStop", () => {
     expect(allowed).not.toContain("lore-learn")
     expect(allowed).not.toContain("lore-decide")
     expect(allowed).not.toContain("lore-task-create")
+  })
+
+  it("issue #194 — codex-shaped backgroundAgent threads through to the spawn boundary", async () => {
+    // Pins the bottom half of the pipeline: a pre-resolved
+    // `HookConfig.backgroundAgent` carrying codex's shape must reach
+    // `child_process.spawn` with the codex binary AND codex args, NOT
+    // Claude's flag dialect. The top half (mergeHookDefaults's
+    // command + preset resolution from `LORE_AGENT_NAME` / yaml / env)
+    // is exercised in `config.test.ts`; this test pins the
+    // helpers.handleStop → spawnBackgroundSave → spawn stage so the
+    // two halves can't drift independently.
+    execFileSyncMock.mockImplementationOnce(() => "/mock/bin/codex\n")
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-codex-preset",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({
+        backgroundAgent: { command: "codex", args: ["exec", "--full-auto"] },
+      }),
+    )
+
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [bin, args] = spawnMock.mock.calls[0] as [string, string[]]
+    expect(bin).toBe("/mock/bin/codex")
+    // Codex preset shape — emphatically NOT Claude's flag dialect.
+    expect(args).toEqual(["exec", "--full-auto"])
+    expect(args).not.toContain("-p")
+    expect(args).not.toContain("--allowedTools")
+    expect(args).not.toContain("--model")
+    expect(args).not.toContain("sonnet")
+    expect(args).not.toContain("--dangerously-skip-permissions")
+    expect(args).not.toContain("--no-session-persistence")
+  })
+
+  it("issue #194 — threads a custom backgroundAgent into the spawn (binary + args + placeholder substitution)", async () => {
+    // End-to-end pin: a `.lore.yaml`-overridden backgroundAgent flows
+    // from the resolved HookConfig through `handleStop` into
+    // `spawnBackgroundSave` and lands at the `child_process.spawn`
+    // boundary as the operator-configured binary + args. Without this,
+    // the unit tests cover the helpers in isolation but no test catches
+    // a regression where the integration drops the custom shape.
+    //
+    // Path probe routing: `which` returns `/mock/bin/codex` for the
+    // override; the same `execFileSyncMock` already powers the default
+    // path so we don't need extra setup here.
+    execFileSyncMock.mockImplementationOnce(() => "/mock/bin/codex\n")
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-custom-agent",
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig({
+        backgroundAgent: {
+          command: "codex",
+          args: ["exec", "--full-auto", "--tools={{allowedTools}}"],
+        },
+      }),
+    )
+
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [bin, args] = spawnMock.mock.calls[0] as [string, string[]]
+    // Binary lookup hit the override, not the default `claude`.
+    expect(bin).toBe("/mock/bin/codex")
+    // Args carry the operator's custom shape, including the substituted
+    // allowlist embedded in the `--tools=` arg via the placeholder.
+    expect(args[0]).toBe("exec")
+    expect(args[1]).toBe("--full-auto")
+    expect(args[2]).toMatch(/^--tools=/)
+    expect(args[2]).toContain("lore-memory")
+    // The historical `claude -p`-shaped flags are absent — proves the
+    // operator's args fully replaced the defaults rather than appending.
+    expect(args).not.toContain("--dangerously-skip-permissions")
+    expect(args).not.toContain("--no-session-persistence")
+    expect(args).not.toContain("-p")
   })
 
   it("forwards LORE_USER_NAME into the spawned child's env when set (DEFERRED-ATTRIBUTION)", async () => {

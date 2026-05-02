@@ -9,6 +9,7 @@ import {
   isBenignRace,
   spawnBackgroundSave,
 } from "../../hooks/background.js"
+import { mergeHookDefaults } from "../../hooks/config.js"
 import { touchDigestMarker } from "../../hooks/digest-marker.js"
 import { safeFilenameSegment } from "../../hooks/marker-key.js"
 
@@ -137,9 +138,11 @@ export const digestCommand = new Command("digest")
         // so a manual `lore digest` and a Stop-fired auto-digest race
         // through the same `MAX_CONCURRENT_SAVES` gate.
         const lockKey = `digest-${safeFilenameSegment(projectLabel)}`
+        const hookConfig = mergeHookDefaults(services.config.hooks)
         const result = spawnBackgroundSave(spawnCwd, prompt, lockKey, {
           logLabel: "digest",
           allowedTools: DIGEST_ALLOWLIST,
+          agent: hookConfig.backgroundAgent,
         })
         if (result.kind !== "spawned") {
           // Benign races (lock-held, cap-hit, race-lost) mean a peer is

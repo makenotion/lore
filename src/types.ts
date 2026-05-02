@@ -1265,6 +1265,31 @@ export interface LoreConfig {
     learningExtraction?: boolean
     /** Real user messages between structured AI-driven saves. Default: 5. */
     saveInterval?: number
+    /**
+     * Background-agent worker configuration (issue #194). Lore's autosave
+     * and auto-digest paths shell out to a detached agent CLI to do the
+     * structured save / digest synthesis. Defaults to `claude -p` with the
+     * shape Claude Code installs assume. Codex-only operators (or anyone
+     * who wants to try a different agent CLI) override `command` to point
+     * at an alternate binary and `args` to pass that binary's headless
+     * flags. Each spawn substitutes `{{allowedTools}}` in `args` for the
+     * tool allowlist string — operators whose CLI does not accept an
+     * allowlist flag should omit the placeholder. Honors
+     * `LORE_BACKGROUND_COMMAND` env override on `command` for ad-hoc
+     * experimentation without editing `.lore.yaml`.
+     */
+    backgroundAgent?: {
+      /** Binary name (resolved on PATH) or absolute path. Default: "claude". */
+      command?: string
+      /**
+       * Args passed to the binary verbatim, with `{{allowedTools}}` replaced
+       * by the tool allowlist string at spawn time. The placeholder appears
+       * once in the default; multiple occurrences are all replaced; omitting
+       * it skips the allowlist hand-off entirely (operators whose CLI takes
+       * the allowlist via env or stdin instead).
+       */
+      args?: string[]
+    }
   }
 }
 

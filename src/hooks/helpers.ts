@@ -453,7 +453,8 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
         const result = spawnBackgroundSave(
           event.cwd ?? process.cwd(),
           prompt,
-          event.session_id
+          event.session_id,
+          { agent: config.backgroundAgent },
         )
         if (result.kind === "spawned") {
           await writeSaveCount(event.session_id, currentCount)
@@ -804,6 +805,7 @@ export async function handleAutoDigest(): Promise<void> {
       config: state.config,
       configRoot: state.configRoot,
       autoDigest: state.hookConfig.autoDigest && !autoDigestEnvDisabled(),
+      backgroundAgent: state.hookConfig.backgroundAgent,
     })
   } catch (err) {
     process.stderr.write(

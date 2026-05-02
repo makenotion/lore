@@ -55,6 +55,110 @@ Tests for each module sit alongside it (`*.test.ts`). `helpers.ts` runs
 — when imported from a test file the `isEntryPoint()` guard skips it so
 handlers can be unit-tested directly.
 
+## Background-agent configurability (issue #194)
+
+The Stop-spawn autosave and Stop-spawn auto-digest paths shell out to a
+detached agent CLI. The historical default is `claude -p` with the args
+`["-p", "--allowedTools", "{{allowedTools}}", "--dangerously-skip-permissions",
+"--no-session-persistence", "--model", "sonnet"]` — preserved byte-for-byte so
+Claude Code installs see no behavioral change.
+
+Operators swap the binary by name (preset args resolve automatically):
+
+```yaml
+hooks:
+  backgroundAgent:
+    command: codex   # picks up CODEX_BACKGROUND_ARGS preset (`exec --full-auto`)
+```
+
+Or via env (ad-hoc):
+
+```bash
+export LORE_BACKGROUND_COMMAND=codex
+```
+
+For unsupported binaries, operators must supply `args` explicitly:
+
+```yaml
+hooks:
+  backgroundAgent:
+    command: aider
+    args: ["--no-pretty", "--message-from-stdin"]
+```
+
+Resolution order:
+
+| Field | Precedence (highest first) |
+|---|---|
+| `command` | `LORE_BACKGROUND_COMMAND` env > `hooks.backgroundAgent.command` in `.lore.yaml` > derived from `LORE_AGENT_NAME` (via `AGENT_BACKGROUND_COMMAND`) > `"claude"` |
+| `args`    | `hooks.backgroundAgent.args` in `.lore.yaml` > preset for the resolved `command` (`lookupCommandPreset` — basename-aware) > `DEFAULT_BACKGROUND_ARGS` (Claude-shaped fallthrough) |
+
+The agent-context tier (tier 3 on `command`) is what makes Codex installs
+"just work." The Codex installer prefixes every hook command with
+`LORE_AGENT_NAME=Codex `, so at hook-fire time `mergeHookDefaults` sees
+`LORE_AGENT_NAME=Codex` and derives `command: codex` automatically — no
+per-project `.lore.yaml` setup or shell-rc-exported `LORE_BACKGROUND_COMMAND`
+required. Claude Code installs do NOT set `LORE_AGENT_NAME` (they rely on
+`CLAUDECODE=1` runtime markers, which `mergeHookDefaults` deliberately
+doesn't read for command derivation), so they fall through to the
+historical `claude` default — back-compat preserved byte-for-byte.
+
+Lore ships presets for `claude` and `codex` (in `KNOWN_COMMAND_PRESETS`,
+`src/hooks/config.ts`). The preset lookup is **basename-aware** —
+`/opt/homebrew/bin/codex` and bare `codex` both pick up the codex preset.
+Absolute paths are common in hook environments with minimal `PATH`, and
+exact-string matching would silently let an absolute-path Codex operator
+inherit Claude flags. Adding a preset is a one-line change to the
+constant plus a test in `config.test.ts`. Adding an agent-name → command
+mapping (e.g., a future `Cline` installer that sets
+`LORE_AGENT_NAME=Cline`) is a one-line change to
+`AGENT_BACKGROUND_COMMAND`.
+
+There is no env path for `args` because the value is structurally an array
+and env vars are scalar; an env-shaped split-on-whitespace parser would
+re-introduce the quoting bugs (`--flag "value with spaces"`) the structured
+shape exists to avoid.
+
+The token `{{allowedTools}}` (`ALLOWED_TOOLS_PLACEHOLDER` in `config.ts`) inside
+`args` is replaced at spawn time with the tool allowlist string
+(`DEFAULT_SAVE_ALLOWLIST` for autosave, `DIGEST_ALLOWLIST` for digest). Operators
+whose CLI doesn't accept an allowlist flag drop the placeholder; the spawn
+primitive silently skips the hand-off, and the agent's allowlist must be
+configured out-of-band (for Codex: `mcp_servers.lore.allowed_tools` in
+`.codex/config.toml`). The install-time path emits an explicit `Note:` line
+when the resolved args lack the placeholder so operators see the
+out-of-band requirement.
+
+The merged shape lives on `HookConfig.backgroundAgent` and is threaded through
+`helpers.handleStop` (autosave), `digest-scheduler.fireDigestIfStale`
+(auto-digest), and `core/synopsis-backfill.backfillSynopses`
+(`lore migrate --backfill-synopses`). The `lore digest` CLI calls
+`mergeHookDefaults(services.config.hooks)` to pick up the same knob.
+Direct callers of `spawnBackgroundSave` that omit the `agent` option fall
+through to the built-in defaults — that's the back-compat path for callers
+not threaded through the config layer.
+
+Both `runClaudeInstall` and `runCodexInstall` (in `cli/commands/install.ts`)
+call `resolveBackgroundAgentForInstall` and `printBackgroundAgentSummary` so
+operators see install-time warnings for any of three independent failure
+bands:
+
+1. **Binary missing** — the resolved command isn't on PATH; the runtime
+   spawn would fail with `binary-missing`.
+2. **Unknown command without preset** — the binary exists but isn't in
+   `KNOWN_COMMAND_PRESETS`; args fell through to the Claude-shaped default,
+   which works only for Claude variants. The warning recommends an explicit
+   `args` override.
+3. **Allowlist hand-off missing** — the resolved args lack
+   `{{allowedTools}}`; the agent's allowlist must be configured out-of-band.
+
+`LORE_BACKGROUND_COMMAND` is NOT deprecation-tracked — unlike
+`LORE_NOTION_TOKEN` (soft-deprecated 0.10.0; see root `AGENTS.md`'s
+**Authentication** section), this env var is the canonical
+operator-scoped knob for redirecting the background agent. The
+matching `.lore.yaml` shape is also canonical. Both paths persist
+through the deprecation horizon for `LORE_NOTION_TOKEN` and beyond.
+
 ## Autosave flow
 
 Autosave fires on `Stop` only and spawns a detached `claude -p` sub-agent

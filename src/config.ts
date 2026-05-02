@@ -15,6 +15,12 @@ const hookConfigSchema = z
     autoDigest: z.boolean().optional(),
     learningExtraction: z.boolean().optional(),
     saveInterval: z.number().int().min(1).optional(),
+    backgroundAgent: z
+      .object({
+        command: z.string().min(1).optional(),
+        args: z.array(z.string()).optional(),
+      })
+      .optional(),
   })
   .optional()
 

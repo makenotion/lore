@@ -4,6 +4,10 @@ import { Command } from "commander"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { initServices, type LoreServices } from "../../services.js"
+import {
+  mergeHookDefaults,
+  type BackgroundAgentConfig,
+} from "../../hooks/config.js"
 import type { MemoryTagPlan } from "../../core/tag-migration.js"
 import { classifyTags, planMemoryMigration } from "../../core/tag-migration.js"
 import { BODY_SIZE_CAP_BYTES } from "../../core/memory-encoding.js"
@@ -464,11 +468,18 @@ export const migrateCommand = new Command("migrate")
         }
 
         if (opts.backfillSynopses) {
+          // Issue #194: thread the operator-configured background agent
+          // through the synopsis synthesizer so a Codex-only operator
+          // running `--backfill-synopses` (without `--synopsis-backend
+          // placeholder`) gets the same redirected binary the autosave /
+          // digest paths use.
+          const hookConfig = mergeHookDefaults(services.config.hooks)
           await runSynopsisBackfill(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: opts.dryRun,
             backend: synopsisBackend,
             batchSize: synopsisBatchSize,
+            agent: hookConfig.backgroundAgent,
           })
         }
 
@@ -1551,6 +1562,13 @@ export async function runSynopsisBackfill(
     dryRun?: boolean
     backend: SynopsisBackend
     batchSize?: number
+    /**
+     * Resolved background-agent shape (issue #194). Forwarded to
+     * `backfillSynopses` so the configured binary / args drive the
+     * synthesizer spawn. When omitted, the synthesizer falls through
+     * to the historical claude-shaped defaults.
+     */
+    agent?: BackgroundAgentConfig
   }
 ): Promise<BackfillReport> {
   const planOnly = !options.apply || options.dryRun === true
@@ -1560,6 +1578,7 @@ export async function runSynopsisBackfill(
     dryRun: options.dryRun,
     backend: options.backend,
     batchSize: options.batchSize,
+    agent: options.agent,
   })
 
   if (report.totalCandidates === 0 && report.archivedSkipped === 0) {
