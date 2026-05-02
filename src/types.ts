@@ -1194,6 +1194,22 @@ export interface LoreConfig {
        * Notion's public rate-limit guidance.
        */
       concurrency?: number
+      /**
+       * Sustained outbound request rate, in calls/second. Token-bucket
+       * refill rate enforced by `createLimitedClient`. Defaults to 3 to
+       * match Notion's per-token public rate-limit guidance. Distinct
+       * from `concurrency`: the latter caps fan-out memory; this caps
+       * throughput.
+       */
+      requestsPerSecond?: number
+      /**
+       * Token-bucket capacity — how many calls may fire instantly after
+       * a quiet period. Defaults to 3. A larger burst lets short
+       * fan-outs (decision-graph walks, render-layer title lookups) run
+       * without paying refill latency; the sustained ceiling is still
+       * `requestsPerSecond`.
+       */
+      burstSize?: number
     }
   }
   projects?: ProjectConfig[]

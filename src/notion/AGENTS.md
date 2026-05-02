@@ -191,10 +191,32 @@ the operator runs `lore migrate --build-entities` to wire them in.
 
 ## Rate Limiting
 
-`rate-limit.ts` exports `createLimitedClient(client, concurrency)`. It returns
-a `Proxy` over the real client that routes every outbound method call through
-a shared `p-limit` gate, so fan-out (decision-graph walks, batch fact fetches,
-render-layer title lookups) stays under Notion's ~3 rps public guidance.
+`rate-limit.ts` exports `createLimitedClient(client, options)`. It returns
+a `Proxy` over the real client that routes every outbound method call
+through three composed gates so fan-out (decision-graph walks, batch
+fact fetches, render-layer title lookups) stays under Notion's ~3 rps
+per-token public guidance:
+
+1. **Token bucket** (request rate) — paces sustained throughput.
+   Capacity = `burstSize` (default 3); refill = `requestsPerSecond`
+   (default 3). Short fan-outs that fit under the burst (≤3 calls)
+   fire instantly; longer fan-outs pace at the refill rate.
+2. **`p-limit` slot** (concurrency) — bounds simultaneous in-flight
+   requests so a slow Notion call can't fan out memory under heavy
+   load. Capacity = `concurrency` (default 3).
+3. **Shared 429 backoff** — when a 429 escapes the SDK's internal
+   retry budget (the v5 SDK retries 429s twice with `Retry-After`
+   parsing), the wrapper pauses the bucket for the surfaced
+   `Retry-After` (or `DEFAULT_RATE_LIMIT_BACKOFF_MS = 1000ms` when
+   absent), clamped at `MAX_RATE_LIMIT_BACKOFF_MS = 60_000ms` so a
+   runaway header doesn't freeze the entire client for hours. The
+   pause is observed by every subsequent dispatch on this client.
+   Siblings already past the in-slot `bucket.acquire()` (i.e.
+   already-dispatched SDK calls) are NOT affected — the pause
+   governs the next dispatch, not in-flight calls. Backoff events
+   emit a `[lore] notion-sdk warn: 429 backoff <ms> (source=...)`
+   stderr line by default; consumers wanting telemetry replace
+   `deps.onBackoff`.
 
 The Proxy **recurses through sub-namespaces at arbitrary depth**, so
 three-level paths like `client.blocks.children.list`,
@@ -205,11 +227,44 @@ non-recursive wrapper would leak these three-level calls — an earlier
 revision of this module did, and `setup.ts`'s `blocks.children.list`
 verification sweep was ungoverned until the fix.
 
-`initServicesFromConfig` and `lore init` both wrap the raw client before
-handing it to services, using `config.notion.rateLimit.concurrency`
-(default `3`). `initServicesFromConfig` reads the config value;
-`lore init` runs before `.lore.yaml` exists, so it uses the default and
-picks up any custom concurrency on subsequent commands.
+`initServicesFromConfig` and `lore init` both wrap the raw client
+before handing it to services. `initServicesFromConfig` reads
+`config.notion.rateLimit` (with `concurrency` / `requestsPerSecond` /
+`burstSize` knobs); `lore init` runs before `.lore.yaml` exists, so it
+uses defaults and picks up any custom values on subsequent commands.
+
+**Backwards-compatible signature**: a bare `number` second argument
+is interpreted as `{ concurrency: <n> }`. Legacy `createLimitedClient(client, 3)`
+call sites continue to work; they pick up the new rps + burst defaults
+transparently.
+
+**One-time setup flows pay the rps tax too.** `lore init`,
+`lore install`, and `lore auth --status` previously had only the
+concurrency cap; under the new defaults they're paced at 3 rps. These
+flows run once-per-vault each and are not on the hot path, so the
+added latency (a few seconds for setup-shaped operations that fire >3
+calls/sec) is acceptable. Operators who measure their workload and
+want to tune up should set `notion.rateLimit.requestsPerSecond` in
+`.lore.yaml`.
+
+**Bucket lifecycle.** The bucket only schedules a refill timer when
+its waiter queue is non-empty; the timer is NOT `unref`'d. An
+`unref`'d refill timer would let Node exit between an in-flight SDK
+call resolving and the next queued caller's token arriving, leaving
+the queued caller's Promise unresolved (Node treats top-level await
+on an unresolved Promise as a no-op exit). The natural lifecycle is
+"timer keeps the loop alive while the queue has work; queue drains;
+last issuance schedules no successor; loop exits."
+
+**`pauseFor` drains the bucket.** When a 429 surfaces, the wrapper
+calls `bucket.pauseFor(retryAfterMs)`, which sets `tokens = 0` AND
+`lastRefillMs = pausedUntilMs`. A caller queued during the pause
+therefore waits the pause window PLUS the first refill interval
+(`1/rps` seconds) before its token is issued — pinned by the
+`pauseFor + slow refill` test. Preserving any token at pause-expiry
+would let the next caller fire instantly back into the same
+throttling window the 429 signaled. The extra refill interval is the
+cost of "no bursting after backoff."
 
 Tests that inject their own mock client remain unaffected because the
 wrap happens inside `initServicesFromConfig` / `lore init`, not at
@@ -225,6 +280,15 @@ promise chains, future higher-order factories) or a change to the
 SDK's property shape could bypass the wrap without any type-level
 signal. The scar tissue is: a one-line test per new top-level or
 nested method saves the next regression.
+
+**When the new path lands in a hot fan-out** (a paginated walk, a
+batch-fetch helper that issues many calls to the same SDK method),
+add a *pacing* test alongside the *concurrency* test — the existing
+"caps concurrency on top-level client methods" tests use the
+`RATE_GATE_DISABLED` options bag to bypass pacing for clean cap
+assertions, so a fan-out path that should respect rps needs its own
+test that exercises the bucket. See "paces a burst of calls beyond
+the bucket capacity" for the shape.
 
 **Per-token, not per-integration.** Notion enforces rate limits per
 access token (confirmed with the public-connections team

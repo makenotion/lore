@@ -34,6 +34,8 @@ const configSchema = z.object({
       rateLimit: z
         .object({
           concurrency: z.number().int().positive().optional(),
+          requestsPerSecond: z.number().positive().optional(),
+          burstSize: z.number().int().positive().optional(),
         })
         .optional(),
     })

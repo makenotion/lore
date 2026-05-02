@@ -10,7 +10,7 @@ import { access } from "node:fs/promises"
 import { resolve } from "node:path"
 import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
 import { createClient } from "./notion/client.js"
-import { createLimitedClient, DEFAULT_NOTION_CONCURRENCY } from "./notion/rate-limit.js"
+import { createLimitedClient } from "./notion/rate-limit.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
 import { TopicService } from "./core/topic.js"
@@ -109,10 +109,11 @@ export async function initServicesFromConfig(
   const auth = await resolveAuth(config, configRoot)
   const rawClient = createClient(auth.token, auth.baseUrl)
   // Every downstream service shares the same rate-limited Proxy so fan-out
-  // stays under Notion's public rps ceiling without per-call-site work.
-  const concurrency =
-    config.notion?.rateLimit?.concurrency ?? DEFAULT_NOTION_CONCURRENCY
-  const client = createLimitedClient(rawClient, concurrency)
+  // stays under Notion's per-token rps ceiling without per-call-site work.
+  // The wrapper governs concurrency (fan-out memory), request rate (token
+  // bucket), and 429 shared backoff; defaults match Notion's ~3 rps
+  // public guidance.
+  const client = createLimitedClient(rawClient, config.notion?.rateLimit ?? {})
 
   const vault = new VaultManager(client, config.vault.pageId)
   const driftCheck = await resolveDriftCheck(configRoot, options.driftCheck)
