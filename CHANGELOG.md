@@ -11,6 +11,156 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-01
+
+The 0.10.0 train ships ntn-First Auth: per-engineer Notion bearer
+tokens issued by Notion's internal `ntn` CLI replace the shared
+`LORE_NOTION_TOKEN` deployment, eliminating the per-token rate-limit
+collision N humans on one ~3-rps bucket caused. Three workstreams:
+ntn integration (Workstream A), operator UX (Workstream B), and
+documentation (Workstream C). Internal-rollout-only — the OAuth + PKCE
+broker work originally scoped here is parked at
+`Lore-Issues/oauth-pkce-epic/` for a future external-rollout release.
+The four version literals move atomically per the release-coordinator
+pattern (#10).
+
+### Added
+
+#### Workstream A — ntn integration
+
+- **`resolveAuth` rewrites with a four-source priority order.** The
+  first available source wins: `NOTION_API_TOKEN` env (canonical) >
+  ntn-resolved (`~/.config/notion/auth.json`) > `LORE_NOTION_TOKEN`
+  env (soft-deprecated) > `auth.token` in `.lore.yaml` (soft-
+  deprecated). The pre-0.10.0 `ResolvedAuth` discriminated-union from
+  the parked OAuth epic collapses to a flat shape with a `source`
+  field — every source produces a static bearer token; no refresh
+  capability under ntn. Soft-deprecated paths emit a debounced one-
+  time-per-session warning to stderr; `LORE_SUPPRESS_DEPRECATIONS=1`
+  silences. (Issue 0.10.0/01.)
+- **New `src/auth/ntn.ts` module.** Covers (a) `auth.json` reading +
+  workspace selection via `NOTION_WORKSPACE_ID` env / `auth.workspaceId`
+  config / single-workspace auto-pick; (b) interactive `ntn login`
+  shell-out via `runNtnLogin()` with stdio inheritance and
+  `NOTION_KEYRING=0` forced inside the spawn so engineers don't need
+  the env var in shell rc; (c) auto-install via `installNtn()` invoking
+  `curl -fsSL https://ntn.dev | bash` with operator confirmation
+  (`--yes` skips); (d) version detection via `getNtnVersion` /
+  `checkNtnVersion` against `MIN_NTN_VERSION` (currently `0.12.0`).
+  Below-minimum versions emit a non-blocking warning; Lore prefers
+  existing operator versions and never auto-upgrades. (Issue
+  0.10.0/02.)
+- **New `verifyVaultAccess(client, pageId)` preflight.** Auth-mode-
+  agnostic helper ported from the parked OAuth epic. Runs against
+  `pages.retrieve` and surfaces `not-found` / `unauthorized` /
+  `forbidden` cleanly so operators see "wrong workspace" / "page not
+  shared with the engineer in this workspace" before downstream
+  commands fail. Used by `lore auth --status`, `--login`, `--migrate`,
+  and `lore init <page-id>`. Under ntn-first auth, tokens inherit the
+  engineer's personal Notion permissions; there is no separate "share
+  with Notion Workers CLI integration" step. (Issue 0.10.0/03.)
+
+#### Workstream B — Operator UX
+
+- **`lore auth` rewritten for the ntn-first model.** `--login` is the
+  recommended entry point: probes prerequisites, auto-installs ntn if
+  missing (with confirmation), runs `runNtnLogin()` with
+  `NOTION_KEYRING=0` forced, then runs `verifyVaultAccess` post-flow.
+  `--status` reports ntn install state, active workspace, token source,
+  deprecation state of legacy paths, and runs `verifyVaultAccess`
+  against the configured vault page. `--whoami` reads identity via
+  `users.me`. `--logout` is informational and points at `ntn logout`
+  since Lore does not manage ntn's storage. `-y, --yes` skips
+  confirmation prompts on `--login` / `--migrate` for non-interactive
+  automation. (Issue 0.10.0/06.)
+- **New `lore auth --migrate`.** Walks operators with `LORE_NOTION_TOKEN`
+  set through ntn setup. Shells out to `ntn login` directly via
+  `runNtnLogin()` (no press-Enter pause), runs double-preflight (legacy
+  token reaches vault → ntn-issued token reaches the same vault) before
+  printing unset instructions with shell-rc location detection (zsh /
+  bash / fish). (Issue 0.10.0/07.)
+- **`lore install` adds ntn detection and rewrites MCP env-forwarding.**
+  Three new prerequisite probes: `isNtnInstalled`, ntn version check,
+  auth-resolution. Offers auto-install via `installNtn()` when ntn is
+  missing and auto-login via `runNtnLogin()` when auth resolves empty
+  — both honor `--yes` for non-interactive contexts. The MCP-entry
+  env-forwarding shifts from a static forwarded `LORE_NOTION_TOKEN` to
+  `LORE_CONFIG_ROOT` so the spawned MCP server resolves auth.json on
+  its own at startup; `LORE_SUPPRESS_DEPRECATIONS=1` is always added
+  to the MCP env to silence per-session warnings from spawned children.
+  Conditional `LORE_NOTION_TOKEN` forwarding is preserved when the
+  legacy env var is set in the install-time environment so legacy
+  operators don't lose access by upgrading. `services.ts:initServices`
+  honors `LORE_CONFIG_ROOT` env so MCP children resolve the right
+  `.lore.yaml` without re-walking the filesystem. (Issue 0.10.0/08.)
+- **New `lore init` no-arg form.** Runs against the resolved ntn token;
+  offers auto-install + `runNtnLogin()` if no auth resolves; creates a
+  workspace-level vault page via
+  `pages.create({ parent: { type: "workspace", workspace: true } })`
+  (per Notion's Create-a-page reference, "available only for bots of
+  public connections" — which ntn-issued tokens qualify as); runs
+  preflight; initializes databases; writes `.lore.yaml` with
+  `auth.workspaceId` populated when the resolved auth carries a
+  workspace id. The existing `lore init <page-id>` form for already-
+  created vault pages remains, with a new preflight gate. (Issue
+  0.10.0/09.)
+
+#### Workstream C — Documentation
+
+- **New top-level `Authentication` section in root `AGENTS.md`.**
+  Covers the four auth sources, the per-token Notion rate-limit rule
+  (confirmed with the public-connections team 2026-05-01), the
+  `auth.json` direct-read coupling as a temporary bridge pending
+  `ntn auth token --plain` (DEFERRED-OFFICIAL-EXPORT), the Lore-managed
+  `NOTION_KEYRING=0` posture (forced inside Lore's ntn spawns, not a
+  shell-rc prerequisite), and the version-compatibility policy.
+  (Issue 0.10.0/04.)
+- **New internal-team rollout runbook at `docs/internal-rollout.md`.**
+  Documents per-engineer onboarding, the auto-install path
+  (`curl -fsSL https://ntn.dev | bash`), the version policy,
+  `lore auth --migrate` walkthrough, dogfood criteria, and the asks-
+  list to the `ntn` CLI team for the official `ntn auth token --plain`
+  command. (Issue 0.10.0/05.)
+
+### Changed
+
+- **`.lore.yaml` config schema gains `auth.workspaceId`
+  (string, optional).** Pins which workspace the ntn-token resolver
+  picks from `auth.json` when multiple are present. Falls back to the
+  `NOTION_WORKSPACE_ID` env var, then to single-workspace auto-pick.
+  Documented in `.lore.example.yaml` alongside the four-source priority
+  chain.
+- **Notion `User-Agent` header bumps to `lore/0.10.0`.** Notion logs
+  `User-Agent` on every API call; the bump keeps Notion-side analytics
+  attribution honest. No drift detection migration: 0.10.0 does not add
+  any Notion DB columns — `lore migrate` against a 0.9.x vault is a
+  no-op.
+
+### Deprecated
+
+- **`LORE_NOTION_TOKEN` env var.** Soft-deprecated; still works in 0.10.x
+  but emits a debounced one-time-per-session warning to stderr.
+  `lore auth --migrate` walks operators through upgrading. Hard removal
+  is plausibly 0.11.0 or 1.0.0, contingent on telemetry showing no
+  internal team still relies on the env path. Not 0.10.0.
+- **`auth.token` in `.lore.yaml`.** Same posture as `LORE_NOTION_TOKEN`
+  — soft-deprecated, same debounced warning, same migration path.
+
+### Notes
+
+- **OAuth + PKCE / broker work parked.** The OAuth+PKCE epic originally
+  scoped as 0.10.0 stays parked at `Lore-Issues/oauth-pkce-epic/` for a
+  future external-rollout release; the release coordinator does not
+  update or close the parked epic.
+- **DEFERRED-OFFICIAL-EXPORT timeline open.** The ask to the `ntn` CLI
+  team for an official `ntn auth token --plain` (or equivalent) command
+  has no commitment. If they ship within 0.10.x, Lore lands a 0.10.1
+  patch swapping the auth.json reader for the official command.
+- **Internal-only rollout.** The 0.10.0 dogfood window is multi-team
+  internal — the ntn CLI is not externally available, so external users
+  remain on the legacy paths until the eventual external-rollout
+  release.
+
 ## [0.9.0] - 2026-05-01
 
 The 0.9.0 train ships four engram-borrow workstreams: lexical-conflict
@@ -245,7 +395,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/makenotion/lore/compare/v0.6.0...v0.9.0
 [0.6.0]: https://github.com/makenotion/lore/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/makenotion/lore/releases/tag/v0.5.1

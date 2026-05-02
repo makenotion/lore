@@ -6,9 +6,23 @@ vault:
   # Create a page in Notion, share it with your integration, and paste the ID here.
   pageId: "your-page-id-here"
 
-# Authentication (optional if LORE_NOTION_TOKEN env var is set)
+# Authentication (0.10.0+)
+# Lore resolves a Notion bearer token from the first available source in
+# this priority order:
+#   1. NOTION_API_TOKEN env (canonical; honored by the Notion SDK)
+#   2. ntn-resolved (~/.config/notion/auth.json — the 0.10.0 dogfood path;
+#      run `lore auth --login` to seed it)
+#   3. LORE_NOTION_TOKEN env (soft-deprecated 0.10.0; emits a one-time-
+#      per-session warning; hard removal plausibly 0.11.0+)
+#   4. auth.token below (soft-deprecated 0.10.0; same posture)
+# Most operators leave this block alone and run `lore auth --login`.
 # auth:
+#   # Soft-deprecated. Only set if you cannot use ntn or NOTION_API_TOKEN.
 #   token: "ntn_..."
+#   # workspaceId (0.10.0): pin which workspace the ntn-token resolver picks
+#   # from auth.json when multiple are present. Falls back to the
+#   # NOTION_WORKSPACE_ID env var, then to single-workspace auto-pick.
+#   workspaceId: "<notion-workspace-id>"
 
 # Project definitions for monorepo support.
 # Map sub-directories to named projects.

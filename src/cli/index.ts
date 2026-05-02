@@ -14,7 +14,7 @@ import { hooksCommand } from "./commands/hooks.js"
 
 const program = new Command()
 
-program.name("lore").description("AI memory system backed by Notion").version("0.9.1")
+program.name("lore").description("AI memory system backed by Notion").version("0.10.0")
 
 program.addCommand(initCommand)
 program.addCommand(authCommand)

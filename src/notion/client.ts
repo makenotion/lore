@@ -1,6 +1,6 @@
 import { Client, LogLevel, type Logger } from "@notionhq/client"
 
-const USER_AGENT = "lore/0.9.1"
+const USER_AGENT = "lore/0.10.0"
 
 /**
  * Routes Notion SDK log lines through stderr instead of the default

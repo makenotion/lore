@@ -48,7 +48,7 @@ export async function startServer(): Promise<void> {
   // change — patch bump per the version-literal-must-move-together
   // contract documented in `src/mcp/AGENTS.md`.
   const server = new McpServer(
-    { name: "lore", version: "0.9.1" },
+    { name: "lore", version: "0.10.0" },
     {
       capabilities: {
         tools: {},
