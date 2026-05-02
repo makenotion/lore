@@ -469,11 +469,19 @@ export async function loadWakeUpData(
     Memory[],
     Memory[],
   ] = await Promise.all([
-    services.memories.list({
-      projectId,
-      limit: memoryLimit + 1,
-      includeContent,
-    }),
+    memoryLimit > 0 || memoryLimitWithDigest > 0
+      ? services.memories.list({
+          projectId,
+          limit: memoryLimit + 1,
+          includeContent,
+        })
+      : // Both memory limits are zero — render no memories regardless of
+        // whether a digest exists. Skip the Notion query rather than
+        // fetching `memoryLimit + 1 = 1` row only to slice it away.
+        // Mirrors the gate pattern on the sibling fact / task / task-
+        // candidate arms so every limit-bearing query in the fan-out
+        // shares the same `0 = skip` discipline.
+        Promise.resolve({ items: [] as Memory[] }),
     projectId
       ? // Sort by creation so freshness (`createdAt`) aligns with "latest":
         // an edit to an older digest must not mask a newer one.
@@ -485,7 +493,7 @@ export async function loadWakeUpData(
           sortBy: "created_time",
         })
       : Promise.resolve({ items: [] as Memory[] }),
-    projectId
+    projectId && knowledgeLimit > 0
       ? services.facts.listRecent({
           projectId,
           limit: knowledgeLimit,

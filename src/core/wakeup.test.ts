@@ -426,6 +426,77 @@ describe("loadWakeUpData", () => {
     expect(services.factsListRecentCalls[0]?.limit).toBe(7)
   })
 
+  it("skips the recent-memories query entirely when both memory limits are 0", async () => {
+    // The recent-memories arm of the fan-out feeds two consumer paths
+    // (digest at `memoryLimitWithDigest`, no-digest at `memoryLimit`).
+    // Skipping requires BOTH to be zero — otherwise the digest path
+    // silently under-renders. Gate matches sibling arms in the fan-out.
+    const services = stubServices({
+      rawMemories: [
+        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
+      ],
+      digestMemories: [],
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      memoryLimit: 0,
+      memoryLimitWithDigest: 0,
+      now: NOW,
+    })
+
+    const recentCalls = services.memoriesCalls.filter(
+      (c) => c.source === undefined,
+    )
+    expect(recentCalls).toHaveLength(0)
+    expect(data.memories).toEqual([])
+  })
+
+  it("still fires the recent-memories query when memoryLimitWithDigest > 0 even if memoryLimit is 0", async () => {
+    // Pins the OR gate's correctness: a caller that wants zero
+    // memories without a digest but N memories alongside one must NOT
+    // see the query skipped.
+    const services = stubServices({
+      rawMemories: [
+        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
+      ],
+      digestMemories: [],
+    })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      memoryLimit: 0,
+      memoryLimitWithDigest: 3,
+      now: NOW,
+    })
+
+    const recentCalls = services.memoriesCalls.filter(
+      (c) => c.source === undefined,
+    )
+    expect(recentCalls).toHaveLength(1)
+  })
+
+  it("skips the knowledge-facts query entirely when knowledgeFactLimit is 0", async () => {
+    // The MCP schema documents `knowledgeFactLimit: 0` as "skips the
+    // section." `clampNotionPageSize(0)` clamps up to 1, so without an
+    // explicit short-circuit a project-scoped wake-up still pays the
+    // Notion query and renders one fact — violating the contract.
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      facts: [buildFact({ id: "f1", predicate: "uses" })],
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      knowledgeFactLimit: 0,
+      now: NOW,
+    })
+
+    expect(services.facts.listRecent).not.toHaveBeenCalled()
+    expect(data.knowledgeFacts).toEqual([])
+  })
+
   it("skips digest, fact, decision, and related-memory lookup when no project is resolved", async () => {
     const services = stubServices({ rawMemories: [], digestMemories: [] })
 
