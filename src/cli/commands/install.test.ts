@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
@@ -38,7 +38,9 @@ import {
   buildMcpEnv,
   buildPrintConfigOutput,
   containsTomlArrayOfTables,
+  detectYarnPnp,
   ntnLoginRecovery,
+  prepareInstallContext,
   shellQuotePortablePath,
   shellQuoteSingle,
   deepEqual,
@@ -902,6 +904,182 @@ describe("runCursorInstall (integration)", () => {
     // mcp.js path to the literal "mcp" subcommand argument.
     expect(loreEntry.command).toBe("lore")
     expect(loreEntry.args).toEqual(["mcp"])
+  })
+
+  it("rewrites a PnP entry that still carries LORE_CONFIG_ROOT to the portable shape", async () => {
+    // Followup #11 (makenotion/mail#25947): an operator who installed
+    // before #08's PnP omission rule landed has a `.cursor/mcp.json`
+    // whose `lore` entry uses the canonical PnP launch shape (`yarn
+    // run -T lore mcp`) but still carries `LORE_CONFIG_ROOT` set to
+    // their personal checkout path. Reinstalling under PnP detection
+    // must rewrite the entry so committed config stops leaking the
+    // engineer-specific path. The deep-equal MCP-status comparison
+    // classifies the seeded entry as `stale` (not `current`) because
+    // `binMcpEntry` for `shape: "yarn"` builds `env` without
+    // `LORE_CONFIG_ROOT`, so the runner's write path replaces it.
+    const projectDir = mkdtempSync(join(SCRATCH, "pnp-rewrite-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pnp-rewrite-pkg-"))
+    const targetPath = join(projectDir, ".cursor", "mcp.json")
+
+    const stale = {
+      mcpServers: {
+        lore: {
+          command: "yarn",
+          args: ["run", "-T", "lore", "mcp"],
+          env: {
+            LORE_CONFIG_ROOT: "/Users/old-engineer/work/repo",
+            LORE_SUPPRESS_DEPRECATIONS: "1",
+          },
+        },
+      },
+    }
+    const fs = await import("node:fs/promises")
+    await fs.mkdir(join(projectDir, ".cursor"), { recursive: true })
+    writeFileSync(targetPath, JSON.stringify(stale, null, 2))
+
+    const ctx: InstallContext = { ...makeContext(projectDir, pkgRoot), yarnPnp: true }
+    await runCursorInstall(ctx, null, targetPath, false)
+
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const servers = written.mcpServers as Record<string, unknown>
+    const loreEntry = servers.lore as {
+      command: string
+      args: string[]
+      env: Record<string, string>
+    }
+    expect(loreEntry.command).toBe("yarn")
+    expect(loreEntry.args).toEqual(["run", "-T", "lore", "mcp"])
+    expect(loreEntry.env).not.toHaveProperty("LORE_CONFIG_ROOT")
+    // The other static (`LORE_SUPPRESS_DEPRECATIONS=1`) survives — its
+    // value is a literal "1", not a per-engineer path.
+    expect(loreEntry.env.LORE_SUPPRESS_DEPRECATIONS).toBe("1")
+  })
+
+  it("anchors the PnP entry with cwd + LORE_CONFIG_ROOT under --cursor-global", async () => {
+    // PR #182 review feedback: under `--cursor-global`, the entry
+    // lands at `~/.cursor/mcp.json` (machine-local), not in
+    // committed project config. Cursor's launch cwd at fire time is
+    // not guaranteed to be inside the PnP project, so `yarn run -T
+    // lore mcp` would fire from Cursor's process cwd and fail to
+    // walk upward to `.pnp.cjs`. The runner has to emit `cwd`
+    // anchored to the project's configRoot AND retain
+    // `LORE_CONFIG_ROOT` so the spawned MCP child resolves
+    // `.lore.yaml` regardless of how Cursor handles cwd
+    // inheritance.
+    const projectDir = mkdtempSync(join(SCRATCH, "pnp-global-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pnp-global-pkg-"))
+    const fakeHome = mkdtempSync(join(SCRATCH, "pnp-global-home-"))
+    const targetPath = join(fakeHome, ".cursor", "mcp.json")
+
+    const ctx: InstallContext = { ...makeContext(projectDir, pkgRoot), yarnPnp: true }
+    // useGlobalScope=true is the production driver of the
+    // anchored shape; the runner threads it into the entry
+    // builder.
+    await runCursorInstall(ctx, null, targetPath, true)
+
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const loreEntry = (written.mcpServers as Record<string, unknown>).lore as {
+      command: string
+      args: string[]
+      cwd?: string
+      env: Record<string, string>
+    }
+    expect(loreEntry.command).toBe("yarn")
+    expect(loreEntry.args).toEqual(["run", "-T", "lore", "mcp"])
+    // configRoot defaults to projectDir under makeContext (no
+    // .lore.yaml on disk). `toPortablePath` leaves tmpdir paths
+    // unchanged because they're outside `homedir()`.
+    expect(loreEntry.cwd).toBe(projectDir)
+    expect(loreEntry.env["LORE_CONFIG_ROOT"]).toBe(projectDir)
+  })
+
+  it("anchors cwd to projectDir (NOT configRoot) when .lore.yaml lives above the PnP workspace", async () => {
+    // PR #182 second-round review feedback: `--project
+    // <repo>/services/mail` plus a `.lore.yaml` that resolves to a
+    // parent ABOVE the PnP workspace splits the two roots:
+    //
+    //   tmpdir/umbrella/                       <- configRoot
+    //                                              (.lore.yaml lives here,
+    //                                              found by findConfigFile's
+    //                                              upward walk from mail)
+    //   tmpdir/umbrella/repo/                  <- PnP workspace
+    //                                              (.pnp.cjs lives here)
+    //   tmpdir/umbrella/repo/services/mail/    <- projectDir
+    //                                              (--project arg)
+    //
+    // The earlier shape of this fix derived `cwd` from `configRoot`,
+    // which works when `.lore.yaml` lives inside the PnP workspace
+    // (configRoot === projectDir or descendant) but breaks here:
+    // `cwd === umbrella` is OUTSIDE the PnP workspace, so
+    // `yarn run -T` walks upward from umbrella and never enters
+    // `repo/` where `.pnp.cjs` lives. Same class of failure the
+    // global-scope anchor was supposed to close.
+    //
+    // The fix: thread `launchCwd: context.projectDir` through to
+    // the entry builder, and `LORE_CONFIG_ROOT: context.configRoot`
+    // independently. `projectDir` is what `detectYarnPnp` was
+    // called against — guaranteed at-or-below `.pnp.cjs` when
+    // `yarnPnp` came back true. `configRoot` continues to point
+    // at the actual `.lore.yaml` directory so the spawned MCP
+    // child can resolve config.
+    const umbrella = mkdtempSync(join(SCRATCH, "umbrella-"))
+    const repo = join(umbrella, "repo")
+    const mail = join(repo, "services", "mail")
+    mkdirSync(mail, { recursive: true })
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+
+    const pkgRoot = mkdtempSync(join(SCRATCH, "split-pkg-"))
+    const fakeHome = mkdtempSync(join(SCRATCH, "split-home-"))
+    const targetPath = join(fakeHome, ".cursor", "mcp.json")
+
+    const ctx: InstallContext = {
+      ...makeContext(mail, pkgRoot),
+      // configRoot deliberately diverges from projectDir — this is
+      // the topology where `.lore.yaml` resolves to a parent above
+      // the PnP workspace.
+      configRoot: umbrella,
+      yarnPnp: true,
+    }
+    await runCursorInstall(ctx, null, targetPath, true)
+
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const loreEntry = (written.mcpServers as Record<string, unknown>).lore as {
+      cwd?: string
+      env: Record<string, string>
+    }
+    // The fix: cwd anchors to projectDir (inside PnP workspace)
+    // so `yarn run -T` can walk upward to `.pnp.cjs` at `repo`.
+    expect(loreEntry.cwd).toBe(mail)
+    // The fix: LORE_CONFIG_ROOT continues to point at the
+    // `.lore.yaml` directory (above the PnP workspace), separate
+    // from `cwd`.
+    expect(loreEntry.env["LORE_CONFIG_ROOT"]).toBe(umbrella)
+    // Negative assertion: cwd MUST NOT equal configRoot in this
+    // topology — that's exactly the bug the fix closes.
+    expect(loreEntry.cwd).not.toBe(umbrella)
+  })
+
+  it("does NOT anchor the PnP entry under project-scoped install (committed-portability invariant)", async () => {
+    // Inverse of the test above: pin that the project-scoped path
+    // continues to omit `cwd` and `LORE_CONFIG_ROOT` so committed
+    // `<project>/.cursor/mcp.json` stays portable across
+    // engineers. A regression that lifted the global-scope anchor
+    // into the project path would silently re-introduce
+    // per-engineer leaks Mail PR #25947 spent effort to remove.
+    const projectDir = mkdtempSync(join(SCRATCH, "pnp-project-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pnp-project-pkg-"))
+    const targetPath = join(projectDir, ".cursor", "mcp.json")
+
+    const ctx: InstallContext = { ...makeContext(projectDir, pkgRoot), yarnPnp: true }
+    await runCursorInstall(ctx, null, targetPath, false)
+
+    const written = JSON.parse(await readFile(targetPath, "utf-8")) as Record<string, unknown>
+    const loreEntry = (written.mcpServers as Record<string, unknown>).lore as {
+      cwd?: string
+      env: Record<string, string>
+    }
+    expect(loreEntry.cwd).toBeUndefined()
+    expect(loreEntry.env).not.toHaveProperty("LORE_CONFIG_ROOT")
   })
 
   it("prints the hook-not-supported notice after a successful install", async () => {
@@ -2019,6 +2197,396 @@ describe("Yarn-PnP MCP entry shape (workspace-root resolution + portable env)", 
     // would surface as a failure here.
     const claude = buildClaudeMcpEntry("bare", TEST_CONFIG_ROOT, ENV_NONE)
     expect(claude.env["LORE_CONFIG_ROOT"]).toBe(TEST_CONFIG_ROOT)
+  })
+
+  it("Cursor PnP global-scope entry anchors with cwd and keeps LORE_CONFIG_ROOT", () => {
+    // Under `--cursor-global` the entry lands at `~/.cursor/mcp.json`
+    // which is per-machine, NOT committed across developers. The
+    // committed-portability rationale that drives the omissions on
+    // the project-scoped path doesn't apply here, and Cursor's
+    // launch cwd at fire time is not guaranteed to be inside the
+    // PnP project. Without an explicit `cwd` anchor, `yarn run -T`
+    // would fire from Cursor's process cwd, fail to find
+    // `.pnp.cjs` upward, and the install would silently break for
+    // every PnP operator who used `--cursor-global`.
+    const entry = buildCursorMcpEntry("yarn", TEST_CONFIG_ROOT, ENV_NONE, {
+      useGlobalScope: true,
+    })
+    expect(entry.command).toBe("yarn")
+    expect(entry.args).toEqual(["run", "-T", "lore", "mcp"])
+    // cwd defaults to configRoot when launchCwd is omitted —
+    // safe in the typical case where `.lore.yaml` lives inside
+    // the PnP workspace.
+    expect(entry.cwd).toBe(TEST_CONFIG_ROOT)
+    // LORE_CONFIG_ROOT short-circuits the spawned MCP child's
+    // `.lore.yaml` discovery — defense in depth alongside the cwd
+    // anchor in case Cursor or yarn does anything unexpected with
+    // cwd inheritance.
+    expect(entry.env["LORE_CONFIG_ROOT"]).toBe(TEST_CONFIG_ROOT)
+    expect(entry.env["LORE_SUPPRESS_DEPRECATIONS"]).toBe("1")
+  })
+
+  it("Cursor PnP global-scope entry uses launchCwd separately from configRoot", () => {
+    // Pinning the unit-level invariant the integration test pins
+    // end-to-end: when callers pass `launchCwd` distinct from
+    // `configRoot` (the split-roots topology where `.lore.yaml`
+    // lives above the PnP workspace), the entry's `cwd` derives
+    // from `launchCwd` and `LORE_CONFIG_ROOT` from `configRoot`.
+    const TEST_PROJECT_DIR = "/test/pnp-workspace/services/mail"
+    const TEST_CONFIG_ABOVE_WORKSPACE = "/test/umbrella"
+    const entry = buildCursorMcpEntry(
+      "yarn",
+      TEST_CONFIG_ABOVE_WORKSPACE,
+      ENV_NONE,
+      { useGlobalScope: true, launchCwd: TEST_PROJECT_DIR },
+    )
+    // cwd → launchCwd (inside PnP workspace).
+    expect(entry.cwd).toBe(TEST_PROJECT_DIR)
+    // LORE_CONFIG_ROOT → configRoot (the .lore.yaml directory,
+    // possibly outside the PnP workspace).
+    expect(entry.env["LORE_CONFIG_ROOT"]).toBe(TEST_CONFIG_ABOVE_WORKSPACE)
+  })
+
+  it("Cursor PnP project-scope entry (default) still omits cwd and LORE_CONFIG_ROOT", () => {
+    // Default useGlobalScope=false (and the omitted-options call
+    // path) must continue to produce the committed-portability
+    // shape. A regression that lifted cwd / LORE_CONFIG_ROOT into
+    // the project-scoped path would re-introduce the per-engineer
+    // path leak Mail PR #25947 fixed.
+    const explicit = buildCursorMcpEntry("yarn", TEST_CONFIG_ROOT, ENV_NONE, {
+      useGlobalScope: false,
+    })
+    const defaulted = buildCursorMcpEntry("yarn", TEST_CONFIG_ROOT, ENV_NONE)
+    for (const entry of [explicit, defaulted]) {
+      expect(entry.cwd).toBeUndefined()
+      expect(entry.env["LORE_CONFIG_ROOT"]).toBeUndefined()
+    }
+  })
+
+  it("Cursor bare global-scope entry keeps LORE_CONFIG_ROOT (no cwd needed)", () => {
+    // The bare shape resolves `lore` via PATH (npm /
+    // `node_modules/.bin/lore`) — no need to anchor cwd to find a
+    // `.pnp.cjs` because there isn't one. The spawned MCP child
+    // still needs `LORE_CONFIG_ROOT` to find `.lore.yaml`
+    // regardless of Cursor's cwd, which the bare shape already
+    // emits unconditionally. Pinning that the global-scope flag
+    // doesn't accidentally spuriously add cwd on the bare path.
+    const entry = buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_NONE, {
+      useGlobalScope: true,
+    })
+    expect(entry.cwd).toBeUndefined()
+    expect(entry.env["LORE_CONFIG_ROOT"]).toBe(TEST_CONFIG_ROOT)
+  })
+})
+
+describe("PnP MCP entries carry no per-engineer absolute paths", () => {
+  // Followup #11 (makenotion/mail#25947): the headline portability
+  // promise of the PnP shape is that `.mcp.json` /
+  // `.cursor/mcp.json` / `.codex/config.toml` can be committed to a
+  // shared monorepo without leaking any single engineer's checkout
+  // path. The `LORE_CONFIG_ROOT` omission is the most visible case
+  // (covered above), but the invariant must hold for the entire
+  // serialized entry — `command`, `args`, `cwd`, every value in
+  // `env`, and the entire Codex bash-prefix string. A regression
+  // anywhere in those surfaces would force Mail-style consumers
+  // back onto hand-maintained committed config.
+  //
+  // The probe substrings:
+  //   - `/Users/`  catches macOS absolute paths
+  //   - `${HOME}`  catches the portability-rewritten shell marker
+  //                that `toPortablePath` produces (legitimate on
+  //                the legacy absolute-path shape, illegitimate on
+  //                the PnP shape)
+  //   - `$HOME`    catches the unbraced shell variant for paranoia
+  //
+  // The PROJECT_ABS_PATH passed in is deliberately under `/Users/`
+  // and inside the developer's home directory so a regression that
+  // accidentally included `configRoot` somewhere in the entry would
+  // fail loudly here. The PnP builders ignore the configRoot for
+  // exactly this reason; the test pins that ignoring.
+  const PROJECT_ABS_PATH = "/Users/test-engineer/work/repo"
+
+  // Table-driven across the three MCP-host serializers so a
+  // regression in any one of them fails its own row independently.
+  // Each row's `serialize` returns the full string a future operator
+  // would commit to disk — JSON for Claude / Cursor (the on-disk
+  // shape that ships in `.mcp.json` / `.cursor/mcp.json`), the raw
+  // TOML section for Codex (the on-disk shape that ships in
+  // `.codex/config.toml`).
+  const PNP_HOSTS = [
+    {
+      name: "Claude",
+      serialize: (env: NodeJS.ProcessEnv) =>
+        JSON.stringify(buildClaudeMcpEntry("yarn", PROJECT_ABS_PATH, env)),
+    },
+    {
+      name: "Cursor",
+      serialize: (env: NodeJS.ProcessEnv) =>
+        JSON.stringify(buildCursorMcpEntry("yarn", PROJECT_ABS_PATH, env)),
+    },
+    {
+      name: "Codex",
+      serialize: (env: NodeJS.ProcessEnv) =>
+        buildCodexMcpSection("yarn", PROJECT_ABS_PATH, env),
+    },
+  ] as const
+
+  // A realistic operator env. Real-shaped values (not "test-token"
+  // sentinels) so a regression that accidentally interpolated a
+  // value into committed config would surface a recognizable
+  // secret rather than a sanitized placeholder.
+  const REAL_OPERATOR_ENV: NodeJS.ProcessEnv = {
+    NOTION_API_TOKEN: "secret_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfG",
+    LORE_NOTION_TOKEN: "secret_legacy_lore_token_must_not_leak_into_config",
+    LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
+    NOTION_ENV: "dev",
+    NOTION_BASE_URL: "https://api-dev.notion.com",
+    NOTION_API_BASE_URL: "https://api-dev.notion.com",
+  }
+
+  // Probes that should never appear in committed PnP config:
+  //   - `/Users/` catches macOS absolute paths (the configRoot we
+  //     deliberately passed in) — the PnP shape ignores it.
+  //   - `${HOME}` and `$HOME` catch the portability-rewritten shell
+  //     marker (legitimate on the legacy absolute-path shape but
+  //     illegitimate on PnP).
+  //   - The two raw token strings catch a regression that
+  //     interpolated values into the entry rather than emitting
+  //     `${VAR}` placeholders. The operator env above is the only
+  //     place these strings exist; finding them in serialized
+  //     output means a real leak.
+  //   - The dev base-URL value catches the same family of leak on
+  //     the auth-base-url forwarder. The dev-env name `dev` is too
+  //     short / too generic to probe for safely.
+  const FORBIDDEN_SUBSTRINGS = [
+    "/Users/",
+    "${HOME}",
+    "$HOME",
+    "secret_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfG",
+    "secret_legacy_lore_token_must_not_leak_into_config",
+    "https://api-dev.notion.com",
+  ]
+
+  for (const host of PNP_HOSTS) {
+    it(`${host.name} PnP entry stays portable across the empty-env case`, () => {
+      // No operator env vars set — the bare ntn-resolved-at-runtime
+      // shape. Catches a regression that introduced a per-engineer
+      // path into the always-emitted entry surface.
+      const serialized = host.serialize(ENV_NONE)
+      for (const probe of FORBIDDEN_SUBSTRINGS) {
+        expect(serialized, `${host.name}: empty-env serialized output leaked ${probe}`).not.toContain(probe)
+      }
+    })
+
+    it(`${host.name} PnP entry stays portable with the full real-operator env`, () => {
+      // Every supported runtime forwarder set to a realistic
+      // value. The serialized entry must carry `${VAR}`
+      // placeholders, never the raw values.
+      const serialized = host.serialize(REAL_OPERATOR_ENV)
+      for (const probe of FORBIDDEN_SUBSTRINGS) {
+        expect(serialized, `${host.name}: real-env serialized output leaked ${probe}`).not.toContain(probe)
+      }
+    })
+  }
+
+  it("PnP entries still emit ${VAR} placeholders for the runtime forwarders", () => {
+    // Inverse of the leak probes above: confirm the host actually
+    // emits the placeholder names so the MCP-host substitution flow
+    // works at runtime. Without this, a regression that suppressed
+    // the entire env block would pass the no-leak assertions
+    // trivially.
+    const claude = buildClaudeMcpEntry("yarn", PROJECT_ABS_PATH, REAL_OPERATOR_ENV)
+    expect(claude.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
+    expect(claude.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
+    expect(claude.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
+
+    const cursor = buildCursorMcpEntry("yarn", PROJECT_ABS_PATH, REAL_OPERATOR_ENV)
+    expect(cursor.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
+
+    const codex = buildCodexMcpSection("yarn", PROJECT_ABS_PATH, REAL_OPERATOR_ENV)
+    // Codex's env_vars carries name-only references; the placeholder
+    // form lives implicitly there.
+    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL"]')
+  })
+})
+
+describe("detectYarnPnp — cwd-drift coverage", () => {
+  // Followup #11 (makenotion/mail#25947): the install path runs from
+  // wherever the operator invokes `lore install`, and Claude hooks
+  // can fire after the assistant changes cwd mid-session. Detection
+  // must walk upward from the supplied directory to find the
+  // `.pnp.cjs` (or `.pnp.loader.mjs`) marker at the workspace root,
+  // not just check the immediate directory. Without these tests, a
+  // future refactor that drops the upward walk would still pass the
+  // existing entry-builder tests and silently break Mail-style
+  // monorepo consumers whose hooks fire from `services/<name>`
+  // subdirectories.
+  //
+  // Fixtures use `node:os` `tmpdir()` so the walk doesn't traverse
+  // the developer's home directory; the upward walk hits filesystem
+  // root and returns false on the no-marker path, which is exactly
+  // the production semantics for an outside-repo cwd.
+  const SCRATCH = mkdtempSync(join(tmpdir(), "lore-pnp-detect-"))
+  afterAll(() => {
+    rmSync(SCRATCH, { recursive: true, force: true })
+  })
+
+  it("detects PnP when the marker sits at the supplied repo root", async () => {
+    const repo = mkdtempSync(join(SCRATCH, "repo-root-"))
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+    expect(await detectYarnPnp(repo)).toBe(true)
+  })
+
+  it("detects PnP from a nested workspace cwd by walking upward to the marker", async () => {
+    // Yarn 4 monorepo layout: `apps/web` is a workspace package.
+    // The MCP host or hook may launch from this subdirectory; the
+    // upward walk has to find the marker at the workspace root.
+    const repo = mkdtempSync(join(SCRATCH, "nested-workspace-"))
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+    const apps = join(repo, "apps", "web")
+    mkdirSync(apps, { recursive: true })
+    expect(await detectYarnPnp(apps)).toBe(true)
+  })
+
+  it("detects PnP from `services/mail` (Mail's specific layout)", async () => {
+    // Mirrors the layout from `makenotion/mail#25947`. Hook-time
+    // cwd lands here when the assistant changes directory during a
+    // session, and the install path has to recognize the project as
+    // PnP regardless of which subdirectory it was invoked from.
+    const repo = mkdtempSync(join(SCRATCH, "services-mail-"))
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+    const mail = join(repo, "services", "mail")
+    mkdirSync(mail, { recursive: true })
+    expect(await detectYarnPnp(mail)).toBe(true)
+  })
+
+  it("returns false for an outside-repo cwd with no marker on the upward path", async () => {
+    // Confirms the walk does NOT classify every directory as PnP
+    // just because the bounded walk-stop logic exists. Without this
+    // test, a regression that returned `true` for any tmpdir-style
+    // path would silently misroute every install onto the PnP
+    // shape.
+    const empty = mkdtempSync(join(SCRATCH, "outside-"))
+    expect(await detectYarnPnp(empty)).toBe(false)
+  })
+
+  it("recognizes the `.pnp.loader.mjs` alternate marker spelling", async () => {
+    // Some Yarn configurations emit `.pnp.loader.mjs` instead of
+    // `.pnp.cjs` (or alongside it). The detector accepts either —
+    // documented in the helper's docblock — so installs on those
+    // configs land on the PnP shape just like `.pnp.cjs`-equipped
+    // ones.
+    const repo = mkdtempSync(join(SCRATCH, "loader-marker-"))
+    writeFileSync(join(repo, ".pnp.loader.mjs"), "")
+    expect(await detectYarnPnp(repo)).toBe(true)
+  })
+})
+
+describe("prepareInstallContext — threads --project through to runner-bound yarnPnp", () => {
+  // Followup #11 (makenotion/mail#25947): Mail invokes
+  // `yarn run -T lore install -y` from arbitrary cwds, frequently a
+  // workspace package's directory rather than the repo root. The seam
+  // that has to hold end-to-end:
+  //
+  //   --project <repo>/services/mail
+  //     → projectDir = <abs path>/services/mail
+  //     → detectYarnPnp(projectDir) walks upward
+  //     → context.yarnPnp = true (because .pnp.cjs sits at <repo>)
+  //     → every per-client runner sees shape: "yarn"
+  //
+  // detectYarnPnp's upward walk is unit-tested above and the
+  // runner-level honoring of yarnPnp:true is integration-tested in
+  // runCursorInstall, but nothing pinned the threading from
+  // --project through prepareInstallContext into the runner-bound
+  // context. A regression that, say, forwarded process.cwd() into
+  // detectYarnPnp instead of opts.project would slip past every
+  // existing test.
+  const SCRATCH = mkdtempSync(join(tmpdir(), "lore-prepare-ctx-"))
+  afterAll(() => {
+    rmSync(SCRATCH, { recursive: true, force: true })
+  })
+
+  it("auto-detects yarnPnp when --project lands in a nested workspace package and the marker sits at the repo root", async () => {
+    // Mail's specific layout: hooks fire / install runs from
+    // `services/mail`. The function must locate the marker by
+    // walking upward, not by checking only the supplied directory.
+    const repo = mkdtempSync(join(SCRATCH, "mail-monorepo-"))
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+    const mail = join(repo, "services", "mail")
+    mkdirSync(mail, { recursive: true })
+
+    const ctx = await prepareInstallContext({ project: mail, yes: true })
+
+    expect(ctx.projectDir).toBe(mail)
+    expect(ctx.yarnPnp).toBe(true)
+    expect(ctx.legacyPaths).toBe(false)
+  })
+
+  it("returns yarnPnp:false when --project lands outside any PnP repo", async () => {
+    // Outside-repo cwds (and projects not using PnP at all) must
+    // route to the bare bin-dispatch shape. A regression that
+    // misclassified non-PnP projects as PnP would wedge installs
+    // for every consumer that uses npm or Yarn 1.
+    const project = mkdtempSync(join(SCRATCH, "non-pnp-"))
+
+    const ctx = await prepareInstallContext({ project, yes: true })
+
+    expect(ctx.projectDir).toBe(project)
+    expect(ctx.yarnPnp).toBe(false)
+  })
+
+  it("--no-yarn-pnp (explicit yarnPnp:false) overrides auto-detection", async () => {
+    // Operator escape hatch: a PnP project that has fixed bin
+    // resolution out-of-band (custom .yarnrc.yml, vendored
+    // node_modules/.bin shim) can pin the bare shape without
+    // ripping out .pnp.cjs. The marker is present but the
+    // explicit override wins per the field's documented priority.
+    const repo = mkdtempSync(join(SCRATCH, "pnp-with-override-"))
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+
+    const ctx = await prepareInstallContext({
+      project: repo,
+      yes: true,
+      yarnPnp: false,
+    })
+
+    expect(ctx.yarnPnp).toBe(false)
+  })
+
+  it("--yarn-pnp (explicit yarnPnp:true) overrides absence of a marker", async () => {
+    // Symmetric escape hatch: an operator pinning the PnP shape on
+    // a project that lacks the marker (e.g., the marker lives in a
+    // sibling workspace and detection's upward-only walk misses
+    // it). The explicit true wins regardless of detection.
+    const project = mkdtempSync(join(SCRATCH, "force-pnp-"))
+
+    const ctx = await prepareInstallContext({
+      project,
+      yes: true,
+      yarnPnp: true,
+    })
+
+    expect(ctx.yarnPnp).toBe(true)
+  })
+
+  it("legacyPaths:true forces yarnPnp:false even when a marker is present", async () => {
+    // The legacy absolute-path shape doesn't depend on PATH
+    // resolution at all (it invokes node against an absolute
+    // mcp.js path), so the PnP question is moot. The field's
+    // priority rule pins `legacyPaths` ahead of every other
+    // signal — pinning it here keeps a future refactor from
+    // accidentally lifting the legacy override.
+    const repo = mkdtempSync(join(SCRATCH, "legacy-with-marker-"))
+    writeFileSync(join(repo, ".pnp.cjs"), "")
+
+    const ctx = await prepareInstallContext({
+      project: repo,
+      yes: true,
+      legacyPaths: true,
+    })
+
+    expect(ctx.legacyPaths).toBe(true)
+    expect(ctx.yarnPnp).toBe(false)
   })
 })
 

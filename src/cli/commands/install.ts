@@ -363,17 +363,89 @@ export interface CursorMcpEntry {
   env: Record<string, string>
 }
 
+/**
+ * Options for `buildCursorMcpEntry`.
+ *
+ * `useGlobalScope` flips the entry from "committed project-scoped
+ * config" semantics to "machine-local global config" semantics. The
+ * project-scoped default writes the entry into
+ * `<project>/.cursor/mcp.json` which is shared across every engineer
+ * with a checkout, so the PnP shape omits machine-specific anchors
+ * (`cwd`, `LORE_CONFIG_ROOT`) and trusts Cursor's launch cwd to land
+ * inside the PnP project. The global shape writes to
+ * `~/.cursor/mcp.json` which is per-machine — Cursor launches the
+ * server from its own process cwd at fire time, which is NOT
+ * guaranteed to be inside any PnP project. Under PnP + global, the
+ * entry has to anchor itself with `cwd` (so `yarn run -T` finds the
+ * right `.pnp.cjs` upward) and keep `LORE_CONFIG_ROOT` (so the
+ * spawned MCP child resolves the right `.lore.yaml`); without those
+ * anchors, the global launcher fires from Cursor's process cwd and
+ * neither yarn nor `.lore.yaml` discovery succeeds.
+ *
+ * `launchCwd` and `LORE_CONFIG_ROOT` derive from DIFFERENT roots and
+ * the function won't conflate them:
+ *
+ * - `launchCwd` must sit at or below the Yarn PnP workspace root
+ *   (the directory containing `.pnp.cjs`) so `yarn run -T`'s upward
+ *   walk resolves the right project. `prepareInstallContext`
+ *   guarantees this by passing `context.projectDir` — the exact
+ *   directory `detectYarnPnp` was called against, so when it
+ *   returned `true`, the directory is at-or-below the PnP root.
+ * - `LORE_CONFIG_ROOT` (sourced from `configRoot`) must point at
+ *   the `.lore.yaml` directory. `findConfigFile` walks upward, and
+ *   `.lore.yaml` can legitimately live ABOVE the PnP workspace —
+ *   for example, a monorepo umbrella containing multiple PnP
+ *   workspaces with one shared `.lore.yaml` at the umbrella root.
+ *   In that layout, deriving `cwd` from `configRoot` would anchor
+ *   the launcher to a directory OUTSIDE the PnP workspace, and
+ *   `yarn run -T` would never walk into `.pnp.cjs` territory.
+ *
+ * `launchCwd` defaults to `configRoot` when omitted — the safe
+ * default for the typical case where `.lore.yaml` lives inside the
+ * PnP workspace. Production callers (`runCursorInstall`) pass
+ * `context.projectDir` explicitly so the split-roots case (config
+ * above workspace) doesn't break.
+ *
+ * The bare (non-PnP) shape already retains `LORE_CONFIG_ROOT` on
+ * both project and global paths because `omitConfigRoot` only
+ * triggers under `shape === "yarn"`. The bare path doesn't need
+ * `cwd` because `lore` is on PATH and the spawned MCP child reads
+ * `LORE_CONFIG_ROOT` to short-circuit config discovery; `launchCwd`
+ * is ignored on the bare path.
+ */
+export interface BuildCursorMcpEntryOptions {
+  useGlobalScope?: boolean
+  launchCwd?: string
+}
+
 export function buildCursorMcpEntry(
   shape: BinDispatchShape = "bare",
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
+  options: BuildCursorMcpEntryOptions = {},
 ): CursorMcpEntry {
-  const build = buildMcpEnv(configRoot, envSource, {
-    omitConfigRoot: shape === "yarn",
-  })
+  const useGlobalScope = options.useGlobalScope ?? false
+  // PnP omission rationale only applies to committed config. Under
+  // global scope the entry is machine-local; an absolute
+  // `LORE_CONFIG_ROOT` is the right anchor, not a portability leak.
+  const omitConfigRoot = shape === "yarn" && !useGlobalScope
+  const build = buildMcpEnv(configRoot, envSource, { omitConfigRoot })
   const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
-    return { command: "yarn", args: ["run", "-T", "lore", "mcp"], env }
+    const entry: CursorMcpEntry = {
+      command: "yarn",
+      args: ["run", "-T", "lore", "mcp"],
+      env,
+    }
+    if (useGlobalScope) {
+      // Anchor `yarn run -T` to a directory inside the PnP
+      // workspace. `launchCwd` (typically `context.projectDir`)
+      // can differ from `configRoot` when `.lore.yaml` lives
+      // above the workspace. See `BuildCursorMcpEntryOptions`
+      // for the split-roots rationale.
+      entry.cwd = toPortablePath(options.launchCwd ?? configRoot)
+    }
+    return entry
   }
   return { command: "lore", args: ["mcp"], env }
 }
@@ -1446,7 +1518,24 @@ function wakeupStatusSuffix(wakeUpConfig: boolean | null): string {
   return wakeUpConfig === false ? " (disabled by config)" : ""
 }
 
-async function prepareInstallContext(
+/**
+ * Resolve the InstallContext threaded into every per-client runner.
+ *
+ * The seam this function pins:
+ *
+ * - `opts.project` → `projectDir` via `resolve()` (relative paths
+ *   land against `process.cwd()` at call time).
+ * - `projectDir` → `yarnPnp` via the priority chain documented on
+ *   the field: `legacyPaths` forces false; an explicit
+ *   `opts.yarnPnp` override (true OR false) wins over auto-detect;
+ *   otherwise `detectYarnPnp(projectDir)` walks upward for a
+ *   `.pnp.cjs` / `.pnp.loader.mjs` marker.
+ *
+ * Exported for integration tests that pin the full pipe (project
+ * arg → upward `.pnp.cjs` walk → runner-bound `yarnPnp`).
+ * Production callers go through `runInstall`.
+ */
+export async function prepareInstallContext(
   opts: {
     yes?: boolean
     project?: string
@@ -2527,7 +2616,24 @@ export async function runCursorInstall(
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
   const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
-  const binMcpEntry = buildCursorMcpEntry(binShape, context.configRoot)
+  // Under `--cursor-global` + PnP, the entry needs to carry `cwd`
+  // and `LORE_CONFIG_ROOT` because Cursor's launch cwd is not
+  // guaranteed to be inside the PnP project at fire time.
+  //
+  // `launchCwd` and `LORE_CONFIG_ROOT` (= configRoot) thread
+  // separately. `projectDir` is the directory `detectYarnPnp`
+  // resolved against, so when `context.yarnPnp === true` it sits
+  // at or below the PnP root and `yarn run -T`'s upward walk is
+  // guaranteed to reach `.pnp.cjs`. `configRoot` may live ABOVE
+  // the PnP workspace when `.lore.yaml` resolves to a parent
+  // (monorepo umbrella with shared lore config); using it for
+  // `cwd` would anchor the launcher OUTSIDE the workspace and
+  // re-introduce the failure mode this fix exists to close. See
+  // `BuildCursorMcpEntryOptions` for the full rationale.
+  const binMcpEntry = buildCursorMcpEntry(binShape, context.configRoot, process.env, {
+    useGlobalScope,
+    launchCwd: context.projectDir,
+  })
   const legacyMcpEntry = buildLegacyCursorMcpEntry(
     portableMcpJsPath,
     portablePkgRoot,
