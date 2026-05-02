@@ -441,13 +441,15 @@ export class FactService {
    * `pages.update` is per-request atomic at the Notion API, so either the
    * whole properties payload lands or none of it does.
    *
-   * `enriched[]` order is deterministic: `Review By`, then `Project`, then
-   * `Source`. Previously each string was pushed after its own successful
-   * update so the array reflected Notion confirmation order; after the
-   * collapse, ordering is mechanical. No user-visible change — no
-   * downstream renderer relies on the order — but the test suite does
-   * pin it at `fact.test.ts:737`, so a future refactor that flips the
-   * order must update the fixture. Worth noting so a future reader
+   * `enriched[]` order is deterministic: `Review By`, then `Project`,
+   * then `Source`, then `SubjectEntity`, then `ObjectEntity`. Previously
+   * each string was pushed after its own successful update so the array
+   * reflected Notion confirmation order; after the collapse, ordering
+   * is mechanical. No user-visible change — no downstream renderer
+   * relies on the order — but the test suite pins it via the
+   * `bundles entity backfill with review/project/source merges`
+   * fixture in `fact.test.ts`, so a future refactor that flips the
+   * order must update that fixture. Worth noting so a future reader
    * doesn't read it as an accidental invariant.
    *
    * The `decodedInput` parameter name is load-bearing: `createWithDedup`
@@ -464,7 +466,7 @@ export class FactService {
     const properties: Record<string, unknown> = {}
     const enriched: string[] = []
 
-    // Parallel boolean flags for the three mutations. Hoisted so the
+    // Parallel boolean flags for the five mutations. Hoisted so the
     // post-write mirror block doesn't re-evaluate the same conditions.
     const extendingReview = Boolean(reviewBy) && reviewBy !== existing.reviewBy
     const missingProjectIds = (decodedInput.projectIds ?? []).filter(
@@ -477,7 +479,24 @@ export class FactService {
     // First-writer-wins on Source: if the existing row already has a
     // source memory we don't clobber it (PR #44's "no orphans" contract
     // only cares about filling the gap, not re-pointing a linked row).
+    // Same posture below for the entity relations.
     const fillingSource = Boolean(!existing.sourceMemoryId && decodedInput.sourceMemoryId)
+    // First-writer-wins on the entity relations, mirroring Source's
+    // posture. Cold creates already populate `SubjectEntity` /
+    // `ObjectEntity` from `decodedInput` via `buildFactProps`; the dedup
+    // path used to drop them on the floor, leaving canonical relations
+    // absent on rows that match a legacy (pre-PF3-01) or partially
+    // migrated row even though the current write already resolved the
+    // ids. We fill only when the existing relation is empty AND the
+    // incoming write resolved one — preserving an existing relation
+    // matches the no-clobber rule on Source. Concurrency analysis vs
+    // `lore migrate --build-entities` lives in `src/core/AGENTS.md`.
+    const fillingSubjectEntity = Boolean(
+      !existing.subjectEntityId && decodedInput.subjectEntityId,
+    )
+    const fillingObjectEntity = Boolean(
+      !existing.objectEntityId && decodedInput.objectEntityId,
+    )
 
     if (extendingReview) {
       properties["Review By"] = { date: { start: reviewBy } }
@@ -496,6 +515,18 @@ export class FactService {
         relation: [{ id: decodedInput.sourceMemoryId }],
       }
       enriched.push("linked source memory")
+    }
+    if (fillingSubjectEntity) {
+      properties["SubjectEntity"] = {
+        relation: [{ id: decodedInput.subjectEntityId }],
+      }
+      enriched.push("linked subject entity")
+    }
+    if (fillingObjectEntity) {
+      properties["ObjectEntity"] = {
+        relation: [{ id: decodedInput.objectEntityId }],
+      }
+      enriched.push("linked object entity")
     }
 
     if (Object.keys(properties).length === 0) return []
@@ -516,6 +547,12 @@ export class FactService {
     // `decodedInput.sourceMemoryId` is a non-empty string — but required for
     // TS to narrow `string | undefined` to `Fact.sourceMemoryId: string | null`.
     if (fillingSource) existing.sourceMemoryId = decodedInput.sourceMemoryId ?? null
+    if (fillingSubjectEntity) {
+      existing.subjectEntityId = decodedInput.subjectEntityId ?? null
+    }
+    if (fillingObjectEntity) {
+      existing.objectEntityId = decodedInput.objectEntityId ?? null
+    }
 
     return enriched
   }

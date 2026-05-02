@@ -1229,6 +1229,12 @@ of triple length, sidestepping Notion's 2000-char `rich_text` truncation.
   - Link `sourceMemoryId` into `Source` only when the existing row is
     orphaned (first-writer-wins — does not clobber an earlier provenance
     link).
+  - Fill `SubjectEntity` / `ObjectEntity` (PF3-01) with the canonical
+    entity ids the upstream caller resolved, but only on sides whose
+    relation is currently empty — same first-writer-wins posture as
+    `Source`. Backfills legacy / partially migrated rows opportunistically
+    on every dedup hit so the migration's coverage doesn't depend on a
+    one-shot `lore migrate --build-entities` run capturing every row.
   All applicable mutations ship as a single atomic `pages.update` —
   Notion's API is per-request atomic, so either every mutated property
   lands or none does. A zero-mutation match (everything already present)
@@ -1253,6 +1259,19 @@ a few hundred ms) can both see an empty probe. The
 `lore migrate --dedup-keys --merge` pass is the authoritative collapse for
 any duplicates that slip through. The pass prints the survivor/loser plan
 by default; `--yes` is required to execute.
+
+**Concurrency vs `lore migrate --build-entities`**: the migration's
+`setEntityRelations` writes target the same `SubjectEntity` /
+`ObjectEntity` columns as the dedup-fill above, and both paths resolve
+canonical ids through `EntityService.resolveOrCreateEntity`. For a
+stable entity name both produce the same id, so a race between an
+in-flight migration and an opportunistic dedup-fill on the same row
+converges on the same value — worst case is one redundant write of the
+same id, never a re-pointed relation. Ambiguity short-circuits both
+paths (the migration skips ambiguous groups; `handleLearn` omits the
+entity id from the `CreateFactInput`, so the dedup-fill flag resolves
+false and no entity write happens here). Operators do not need to
+quiesce live writes before running `--build-entities`.
 
 **Rule**: Callers that need to tell the user "this was a dedup, not a new
 row" (e.g. `lore-learn`) should use `createWithDedup()` and inspect the

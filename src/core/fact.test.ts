@@ -39,6 +39,8 @@ function factPage(overrides: {
   validUntil?: string | null
   projectIds?: string[]
   sourceMemoryId?: string | null
+  subjectEntityId?: string | null
+  objectEntityId?: string | null
 }): PageObjectResponse {
   return {
     object: "page",
@@ -101,6 +103,18 @@ function factPage(overrides: {
         type: "rich_text",
         rich_text: overrides.dedupKey
           ? [{ plain_text: overrides.dedupKey }]
+          : [],
+      } as unknown,
+      SubjectEntity: {
+        type: "relation",
+        relation: overrides.subjectEntityId
+          ? [{ id: overrides.subjectEntityId }]
+          : [],
+      } as unknown,
+      ObjectEntity: {
+        type: "relation",
+        relation: overrides.objectEntityId
+          ? [{ id: overrides.objectEntityId }]
           : [],
       } as unknown,
     } as PageObjectResponse["properties"],
@@ -743,19 +757,202 @@ describe("FactService.createWithDedup", () => {
     expect(client.pages.update).not.toHaveBeenCalled()
   })
 
+  it("fills missing SubjectEntity and ObjectEntity relations on a deduped legacy row", async () => {
+    // Issue #199: cold-create wires `subjectEntityId` / `objectEntityId`
+    // through `buildFactProps`, but the dedup path used to drop them.
+    // A legacy row that pre-dates PF3-01 has empty entity relations; the
+    // current write already resolved canonical ids upstream, so the
+    // dedup hit must fold them into the same atomic update.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "legacy-fact",
+          subjectEntityId: null,
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      subjectEntityId: "ent-sub",
+      objectEntityId: "ent-obj",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([
+      "linked subject entity",
+      "linked object entity",
+    ])
+    expect(result.fact.subjectEntityId).toBe("ent-sub")
+    expect(result.fact.objectEntityId).toBe("ent-obj")
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const [updateCall] = client.pages.update.mock.calls
+    expect(updateCall[0].page_id).toBe("legacy-fact")
+    expect(updateCall[0].properties).toEqual({
+      SubjectEntity: { relation: [{ id: "ent-sub" }] },
+      ObjectEntity: { relation: [{ id: "ent-obj" }] },
+    })
+  })
+
+  it("preserves existing entity relations (first-writer-wins, no clobber)", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "linked-fact",
+          subjectEntityId: "ent-sub-original",
+          objectEntityId: "ent-obj-original",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      subjectEntityId: "ent-sub-new",
+      objectEntityId: "ent-obj-new",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(result.fact.subjectEntityId).toBe("ent-sub-original")
+    expect(result.fact.objectEntityId).toBe("ent-obj-original")
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("fills only the missing entity side and leaves the populated side untouched", async () => {
+    // Mid-migration vault: subject was re-pointed by `--build-entities`
+    // but the object side hasn't landed yet. Asymmetric fill.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "half-linked",
+          subjectEntityId: "ent-sub-original",
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      subjectEntityId: "ent-sub-new",
+      objectEntityId: "ent-obj",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual(["linked object entity"])
+    expect(result.fact.subjectEntityId).toBe("ent-sub-original")
+    expect(result.fact.objectEntityId).toBe("ent-obj")
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const [updateCall] = client.pages.update.mock.calls
+    expect(updateCall[0].properties).toEqual({
+      ObjectEntity: { relation: [{ id: "ent-obj" }] },
+    })
+  })
+
+  it("bundles entity backfill with review/project/source merges in one atomic update", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          projectIds: ["proj-x"],
+          reviewBy: "2026-04-01",
+          sourceMemoryId: null,
+          subjectEntityId: null,
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x", "proj-y"],
+      reviewBy: "2026-05-01",
+      sourceMemoryId: "mem-new",
+      subjectEntityId: "ent-sub",
+      objectEntityId: "ent-obj",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([
+      "extended review to 2026-05-01",
+      "added 1 project",
+      "linked source memory",
+      "linked subject entity",
+      "linked object entity",
+    ])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const [updateCall] = client.pages.update.mock.calls
+    expect(updateCall[0].page_id).toBe("live-fact")
+    expect(updateCall[0].properties).toEqual({
+      "Review By": { date: { start: "2026-05-01" } },
+      Project: { relation: [{ id: "proj-x" }, { id: "proj-y" }] },
+      Source: { relation: [{ id: "mem-new" }] },
+      SubjectEntity: { relation: [{ id: "ent-sub" }] },
+      ObjectEntity: { relation: [{ id: "ent-obj" }] },
+    })
+  })
+
+  it("issues no update when caller omits entity ids on a legacy row", async () => {
+    // Legacy `lore-fact action='create'` paths (decision-graph helpers,
+    // pre-PF3-01 callers) don't pass entity ids. The dedup hit must
+    // remain a no-op when nothing else changed.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "legacy-fact",
+          projectIds: ["proj-x"],
+          subjectEntityId: null,
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      projectIds: ["proj-x"],
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
   it("leaves existing in-memory state untouched when the atomic update throws", async () => {
-    // Pin the in-memory rollback invariant: if someone later moves the
-    // `existing.projectIds = ...` / `existing.sourceMemoryId = ...`
-    // mirror assignments back above the `await pages.update`, the
-    // retry below would see mergedProjectIds === null and fillingSource
-    // === false and issue zero updates — which is the failure mode this
-    // test catches. With the assignments correctly placed after the
-    // await, the retry recomputes both and issues a second update with
-    // the same payload as the first attempt.
+    // Pin the in-memory rollback invariant: if someone later moves any of
+    // the `existing.projectIds = ...` / `existing.sourceMemoryId = ...` /
+    // `existing.subjectEntityId = ...` / `existing.objectEntityId = ...`
+    // mirror assignments back above the `await pages.update`, the retry
+    // below would see the corresponding `filling*` flag false and skip
+    // its update — which is the failure mode this test catches. With
+    // the assignments correctly placed after the await, the retry
+    // recomputes every flag and issues a second update with the same
+    // payload as the first attempt.
     const livePage = factPage({
       id: "live-fact",
       projectIds: ["proj-x"],
       sourceMemoryId: null,
+      subjectEntityId: null,
+      objectEntityId: null,
     })
     client.dataSources.query.mockResolvedValue({
       results: [livePage],
@@ -771,6 +968,8 @@ describe("FactService.createWithDedup", () => {
         object: "Obj",
         projectIds: ["proj-x", "proj-y"],
         sourceMemoryId: "mem-new",
+        subjectEntityId: "ent-sub",
+        objectEntityId: "ent-obj",
       })
     ).rejects.toThrow("Notion 500")
 
@@ -780,11 +979,11 @@ describe("FactService.createWithDedup", () => {
     expect(client.pages.update).toHaveBeenCalledTimes(1)
 
     // Retry: second call's probe returns the same livePage. If the first
-    // attempt had mutated `existing` before the throw, merging the same
-    // projectIds would find them already present and skip the Project
-    // update — so we'd see `enriched` missing the projects entry. The
-    // correct post-throw behaviour is that the second call sees the
-    // pristine pre-write state and produces the full enrichment again.
+    // attempt had mutated `existing` before the throw, the matching merge
+    // flags would short-circuit on the retry and the second update would
+    // be missing the corresponding entries. The correct post-throw
+    // behaviour is that the second call sees the pristine pre-write
+    // state and produces the full enrichment again.
     client.pages.update.mockResolvedValueOnce({})
     const retryResult = await service.createWithDedup({
       subject: "Sub",
@@ -792,14 +991,18 @@ describe("FactService.createWithDedup", () => {
       object: "Obj",
       projectIds: ["proj-x", "proj-y"],
       sourceMemoryId: "mem-new",
+      subjectEntityId: "ent-sub",
+      objectEntityId: "ent-obj",
     })
     expect(retryResult.deduped).toBe(true)
     expect(retryResult.enriched).toEqual([
       "added 1 project",
       "linked source memory",
+      "linked subject entity",
+      "linked object entity",
     ])
-    // One update on the retry — a single atomic payload covering both
-    // properties, identical to the shape the first attempt built.
+    // One update on the retry — a single atomic payload covering every
+    // property, identical to the shape the first attempt built.
     expect(client.pages.update).toHaveBeenCalledTimes(2)
   })
 })
