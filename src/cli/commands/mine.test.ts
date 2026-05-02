@@ -1,8 +1,25 @@
-import { describe, expect, it, vi } from "vitest"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { relative } from "node:path"
+import { join, relative } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
+
+const { mineStateDir } = vi.hoisted(() => {
+  const mineStateDir =
+    `${process.env["TMPDIR"] ?? "/tmp"}/lore-mine-lock-test-${process.pid}-${Date.now()}`
+  process.env["LORE_HOOK_STATE_DIR"] = mineStateDir
+  process.env["LORE_MINE_POST_CREATE_STABILIZE_MS"] = "0"
+  process.env["LORE_MINE_LOCK_TIMEOUT_MS"] = "1000"
+  return { mineStateDir }
+})
+
+afterEach(async () => {
+  await rm(mineStateDir, { recursive: true, force: true })
+  process.env["LORE_MINE_POST_CREATE_STABILIZE_MS"] = "0"
+  process.env["LORE_MINE_LOCK_TIMEOUT_MS"] = "1000"
+  delete process.env["LORE_DEBUG"]
+})
+
 import {
   DEFAULT_MINE_LIMIT,
   DEFAULT_MINE_PATTERN,
@@ -13,10 +30,12 @@ import {
   formatMineSummary,
   globToRegExp,
   matchesGlob,
+  mineLockPath,
   parseMineCliOptions,
   resolveMineProject,
   runMineUpsert,
   selectMineFiles,
+  tryReclaimStaleMineLock,
   type MineCliOptions,
   type MineSummary,
 } from "./mine.js"
@@ -762,6 +781,8 @@ describe("runMineUpsert (orchestration)", () => {
     existingByPath?: Map<string, string>
     concurrency?: number
     searchImpl?: (input: { query: string }) => Promise<Memory[]>
+    searchDelayMs?: number
+    onCreate?: (input: unknown) => void | Promise<void>
   }) {
     const existingByPath = opts.existingByPath ?? new Map<string, string>()
     const updateCalls: Array<{ id: string; input: unknown }> = []
@@ -769,6 +790,9 @@ describe("runMineUpsert (orchestration)", () => {
     const search =
       opts.searchImpl ??
       (async (input: { query: string }) => {
+        if (opts.searchDelayMs) {
+          await new Promise((r) => setTimeout(r, opts.searchDelayMs))
+        }
         const id = existingByPath.get(input.query)
         if (!id) return []
         return [
@@ -817,10 +841,20 @@ describe("runMineUpsert (orchestration)", () => {
     })
     const create = vi.fn(async (input: unknown) => {
       createCalls.push({ input })
+      await opts.onCreate?.(input)
       return { id: "fresh-id" } as unknown as Memory
     })
     const services = {
       memories: { search, update, create },
+      context: {
+        vault: {
+          pageId: "vault-test",
+          databases: {},
+        },
+        project: null,
+        cwd: "/repo",
+        isCatchAllFallback: false,
+      },
       configRoot: "/repo",
       config: {
         notion: { rateLimit: { concurrency: opts.concurrency ?? 3 } },
@@ -849,6 +883,34 @@ describe("runMineUpsert (orchestration)", () => {
     } finally {
       await rm(tmp, { recursive: true, force: true })
     }
+  }
+
+  function mineLockPathFor(relPath: string, projectId?: string): string {
+    return mineLockPath("vault-test", projectId, relPath)
+  }
+
+  async function seedMineLock(
+    relPath: string,
+    opts: {
+      projectId?: string
+      pid?: number
+      createdAt?: string
+    } = {}
+  ): Promise<string> {
+    const pid = opts.pid ?? 4_000_001
+    const createdAt = opts.createdAt ?? new Date().toISOString()
+    const path = mineLockPathFor(relPath, opts.projectId)
+    await mkdir(path, { recursive: true })
+    await writeFile(
+      join(path, "owner.json"),
+      JSON.stringify({
+        pid,
+        token: "stale-owner",
+        relPath,
+        createdAt,
+      })
+    )
+    return path
   }
 
   it("creates fresh memories on a vault with no existing matches", async () => {
@@ -912,6 +974,145 @@ describe("runMineUpsert (orchestration)", () => {
       expect(createCalls).toHaveLength(1)
       expect(updateCalls).toHaveLength(1)
       expect(updateCalls[0]?.id).toBe("existing-id-1")
+    })
+  })
+
+  it("serializes concurrent runs for the same file so only one fresh row is created", async () => {
+    process.env["LORE_MINE_POST_CREATE_STABILIZE_MS"] = "40"
+    await withFixture({ "a.ts": "// content" }, async (dir) => {
+      const relPath = relative("/repo", `${dir}/a.ts`)
+      const existing = new Map<string, string>()
+      const createInputs: unknown[] = []
+      const makeRunnerServices = () =>
+        makeServices({
+          existingByPath: existing,
+          concurrency: 2,
+          searchDelayMs: 1,
+          onCreate: async (input) => {
+            createInputs.push(input)
+            setTimeout(() => existing.set(relPath, "fresh-id"), 10)
+          },
+        })
+      const firstServices = makeRunnerServices()
+      const secondServices = makeRunnerServices()
+
+      const [first, second] = await Promise.all([
+        runMineUpsert(
+          firstServices.services,
+          dir,
+          ["a.ts"],
+          undefined,
+          undefined,
+          () => {}
+        ),
+        runMineUpsert(
+          secondServices.services,
+          dir,
+          ["a.ts"],
+          undefined,
+          undefined,
+          () => {}
+        ),
+      ])
+
+      expect(first.indexed + second.indexed).toBe(1)
+      expect(first.updated + second.updated).toBe(1)
+      expect(first.failed + second.failed).toBe(0)
+      expect(createInputs).toHaveLength(1)
+      expect(
+        firstServices.updateCalls.length + secondServices.updateCalls.length
+      ).toBe(1)
+    })
+  })
+
+  it("fails fast on duplicate files in the same concurrent batch", async () => {
+    await withFixture({ "a.ts": "// content" }, async (dir) => {
+      const { services, createCalls } = makeServices({
+        searchDelayMs: 20,
+        onCreate: async () => {
+          await new Promise((r) => setTimeout(r, 20))
+        },
+      })
+
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["a.ts", "a.ts"],
+        undefined,
+        undefined,
+        () => {},
+        () => {}
+      )
+
+      expect(summary.indexed).toBe(1)
+      expect(summary.failed).toBe(1)
+      expect(createCalls).toHaveLength(1)
+      expect(
+        summary.outcomes.some(
+          (o) => o.kind === "failed" && o.error.includes("Duplicate in-flight")
+        )
+      ).toBe(true)
+    })
+  })
+
+  it("recovers a stale mine lock before processing the file", async () => {
+    await withFixture({ "a.ts": "// content" }, async (dir) => {
+      const relPath = relative("/repo", `${dir}/a.ts`)
+      await seedMineLock(relPath)
+      const { services, createCalls } = makeServices({})
+
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["a.ts"],
+        undefined,
+        undefined,
+        () => {}
+      )
+
+      expect(summary.indexed).toBe(1)
+      expect(summary.failed).toBe(0)
+      expect(createCalls).toHaveLength(1)
+    })
+  })
+
+  it("reclaims old mine locks even when the recorded PID is live", async () => {
+    await withFixture({ "a.ts": "// content" }, async (dir) => {
+      const relPath = relative("/repo", `${dir}/a.ts`)
+      await seedMineLock(relPath, {
+        pid: process.pid,
+        createdAt: new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+      })
+      const { services, createCalls } = makeServices({})
+
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["a.ts"],
+        undefined,
+        undefined,
+        () => {}
+      )
+
+      expect(summary.indexed).toBe(1)
+      expect(summary.failed).toBe(0)
+      expect(createCalls).toHaveLength(1)
+    })
+  })
+
+  it("serializes stale-lock cleanup races with the reaper marker", async () => {
+    await withFixture({ "a.ts": "// content" }, async (dir) => {
+      const relPath = relative("/repo", `${dir}/a.ts`)
+      const path = await seedMineLock(relPath)
+
+      const results = await Promise.all([
+        tryReclaimStaleMineLock(path),
+        tryReclaimStaleMineLock(path),
+      ])
+
+      expect(results.filter((r) => r === "reclaimed")).toHaveLength(1)
+      expect(results.some((r) => r === "active" || r === "gone")).toBe(true)
+      await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" })
     })
   })
 
@@ -1023,6 +1224,15 @@ describe("runMineUpsert (orchestration)", () => {
             search,
             create: vi.fn(async () => ({ id: "x" }) as unknown as Memory),
             update: vi.fn(async () => ({ id: "x" }) as unknown as Memory),
+          },
+          context: {
+            vault: {
+              pageId: "vault-test",
+              databases: {},
+            },
+            project: null,
+            cwd: "/repo",
+            isCatchAllFallback: false,
           },
           configRoot: "/repo",
           config: { notion: { rateLimit: { concurrency: 2 } } },

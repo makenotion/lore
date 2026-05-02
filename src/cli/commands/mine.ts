@@ -1,5 +1,16 @@
 import { Command } from "commander"
-import { readFile, readdir, stat } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rmdir,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { resolve, relative, basename, extname, join } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import { initServices, type LoreServices } from "../../services.js"
@@ -70,6 +81,13 @@ export const FIND_EXISTING_LIMIT = 100
  * crowd out the page properties on render and are usually generated
  * artifacts. */
 const MAX_FILE_SIZE = 100 * 1024
+
+const MINE_LOCK_RETRY_MS = 25
+const CORRUPT_MINE_LOCK_STALE_MS = 30_000
+const DEFAULT_MINE_LOCK_WAIT_TIMEOUT_MS = 10 * 60 * 1000
+const DEFAULT_MINE_POST_CREATE_STABILIZE_MS = 500
+const MINE_LOCK_HARD_STALE_MS = 30 * 60 * 1000
+const MINE_LOCK_WAIT_NOTICE_MS = 5_000
 
 const IGNORED_DIRS = new Set([
   "node_modules",
@@ -424,6 +442,351 @@ function projectIdsEqual(a: readonly string[], b: readonly string[]): boolean {
   return true
 }
 
+interface MineFileLock {
+  path: string
+  token: string
+}
+
+interface MineLockSnapshot {
+  pid: number | null
+  ageMs: number
+}
+
+export type MineLockReclaimResult = "reclaimed" | "active" | "gone"
+
+const MINE_LOCK_OWNER_FILE = "owner.json"
+const MINE_LOCK_REAPER_FILE = "reaper"
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function debugMineLockError(source: string, err: unknown): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] mine-lock-${source}: error=${errorMessage(err)} source=mine-${source}\n`
+  )
+}
+
+function parseNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  if (!/^[0-9]+$/.test(raw)) return fallback
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : fallback
+}
+
+function mineLockWaitTimeoutMs(): number {
+  return parseNonNegativeIntegerEnv(
+    "LORE_MINE_LOCK_TIMEOUT_MS",
+    DEFAULT_MINE_LOCK_WAIT_TIMEOUT_MS
+  )
+}
+
+function minePostCreateStabilizeMs(): number {
+  return parseNonNegativeIntegerEnv(
+    "LORE_MINE_POST_CREATE_STABILIZE_MS",
+    DEFAULT_MINE_POST_CREATE_STABILIZE_MS
+  )
+}
+
+function getMineLockDir(): string {
+  // Resolve on every call so tests and hook-hosted invocations can
+  // override LORE_HOOK_STATE_DIR at runtime, matching hooks/lock.ts.
+  const stateRoot = process.env["LORE_HOOK_STATE_DIR"]
+    ? join(process.env["LORE_HOOK_STATE_DIR"])
+    : join(tmpdir(), "lore-hook-state")
+  return join(stateRoot, "mine-locks")
+}
+
+export function mineLockPath(
+  vaultPageId: string,
+  projectId: string | undefined,
+  relPath: string
+): string {
+  const key = `vault:${vaultPageId}\0project:${projectId ?? ""}\0path:${relPath}`
+  const hash = createHash("sha256").update(key).digest("hex")
+  return join(getMineLockDir(), `${hash}.lockdir`)
+}
+
+function mineLockOwnerPath(path: string): string {
+  return join(path, MINE_LOCK_OWNER_FILE)
+}
+
+function mineLockReaperPath(path: string): string {
+  return join(path, MINE_LOCK_REAPER_FILE)
+}
+
+function isErrnoCode(err: unknown, code: string): boolean {
+  return (err as NodeJS.ErrnoException).code === code
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return isErrnoCode(err, "EPERM")
+  }
+}
+
+function parseMineLockOwner(raw: string): { pid: number | null; createdAtMs: number | null } {
+  try {
+    const parsed = JSON.parse(raw) as { pid?: unknown; createdAt?: unknown }
+    const createdAtMs =
+      typeof parsed.createdAt === "string" ? Date.parse(parsed.createdAt) : NaN
+    if (typeof parsed.pid === "number" && Number.isFinite(parsed.pid)) {
+      return {
+        pid: parsed.pid,
+        createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
+      }
+    }
+  } catch {
+    // Pre-JSON or corrupt lock files fall through to the plain PID parser.
+  }
+  const pid = Number.parseInt(raw.trim(), 10)
+  return {
+    pid: Number.isFinite(pid) && pid > 0 ? pid : null,
+    createdAtMs: null,
+  }
+}
+
+async function readMineLockSnapshot(path: string): Promise<MineLockSnapshot> {
+  const ownerPath = mineLockOwnerPath(path)
+  let raw: string
+  let ownerStat: Awaited<ReturnType<typeof stat>>
+  try {
+    raw = await readFile(ownerPath, "utf-8")
+    ownerStat = await stat(ownerPath)
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) throw err
+    const dirStat = await stat(path)
+    return { pid: null, ageMs: Date.now() - dirStat.mtimeMs }
+  }
+
+  const owner = parseMineLockOwner(raw)
+  const ageMs = Date.now() - (owner.createdAtMs ?? ownerStat.mtimeMs)
+  return { pid: owner.pid, ageMs }
+}
+
+function isStaleMineLock(snapshot: MineLockSnapshot): boolean {
+  if (snapshot.ageMs >= MINE_LOCK_HARD_STALE_MS) return true
+  if (snapshot.pid === null) return snapshot.ageMs >= CORRUPT_MINE_LOCK_STALE_MS
+  return !isProcessAlive(snapshot.pid)
+}
+
+export async function tryReclaimStaleMineLock(
+  path: string
+): Promise<MineLockReclaimResult> {
+  let initialSnapshot: MineLockSnapshot
+  try {
+    initialSnapshot = await readMineLockSnapshot(path)
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return "gone"
+    throw err
+  }
+  if (!isStaleMineLock(initialSnapshot)) return "active"
+
+  const reaperPath = mineLockReaperPath(path)
+  const reaperPayload = JSON.stringify({
+    pid: process.pid,
+    token: randomUUID(),
+    createdAt: new Date().toISOString(),
+  })
+
+  try {
+    await writeFile(reaperPath, reaperPayload, { flag: "wx", mode: 0o600 })
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return "gone"
+    if (isErrnoCode(err, "EEXIST")) {
+      await removeStaleMineReaper(reaperPath)
+      return "active"
+    }
+    throw err
+  }
+
+  try {
+    const snapshot = await readMineLockSnapshot(path)
+    if (!isStaleMineLock(snapshot)) return "active"
+
+    try {
+      await unlink(mineLockOwnerPath(path))
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err
+    }
+
+    try {
+      await unlink(reaperPath)
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err
+    }
+
+    try {
+      await rmdir(path)
+      return "reclaimed"
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return "gone"
+      if (isErrnoCode(err, "ENOTEMPTY")) return "active"
+      throw err
+    }
+  } finally {
+    try {
+      await unlink(reaperPath)
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) {
+        debugMineLockError("reaper", err)
+      }
+    }
+  }
+}
+
+async function removeStaleMineReaper(path: string): Promise<void> {
+  let reaperStat: Awaited<ReturnType<typeof stat>>
+  try {
+    reaperStat = await stat(path)
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return
+    throw err
+  }
+  if (Date.now() - reaperStat.mtimeMs < CORRUPT_MINE_LOCK_STALE_MS) return
+  try {
+    await unlink(path)
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) throw err
+  }
+}
+
+async function createMineFileLock(path: string, payload: string): Promise<boolean> {
+  try {
+    await mkdir(path, { mode: 0o700 })
+  } catch (err) {
+    if (isErrnoCode(err, "EEXIST")) return false
+    throw err
+  }
+
+  try {
+    await writeFile(mineLockOwnerPath(path), payload, { flag: "wx", mode: 0o600 })
+    return true
+  } catch (err) {
+    await rm(path, { recursive: true, force: true })
+    throw err
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForMineIndexStability(): Promise<void> {
+  const delayMs = minePostCreateStabilizeMs()
+  if (delayMs > 0) await sleep(delayMs)
+}
+
+async function logMineLockWait(
+  path: string,
+  relPath: string,
+  timeoutMs: number,
+  log: (msg: string) => void
+): Promise<void> {
+  let holder = ""
+  try {
+    const snapshot = await readMineLockSnapshot(path)
+    if (snapshot.pid !== null) holder = ` (held by pid ${snapshot.pid})`
+  } catch {
+    // The lock may vanish between polls; the next loop will retry acquisition.
+  }
+  log(
+    `[lore] mine: waiting on lock for ${relPath}${holder}; ` +
+      `will retry up to ${Math.ceil(timeoutMs / 1000)}s`
+  )
+}
+
+async function acquireMineFileLock(
+  vaultPageId: string,
+  projectId: string | undefined,
+  relPath: string,
+  logLockWait: (msg: string) => void
+): Promise<MineFileLock> {
+  const dir = getMineLockDir()
+  await mkdir(dir, { recursive: true })
+  const path = mineLockPath(vaultPageId, projectId, relPath)
+  const token = randomUUID()
+  const payload = JSON.stringify({
+    pid: process.pid,
+    token,
+    vaultPageId,
+    projectId: projectId ?? null,
+    relPath,
+    createdAt: new Date().toISOString(),
+  })
+  const timeoutMs = mineLockWaitTimeoutMs()
+  const deadline = Date.now() + timeoutMs
+  const noticeAt = Date.now() + MINE_LOCK_WAIT_NOTICE_MS
+  let noticeLogged = false
+
+  while (true) {
+    if (await createMineFileLock(path, payload)) {
+      return { path, token }
+    }
+    const reclaim = await tryReclaimStaleMineLock(path)
+    if (reclaim !== "active") continue
+    const now = Date.now()
+    if (!noticeLogged && now >= noticeAt) {
+      await logMineLockWait(path, relPath, timeoutMs, logLockWait)
+      noticeLogged = true
+    }
+    if (now >= deadline) {
+      throw new Error(`Timed out waiting for mine lock: ${relPath}`)
+    }
+    await sleep(MINE_LOCK_RETRY_MS)
+  }
+}
+
+async function releaseMineFileLock(lock: MineFileLock): Promise<void> {
+  try {
+    const raw = await readFile(mineLockOwnerPath(lock.path), "utf-8")
+    const parsed = JSON.parse(raw) as { token?: unknown }
+    if (parsed.token !== lock.token) return
+    await unlink(mineLockOwnerPath(lock.path))
+    await rmdir(lock.path)
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) {
+      debugMineLockError("release", err)
+    }
+  }
+}
+
+async function withMineFileLock<T>(
+  services: LoreServices,
+  relPath: string,
+  projectId: string | undefined,
+  heldLockPaths: Set<string> | undefined,
+  logLockWait: (msg: string) => void,
+  fn: () => Promise<T>
+): Promise<T> {
+  const path = mineLockPath(services.context.vault.pageId, projectId, relPath)
+  if (heldLockPaths?.has(path)) {
+    throw new Error(`Duplicate in-flight mine lock for ${relPath}`)
+  }
+  heldLockPaths?.add(path)
+  try {
+    const lock = await acquireMineFileLock(
+      services.context.vault.pageId,
+      projectId,
+      relPath,
+      logLockWait
+    )
+    try {
+      return await fn()
+    } finally {
+      await releaseMineFileLock(lock)
+    }
+  } finally {
+    heldLockPaths?.delete(path)
+  }
+}
+
 /**
  * Find an existing `source: file` memory whose title matches the
  * mined-file title shape (`<basename> — <relPath>`) AND whose project
@@ -501,7 +864,9 @@ async function processOneFile(
   dir: string,
   file: string,
   projectId: string | undefined,
-  topicId: string | undefined
+  topicId: string | undefined,
+  heldLockPaths: Set<string> | undefined,
+  logLockWait: (msg: string) => void
 ): Promise<MineFileOutcome> {
   try {
     const fullPath = resolve(dir, file)
@@ -525,38 +890,53 @@ async function processOneFile(
     const title = `${basename(file)} — ${relPath}`
     const body = `# ${relPath}\n\n\`\`\`${ext}\n${content}\n\`\`\``
 
-    const existingId = await findExistingFileMemory(services, title, relPath, projectId)
+    return await withMineFileLock(
+      services,
+      relPath,
+      projectId,
+      heldLockPaths,
+      logLockWait,
+      async () => {
+        const existingId = await findExistingFileMemory(
+          services,
+          title,
+          relPath,
+          projectId
+        )
 
-    if (existingId) {
-      // Topic preservation: when the rerun has no `--topic` (or
-      // `topicId` couldn't be resolved without a project), we omit
-      // the field from the update payload so `MemoryService.update`
-      // leaves the existing Topic relation in place. Mirrors the
-      // upsert-by-topic-key contract documented in
-      // `src/core/CLAUDE.md` (Status / Topic preserve silently on
-      // upsert). An operator who wants to retire a stale topic
-      // explicitly should call `lore-memory action='update'` —
-      // not the mine path, which is content-replication, not
-      // metadata-curation.
-      await services.memories.update(existingId, {
-        title,
-        content: body,
-        projectIds: projectId ? [projectId] : undefined,
-        topicId,
-        keywords,
-      })
-      return { kind: "updated", file }
-    }
+        if (existingId) {
+          // Topic preservation: when the rerun has no `--topic` (or
+          // `topicId` couldn't be resolved without a project), we omit
+          // the field from the update payload so `MemoryService.update`
+          // leaves the existing Topic relation in place. Mirrors the
+          // upsert-by-topic-key contract documented in
+          // `src/core/CLAUDE.md` (Status / Topic preserve silently on
+          // upsert). An operator who wants to retire a stale topic
+          // explicitly should call `lore-memory action='update'` —
+          // not the mine path, which is content-replication, not
+          // metadata-curation.
+          await services.memories.update(existingId, {
+            title,
+            content: body,
+            projectIds: projectId ? [projectId] : undefined,
+            topicId,
+            keywords,
+          })
+          return { kind: "updated", file }
+        }
 
-    await services.memories.create({
-      title,
-      content: body,
-      projectIds: projectId ? [projectId] : undefined,
-      topicId,
-      source: "file",
-      keywords,
-    })
-    return { kind: "indexed", file }
+        await services.memories.create({
+          title,
+          content: body,
+          projectIds: projectId ? [projectId] : undefined,
+          topicId,
+          source: "file",
+          keywords,
+        })
+        await waitForMineIndexStability()
+        return { kind: "indexed", file }
+      }
+    )
   } catch (err) {
     const record = classifyMineFailure(file, err)
     return {
@@ -580,14 +960,12 @@ async function processOneFile(
  * so tests can capture progress lines without process globals; the
  * default sink writes to stdout.
  *
- * **Concurrent mining caveat.** Two parallel `lore mine` runs against
- * the same project for the same file can both observe an empty
- * `findExistingFileMemory` and both create — Notion has no per-key
- * uniqueness primitive on the Memories DB. Single-operator serial
- * use is the common case; if real-vault data shows the race matters,
- * a follow-up adds a per-vault lock via `src/hooks/lock.ts`. The
- * existing `lore migrate --dedup-keys --merge` pass is fact-side
- * dedup, not memory-side, so it does NOT collapse mine duplicates.
+ * File upserts acquire a short-lived process lock around the
+ * `findExistingFileMemory → create-or-update` critical section, keyed
+ * by vault, project, and relPath. Fresh creates hold that lock for a
+ * small stabilization delay after the write so the next miner's
+ * contains-mode query can see Notion's updated index. Unrelated files
+ * still use the configured bounded concurrency.
  */
 export async function runMineUpsert(
   services: LoreServices,
@@ -601,12 +979,23 @@ export async function runMineUpsert(
   const concurrency =
     services.config.notion?.rateLimit?.concurrency ?? DEFAULT_NOTION_CONCURRENCY
   const outcomes: MineFileOutcome[] = []
+  const heldLockPaths = new Set<string>()
   let writes = 0
   let nextProgressMark = 10
   for (let i = 0; i < files.length; i += concurrency) {
     const batch = files.slice(i, i + concurrency)
     const results = await Promise.all(
-      batch.map((file) => processOneFile(services, dir, file, projectId, topicId))
+      batch.map((file) =>
+        processOneFile(
+          services,
+          dir,
+          file,
+          projectId,
+          topicId,
+          heldLockPaths,
+          logError
+        )
+      )
     )
     outcomes.push(...results)
 
