@@ -392,22 +392,40 @@ describe("computeRelationConfigDiff", () => {
  * await` loop drives `maxInFlight` to 1, while a `Promise.all` over N
  * retrieves drives it to N.
  */
+type StartupChildBlockPage = {
+  results: Array<Record<string, unknown>>
+  has_more?: boolean
+  next_cursor?: string | null
+}
+
 function makeStartupStub({
   childDatabases,
+  childBlockPages,
   liveProperties,
   retrieveDelayMs = 10,
 }: {
   childDatabases: Array<{ id: string; title: string }>
+  childBlockPages?: StartupChildBlockPage[]
   liveProperties: Record<string, Record<string, unknown>>
   retrieveDelayMs?: number
 }): {
   client: Client
+  blocksChildrenListCalls: () => Array<{
+    block_id: string
+    page_size?: number
+    start_cursor?: string
+  }>
   maxInFlight: () => number
   databasesRetrieveCalls: () => string[]
   dataSourcesRetrieveCalls: () => string[]
 } {
   let inFlight = 0
   let maxInFlight = 0
+  const blocksChildrenListCalls: Array<{
+    block_id: string
+    page_size?: number
+    start_cursor?: string
+  }> = []
   const databasesRetrieveCalls: string[] = []
   const dataSourcesRetrieveCalls: string[] = []
 
@@ -422,13 +440,32 @@ function makeStartupStub({
   const stub = {
     blocks: {
       children: {
-        list: async () => ({
-          results: childDatabases.map((db) => ({
-            type: "child_database",
-            id: db.id,
-            child_database: { title: db.title },
-          })),
-        }),
+        list: async (args: {
+          block_id: string
+          page_size?: number
+          start_cursor?: string
+        }) => {
+          blocksChildrenListCalls.push(args)
+          if (childBlockPages) {
+            return (
+              childBlockPages[blocksChildrenListCalls.length - 1] ?? {
+                results: [],
+                has_more: false,
+                next_cursor: null,
+              }
+            )
+          }
+
+          return {
+            results: childDatabases.map((db) => ({
+              type: "child_database",
+              id: db.id,
+              child_database: { title: db.title },
+            })),
+            has_more: false,
+            next_cursor: null,
+          }
+        },
       },
     },
     databases: {
@@ -451,11 +488,170 @@ function makeStartupStub({
 
   return {
     client: stub,
+    blocksChildrenListCalls: () => blocksChildrenListCalls,
     maxInFlight: () => maxInFlight,
     databasesRetrieveCalls: () => databasesRetrieveCalls,
     dataSourcesRetrieveCalls: () => dataSourcesRetrieveCalls,
   }
 }
+
+describe("verifyVaultDatabases child block pagination", () => {
+  function childDatabaseBlocks(
+    childDatabases: Array<{ id: string; title: string }>
+  ): Array<Record<string, unknown>> {
+    return childDatabases.map((db) => ({
+      type: "child_database",
+      id: db.id,
+      child_database: { title: db.title },
+    }))
+  }
+
+  function noiseBlocks(): Array<Record<string, unknown>> {
+    return Array.from({ length: 100 }, (_, i) => ({
+      type: "paragraph",
+      id: `note-${i}`,
+    }))
+  }
+
+  it("finds vault databases after the first page of child blocks", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-entities", title: ENTITIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, blocksChildrenListCalls } = makeStartupStub({
+      childDatabases: [],
+      childBlockPages: [
+        { results: noiseBlocks(), has_more: true, next_cursor: "cursor-2" },
+        {
+          results: childDatabaseBlocks(childDatabases),
+          has_more: false,
+          next_cursor: null,
+        },
+      ],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    const vault = await verifyVaultDatabases(client, "page-1")
+
+    expect(blocksChildrenListCalls()).toEqual([
+      { block_id: "page-1", page_size: 100 },
+      { block_id: "page-1", page_size: 100, start_cursor: "cursor-2" },
+    ])
+    expect(vault.databases.projects).toEqual({
+      databaseId: "block-projects",
+      dataSourceId: "ds-block-projects",
+    })
+    expect(vault.databases.entities).toEqual({
+      databaseId: "block-entities",
+      dataSourceId: "ds-block-entities",
+    })
+  })
+
+  it("still succeeds when a paginated legacy vault has no Entities DB", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, blocksChildrenListCalls } = makeStartupStub({
+      childDatabases: [],
+      childBlockPages: [
+        { results: noiseBlocks(), has_more: true, next_cursor: "cursor-2" },
+        {
+          results: childDatabaseBlocks(childDatabases),
+          has_more: false,
+          next_cursor: null,
+        },
+      ],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    const vault = await verifyVaultDatabases(client, "page-1")
+
+    expect(blocksChildrenListCalls()).toEqual([
+      { block_id: "page-1", page_size: 100 },
+      { block_id: "page-1", page_size: 100, start_cursor: "cursor-2" },
+    ])
+    expect(vault.databases.facts).toEqual({
+      databaseId: "block-facts",
+      dataSourceId: "ds-block-facts",
+    })
+    expect(vault.databases.entities).toBeUndefined()
+  })
+
+  it("stops paging once all expected vault databases are found", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-entities", title: ENTITIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, blocksChildrenListCalls } = makeStartupStub({
+      childDatabases: [],
+      childBlockPages: [
+        {
+          results: childDatabaseBlocks(childDatabases),
+          has_more: true,
+          next_cursor: "cursor-2",
+        },
+        {
+          results: noiseBlocks(),
+          has_more: false,
+          next_cursor: null,
+        },
+      ],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    await verifyVaultDatabases(client, "page-1")
+
+    expect(blocksChildrenListCalls()).toEqual([
+      { block_id: "page-1", page_size: 100 },
+    ])
+  })
+
+  it("fails fast when Notion repeats a pagination cursor", async () => {
+    const { client } = makeStartupStub({
+      childDatabases: [],
+      childBlockPages: [
+        { results: noiseBlocks(), has_more: true, next_cursor: "cursor-2" },
+        { results: noiseBlocks(), has_more: true, next_cursor: "cursor-2" },
+      ],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    await expect(verifyVaultDatabases(client, "page-1")).rejects.toThrow(
+      "repeated cursor cursor-2"
+    )
+  })
+
+  it("fails fast when vault child block pagination exceeds the page cap", async () => {
+    const { client, blocksChildrenListCalls } = makeStartupStub({
+      childDatabases: [],
+      childBlockPages: Array.from({ length: 100 }, (_, i) => ({
+        results: noiseBlocks(),
+        has_more: true,
+        next_cursor: `cursor-${i}`,
+      })),
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    await expect(verifyVaultDatabases(client, "page-1")).rejects.toThrow(
+      "exceeded 100 pages"
+    )
+    expect(blocksChildrenListCalls()).toHaveLength(100)
+  })
+})
 
 describe("verifyVaultDatabases parallel retrieves", () => {
   it("issues every databases.retrieve call concurrently", async () => {

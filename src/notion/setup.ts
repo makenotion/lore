@@ -31,6 +31,18 @@ import {
 // Record<string, PropertyConfigurationRequest>. Our schema definitions
 // are structurally compatible but need a cast at the boundary.
 type AnyProperties = Record<string, Record<string, unknown>>
+type VaultDatabaseTitles = Record<keyof VaultDatabases, string>
+
+const MAX_VAULT_CHILD_BLOCK_PAGES = 100
+
+function hasAllExpectedDatabases(
+  found: Partial<Record<keyof VaultDatabases, string>>,
+  expected: VaultDatabaseTitles
+): boolean {
+  return (Object.keys(expected) as Array<keyof VaultDatabases>).every(
+    (key) => found[key]
+  )
+}
 
 function createDbArgs(
   pageId: string,
@@ -521,11 +533,6 @@ export async function verifyVaultDatabases(
   client: Client,
   pageId: string
 ): Promise<Vault> {
-  const response = await client.blocks.children.list({
-    block_id: pageId,
-    page_size: 100,
-  })
-
   // Required-vs-optional split. Entities (PF3-01) is optional so vaults
   // created before the migration ran still load — `lore migrate
   // --build-entities` is the path that lifts a legacy vault into a
@@ -544,23 +551,56 @@ export async function verifyVaultDatabases(
   const optionalTitles: Record<"entities", string> = {
     entities: ENTITIES_DB_TITLE,
   }
+  const expectedTitles: VaultDatabaseTitles = {
+    ...requiredTitles,
+    ...optionalTitles,
+  }
 
   const dbBlockIds: Partial<Record<keyof VaultDatabases, string>> = {}
 
-  for (const block of response.results) {
-    if (!("type" in block)) continue
-    const fullBlock = block as BlockObjectResponse
-    if (fullBlock.type !== "child_database") continue
+  let cursor: string | undefined
+  const seenCursors = new Set<string>()
+  for (;;) {
+    if (seenCursors.size >= MAX_VAULT_CHILD_BLOCK_PAGES) {
+      throw new Error(
+        `Vault at ${pageId} child block pagination exceeded ` +
+          `${MAX_VAULT_CHILD_BLOCK_PAGES} pages while verifying databases.`
+      )
+    }
 
-    const title = fullBlock.child_database.title
-    for (const [key, expectedTitle] of Object.entries({
-      ...requiredTitles,
-      ...optionalTitles,
-    })) {
-      if (title === expectedTitle) {
-        dbBlockIds[key as keyof VaultDatabases] = fullBlock.id
+    const response = await client.blocks.children.list({
+      block_id: pageId,
+      page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    })
+
+    for (const block of response.results) {
+      if (!("type" in block)) continue
+      const fullBlock = block as BlockObjectResponse
+      if (fullBlock.type !== "child_database") continue
+
+      const title = fullBlock.child_database.title
+      for (const [key, expectedTitle] of Object.entries(expectedTitles)) {
+        if (title === expectedTitle) {
+          dbBlockIds[key as keyof VaultDatabases] = fullBlock.id
+        }
       }
     }
+
+    if (hasAllExpectedDatabases(dbBlockIds, expectedTitles) || !response.has_more) {
+      break
+    }
+
+    const nextCursor = response.next_cursor ?? undefined
+    if (!nextCursor) break
+    if (seenCursors.has(nextCursor)) {
+      throw new Error(
+        `Vault at ${pageId} child block pagination repeated cursor ` +
+          `${nextCursor} while verifying databases.`
+      )
+    }
+    seenCursors.add(nextCursor)
+    cursor = nextCursor
   }
 
   const missing = Object.entries(requiredTitles)
