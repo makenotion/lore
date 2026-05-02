@@ -110,7 +110,9 @@ import {
   handleStop,
   handleSessionEnd,
   parseUserQueryFromEvent,
+  statePath,
 } from "./helpers.js"
+import { HOSTILE_SESSION_IDS } from "./path-injection-fixtures.js"
 
 // Stand-in for a spawned `claude -p` process. Returning a live PID (this
 // process) means subsequent lock-aliveness checks see it as "still running",
@@ -440,8 +442,13 @@ describe("handleStop", () => {
 
     // Counter must remain at 0 — proving the next Stop hook will see
     // currentCount > lastSaveCount and re-fire the save on its turn.
+    // Route through `statePath` (rather than re-inlining the join +
+    // raw `${sessionId}.count`) so the assertion exercises the same
+    // sanitized path the production writer uses; without that, a future
+    // regression that broke the writer/reader round-trip wouldn't be
+    // caught here.
     const { readFileSync, existsSync } = await import("node:fs")
-    const counterPath = join(getStateDir(), `${sessionId}.count`)
+    const counterPath = statePath(sessionId)
     if (existsSync(counterPath)) {
       const contents = readFileSync(counterPath, "utf-8")
       expect(contents).toBe("0")
@@ -463,6 +470,41 @@ describe("handleStop", () => {
     const { readFileSync } = await import("node:fs")
     const lockContent = readFileSync(lockPath(sessionId), "utf-8").trim()
     expect(lockContent).toBe(process.pid.toString())
+  })
+
+  it("writes the save counter under getStateDir() even for a hostile sessionId (issue #200 E2E)", async () => {
+    // Parallel to the `tryAcquireSessionLock` end-to-end check in
+    // `lock.test.ts`. Drives the real `handleStop` -> `writeSaveCount`
+    // path with a path-traversing sessionId and verifies the counter
+    // file lands inside the state dir. Without `safeFilenameSegment`
+    // in `statePath`, this writes to `$TMPDIR/escape/me.count` and the
+    // assertion below fails — pin the production write path, not just
+    // the path builder, so a future regression that bypassed
+    // `statePath` (e.g. inlining the join in `writeSaveCount`) gets
+    // caught here.
+    const { existsSync, readFileSync } = await import("node:fs")
+    writeTranscript(transcriptPath, 3)
+    const hostile = "../escape/me"
+    await handleStop(
+      {
+        session_id: hostile,
+        transcript_path: transcriptPath,
+        cwd: tmpDir,
+      },
+      defaultConfig(),
+    )
+
+    const stateDir = getStateDir()
+    const expected = statePath(hostile)
+    expect(expected.startsWith(`${stateDir}/`)).toBe(true)
+    expect(existsSync(expected)).toBe(true)
+    // Counter must reflect the user-message count we just produced.
+    expect(readFileSync(expected, "utf-8")).toBe("3")
+    // Confirm no file was written at the un-sanitized escape path —
+    // belt-and-suspenders proof that the hostile id didn't ALSO land
+    // there as a side effect.
+    const escapePath = `${stateDir}/../escape/me.count`
+    expect(existsSync(escapePath)).toBe(false)
   })
 
   it("schedules the detached auto-digest helper with the event cwd", async () => {
@@ -1091,5 +1133,38 @@ describe("deriveAuthorName (DEFERRED-ATTRIBUTION)", () => {
     delete process.env["LORE_USER_NAME"]
     process.env["LORE_USER_NAME"] = "   "
     expect(deriveAuthorName({})).toBeUndefined()
+  })
+})
+
+// Issue #200: parallel to the lock/log path-injection tests in
+// `lock.test.ts`, the save-count file must also stay under
+// `getStateDir()` for any sessionId. The save-count writer is
+// `writeSaveCount` in `helpers.ts` and the path builder is `statePath`;
+// pinning the boundary here means a future regression that drops the
+// scrub gets caught at the same layer that protects lock and log files.
+describe("statePath path injection resistance", () => {
+  // Same shared fixture lockPath / logPath use, so the three tables can't
+  // drift on a future attack-shape addition. See
+  // `path-injection-fixtures.ts`.
+  it.each(HOSTILE_SESSION_IDS as unknown as Array<[string, string]>)(
+    "stays under getStateDir() for %s",
+    (_label, hostileId) => {
+      const stateDir = getStateDir()
+      const path = statePath(hostileId)
+      expect(path.startsWith(`${stateDir}/`)).toBe(true)
+      expect(path).toMatch(/\.count$/)
+      const segment = path.slice(stateDir.length + 1)
+      expect(segment).not.toContain("/")
+      expect(segment).not.toContain("\\")
+    },
+  )
+
+  it("leaves UUID-shaped sessionIds unchanged", () => {
+    // Existing on-disk save-count files keyed on real Claude Code
+    // session ids must remain addressable across the upgrade — the
+    // issue-200 scrub is a defense for hostile inputs, not a migration
+    // of the common case.
+    const uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    expect(statePath(uuid)).toBe(`${getStateDir()}/${uuid}.count`)
   })
 })

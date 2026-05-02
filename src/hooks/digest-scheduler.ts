@@ -44,6 +44,7 @@ import {
   digestMarkerAgeDays,
   touchDigestMarker,
 } from "./digest-marker.js"
+import { safeFilenameSegment } from "./marker-key.js"
 
 export interface DigestSchedulerState {
   config: LoreConfig
@@ -192,8 +193,12 @@ export async function fireDigestIfStale(
   // can't double-fire (the marker debounce already covers that), but the
   // lock is still useful for the global `MAX_CONCURRENT_SAVES` cap — five
   // sessions firing Stop at once shouldn't fan out into five concurrent
-  // `claude -p` digests.
-  const lockKey = `digest-${project.name.replace(/[^A-Za-z0-9_.-]/g, "_")}`
+  // `claude -p` digests. Project names route through `safeFilenameSegment`
+  // (the same helper `lockPath` / `logPath` use) so two projects whose
+  // names sanitize identically — e.g. `Mail/Backend` vs. `Mail-Backend`
+  // — share one digest lock by design, and the policy can never drift
+  // from the rest of the hook-state filename surface.
+  const lockKey = `digest-${safeFilenameSegment(project.name)}`
   const result = spawn(cwd, prompt, lockKey, {
     logLabel: "digest",
     allowedTools: DIGEST_ALLOWLIST,

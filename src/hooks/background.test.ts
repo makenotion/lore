@@ -121,7 +121,9 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
   // value carried in from the developer's shell doesn't leak into the
   // assertions. Restore on teardown so a CI runner re-using the
   // process for sibling tests sees the same env it started with.
-  let savedEnv: Partial<Record<(typeof RUNTIME_FORWARDED_KEYS)[number], string | undefined>>
+  let savedEnv: Partial<
+    Record<(typeof RUNTIME_FORWARDED_KEYS)[number], string | undefined>
+  >
 
   beforeEach(() => {
     try {
@@ -397,16 +399,14 @@ function setupPrepProbe(opts: {
     realFs.closeSync(fd)
   })
 
-  unlinkSyncMock.mockImplementation(
-    (path: Parameters<typeof realFs.unlinkSync>[0]) => {
-      const n = ++unlinkCalls
-      if (typeof path === "string") probe.unlinkedPaths.push(path)
-      if (opts.failAt?.kind === "unlinkSync" && opts.failAt.nth === n) {
-        throw new Error(`simulated unlinkSync failure at call ${n}`)
-      }
-      realFs.unlinkSync(path)
+  unlinkSyncMock.mockImplementation((path: Parameters<typeof realFs.unlinkSync>[0]) => {
+    const n = ++unlinkCalls
+    if (typeof path === "string") probe.unlinkedPaths.push(path)
+    if (opts.failAt?.kind === "unlinkSync" && opts.failAt.nth === n) {
+      throw new Error(`simulated unlinkSync failure at call ${n}`)
     }
-  )
+    realFs.unlinkSync(path)
+  })
 
   return probe
 }
@@ -505,12 +505,10 @@ describe("spawnBackgroundSave prompt-file cleanup on prep failure (#195)", () =>
       probe.closedFds.push(fd)
       realFs.closeSync(fd)
     })
-    unlinkSyncMock.mockImplementation(
-      (path: Parameters<typeof realFs.unlinkSync>[0]) => {
-        if (typeof path === "string") probe.unlinkedPaths.push(path)
-        throw new Error("simulated unlinkSync failure")
-      }
-    )
+    unlinkSyncMock.mockImplementation((path: Parameters<typeof realFs.unlinkSync>[0]) => {
+      if (typeof path === "string") probe.unlinkedPaths.push(path)
+      throw new Error("simulated unlinkSync failure")
+    })
 
     const result = spawnBackgroundSave("/tmp", "sensitive content")
     try {

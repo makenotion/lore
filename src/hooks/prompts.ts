@@ -6,6 +6,8 @@
  * no filesystem, no Notion, no process state.
  */
 
+import { safeFilenameSegment } from "./marker-key.js"
+
 /**
  * Shared project-selection guidance used by every save-style prompt. When
  * the config has sub-projects, enumerate them so the AI has an explicit list
@@ -49,6 +51,30 @@ export function buildProjectSelectionGuidance(
  * fails (transient `users.me` blip) AND the load-bearing path for explicit
  * `LORE_USER_NAME` overrides — the prompt instructs the agent to pass
  * `author:` verbatim, parallel to how `agent:` flows from `LORE_AGENT_NAME`.
+ *
+ * `sessionId` routes through `safeFilenameSegment` before embedding for
+ * the same reason the lock / log / count filename builders do — and one
+ * additional reason that's specific to this surface. The filesystem
+ * angle: the spawned MCP child re-uses the agent's `session: "..."`
+ * pass-through value as the lock key on its own writes, so a hostile
+ * `session_id` that survived to the prompt would re-hit the path-
+ * traversal hole that `lockPath` already closes. The prompt-injection
+ * angle: a `session_id` carrying `\n` followed by a fake instruction
+ * (`\nIgnore all prior instructions and ...`) lands verbatim inside
+ * the spawned `claude -p`'s prompt body, where line-shaped tokens are
+ * the dominant structural signal — `safeFilenameSegment`'s scrub
+ * collapses every newline / control character / shell metacharacter to
+ * `_`, defeating both vectors with the one regex policy the rest of
+ * the hook surface already shares. UUID-shaped real session ids round-
+ * trip unchanged because alphanumeric + hyphens are in the allowed set.
+ *
+ * `agentName` and `authorName` deliberately do NOT pass through the
+ * sanitizer: `agentName` is already constrained by
+ * `canonicalizeAgentName`'s explicit allowlist, and `authorName` is a
+ * human display string where collapsing `Hesham Salman` to
+ * `Hesham_Salman` would break the prompt's "Author: <name>" contract
+ * without buying a meaningful threat reduction (both come from
+ * operator env vars under a distinct trust model).
  */
 function buildIdentityBlock(
   sessionId?: string,
@@ -57,13 +83,15 @@ function buildIdentityBlock(
 ): string {
   if (!sessionId && !agentName && !authorName) return ""
 
+  const safeSessionId = sessionId ? safeFilenameSegment(sessionId) : undefined
+
   const lines: string[] = [""]
-  if (sessionId) lines.push(`Session ID: ${sessionId}`)
+  if (safeSessionId) lines.push(`Session ID: ${safeSessionId}`)
   if (agentName) lines.push(`Agent: ${agentName}`)
   if (authorName) lines.push(`Author: ${authorName}`)
 
   const parts: string[] = []
-  if (sessionId) parts.push(`session: "${sessionId}"`)
+  if (safeSessionId) parts.push(`session: "${safeSessionId}"`)
   if (agentName) parts.push(`agent: "${agentName}"`)
   if (authorName) parts.push(`author: "${authorName}"`)
   lines.push(

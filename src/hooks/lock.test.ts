@@ -28,6 +28,7 @@ import {
   tryAcquireSessionLock,
   MAX_CONCURRENT_SAVES,
 } from "./lock.js"
+import { HOSTILE_SESSION_IDS } from "./path-injection-fixtures.js"
 
 // PIDs above 4 million are effectively never alive on Linux/macOS — the
 // kernel recycles well below this ceiling. Use it to simulate a stale lock
@@ -123,6 +124,91 @@ describe("logPath", () => {
   it("lives alongside lock files in the state dir", () => {
     const path = logPath("sess-log")
     expect(path.endsWith("sess-log.log")).toBe(true)
-    expect(path.startsWith(getStateDir())).toBe(true)
+    // Trailing slash on the prefix so a sibling directory whose name
+    // *starts* with `${getStateDir()}` (e.g. `${stateDir}MALICIOUS/...`)
+    // can't false-pass this check. Same posture as the path-injection
+    // assertions below.
+    expect(path.startsWith(`${getStateDir()}/`)).toBe(true)
+  })
+})
+
+// Issue #200: a malformed or hostile sessionId must not be able to write
+// state files outside `getStateDir()`. The path-builders sanitize through
+// `safeFilenameSegment` from `marker-key.ts`, so a payload carrying `/`,
+// `..`, backslashes, whitespace, or shell metacharacters collapses to a
+// filename that stays under the state dir. Pin both surfaces so a future
+// regression that removed the scrub gets caught at this layer rather than
+// at the filesystem.
+describe("path injection resistance", () => {
+  // Both tables share the same hostile-id fixture so a future maintainer
+  // adding a new attack shape (e.g. a Unicode normalization variant)
+  // updates the fixture once and lockPath / logPath / statePath all
+  // pick it up. See `path-injection-fixtures.ts`.
+  it.each(HOSTILE_SESSION_IDS as unknown as Array<[string, string]>)(
+    "lockPath stays under getStateDir() for %s",
+    (_label, hostileId) => {
+      const stateDir = getStateDir()
+      const path = lockPath(hostileId)
+      expect(path.startsWith(`${stateDir}/`)).toBe(true)
+      expect(path).toMatch(/\.lock$/)
+      // No raw separators in the filename portion — the dirname must equal
+      // getStateDir() exactly, which proves the segment didn't punch out
+      // into a parent or sibling directory.
+      const segment = path.slice(stateDir.length + 1)
+      expect(segment).not.toContain("/")
+      expect(segment).not.toContain("\\")
+    },
+  )
+
+  it.each(HOSTILE_SESSION_IDS as unknown as Array<[string, string]>)(
+    "logPath stays under getStateDir() for %s",
+    (_label, hostileId) => {
+      const stateDir = getStateDir()
+      const path = logPath(hostileId)
+      expect(path.startsWith(`${stateDir}/`)).toBe(true)
+      expect(path).toMatch(/\.log$/)
+      const segment = path.slice(stateDir.length + 1)
+      expect(segment).not.toContain("/")
+      expect(segment).not.toContain("\\")
+    },
+  )
+
+  it("treats sanitized variants of the same hostile id as the same lock", () => {
+    // Two payloads whose sanitized forms collide map to the same lock file.
+    // This is the documented trade-off — under the trusted-host-integration
+    // assumption it's acceptable, and pinning the property here makes the
+    // collision behavior explicit instead of accidental.
+    expect(lockPath("a/b")).toBe(lockPath("a_b"))
+    expect(lockPath("a\\b")).toBe(lockPath("a_b"))
+    expect(lockPath("a b")).toBe(lockPath("a_b"))
+  })
+
+  it("leaves UUID-shaped sessionIds untouched", () => {
+    // Real Claude Code session ids are UUID-like — alphanumeric plus
+    // hyphens — and must round-trip unchanged so existing on-disk locks
+    // stay addressable across the upgrade. If a future regex tweak
+    // accidentally narrows the allowed set, this assertion catches it.
+    const uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    const stateDir = getStateDir()
+    expect(lockPath(uuid)).toBe(`${stateDir}/${uuid}.lock`)
+    expect(logPath(uuid)).toBe(`${stateDir}/${uuid}.log`)
+  })
+
+  it("actually writes a lock file under getStateDir() for a hostile sessionId", () => {
+    // End-to-end check: tryAcquireSessionLock with a path-traversing
+    // sessionId must succeed, the write must land under getStateDir(),
+    // and the global activeSaveCount sweeper must see it. This proves
+    // every lock-state filesystem call routes through the same scrubbed
+    // path, not just the path builder.
+    const hostile = "../escape/me"
+    const acquired = tryAcquireSessionLock(hostile, process.pid)
+    expect(acquired).not.toBeNull()
+    expect(acquired!.startsWith(`${getStateDir()}/`)).toBe(true)
+    expect(existsSync(acquired!)).toBe(true)
+    // hasActiveSessionLock must agree the lock is held — otherwise a
+    // mismatch between writer and reader would silently let an overlap
+    // race spawn a duplicate save.
+    expect(activeSaveCount()).toBeGreaterThanOrEqual(1)
+    releaseSessionLock(acquired!)
   })
 })

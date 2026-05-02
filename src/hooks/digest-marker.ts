@@ -7,9 +7,10 @@
  * Keyed on a short hash of the config root *plus* the project name so two
  * vaults that both have a `Mail` project in the same user's `$TMPDIR` don't
  * collide — a cross-vault collision would silently debounce the second
- * vault's digest forever. Key derivation and project-name sanitization live
- * in `marker-key.ts` so this module and `drift-marker.ts` stay in lockstep
- * on the truncation length and the sanitization charset.
+ * vault's digest forever. Key derivation and segment sanitization live in
+ * `marker-key.ts` so this module, `drift-marker.ts`, and the lock/log/
+ * count paths in `lock.ts` / `helpers.ts` stay in lockstep on the
+ * truncation length and the sanitization charset.
  *
  * The state dir is resolved per-call via `getStateDir()` from `lock.ts` so
  * `LORE_HOOK_STATE_DIR` overrides (used by parallel test files for
@@ -19,7 +20,7 @@
 import { stat, writeFile, utimes, mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { getStateDir } from "./lock.js"
-import { configKey, safeProjectName } from "./marker-key.js"
+import { configKey, safeFilenameSegment } from "./marker-key.js"
 
 export function digestMarkerPath(
   configRoot: string,
@@ -27,7 +28,7 @@ export function digestMarkerPath(
 ): string {
   return join(
     getStateDir(),
-    `digest.${configKey(configRoot)}.${safeProjectName(projectName)}.last`,
+    `digest.${configKey(configRoot)}.${safeFilenameSegment(projectName)}.last`,
   )
 }
 

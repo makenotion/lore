@@ -48,6 +48,7 @@ import {
 import { spawnBackgroundSave } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
 import { getStateDir } from "./lock.js"
+import { safeFilenameSegment } from "./marker-key.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
 
 /** Hook payload fields shared by Claude Code and Codex. */
@@ -130,8 +131,18 @@ async function ensureStateDir(): Promise<void> {
   await mkdir(getStateDir(), { recursive: true })
 }
 
-function statePath(sessionId: string): string {
-  return join(getStateDir(), `${sessionId}.count`)
+/**
+ * Save-count filename for a session id. Routed through
+ * `safeFilenameSegment` so the same sanitization policy that protects
+ * `lockPath` / `logPath` also protects the per-session counter — a
+ * payload with `/`, `..`, backslashes, whitespace, or shell metacharacters
+ * stays inside `getStateDir()` rather than escaping into the filesystem.
+ *
+ * Exported so the path-injection tests can assert the sanitization
+ * directly without round-tripping through `handleStop`.
+ */
+export function statePath(sessionId: string): string {
+  return join(getStateDir(), `${safeFilenameSegment(sessionId)}.count`)
 }
 
 async function readSaveCount(sessionId: string | undefined): Promise<number> {

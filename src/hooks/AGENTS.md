@@ -25,12 +25,30 @@ an exit-0 compatibility shim for stale Claude Code settings written before
 | `digest-scheduler.ts` | `fireDigestIfStale` (in-child digest logic) + `scheduleAutoDigestSpawn` (parent-side detached fork off Stop) |
 | `digest-marker.ts`| Per-config-root debounce marker for the auto-digest scheduler                                          |
 | `drift-marker.ts` | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)          |
-| `marker-key.ts`   | Shared `configKey()` and `safeProjectName()` helpers for every filesystem marker in this dir           |
+| `marker-key.ts`   | Shared `configKey()` and `safeFilenameSegment()` helpers for every filesystem marker, lock, log, and count file in this dir |
 
 New marker modules under `src/hooks/` derive their config key and
 sanitize free-form name segments via `marker-key.ts` rather than
 re-implementing the hash or the regex — that keeps the truncation
-length and sanitization charset in lockstep across every marker.
+length and sanitization charset in lockstep across every filesystem
+state file. The lock/log/count paths in `lock.ts` and `helpers.ts`
+route through `safeFilenameSegment` for the same reason: a hostile
+or malformed `sessionId` carrying `/`, `..`, backslashes, or shell
+metacharacters must not be able to escape `getStateDir()`. The
+sanitizer also fronts the prompt-side `Session ID:` / `session: "..."`
+lines in `prompts.ts:buildIdentityBlock` so a `sessionId` carrying
+`\n` followed by a fake instruction can't inject prompt content into
+the spawned `claude -p`'s body — same regex policy, parallel exit
+channel.
+
+**POSIX-only.** The sanitizer is not Windows-safe: NTFS reserved device
+names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) pass
+through the allowed-charset regex unchanged, so `CON.lock` would resolve
+to a device handle on Windows rather than a file. Lore's hook runner
+already assumes POSIX for unrelated reasons (`process.kill` PID liveness
+probe, `os.tmpdir()` state-dir convention, the Stop-hook lifecycle); a
+future Windows port should layer a case-insensitive reserved-name check
+at the same boundary rather than widening the regex.
 
 Tests for each module sit alongside it (`*.test.ts`). `helpers.ts` runs
 `main()` only when invoked as the Node entry point (`dist/hooks/helpers.js`)

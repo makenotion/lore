@@ -16,7 +16,7 @@
  * triggering hook routing as a side effect.
  */
 
-import { spawn, execFileSync } from "node:child_process"
+import { spawn, execFileSync, type ChildProcess } from "node:child_process"
 import {
   existsSync,
   writeSync,
@@ -286,8 +286,18 @@ export function spawnBackgroundSave(
   }
 
   let lockFile: string | null = null
+  // `child` is hoisted out of the try so the catch can reach it. Without
+  // that, a throw between `spawn` and `tryAcquireSessionLock` (e.g. an
+  // unexpected `ENAMETOOLONG` / `ENOSPC` from `writeFileSync` on the lock
+  // file) leaves the detached `claude -p` running but untracked — the
+  // outer catch returns `spawn-error`, the lock file never lands, and the
+  // next Stop hook can't see the in-flight save so it spawns another. The
+  // segment-length cap in `safeFilenameSegment` removes the specific
+  // `ENAMETOOLONG` cause; this hoist is the symmetric fix that holds for
+  // any future post-spawn throw.
+  let child: ChildProcess | undefined
   try {
-    const child = spawn(claudeBin, args, {
+    child = spawn(claudeBin, args, {
       cwd,
       detached: true,
       stdio: [stdinFd, "ignore", stderrSink],
@@ -328,6 +338,21 @@ export function spawnBackgroundSave(
     process.stderr.write(
       `[lore] ${logLabel}: spawn failed: ${err instanceof Error ? err.message : err}\n`
     )
+    // If we got past `spawn` but never claimed the lock, the child is
+    // running but no debounce / accounting points at it. SIGTERM the
+    // orphan so it can't silently spend tokens or duplicate work on the
+    // next retry. When `lockFile` is set the acquire succeeded — the
+    // child is reachable through the normal lock-aliveness path and
+    // tearing it down here would defeat the spawn we're returning success
+    // for (the only post-acquire operation is `child.unref()`, which
+    // doesn't realistically throw but is cheap to defend against).
+    if (child && !lockFile) {
+      try {
+        child.kill("SIGTERM")
+      } catch {
+        // Child already gone.
+      }
+    }
     if (lockFile) releaseSessionLock(lockFile)
     return { kind: "spawn-error", error: err }
   } finally {

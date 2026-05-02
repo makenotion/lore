@@ -22,6 +22,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { safeFilenameSegment } from "./marker-key.js"
 
 /**
  * Where per-session lock files and stderr logs live. Defaults to a fixed
@@ -50,8 +51,15 @@ function ensureStateDirSync(): void {
   mkdirSync(getStateDir(), { recursive: true })
 }
 
+/**
+ * Lock filename for a session id, scrubbed through `safeFilenameSegment` so
+ * a payload carrying `/`, `..`, backslashes, whitespace, or shell
+ * metacharacters can't escape `getStateDir()`. Normal Claude Code session
+ * ids (UUID-shaped, alphanumeric + hyphens) pass through unchanged so this
+ * is a no-op for the common case.
+ */
 export function lockPath(sessionId: string): string {
-  return join(getStateDir(), `${sessionId}.lock`)
+  return join(getStateDir(), `${safeFilenameSegment(sessionId)}.lock`)
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -163,7 +171,11 @@ export function releaseSessionLock(path: string): void {
   removeIfExists(path)
 }
 
-/** Path to the background-save stderr log for a given session. */
+/**
+ * Path to the background-save stderr log for a given session. Same
+ * sanitization posture as `lockPath` — `safeFilenameSegment` keeps the
+ * filename inside `getStateDir()` regardless of the session id's shape.
+ */
 export function logPath(sessionId: string): string {
-  return join(getStateDir(), `${sessionId}.log`)
+  return join(getStateDir(), `${safeFilenameSegment(sessionId)}.log`)
 }

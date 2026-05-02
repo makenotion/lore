@@ -10,6 +10,7 @@ import {
   spawnBackgroundSave,
 } from "../../hooks/background.js"
 import { touchDigestMarker } from "../../hooks/digest-marker.js"
+import { safeFilenameSegment } from "../../hooks/marker-key.js"
 
 /**
  * Resolve the absolute path configured for a project in `.lore.yaml`. When
@@ -126,7 +127,16 @@ export const digestCommand = new Command("digest")
         )
 
         const spawnCwd = resolveSpawnCwd(services.configRoot, projectConfigPath)
-        const lockKey = `digest-${projectLabel.replace(/[^A-Za-z0-9_.-]/g, "_")}`
+        // Routes through `safeFilenameSegment` for the same reason
+        // `digest-scheduler.ts` does — one shared sanitization +
+        // length-cap policy across every hook-state filename builder
+        // (see `src/hooks/marker-key.ts`). Two parallel `digest-` lock
+        // builders inlining the regex would drift the moment one is
+        // tweaked; this CLI surface and the auto-digest scheduler must
+        // produce byte-identical lock keys for the same `projectLabel`
+        // so a manual `lore digest` and a Stop-fired auto-digest race
+        // through the same `MAX_CONCURRENT_SAVES` gate.
+        const lockKey = `digest-${safeFilenameSegment(projectLabel)}`
         const result = spawnBackgroundSave(spawnCwd, prompt, lockKey, {
           logLabel: "digest",
           allowedTools: DIGEST_ALLOWLIST,
