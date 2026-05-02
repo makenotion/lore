@@ -2668,9 +2668,11 @@ export class MemoryService {
     topicId?: string
     source?: MemorySource
     kind?: MemoryKind
+    confidence?: MemoryConfidence
     status?: MemoryStatus
     reviewBefore?: string
     tags?: string[]
+    session?: string
     limit?: number
     since?: string
     until?: string
@@ -2727,6 +2729,12 @@ export class MemoryService {
         select: { equals: opts.kind },
       })
     }
+    if (opts?.confidence) {
+      filters.push({
+        property: "Confidence",
+        select: { equals: opts.confidence },
+      })
+    }
     if (opts?.status) {
       filters.push({
         property: "Status",
@@ -2750,6 +2758,12 @@ export class MemoryService {
           })),
         })
       }
+    }
+    if (opts?.session) {
+      filters.push({
+        property: "Session",
+        rich_text: { equals: opts.session },
+      })
     }
     if (opts?.since) {
       filters.push({

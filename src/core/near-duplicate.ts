@@ -17,7 +17,9 @@
 
 import type {
   Memory,
+  MemoryConfidence,
   MemoryKind,
+  MemorySource,
   MemoryStatus,
   TaskState,
   TaskSummary,
@@ -51,8 +53,11 @@ export interface MemoryLister {
   list(opts: {
     projectId?: string
     topicId?: string
+    source?: MemorySource
     tags?: string[]
     kind?: MemoryKind
+    confidence?: MemoryConfidence
+    session?: string
     limit?: number
     includeContent?: boolean
   }): Promise<{ items: Memory[]; nextCursor?: string }>
@@ -178,6 +183,225 @@ export async function findNearDuplicates(
   }
   matches.sort((a, b) => b.titleSimilarity - a.titleSimilarity)
   return matches
+}
+
+export interface AutosaveLearningDuplicateMatch extends NearDuplicateMatch {
+  /** Project relation on the existing row, for session auto-link bookkeeping. */
+  projectIds: string[]
+  /** Trigram Jaccard over the full markdown body. Range `[0, 1]`. */
+  contentSimilarity: number
+  /** Trigram Jaccard over title + body. Range `[0, 1]`. */
+  combinedSimilarity: number
+  /** Token-set Jaccard over title + body after light stemming. Range `[0, 1]`. */
+  tokenSimilarity: number
+}
+
+export interface FindAutosaveLearningDuplicateOpts {
+  /** Title of the atomic learning being written. */
+  title: string
+  /** Markdown body of the atomic learning being written. */
+  content: string
+  /** Project scope to prefer when one is available. */
+  projectId?: string
+  /** Hook session id. Required because the gate is session-scoped. */
+  session?: string
+  /** Similarity threshold for blocking a duplicate create. */
+  threshold?: number
+  /** Max rows to scan in the candidate pool (default 50). */
+  limit?: number
+  /** Optional observer for list-query failures. */
+  onError?: (err: unknown) => void
+}
+
+const AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD = 0.92
+const AUTOSAVE_LEARNING_TOKEN_DUPLICATE_THRESHOLD = 0.72
+
+const LEARNING_TOKEN_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "by",
+  "for",
+  "from",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "this",
+  "to",
+  "with",
+])
+
+function learningContentSimilarity(a: string, b: string): number {
+  if (a.trim() === "" || b.trim() === "") return 0
+  return trigramJaccard(a, b)
+}
+
+function learningCombinedSimilarity(
+  titleA: string,
+  contentA: string,
+  titleB: string,
+  contentB: string,
+): number {
+  return trigramJaccard(`${titleA}\n${contentA}`, `${titleB}\n${contentB}`)
+}
+
+function normalizeLearningToken(raw: string): string {
+  if (LEARNING_TOKEN_STOPWORDS.has(raw)) return ""
+
+  let token = raw
+  if (token.endsWith("ies") && token.length > 4) {
+    token = `${token.slice(0, -3)}y`
+  } else if (token.endsWith("ed") && token.length > 4) {
+    token = token.slice(0, -2)
+  } else if (token.endsWith("s") && token.length > 3) {
+    token = token.slice(0, -1)
+  }
+
+  return LEARNING_TOKEN_STOPWORDS.has(token) ? "" : token
+}
+
+function learningTokens(title: string, content: string): Set<string> {
+  const text = `${title}\n${content}`
+    .toLowerCase()
+    .replace(/\b([a-z0-9]+)['’]s\b/g, "$1")
+  const rawTokens = text.match(/[a-z0-9]+/g) ?? []
+  const tokens = new Set<string>()
+  for (const raw of rawTokens) {
+    const normalized = normalizeLearningToken(raw)
+    if (normalized) tokens.add(normalized)
+  }
+  return tokens
+}
+
+function learningTokenSimilarity(
+  titleA: string,
+  contentA: string,
+  titleB: string,
+  contentB: string,
+): number {
+  const A = learningTokens(titleA, contentA)
+  const B = learningTokens(titleB, contentB)
+  if (A.size === 0 || B.size === 0) return 0
+
+  let intersection = 0
+  const [smaller, larger] = A.size <= B.size ? [A, B] : [B, A]
+  for (const token of smaller) {
+    if (larger.has(token)) intersection++
+  }
+  const union = A.size + B.size - intersection
+  return intersection / union
+}
+
+/**
+ * Blocking duplicate finder for Stop-spawn atomic learnings.
+ *
+ * The regular `findNearDuplicates` probe is advisory and project-scoped.
+ * Autosave learning extraction needs a stronger contract because the same
+ * transcript window can be processed more than once. This helper stays
+ * session-scoped, reads only likely conversation-sourced notes, and fetches bodies
+ * so a duplicate body/combined-text pair returns the existing row instead of letting
+ * the write path create another memory.
+ */
+export async function findAutosaveLearningDuplicate(
+  memories: MemoryLister,
+  opts: FindAutosaveLearningDuplicateOpts,
+): Promise<AutosaveLearningDuplicateMatch | null> {
+  if (
+    process.env["LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP"] === "1" ||
+    process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1"
+  ) {
+    return null
+  }
+  const session = opts.session?.trim()
+  if (!session) return null
+  if (opts.title.trim() === "") return null
+
+  let items: Memory[]
+  try {
+    const result = await memories.list({
+      projectId: opts.projectId,
+      session,
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      limit: opts.limit ?? 50,
+      includeContent: true,
+    })
+    items = result.items
+  } catch (err) {
+    opts.onError?.(err)
+    return null
+  }
+
+  const textThreshold = opts.threshold ?? AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD
+  const matches: AutosaveLearningDuplicateMatch[] = []
+  for (const mem of items) {
+    // Defense in depth: the server-side list filter above should already
+    // narrow to this triple. Keeping the client-side guard means a future
+    // list-filter regression cannot turn synopsis rows into blocking matches.
+    if (mem.source !== "conversation" || mem.kind !== "note" || mem.confidence !== "likely") {
+      continue
+    }
+    const titleSimilarity = trigramJaccard(opts.title, mem.title)
+    const contentSimilarity = learningContentSimilarity(opts.content, mem.content)
+    const combinedSimilarity = learningCombinedSimilarity(
+      opts.title,
+      opts.content,
+      mem.title,
+      mem.content,
+    )
+    const tokenSimilarity = learningTokenSimilarity(
+      opts.title,
+      opts.content,
+      mem.title,
+      mem.content,
+    )
+
+    const duplicate =
+      combinedSimilarity >= textThreshold ||
+      contentSimilarity >= textThreshold ||
+      tokenSimilarity >= AUTOSAVE_LEARNING_TOKEN_DUPLICATE_THRESHOLD
+    if (!duplicate) continue
+
+    matches.push({
+      id: mem.id,
+      title: mem.title,
+      titleSimilarity,
+      tagOverlap: 0,
+      decidedAt: mem.decidedAt,
+      status: mem.status,
+      projectIds: mem.projectIds,
+      contentSimilarity,
+      combinedSimilarity,
+      tokenSimilarity,
+    })
+  }
+
+  matches.sort((a, b) => {
+    const aBest = Math.max(
+      a.titleSimilarity,
+      a.contentSimilarity,
+      a.combinedSimilarity,
+      a.tokenSimilarity,
+    )
+    const bBest = Math.max(
+      b.titleSimilarity,
+      b.contentSimilarity,
+      b.combinedSimilarity,
+      b.tokenSimilarity,
+    )
+    return bBest - aBest
+  })
+  return matches[0] ?? null
 }
 
 /**

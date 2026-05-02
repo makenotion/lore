@@ -6180,6 +6180,30 @@ describe("MemoryService.list — pagination", () => {
       start_cursor: "resume-from-here",
     })
   })
+
+  it("adds a Session rich_text filter when session is provided", async () => {
+    const { client, querySpy } = createClient({ results: [] })
+    const service = new MemoryService(client, db)
+
+    await service.list({ session: "session-1", includeContent: false })
+
+    expect(querySpy.mock.calls[0][0].filter).toEqual({
+      property: "Session",
+      rich_text: { equals: "session-1" },
+    })
+  })
+
+  it("adds a Confidence select filter when confidence is provided", async () => {
+    const { client, querySpy } = createClient({ results: [] })
+    const service = new MemoryService(client, db)
+
+    await service.list({ confidence: "likely", includeContent: false })
+
+    expect(querySpy.mock.calls[0][0].filter).toEqual({
+      property: "Confidence",
+      select: { equals: "likely" },
+    })
+  })
 })
 
 describe("MemoryService.list — archived filter", () => {

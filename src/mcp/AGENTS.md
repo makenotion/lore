@@ -377,10 +377,23 @@ the response adds a trailing `Warning:` block listing the candidates.
   `lore-decision({ action: 'supersede', ... })` line per candidate,
   scoped to same-project + same-topic + active status.
 
-The probe is advisory only — it never blocks the save, and a probe
-failure returns silently (no trailing warning, save succeeds as normal).
-Rows the caller already superseded via `supersedesIds` are dropped from
-the warning list to avoid re-warning about known duplicates.
+The general probe is advisory only — it never blocks the save, and a
+probe failure returns silently (no trailing warning, save succeeds as
+normal). Rows the caller already superseded via `supersedesIds` are
+dropped from the warning list to avoid re-warning about known
+duplicates.
+
+Exception: Stop-spawn atomic learnings have a structural duplicate gate
+before create. In a `LORE_BACKGROUND_AGENT=true` process, a
+`lore-memory action='save'` call shaped like the learning prompt
+(`source: "conversation"` default, `kind: "note"`,
+`confidence: "likely"`, non-empty `session`) checks existing
+likely conversation notes in that session. A duplicate returns the
+existing row and creates nothing. This intentionally does not apply to
+synopsis-style saves where `confidence` is omitted or non-`likely`.
+Set `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` to bypass only this
+structural gate; `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` bypasses it too
+for one-switch near-duplicate rollback.
 
 Set `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` to skip the probe entirely
 in bulk-import, fixture, or autosave contexts where the per-save

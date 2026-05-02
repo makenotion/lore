@@ -283,17 +283,29 @@ surfaces 30 candidate facts must rank by durability and skip the long
 tail — the next session's autosave will catch anything truly important
 that the prior run dropped (transcripts overlap).
 
-Foreground/background dedup is **prompt-only**. The sub-agent is told
-to probe `lore-query action='search'` (scoped to the same project,
-seeded by the candidate's title or distinctive terms) for each
-candidate before saving, skipping near-matches. `action='search'` —
-not `action='ask'` — is the right probe: `ask` walks the fact / task
-graph by entity, so it would miss any foreground
+Foreground/background dedup has a structural same-session gate plus a
+prompt-level cross-session probe. The save path treats background
+`source: "conversation"`, `kind: "note"`, `confidence: "likely"` saves
+with a session id as atomic-learning-shaped and checks existing
+likely conversation notes in that session before creating a row. If an
+overlapping transcript window produces the same likely-note learning
+twice (including simple title/body reordering), `lore-memory
+action='save'` returns the existing row instead of creating another one.
+This gate does not apply to synopsis-style saves (`confidence` omitted
+or non-`likely`) so the session-level memory stays independent from the
+per-learning rows. The prompt therefore requires `confidence: "likely"`
+on every atomic learning; using `"certain"` intentionally opts out of
+the structural learning gate and should not be used by autosave
+learning extraction.
+
+The prompt still tells the sub-agent to probe `lore-query
+action='search'` (scoped to the same project, seeded by the candidate's
+title or distinctive terms) for older or cross-session near-matches.
+`action='search'` — not `action='ask'` — is the right probe: `ask` walks
+the fact / task graph by entity, so it would miss any foreground
 `lore-memory action='save'` row whose title doesn't already carry a
-matching fact edge. `lore-query` is therefore in the autosave's
-`DEFAULT_SAVE_ALLOWLIST`. Real-vault duplicates remain possible — a
-session-scoped dedup relation is the deferred follow-up; v1 accepts the
-occasional duplicate and lets `lore-correct` clean up.
+matching fact edge. `lore-query` stays in the autosave's
+`DEFAULT_SAVE_ALLOWLIST` for that cross-session check.
 
 The block does not introduce a new `MemorySource` value. Atomic
 learnings inherit `source: "conversation"` (the existing autosave
@@ -319,6 +331,12 @@ block to ship).
   Anti-foot-gun: only the literal string `"1"` disables. Other
   truthy-looking values (`"true"`, `"yes"`) fall through to the
   permissive branch.
+- `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` — env var, runtime
+  rollback for the structural same-session gate only. Learning
+  extraction still runs; the save path simply stops blocking duplicate
+  learning rows. The shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
+  also disables this gate because it is a near-duplicate probe by
+  another name.
 - `hooks.learningExtraction: false` — `.lore.yaml`, persistent.
   Defaults to `true` in `mergeHookDefaults`.
 

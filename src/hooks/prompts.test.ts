@@ -306,16 +306,16 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toContain(`top ${PER_SPAWN_LEARNING_LIMIT} high-signal learnings`)
   })
 
-  it("instructs the sub-agent to dedup against persisted state via lore-query action='search'", () => {
-    // The dedup probe is the only mechanism keeping learning saves from
-    // duplicating foreground `lore-remember` calls in the same session.
-    // Pinning the phrase ensures the prompt continues to teach the
-    // *correct* probe explicitly — `action='search'` (memory-shaped
+  it("instructs the sub-agent to dedup older matches while noting the structural same-session gate", () => {
+    // The save path now blocks same-session duplicate learnings, but
+    // the prompt still teaches the *correct* read probe for older /
+    // cross-session persisted state — `action='search'` (memory-shaped
     // similarity), not `action='ask'` (entity-keyed fact/task graph
     // walk that would miss memory rows without matching fact edges).
     const prompt = buildBackgroundSavePrompt([], null, "transcript")
     expect(prompt).toContain("lore-query action='search'")
     expect(prompt).toContain("Non-redundant against persisted state")
+    expect(prompt).toContain("return the existing learning instead of creating another row")
     // Negative-pin the wrong probe so a future prompt rewrite that
     // re-introduces `action='ask'` for memory dedup fails this test
     // rather than landing silently. The exact phrase the prompt uses
@@ -337,6 +337,13 @@ describe("buildBackgroundSavePrompt", () => {
     // word "body" in narrative ("a learning's body should be ...");
     // we negative-pin only the bullet form to avoid false positives.
     expect(prompt).not.toContain("- body: 1-3 sentences")
+  })
+
+  it("requires confidence='likely' for atomic learnings so structural dedup applies", () => {
+    const prompt = buildBackgroundSavePrompt([], null, "transcript")
+    expect(prompt).toContain('confidence: "likely"')
+    expect(prompt).toContain("required for autosave learning dedup")
+    expect(prompt).toContain('do not omit or bump to "certain"')
   })
 
   it("places the learning-extraction block between the extraction filter and the tool guidance", () => {

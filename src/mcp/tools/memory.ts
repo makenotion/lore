@@ -25,8 +25,10 @@ import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
   extractEntityCandidates,
+  findAutosaveLearningDuplicate,
   findNearDuplicates,
   findRelatedActiveTasks,
+  type AutosaveLearningDuplicateMatch,
   type NearDuplicateMatch,
 } from "../../core/near-duplicate.js"
 import { decodeTextEntities } from "../../notion/html-entities.js"
@@ -60,6 +62,9 @@ const MEMORY_NEAR_DUPLICATE_THRESHOLD = 0.7
 
 /** Cap the probe candidate pool. See `findNearDuplicates` docstring. */
 const NEAR_DUPLICATE_POOL_LIMIT = 50
+
+/** Cap the session-scoped duplicate pool for Stop-spawn atomic learnings. */
+const AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT = 50
 
 /**
  * Topic-key format (0.9.0/#06): kebab-case path like `decision/jwt-auth`.
@@ -99,6 +104,28 @@ function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
     "Consider `lore-memory` with `action: 'update'` on the existing row, or `lore-decision` with `action: 'create'` and `supersedesIds` if this is a formal replacement.",
   )
   return lines
+}
+
+function isAutosaveLearningSave(args: SaveArgs, resolvedKind: MemoryKind): boolean {
+  return (
+    process.env["LORE_BACKGROUND_AGENT"] === "true" &&
+    (args.source ?? "conversation") === "conversation" &&
+    resolvedKind === "note" &&
+    args.confidence === "likely" &&
+    typeof args.session === "string" &&
+    args.session.trim().length > 0
+  )
+}
+
+function formatAutosaveLearningDuplicate(match: AutosaveLearningDuplicateMatch): string[] {
+  return [
+    `Skipped duplicate autosave learning: "${match.title}" (${match.id})`,
+    `Similarity: title ${match.titleSimilarity.toFixed(2)}, ` +
+      `content ${match.contentSimilarity.toFixed(2)}, ` +
+      `combined ${match.combinedSimilarity.toFixed(2)}, ` +
+      `token ${match.tokenSimilarity.toFixed(2)}`,
+    "No new memory was created. The existing memory stays available for this session.",
+  ]
 }
 
 const KINDS = [
@@ -248,22 +275,8 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     }
 
     const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
-
-    let topicId: string | undefined
-    let topicLabel = "none"
-    if (args.topicName && resolved.ids.length > 0) {
-      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids, {
-        forceNew: args.forceNewTopic,
-      })
-      topicId = topic.id
-      // Use the canonical's stored name when normalized-equivalent
-      // collapse landed on an existing row — otherwise the response
-      // misleadingly echoes the caller's input even though the memory
-      // is now linked to a topic with a different name.
-      topicLabel = topic.name
-    }
-
     const probeProjectId = resolved.ids[0]
+
     const probePromise = probeProjectId
       ? findNearDuplicates(services.memories, {
           title: args.title,
@@ -279,16 +292,11 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         })
       : Promise.resolve([] as NearDuplicateMatch[])
 
-    // Active-task cross-reference probe (issue 0.7.0/11). Fires in
-    // parallel with the create + near-dup probe so wall-clock latency
-    // stays at `max(latencies)` rather than summed. The probe surfaces
-    // active tasks whose `Entity` column contains an entity extracted
-    // from the saved memory's title / keywords / synopsis — anchoring
-    // closure CTAs at the moment the agent reasons about resolution.
-    // Project scope is optional here (unlike near-dup): the helper's
-    // unscoped path is well-defined since `TaskService.list` honors
-    // `projectOrUnscopedFilter`. Advisory: failures route through
-    // `debugLogPartialFailures` and degrade to `[]` silently.
+    // Active-task cross-reference probe (issue 0.7.0/11). Fires as soon
+    // as project scope is known so likely-note autosave saves can overlap
+    // this advisory query with the blocking learning-dedup probe. The
+    // write itself still waits for the blocking probe to clear so a
+    // duplicate hit never creates a row.
     const taskCrossrefPromise = findRelatedActiveTasks(services, {
       memoryTitle: args.title,
       memoryKeywords: args.keywords,
@@ -299,6 +307,50 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           { rootId: "task-crossref", error: err },
         ]),
     })
+
+    if (isAutosaveLearningSave(args, resolvedKind)) {
+      const duplicate = await findAutosaveLearningDuplicate(services.memories, {
+        title: args.title,
+        content: args.content,
+        projectId: probeProjectId,
+        session: args.session,
+        limit: AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT,
+        onError: (err) =>
+          debugLogPartialFailures("lore-memory", [
+            { rootId: "autosave-learning-dedup", error: err },
+          ]),
+      })
+
+      if (duplicate) {
+        // Record the existing row's project scope so later same-session
+        // fact creates auto-link to the row future retrieval should cite.
+        services.sessionMemories.record(
+          { agent: args.agent, session: args.session },
+          { memoryId: duplicate.id, projectIds: duplicate.projectIds },
+        )
+        // No new memory means no derived auto-mentions or task-crossref
+        // footer: the duplicate row's existing facts remain authoritative.
+        return {
+          content: [
+            { type: "text", text: formatAutosaveLearningDuplicate(duplicate).join("\n") },
+          ],
+        }
+      }
+    }
+
+    let topicId: string | undefined
+    let topicLabel = "none"
+    if (args.topicName && resolved.ids.length > 0) {
+      const topic = await services.topics.getOrCreate(args.topicName, resolved.ids, {
+        forceNew: args.forceNewTopic,
+      })
+      topicId = topic.id
+      // Use the canonical's stored name when normalized-equivalent
+      // collapse landed on an existing row — otherwise the response
+      // misleadingly echoes the caller's input even though the memory
+      // is now linked to a topic with a different name.
+      topicLabel = topic.name
+    }
 
     // Topic-key upsert dispatch (0.9.0/#06). When `topicKey` is set,
     // the save path looks for an existing memory with that key +

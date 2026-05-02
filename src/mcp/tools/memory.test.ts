@@ -634,6 +634,164 @@ describe("lore-remember near-duplicate probe", () => {
   })
 })
 
+describe("lore-memory action='save' autosave-learning structural dedup", () => {
+  it("returns the existing same-session learning instead of creating a duplicate", async () => {
+    const mockServer = createMockServer()
+    const existing = makeMemory("mem-existing", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-1",
+    })
+    const create = vi.fn()
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const record = vi.fn()
+    const getOrCreate = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate },
+      memories: { create, list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+      identity: { author: null },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-1",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("Skipped duplicate autosave learning")
+      expect(text).toContain("mem-existing")
+      expect(create).not.toHaveBeenCalled()
+      expect(getOrCreate).not.toHaveBeenCalled()
+      expect(record).toHaveBeenCalledWith(
+        { agent: "Codex", session: "session-1" },
+        { memoryId: "mem-existing", projectIds: ["proj-a"] },
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("keeps synopsis-style background saves independent from the learning gate", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-synopsis", {
+      title: "session synopsis",
+      content: "Session-level synopsis.",
+      projectIds: ["proj-a"],
+    })
+    const existing = makeMemory("mem-existing", {
+      title: "session synopsis",
+      content: "Session-level synopsis.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-1",
+    })
+    const create = vi.fn().mockResolvedValue(created)
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "session synopsis",
+        content: "Session-level synopsis.",
+        kind: "note",
+        session: "session-1",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain('Saved memory: "session synopsis"')
+      expect(create).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("does not let an existing synopsis-style row suppress a later learning", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-learning", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      confidence: "likely",
+    })
+    const existingSynopsis = makeMemory("mem-synopsis", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "certain",
+      session: "session-1",
+    })
+    const create = vi.fn().mockResolvedValue(created)
+    const list = vi.fn().mockResolvedValue({ items: [existingSynopsis] })
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-1",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
+      expect(create).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+})
+
 describe("lore-recall topicName resolution", () => {
   it("resolves topicName globally (not scoped to the ambient project) so multi-project topics work", async () => {
     const mockServer = createMockServer()

@@ -1586,6 +1586,17 @@ Scoping rules:
   `proposed`, trigram threshold `0.6`. Superseded / deprecated /
   rejected decisions are deliberately excluded — they are not valid
   supersession targets.
+- **Autosave atomic-learning path**: session + optional project +
+  `Source = conversation` + `Kind = note` + `Confidence = likely`,
+  body-fetch enabled. Unlike the general probe, this is blocking: a
+  match returns the existing row and the MCP save path creates nothing.
+  It uses strict trigram checks for near-literal duplicate bodies plus a
+  lightly-stemmed token Jaccard check for reordered same-fact phrasing.
+  It deliberately does NOT use title-only similarity because two
+  durable learnings can share a short title while carrying different
+  facts. The client-side source/kind/confidence recheck duplicates the
+  server filter on purpose so a future `MemoryService.list` regression
+  cannot make synopsis rows block atomic-learning rows.
 
 **`kind` and `excludeKinds` are mutually exclusive by design.** The
 memory path sets `excludeKinds: ["decision"]` (client-side filter),
@@ -1638,10 +1649,13 @@ visible under `LORE_DEBUG=1` without adding noise to the default
 stderr stream.
 
 **Kill-switch.** `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` skips the
-probe entirely. Use for bulk-import, fixture setup, or autosave
-flows where the per-save round-trip isn't justified. The bypass
-lives inside `findNearDuplicates`, not per-tool, so both write tools
-honor it without duplicate plumbing.
+general probe entirely. Use for bulk-import, fixture setup, or
+autosave flows where the per-save round-trip isn't justified. The
+bypass lives inside `findNearDuplicates`, not per-tool, so both write
+tools honor it without duplicate plumbing. The autosave-learning gate
+also honors this shared switch, and additionally honors
+`LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` for a narrower rollback that
+keeps the advisory memory / decision probes enabled.
 
 ## Lexical conflict candidates (`conflict.ts`)
 
