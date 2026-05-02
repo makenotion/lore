@@ -2,15 +2,15 @@ import { get } from "node:http"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const oauthFlowMocks = vi.hoisted(() => ({
-  exec: vi.fn(),
-  execWaiters: [] as Array<(command: string) => void>,
   mkdir: vi.fn(async () => undefined),
-  openedCommands: [] as string[],
+  openedBrowserInvocations: [] as Array<{ command: string; args: string[] }>,
+  spawn: vi.fn(),
+  spawnWaiters: [] as Array<(command: string, args: string[]) => void>,
   writeFile: vi.fn(async () => undefined),
 }))
 
 vi.mock("node:child_process", () => ({
-  exec: oauthFlowMocks.exec,
+  spawn: oauthFlowMocks.spawn,
 }))
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -27,18 +27,22 @@ import { runOAuthFlow } from "./oauth.js"
 const ORIGINAL_ENV_CLIENT_ID = process.env["LORE_OAUTH_CLIENT_ID"]
 
 beforeEach(() => {
-  oauthFlowMocks.openedCommands.length = 0
-  oauthFlowMocks.execWaiters.length = 0
-  oauthFlowMocks.exec.mockImplementation((command: string) => {
-    oauthFlowMocks.openedCommands.push(command)
-    oauthFlowMocks.execWaiters.shift()?.(command)
+  oauthFlowMocks.openedBrowserInvocations.length = 0
+  oauthFlowMocks.spawnWaiters.length = 0
+  oauthFlowMocks.spawn.mockImplementation((command: string, args: string[]) => {
+    oauthFlowMocks.openedBrowserInvocations.push({ command, args })
+    oauthFlowMocks.spawnWaiters.shift()?.(command, args)
+    return {
+      on: vi.fn(),
+      unref: vi.fn(),
+    }
   })
 })
 
 afterEach(() => {
-  oauthFlowMocks.exec.mockReset()
-  oauthFlowMocks.openedCommands.length = 0
-  oauthFlowMocks.execWaiters.length = 0
+  oauthFlowMocks.spawn.mockReset()
+  oauthFlowMocks.openedBrowserInvocations.length = 0
+  oauthFlowMocks.spawnWaiters.length = 0
   oauthFlowMocks.mkdir.mockClear()
   oauthFlowMocks.writeFile.mockClear()
   vi.restoreAllMocks()
@@ -68,7 +72,8 @@ describe("runOAuthFlow", () => {
     if (!redirectUri) {
       throw new Error("Authorization URL did not include a redirect_uri")
     }
-    expect(redirectUri).toMatch(/^http:\/\/localhost:\d+\/callback$/)
+    expect(redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/callback$/)
+    expect(parsedAuthUrl.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+$/)
 
     expect(credentials.access_token).toBe("token")
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -97,6 +102,23 @@ describe("runOAuthFlow", () => {
     })
   })
 
+  it("passes the full OAuth URL as one argv value on Windows", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32")
+
+    const { authUrl } = await completeOAuthFlow({
+      clientId: "windows-client-id",
+      clientSecret: "windows-client-secret",
+    })
+    const invocation = oauthFlowMocks.openedBrowserInvocations[0]
+
+    expect(invocation).toEqual({
+      command: "rundll32",
+      args: ["url.dll,FileProtocolHandler", authUrl],
+    })
+    expect(authUrl).toContain("&redirect_uri=")
+    expect(authUrl).toContain("&state=")
+  })
+
   it("clears the callback timeout when authorization returns an error", async () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
     const fetchMock = vi.fn()
@@ -109,13 +131,99 @@ describe("runOAuthFlow", () => {
     const flowError = flow.catch((error: unknown) => error)
     const authUrl = await waitForOpenedAuthorizationUrl()
     const redirectUri = getRedirectUri(authUrl)
+    const state = getState(authUrl)
 
-    await requestCallback(`${redirectUri}?error=access_denied`)
+    await requestCallback(`${redirectUri}?error=access_denied&state=${state}`)
     const error = await flowError
 
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toBe("OAuth authorization denied: access_denied")
     expect(clearTimeoutSpy).toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("rejects callback codes whose state does not match the authorization URL", async () => {
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const flow = runOAuthFlow({
+      clientId: "state-client-id",
+      clientSecret: "state-client-secret",
+    })
+    const flowError = flow.catch((error: unknown) => error)
+    const authUrl = await waitForOpenedAuthorizationUrl()
+    const redirectUri = getRedirectUri(authUrl)
+
+    const response = await requestCallback(`${redirectUri}?code=callback-code`)
+    const error = await flowError
+
+    expect(response.statusCode).toBe(400)
+    expect(response.body).toContain("could not be verified")
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(
+      "OAuth callback state mismatch. Retry authorization."
+    )
+    expect(clearTimeoutSpy).toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("checks state before trusting provider error callbacks", async () => {
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const flow = runOAuthFlow({
+      clientId: "error-state-client-id",
+      clientSecret: "error-state-client-secret",
+    })
+    const flowError = flow.catch((error: unknown) => error)
+    const authUrl = await waitForOpenedAuthorizationUrl()
+    const redirectUri = getRedirectUri(authUrl)
+
+    const response = await requestCallback(
+      `${redirectUri}?error=access_denied&state=wrong-state`
+    )
+    const error = await flowError
+
+    expect(response.statusCode).toBe(400)
+    expect(response.body).toContain("could not be verified")
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(
+      "OAuth callback state mismatch. Retry authorization."
+    )
+    expect(clearTimeoutSpy).toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("escapes provider error text before rendering it in the callback response", async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const flow = runOAuthFlow({
+      clientId: "error-escape-client-id",
+      clientSecret: "error-escape-client-secret",
+    })
+    const flowError = flow.catch((error: unknown) => error)
+    const authUrl = await waitForOpenedAuthorizationUrl()
+    const redirectUri = getRedirectUri(authUrl)
+    const state = getState(authUrl)
+    const errorText = `<script>alert("x")</script>&reason='bad'`
+
+    const response = await requestCallback(
+      `${redirectUri}?error=${encodeURIComponent(errorText)}&state=${encodeURIComponent(
+        state
+      )}`
+    )
+    const error = await flowError
+
+    expect(response.statusCode).toBe(200)
+    expect(response.body).not.toContain(errorText)
+    expect(response.body).toContain(
+      "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;reason=&#39;bad&#39;"
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(`OAuth authorization denied: ${errorText}`)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
@@ -136,8 +244,11 @@ async function completeOAuthFlow(config: {
   const flow = runOAuthFlow(config)
   const authUrl = await waitForOpenedAuthorizationUrl()
   const redirectUri = getRedirectUri(authUrl)
+  const state = getState(authUrl)
 
-  await requestCallback(`${redirectUri}?code=callback-code`)
+  await requestCallback(
+    `${redirectUri}?code=callback-code&state=${encodeURIComponent(state)}`
+  )
   const credentials = await flow
 
   return { authUrl, clearTimeoutSpy, credentials, fetchMock }
@@ -177,31 +288,52 @@ function getRedirectUri(authUrl: string): string {
   return redirectUri
 }
 
+function getState(authUrl: string): string {
+  const state = new URL(authUrl).searchParams.get("state")
+  if (!state) {
+    throw new Error("Authorization URL did not include a state")
+  }
+  return state
+}
+
 async function waitForOpenedAuthorizationUrl(): Promise<string> {
-  const openedCommand = oauthFlowMocks.openedCommands[0]
-  if (openedCommand) {
-    return extractAuthorizationUrl(openedCommand)
+  const openedInvocation = oauthFlowMocks.openedBrowserInvocations[0]
+  if (openedInvocation) {
+    return extractAuthorizationUrl(openedInvocation)
   }
   return new Promise((resolve) => {
-    oauthFlowMocks.execWaiters.push((command) => {
-      resolve(extractAuthorizationUrl(command))
+    oauthFlowMocks.spawnWaiters.push((command, args) => {
+      resolve(extractAuthorizationUrl({ command, args }))
     })
   })
 }
 
-function extractAuthorizationUrl(command: string): string {
-  const match = command.match(/https?:\/\/[^"]+/)
-  if (!match) {
-    throw new Error(`Browser command did not include an authorization URL: ${command}`)
+function extractAuthorizationUrl(invocation: {
+  command: string
+  args: string[]
+}): string {
+  const authUrl = invocation.args.find((arg) => arg.startsWith("http"))
+  if (!authUrl) {
+    throw new Error(
+      `Browser command did not include an authorization URL: ${invocation.command} ${invocation.args.join(
+        " "
+      )}`
+    )
   }
-  return match[0]
+  return authUrl
 }
 
-function requestCallback(url: string): Promise<void> {
+function requestCallback(url: string): Promise<{ body: string; statusCode: number }> {
   return new Promise((resolve, reject) => {
     get(url, (res) => {
-      res.resume()
-      res.on("end", () => resolve())
+      const chunks: Buffer[] = []
+      res.on("data", (chunk: Buffer) => chunks.push(chunk))
+      res.on("end", () =>
+        resolve({
+          body: Buffer.concat(chunks).toString("utf-8"),
+          statusCode: res.statusCode ?? 0,
+        })
+      )
     }).on("error", reject)
   })
 }

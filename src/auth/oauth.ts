@@ -16,8 +16,9 @@
  */
 
 import type { Client } from "@notionhq/client"
+import { spawn } from "node:child_process"
+import { randomBytes, timingSafeEqual } from "node:crypto"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
-import { exec } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -25,6 +26,7 @@ import type { NtnEnv } from "./ntn.js"
 
 const CREDENTIALS_DIR = join(homedir(), ".lore")
 const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json")
+const OAUTH_REDIRECT_HOST = "127.0.0.1"
 
 /**
  * Canonical Notion API base URLs per ntn environment selector. ntn's
@@ -128,7 +130,7 @@ export function ntnEnvFromBaseUrl(url: string | undefined): NtnEnv | undefined {
  * has to land them on the right URL.
  */
 export function resolveOperatorBaseUrl(
-  envSource: NodeJS.ProcessEnv = process.env,
+  envSource: NodeJS.ProcessEnv = process.env
 ): string | undefined {
   return (
     envSource["LORE_NOTION_BASE_URL"] ||
@@ -174,9 +176,10 @@ export interface OAuthConfig {
  */
 export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredentials> {
   const port = config.redirectPort ?? 0 // 0 = OS picks a free port
-  const { code, actualPort } = await startCallbackServer(port, config.clientId)
+  const state = createOAuthState()
+  const { code, actualPort } = await startCallbackServer(port, config.clientId, state)
 
-  const redirectUri = `http://localhost:${actualPort}/callback`
+  const redirectUri = `http://${OAUTH_REDIRECT_HOST}:${actualPort}/callback`
 
   // Exchange authorization code for access token
   const credentials = await exchangeCode({
@@ -195,7 +198,11 @@ export async function runOAuthFlow(config: OAuthConfig): Promise<OAuthCredential
 /**
  * Get the OAuth authorization URL that the user should open in their browser.
  */
-export function getAuthorizationUrl(clientId: string, redirectUri: string): string {
+export function getAuthorizationUrl(
+  clientId: string,
+  redirectUri: string,
+  state?: string
+): string {
   const base = getBaseUrl()
   const params = new URLSearchParams({
     client_id: clientId,
@@ -203,6 +210,9 @@ export function getAuthorizationUrl(clientId: string, redirectUri: string): stri
     owner: "user",
     redirect_uri: redirectUri,
   })
+  if (state) {
+    params.set("state", state)
+  }
   return `${base}/v1/oauth/authorize?${params}`
 }
 
@@ -280,10 +290,12 @@ async function exchangeCode(params: {
 /**
  * Start a temporary HTTP server to receive the OAuth callback.
  * Returns a promise that resolves with the authorization code.
+ * Validates the per-flow OAuth state before accepting any callback outcome.
  */
 function startCallbackServer(
   port: number,
-  clientId: string
+  clientId: string,
+  expectedState: string
 ): Promise<{ code: string; actualPort: number }> {
   return new Promise((resolve, reject) => {
     let timeout: ReturnType<typeof setTimeout> | undefined
@@ -295,16 +307,30 @@ function startCallbackServer(
     }
 
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const url = new URL(req.url ?? "/", `http://localhost:${port}`)
+      const url = new URL(req.url ?? "/", `http://${OAUTH_REDIRECT_HOST}:${port}`)
 
       if (url.pathname === "/callback") {
+        const state = url.searchParams.get("state")
         const code = url.searchParams.get("code")
         const error = url.searchParams.get("error")
 
+        if (!isExpectedOAuthState(state, expectedState)) {
+          writeHtmlResponse(
+            res,
+            400,
+            "<html><body><h2>Authorization failed</h2><p>The OAuth callback could not be verified. Retry authorization.</p><p>You can close this tab.</p></body></html>"
+          )
+          clearCallbackTimeout()
+          server.close()
+          reject(new Error("OAuth callback state mismatch. Retry authorization."))
+          return
+        }
+
         if (error) {
-          res.writeHead(200, { "Content-Type": "text/html" })
-          res.end(
-            `<html><body><h2>Authorization failed</h2><p>${error}</p><p>You can close this tab.</p></body></html>`
+          writeHtmlResponse(
+            res,
+            200,
+            `<html><body><h2>Authorization failed</h2><p>${escapeHtml(error)}</p><p>You can close this tab.</p></body></html>`
           )
           clearCallbackTimeout()
           server.close()
@@ -313,8 +339,9 @@ function startCallbackServer(
         }
 
         if (code) {
-          res.writeHead(200, { "Content-Type": "text/html" })
-          res.end(
+          writeHtmlResponse(
+            res,
+            200,
             "<html><body><h2>Authorized</h2><p>Lore has been authorized. You can close this tab.</p></body></html>"
           )
           const addr = server.address()
@@ -330,13 +357,13 @@ function startCallbackServer(
       res.end("Not found")
     })
 
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(port, OAUTH_REDIRECT_HOST, () => {
       const addr = server.address()
       if (typeof addr === "object" && addr) {
         // Open browser to the authorization URL
-        const redirectUri = `http://localhost:${addr.port}/callback`
+        const redirectUri = `http://${OAUTH_REDIRECT_HOST}:${addr.port}/callback`
         // Keep browser authorization and token exchange bound to one config value.
-        const authUrl = getAuthorizationUrl(clientId, redirectUri)
+        const authUrl = getAuthorizationUrl(clientId, redirectUri, expectedState)
         openBrowser(authUrl)
         console.log(`\nOpening browser for Notion authorization...`)
         console.log(`If the browser doesn't open, visit:\n  ${authUrl}\n`)
@@ -359,17 +386,66 @@ function startCallbackServer(
   })
 }
 
+function createOAuthState(): string {
+  return randomBytes(32).toString("base64url")
+}
+
+function isExpectedOAuthState(actual: string | null, expected: string): boolean {
+  if (!actual) return false
+  const actualBuffer = Buffer.from(actual)
+  const expectedBuffer = Buffer.from(expected)
+  return (
+    actualBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(actualBuffer, expectedBuffer)
+  )
+}
+
+function writeHtmlResponse(res: ServerResponse, statusCode: number, html: string): void {
+  res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" })
+  res.end(html)
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;"
+      case "<":
+        return "&lt;"
+      case ">":
+        return "&gt;"
+      case '"':
+        return "&quot;"
+      default:
+        return "&#39;"
+    }
+  })
+}
+
 /**
  * Open a URL in the default browser.
  */
 function openBrowser(url: string): void {
-  const cmd =
+  const command =
     process.platform === "darwin"
-      ? `open "${url}"`
+      ? "open"
       : process.platform === "win32"
-        ? `start "${url}"`
-        : `xdg-open "${url}"`
-  exec(cmd)
+        ? "rundll32"
+        : "xdg-open"
+  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url]
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  })
+  child.on("error", (error) => {
+    console.error(
+      `Failed to open the browser automatically: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  })
+  child.unref()
 }
 
 // ---------------------------------------------------------------------------
