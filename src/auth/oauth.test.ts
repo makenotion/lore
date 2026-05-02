@@ -461,6 +461,15 @@ describe("ntnEnvFromBaseUrl (URL → ntn env selector)", () => {
     expect(ntnEnvFromBaseUrl("https://api.notion.so")).toBe("prod")
   })
 
+  it("maps the `.com` prod alias to env=prod", () => {
+    // Notion is migrating public surfaces from `.so` to `.com`; both
+    // forms hit prod. A `.lore.yaml` carrying either must infer prod
+    // so a future config update doesn't silently demote prod to
+    // "unknown" (which would refuse auto-login on the install path
+    // and skip env inference on the auth --login path).
+    expect(ntnEnvFromBaseUrl("https://api.notion.com")).toBe("prod")
+  })
+
   it("maps the canonical dev URL to env=dev", () => {
     expect(ntnEnvFromBaseUrl("https://api-dev.notion.com")).toBe("dev")
   })

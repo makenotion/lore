@@ -335,10 +335,20 @@ describe("resolveNtnEnvBaseUrl", () => {
     )
   })
 
-  it("returns undefined for NOTION_ENV=prod (SDK default)", () => {
-    // Mirrors src/auth/ntn.ts:resolveNtnBaseUrl — `prod` has no
-    // explicit override; the SDK uses its canonical prod URL.
-    expect(resolveNtnEnvBaseUrl({ NOTION_ENV: "prod" })).toBeUndefined()
+  it("returns the canonical prod URL for explicit NOTION_ENV=prod", () => {
+    // Round-7 review: returning `undefined` for explicit prod let a
+    // stale `auth.baseUrl: <dev URL>` win over an explicit
+    // `NOTION_ENV=prod lore auth --migrate` via
+    // `computeNtnLoginEnvOverride`'s `resolveNtnEnvBaseUrl(env) ??
+    // configBaseUrl` fallback. The fix: return the canonical URL so
+    // explicit operator intent is recorded; the prod → "no override"
+    // normalization happens later at the spawn / client boundary
+    // (`computeNtnLoginEnvOverride` returns `undefined` when migrate's
+    // target equals ntn login's native target — both prod URLs match,
+    // so no override forwarded; ntn login defaults to prod).
+    expect(resolveNtnEnvBaseUrl({ NOTION_ENV: "prod" })).toBe(
+      "https://api.notion.so",
+    )
   })
 
   it("returns undefined for unrecognized NOTION_ENV values (safe fallback)", () => {
@@ -399,12 +409,21 @@ describe("resolveLoginTargetBaseUrl", () => {
     ).toBe("https://api-dev.notion.com")
   })
 
-  it("returns NOTION_ENV mapped to canonical URL", () => {
+  it("returns NOTION_ENV mapped to canonical URL (including explicit prod)", () => {
     expect(resolveLoginTargetBaseUrl({ NOTION_ENV: "dev" })).toBe(
       "https://api-dev.notion.com",
     )
     expect(resolveLoginTargetBaseUrl({ NOTION_ENV: "stg" })).toBe(
       "https://api-stg.notion.com",
+    )
+    // Round-7 review: explicit `NOTION_ENV=prod` returns the canonical
+    // prod URL so it pairs symmetrically with `resolveNtnEnvBaseUrl` —
+    // `computeNtnLoginEnvOverride`'s "no override when login native
+    // target equals migrate target" gate then collapses to "both prod
+    // → no override → ntn login defaults to prod" without leaking a
+    // stale `auth.baseUrl` past the explicit selector.
+    expect(resolveLoginTargetBaseUrl({ NOTION_ENV: "prod" })).toBe(
+      "https://api.notion.so",
     )
   })
 
@@ -523,6 +542,39 @@ describe("computeNtnLoginEnvOverride", () => {
     expect(
       computeNtnLoginEnvOverride("https://custom-staging.notion.example", {}),
     ).toEqual({ NOTION_BASE_URL: "https://custom-staging.notion.example" })
+  })
+
+  it("explicit NOTION_ENV=prod beats stale auth.baseUrl=dev (round-7 regression)", () => {
+    // Round-7 review blocking finding #1: pre-fix,
+    // `resolveNtnEnvBaseUrl({NOTION_ENV: "prod"})` returned `undefined`,
+    // so `resolveNtnEnvBaseUrl(env) ?? configBaseUrl` fell through to
+    // the stale dev URL. The migrate spawn forwarded
+    // `NOTION_BASE_URL=https://api-dev.notion.com` despite the explicit
+    // `NOTION_ENV=prod` selector — silently overruling operator intent.
+    //
+    // Post-fix: the resolver returns the canonical prod URL, so
+    // migrateTarget is prod and matches `resolveLoginTargetBaseUrl`'s
+    // prod return. They match → no override forwarded → ntn login uses
+    // its default (prod). Operator intent preserved.
+    expect(
+      computeNtnLoginEnvOverride("https://api-dev.notion.com", {
+        NOTION_ENV: "prod",
+      }),
+    ).toBeUndefined()
+  })
+
+  it("explicit NOTION_ENV=dev beats stale auth.baseUrl=prod (symmetry)", () => {
+    // Symmetric guard: an operator with `auth.baseUrl: https://api.notion.so`
+    // in committed config but explicit `NOTION_ENV=dev` in shell wants
+    // a dev token; the env var is the more recent / specific signal.
+    // ntn login natively reads NOTION_ENV → dev URL; migrateTarget is
+    // also dev URL (env wins over config). Match → no override needed
+    // because ntn login already gets NOTION_ENV via process.env spread.
+    expect(
+      computeNtnLoginEnvOverride("https://api.notion.so", {
+        NOTION_ENV: "dev",
+      }),
+    ).toBeUndefined()
   })
 })
 
@@ -1363,20 +1415,22 @@ describe("runMigrate", () => {
   // NOTION_API_TOKEN guard base-URL resolution
   //
   // The guard MUST mirror `resolveAuth`'s `env-notion-api-token` source
-  // exactly (src/config.ts:246-253) — which on this branch honors ONLY
-  // `LORE_NOTION_BASE_URL`. Anything broader creates a false positive:
-  // the guard would verify against dev (because it broadly resolved
-  // ntn's env vars) while the next process verifies against prod
-  // (because resolveAuth's env-notion-api-token source ignores those).
-  //
-  // When PR #178 lands and broadens resolveAuth via resolveOperatorBaseUrl,
-  // the late-merger broadens both this guard and resolveAuth together.
+  // exactly (src/config.ts:243-258), which on this branch resolves the
+  // base URL via `resolveOperatorBaseUrl()` — honoring (in priority
+  // order) LORE_NOTION_BASE_URL → NOTION_BASE_URL → NOTION_API_BASE_URL
+  // → NOTION_ENV. Anything narrower creates a false positive in the
+  // opposite direction: a dev operator with `NOTION_API_TOKEN` plus
+  // `NOTION_BASE_URL=<dev URL>` would have the guard verify prod
+  // (LORE_-only) while the next Lore process verifies dev (via
+  // resolveOperatorBaseUrl) — silently greenlighting a migration whose
+  // post-migrate session targets a host the api token doesn't authorize,
+  // OR falsely aborting a valid migration when the api token IS valid
+  // for dev but not prod. Round-7 review blocking finding #2 corrected
+  // an earlier round-of-review claim that resolveAuth's source was
+  // LORE_-only; on this branch it isn't.
   // -------------------------------------------------------------------------
 
-  it("NOTION_API_TOKEN guard inherits LORE_NOTION_BASE_URL when set", async () => {
-    // The only env var resolveAuth's env-notion-api-token source honors
-    // today. The guard must mirror exactly so it verifies the same
-    // host the next Lore process will hit.
+  it("NOTION_API_TOKEN guard inherits LORE_NOTION_BASE_URL when set (top priority)", async () => {
     const { deps, spies } = makeScenario({
       envToken: "legacy-tok",
       notionApiTokenEnv: "api-tok",
@@ -1391,43 +1445,10 @@ describe("runMigrate", () => {
     )
   })
 
-  it("NOTION_API_TOKEN guard IGNORES NOTION_API_BASE_URL (mirrors resolveAuth's narrow shape)", async () => {
-    // The round-7 reviewer's silent-host-mismatch concern: previously
-    // the guard broadly honored NOTION_API_BASE_URL via
-    // `resolveNtnEnvBaseUrl`, but resolveAuth's env-notion-api-token
-    // source ignores it. So the guard would verify dev → pass, but
-    // the next process would verify prod → fail. Pin that the guard
-    // matches resolveAuth's narrow LORE_-only behavior so a future
-    // refactor doesn't reintroduce the false positive.
-    const { deps, spies } = makeScenario({
-      envToken: "legacy-tok",
-      notionApiTokenEnv: "api-tok",
-      notionApiBaseUrlNativeEnv: "https://api-dev.notion.com",
-    })
-    const result = await runMigrate({}, deps)
-    expect(result.exitCode).toBe(0)
-    // Verify against undefined (SDK default = prod), NOT the dev URL —
-    // even though NOTION_API_BASE_URL is set. resolveAuth would
-    // resolve to undefined here, so the guard must too.
-    expect(spies.makeClient).toHaveBeenNthCalledWith(3, "api-tok", undefined)
-  })
-
-  it("NOTION_API_TOKEN guard IGNORES NOTION_ENV (mirrors resolveAuth's narrow shape)", async () => {
-    const { deps, spies } = makeScenario({
-      envToken: "legacy-tok",
-      notionApiTokenEnv: "api-tok",
-      notionEnvEnv: "dev",
-    })
-    const result = await runMigrate({}, deps)
-    expect(result.exitCode).toBe(0)
-    expect(spies.makeClient).toHaveBeenNthCalledWith(3, "api-tok", undefined)
-  })
-
-  it("NOTION_API_TOKEN guard IGNORES NOTION_BASE_URL (mirrors resolveAuth's narrow shape)", async () => {
-    // Even #178's middle-tier NOTION_BASE_URL is ignored by the guard
-    // because resolveAuth's env-notion-api-token source on this PR's
-    // branch only reads LORE_NOTION_BASE_URL. The late-merger with
-    // #178 broadens both together.
+  it("NOTION_API_TOKEN guard inherits NOTION_BASE_URL when LORE_ is unset", async () => {
+    // Mirrors `resolveOperatorBaseUrl`'s second-tier priority — the
+    // env var that ntn login natively reads, also picked up by the
+    // env-notion-api-token resolveAuth path.
     const { deps, spies } = makeScenario({
       envToken: "legacy-tok",
       notionApiTokenEnv: "api-tok",
@@ -1435,7 +1456,68 @@ describe("runMigrate", () => {
     })
     const result = await runMigrate({}, deps)
     expect(result.exitCode).toBe(0)
-    expect(spies.makeClient).toHaveBeenNthCalledWith(3, "api-tok", undefined)
+    expect(spies.makeClient).toHaveBeenNthCalledWith(
+      3,
+      "api-tok",
+      "https://api-dev.notion.com",
+    )
+  })
+
+  it("NOTION_API_TOKEN guard inherits NOTION_API_BASE_URL when LORE_ and NOTION_BASE_URL are unset", async () => {
+    // ntn-native runtime API-host var; third-tier priority in
+    // resolveOperatorBaseUrl. Covered here so the guard's behavior
+    // stays in lockstep with resolveAuth's actual env-notion-api-token
+    // resolution.
+    const { deps, spies } = makeScenario({
+      envToken: "legacy-tok",
+      notionApiTokenEnv: "api-tok",
+      notionApiBaseUrlNativeEnv: "https://api-dev.notion.com",
+    })
+    const result = await runMigrate({}, deps)
+    expect(result.exitCode).toBe(0)
+    expect(spies.makeClient).toHaveBeenNthCalledWith(
+      3,
+      "api-tok",
+      "https://api-dev.notion.com",
+    )
+  })
+
+  it("NOTION_API_TOKEN guard inherits NOTION_ENV mapped to canonical URL", async () => {
+    // Fourth-tier priority — env-name shortcut. resolveOperatorBaseUrl
+    // maps it via ntnEnvBaseUrl, so the guard must too.
+    const { deps, spies } = makeScenario({
+      envToken: "legacy-tok",
+      notionApiTokenEnv: "api-tok",
+      notionEnvEnv: "dev",
+    })
+    const result = await runMigrate({}, deps)
+    expect(result.exitCode).toBe(0)
+    expect(spies.makeClient).toHaveBeenNthCalledWith(
+      3,
+      "api-tok",
+      "https://api-dev.notion.com",
+    )
+  })
+
+  it("NOTION_API_TOKEN guard LORE_NOTION_BASE_URL beats NOTION_BASE_URL beats NOTION_API_BASE_URL beats NOTION_ENV (priority pin)", async () => {
+    // Pin the full priority chain so a future refactor reordering
+    // resolveOperatorBaseUrl loudly breaks the guard's mirror. With
+    // all four set, the LORE_-prefixed value wins.
+    const { deps, spies } = makeScenario({
+      envToken: "legacy-tok",
+      notionApiTokenEnv: "api-tok",
+      notionApiBaseUrlEnv: "https://lore-tier.example",
+      notionBaseUrlEnv: "https://middle-tier.example",
+      notionApiBaseUrlNativeEnv: "https://ntn-tier.example",
+      notionEnvEnv: "dev",
+    })
+    const result = await runMigrate({}, deps)
+    expect(result.exitCode).toBe(0)
+    expect(spies.makeClient).toHaveBeenNthCalledWith(
+      3,
+      "api-tok",
+      "https://lore-tier.example",
+    )
   })
 
   it("NOTION_API_TOKEN with no base-URL env vars hits SDK default (prod)", async () => {
@@ -1529,6 +1611,30 @@ describe("runMigrate", () => {
     const out = run.stdout.join("\n")
     expect(out).toContain("Forwarding from")
     expect(out).toContain("NOTION_BASE_URL=https://api-dev.notion.com")
+  })
+
+  it("explicit NOTION_ENV=prod beats stale config auth.baseUrl=dev (round-7 regression)", async () => {
+    // Round-7 review blocking finding #1, full-orchestrator coverage
+    // for the pure-helper pin in the computeNtnLoginEnvOverride
+    // describe block above. An operator running
+    // `NOTION_ENV=prod lore auth --migrate` in a repo whose
+    // `.lore.yaml` still carries `auth.baseUrl: https://api-dev.notion.com`
+    // pre-fix had the dev config win — the migrate spawn forwarded
+    // `NOTION_BASE_URL=dev` despite the explicit prod selector. This
+    // pins that the explicit operator selector is preserved end-to-end:
+    // no override is forwarded to ntn login (because ntn login
+    // natively reads NOTION_ENV=prod via process.env spread), and the
+    // user-facing "Forwarding from" log doesn't fire.
+    const { deps, run, spies } = makeScenario({
+      envToken: "legacy-tok",
+      configBaseUrl: "https://api-dev.notion.com",
+      notionEnvEnv: "prod",
+    })
+    const result = await runMigrate({}, deps)
+    expect(result.exitCode).toBe(0)
+    expect(spies.runNtnLogin).toHaveBeenCalledTimes(1)
+    expect(spies.runNtnLogin).toHaveBeenCalledWith(undefined)
+    expect(run.stdout.join("\n")).not.toContain("Forwarding from")
   })
 
   it("config auth.baseUrl + no env vars + ntn record without baseUrl: Step 4 uses captured target (regression)", async () => {
@@ -1634,6 +1740,22 @@ describe("inferNtnEnvFromBaseUrl", () => {
   it("returns undefined for empty / undefined / null inputs", () => {
     expect(inferNtnEnvFromBaseUrl(undefined)).toBeUndefined()
     expect(inferNtnEnvFromBaseUrl("")).toBeUndefined()
+  })
+
+  it("is exact-match — a canonical URL with extra path does NOT match", () => {
+    // Pin the consolidated exact-match policy. A `.lore.yaml`
+    // carrying `auth.baseUrl: https://api-dev.notion.com/v1` would
+    // not round-trip cleanly through ntn's resolution anyway (ntn
+    // appends its own path), so refusing the inference is the right
+    // call. Exact-match also closes a small attack surface where a
+    // substring matcher could be tricked by a hostile baseUrl whose
+    // path embeds a canonical URL fragment.
+    expect(
+      inferNtnEnvFromBaseUrl("https://api-dev.notion.com/v1"),
+    ).toBeUndefined()
+    expect(
+      inferNtnEnvFromBaseUrl("https://attacker.example/api.notion.so"),
+    ).toBeUndefined()
   })
 })
 

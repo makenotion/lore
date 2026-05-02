@@ -7,7 +7,7 @@ import { createClient } from "../../notion/client.js"
 import { createLimitedClient } from "../../notion/rate-limit.js"
 import { VaultManager } from "../../core/vault.js"
 import { resolveAuth, type ResolvedAuth } from "../../config.js"
-import { verifyVaultAccess } from "../../auth/oauth.js"
+import { ntnEnvBaseUrl, ntnEnvFromBaseUrl, verifyVaultAccess } from "../../auth/oauth.js"
 import {
   installNtn,
   isNtnInstalled,
@@ -151,15 +151,18 @@ async function tryResolveAuth(cwd: string): Promise<ResolvedAuth | null> {
  * try, leading to a vault created in prod despite the explicit dev
  * request.
  *
- * Equality table:
- *   `--ntn-env prod` ↔ baseUrl is `undefined` OR `https://api.notion.so`
- *   `--ntn-env dev`  ↔ baseUrl is `https://api-dev.notion.com`
- *   `--ntn-env stg`  ↔ baseUrl is `https://api-stg.notion.com`
+ * Delegates the URL → env mapping to `oauth.ts:ntnEnvFromBaseUrl` so
+ * every Lore-managed ntn login surface (#06 / #07 / #08 / #09) agrees
+ * on the canonical URL table — per the milestone spec's "Centralize
+ * this so every surface agrees" guidance.
  *
- * The `undefined === prod` rule is load-bearing: ntn-source auth
- * pointing at prod returns `baseUrl: undefined` (the SDK then defaults
- * to `api.notion.so`), and forcing it to write the explicit string
- * would diverge the in-memory shape from the on-disk config.json shape.
+ * The `undefined === prod` rule is load-bearing and lives here, NOT
+ * in `ntnEnvFromBaseUrl`: ntn-source auth pointing at prod returns
+ * `baseUrl: undefined` (the SDK then defaults to `api.notion.so`),
+ * and forcing it to write the explicit string would diverge the
+ * in-memory shape from the on-disk config.json shape. Re-encoding the
+ * undefined→prod equivalence in the inverse mapper would over-broaden
+ * its surface; only init's mismatch gate cares.
  *
  * Pure so tests can pin the equality without spinning up the
  * orchestrator.
@@ -168,33 +171,23 @@ export function authBaseUrlMatchesEnv(
   authBaseUrl: string | undefined,
   requestedEnv: NtnEnv
 ): boolean {
-  if (requestedEnv === "prod") {
-    return authBaseUrl === undefined || authBaseUrl === "https://api.notion.so"
-  }
-  if (requestedEnv === "dev") {
-    return authBaseUrl === "https://api-dev.notion.com"
-  }
-  if (requestedEnv === "stg") {
-    return authBaseUrl === "https://api-stg.notion.com"
-  }
-  // Exhaustiveness — `NtnEnv` is closed at three values.
-  const _exhaust: never = requestedEnv
-  return _exhaust
+  if (authBaseUrl === undefined) return requestedEnv === "prod"
+  return ntnEnvFromBaseUrl(authBaseUrl) === requestedEnv
 }
 
 /**
- * Map an `NtnEnv` literal to the canonical Notion API base URL. Returns
- * `undefined` for `prod` (the SDK's default; explicit URLs would
- * diverge from the on-disk shape ntn writes for prod). Used by the
- * env-mismatch recovery copy to surface a paste-ready
- * `LORE_NOTION_BASE_URL=<expected>` example for env-token sources.
+ * Map an `NtnEnv` literal to the canonical Notion API base URL the
+ * env-mismatch recovery copy should hand operators on env-token
+ * sources. Returns `undefined` for `prod` (the SDK's default; explicit
+ * URLs would diverge from the on-disk shape ntn writes for prod).
+ *
+ * Delegates to `oauth.ts:ntnEnvBaseUrl` for the URL — `expectedBaseUrlForEnv`
+ * exists only to apply the prod-special-case (return undefined instead
+ * of the canonical URL) on top of the shared mapping.
  */
 function expectedBaseUrlForEnv(env: NtnEnv): string | undefined {
   if (env === "prod") return undefined
-  if (env === "dev") return "https://api-dev.notion.com"
-  if (env === "stg") return "https://api-stg.notion.com"
-  const _exhaust: never = env
-  return _exhaust
+  return ntnEnvBaseUrl(env)
 }
 
 /**

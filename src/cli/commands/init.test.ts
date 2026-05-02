@@ -215,6 +215,17 @@ describe("authBaseUrlMatchesEnv", () => {
     expect(authBaseUrlMatchesEnv("https://api.notion.so", "stg")).toBe(false)
   })
 
+  it("treats the `.com` prod alias as prod (Notion is migrating `.so` → `.com`)", () => {
+    // Consolidation pin: `authBaseUrlMatchesEnv` delegates to
+    // `oauth.ts:ntnEnvFromBaseUrl`, which recognizes both
+    // `https://api.notion.so` and `https://api.notion.com` as prod.
+    // Without this, a `.lore.yaml` carrying the `.com` form would fail
+    // the env-mismatch gate even when the operator's intent matched.
+    expect(authBaseUrlMatchesEnv("https://api.notion.com", "prod")).toBe(true)
+    expect(authBaseUrlMatchesEnv("https://api.notion.com", "dev")).toBe(false)
+    expect(authBaseUrlMatchesEnv("https://api.notion.com", "stg")).toBe(false)
+  })
+
   it("matches dev baseUrl strictly to the dev env", () => {
     expect(authBaseUrlMatchesEnv("https://api-dev.notion.com", "dev")).toBe(true)
     expect(authBaseUrlMatchesEnv("https://api-dev.notion.com", "prod")).toBe(false)

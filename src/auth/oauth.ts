@@ -56,15 +56,36 @@ export function ntnEnvBaseUrl(env: string | undefined): string | undefined {
 }
 
 /**
- * Inverse of `ntnEnvBaseUrl` — map a canonical Notion API base URL
- * back to its ntn env selector (`prod` / `dev` / `stg`). Returns
- * `undefined` for unknown URLs (e.g., a corporate proxy or a
- * future env Lore doesn't know about).
+ * Aliases beyond the canonical `NTN_ENV_BASE_URLS` table that resolve
+ * to the same env. Notion is migrating public surfaces from `.so` to
+ * `.com`; both forms hit prod, so a `.lore.yaml` carrying either one
+ * must infer prod. The alias lives in its own table (rather than
+ * duplicating values inside `NTN_ENV_BASE_URLS`) so `ntnEnvBaseUrl`
+ * keeps returning ONE canonical URL per env — the inverse direction
+ * is the only one that needs many-to-one resolution.
+ */
+const NTN_ENV_BASE_URL_ALIASES: Record<string, NtnEnv> = {
+  "https://api.notion.com": "prod",
+}
+
+/**
+ * Inverse of `ntnEnvBaseUrl` — map a Notion API base URL back to its
+ * ntn env selector (`prod` / `dev` / `stg`). Recognizes the canonical
+ * URLs in `NTN_ENV_BASE_URLS` plus the aliases in
+ * `NTN_ENV_BASE_URL_ALIASES`. Returns `undefined` for unknown URLs
+ * (e.g., a corporate proxy or a future env Lore doesn't know about).
  *
- * Used by `lore install` to derive the ntn-login env target from
- * `.lore.yaml`'s `auth.baseUrl` when the operator hasn't set
- * `NOTION_ENV` in their shell — without this inference, an
- * `lore install -y` against a dev project would mint a prod token
+ * Single canonical helper for every Lore-managed ntn login surface
+ * (#06 `lore auth --login`, #07 `lore auth --migrate`, #08 `lore
+ * install`, #09 `lore init`). Centralized here so a future
+ * canonical-URL change (Notion shipping a new env, retiring an old
+ * one, adding another `.com` alias) lands in one place — surfaces
+ * MUST NOT hand-roll their own URL → env mapping.
+ *
+ * Used to derive the ntn-login env target from `.lore.yaml`'s
+ * `auth.baseUrl` when the operator hasn't set `NOTION_ENV` in their
+ * shell — without this inference, an `lore install -y` (or
+ * `lore auth --login`) against a dev project would mint a prod token
  * (ntn's default) and the post-login preflight would fail with a
  * confusing "vault not accessible" error.
  */
@@ -75,7 +96,7 @@ export function ntnEnvFromBaseUrl(url: string | undefined): NtnEnv | undefined {
   >) {
     if (canonicalUrl === url) return env
   }
-  return undefined
+  return NTN_ENV_BASE_URL_ALIASES[url]
 }
 
 /**

@@ -45,6 +45,9 @@ import {
   type NtnTokenRecord,
 } from "../../auth/ntn.js"
 import {
+  ntnEnvBaseUrl,
+  ntnEnvFromBaseUrl,
+  resolveOperatorBaseUrl,
   verifyVaultAccess,
   type VaultAccessResult,
 } from "../../auth/oauth.js"
@@ -502,7 +505,7 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   // the loop.
   const shellNtnEnvRaw = process.env["NOTION_ENV"]
   const shellNtnEnv = parseNtnEnv(shellNtnEnvRaw) ?? undefined
-  const inferredNtnEnv = inferNtnEnvFromBaseUrl(config.auth?.baseUrl)
+  const inferredNtnEnv = ntnEnvFromBaseUrl(config.auth?.baseUrl)
   const ntnEnv: NtnEnv | undefined = shellNtnEnv ?? inferredNtnEnv
   if (!shellNtnEnv && inferredNtnEnv) {
     console.log(
@@ -937,35 +940,15 @@ function formatErrorDetail(err: unknown): string {
 }
 
 /**
- * Infer ntn's environment name (`dev` / `stg` / `prod`) from a
- * Notion API base URL. Inverse of `auth/ntn.ts:resolveNtnBaseUrl`'s
- * env→URL mapping; ntn's own per-environment endpoints are:
+ * Re-export of `auth/oauth.ts:ntnEnvFromBaseUrl` (the single canonical
+ * inference helper) under the local name so the `runLogin` call site
+ * and its existing tests don't have to migrate import paths in lockstep
+ * with the consolidation.
  *
- *   prod → https://api.notion.so   (also the legacy `.com` variant)
- *   dev  → https://api-dev.notion.com
- *   stg  → https://api-stg.notion.com
- *
- * Returns `undefined` when the input is missing, null, or doesn't
- * match a known environment — the caller falls through to ntn's own
- * default rather than guessing wrong.
- *
- * Exported for unit tests so the mapping is pinned independently of
- * the `runLogin` call site that consumes it.
+ * See `oauth.ts:ntnEnvFromBaseUrl` for the recognized URL table and the
+ * exact-match policy rationale.
  */
-export function inferNtnEnvFromBaseUrl(
-  baseUrl: string | undefined,
-): NtnEnv | undefined {
-  if (!baseUrl) return undefined
-  if (baseUrl.includes("api-dev.notion.com")) return "dev"
-  if (baseUrl.includes("api-stg.notion.com")) return "stg"
-  if (
-    baseUrl.includes("api.notion.so") ||
-    baseUrl.includes("api.notion.com")
-  ) {
-    return "prod"
-  }
-  return undefined
-}
+export { ntnEnvFromBaseUrl as inferNtnEnvFromBaseUrl } from "../../auth/oauth.js"
 
 // ---------------------------------------------------------------------------
 // `lore auth --migrate`
@@ -1006,19 +989,26 @@ export interface MigrateOptions {
 export type ShellRcFinder = () => Promise<string | null>
 
 /**
- * Canonical Notion API base URLs per ntn's `NOTION_ENV` switch.
+ * Map a `NOTION_ENV` selector to the URL `resolveNtnEnvBaseUrl` /
+ * `resolveLoginTargetBaseUrl` should hand back. Delegates to
+ * `oauth.ts:ntnEnvBaseUrl` (the single canonical env→URL table). The
+ * helper exists for the early-return symmetry — `ntnEnvBaseUrl` already
+ * handles `undefined` and unknown env names; this wrapper just names
+ * the local intent at the call sites that read `NOTION_ENV` directly.
  *
- * Mirrors the env→URL mapping in `src/auth/ntn.ts:resolveNtnBaseUrl`
- * (private to that module) so a future change in one place needs the
- * other updated. `prod` resolves to `undefined` rather than the literal
- * URL because the `@notionhq/client` SDK default is prod — passing
- * `undefined` lets the SDK pick its canonical value rather than
- * pinning it here. Unknown env names also resolve to `undefined`
- * (treat as prod, matching ntn's own behavior).
+ * **Explicit `NOTION_ENV=prod` returns the canonical prod URL**
+ * (`https://api.notion.so`), NOT `undefined`. The "no override needed
+ * for prod" normalization (i.e., letting the SDK pick its default)
+ * happens at the spawn / client boundary in `computeNtnLoginEnvOverride`
+ * — collapsing prod to `undefined` here lets a stale
+ * `auth.baseUrl: <dev URL>` win over an explicit `NOTION_ENV=prod`
+ * via `computeNtnLoginEnvOverride`'s `resolveNtnEnvBaseUrl(env) ??
+ * configBaseUrl` fallback, which is exactly the "explicit operator
+ * intent silently overruled by stale config" footgun this resolver is
+ * supposed to prevent.
  */
-const NTN_ENV_BASE_URLS: Record<string, string> = {
-  dev: "https://api-dev.notion.com",
-  stg: "https://api-stg.notion.com",
+function envNameBaseUrl(envName: string | undefined): string | undefined {
+  return ntnEnvBaseUrl(envName)
 }
 
 /**
@@ -1065,9 +1055,7 @@ export function resolveNtnEnvBaseUrl(
   if (middleOverride) return middleOverride
   const nativeOverride = env["NOTION_API_BASE_URL"]
   if (nativeOverride) return nativeOverride
-  const envName = env["NOTION_ENV"]
-  if (envName) return NTN_ENV_BASE_URLS[envName]
-  return undefined
+  return envNameBaseUrl(env["NOTION_ENV"])
 }
 
 /**
@@ -1090,9 +1078,7 @@ export function resolveLoginTargetBaseUrl(
 ): string | undefined {
   const direct = env["NOTION_BASE_URL"]
   if (direct) return direct
-  const envName = env["NOTION_ENV"]
-  if (envName) return NTN_ENV_BASE_URLS[envName]
-  return undefined
+  return envNameBaseUrl(env["NOTION_ENV"])
 }
 
 /**
@@ -1595,22 +1581,24 @@ export async function runMigrate(
   if (apiTokenEnv) {
     deps.log("NOTION_API_TOKEN is set and ranks above ntn; verifying it reaches the vault...")
     // **Mirror `resolveAuth`'s `env-notion-api-token` source exactly.**
-    // Per `src/config.ts:246-253`, that source uses `LORE_NOTION_BASE_URL`
-    // ONLY — it does NOT honor `NOTION_BASE_URL`, `NOTION_API_BASE_URL`,
-    // or `NOTION_ENV`. So the next Lore process will verify against
-    // `LORE_NOTION_BASE_URL` (or undefined → SDK default = prod) when
-    // it resolves NOTION_API_TOKEN.
+    // Per `src/config.ts:243-258`, that source resolves the base URL via
+    // `resolveOperatorBaseUrl()`, which honors (in priority order)
+    // `LORE_NOTION_BASE_URL` → `NOTION_BASE_URL` → `NOTION_API_BASE_URL`
+    // → `NOTION_ENV` mapped via `ntnEnvBaseUrl`. The guard MUST use the
+    // same resolver — anything narrower creates a false positive in the
+    // opposite direction:
     //
-    // Anything broader here creates a false positive: an operator with
-    // only `NOTION_API_BASE_URL=<dev URL>` set would have this guard
-    // verify against dev (because `resolveNtnEnvBaseUrl` honors it)
-    // while the next process verifies against prod (because
-    // `resolveAuth` doesn't). The guard's job is to verify the same
-    // thing the next process will, so scope this to `LORE_NOTION_BASE_URL`
-    // until #178's broader `resolveOperatorBaseUrl` lands and the
-    // late-merger broadens both `resolveAuth` and this guard
-    // together.
-    const apiClient = deps.makeClient(apiTokenEnv, env["LORE_NOTION_BASE_URL"])
+    //   - Narrower (only `LORE_NOTION_BASE_URL`): an operator with
+    //     `NOTION_API_TOKEN` + `NOTION_BASE_URL=https://api-dev.notion.com`
+    //     in their shell has `resolveAuth` verify against dev, but the
+    //     guard would verify against prod — falsely greenlight a
+    //     migration whose post-migrate session resolves to a host the
+    //     api token doesn't authorize, OR falsely abort a valid
+    //     migration when the api token IS valid for dev but not prod.
+    //
+    // The guard's job is to verify the same thing the next Lore process
+    // will. Use the same resolver.
+    const apiClient = deps.makeClient(apiTokenEnv, resolveOperatorBaseUrl(env))
     const apiResult = await deps.verifyVaultAccess(apiClient, config.vault.pageId)
     if (apiResult.kind !== "ok") {
       deps.error(

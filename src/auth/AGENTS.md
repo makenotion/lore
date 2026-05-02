@@ -125,3 +125,49 @@ surfaces from `.so` to `.com`; both resolve. ntn's per-environment
 defaults are: prod = `api.notion.so`; dev = `api-dev.notion.com`.
 Operators on dev / staging set `LORE_NOTION_BASE_URL` per the
 existing convention.
+
+## ntn env ↔ URL mapping is centralized in `oauth.ts`
+
+`oauth.ts` exports the **single canonical pair** every Lore-managed
+ntn login surface (`lore auth --login`, `lore auth --migrate`,
+`lore install`, `lore init`) consults for env ↔ URL conversion:
+
+- `ntnEnvBaseUrl(env)` — env (`prod` / `dev` / `stg`) → canonical URL.
+- `ntnEnvFromBaseUrl(url)` — URL → env. Recognizes
+  `NTN_ENV_BASE_URLS` plus the aliases in
+  `NTN_ENV_BASE_URL_ALIASES` (currently `https://api.notion.com` →
+  `prod`, since Notion is migrating public surfaces from `.so` to
+  `.com`).
+
+**Do NOT add a new env-mapping table elsewhere.** The 0.10.0 milestone
+shipped four PRs (#176 / #178 / #179 / #180) that each rolled their
+own duplicate map; they disagreed on edge cases (notably the `.com`
+prod alias) and were collapsed in followup #13. Future contributors
+who need a URL ↔ env conversion in any new surface MUST import from
+`oauth.ts`. New canonical URLs (Notion shipping a new env, retiring
+an old one, adding another `.com` alias) land in `NTN_ENV_BASE_URLS`
+or `NTN_ENV_BASE_URL_ALIASES` and propagate to every consumer
+automatically.
+
+One caller wraps the canonical helper to apply call-site-specific
+semantics — this wrapper is intentional, NOT a duplicate table:
+
+- `init.ts:authBaseUrlMatchesEnv` adds the `undefined → prod` rule
+  (ntn-source auth pointing at prod returns `baseUrl: undefined`;
+  forcing the explicit URL would diverge the in-memory shape from
+  ntn's on-disk `config.json` shape). Defined-baseUrl matches go
+  through `ntnEnvFromBaseUrl`.
+
+`auth.ts:envNameBaseUrl` (used by migrate's `resolveNtnEnvBaseUrl` /
+`resolveLoginTargetBaseUrl`) is a pure delegation to `ntnEnvBaseUrl`
+with no prod-special-case — explicit `NOTION_ENV=prod` returns the
+canonical prod URL, NOT `undefined`. **Do not reintroduce a `prod →
+undefined` shortcut here**: collapsing prod to `undefined` lets a
+stale `auth.baseUrl: <dev URL>` win over an explicit
+`NOTION_ENV=prod` via `computeNtnLoginEnvOverride`'s
+`resolveNtnEnvBaseUrl(env) ?? configBaseUrl` fallback (round-7
+review's blocking finding #1). The "no override needed for prod"
+normalization happens at the spawn boundary in
+`computeNtnLoginEnvOverride`: when migrate's target equals ntn
+login's native target, no override is forwarded; ntn login then
+defaults to prod.
