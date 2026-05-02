@@ -22,16 +22,22 @@ vi.mock("./config.js", async () => {
     ...actual,
     findConfigFile: vi.fn(actual.findConfigFile),
     loadConfig: vi.fn(actual.loadConfig),
+    resolveAuth: vi.fn(actual.resolveAuth),
   }
 })
 
-import { resolveDriftCheck } from "./services.js"
-import { findConfigFile, loadConfig } from "./config.js"
+import {
+  AUTH_REFRESH_UNAVAILABLE_CACHE_MS,
+  createNtnAuthRefresh,
+  resolveDriftCheck,
+} from "./services.js"
+import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
 import {
   driftMarkerPath,
   driftMarkerAgeDays,
   touchDriftMarker,
 } from "./hooks/drift-marker.js"
+import type { LoreConfig } from "./types.js"
 
 const TEST_ROOTS: string[] = []
 function uniqueRoot(label: string): string {
@@ -41,9 +47,7 @@ function uniqueRoot(label: string): string {
 }
 
 afterAll(async () => {
-  await Promise.all(
-    TEST_ROOTS.map((root) => rm(driftMarkerPath(root), { force: true })),
-  )
+  await Promise.all(TEST_ROOTS.map((root) => rm(driftMarkerPath(root), { force: true })))
 })
 
 describe("resolveDriftCheck", () => {
@@ -130,7 +134,7 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
 
     const services = await import("./services.js")
     await expect(services.initServices("/tmp/some/unrelated/cwd")).rejects.toThrow(
-      /sentinel-loadConfig-called/,
+      /sentinel-loadConfig-called/
     )
     expect(loadConfig).toHaveBeenCalledWith(join(root, ".lore.yaml"))
     expect(findConfigFile).not.toHaveBeenCalled()
@@ -147,7 +151,9 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
     vi.mocked(loadConfig).mockRejectedValue(new Error("sentinel-fallback-fired"))
 
     const services = await import("./services.js")
-    await expect(services.initServices(workDir)).rejects.toThrow(/sentinel-fallback-fired/)
+    await expect(services.initServices(workDir)).rejects.toThrow(
+      /sentinel-fallback-fired/
+    )
     expect(findConfigFile).toHaveBeenCalledWith(workDir)
     expect(loadConfig).toHaveBeenCalledWith(join(workDir, ".lore.yaml"))
   })
@@ -156,7 +162,7 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
     vi.mocked(findConfigFile).mockResolvedValue(null)
     const services = await import("./services.js")
     await expect(services.initServices("/tmp/no-config")).rejects.toThrow(
-      /No \.lore\.yaml found/,
+      /No \.lore\.yaml found/
     )
   })
 
@@ -174,7 +180,7 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
 
     const services = await import("./services.js")
     await expect(services.initServices("/tmp/fallback-after-trim")).rejects.toThrow(
-      /sentinel-fallback-took/,
+      /sentinel-fallback-took/
     )
     expect(findConfigFile).toHaveBeenCalledWith("/tmp/fallback-after-trim")
   })
@@ -192,8 +198,164 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
 
     const services = await import("./services.js")
     await expect(services.initServices("/tmp/some/other/cwd")).rejects.toThrow(
-      /LORE_CONFIG_ROOT=.* but no \.lore\.yaml exists there/,
+      /LORE_CONFIG_ROOT=.* but no \.lore\.yaml exists there/
     )
     expect(loadConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe("createNtnAuthRefresh", () => {
+  const config = { vault: { pageId: "vault" } } as LoreConfig
+  const configRoot = "/tmp/lore-config-root"
+
+  afterEach(() => {
+    vi.mocked(resolveAuth).mockReset()
+  })
+
+  it("returns refreshed ntn auth when auth.json resolves to a changed token", async () => {
+    const refresh = createNtnAuthRefresh(
+      {
+        token: "old-token",
+        source: "ntn-auth-json",
+        workspaceId: "workspace",
+      },
+      configRoot,
+      config
+    )
+
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "new-token",
+      baseUrl: "https://api-dev.notion.com",
+      source: "ntn-auth-json",
+      workspaceId: "workspace",
+    })
+
+    await expect(refresh?.({ token: "old-token" })).resolves.toEqual({
+      kind: "refreshed",
+      auth: {
+        token: "new-token",
+        baseUrl: "https://api-dev.notion.com",
+      },
+      source: "ntn-auth-json",
+    })
+    expect(resolveAuth).toHaveBeenCalledWith(config, configRoot)
+  })
+
+  it("returns null when ntn auth re-resolution leaves the token unchanged", async () => {
+    const refresh = createNtnAuthRefresh(
+      {
+        token: "same-token",
+        source: "ntn-auth-json",
+        workspaceId: "workspace",
+      },
+      configRoot,
+      config
+    )
+
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "same-token",
+      source: "ntn-auth-json",
+      workspaceId: "workspace",
+    })
+
+    await expect(refresh?.({ token: "same-token" })).resolves.toEqual({
+      kind: "unchanged",
+    })
+  })
+
+  it("honors a higher-priority token source when an ntn session re-resolves auth", async () => {
+    const refresh = createNtnAuthRefresh(
+      {
+        token: "old-ntn-token",
+        source: "ntn-auth-json",
+        workspaceId: "workspace",
+      },
+      configRoot,
+      config
+    )
+
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "env-token",
+      source: "env-notion-api-token",
+    })
+
+    await expect(refresh?.({ token: "old-ntn-token" })).resolves.toEqual({
+      kind: "refreshed",
+      auth: { token: "env-token" },
+      source: "env-notion-api-token",
+    })
+  })
+
+  it("does not cache unchanged refresh results so re-auth can recover immediately", async () => {
+    const refresh = createNtnAuthRefresh(
+      {
+        token: "same-token",
+        source: "ntn-auth-json",
+        workspaceId: "workspace",
+      },
+      configRoot,
+      config
+    )
+
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "same-token",
+      source: "ntn-auth-json",
+      workspaceId: "workspace",
+    })
+
+    await expect(refresh?.({ token: "same-token" })).resolves.toEqual({
+      kind: "unchanged",
+    })
+    await expect(refresh?.({ token: "same-token" })).resolves.toEqual({
+      kind: "unchanged",
+    })
+    expect(resolveAuth).toHaveBeenCalledTimes(2)
+  })
+
+  it("negative-caches unavailable refresh results briefly for the same current auth", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date("2026-05-02T12:00:00.000Z"))
+      const refresh = createNtnAuthRefresh(
+        {
+          token: "same-token",
+          source: "ntn-auth-json",
+          workspaceId: "workspace",
+        },
+        configRoot,
+        config
+      )
+
+      vi.mocked(resolveAuth).mockRejectedValue(new Error("auth unavailable"))
+
+      await expect(refresh?.({ token: "same-token" })).resolves.toEqual({
+        kind: "unavailable",
+        errorMessage: "auth unavailable",
+      })
+      await expect(refresh?.({ token: "same-token" })).resolves.toEqual({
+        kind: "unavailable",
+      })
+      expect(resolveAuth).toHaveBeenCalledTimes(1)
+
+      vi.setSystemTime(new Date(Date.now() + AUTH_REFRESH_UNAVAILABLE_CACHE_MS + 1))
+      await expect(refresh?.({ token: "same-token" })).resolves.toEqual({
+        kind: "unavailable",
+        errorMessage: "auth unavailable",
+      })
+      expect(resolveAuth).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not install a refresh hook for static token sources", () => {
+    expect(
+      createNtnAuthRefresh(
+        { token: "static", source: "env-notion-api-token" },
+        configRoot,
+        config
+      )
+    ).toBeUndefined()
+    expect(resolveAuth).not.toHaveBeenCalled()
   })
 })

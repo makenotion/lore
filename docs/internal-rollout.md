@@ -240,7 +240,7 @@ and confirm the workspace selector during the ntn flow it spawns.
 | `No Notion auth configured` | Engineer hasn't authenticated yet, OR ntn wrote the token to keychain (operator ran `ntn login` directly outside Lore without `NOTION_KEYRING=0` set) | Run `lore auth --login` — it auto-installs ntn if missing, runs `ntn login` with `NOTION_KEYRING=0` forced inside the spawn (writing to auth.json), and verifies vault access. The `NOTION_KEYRING=0` shell-rc edit is only needed for engineers who use ntn outside Lore and want their direct-ntn sessions to be Lore-readable. |
 | `auth.json carries N workspaces; specify one` | Engineer is logged into multiple workspaces | Set `NOTION_WORKSPACE_ID` env, OR add `auth.workspaceId` to `.lore.yaml` |
 | `Vault page not accessible` | Engineer authenticated against the wrong workspace, OR the vault page isn't shared with the engineer in this workspace | Re-run `lore auth --login` and pick the right workspace, OR ask the team / vault owner to share the page in Notion's UI. (Direct `NOTION_KEYRING=0 ntn login` works too if you prefer the manual path; Lore's wrapper is the canonical recovery because it forces the env var and runs vault preflight.) |
-| Notion API returns 401 mid-session (assistant errors after working earlier in the same session) | ntn-issued token expired | Run `lore auth --login` and restart the assistant to pick up the new token. Auto-recovery (mid-session re-resolution) is DEFERRED-MID-SESSION-REFRESH. |
+| Notion API returns 401 mid-session (assistant errors after working earlier in the same session) | ntn-issued token expired | Run `lore auth --login`. The running service re-runs auth resolution after the first 401, rebuilds its Notion client when the token or base URL changed, and retries the failed request once. Restart the assistant only if the refreshed auth is unchanged or still rejected. |
 | `lore auth --migrate` legacy preflight fails | Legacy `LORE_NOTION_TOKEN` doesn't reach the vault | Don't unset the env var; investigate the integration sharing |
 | `auth.json malformed` | ntn version mismatch, partial write, or storage corruption | Run `lore auth --login` to spawn ntn login with the right env and refresh the file. (Direct `NOTION_KEYRING=0 ntn login` is the manual fallback.) |
 | `--ntn-env dev requested, but resolved auth points at <baseUrl>` | Engineer ran `lore init --ntn-env dev` but their existing ntn auth resolves to a different env | Source-aware recovery printed inline: `ntn-auth-json` → `ntn logout && NOTION_ENV=dev ntn login`; env-token sources → unset the token OR set `LORE_NOTION_BASE_URL`. The gate is fail-fast by design — silent prod-vault creation despite explicit dev request would be worse than re-auth friction. |
@@ -443,10 +443,9 @@ adoption":
 - [ ] At least 1 engineer has run `lore auth --migrate` from a
   legacy `LORE_NOTION_TOKEN` setup successfully.
 - [ ] At least 1 engineer has hit a mid-session token expiry and
-  the documented `lore auth --login` + assistant-restart recovery
-  has worked. (If 0 engineers hit this in 1 week, ntn tokens are
-  long-lived enough that DEFERRED-MID-SESSION-REFRESH is not
-  urgent.)
+  the documented `lore auth --login` + bounded in-process retry has
+  worked. If the refreshed auth is unchanged or still rejected, the
+  fallback restart recovery also works.
 - [ ] No regressions in the existing test surface.
 - [ ] No regressions in the existing `lore status` output.
 

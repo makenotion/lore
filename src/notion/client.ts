@@ -1,6 +1,39 @@
-import { Client, LogLevel, type Logger } from "@notionhq/client"
+import {
+  APIErrorCode,
+  Client,
+  LogLevel,
+  isNotionClientError,
+  type Logger,
+} from "@notionhq/client"
 
 const USER_AGENT = "lore/0.10.0"
+
+export interface ClientAuthSnapshot {
+  token: string
+  baseUrl?: string
+}
+
+export type ClientAuthRefreshOutcome =
+  | { kind: "refreshed"; auth: ClientAuthSnapshot; source: string }
+  | { kind: "unchanged" }
+  | { kind: "unavailable"; errorMessage?: string }
+
+export type RefreshClientAuth = (
+  current: ClientAuthSnapshot
+) => Promise<ClientAuthRefreshOutcome>
+
+export type AuthRefreshEvent =
+  | { kind: "refreshed"; source: string }
+  | {
+      kind: "skipped"
+      reason: "unchanged" | "unavailable"
+      errorMessage?: string
+    }
+
+export interface AuthRefreshingClientDeps {
+  createClient?: (token: string, baseUrl?: string) => Client
+  onRefresh?: (event: AuthRefreshEvent) => void
+}
 
 /**
  * Routes Notion SDK log lines through stderr instead of the default
@@ -89,4 +122,174 @@ export function createClient(token: string, baseUrl?: string): Client {
       })
     },
   })
+}
+
+/**
+ * Wrap a Notion client in a stable Proxy that can rebuild the underlying
+ * SDK client after a 401. The retry is intentionally one-shot per call:
+ * if refreshed auth is unavailable, unchanged, or the retried request is
+ * still unauthorized, the caller receives the surfaced SDK error.
+ */
+export function createAuthRefreshingClient(
+  initialAuth: ClientAuthSnapshot,
+  refreshAuth: RefreshClientAuth,
+  deps: AuthRefreshingClientDeps = {}
+): Client {
+  const makeClient = deps.createClient ?? createClient
+  const onRefresh = deps.onRefresh ?? defaultOnRefresh
+  let currentAuth = initialAuth
+  let currentClient = makeClient(initialAuth.token, initialAuth.baseUrl)
+  let refreshInFlight: Promise<boolean> | null = null
+  // Bounded by the finite Notion SDK namespace/method surface, not by call count.
+  const levelCache = new Map<string, object>()
+  const methodCache = new Map<string, (...args: unknown[]) => Promise<unknown>>()
+
+  const getAtPath = (root: unknown, path: PropertyKey[]): unknown => {
+    let value = root
+    for (const prop of path) {
+      if (value === null || value === undefined) return undefined
+      value = Reflect.get(value as object, prop)
+    }
+    return value
+  }
+
+  const invoke = async (path: PropertyKey[], args: unknown[]) => {
+    const fn = getAtPath(currentClient, path)
+    if (typeof fn !== "function") {
+      throw new Error(`Notion client path ${formatPath(path)} is not callable`)
+    }
+    const thisArg = getAtPath(currentClient, path.slice(0, -1))
+    return await (fn.apply(thisArg, args) as Promise<unknown>)
+  }
+
+  const refreshAfterUnauthorized = async (
+    seenAuth: ClientAuthSnapshot
+  ): Promise<boolean> => {
+    if (!sameAuth(currentAuth, seenAuth)) return true
+    if (refreshInFlight) return refreshInFlight
+
+    refreshInFlight = (async () => {
+      let outcome: ClientAuthRefreshOutcome
+      try {
+        outcome = await refreshAuth(currentAuth)
+      } catch (err) {
+        emitRefreshEvent(onRefresh, {
+          kind: "skipped",
+          reason: "unavailable",
+          errorMessage: errorMessage(err),
+        })
+        return false
+      }
+
+      if (outcome.kind === "unavailable") {
+        emitRefreshEvent(onRefresh, {
+          kind: "skipped",
+          reason: "unavailable",
+          errorMessage: outcome.errorMessage,
+        })
+        return false
+      }
+      if (outcome.kind === "unchanged" || sameAuth(outcome.auth, currentAuth)) {
+        emitRefreshEvent(onRefresh, { kind: "skipped", reason: "unchanged" })
+        return false
+      }
+
+      currentAuth = outcome.auth
+      currentClient = makeClient(outcome.auth.token, outcome.auth.baseUrl)
+      emitRefreshEvent(onRefresh, { kind: "refreshed", source: outcome.source })
+      return true
+    })().finally(() => {
+      refreshInFlight = null
+    })
+
+    return refreshInFlight
+  }
+
+  const wrapMethod = (path: PropertyKey[]) => {
+    const key = pathKey(path)
+    const existing = methodCache.get(key)
+    if (existing) return existing
+
+    const method = async (...args: unknown[]) => {
+      const seenAuth = currentAuth
+      try {
+        return await invoke(path, args)
+      } catch (err) {
+        if (!isUnauthorizedError(err)) throw err
+        const refreshed = await refreshAfterUnauthorized(seenAuth)
+        if (!refreshed) throw err
+        return await invoke(path, args)
+      }
+    }
+    methodCache.set(key, method)
+    return method
+  }
+
+  const wrapLevel = <T extends object>(path: PropertyKey[] = []): T => {
+    const key = pathKey(path)
+    const existing = levelCache.get(key) as T | undefined
+    if (existing) return existing
+
+    const proxy = new Proxy({} as T, {
+      get(_target, prop) {
+        const nextPath = [...path, prop]
+        const value = getAtPath(currentClient, nextPath)
+        if (typeof value === "function") return wrapMethod(nextPath)
+        if (typeof value === "object" && value !== null) return wrapLevel(nextPath)
+        return value
+      },
+    })
+    levelCache.set(key, proxy)
+    return proxy
+  }
+
+  return wrapLevel<Client>()
+}
+
+function sameAuth(a: ClientAuthSnapshot, b: ClientAuthSnapshot): boolean {
+  return a.token === b.token && a.baseUrl === b.baseUrl
+}
+
+function formatPath(path: PropertyKey[]): string {
+  return path.map((prop) => String(prop)).join(".")
+}
+
+function pathKey(path: PropertyKey[]): string {
+  return path.map((prop) => String(prop)).join("\u0000")
+}
+
+function isUnauthorizedError(err: unknown): boolean {
+  return isNotionClientError(err) && err.code === APIErrorCode.Unauthorized
+}
+
+function defaultOnRefresh(event: AuthRefreshEvent): void {
+  if (event.kind === "refreshed") {
+    process.stderr.write(
+      `[lore] auth: refreshed ntn token after 401 (source=${event.source})\n`
+    )
+    return
+  }
+
+  if (process.env["LORE_DEBUG"] !== "1") return
+
+  const reason = event.reason === "unchanged" ? "token unchanged" : "auth unavailable"
+  const suffix = event.errorMessage ? `: ${event.errorMessage}` : ""
+  process.stderr.write(`[lore] auth: 401 refresh skipped (${reason})${suffix}\n`)
+}
+
+function emitRefreshEvent(
+  onRefresh: (event: AuthRefreshEvent) => void,
+  event: AuthRefreshEvent
+): void {
+  try {
+    onRefresh(event)
+  } catch {
+    // Observability hooks must not mask the original Notion error.
+  }
+}
+
+function errorMessage(err: unknown): string | undefined {
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === "string" && err.length > 0) return err
+  return undefined
 }

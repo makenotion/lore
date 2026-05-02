@@ -8,8 +8,14 @@
 
 import { access } from "node:fs/promises"
 import { resolve } from "node:path"
-import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
-import { createClient } from "./notion/client.js"
+import { findConfigFile, loadConfig, resolveAuth, type ResolvedAuth } from "./config.js"
+import {
+  createAuthRefreshingClient,
+  createClient,
+  type ClientAuthSnapshot,
+  type ClientAuthRefreshOutcome,
+  type RefreshClientAuth,
+} from "./notion/client.js"
 import { createLimitedClient } from "./notion/rate-limit.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
@@ -100,20 +106,28 @@ export interface LoreServices {
   identity: ResolvedIdentity
 }
 
+export const AUTH_REFRESH_UNAVAILABLE_CACHE_MS = 1_000
+
 export async function initServicesFromConfig(
   cwd: string,
   configRoot: string,
   config: LoreConfig,
-  options: InitServicesOptions = {},
+  options: InitServicesOptions = {}
 ): Promise<LoreServices> {
   const auth = await resolveAuth(config, configRoot)
-  const rawClient = createClient(auth.token, auth.baseUrl)
+  const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
+  const rateLimitOptions = config.notion?.rateLimit ?? {}
   // Every downstream service shares the same rate-limited Proxy so fan-out
   // stays under Notion's per-token rps ceiling without per-call-site work.
   // The wrapper governs concurrency (fan-out memory), request rate (token
   // bucket), and 429 shared backoff; defaults match Notion's ~3 rps
   // public guidance.
-  const client = createLimitedClient(rawClient, config.notion?.rateLimit ?? {})
+  const client = authRefresh
+    ? createAuthRefreshingClient(toClientAuth(auth), authRefresh, {
+        createClient: (token, baseUrl) =>
+          createLimitedClient(createClient(token, baseUrl), rateLimitOptions),
+      })
+    : createLimitedClient(createClient(auth.token, auth.baseUrl), rateLimitOptions)
 
   const vault = new VaultManager(client, config.vault.pageId)
   const driftCheck = await resolveDriftCheck(configRoot, options.driftCheck)
@@ -167,6 +181,65 @@ export async function initServicesFromConfig(
   }
 }
 
+export function createNtnAuthRefresh(
+  initialAuth: ResolvedAuth,
+  configRoot: string,
+  config: LoreConfig
+): RefreshClientAuth | undefined {
+  if (initialAuth.source !== "ntn-auth-json") return undefined
+
+  let lastFailedAuth: ClientAuthSnapshot | null = null
+  let lastFailureMs = 0
+
+  function cacheRefreshFailure(
+    auth: ClientAuthSnapshot,
+    errorMessage?: string
+  ): ClientAuthRefreshOutcome {
+    lastFailedAuth = auth
+    lastFailureMs = Date.now()
+    return { kind: "unavailable", errorMessage }
+  }
+
+  return async (current) => {
+    if (
+      lastFailedAuth &&
+      sameClientAuth(lastFailedAuth, current) &&
+      Date.now() - lastFailureMs < AUTH_REFRESH_UNAVAILABLE_CACHE_MS
+    ) {
+      return { kind: "unavailable" }
+    }
+
+    let nextAuth: ResolvedAuth
+    try {
+      nextAuth = await resolveAuth(config, configRoot)
+    } catch (err) {
+      return cacheRefreshFailure(current, errorMessage(err))
+    }
+
+    const next = toClientAuth(nextAuth)
+    lastFailedAuth = null
+    if (sameClientAuth(next, current)) {
+      return { kind: "unchanged" }
+    }
+
+    return { kind: "refreshed", auth: next, source: nextAuth.source }
+  }
+}
+
+function toClientAuth(auth: Pick<ResolvedAuth, "token" | "baseUrl">): ClientAuthSnapshot {
+  return { token: auth.token, baseUrl: auth.baseUrl }
+}
+
+function sameClientAuth(a: ClientAuthSnapshot, b: ClientAuthSnapshot): boolean {
+  return a.token === b.token && a.baseUrl === b.baseUrl
+}
+
+function errorMessage(err: unknown): string | undefined {
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === "string" && err.length > 0) return err
+  return undefined
+}
+
 /**
  * Initialize all services from config. Shared by both MCP server and CLI.
  *
@@ -176,7 +249,7 @@ export async function initServicesFromConfig(
  */
 export async function initServices(
   cwd?: string,
-  options: InitServicesOptions = {},
+  options: InitServicesOptions = {}
 ): Promise<LoreServices> {
   const workDir = cwd ?? process.cwd()
 
@@ -207,7 +280,7 @@ export async function initServices(
       throw new Error(
         `LORE_CONFIG_ROOT=${root} but no .lore.yaml exists there. ` +
           "Re-run `lore install` from the project directory or unset " +
-          "LORE_CONFIG_ROOT to fall back to the upward search.",
+          "LORE_CONFIG_ROOT to fall back to the upward search."
       )
     }
     const config = await loadConfig(configPath)
@@ -247,7 +320,7 @@ export async function initServices(
  */
 export async function resolveDriftCheck(
   configRoot: string,
-  mode: DriftCheckMode | undefined,
+  mode: DriftCheckMode | undefined
 ): Promise<boolean> {
   if (mode === true) {
     await touchDriftMarker(configRoot)

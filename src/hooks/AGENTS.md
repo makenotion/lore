@@ -237,10 +237,16 @@ on slow networks (or who otherwise want the resolution off the hot
 path) export `LORE_USER_NAME` in shell rc and the spawned child's
 synchronous env path resolves identity for free.
 
-**Mid-process re-resolution is deferred** — once the child has
-resolved its credentials, it does not re-read `auth.json`. A 401
-mid-spawn surfaces as the Notion call failing; the next autosave
-fire after `lore auth --login` picks up the refreshed token.
+**Mid-process ntn re-resolution is bounded in the MCP server.** The
+autosave child still resolves its own credentials at startup, then
+invokes tools on the MCP server. For those tool calls, an MCP server
+that started from `ntn-auth-json` re-runs auth resolution after the
+first 401, rebuilds the SDK client when the token or base URL changed,
+and retries the failed request once. Static token sources keep the old
+behavior: the 401 surfaces, and a subsequent child starts with fresh
+credentials only if its launch environment or config changed. `lore
+auth --login` refreshes ntn auth; it does not refresh canonical
+env-token children.
 
 **Canonical-path child never reads `auth.json` at all (#188).** When
 the parent has `NOTION_API_TOKEN` set, the forward lands in the
