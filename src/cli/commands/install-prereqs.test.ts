@@ -11,15 +11,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // (which exercises buildClaudeMcpEntry, runCursorInstall, etc., none of
 // which need the auth modules mocked).
 
-vi.mock("../../auth/ntn.js", () => ({
-  isNtnInstalled: vi.fn(),
-  getNtnVersion: vi.fn(),
-  checkNtnVersion: vi.fn(),
-  installNtn: vi.fn(),
-  runNtnLogin: vi.fn(),
-  MIN_NTN_VERSION: "0.12.0",
-  NTN_INSTALL_COMMAND: "curl -fsSL https://ntn.dev | bash",
-}))
+vi.mock("../../auth/ntn.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../auth/ntn.js")>()
+  return {
+    ...actual,
+    isNtnInstalled: vi.fn(),
+    getNtnVersion: vi.fn(),
+    checkNtnVersion: vi.fn(),
+    installNtn: vi.fn(),
+    runNtnLogin: vi.fn(),
+    // Let pure helpers (`parseNtnEnv`) through; they're table lookups
+    // with no Notion / process I/O, and the env-aware preflight tests
+    // exercise their real behavior.
+  }
+})
 
 vi.mock("../../auth/oauth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../auth/oauth.js")>()

@@ -409,25 +409,38 @@ export type NtnLoginResult =
   | { kind: "exit-non-zero"; code: number }
   | { kind: "spawn-error"; error: unknown }
 
-export interface RunNtnLoginOptions {
+/**
+ * Notion environment ntn authenticates against. Mirrors ntn's own
+ * `--env` flag values and the `NOTION_ENV` env var ntn reads.
+ *
+ * - `prod` → `api.notion.so` (default)
+ * - `dev`  → `api-dev.notion.com`
+ * - `stg`  → `api-stg.notion.com`
+ *
+ * Single source of truth so a typo in one surface can't drift away
+ * from another. The literal strings match ntn's accepted values
+ * verbatim — the type is functionally an enum but expressed as a
+ * string union so it round-trips through commander's argv parsing
+ * without a custom coercer.
+ */
+export type NtnEnv = "prod" | "dev" | "stg"
+
+export interface RunNtnLoginOpts {
   /**
-   * Override `NOTION_ENV` in the spawn env. ntn's environment
-   * selector picks which Notion deployment the new token authorizes
-   * against (prod / dev / stg). When unset, ntn defaults to prod.
+   * Notion environment to authenticate against. When provided, sets
+   * `NOTION_ENV` in the spawn env so ntn writes the matching `env`
+   * field into `~/.config/notion/config.json` — which `loadNtnToken`
+   * + `resolveNtnBaseUrl` then read on the post-login auth resolution
+   * to surface the dev / stg base URL.
    *
-   * Use case: `lore install` against a dev project (one whose
-   * `.lore.yaml` carries `auth.baseUrl: https://api-dev.notion.com`)
-   * derives the env from config and passes it here so the operator
-   * doesn't have to remember to export `NOTION_ENV=dev` before
-   * running `lore install`. Without this option, ntn would default
-   * to prod and the operator would mint a prod token for a dev
-   * vault — preflight then fails with a generic "vault not
-   * accessible" error that doesn't name the env mismatch.
-   *
-   * Pass `undefined` (default) to inherit `NOTION_ENV` from the
-   * operator's shell (or none at all → ntn's prod default).
+   * Omitting this leaves the spawn env untouched (no override
+   * written), so an operator who set `NOTION_ENV` in their shell rc
+   * sees that value flow through naturally. The omit-vs-explicit
+   * distinction is load-bearing: writing `NOTION_ENV=prod` always
+   * would clobber an inherited `dev` value from shell rc, surprising
+   * operators who already opted into dev outside Lore.
    */
-  env?: string
+  env?: NtnEnv
 }
 
 /**
@@ -456,17 +469,15 @@ export interface RunNtnLoginOptions {
  * Returns a discriminated outcome so consumers can route on success
  * / exit-non-zero / spawn-error without try/catch ladders.
  */
-export async function runNtnLogin(
-  options: RunNtnLoginOptions = {},
-): Promise<NtnLoginResult> {
+export async function runNtnLogin(opts: RunNtnLoginOpts = {}): Promise<NtnLoginResult> {
   return new Promise((resolve) => {
     try {
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         NOTION_KEYRING: "0",
       }
-      if (options.env) {
-        env["NOTION_ENV"] = options.env
+      if (opts.env !== undefined) {
+        env["NOTION_ENV"] = opts.env
       }
       const child = spawn("ntn", ["login"], {
         stdio: "inherit",
@@ -482,6 +493,26 @@ export async function runNtnLogin(
       resolve({ kind: "spawn-error", error })
     }
   })
+}
+
+/**
+ * Parse a CLI-supplied `--ntn-env` value (or `NOTION_ENV` from the
+ * operator's shell) into an `NtnEnv` or null.
+ *
+ * Returns the parsed enum on a recognized value, `null` on an
+ * unrecognized string. Consumers that want hard-fail behavior treat
+ * `null` as "reject and exit"; consumers that want soft-fail can
+ * fall back to default ntn behavior.
+ *
+ * Returns `undefined` (NOT `null`) when the input itself is undefined,
+ * so consumers can distinguish "operator didn't pass the flag" from
+ * "operator passed an invalid value." The former is the "use ntn's
+ * default" path; the latter is a fail-fast input error.
+ */
+export function parseNtnEnv(value: string | undefined): NtnEnv | null | undefined {
+  if (value === undefined) return undefined
+  if (value === "prod" || value === "dev" || value === "stg") return value
+  return null
 }
 
 export type NtnInstallResult =

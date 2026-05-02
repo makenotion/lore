@@ -21,6 +21,7 @@ import { exec } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import type { NtnEnv } from "./ntn.js"
 
 const CREDENTIALS_DIR = join(homedir(), ".lore")
 const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json")
@@ -34,7 +35,7 @@ const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json")
  * stay in lockstep — a future canonical-URL change lands in one
  * place.
  */
-const NTN_ENV_BASE_URLS: Record<string, string> = {
+const NTN_ENV_BASE_URLS: Record<NtnEnv, string> = {
   prod: "https://api.notion.so",
   dev: "https://api-dev.notion.com",
   stg: "https://api-stg.notion.com",
@@ -48,7 +49,10 @@ const NTN_ENV_BASE_URLS: Record<string, string> = {
  */
 export function ntnEnvBaseUrl(env: string | undefined): string | undefined {
   if (!env) return undefined
-  return NTN_ENV_BASE_URLS[env]
+  if (env === "prod" || env === "dev" || env === "stg") {
+    return NTN_ENV_BASE_URLS[env]
+  }
+  return undefined
 }
 
 /**
@@ -64,9 +68,11 @@ export function ntnEnvBaseUrl(env: string | undefined): string | undefined {
  * (ntn's default) and the post-login preflight would fail with a
  * confusing "vault not accessible" error.
  */
-export function ntnEnvFromBaseUrl(url: string | undefined): string | undefined {
+export function ntnEnvFromBaseUrl(url: string | undefined): NtnEnv | undefined {
   if (!url) return undefined
-  for (const [env, canonicalUrl] of Object.entries(NTN_ENV_BASE_URLS)) {
+  for (const [env, canonicalUrl] of Object.entries(NTN_ENV_BASE_URLS) as Array<
+    [NtnEnv, string]
+  >) {
     if (canonicalUrl === url) return env
   }
   return undefined

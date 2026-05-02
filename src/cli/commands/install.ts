@@ -14,7 +14,9 @@ import {
   installNtn,
   isNtnInstalled,
   MIN_NTN_VERSION,
+  type NtnEnv,
   NTN_INSTALL_COMMAND,
+  parseNtnEnv,
   runNtnLogin,
 } from "../../auth/ntn.js"
 
@@ -1848,10 +1850,26 @@ export async function ensurePrerequisites(
   // mint a prod token and fall into the generic vault-not-accessible
   // path — exactly the dev-onboarding footgun an early review flagged.
   const operatorEnv = process.env["NOTION_ENV"]
-  let resolvedNtnEnv: string | undefined
+  const operatorEnvParsed = parseNtnEnv(operatorEnv)
+  let resolvedNtnEnv: NtnEnv | undefined
   let resolvedNtnEnvSource: "operator-env" | "config-baseurl" | "default" = "default"
   if (operatorEnv) {
-    resolvedNtnEnv = operatorEnv
+    if (operatorEnvParsed === null) {
+      // Operator's shell carries `NOTION_ENV=<garbage>`. Refuse to
+      // forward it to ntn — bare ntn would also reject, but Lore can
+      // surface a clearer message at the install seam.
+      console.log("  Auth source:          ✗ no token resolved")
+      console.error("")
+      console.error(
+        `    NOTION_ENV=${operatorEnv} is not a recognized ntn environment.`,
+      )
+      console.error("    Expected one of: prod, dev, stg.")
+      console.error("")
+      console.error("    Recovery: unset or correct NOTION_ENV in your shell, then re-run")
+      console.error("    `lore install`.")
+      return { ready: false }
+    }
+    resolvedNtnEnv = operatorEnvParsed
     resolvedNtnEnvSource = "operator-env"
   } else if (config?.auth?.baseUrl) {
     const inferred = ntnEnvFromBaseUrl(config.auth.baseUrl)
