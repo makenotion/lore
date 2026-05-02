@@ -34,6 +34,7 @@ import {
   LIVE_PAGE_REFILL_MAX_ROWS,
   warnLivePageCapFired,
 } from "../notion/live-pages.js"
+import { isFullPage, isLiveFullPage } from "../notion/extractors.js"
 import { pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
 
@@ -111,6 +112,36 @@ function decodeDecisionTextFields(input: CreateDecisionInput): DecodedDecisionTe
   }
 }
 
+/**
+ * Raised when `DecisionService.create` creates the decision row but fails
+ * while writing the rationale markdown body. The decision row is best-effort
+ * archived before this error is thrown; `cleanedUp` reports whether that
+ * cleanup landed.
+ */
+export class DecisionCreatePartialFailureError extends Error {
+  readonly pageId: string
+  readonly cleanedUp: boolean
+  readonly bodyWriteError: unknown
+  readonly cleanupError: unknown
+
+  constructor(
+    message: string,
+    details: {
+      pageId: string
+      cleanedUp: boolean
+      bodyWriteError: unknown
+      cleanupError?: unknown
+    }
+  ) {
+    super(message)
+    this.name = "DecisionCreatePartialFailureError"
+    this.pageId = details.pageId
+    this.cleanedUp = details.cleanedUp
+    this.bodyWriteError = details.bodyWriteError
+    this.cleanupError = details.cleanupError
+  }
+}
+
 export class DecisionService {
   private readonly idCache = new LruCache<string, Decision>(
     DECISION_CACHE_MAX,
@@ -154,11 +185,47 @@ export class DecisionService {
     })
 
     if (decoded.rationale) {
-      await this.client.pages.updateMarkdown({
-        page_id: page.id,
-        type: "insert_content",
-        insert_content: { content: decoded.rationale },
-      })
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: page.id,
+          type: "insert_content",
+          insert_content: { content: decoded.rationale },
+        })
+      } catch (bodyWriteError) {
+        let cleanedUp = false
+        let cleanupError: unknown
+        try {
+          await this.client.pages.update({
+            page_id: page.id,
+            archived: true,
+          })
+          cleanedUp = true
+        } catch (err) {
+          cleanupError = err
+        }
+        const cause =
+          bodyWriteError instanceof Error
+            ? bodyWriteError.message
+            : String(bodyWriteError)
+        const message = cleanedUp
+          ? `Decision create partial failure: the decision row was ` +
+            `created (page ${page.id}) but the rationale write failed: ${cause}. ` +
+            `The orphan decision row was archived to keep the vault consistent; ` +
+            `retry the create to land a fresh row.`
+          : `Decision create partial failure: the decision row was ` +
+            `created (page ${page.id}) but the rationale write failed: ${cause}. ` +
+            `The cleanup archive also failed (${
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            }); the orphan decision row remains live in the vault. Archive it ` +
+            `manually before retrying to avoid a duplicate row.`
+        this.idCache.delete(page.id)
+        throw new DecisionCreatePartialFailureError(message, {
+          pageId: page.id,
+          cleanedUp,
+          bodyWriteError,
+          cleanupError,
+        })
+      }
     }
 
     // The page we just created is guaranteed to have `Kind = decision` because
@@ -178,18 +245,21 @@ export class DecisionService {
     // `getOrLoad` collapses concurrent cold-start fan-out onto a single
     // retrieve: `resolveCanonicalDecisionLinks` walks supersession DAGs
     // in parallel, and converging root walks hitting the same ancestor
-    // previously each issued their own pair of `pages.retrieve` +
-    // `pages.retrieveMarkdown` calls. The loader either returns a
-    // Decision or throws on non-decision kinds; the non-null assertion
-    // below is safe because `null` is unreachable on this path. A throw
-    // propagates to every waiter and clears the pending slot so the
-    // next caller retries rather than caching an error.
+    // previously each issued their own `pages.retrieve` call. The loader
+    // either returns a Decision or throws on non-decision kinds; the
+    // non-null assertion below is safe because `null` is unreachable on
+    // this path. A throw propagates to every waiter and clears the
+    // pending slot so the next caller retries rather than caching an error.
     const decision = await this.idCache.getOrLoad(id, async () => {
-      const [page, md] = await Promise.all([
-        this.client.pages.retrieve({ page_id: id }),
-        this.client.pages.retrieveMarkdown({ page_id: id }),
-      ])
-      const memory = pageToMemory(page as PageObjectResponse, md.markdown)
+      const page = await this.client.pages.retrieve({ page_id: id })
+      if (!isLiveFullPage(page)) {
+        if (isFullPage(page) && page.archived) {
+          throw new Error(`Decision ${id} is archived.`)
+        }
+        throw new Error(`Decision ${id} could not be loaded as a full Notion page.`)
+      }
+      const md = await this.client.pages.retrieveMarkdown({ page_id: id })
+      const memory = pageToMemory(page, md.markdown)
       if (memory.kind !== "decision") {
         throw new Error(
           `Memory ${id} is not a decision (kind: ${memory.kind}). ` +

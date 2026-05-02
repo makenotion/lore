@@ -168,6 +168,52 @@ describe("lore-remember session recording", () => {
   })
 })
 
+describe("lore-memory action='archive'", () => {
+  it("clears the decision cache after archiving a memory", async () => {
+    const mockServer = createMockServer()
+    const archive = vi.fn().mockResolvedValue(undefined)
+    const clearDecisionCache = vi.fn()
+    const services = {
+      memories: { archive },
+      decisions: { clearCache: clearDecisionCache },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const archiveMemory = mockServer.getActionHandler("lore-memory", "archive")
+
+    const result = await archiveMemory({ memoryId: "dec-cached" } as never)
+
+    const text = (result as { content: Array<{ text: string }>; isError?: boolean })
+      .content[0].text
+    expect(text).toBe("Archived memory dec-cached")
+    expect(archive).toHaveBeenCalledWith("dec-cached")
+    expect(clearDecisionCache).toHaveBeenCalledTimes(1)
+    expect(archive.mock.invocationCallOrder[0]).toBeLessThan(
+      clearDecisionCache.mock.invocationCallOrder[0],
+    )
+  })
+
+  it("does not clear the decision cache when archive fails", async () => {
+    const mockServer = createMockServer()
+    const archive = vi.fn().mockRejectedValue(new Error("notion 503"))
+    const clearDecisionCache = vi.fn()
+    const services = {
+      memories: { archive },
+      decisions: { clearCache: clearDecisionCache },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const archiveMemory = mockServer.getActionHandler("lore-memory", "archive")
+
+    const result = await archiveMemory({ memoryId: "dec-cached" } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("Error: notion 503")
+    expect(clearDecisionCache).not.toHaveBeenCalled()
+  })
+})
+
 describe("lore-remember forceNewTopic (issue #109)", () => {
   it("forwards forceNewTopic to topics.getOrCreate as { forceNew: true }", async () => {
     // The MCP boundary takes a `forceNewTopic` flag; the service-layer

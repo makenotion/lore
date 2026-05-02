@@ -398,7 +398,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     expect(partial.cleanedUp).toBe(false)
     expect(partial.bodyWriteError).toBe(bodyWriteError)
     expect(partial.cleanupError).toBe(cleanupError)
-    expect(partial.message).toMatch(/cleanup archive ALSO failed/)
+    expect(partial.message).toMatch(/cleanup archive also failed/)
     expect(partial.message).toMatch(/Archive it manually before retrying/)
     expect(partial.message).toContain("mem-orphan")
 

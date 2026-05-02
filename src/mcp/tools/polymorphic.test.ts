@@ -154,6 +154,7 @@ interface StubOpts {
   decisionsGetById?: ReturnType<typeof vi.fn>
   decisionsSupersede?: ReturnType<typeof vi.fn>
   decisionsReviewCompleted?: ReturnType<typeof vi.fn>
+  decisionsClearCache?: ReturnType<typeof vi.fn>
   tasksCreate?: ReturnType<typeof vi.fn>
   tasksUpdate?: ReturnType<typeof vi.fn>
   tasksClose?: ReturnType<typeof vi.fn>
@@ -218,6 +219,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       supersede: opts.decisionsSupersede ?? vi.fn(async () => undefined),
       reviewCompleted: opts.decisionsReviewCompleted ?? vi.fn(async () => undefined),
       queryOverdue: vi.fn(async () => []),
+      clearCache: opts.decisionsClearCache ?? vi.fn(),
     },
     tasks: {
       create: opts.tasksCreate ?? vi.fn(),

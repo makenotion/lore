@@ -27,6 +27,11 @@ type ToolResult = {
   isError?: boolean
 }
 
+interface SupersedeRef {
+  id: string
+  title?: string
+}
+
 /**
  * Trigram threshold for the `lore-decision action='create'` near-duplicate probe. Lower
  * than the memory threshold because decisions carry more ceremony and
@@ -39,6 +44,149 @@ const DECISION_POOL_LIMIT = 50
 
 /** Max candidates to surface in the response. */
 const DECISION_SURFACE_LIMIT = 3
+
+class DecisionCreateFactPartialFailureError extends Error {
+  readonly decisionId: string
+  readonly failedAffect: string
+  readonly createdAffects: string[]
+  readonly pendingAffects: string[]
+  readonly pendingSupersedes: string[]
+  readonly factWriteError: unknown
+
+  constructor(details: {
+    decision: Decision
+    failedAffect: string
+    createdAffects: string[]
+    pendingAffects: string[]
+    pendingSupersedes: string[]
+    factWriteError: unknown
+  }) {
+    const cause =
+      details.factWriteError instanceof Error
+        ? details.factWriteError.message
+        : String(details.factWriteError)
+    const createdPart =
+      details.createdAffects.length > 0
+        ? `Created \`decided_by\` facts before failure: ${details.createdAffects.join(", ")}. `
+        : "No `decided_by` facts were created before the failure. "
+    const pendingPart =
+      details.pendingAffects.length > 0
+        ? `Missing \`decided_by\` facts: ${details.pendingAffects.join(", ")}. `
+        : ""
+    const supersedesPart =
+      details.pendingSupersedes.length > 0
+        ? `Pending supersessions not attempted: ${details.pendingSupersedes.join(", ")}. `
+        : ""
+    super(
+      `Decision create partial failure: decision "${details.decision.title}" ` +
+        `(${details.decision.id}) was saved, but the \`decided_by\` fact ` +
+        `for "${details.failedAffect}" failed: ${cause}. ` +
+        createdPart +
+        pendingPart +
+        supersedesPart +
+        "Create the missing facts for the saved decision; do not recreate the decision.",
+    )
+    this.name = "DecisionCreateFactPartialFailureError"
+    this.decisionId = details.decision.id
+    this.failedAffect = details.failedAffect
+    this.createdAffects = details.createdAffects
+    this.pendingAffects = details.pendingAffects
+    this.pendingSupersedes = details.pendingSupersedes
+    this.factWriteError = details.factWriteError
+  }
+}
+
+class DecisionCreateSupersedePartialFailureError extends Error {
+  readonly decisionId: string
+  readonly failedSupersede: string
+  readonly completedSupersedes: string[]
+  readonly markedSupersedes: string[]
+  readonly createdSupersedeFacts: string[]
+  readonly pendingSupersedes: string[]
+  readonly missingSupersedeFacts: string[]
+  readonly missingReachabilityUpdates: string[]
+  readonly supersedeError: unknown
+
+  constructor(details: {
+    decision: Decision
+    failedSupersede: SupersedeRef
+    stage: string
+    completedSupersedes: SupersedeRef[]
+    markedSupersedes: SupersedeRef[]
+    createdSupersedeFacts: SupersedeRef[]
+    pendingSupersedes: SupersedeRef[]
+    missingSupersedeFacts: SupersedeRef[]
+    missingReachabilityUpdates: SupersedeRef[]
+    supersedeError: unknown
+  }) {
+    const cause =
+      details.supersedeError instanceof Error
+        ? details.supersedeError.message
+        : String(details.supersedeError)
+    const completedIds = new Set(details.completedSupersedes.map((ref) => ref.id))
+    const partiallyMarked = details.markedSupersedes.filter(
+      (ref) => !completedIds.has(ref.id),
+    )
+    super(
+      `Decision create partial failure: decision "${details.decision.title}" ` +
+        `(${details.decision.id}) was saved, but supersession for ` +
+        `${formatSupersedeRef(details.failedSupersede)} failed during ` +
+        `${details.stage}: ${cause}. ` +
+        formatSupersedeRefs(
+          "Completed supersessions before failure",
+          details.completedSupersedes,
+          "No supersessions completed before the failure",
+        ) +
+        formatSupersedeRefs(
+          "Marked superseded before failure but still missing graph repair",
+          partiallyMarked,
+        ) +
+        formatSupersedeRefs(
+          "Created `supersedes_decision` facts before failure",
+          details.createdSupersedeFacts,
+          "No `supersedes_decision` facts were created before the failure",
+        ) +
+        formatSupersedeRefs(
+          "Missing `supersedes_decision` facts",
+          details.missingSupersedeFacts,
+        ) +
+        formatSupersedeRefs(
+          "Missing decision-context reachability updates",
+          details.missingReachabilityUpdates,
+        ) +
+        formatSupersedeRefs(
+          "Pending supersessions not attempted",
+          details.pendingSupersedes,
+        ) +
+        "Repair the missing supersession work for the saved decision; do not recreate the decision.",
+    )
+    this.name = "DecisionCreateSupersedePartialFailureError"
+    this.decisionId = details.decision.id
+    this.failedSupersede = details.failedSupersede.id
+    this.completedSupersedes = details.completedSupersedes.map((ref) => ref.id)
+    this.markedSupersedes = details.markedSupersedes.map((ref) => ref.id)
+    this.createdSupersedeFacts = details.createdSupersedeFacts.map((ref) => ref.id)
+    this.pendingSupersedes = details.pendingSupersedes.map((ref) => ref.id)
+    this.missingSupersedeFacts = details.missingSupersedeFacts.map((ref) => ref.id)
+    this.missingReachabilityUpdates = details.missingReachabilityUpdates.map(
+      (ref) => ref.id,
+    )
+    this.supersedeError = details.supersedeError
+  }
+}
+
+function formatSupersedeRef(ref: SupersedeRef): string {
+  return ref.title ? `"${ref.title}" (${ref.id})` : ref.id
+}
+
+function formatSupersedeRefs(
+  label: string,
+  refs: SupersedeRef[],
+  empty?: string,
+): string {
+  if (refs.length === 0) return empty ? `${empty}. ` : ""
+  return `${label}: ${refs.map(formatSupersedeRef).join(", ")}. `
+}
 
 function formatNearDuplicateDecisions(
   matches: NearDuplicateMatch[],
@@ -206,9 +354,16 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
       { memoryId: created.id, projectIds: created.projectIds },
     )
 
+    const supersedesIds = args.supersedesIds ?? []
+    const supersedeRefs = new Map<string, SupersedeRef>()
+    const supersedeRef = (id: string): SupersedeRef => supersedeRefs.get(id) ?? { id }
+    const supersedeRefsFor = (ids: string[]): SupersedeRef[] =>
+      ids.map((id) => supersedeRef(id))
+
     const affectsCreated: string[] = []
     const affectsWarnings: string[] = []
-    for (const entity of args.affects ?? []) {
+    const affects = args.affects ?? []
+    for (const [index, entity] of affects.entries()) {
       // PF3-01 — resolve each `affects` entry through EntityService so
       // the auto-created `decided_by` fact carries a canonical
       // `SubjectEntity` relation. Strict per-entry try/catch matches
@@ -240,33 +395,116 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
         }
       }
 
-      await services.facts.create({
-        subject: entity,
-        predicate: "decided_by",
-        object: created.id,
-        projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
-        sourceMemoryId: created.id,
-        confidence: created.confidence,
-        subjectEntityId,
-      })
+      try {
+        await services.facts.create({
+          subject: entity,
+          predicate: "decided_by",
+          object: created.id,
+          projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
+          sourceMemoryId: created.id,
+          confidence: created.confidence,
+          subjectEntityId,
+        })
+      } catch (factWriteError) {
+        throw new DecisionCreateFactPartialFailureError({
+          decision: created,
+          failedAffect: entity,
+          createdAffects: [...affectsCreated],
+          pendingAffects: affects.slice(index),
+          pendingSupersedes: supersedesIds,
+          factWriteError,
+        })
+      }
       affectsCreated.push(entity)
     }
 
     const supersededEntries: Array<{ id: string; title: string }> = []
+    const markedSupersedes: SupersedeRef[] = []
+    const createdSupersedeFacts: SupersedeRef[] = []
     const reachabilityUpdates: string[] = []
     const supersededDecisions: Decision[] = []
-    for (const oldId of args.supersedesIds ?? []) {
-      const oldDecision = await services.decisions.getById(oldId)
-      await services.decisions.supersede(created.id, oldId)
-      await services.facts.create({
-        subject: created.id,
-        predicate: "supersedes_decision",
-        object: oldId,
-        projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
-        sourceMemoryId: created.id,
-        confidence: created.confidence,
-      })
-      const reachability = await syncDecisionReachability(services, oldId, created)
+    for (const [index, oldId] of supersedesIds.entries()) {
+      let oldDecision: Decision
+      try {
+        oldDecision = await services.decisions.getById(oldId)
+      } catch (supersedeError) {
+        throw new DecisionCreateSupersedePartialFailureError({
+          decision: created,
+          failedSupersede: supersedeRef(oldId),
+          stage: "decision lookup",
+          completedSupersedes: [...supersededEntries],
+          markedSupersedes: [...markedSupersedes],
+          createdSupersedeFacts: [...createdSupersedeFacts],
+          pendingSupersedes: supersedeRefsFor(supersedesIds.slice(index)),
+          missingSupersedeFacts: supersedeRefsFor(supersedesIds.slice(index)),
+          missingReachabilityUpdates: supersedeRefsFor(supersedesIds.slice(index)),
+          supersedeError,
+        })
+      }
+
+      const oldRef = { id: oldId, title: oldDecision.title }
+      supersedeRefs.set(oldId, oldRef)
+
+      try {
+        await services.decisions.supersede(created.id, oldId)
+      } catch (supersedeError) {
+        throw new DecisionCreateSupersedePartialFailureError({
+          decision: created,
+          failedSupersede: oldRef,
+          stage: "supersede update",
+          completedSupersedes: [...supersededEntries],
+          markedSupersedes: [...markedSupersedes],
+          createdSupersedeFacts: [...createdSupersedeFacts],
+          pendingSupersedes: supersedeRefsFor(supersedesIds.slice(index)),
+          missingSupersedeFacts: supersedeRefsFor(supersedesIds.slice(index)),
+          missingReachabilityUpdates: supersedeRefsFor(supersedesIds.slice(index)),
+          supersedeError,
+        })
+      }
+      markedSupersedes.push(oldRef)
+
+      try {
+        await services.facts.create({
+          subject: created.id,
+          predicate: "supersedes_decision",
+          object: oldId,
+          projectIds: created.projectIds.length > 0 ? created.projectIds : undefined,
+          sourceMemoryId: created.id,
+          confidence: created.confidence,
+        })
+      } catch (supersedeError) {
+        throw new DecisionCreateSupersedePartialFailureError({
+          decision: created,
+          failedSupersede: oldRef,
+          stage: "`supersedes_decision` fact write",
+          completedSupersedes: [...supersededEntries],
+          markedSupersedes: [...markedSupersedes],
+          createdSupersedeFacts: [...createdSupersedeFacts],
+          pendingSupersedes: supersedeRefsFor(supersedesIds.slice(index + 1)),
+          missingSupersedeFacts: supersedeRefsFor(supersedesIds.slice(index)),
+          missingReachabilityUpdates: supersedeRefsFor(supersedesIds.slice(index)),
+          supersedeError,
+        })
+      }
+      createdSupersedeFacts.push(oldRef)
+
+      let reachability: Awaited<ReturnType<typeof syncDecisionReachability>>
+      try {
+        reachability = await syncDecisionReachability(services, oldId, created)
+      } catch (supersedeError) {
+        throw new DecisionCreateSupersedePartialFailureError({
+          decision: created,
+          failedSupersede: oldRef,
+          stage: "decision-context reachability sync",
+          completedSupersedes: [...supersededEntries],
+          markedSupersedes: [...markedSupersedes],
+          createdSupersedeFacts: [...createdSupersedeFacts],
+          pendingSupersedes: supersedeRefsFor(supersedesIds.slice(index + 1)),
+          missingSupersedeFacts: supersedeRefsFor(supersedesIds.slice(index + 1)),
+          missingReachabilityUpdates: supersedeRefsFor(supersedesIds.slice(index)),
+          supersedeError,
+        })
+      }
       supersededEntries.push({ id: oldId, title: oldDecision.title })
       supersededDecisions.push(oldDecision)
       if (reachability.invalidated > 0) {

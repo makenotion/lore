@@ -164,6 +164,248 @@ describe("registerDecisionTools", () => {
     )
   })
 
+  it("surfaces saved decision recovery context when decided_by fact creation fails", async () => {
+    const mockServer = createMockServer()
+    const created = makeDecision("dec-partial", { title: "Adopt cache" })
+    const factError = new Error("notion 503")
+    const factCreate = vi
+      .fn()
+      .mockResolvedValueOnce(makeFact("fact-auth"))
+      .mockRejectedValueOnce(factError)
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(created),
+        getById: vi.fn(),
+        supersede: vi.fn(),
+      },
+      facts: {
+        create: factCreate,
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      memories: {
+        decrementConfidence: vi.fn(),
+      },
+      topics: {
+        getOrCreate: vi.fn(),
+      },
+      projects: {
+        findByName: vi.fn(),
+      },
+      context: {
+        project: null,
+      },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn(),
+      },
+      identity: { author: null },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    const result = await loreDecide({
+      decision: "Adopt cache",
+      rationale: "Because reasons",
+      affects: ["AuthService", "CacheLayer", "Queue"],
+      supersedesIds: ["dec-old"],
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain("Decision create partial failure")
+    expect(wrapped.content[0].text).toContain(
+      'decision "Adopt cache" (dec-partial) was saved',
+    )
+    expect(wrapped.content[0].text).toContain(
+      '`decided_by` fact for "CacheLayer" failed: notion 503',
+    )
+    expect(wrapped.content[0].text).toContain(
+      "Created `decided_by` facts before failure: AuthService",
+    )
+    expect(wrapped.content[0].text).toContain(
+      "Missing `decided_by` facts: CacheLayer, Queue",
+    )
+    expect(wrapped.content[0].text).toContain(
+      "Pending supersessions not attempted: dec-old",
+    )
+    expect(wrapped.content[0].text).toContain("do not recreate the decision")
+    expect(services.decisions.create).toHaveBeenCalledTimes(1)
+    expect(factCreate).toHaveBeenCalledTimes(2)
+    expect(services.decisions.getById).not.toHaveBeenCalled()
+    expect(services.decisions.supersede).not.toHaveBeenCalled()
+    expect(services.sessionMemories.record).toHaveBeenCalledWith(
+      { agent: undefined, session: undefined },
+      { memoryId: "dec-partial", projectIds: [] },
+    )
+  })
+
+  it("surfaces saved decision recovery context when supersedes fact creation fails", async () => {
+    const mockServer = createMockServer()
+    const created = makeDecision("dec-new", { title: "Adopt cache" })
+    const oldA = makeDecision("dec-a")
+    const oldB = makeDecision("dec-b")
+    const factError = new Error("notion 503")
+    const factCreate = vi
+      .fn()
+      .mockResolvedValueOnce(makeFact("fact-a"))
+      .mockRejectedValueOnce(factError)
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(created),
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "dec-a") return oldA
+          if (id === "dec-b") return oldB
+          throw new Error(`unknown decision ${id}`)
+        }),
+        supersede: vi.fn().mockResolvedValue(undefined),
+      },
+      facts: {
+        create: factCreate,
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      memories: {
+        decrementConfidence: vi.fn(),
+      },
+      topics: {
+        getOrCreate: vi.fn(),
+      },
+      projects: {
+        findByName: vi.fn(),
+      },
+      context: {
+        project: null,
+      },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn(),
+      },
+      identity: { author: null },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    const result = await loreDecide({
+      decision: "Adopt cache",
+      rationale: "Because reasons",
+      supersedesIds: ["dec-a", "dec-b", "dec-c"],
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    const text = wrapped.content[0].text
+
+    expect(wrapped.isError).toBe(true)
+    expect(text).toContain("Decision create partial failure")
+    expect(text).toContain('decision "Adopt cache" (dec-new) was saved')
+    expect(text).toContain(
+      'supersession for "Decision dec-b" (dec-b) failed during `supersedes_decision` fact write: notion 503',
+    )
+    expect(text).toContain(
+      'Completed supersessions before failure: "Decision dec-a" (dec-a)',
+    )
+    expect(text).toContain(
+      'Marked superseded before failure but still missing graph repair: "Decision dec-b" (dec-b)',
+    )
+    expect(text).toContain(
+      'Created `supersedes_decision` facts before failure: "Decision dec-a" (dec-a)',
+    )
+    expect(text).toContain(
+      'Missing `supersedes_decision` facts: "Decision dec-b" (dec-b), dec-c',
+    )
+    expect(text).toContain(
+      'Missing decision-context reachability updates: "Decision dec-b" (dec-b), dec-c',
+    )
+    expect(text).toContain("Pending supersessions not attempted: dec-c")
+    expect(text).toContain("do not recreate the decision")
+    expect(services.decisions.create).toHaveBeenCalledTimes(1)
+    expect(services.decisions.supersede).toHaveBeenCalledTimes(2)
+    expect(services.decisions.supersede).toHaveBeenNthCalledWith(1, "dec-new", "dec-a")
+    expect(services.decisions.supersede).toHaveBeenNthCalledWith(2, "dec-new", "dec-b")
+    expect(factCreate).toHaveBeenCalledTimes(2)
+    expect(services.memories.decrementConfidence).not.toHaveBeenCalled()
+  })
+
+  it("keeps landed supersedes facts out of the missing list when reachability sync fails", async () => {
+    const mockServer = createMockServer()
+    const created = makeDecision("dec-new", { title: "Adopt cache" })
+    const oldA = makeDecision("dec-a")
+    const oldB = makeDecision("dec-b")
+    const queryBySourceMemory = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("reachability 503"))
+      .mockResolvedValue([])
+
+    const services = {
+      decisions: {
+        create: vi.fn().mockResolvedValue(created),
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === "dec-a") return oldA
+          if (id === "dec-b") return oldB
+          throw new Error(`unknown decision ${id}`)
+        }),
+        supersede: vi.fn().mockResolvedValue(undefined),
+      },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory,
+        invalidate: vi.fn().mockResolvedValue(undefined),
+      },
+      memories: {
+        decrementConfidence: vi.fn(),
+      },
+      topics: {
+        getOrCreate: vi.fn(),
+      },
+      projects: {
+        findByName: vi.fn(),
+      },
+      context: {
+        project: null,
+      },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn(),
+      },
+      identity: { author: null },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const loreDecide = mockServer.getActionHandler("lore-decision", "create")
+
+    const result = await loreDecide({
+      decision: "Adopt cache",
+      rationale: "Because reasons",
+      supersedesIds: ["dec-a", "dec-b", "dec-c"],
+    } as never)
+
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    const text = wrapped.content[0].text
+
+    expect(wrapped.isError).toBe(true)
+    expect(text).toContain(
+      'supersession for "Decision dec-b" (dec-b) failed during decision-context reachability sync: reachability 503',
+    )
+    expect(text).toContain(
+      'Created `supersedes_decision` facts before failure: "Decision dec-a" (dec-a), "Decision dec-b" (dec-b)',
+    )
+    expect(text).toContain("Missing `supersedes_decision` facts: dec-c")
+    expect(text).toContain(
+      'Missing decision-context reachability updates: "Decision dec-b" (dec-b), dec-c',
+    )
+    expect(text).toContain("Pending supersessions not attempted: dec-c")
+    expect(text).toContain("do not recreate the decision")
+    expect(services.facts.create).toHaveBeenCalledTimes(2)
+    expect(queryBySourceMemory).toHaveBeenCalledTimes(4)
+    expect(services.memories.decrementConfidence).not.toHaveBeenCalled()
+  })
+
   it("surfaces near-duplicate decisions with a lore-supersede hint", async () => {
     // P2-03 acceptance: a decision near-identical to an existing active
     // decision (trigram ≥ 0.6, same project, same topic) lights up a

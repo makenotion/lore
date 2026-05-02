@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import { DecisionService } from "./decision.js"
+import { DecisionCreatePartialFailureError, DecisionService } from "./decision.js"
 import type { DatabaseRef, MemoryKind } from "../types.js"
 
 /**
@@ -73,7 +73,20 @@ interface MockClientOpts {
   nextCursor?: string | null
 }
 
-function createMockClient(opts: MockClientOpts = {}) {
+type MockClient = Client & {
+  pages: {
+    create: ReturnType<typeof vi.fn>
+    retrieve: ReturnType<typeof vi.fn>
+    update: ReturnType<typeof vi.fn>
+    updateMarkdown: ReturnType<typeof vi.fn>
+    retrieveMarkdown: ReturnType<typeof vi.fn>
+  }
+  dataSources: {
+    query: ReturnType<typeof vi.fn>
+  }
+}
+
+function createMockClient(opts: MockClientOpts = {}): MockClient {
   const defaultCreate = makePage({ id: "new-page-id" })
   return {
     pages: {
@@ -94,7 +107,7 @@ function createMockClient(opts: MockClientOpts = {}) {
         next_cursor: opts.nextCursor ?? null,
       }),
     },
-  } as unknown as Client & { pages: { create: ReturnType<typeof vi.fn> } }
+  } as unknown as MockClient
 }
 
 const DB: DatabaseRef = {
@@ -140,6 +153,72 @@ describe("DecisionService.create", () => {
     )
   })
 
+  it("archives orphan and throws structured error when rationale write fails", async () => {
+    const bodyWriteError = new Error("Notion rationale update failed (502)")
+    const client = createMockClient({ createReturn: decisionPage("dec-orphan") })
+    client.pages.updateMarkdown.mockRejectedValueOnce(bodyWriteError)
+    const service = new DecisionService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.create({
+        decision: "Handle partial decision creates",
+        rationale: "Rationale body",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(DecisionCreatePartialFailureError)
+    const partial = caught as DecisionCreatePartialFailureError
+    expect(partial.pageId).toBe("dec-orphan")
+    expect(partial.cleanedUp).toBe(true)
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.cleanupError).toBeUndefined()
+    expect(partial.message).toMatch(/decision row was created/)
+    expect(partial.message).not.toMatch(/Memories DB row/)
+    expect(partial.message).toContain("dec-orphan")
+    expect(partial.message).toMatch(/archived to keep the vault consistent/)
+    expect(partial.message).toMatch(/retry the create/)
+    expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.update.mock.calls[0][0]).toEqual({
+      page_id: "dec-orphan",
+      archived: true,
+    })
+  })
+
+  it("carries cleanup failure when orphan archive also fails", async () => {
+    const bodyWriteError = new Error("Notion rationale update failed (502)")
+    const cleanupError = new Error("Notion archive failed (429)")
+    const client = createMockClient({ createReturn: decisionPage("dec-orphan") })
+    client.pages.updateMarkdown.mockRejectedValueOnce(bodyWriteError)
+    client.pages.update.mockRejectedValueOnce(cleanupError)
+    const service = new DecisionService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.create({
+        decision: "Handle partial decision creates",
+        rationale: "Rationale body",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(DecisionCreatePartialFailureError)
+    const partial = caught as DecisionCreatePartialFailureError
+    expect(partial.pageId).toBe("dec-orphan")
+    expect(partial.cleanedUp).toBe(false)
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.cleanupError).toBe(cleanupError)
+    expect(partial.message).toMatch(/cleanup archive also failed/)
+    expect(partial.message).not.toMatch(/ALSO/)
+    expect(partial.message).toMatch(/Archive it manually before retrying/)
+    expect(partial.message).toContain("dec-orphan")
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+  })
+
   it("does not call updateMarkdown when rationale is empty", async () => {
     const client = createMockClient()
     const service = new DecisionService(client, DB)
@@ -150,6 +229,47 @@ describe("DecisionService.create", () => {
     })
 
     expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("pages.create rejection bubbles untouched with no cleanup or rationale write", async () => {
+    const createError = new Error("Notion 400: invalid relation")
+    const client = createMockClient()
+    client.pages.create.mockRejectedValueOnce(createError)
+    const service = new DecisionService(client, DB)
+
+    await expect(
+      service.create({
+        decision: "Invalid relation",
+        rationale: "Rationale body",
+      })
+    ).rejects.toBe(createError)
+
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("partial failure evicts any cached decision under the created id", async () => {
+    const bodyWriteError = new Error("Notion rationale update failed (502)")
+    const client = createMockClient({
+      createReturn: decisionPage("dec-orphan"),
+      retrievedPages: { "dec-orphan": decisionPage("dec-orphan") },
+      markdown: "cached rationale",
+    })
+    const service = new DecisionService(client, DB)
+
+    await service.getById("dec-orphan")
+    client.pages.updateMarkdown.mockRejectedValueOnce(bodyWriteError)
+    await expect(
+      service.create({
+        decision: "Handle partial decision creates",
+        rationale: "Rationale body",
+      })
+    ).rejects.toBeInstanceOf(DecisionCreatePartialFailureError)
+    await service.getById("dec-orphan")
+
+    expect(client.pages.retrieve).toHaveBeenCalledTimes(2)
+    expect(client.pages.retrieveMarkdown).toHaveBeenCalledTimes(2)
   })
 
   it("passes through explicit status, confidence, reviewBy, supersedesIds", async () => {
@@ -276,6 +396,18 @@ describe("DecisionService.getById", () => {
     const service = new DecisionService(client, DB)
 
     await expect(service.getById("mem-1")).rejects.toThrow(/not a decision/)
+  })
+
+  it("treats archived decisions as absent", async () => {
+    const archivedDecision = decisionPage("dec-archived", { archived: true })
+    const client = createMockClient({
+      retrievedPages: { "dec-archived": archivedDecision },
+    })
+    const service = new DecisionService(client, DB)
+
+    await expect(service.getById("dec-archived")).rejects.toThrow(/archived/)
+
+    expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
   })
 })
 

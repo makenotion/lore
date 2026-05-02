@@ -907,7 +907,7 @@ export class MemoryService {
             `retry the create to land a fresh row.`
           : `Memory create partial failure: the Memories DB row was ` +
             `created (page ${page.id}) but the body write failed: ${cause}. ` +
-            `The cleanup archive ALSO failed (${
+            `The cleanup archive also failed (${
               cleanupError instanceof Error
                 ? cleanupError.message
                 : String(cleanupError)
