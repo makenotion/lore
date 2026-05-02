@@ -4420,6 +4420,53 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     expect(taskList).not.toHaveBeenCalled()
   })
 
+  it("rejects topicKey + kind=task at the dispatcher boundary before any Notion side effect", async () => {
+    const mockServer = createMockServer()
+    const findByName = vi.fn()
+    const getOrCreate = vi.fn()
+    const create = vi.fn()
+    const upsertByTopicKey = vi.fn()
+    const list = vi.fn()
+    const createWithDedup = vi.fn()
+    const taskList = vi.fn()
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate },
+      memories: { create, upsertByTopicKey, list },
+      facts: { createWithDedup },
+      tasks: { list: taskList },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Task-shaped memory",
+      content: "body",
+      kind: "task",
+      topicKey: "decision/jwt-auth",
+      topicName: "Auth Models",
+      projectName: "a",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("kind: Invalid enum value")
+    expect(text).toContain("received 'task'")
+
+    expect(findByName).not.toHaveBeenCalled()
+    expect(getOrCreate).not.toHaveBeenCalled()
+    expect(create).not.toHaveBeenCalled()
+    expect(upsertByTopicKey).not.toHaveBeenCalled()
+    expect(list).not.toHaveBeenCalled()
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(taskList).not.toHaveBeenCalled()
+  })
+
   it("rejects single-segment topicKey ('decision' alone) at the Zod boundary", async () => {
     // The TOPIC_KEY_REGEX requires `family/key` shape — at least
     // one slash separator — to match what `suggest-topic-key`

@@ -208,10 +208,11 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // Validate the topicKey + kind contract BEFORE any service call.
     //
     // Topic keys group recurring decision/runbook/policy/incident/
-    // postmortem topics. Notes are the catch-all default and don't form
-    // a recurring topic — the suggester (`action='suggest-topic-key'`)
+    // postmortem topics. Notes are the catch-all default and tasks are
+    // lifecycle records owned by `lore-task`, so neither forms a
+    // recurring topic — the suggester (`action='suggest-topic-key'`)
     // returns null for `kind: 'note'` and `kind: 'task'` for the same
-    // reason. The contract is documented in CLAUDE.md ("Topic keys for
+    // reason. The contract is documented in AGENTS.md ("Topic keys for
     // evolving memories").
     //
     // **Position is load-bearing**: this guard runs BEFORE
@@ -231,11 +232,16 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // `kind`) would silently land in an upsert chain on a
     // `note`-defaulted memory.
     const resolvedKind = (args.kind as MemoryKind | undefined) ?? "note"
-    if (args.topicKey && resolvedKind === "note") {
+    if (args.topicKey && (resolvedKind === "note" || resolvedKind === "task")) {
+      const reason =
+        resolvedKind === "note"
+          ? "notes are the catch-all default"
+          : "tasks are lifecycle records owned by lore-task"
+
       throw new Error(
-        "topicKey is not valid on kind: 'note'. Topic keys group " +
-          "recurring decision/runbook/policy-style topics; notes are " +
-          "the catch-all default and do not form a recurring topic. " +
+        `topicKey is not valid on kind: '${resolvedKind}'. Topic keys group ` +
+          `recurring decision/runbook/policy-style topics; ${reason} and ` +
+          "do not form a recurring topic. " +
           "Either omit topicKey, or set kind to one of: decision, " +
           "runbook, incident, postmortem, policy.",
       )
