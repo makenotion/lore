@@ -2,7 +2,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
-import type { Fact, Memory, Project, TaskSummary } from "../../types.js"
+import type {
+  DecisionSummary,
+  Fact,
+  Memory,
+  Project,
+  TaskSummary,
+} from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
   return {
@@ -58,6 +64,46 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
     objectEntityId: null,
     ...overrides,
   }
+}
+
+function makeDecisionSummary(
+  overrides: Partial<DecisionSummary> & { id: string },
+): DecisionSummary {
+  const base: DecisionSummary = {
+    id: overrides.id,
+    title: overrides.title ?? `Decision ${overrides.id}`,
+    projectIds: [],
+    topicId: null,
+    source: "manual",
+    kind: "decision",
+    status: "accepted",
+    confidence: "certain",
+    confidenceScore: null,
+    reviewBy: null,
+    doneAt: null,
+    decidedAt: "2026-04-20",
+    lastReferencedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    synopsis: "",
+    session: "",
+    taskState: null,
+    blockedBy: "",
+    entity: "",
+    topicKey: "",
+    revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
+    createdAt: "2026-04-20T00:00:00Z",
+    updatedAt: "2026-04-20T00:00:00Z",
+  }
+  return { ...base, ...overrides }
 }
 
 function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
@@ -167,6 +213,18 @@ interface WakeServicesOverrides {
   configProjects?: Array<{ name: string; path: string }>
   /** Override `services.projects.findByName`. Used by explicit-projectName tests. */
   findByName?: (name: string) => Promise<unknown>
+  /**
+   * Decisions returned by `services.decisions.list({ status: "proposed" })`
+   * for the wake-up "Decisions Requiring Attention" Proposed subsection
+   * (0.9.0/DEFERRED-07 trust-indicator coverage).
+   */
+  proposedDecisions?: DecisionSummary[]
+  /**
+   * Decisions returned by `services.decisions.queryOverdue` for the
+   * wake-up "Decisions Requiring Attention" Overdue for Review
+   * subsection (0.9.0/DEFERRED-07 trust-indicator coverage).
+   */
+  overdueDecisions?: DecisionSummary[]
 }
 
 function makeWakeServices(overrides: WakeServicesOverrides = {}) {
@@ -227,8 +285,13 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       listRecent: factsListRecent,
     },
     decisions: {
-      list: vi.fn(async () => ({ items: [] })),
-      queryOverdue: vi.fn(async () => []),
+      list: vi.fn(async (opts?: { status?: string }) => {
+        if (opts?.status === "proposed") {
+          return { items: overrides.proposedDecisions ?? [] }
+        }
+        return { items: [] }
+      }),
+      queryOverdue: vi.fn(async () => overrides.overdueDecisions ?? []),
     },
     tasks: {
       // Honor the caller's `limit` so fixtures larger than the data
@@ -2740,5 +2803,103 @@ describe("lore-wake-up — Stale Confidence subsection (issue 0.8.0/#10)", () =>
       projectId: "proj-1",
       limit: 5,
     })
+  })
+})
+
+describe("lore-wake-up — Decisions Requiring Attention trust indicator (0.9.0/DEFERRED-07)", () => {
+  // Pinned at the surface (not just the render helper) so a future
+  // contributor swapping the wake-up "Decisions Requiring Attention"
+  // renderer would see the trust line disappear from listings and
+  // surface here, not just in `render.test.ts`. Bullet-shaped surface,
+  // so the indented italic continuation matches the wake-up Tasks
+  // sub-section's shape.
+
+  it("renders the trust line on a low-confidence Proposed decision row", async () => {
+    const decision = makeDecisionSummary({
+      id: "dec-prop",
+      title: "Speculative governance proposal",
+      status: "proposed",
+      confidenceScore: 0.3,
+    })
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ proposedDecisions: [decision] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) =>
+      l.includes("**Speculative governance proposal**"),
+    )
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
+  })
+
+  it("renders the trust line on a low-confidence Overdue for Review decision row", async () => {
+    const decision = makeDecisionSummary({
+      id: "dec-over",
+      title: "Overdue review decision",
+      status: "accepted",
+      reviewBy: "2026-01-01",
+      confidenceScore: 0.15,
+    })
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ overdueDecisions: [decision] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) =>
+      l.includes("**Overdue review decision**"),
+    )
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
+  })
+
+  it("omits the trust line on a null-score decision (pre-migration vault)", async () => {
+    const decision = makeDecisionSummary({
+      id: "dec-null",
+      title: "Pre-migration proposal",
+      status: "proposed",
+      confidenceScore: null,
+    })
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ proposedDecisions: [decision] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Pre-migration proposal")
+    // Trust label vocabulary `_X confidence_` must not appear when
+    // the row's score is null. Scoped to the trust-label suffix so
+    // unrelated `_..._` italic surfaces (e.g. closure CTAs) don't
+    // false-positive.
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("omits the trust line on an above-threshold proposed decision", async () => {
+    const decision = makeDecisionSummary({
+      id: "dec-healthy",
+      title: "Well-cited proposal",
+      status: "proposed",
+      confidenceScore: 0.8,
+    })
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ proposedDecisions: [decision] })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Well-cited proposal")
+    expect(text).not.toContain("confidence_")
   })
 })

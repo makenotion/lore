@@ -10,7 +10,12 @@ import {
 } from "../helpers.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
-import { groupFactsByClass, renderFact, resolveReferencedTitles } from "../render.js"
+import {
+  groupFactsByClass,
+  renderFact,
+  renderTrustLine,
+  resolveReferencedTitles,
+} from "../render.js"
 
 import type { Decision, Fact, Project, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
@@ -845,6 +850,11 @@ export async function handleAudit(
             (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000,
           )
           const since = f.validFrom ? ` (since ${f.validFrom})` : ""
+          // TODO(0.8.0/DEFERRED-02): emit `renderTrustLine(f.confidenceScore, "  ")`
+          // between the title row and the Review by row once the Facts DB carries
+          // a Confidence Score column. The symmetric Overdue Decisions block below
+          // already renders the trust line; this site is the paired call site that
+          // 0.8.0/DEFERRED-02 unblocks.
           return (
             `- **${f.subject}** ${f.predicate.replace(/_/g, " ")} **${f.object}** [${f.confidence}]${since}\n` +
             `  Review by: ${f.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
@@ -865,8 +875,16 @@ export async function handleAudit(
               )
             : 0
           const decided = d.decidedAt ? ` | decided ${d.decidedAt}` : ""
+          // Trust indicator (0.9.0/DEFERRED-07). Bullet-shaped surface
+          // with continuation lines — the trust line sits between the
+          // title row and the Review By row so the audit reader sees
+          // the signal before the staleness detail. Same indent as
+          // the surrounding continuation lines.
+          const trustLine = renderTrustLine(d.confidenceScore, "  ")
+          const trustRow = trustLine !== null ? `${trustLine}\n` : ""
           return (
             `- **${d.title}** [${d.status}]${decided}\n` +
+            trustRow +
             `  Review by: ${d.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
             `  ID: ${d.id}`
           )

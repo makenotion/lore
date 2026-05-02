@@ -1511,3 +1511,89 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
     }
   })
 })
+
+describe("lore-decision action='context' trust indicator (0.9.0/DEFERRED-07)", () => {
+  // The action='context' surface (graph walk: every active decision
+  // governing an entity) shares the heading-shaped layout with
+  // action='list', so the trust line lands in the same slot. These
+  // tests pin the surface wiring; bucket-by-bucket coverage lives in
+  // `render.test.ts`.
+
+  function contextServices(decision: ReturnType<typeof makeDecision>) {
+    return {
+      decisions: {
+        getById: vi.fn().mockImplementation(async (id: string) => {
+          if (id === decision.id) return decision
+          throw new Error(`unknown decision ${id}`)
+        }),
+      },
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue([
+          {
+            ...makeFact("fact-1"),
+            sourceMemoryId: decision.id,
+            object: decision.id,
+          },
+        ]),
+        queryByObject: vi.fn().mockResolvedValue([]),
+      },
+      topics: {},
+      context: { project: null },
+      entities: null,
+    }
+  }
+
+  it("renders the trust line between heading and metadata on a low-confidence decision", async () => {
+    const decision = makeDecision("dec-low", {
+      title: "Low-confidence governing decision",
+      confidenceScore: 0.3,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, contextServices(decision) as never)
+    const handler = mockServer.getActionHandler("lore-decision", "context")
+
+    const result = await handler({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const headingIdx = lines.findIndex(
+      (l) => l === "### Low-confidence governing decision",
+    )
+    expect(headingIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[headingIdx + 1]).toBe("_low confidence_")
+    // Metadata line follows trust, matching the heading → trust → meta
+    // shape from action='list'.
+    expect(lines[headingIdx + 2]).toMatch(/^\*\*\[accepted\]/)
+  })
+
+  it("omits the trust line when confidenceScore is null (pre-migration vault)", async () => {
+    const decision = makeDecision("dec-null", {
+      title: "Pre-migration governing decision",
+      confidenceScore: null,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, contextServices(decision) as never)
+    const handler = mockServer.getActionHandler("lore-decision", "context")
+
+    const result = await handler({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("omits the trust line when the score is at or above the display threshold", async () => {
+    const decision = makeDecision("dec-healthy", {
+      title: "Healthy governing decision",
+      confidenceScore: 0.5,
+    })
+    const mockServer = createMockServer()
+    registerDecisionTools(mockServer.server, contextServices(decision) as never)
+    const handler = mockServer.getActionHandler("lore-decision", "context")
+
+    const result = await handler({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).not.toContain("confidence_")
+  })
+})

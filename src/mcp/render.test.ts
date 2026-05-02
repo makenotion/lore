@@ -11,6 +11,7 @@ import {
   isUuid,
   renderFact,
   renderRevisionMarker,
+  renderTrustLine,
   resolveReferencedTitles,
   resolveTitles,
 } from "./render.js"
@@ -707,6 +708,53 @@ describe("formatTrustLabel (issue 0.8.0/09)", () => {
     expect(formatTrustLabel(0.5)).toBeNull()
     expect(formatTrustLabel(0.95)).toBeNull()
     expect(formatTrustLabel(1.0)).toBeNull()
+  })
+})
+
+describe("renderTrustLine (0.9.0/DEFERRED-07)", () => {
+  // The shared cross-surface helper consumed by `formatMemoryListItem`,
+  // `lore-decision action='list' | 'context'`, `lore-task action='list'`,
+  // wake-up Decisions Requiring Attention + Tasks subsections, and audit
+  // Overdue Decisions. Pinning the gate + indent contract directly so a
+  // future tuning of the threshold or italic-wrap shape lands in one
+  // place.
+
+  it("returns null when confidenceScore is null (pre-migration / unscored)", () => {
+    expect(renderTrustLine(null)).toBeNull()
+    expect(renderTrustLine(null, "  ")).toBeNull()
+  })
+
+  it("returns null when confidenceScore is at or above the display threshold", () => {
+    // Strict less-than gate: 0.5 → null. Pinning the boundary here
+    // protects against an off-by-one rewrite to `<=`.
+    expect(renderTrustLine(0.5)).toBeNull()
+    expect(renderTrustLine(0.95)).toBeNull()
+    expect(renderTrustLine(1.0)).toBeNull()
+  })
+
+  it("renders an italic-wrapped label with empty indent by default", () => {
+    expect(renderTrustLine(0.0)).toBe("_very low confidence_")
+    expect(renderTrustLine(0.15)).toBe("_very low confidence_")
+    expect(renderTrustLine(0.2)).toBe("_low confidence_")
+    expect(renderTrustLine(0.3)).toBe("_low confidence_")
+    expect(renderTrustLine(0.4)).toBe("_moderate confidence_")
+    expect(renderTrustLine(0.45)).toBe("_moderate confidence_")
+  })
+
+  it("prefixes the indent before the underscore for bullet-shaped surfaces", () => {
+    // Bullet-shaped surfaces (task-list, wake-up Tasks + Decisions
+    // Requiring Attention, audit Overdue Decisions) pass `"  "` so the
+    // line aligns with the surrounding continuation columns.
+    expect(renderTrustLine(0.3, "  ")).toBe("  _low confidence_")
+    expect(renderTrustLine(0.45, "  ")).toBe("  _moderate confidence_")
+  })
+
+  it("respects a custom indent verbatim (no normalization)", () => {
+    // The helper does not assume two spaces — a deeper-nested surface
+    // could pass four. Pinning the verbatim behavior so a future
+    // contributor can't silently inject normalization.
+    expect(renderTrustLine(0.3, "    ")).toBe("    _low confidence_")
+    expect(renderTrustLine(0.3, "\t")).toBe("\t_low confidence_")
   })
 })
 

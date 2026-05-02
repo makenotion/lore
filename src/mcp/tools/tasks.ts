@@ -23,7 +23,7 @@ import { resolveProjectIds } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { findDuplicateActiveTasks } from "../../core/near-duplicate.js"
-import { truncateSynopsis } from "../render.js"
+import { renderTrustLine, truncateSynopsis } from "../render.js"
 import {
   reconcileActiveTasks,
   formatReconcileOutput,
@@ -31,7 +31,7 @@ import {
   DEFAULT_RECONCILE_MIN_SCORE,
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
-import { ACTIVE_TASK_STATES, SYNOPSIS_MAX, formatTrustLabel } from "../../types.js"
+import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { TaskState, TaskSummary } from "../../types.js"
 
 type ToolResult = {
@@ -106,9 +106,8 @@ function formatTaskRow(
   const includeSynopsis = options.includeSynopsis !== false
   const synopsisLine =
     includeSynopsis && t.synopsis.trim() ? `  ${truncateSynopsis(t.synopsis)}\n` : ""
-  const trustLabel =
-    t.confidenceScore !== null ? formatTrustLabel(t.confidenceScore) : null
-  const trustLine = trustLabel !== null ? `  _${trustLabel}_\n` : ""
+  const trustLineText = renderTrustLine(t.confidenceScore, "  ")
+  const trustLine = trustLineText !== null ? `${trustLineText}\n` : ""
   return (
     `- ${marker}**${t.title}** [${stateLabel}]${blocked}${overduePart}\n` +
     trustLine +

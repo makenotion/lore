@@ -35,7 +35,6 @@ import {
   STALE_CONFIDENCE_DAYS,
   STALE_CONFIDENCE_LIMIT,
   STALE_TASK_DAYS,
-  formatTrustLabel,
   type Memory,
   type TaskSummary,
 } from "../../types.js"
@@ -46,6 +45,7 @@ import {
   formatMemoryListItem,
   renderFact,
   renderRevisionMarker,
+  renderTrustLine,
   resolveReferencedTitles,
   truncateSynopsis,
 } from "../render.js"
@@ -247,9 +247,8 @@ function formatWakeUpTaskRow(
         : ""
   const prefix = overdueDays !== null ? "⚠ " : ""
   const closeCta = `lore-task({ action: 'close', taskId: '${task.id}' })`
-  const trustLabel =
-    task.confidenceScore !== null ? formatTrustLabel(task.confidenceScore) : null
-  const trustLine = trustLabel !== null ? `  _${trustLabel}_\n` : ""
+  const trustLineText = renderTrustLine(task.confidenceScore, "  ")
+  const trustLine = trustLineText !== null ? `${trustLineText}\n` : ""
   const synopsisLine = task.synopsis.trim() ? `  ${truncateSynopsis(task.synopsis)}\n` : ""
   return (
     `- ${prefix}**${task.title}** [${stateLabel}]${blocker}${due}\n` +
@@ -580,12 +579,20 @@ async function handleWakeUp(
 
     if (proposedDecisions.length > 0 || overdueDecisions.length > 0) {
       sections.push("## Decisions Requiring Attention\n")
+      // Trust indicator (0.9.0/DEFERRED-07). Bullet-shaped surface,
+      // so the indented italic continuation matches the wake-up Tasks
+      // sub-section's shape — the agent triages both sections side by
+      // side and the visual rhythm shouldn't diverge by surface.
       if (proposedDecisions.length > 0) {
         sections.push(`### Proposed (${proposedDecisions.length})\n`)
         for (const d of proposedDecisions) {
           sections.push(
             `- **${d.title}** — proposed${d.decidedAt ? ` ${d.decidedAt}` : ""} | ID: ${d.id}`,
           )
+          const trustLine = renderTrustLine(d.confidenceScore, "  ")
+          if (trustLine !== null) {
+            sections.push(trustLine)
+          }
         }
         sections.push("")
       }
@@ -601,6 +608,10 @@ async function handleWakeUp(
           sections.push(
             `- **${d.title}** [${d.status}] — review by ${d.reviewBy ?? "?"} (${days} day${days === 1 ? "" : "s"} overdue) | ID: ${d.id}`,
           )
+          const trustLine = renderTrustLine(d.confidenceScore, "  ")
+          if (trustLine !== null) {
+            sections.push(trustLine)
+          }
         }
         sections.push("")
       }

@@ -2109,3 +2109,82 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
     expect(score).toBeLessThan(0.2)
   })
 })
+
+describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEFERRED-07)", () => {
+  // Pinned at the surface so a future contributor swapping the audit
+  // renderer would see the trust line disappear from the audit's
+  // Overdue Decisions section. Bullet-shaped surface with continuation
+  // lines — the trust line lands between the title row and the Review
+  // By row so the audit reader sees the signal before the staleness
+  // detail.
+
+  function auditServices(decisions: Decision[]) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: { queryOverdue: vi.fn().mockResolvedValue([]) },
+      decisions: { queryOverdue: vi.fn().mockResolvedValue(decisions) },
+      context: { project: null },
+    }
+  }
+
+  it("renders the trust line between the title row and the Review by row on a low-confidence decision", async () => {
+    const decision = makeDecision("dec-low", {
+      title: "Low-confidence decision",
+      reviewBy: "2026-01-01",
+      confidenceScore: 0.3,
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, auditServices([decision]) as never)
+    registerQueryTools(mockServer.server, auditServices([decision]) as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) =>
+      l.includes("**Low-confidence decision**"),
+    )
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
+    // Review by row follows the trust line, matching the
+    // title → trust → review-by → ID envelope.
+    expect(lines[titleIdx + 2]).toMatch(/^ {2}Review by:/)
+  })
+
+  it("omits the trust line when confidenceScore is null (pre-migration vault)", async () => {
+    const decision = makeDecision("dec-null", {
+      title: "Pre-migration overdue decision",
+      reviewBy: "2026-01-01",
+      confidenceScore: null,
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, auditServices([decision]) as never)
+    registerQueryTools(mockServer.server, auditServices([decision]) as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Pre-migration overdue decision")
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("omits the trust line when the score is at or above the display threshold", async () => {
+    const decision = makeDecision("dec-healthy", {
+      title: "Healthy overdue decision",
+      reviewBy: "2026-01-01",
+      confidenceScore: 0.5,
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, auditServices([decision]) as never)
+    registerQueryTools(mockServer.server, auditServices([decision]) as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("Healthy overdue decision")
+    expect(text).not.toContain("confidence_")
+  })
+})

@@ -317,6 +317,43 @@ export function renderRevisionMarker(revisionCount: number): string | null {
 }
 
 /**
+ * Render the trust-indicator line component for a list-shaped row whose
+ * stored `Confidence Score` may be below `CONFIDENCE_DISPLAY_THRESHOLD`.
+ * Returns the italic-wrapped label (`_{label}_`) prefixed by `indent`
+ * when the row is scored AND below the display threshold; returns
+ * `null` otherwise (pre-migration / unscored rows AND above-threshold
+ * rows render byte-identically to pre-0.8.0).
+ *
+ * Single source of truth for the cross-surface trust line shape
+ * (0.9.0/DEFERRED-07): `lore-decision action='list' | 'context'`,
+ * `lore-task action='list'`, `lore-context action='wake-up'`'s
+ * Decisions Requiring Attention + Tasks subsections, and
+ * `lore-query action='audit'`'s Overdue Decisions all consume this
+ * helper so a future tuning of the threshold, label vocabulary, or
+ * italic-wrap shape lands in one place. `formatMemoryListItem` also
+ * routes through here for the same reason — extracting the shared
+ * piece keeps the recall / search listings byte-aligned with the new
+ * surfaces.
+ *
+ * `indent` is prefixed before the underscore so callers in
+ * heading-shaped surfaces (recall / search / wake-up Recent + Related,
+ * `lore-decision action='list' | 'context'`) pass `""`, and
+ * bullet-shaped surfaces (`lore-task action='list'`, wake-up Tasks +
+ * Decisions Requiring Attention, audit Overdue Decisions) pass `"  "`
+ * (two spaces) to align with their continuation columns.
+ */
+export function renderTrustLine(
+  confidenceScore: number | null,
+  /** Prefixed before the underscore. `""` for heading-shaped surfaces, `"  "` for bullet rows. */
+  indent: string = "",
+): string | null {
+  if (confidenceScore === null) return null
+  const label = formatTrustLabel(confidenceScore)
+  if (label === null) return null
+  return `${indent}_${label}_`
+}
+
+/**
  * Default builder matching recall / search's pre-#03 meta shape. Pulled
  * out so wake-up's section-specific builders can fall back to it for the
  * non-Recent-Memories surfaces if they ever need to.
@@ -385,14 +422,12 @@ export function formatMemoryListItem(
   // Trust indicator (#09). Above the synopsis on purpose — a
   // low-confidence memory's synopsis is itself suspect, so the signal
   // has to land before the reader parses the content. The threshold gate
-  // lives inside `formatTrustLabel` (returns `null` above
-  // `CONFIDENCE_DISPLAY_THRESHOLD`); the local guard handles the
-  // structurally-different "no score yet / pre-migration row" case so
-  // pre-migration vaults stay byte-identical to pre-0.8.0.
-  const trustLabel =
-    memory.confidenceScore !== null ? formatTrustLabel(memory.confidenceScore) : null
-  if (trustLabel !== null) {
-    lines.push(`_${trustLabel}_`)
+  // and the "pre-migration / unscored row" null-guard both live inside
+  // `renderTrustLine` so this surface stays aligned with the
+  // decision-list / task-list / wake-up surfaces (0.9.0/DEFERRED-07).
+  const trustLine = renderTrustLine(memory.confidenceScore)
+  if (trustLine !== null) {
+    lines.push(trustLine)
   }
 
   const includeSynopsis = options.includeSynopsis !== false
