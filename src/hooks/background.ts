@@ -301,6 +301,7 @@ export function spawnBackgroundSave(
     PATH: process.env["PATH"] ?? "",
     HOME: process.env["HOME"] ?? "",
     LORE_AUTOSAVE: "false",
+    LORE_BACKGROUND_AGENT: "true",
   }
   for (const key of RUNTIME_FORWARDED_KEYS) {
     const value = process.env[key]

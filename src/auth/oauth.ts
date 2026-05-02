@@ -257,8 +257,9 @@ async function exchangeCode(params: {
   })
 
   if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`OAuth token exchange failed (${response.status}): ${body}`)
+    throw new Error(
+      `OAuth token exchange failed (${response.status}). Check the OAuth client configuration and retry.`
+    )
   }
 
   const data = (await response.json()) as Record<string, unknown>

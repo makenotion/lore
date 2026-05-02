@@ -202,7 +202,9 @@ assistant from a cwd Lore can't predict, so the
 The parent's env passthrough is deliberately minimal:
 `spawnBackgroundSave` builds a `safeEnv` with `PATH`, `HOME`,
 `LORE_AUTOSAVE: "false"` (so the child can't recursively trigger
-its own autosave), and every key in the shared
+its own autosave), `LORE_BACKGROUND_AGENT: "true"` (so the child's
+MCP server fails fast on init errors instead of staying alive as a
+diagnostic server), and every key in the shared
 `RUNTIME_FORWARDED_KEYS` list (`src/auth/forwarded-env.ts`) when
 the parent has it set: `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
 `LORE_NOTION_BASE_URL`, `NOTION_WORKSPACE_ID`, `NOTION_ENV`,

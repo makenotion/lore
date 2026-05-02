@@ -162,7 +162,7 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     }
   })
 
-  it("always forwards PATH, HOME, and the LORE_AUTOSAVE=false guard", () => {
+  it("always forwards PATH, HOME, and background child guards", () => {
     process.env["PATH"] = "/usr/bin:/bin"
     process.env["HOME"] = "/home/test"
 
@@ -176,6 +176,9 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     // from triggering its own autosave on its Stop event — without
     // it, every spawn would recursively spawn another spawn.
     expect(env["LORE_AUTOSAVE"]).toBe("false")
+    // The private sentinel tells the spawned agent's MCP child to fail
+    // fast on init errors instead of staying alive as a diagnostic server.
+    expect(env["LORE_BACKGROUND_AGENT"]).toBe("true")
   })
 
   it("forwards NOTION_API_TOKEN so a canonical-auth operator's hook worker auths without LORE_NOTION_TOKEN (#188)", () => {

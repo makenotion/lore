@@ -551,7 +551,7 @@ Implications for future design:
 | 401 mid-session | ntn-issued token expired. Run `lore auth --login`; the running service re-runs auth resolution after the first 401, rebuilds its Notion client when the token or base URL changed, and retries the failed request once. If the refreshed auth is unchanged or still rejected, restart the assistant after re-auth. |
 | `auth.json` is malformed or absent | `loadNtnToken` in `src/auth/ntn.ts` returns null + stderr hint. Run `lore auth --login` to spawn ntn login with `NOTION_KEYRING=0` and refresh the file. |
 | ntn installed under keychain mode (engineer ran `ntn login` outside Lore) | `auth.json` doesn't carry the workspace token. Re-run `lore auth --login` to refresh, or add `NOTION_KEYRING=0` to shell rc for permanent consistency. |
-| Hook-spawned `claude -p` can't read vault | `spawnBackgroundSave` in `src/hooks/background.ts` runs the child in `event.cwd` with a minimal env (`PATH`, `HOME`, `LORE_AUTOSAVE=false`, plus `LORE_NOTION_TOKEN` / `LORE_NOTION_BASE_URL` when set). The child's `findConfigFile` walks upward from `cwd` to locate `.lore.yaml`. Verify `cwd` is correct and that the upward-search lands on the expected config. |
+| Hook-spawned `claude -p` can't read vault | `spawnBackgroundSave` in `src/hooks/background.ts` runs the child in `event.cwd` with a minimal env (`PATH`, `HOME`, `LORE_AUTOSAVE=false`, `LORE_BACKGROUND_AGENT=true`, plus every non-empty key from `RUNTIME_FORWARDED_KEYS`, including `NOTION_API_TOKEN`, `NOTION_WORKSPACE_ID`, and Notion base-url selectors). The child's `findConfigFile` walks upward from `cwd` to locate `.lore.yaml`. Verify `cwd` is correct and that the upward-search lands on the expected config. |
 
 ## Lore MCP Tools
 

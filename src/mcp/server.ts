@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url"
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { z } from "zod"
 
 import { type LoreServices, initServices } from "../services.js"
 
@@ -29,6 +30,32 @@ import { registerTaskTools } from "./tools/tasks.js"
 // Re-export for consumers that already import from this module
 export type { LoreServices } from "../services.js"
 export { initServices } from "../services.js"
+
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>
+  isError?: boolean
+}
+
+const DIAGNOSTIC_TOOL_NAMES = [
+  "lore-context",
+  "lore-memory",
+  "lore-query",
+  "lore-fact",
+  "lore-decision",
+  "lore-project",
+  "lore-task",
+] as const
+
+const DIAGNOSTIC_INPUT_SCHEMA = z
+  .object({
+    action: z
+      .unknown()
+      .optional()
+      .describe(
+        "Diagnostic mode accepts any action value or omitted action; every call returns setup-recovery text."
+      ),
+  })
+  .passthrough()
 
 export async function startServer(): Promise<void> {
   // P3-01 collapsed the tool surface from 24 single-purpose tools to seven
@@ -47,8 +74,13 @@ export async function startServer(): Promise<void> {
   // preflight ahead of the 0.6.0 deprecation purge. No MCP surface
   // change — patch bump per the version-literal-must-move-together
   // contract documented in `src/mcp/AGENTS.md`.
+  //
+  // 0.10.1 exposes a diagnostic MCP surface for interactive service-init
+  // failures. The success path still registers the same seven dispatchers,
+  // but degraded startup now presents the same dispatcher names with setup
+  // recovery text instead of disconnecting the client.
   const server = new McpServer(
-    { name: "lore", version: "0.10.0" },
+    { name: "lore", version: "0.10.1" },
     {
       capabilities: {
         tools: {},
@@ -57,7 +89,7 @@ export async function startServer(): Promise<void> {
     }
   )
 
-  let services: LoreServices
+  let services: LoreServices | null = null
 
   try {
     // MCP startup is a hot path — every reconnecting client kicks off a
@@ -67,31 +99,108 @@ export async function startServer(): Promise<void> {
     // ensures the scan fires at most once per `DRIFT_DEBOUNCE_DAYS`.
     services = await initServices(undefined, { driftCheck: "debounced" })
   } catch (err) {
-    // If initialization fails, still start the server but with limited tools
-    // so the user can get a helpful error message
+    if (process.env["LORE_BACKGROUND_AGENT"] === "true") {
+      throw err
+    }
+
+    // If service initialization fails, still start the server with a minimal
+    // diagnostic surface so MCP clients can display setup guidance instead
+    // of collapsing the failure into a generic connection error.
+    const initErrorMessage = formatInitErrorMessage(err)
     console.error(
-      `[lore] Failed to initialize: ${err instanceof Error ? err.message : err}`
+      `[lore] Failed to initialize; starting diagnostic MCP server: ${initErrorMessage}`
     )
-    process.exit(1)
+    registerStartupDiagnosticTools(server, formatStartupDiagnostic(err, initErrorMessage))
   }
 
-  // Register all tools. The polymorphic surface is seven dispatchers:
-  // lore-context / lore-memory / lore-query / lore-fact / lore-decision /
-  // lore-project / lore-task. P3-01 introduced the dispatch pattern,
-  // PF3-06 added lore-task, and the 0.6.0 deprecation purge removed the
-  // legacy journal dispatcher alongside the 28 single-purpose aliases.
-  // See src/mcp/AGENTS.md.
-  registerContextTools(server, services)
-  registerMemoryTools(server, services)
-  registerQueryTools(server, services)
-  registerProjectTools(server, services)
-  registerKnowledgeTools(server, services)
-  registerDecisionTools(server, services)
-  registerTaskTools(server, services)
+  if (services) {
+    // Register all tools. The polymorphic surface is seven dispatchers:
+    // lore-context / lore-memory / lore-query / lore-fact / lore-decision /
+    // lore-project / lore-task. P3-01 introduced the dispatch pattern,
+    // PF3-06 added lore-task, and the 0.6.0 deprecation purge removed the
+    // legacy journal dispatcher alongside the 28 single-purpose aliases.
+    // See src/mcp/AGENTS.md.
+    registerContextTools(server, services)
+    registerMemoryTools(server, services)
+    registerQueryTools(server, services)
+    registerProjectTools(server, services)
+    registerKnowledgeTools(server, services)
+    registerDecisionTools(server, services)
+    registerTaskTools(server, services)
+  }
 
   // Start the stdio transport
   const transport = new StdioServerTransport()
   await server.connect(transport)
+}
+
+// Called only when service init failed, before the full tool surface has
+// registered any of these names.
+function registerStartupDiagnosticTools(server: McpServer, diagnosticText: string): void {
+  for (const name of DIAGNOSTIC_TOOL_NAMES) {
+    registerStartupDiagnosticTool(server, name, diagnosticText)
+  }
+}
+
+function registerStartupDiagnosticTool(
+  server: McpServer,
+  name: (typeof DIAGNOSTIC_TOOL_NAMES)[number],
+  diagnosticText: string
+): void {
+  server.registerTool(
+    name,
+    {
+      title: "Lore setup diagnostics",
+      description:
+        "Lore could not finish startup. Any action or arguments return the initialization error and recovery steps.",
+      inputSchema: DIAGNOSTIC_INPUT_SCHEMA,
+      annotations: { readOnlyHint: true },
+    },
+    async (): Promise<ToolResult> => ({
+      content: [{ type: "text", text: diagnosticText }],
+      isError: true,
+    })
+  )
+}
+
+function formatStartupDiagnostic(
+  error: unknown,
+  message = formatInitErrorMessage(error)
+): string {
+  const configRoot = process.env["LORE_CONFIG_ROOT"]?.trim()
+
+  return [
+    "# Lore MCP Startup Diagnostic",
+    "",
+    "Lore MCP server started in diagnostic mode because service initialization failed.",
+    "",
+    "## Initialization Error",
+    "",
+    fencedMarkdown(message),
+    "",
+    "## Environment",
+    "",
+    `- Current working directory: ${process.cwd()}`,
+    `- LORE_CONFIG_ROOT: ${configRoot || "not set"}`,
+    "",
+    "## Recovery Steps",
+    "",
+    "- If the error says no `.lore.yaml` was found, run `lore init` from the project directory or re-run `lore install` from the configured vault project.",
+    "- If the error mentions Notion auth, run `lore auth --login` or set `NOTION_API_TOKEN` with a Notion integration token.",
+    "- If `LORE_CONFIG_ROOT` points at the wrong directory, re-run `lore install` from the project directory or unset `LORE_CONFIG_ROOT` so Lore can search upward from the MCP process cwd.",
+    "- After fixing setup, restart or reconnect the MCP client so Lore can register the full tool surface.",
+  ].join("\n")
+}
+
+function formatInitErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function fencedMarkdown(value: string): string {
+  const longestBacktickRun =
+    value.match(/`+/g)?.reduce((longest, run) => Math.max(longest, run.length), 0) ?? 0
+  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1))
+  return [fence, value, fence].join("\n")
 }
 
 function isEntryPoint(): boolean {
