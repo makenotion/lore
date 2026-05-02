@@ -598,6 +598,13 @@ Body matches are **not** searched here — `dataSources.query` only filters
 on properties. Callers that need body relevance should use `"semantic"`
 or rely on the hybrid fallback below.
 
+**Archived rows are excluded client-side.** Notion's `archived` flag
+lives on `PageObjectResponse`, not as a DB column, so `dataSources.query`
+returns archived rows by default. `fetchContainsPages` filters them out
+post-fetch — same posture as `findByTopicKey`, `listAllForBackfill`, and
+`listForScan`. Without this, an archived row at the top of recency could
+occupy a result slot a live row would otherwise fill.
+
 ### `mode: "semantic"` (workspace-wide, vector-ranked)
 
 The legacy path. Uses `client.search()` for relevance ranking against page
@@ -620,6 +627,57 @@ fetch `page_size: 100` instead so the post-filter to the Memories DS has
 headroom when the workspace contains unrelated pages matching the query
 tokens.
 
+**Paginates up to `SEMANTIC_SEARCH_MAX_PAGES` raw pages (default 5)** when
+the first 100 raw hits do not yield enough post-filtered Lore memories to
+satisfy the requested `limit` (issue #192). Loop exits early on
+saturation (`accumulated >= limit`) or exhaustion (`has_more: false`); the
+cap fires only when both conditions miss — bounding worst-case latency at
+five sequential `client.search` round-trips and protecting the per-token
+rate-limit bucket from a pathological query that has no matches anywhere
+in the workspace. See `SEMANTIC_SEARCH_MAX_PAGES`'s docstring for the
+choice rationale (scan window, tail latency, rate-limit budget).
+
+**Pagination dedupes by page id across cursor steps.** `client.search`
+runs each cursor step as a fresh workspace-wide query, not a slice of a
+frozen result set, so concurrent vault edits between page-N and page-N+1
+fetches CAN surface the same memory id twice. The dedup `Set<string>`
+guards both consumers: hybrid's RRF accumulator (intra-branch
+double-credit would inflate the fused score) and the semantic-only
+caller (rendering the same row twice is a visible correctness bug). Pre-
+pagination this couldn't happen — single page meant single observation.
+
+**Returns the full pagination accumulator without an early `slice(0,
+limit)`.** The saturation gate bounds `accumulated.length` to `[0, limit
++ page_size − 1]`; trimming inside `fetchSemanticPages` would silently
+narrow the hybrid RRF pool. A row at semantic-rank 11 that ALSO appears
+in contains contributes its `1/(RRF_K + 11 + 1)` to the fused score
+and can plausibly beat a contains-only row — but only if it survives
+long enough to reach the accumulator. `runSearch`'s `pages.slice(0,
+limit)` at the call boundary is the authoritative final cap for
+semantic-only callers; hybrid consumes the wider pool. Pre-PR the
+equivalent narrowing was structural (single page of 100 trimmed to
+limit), so this is a recall improvement on the same axis pagination
+opened up, not a fix-for-regression.
+
+**Operator triage signal.** When the cap fires (loop exhausted
+`SEMANTIC_SEARCH_MAX_PAGES` without saturating or hitting `has_more:
+false`), `debugLogSemanticSearchCapFired` writes one stderr line under
+`LORE_DEBUG=1`: `[lore] semantic-search-cap-fired: pages=5
+accumulated=N limit=L source=fetch-semantic-pages`. The `LORE_DEBUG`
+gate keeps the common path silent; operators triaging "lore-query
+returned empty / short results" use this to distinguish the
+pathological-query case from genuine no-matches. Same posture as
+`debugLogHybridBranchFailure`.
+
+**Archived memory pages are excluded** before they enter the
+accumulator. `client.search` ignores Notion's `archived` flag; under
+pagination, an archived memory pushed into the accumulator counts
+toward `limit` and can stop the loop before later live matches are
+fetched. The `applySemanticPostFilters` helper drops archived rows in
+the same pass as the parent-DB match — mirrors the every-other-walker
+contract (`findByTopicKey`, `listAllForBackfill`, `listForScan`,
+`fetchContainsPages`).
+
 ### `mode: "hybrid"` (default)
 
 Speculative parallelism. `searchByHybridPages` fires `fetchContainsPages`
@@ -630,9 +688,19 @@ Once both settle:
 
 - **Saturating case** (`containsPages.length >= HYBRID_FALLBACK_THRESHOLD`,
   default 3): the contains rows alone become the result. The parallel
-  semantic call is discarded — wasted bandwidth, but no wall-clock cost
-  since `Promise.allSettled` resolves at `max(contains_latency, semantic_latency)`,
-  which is the same as a pre-PR semantic-only call.
+  semantic call is discarded. `Promise.allSettled` does NOT short-circuit
+  when contains saturates, so wall-clock is still
+  `max(contains_latency, semantic_latency)`. **Post-#192**, the worst-
+  case `semantic_latency` is bounded by `SEMANTIC_SEARCH_MAX_PAGES` (5)
+  sequential `client.search` round-trips on a pathological query that
+  has no matches anywhere in the workspace; saturation cutoff still
+  pays that cost only to discard the result. In practice the semantic
+  branch saturates or exhausts after 1–2 pages on real queries, so
+  the wall-clock impact is bounded but not theoretically free. A
+  future `AbortController`-based cooperative cancellation would let
+  the saturating contains branch terminate the in-flight semantic
+  pagination; track in `DEFERRED.md` if real-vault metrics show the
+  cost matters.
 - **Under-shooting case (RRF)**: when contains under-shoots the
   threshold, the merge runs Reciprocal Rank Fusion over both branches
   rather than concat-with-dedup. Each row's score is

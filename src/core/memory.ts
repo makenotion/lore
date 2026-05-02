@@ -97,6 +97,51 @@ const TITLE_CACHE_TTL_MS = 60_000
 export const HYBRID_FALLBACK_THRESHOLD = 3
 
 /**
+ * Maximum number of `client.search()` pages `fetchSemanticPages` is
+ * willing to fetch before yielding the post-filtered set, regardless of
+ * whether the requested `limit` has been satisfied. Notion's `search`
+ * endpoint returns workspace-wide hits ranked by relevance; Lore filters
+ * those down to the Memories DS, so a workspace where many non-Lore
+ * pages match the query tokens (or where caller-provided property
+ * filters reject most of the first raw page) used to starve the result
+ * set even when matching memories existed past the first 100 raw hits.
+ * Pagination defends against that — but a sustained-loop pull on a
+ * pathological query (one that genuinely has no matches anywhere in
+ * the workspace) would burn through the per-token rate-limit bucket;
+ * the cap bounds blast radius.
+ *
+ * **Why 5.** Three quantities anchor the choice, all worst-case under
+ * the cap:
+ *
+ * - **Scan window.** `5 × page_size: 100 = 500` raw rows. Clears the
+ *   post-filter-starvation case for every realistic Lore vault — the
+ *   Mail vault audit (see `src/core/AGENTS.md` "Measuring whether
+ *   `--build-entities` collapsed the orphan graph") had ~560 facts and
+ *   ~1,300 memories total; a 500-row scan covers most of either set
+ *   in a single call.
+ * - **Tail latency.** `5 × ~500ms` (typical Notion search round-trip
+ *   ≈ 500ms) ≈ **2.5s** maximum wall-clock for the pathological case.
+ *   Acceptable for a search surface that is not on session-start hot
+ *   paths (`loadWakeUpData` uses `list()`, not `client.search`).
+ * - **Rate-limit budget.** Per-token `client.search` bucket runs ~3
+ *   rps; 5 sequential calls ≈ 1.7s of budget. Saturation cuts this
+ *   in the common case — operators only pay the full cost on
+ *   pathological queries.
+ *
+ * Loop exits early once enough filtered Lore rows are accumulated for
+ * the requested `limit`, or once Notion signals `has_more: false`. The
+ * cap fires only when neither saturation nor exhaustion has occurred
+ * — i.e., when a real pathological query is in flight; under
+ * `LORE_DEBUG=1` `debugLogSemanticSearchCapFired` surfaces a stderr
+ * line so operators can distinguish that case from genuine no-matches.
+ *
+ * Exported for test-pinning and operator visibility. If real-query
+ * feedback shows the cap is wrong, change the const; do not add a
+ * per-call parameter.
+ */
+export const SEMANTIC_SEARCH_MAX_PAGES = 5
+
+/**
  * Reciprocal Rank Fusion damping constant. Score for a row at 0-based
  * `rank` in a branch is `1 / (RRF_K + rank + 1)`. Across both branches
  * the scores sum: a row that ranked #1 in both branches scores
@@ -279,6 +324,33 @@ function debugLogHybridBranchFailure(
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
     `[lore] partial-failure: branch=${branch} error=${rejectionToLogLine(reason)} source=hybrid-search\n`,
+  )
+}
+
+/**
+ * Operator observability for the semantic-search **cap-fired** case.
+ * Fires when `fetchSemanticPages` exhausts `SEMANTIC_SEARCH_MAX_PAGES`
+ * without saturating (`accumulated.length >= limit`) and without Notion
+ * reporting `has_more: false`. The cap was deliberately conservative
+ * (see `SEMANTIC_SEARCH_MAX_PAGES`'s docstring) but it makes
+ * pathological-query results indistinguishable from genuine no-matches
+ * in the success path. Operators triaging "lore-query returned empty /
+ * short results" need a way to disambiguate the two — this helper
+ * supplies the signal.
+ *
+ * Gated on `LORE_DEBUG=1` so the common (non-pathological) path stays
+ * silent; same posture as `debugLogHybridBranchFailure`. Format mirrors
+ * the established `[lore] <event>: <kv pairs> source=<surface>`
+ * contract — `grep '[lore]'` aggregators see one event per occurrence.
+ */
+function debugLogSemanticSearchCapFired(
+  pages: number,
+  accumulated: number,
+  limit: number,
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] semantic-search-cap-fired: pages=${pages} accumulated=${accumulated} limit=${limit} source=fetch-semantic-pages\n`,
   )
 }
 
@@ -2966,9 +3038,17 @@ export class MemoryService {
       page_size: limit,
     })
 
-    return response.results
-      .filter(isFullPage)
-      .filter((page) => !page.archived) as PageObjectResponse[]
+    // Notion's `archived` flag lives on `PageObjectResponse`, NOT as a DB
+    // column, so `dataSources.query` returns archived rows by default.
+    // Mirror the client-side exclusion every other paginating walker
+    // applies (`findByTopicKey`, `listAllForBackfill`, `listForScan`,
+    // `MemoryService.list` via `pageToMemory`-side filtering): an archived
+    // memory should never surface as a search hit. Without this, an
+    // archived row at the top of the recency list could occupy a result
+    // slot that a live row would otherwise fill.
+    return (response.results.filter(isFullPage) as PageObjectResponse[]).filter(
+      (page) => !page.archived,
+    )
   }
 
   /**
@@ -2993,6 +3073,17 @@ export class MemoryService {
    * Returns raw `PageObjectResponse[]`. Markdown bodies are *not* fetched
    * here — `search()` runs `materializeMemories` once on the final
    * merged-and-capped list.
+   *
+   * **Paginates** up to `SEMANTIC_SEARCH_MAX_PAGES` raw pages of
+   * `client.search` results before yielding. The post-filter to the
+   * Memories DS plus caller-provided property filters can drop most of
+   * a single raw page in workspaces dominated by non-Lore pages or
+   * under narrow `projectId` / `kind` / `status` constraints; matching
+   * Lore memories that fall after the first 100 raw hits would
+   * otherwise be invisible to the caller. Loop exits early once
+   * accumulated filtered hits cover the requested `limit` OR Notion
+   * signals `has_more: false`. See `SEMANTIC_SEARCH_MAX_PAGES` for the
+   * cap rationale.
    */
   private async fetchSemanticPages(
     input: SearchMemoriesInput,
@@ -3006,41 +3097,167 @@ export class MemoryService {
     // differently from `"intent"` alone under Notion's unspecified ranking.
     // The contains branch sees ONLY `input.query`; intent never narrows it.
     const composedQuery =
-      intent !== null ? [input.query.trim(), intent].filter(Boolean).join(" ") : input.query
-    const response = await this.client.search({
-      query: composedQuery,
-      filter: { property: "object", value: "page" },
-      page_size: 100,
-    })
+      intent !== null
+        ? [input.query.trim(), intent].filter(Boolean).join(" ")
+        : input.query
+    const limit = input.limit ?? 10
 
+    const accumulated: PageObjectResponse[] = []
+    // Dedup across paginated pages. Within a single `client.search` page
+    // Notion guarantees unique ids; the cross-page collision case the
+    // dedup defends against is a concurrent edit between the page-N
+    // and page-N+1 fetches that promotes the same memory's ranking on
+    // page-N+1 from "off the page" to "on the page." Notion's search
+    // does NOT live-rerank between cursor steps (each call is a fresh
+    // workspace-wide query, not a slice of a frozen result set), so
+    // any vault mutation in flight CAN surface the same id twice
+    // across calls. Pre-pagination this couldn't happen — single page
+    // meant single observation.
+    //
+    // Dedup is load-bearing on **both** consumers, for different
+    // reasons:
+    //
+    // - **Hybrid (`searchByHybridPages`).** Without dedup, the RRF
+    //   accumulator processes the same id twice and adds two
+    //   per-branch contributions (`(1/(RRF_K+rank1+1)) * factor +
+    //   (1/(RRF_K+rank2+1)) * factor`) under the *same* `branchKind`,
+    //   inflating that row's fused score above what a single
+    //   observation would produce. Cross-branch agreement (the signal
+    //   RRF surfaces) gets falsified into intra-branch double-credit;
+    //   fixture-pinned ordering drifts.
+    // - **Semantic-only (`searchBySemanticPages`).** Without dedup,
+    //   the caller sees the same `Memory` rendered twice in the
+    //   result list — a visible correctness bug, not just a ranking
+    //   shift. `runSearch`'s `pages.slice(0, limit)` cap doesn't
+    //   collapse duplicates either; it just truncates.
+    //
+    // One Set; one mechanism; both consumers protected.
+    const seen = new Set<string>()
+    // `cursor` is explicitly typed `string | undefined` (NOT `string |
+    // null | undefined`) so a future contributor adding a third
+    // continuation branch cannot reintroduce `null` into the variable
+    // without a type-check failure. The `next_cursor` early-out below
+    // guarantees we never assign `null` here today, but the annotation
+    // pins that invariant for the next reader.
+    let cursor: string | undefined = undefined
+    // `cappedOut` tracks whether the loop exhausted
+    // `SEMANTIC_SEARCH_MAX_PAGES` without breaking early. JS has no
+    // `for...else` so the natural Python idiom is replaced with a
+    // boolean reset on every break path.
+    let cappedOut = true
+    for (let pageIndex = 0; pageIndex < SEMANTIC_SEARCH_MAX_PAGES; pageIndex++) {
+      const response = await this.client.search({
+        query: composedQuery,
+        filter: { property: "object", value: "page" },
+        page_size: 100,
+        start_cursor: cursor,
+      })
+
+      for (const page of this.applySemanticPostFilters(
+        response.results as PageObjectResponse[],
+        input,
+      )) {
+        if (seen.has(page.id)) continue
+        seen.add(page.id)
+        accumulated.push(page)
+      }
+
+      // Saturation: enough filtered rows accumulated to satisfy the
+      // caller's `limit`. Stop before paying for the next round-trip.
+      if (accumulated.length >= limit) {
+        cappedOut = false
+        break
+      }
+      // Exhaustion: Notion has no more pages to return, OR the response
+      // returned `has_more: true` with `next_cursor: null` — an
+      // inconsistent shape Notion's documented contract excludes but the
+      // SDK type permits. Treat both as exhaustion; advancing the loop
+      // with `start_cursor: undefined` would re-fetch page 1 and spin.
+      if (!response.has_more || response.next_cursor == null) {
+        cappedOut = false
+        break
+      }
+      cursor = response.next_cursor
+    }
+    if (cappedOut) {
+      // Loop exhausted SEMANTIC_SEARCH_MAX_PAGES without saturating or
+      // hitting `has_more: false`. Surface a single stderr line under
+      // LORE_DEBUG=1 so an operator triaging "lore-query returned an
+      // empty / short result" can distinguish the cap-fired pathological
+      // case from genuine no-matches. The `LORE_DEBUG` gate keeps the
+      // common (non-pathological) path silent.
+      debugLogSemanticSearchCapFired(
+        SEMANTIC_SEARCH_MAX_PAGES,
+        accumulated.length,
+        limit,
+      )
+    }
+
+    // Return WITHOUT a final `slice(0, limit)` trim. The saturation gate
+    // already bounds `accumulated.length` to `[0, limit + page_size − 1]`
+    // (the page that crossed the threshold landed all of its post-filter
+    // survivors before the break). Two consequences make the unbounded
+    // return correct:
+    //
+    // - Semantic-only path: `runSearch` trims `pages.slice(0, limit)` at
+    //   the call boundary (the authoritative final cap). Re-trimming
+    //   here would be redundant.
+    // - Hybrid path: `searchByHybridPages` consumes the full accumulator
+    //   in its RRF merge. A row at semantic-rank 11 that ALSO appears
+    //   in contains contributes its `1/(RRF_K + 11 + 1)` to the fused
+    //   score and can plausibly beat a contains-only row — but only if
+    //   it survives long enough to reach the accumulator. Trimming to
+    //   `limit` here would silently nullify that cross-branch signal
+    //   for the under-shoot case RRF exists to handle.
+    //
+    // Pre-PR the equivalent narrowing was structural (single page of
+    // 100 trimmed to limit), so this is not a fix-for-regression but a
+    // recall improvement on the same axis pagination opened up.
+    return accumulated
+  }
+
+  /**
+   * Apply the parent-DB filter and caller-provided property post-filters
+   * to a single raw page of `client.search` results. Pulled out of
+   * `fetchSemanticPages` so the paginating loop can run filters per
+   * page without re-inlining the predicate stack — a future filter
+   * extension lands in one place rather than two.
+   *
+   * Excludes archived rows. `client.search` ignores Notion's `archived`
+   * flag and returns archived pages alongside live ones; under the
+   * paginated loop, an archived memory pushed into the accumulator
+   * counts toward `limit` and can stop the loop before later live
+   * matches are fetched, so a caller can get fewer usable results than
+   * requested even though more non-archived memories exist on
+   * subsequent search pages. Mirror the client-side filter every other
+   * paginating walker applies (`findByTopicKey`, `listAllForBackfill`,
+   * `listForScan`, `fetchContainsPages`).
+   */
+  private applySemanticPostFilters(
+    pages: PageObjectResponse[],
+    input: SearchMemoriesInput,
+  ): PageObjectResponse[] {
     // Filter results to only pages in our Memories database. Notion SDK v5
     // returns two parent-type shapes depending on how the page was created /
     // what the workspace has since been upgraded to: classic `database_id`
     // parents, and data-source-backed `data_source_id` parents. Match either
-    // against our `DatabaseRef`.
-    const memoryPages = (response.results as PageObjectResponse[])
-      .filter((page) => {
-        if (!("parent" in page)) return false
-        const parent = page.parent
-        if (parent.type === "database_id") {
-          return parent.database_id === this.db.databaseId
-        }
-        if (parent.type === "data_source_id") {
-          return parent.data_source_id === this.db.dataSourceId
-        }
-        return false
-      })
-      // Drop archived rows before the property post-filters below so an
-      // archived row never costs a `Project`/`Topic`/`Tags` extraction it
-      // would be discarded for. Same posture as `MemoryService.list` and
-      // sibling DS-scoped paths — `archived` is page metadata, not a
-      // queryable property, so the post-filter is the only way to honor
-      // soft-deletes if the API ever returns them.
-      .filter((page) => !page.archived)
+    // against our `DatabaseRef`. Drop archived rows in the same pass —
+    // see the docstring above for why this matters under pagination.
+    let filtered = pages.filter((page) => {
+      if (!("parent" in page)) return false
+      if (page.archived) return false
+      const parent = page.parent
+      if (parent.type === "database_id") {
+        return parent.database_id === this.db.databaseId
+      }
+      if (parent.type === "data_source_id") {
+        return parent.data_source_id === this.db.dataSourceId
+      }
+      return false
+    })
 
     // Apply additional filters (project, topic, tags, kind, status). The
     // search API has no property-filter support, so these are post-filters.
-    let filtered = memoryPages
     if (input.projectId) {
       filtered = filtered.filter((page) => {
         const ids = extractRelationIds(page.properties["Project"])
@@ -3071,11 +3288,7 @@ export class MemoryService {
       )
     }
 
-    // Trim before returning so the caller only sees the top-`limit` rows
-    // semantic ranked. The final `slice(0, limit)` in `search()` is
-    // belt-and-braces; this trim keeps the merge in `searchByHybridPages`
-    // from carrying a 100-row tail into the dedupe loop.
-    return filtered.slice(0, input.limit ?? 10)
+    return filtered
   }
 
   /**

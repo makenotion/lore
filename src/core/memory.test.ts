@@ -14,6 +14,7 @@ import {
   computePromotionAdvisory,
   PROMOTE_BODY_LENGTH_THRESHOLD,
   PROMOTE_REVISION_THRESHOLD,
+  SEMANTIC_SEARCH_MAX_PAGES,
   type RrfEntry,
 } from "./memory.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
@@ -3009,6 +3010,440 @@ describe("MemoryService.search", () => {
     // The post-filter path goes through `client.search`, not `dataSources.query`.
     expect(searchSpy).toHaveBeenCalledTimes(1)
   })
+
+  it("semantic mode paginates client.search until the requested limit is satisfied", async () => {
+    // Issue #192: workspace-wide search returns relevance-ranked pages
+    // across the entire workspace; Lore filters those down to the
+    // Memories DS afterwards. When the first 100 raw hits are dominated
+    // by non-Lore pages, matching memories on the second page must
+    // still surface — single-page fetch silently starved them pre-fix.
+    //
+    // Setup: page 1 is all non-memory pages (filtered out client-side);
+    // page 2 carries the matching Lore memories. The caller asks for 2.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+    )
+    const page2 = [
+      buildSearchPage("mem-1", "Mem one"),
+      buildSearchPage("mem-2", "Mem two"),
+    ]
+    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
+      if (args["start_cursor"] === undefined) {
+        return { results: page1, has_more: true, next_cursor: "cursor-1" }
+      }
+      return { results: page2, has_more: false, next_cursor: null }
+    })
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
+
+    expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+    // First page primes pagination with no cursor; second page threads
+    // the `next_cursor` returned by the first.
+    expect(searchSpy.mock.calls[0][0]["start_cursor"]).toBeUndefined()
+    expect(searchSpy.mock.calls[1][0]["start_cursor"]).toBe("cursor-1")
+  })
+
+  it("semantic mode keeps paginating when client-side post-filters reject most of the first raw page", async () => {
+    // Acceptance criterion #2: project / kind / status post-filtering
+    // can still fill the requested limit when enough matches exist past
+    // the first raw page. Setup: page 1 has 100 memory-DB pages but all
+    // are kind=note; page 2 has 3 kind=decision rows. Caller asks for
+    // 2 decisions.
+    const note = (id: string): PageObjectResponse =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: `note ${id}` }] },
+          Kind: { type: "select", select: { name: "note" } },
+          Project: { type: "relation", relation: [] },
+          Topic: { type: "relation", relation: [] },
+        },
+        { id, parent: { type: "database_id", database_id: db.databaseId } },
+      )
+    const decision = (id: string): PageObjectResponse =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: `decision ${id}` }] },
+          Kind: { type: "select", select: { name: "decision" } },
+          Project: { type: "relation", relation: [] },
+          Topic: { type: "relation", relation: [] },
+        },
+        { id, parent: { type: "database_id", database_id: db.databaseId } },
+      )
+
+    const page1 = Array.from({ length: 100 }, (_, i) => note(`note-${i}`))
+    const page2 = [decision("dec-1"), decision("dec-2"), decision("dec-3")]
+
+    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
+      if (args["start_cursor"] === undefined) {
+        return { results: page1, has_more: true, next_cursor: "cursor-1" }
+      }
+      return { results: page2, has_more: false, next_cursor: null }
+    })
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({
+      query: "q",
+      limit: 2,
+      kind: "decision",
+      mode: "semantic",
+      includeContent: false,
+    })
+
+    expect(results.map((m) => m.id)).toEqual(["dec-1", "dec-2"])
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("semantic mode stops paginating once Notion reports has_more: false even without saturation", async () => {
+    // Exhaustion path: a workspace genuinely has fewer matching memories
+    // than the requested limit. The loop must exit at `has_more: false`
+    // without burning through the full scan cap.
+    const page1 = [buildSearchPage("mem-1", "Mem one")]
+    const searchSpy = vi.fn(async () => ({
+      results: page1,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 50, mode: "semantic" })
+
+    expect(results.map((m) => m.id)).toEqual(["mem-1"])
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("semantic mode bounds the scan at SEMANTIC_SEARCH_MAX_PAGES even when has_more keeps returning true", async () => {
+    // Acceptance criterion #3: the search path remains bounded by an
+    // explicit maximum number of search pages. Pathological case — a
+    // workspace where every page matches the query lexically but no
+    // page belongs to the Memories DS (every raw hit is filtered out).
+    // Without the cap, the loop would never terminate; with the cap, it
+    // exits after exactly `SEMANTIC_SEARCH_MAX_PAGES` calls and returns
+    // an empty result set.
+    const allOther = Array.from({ length: 100 }, (_, i) =>
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+    )
+    const searchSpy = vi.fn(async () => ({
+      results: allOther,
+      has_more: true,
+      next_cursor: "more",
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 10, mode: "semantic" })
+
+    expect(results).toEqual([])
+    expect(searchSpy).toHaveBeenCalledTimes(SEMANTIC_SEARCH_MAX_PAGES)
+  })
+
+  it("semantic mode treats next_cursor: null with has_more: true as exhaustion (defensive guard)", async () => {
+    // Notion's documented contract is that `next_cursor` is only null
+    // when `has_more` is false, but the SDK's response type permits
+    // `string | null` regardless. Ensure the loop terminates cleanly on
+    // the inconsistent shape rather than spinning on a `start_cursor:
+    // undefined` repeat (which Notion treats as "start from the
+    // beginning" — an infinite loop).
+    const page1 = [buildSearchPage("mem-1", "Mem one")]
+    const searchSpy = vi.fn(async () => ({
+      results: page1,
+      has_more: true,
+      next_cursor: null,
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 50, mode: "semantic" })
+
+    expect(results.map((m) => m.id)).toEqual(["mem-1"])
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("semantic mode dedupes across paginated pages so a cross-page-promoted row surfaces only once", async () => {
+    // Notion's `client.search` does NOT live-rerank between cursor
+    // steps (each call is a fresh workspace-wide query, not a slice of
+    // a frozen result set), so concurrent edits between the page-1 and
+    // page-2 fetches CAN promote the same memory across both pages.
+    // Pre-pagination this couldn't happen — single page meant single
+    // observation. Without dedup, hybrid's RRF accumulator
+    // double-credits the duplicated row (intra-branch double-credit
+    // inflates fused score) AND the semantic-only caller sees the same
+    // memory rendered twice (visible correctness bug). One Set guards
+    // both consumers.
+    const sharedMem = buildSearchPage("mem-shared", "shared")
+    const page1 = [sharedMem, ...Array.from({ length: 99 }, (_, i) =>
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+    )]
+    const page2 = [sharedMem, buildSearchPage("mem-2", "Mem two")]
+    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
+      if (args["start_cursor"] === undefined) {
+        return { results: page1, has_more: true, next_cursor: "cursor-1" }
+      }
+      return { results: page2, has_more: false, next_cursor: null }
+    })
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 5, mode: "semantic" })
+
+    // `mem-shared` appears exactly once even though raw pages observed
+    // it twice. `mem-2` follows.
+    expect(results.map((m) => m.id)).toEqual(["mem-shared", "mem-2"])
+  })
+
+  it("semantic mode does not fire a second client.search when the first page already saturates the limit", async () => {
+    // Saturation path: the first raw page already carries enough
+    // post-filtered Lore memories. Pagination must short-circuit before
+    // burning a second round-trip — otherwise rate-limit cost compounds
+    // on every common-case query.
+    const page1 = [
+      buildSearchPage("mem-1", "Mem one"),
+      buildSearchPage("mem-2", "Mem two"),
+      buildSearchPage("mem-3", "Mem three"),
+    ]
+    const searchSpy = vi.fn(async () => ({
+      results: page1,
+      has_more: true,
+      next_cursor: "cursor-1",
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
+
+    expect(results.map((m) => m.id)).toEqual(["mem-1", "mem-2"])
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("semantic mode excludes archived memory pages so they do not occupy result slots", async () => {
+    // `client.search` ignores Notion's `archived` flag. Under
+    // pagination, an archived memory pushed into the accumulator
+    // counts toward `limit` and can stop the loop before later live
+    // matches are fetched, so the caller would get fewer usable
+    // results than requested. Mirror the every-other-walker contract.
+    const archivedMem = buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: "archived" }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      },
+      {
+        id: "mem-archived",
+        archived: true,
+        parent: { type: "database_id", database_id: db.databaseId },
+      } as Partial<PageObjectResponse>,
+    )
+    const live1 = buildSearchPage("mem-live-1", "live one")
+    const live2 = buildSearchPage("mem-live-2", "live two")
+    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
+      if (args["start_cursor"] === undefined) {
+        // First page: archived row would saturate `limit: 2` if it
+        // counted, masking the live row on page 2.
+        return { results: [archivedMem, live1], has_more: true, next_cursor: "cursor-1" }
+      }
+      return { results: [live2], has_more: false, next_cursor: null }
+    })
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "q", limit: 2, mode: "semantic" })
+
+    // Archived row excluded; live rows fill the limit across both pages.
+    expect(results.map((m) => m.id)).toEqual(["mem-live-1", "mem-live-2"])
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("semantic mode returns the full pagination accumulator (no early limit trim) so hybrid RRF sees rows past `limit`", async () => {
+    // The under-shoot RRF case in `searchByHybridPages` benefits from a
+    // wider semantic pool: a row at semantic-rank 11 that ALSO appears
+    // in contains can plausibly beat a contains-only row via fused
+    // score — but ONLY if it survives long enough to reach the
+    // accumulator. A premature `slice(0, limit)` inside
+    // `fetchSemanticPages` silently nullifies that cross-branch signal.
+    //
+    // Regression pin: after the saturation gate breaks the loop,
+    // `fetchSemanticPages` must return EVERY accumulated post-filter
+    // survivor (up to `limit + page_size − 1`), not just the first
+    // `limit`. `runSearch`'s `pages.slice(0, limit)` is the
+    // authoritative final cap for the semantic-only path; hybrid
+    // consumes the wider pool.
+    const page1 = Array.from({ length: 50 }, (_, i) =>
+      buildSearchPage(`mem-${i}`, `Mem ${i}`),
+    )
+    const searchSpy = vi.fn(async () => ({
+      results: page1,
+      has_more: false,
+      next_cursor: null,
+    }))
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: retrieveMarkdownSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    // Spy on the public path. Cap at limit=10 — the semantic-only
+    // caller still sees 10 (runSearch trims), but we need a probe of
+    // the helper output to assert the wider pool. Use `searchWithExplain`
+    // and the indirect side effect — markdown is fetched only for the
+    // capped subset, so we can't probe pool width through there.
+    //
+    // Direct probe: call the private `fetchSemanticPages` via
+    // unknown-cast indirection. Established pattern in this file.
+    type FetchSemanticPagesFn = (
+      input: { query: string; limit?: number },
+      intent: string | null,
+    ) => Promise<PageObjectResponse[]>
+    const fetcher = (
+      service as unknown as { fetchSemanticPages: FetchSemanticPagesFn }
+    ).fetchSemanticPages.bind(service)
+
+    const pages = await fetcher({ query: "q", limit: 10 }, null)
+
+    // All 50 post-filter survivors flow through, not just the first 10.
+    expect(pages).toHaveLength(50)
+    expect(pages.slice(0, 3).map((p) => p.id)).toEqual(["mem-0", "mem-1", "mem-2"])
+    // The `limit + page_size − 1` upper bound holds: one full page of
+    // 100 in flight plus the saturation gate gives at most ~109 rows.
+    expect(pages.length).toBeLessThanOrEqual(109)
+  })
+
+  it("semantic mode logs a stderr signal under LORE_DEBUG=1 when the scan cap fires without saturating", async () => {
+    // Operator-triage signal: when the cap fires with
+    // `accumulated.length < limit`, a caller cannot distinguish "no
+    // matches in workspace" from "pathological query, cap fired,
+    // matches may exist past 500 rows." The `[lore]
+    // semantic-search-cap-fired:` line under LORE_DEBUG=1 closes the
+    // gap. Format mirrors `debugLogHybridBranchFailure`.
+    const allOther = Array.from({ length: 100 }, (_, i) =>
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+    )
+    const searchSpy = vi.fn(async () => ({
+      results: allOther,
+      has_more: true,
+      next_cursor: "more",
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      await service.search({ query: "q", limit: 10, mode: "semantic" })
+
+      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
+      const capLines = lines.filter((l) => l.includes("semantic-search-cap-fired"))
+      expect(capLines).toHaveLength(1)
+      expect(capLines[0]).toContain(`pages=${SEMANTIC_SEARCH_MAX_PAGES}`)
+      expect(capLines[0]).toContain("accumulated=0")
+      expect(capLines[0]).toContain("limit=10")
+      expect(capLines[0]).toContain("source=fetch-semantic-pages")
+      expect(capLines[0].endsWith("\n")).toBe(true)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+
+  it("semantic mode does NOT log the cap-fired signal under LORE_DEBUG=1 when the loop saturates", async () => {
+    // Saturation is the success path; logging here would be noise on
+    // every common-case query an operator runs with LORE_DEBUG=1 set.
+    const page1 = [buildSearchPage("mem-1", "Mem one"), buildSearchPage("mem-2", "Mem two")]
+    const searchSpy = vi.fn(async () => ({
+      results: page1,
+      has_more: true,
+      next_cursor: "cursor-1",
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      await service.search({ query: "q", limit: 2, mode: "semantic" })
+
+      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
+      expect(lines.some((l) => l.includes("semantic-search-cap-fired"))).toBe(false)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+
+  it("semantic mode does NOT log the cap-fired signal when LORE_DEBUG is unset", async () => {
+    // Without `LORE_DEBUG=1`, even a cap-fire stays silent — operators
+    // who don't opt in shouldn't see search internals on stderr.
+    const allOther = Array.from({ length: 100 }, (_, i) =>
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+    )
+    const searchSpy = vi.fn(async () => ({
+      results: allOther,
+      has_more: true,
+      next_cursor: "more",
+    }))
+    const client = {
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    delete process.env["LORE_DEBUG"]
+    try {
+      await service.search({ query: "q", limit: 10, mode: "semantic" })
+
+      const lines = stderrSpy.mock.calls.map((c) => String(c[0]))
+      expect(lines.some((l) => l.includes("semantic-search-cap-fired"))).toBe(false)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original !== undefined) process.env["LORE_DEBUG"] = original
+    }
+  })
 })
 
 describe("MemoryService.search — contains mode", () => {
@@ -3251,6 +3686,34 @@ describe("MemoryService.search — contains mode", () => {
         },
       ]),
     )
+  })
+
+  it("excludes archived rows that dataSources.query returns by default", async () => {
+    // Notion's `archived` flag lives on PageObjectResponse, NOT as a DB
+    // column, so `dataSources.query` returns archived rows alongside
+    // live ones. Without client-side exclusion, an archived row at the
+    // top of recency could occupy a result slot a live row would
+    // otherwise fill. Mirror the every-other-walker contract
+    // (`findByTopicKey`, `listAllForBackfill`, `listForScan`).
+    const live = buildContainsPage("c-live", "live row")
+    const archived = buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: "archived row" }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      },
+      {
+        id: "c-archived",
+        archived: true,
+        parent: { type: "data_source_id", data_source_id: db.dataSourceId },
+      } as Partial<PageObjectResponse>,
+    )
+    const { client } = makeQueryClient([archived, live])
+    const service = new MemoryService(client, db)
+
+    const results = await service.search({ query: "row", mode: "contains", includeContent: false })
+
+    expect(results.map((m) => m.id)).toEqual(["c-live"])
   })
 })
 
