@@ -27,10 +27,7 @@
  */
 
 import type { Client } from "@notionhq/client"
-import type {
-  PageObjectResponse,
-  QueryDataSourceParameters,
-} from "@notionhq/client"
+import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
 import type {
   CreateEntityInput,
   DatabaseRef,
@@ -48,6 +45,7 @@ import {
   extractSelect,
   extractRelationIds,
 } from "../notion/extractors.js"
+import { hydrateRelationProperties } from "../notion/relation-properties.js"
 import { LruCache } from "./cache.js"
 
 /**
@@ -204,7 +202,7 @@ export interface EntityQueryVariants {
 export function expandEntityQueryVariants(
   rawInput: string,
   entity: Pick<Entity, "name" | "aliases"> | null,
-  cap = ENTITY_QUERY_VARIANT_CAP,
+  cap = ENTITY_QUERY_VARIANT_CAP
 ): EntityQueryVariants {
   const trimmed = rawInput.trim()
   if (!trimmed) {
@@ -292,7 +290,7 @@ export class EntityService {
       }),
     })
 
-    const entity = this.pageToEntity(page as PageObjectResponse)
+    const entity = await this.pageToEntity(page as PageObjectResponse)
     // Drop any stale negative-lookup entry under either the name or any
     // alias key so the freshly-created row is reachable on the next
     // resolve.
@@ -303,7 +301,7 @@ export class EntityService {
 
   async getById(id: string): Promise<Entity> {
     const page = await this.client.pages.retrieve({ page_id: id })
-    return this.pageToEntity(page as PageObjectResponse)
+    return await this.pageToEntity(page as PageObjectResponse)
   }
 
   /**
@@ -322,13 +320,11 @@ export class EntityService {
         page_size: NOTION_MAX_PAGE_SIZE,
         start_cursor: cursor,
       })
-      results.push(
-        ...(response.results.filter(isFullPage) as PageObjectResponse[])
-      )
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToEntity(p))
+    return Promise.all(results.map((p) => this.pageToEntity(p)))
   }
 
   /**
@@ -383,9 +379,11 @@ export class EntityService {
             start_cursor: cursor,
           })
           pagesFetched += 1
-          const fallbackPages = fallback.results.filter(isFullPage) as PageObjectResponse[]
+          const fallbackPages = fallback.results.filter(
+            isFullPage
+          ) as PageObjectResponse[]
           for (const page of fallbackPages) {
-            const entity = this.pageToEntity(page)
+            const entity = await this.pageToEntity(page)
             if (normalizeEntityKey(entity.name) === key) return entity
           }
           if (!fallback.has_more || pagesFetched >= NAME_LOOKUP_MAX_PAGES) {
@@ -395,7 +393,7 @@ export class EntityService {
         }
       }
 
-      return this.pageToEntity(pages[0])
+      return await this.pageToEntity(pages[0])
     })
   }
 
@@ -436,7 +434,7 @@ export class EntityService {
       pagesFetched += 1
       const pages = response.results.filter(isFullPage) as PageObjectResponse[]
       for (const page of pages) {
-        const entity = this.pageToEntity(page)
+        const entity = await this.pageToEntity(page)
         if (entity.aliases.some((a) => normalizeEntityKey(a) === key)) {
           matches.push(entity)
         }
@@ -528,7 +526,7 @@ export class EntityService {
       // Notion returned first), then by id as a tiebreaker.
       const sorted = [...byAlias].sort((a, b) => {
         const keyDiff = normalizeEntityKey(a.name).localeCompare(
-          normalizeEntityKey(b.name),
+          normalizeEntityKey(b.name)
         )
         if (keyDiff !== 0) return keyDiff
         return a.id.localeCompare(b.id)
@@ -571,9 +569,7 @@ export class EntityService {
    */
   async addAliases(id: string, aliases: string[]): Promise<Entity> {
     const existing = await this.getById(id)
-    const existingKeys = new Set(
-      existing.aliases.map((a) => normalizeEntityKey(a))
-    )
+    const existingKeys = new Set(existing.aliases.map((a) => normalizeEntityKey(a)))
     const newAliases = aliases.filter(
       (a) => a.trim().length > 0 && !existingKeys.has(normalizeEntityKey(a))
     )
@@ -692,7 +688,8 @@ export class EntityService {
     }
   }
 
-  private pageToEntity(page: PageObjectResponse): Entity {
+  private async pageToEntity(page: PageObjectResponse): Promise<Entity> {
+    page = await hydrateRelationProperties(this.client, page, ["Project"])
     const props = page.properties
     const rawKind = extractSelect(props["Kind"], "")
     const kind = (ENTITY_KINDS as string[]).includes(rawKind)

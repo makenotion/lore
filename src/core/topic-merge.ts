@@ -14,13 +14,10 @@
 import type { Client } from "@notionhq/client"
 import type { CreatePageParameters, PageObjectResponse } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
-import {
-  isFullPage,
-  extractTitle,
-  extractRelationIds,
-} from "../notion/extractors.js"
+import { isFullPage, extractTitle, extractRelationIds } from "../notion/extractors.js"
 import { buildTopicProps } from "../notion/schema.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
+import { hydrateRelationPropertiesForPages } from "../notion/relation-properties.js"
 import { normalizeTopicNameForLookup } from "./topic-normalize.js"
 
 /** One duplicate-name group detected in the Topics DB. */
@@ -83,7 +80,7 @@ export async function findDuplicateTopicNames(
       const name = extractTitle(page.properties["Name"])
       if (name.length > 0) allTopics.push({ id: page.id, name })
     }
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   const byName = new Map<string, string[]>()
@@ -129,7 +126,7 @@ async function scanTopicNames(
         decodedName: decodeTextEntities(rawName),
       })
     }
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   return snapshot
@@ -333,10 +330,10 @@ async function listTopicPagesByName(
       start_cursor: cursor,
     })
     results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
-  return results
+  return hydrateRelationPropertiesForPages(client, results, ["Project"])
 }
 
 async function listMemoryIdsByTopic(
@@ -360,7 +357,7 @@ async function listMemoryIdsByTopic(
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
       ids.push(page.id)
     }
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   return ids
@@ -445,10 +442,8 @@ export async function findSimilarTopicGroups(
       start_cursor: cursor,
       page_size: 100,
     })
-    allTopics.push(
-      ...(response.results.filter(isFullPage) as PageObjectResponse[])
-    )
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    allTopics.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   const byKey = new Map<string, PageObjectResponse[]>()
@@ -466,9 +461,7 @@ export async function findSimilarTopicGroups(
   for (const [normalizedKey, pages] of byKey.entries()) {
     if (pages.length < 2) continue
 
-    const distinctNames = new Set(
-      pages.map((p) => extractTitle(p.properties["Name"]))
-    )
+    const distinctNames = new Set(pages.map((p) => extractTitle(p.properties["Name"])))
     // Pure exact-name duplicates surface via `findDuplicateTopicNames`;
     // here we want only groups where stored names actually differ.
     if (distinctNames.size < 2) continue
@@ -491,9 +484,7 @@ export async function findSimilarTopicGroups(
     })
   }
 
-  return groups.sort((a, b) =>
-    a.normalizedKey.localeCompare(b.normalizedKey)
-  )
+  return groups.sort((a, b) => a.normalizedKey.localeCompare(b.normalizedKey))
 }
 
 /**
@@ -542,12 +533,13 @@ async function mergeOneSimilarGroup(
   // state — the scan that produced `group` may be minutes old by the
   // time the operator confirms the apply pass.
   const allIds = [group.canonicalId, ...group.siblingIds]
-  const pages: PageObjectResponse[] = []
+  const fetchedPages: PageObjectResponse[] = []
   for (const id of allIds) {
     const page = (await client.pages.retrieve({ page_id: id })) as PageObjectResponse
     if (page.archived) continue
-    pages.push(page)
+    fetchedPages.push(page)
   }
+  const pages = await hydrateRelationPropertiesForPages(client, fetchedPages, ["Project"])
 
   const canonical = pages.find((p) => p.id === group.canonicalId)
   if (!canonical) {
@@ -682,9 +674,7 @@ export interface TopicAliasMergeResult {
  * - the same alias listed in two plans with different canonicals
  * - a canonical in one plan appearing as an alias in another
  */
-export function validateTopicAliasMergePlans(
-  plans: TopicAliasMergePlan[]
-): void {
+export function validateTopicAliasMergePlans(plans: TopicAliasMergePlan[]): void {
   const canonicals = new Set<string>()
   const aliasOwner = new Map<string, string>()
 
@@ -716,9 +706,7 @@ export function validateTopicAliasMergePlans(
         )
       }
       if (seenInPlan.has(alias)) {
-        throw new Error(
-          `Alias "${alias}" listed twice in the plan for "${canonical}".`
-        )
+        throw new Error(`Alias "${alias}" listed twice in the plan for "${canonical}".`)
       }
       seenInPlan.add(alias)
 
@@ -860,9 +848,7 @@ async function mergeOneAliasPlan(
     const canonicalProjectIds = extractRelationIds(
       existingCanonical.properties["Project"]
     )
-    const missing = unionProjectIds.filter(
-      (id) => !canonicalProjectIds.includes(id)
-    )
+    const missing = unionProjectIds.filter((id) => !canonicalProjectIds.includes(id))
     if (missing.length > 0 && !options.dryRun) {
       await client.pages.update({
         page_id: existingCanonical.id,

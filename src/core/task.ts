@@ -49,7 +49,7 @@ import {
   LIVE_PAGE_REFILL_MAX_ROWS,
   warnLivePageCapFired,
 } from "../notion/live-pages.js"
-import { pageToMemory } from "./memory.js"
+import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 
 /**
  * Single rule for every empty-able optional task field: **empty string
@@ -100,7 +100,7 @@ export class TaskCreatePartialFailureError extends Error {
       cleanedUp: boolean
       bodyWriteError: unknown
       cleanupError?: unknown
-    },
+    }
   ) {
     super(message)
     this.name = "TaskCreatePartialFailureError"
@@ -208,9 +208,7 @@ export class TaskService {
           : `Task create partial failure: the task row was ` +
             `created (page ${page.id}) but the description write failed: ${cause}. ` +
             `The cleanup archive ALSO failed (${
-              cleanupError instanceof Error
-                ? cleanupError.message
-                : String(cleanupError)
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
             }); the orphan task row remains live in the vault. Archive it ` +
             `manually before retrying to avoid a duplicate row.`
         throw new TaskCreatePartialFailureError(message, {
@@ -223,7 +221,7 @@ export class TaskService {
     }
 
     return pageToMemory(
-      page as PageObjectResponse,
+      await hydrateMemoryRelationProperties(this.client, page as PageObjectResponse),
       description ?? ""
     ) as Task
   }
@@ -239,7 +237,10 @@ export class TaskService {
       this.client.pages.retrieve({ page_id: id }),
       this.client.pages.retrieveMarkdown({ page_id: id }),
     ])
-    const memory = pageToMemory(page as PageObjectResponse, md.markdown)
+    const memory = pageToMemory(
+      await hydrateMemoryRelationProperties(this.client, page as PageObjectResponse),
+      md.markdown
+    )
     if (memory.kind !== "task") {
       throw new Error(
         `Memory ${id} is not a task (kind: ${memory.kind}). ` +
@@ -365,7 +366,9 @@ export class TaskService {
     })
 
     return {
-      items: result.pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task)),
+      items: await Promise.all(
+        result.pages.map((page) => pageToTaskSummary(this.client, page))
+      ),
       nextCursor: result.nextCursor,
       capped: result.capped,
     }
@@ -522,10 +525,7 @@ export class TaskService {
    * clock time elapsed between them, which makes status tests flap on
    * clock skew.
    */
-  async countActive(opts: {
-    projectId?: string
-    today: string
-  }): Promise<{
+  async countActive(opts: { projectId?: string; today: string }): Promise<{
     total: number
     overdue: number
     stale: number
@@ -593,7 +593,7 @@ export class TaskService {
    */
   async countClosedSince(
     date: string,
-    opts?: { projectId?: string },
+    opts?: { projectId?: string }
   ): Promise<number | null> {
     try {
       let total = 0
@@ -618,9 +618,7 @@ export class TaskService {
         })
         total += response.results.filter(isLiveFullPage).length
         cursor =
-          response.has_more && response.next_cursor
-            ? response.next_cursor
-            : undefined
+          response.has_more && response.next_cursor ? response.next_cursor : undefined
       } while (cursor)
       return total
     } catch (err) {
@@ -686,10 +684,20 @@ export class TaskService {
     }
 
     return {
-      items: result.pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task)),
+      items: await Promise.all(
+        result.pages.map((page) => pageToTaskSummary(this.client, page))
+      ),
       capped: result.capped,
     }
   }
+}
+
+async function pageToTaskSummary(
+  client: Client,
+  page: PageObjectResponse
+): Promise<TaskSummary> {
+  const hydrated = await hydrateMemoryRelationProperties(client, page)
+  return toTaskSummary(pageToMemory(hydrated, "") as Task)
 }
 
 function toTaskSummary(task: Task): TaskSummary {
@@ -796,7 +804,9 @@ export function todayUtc(): string {
 function parseTodayMs(today: string, caller: string): number {
   const todayMs = new Date(today).getTime()
   if (Number.isNaN(todayMs)) {
-    throw new RangeError(`${caller}: invalid today value "${today}" — expected YYYY-MM-DD`)
+    throw new RangeError(
+      `${caller}: invalid today value "${today}" — expected YYYY-MM-DD`
+    )
   }
   return todayMs
 }
@@ -825,9 +835,7 @@ export async function taskStats(
   // would cover 31 inclusive days and silently inflate the rate against
   // the `N / 30` divisor by ~3.3% — the label reads "Closed last 30 days"
   // verbatim, so the math must match.
-  const windowStart = new Date(todayMs - 29 * 86_400_000)
-    .toISOString()
-    .split("T")[0]!
+  const windowStart = new Date(todayMs - 29 * 86_400_000).toISOString().split("T")[0]!
   const [active, closedLast30Days] = await Promise.all([
     service.countActive({ projectId: opts.projectId, today: opts.today }),
     service.countClosedSince(windowStart, { projectId: opts.projectId }),
@@ -888,7 +896,7 @@ export function formatTaskSummary(report: TaskStats): string[] {
     // future prefix change.
     const indent = " ".repeat(TASKS_PREFIX.length)
     lines.push(
-      `${indent}Closed last 30 days: ${report.closedLast30Days} (rate: ${rate}/day)`,
+      `${indent}Closed last 30 days: ${report.closedLast30Days} (rate: ${rate}/day)`
     )
   }
   return lines

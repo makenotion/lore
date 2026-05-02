@@ -21,6 +21,7 @@ import {
   extractRichText,
   extractRelationIds,
 } from "../notion/extractors.js"
+import { hydrateRelationProperties } from "../notion/relation-properties.js"
 import { LruCache } from "./cache.js"
 import { normalizeTopicNameForLookup } from "./topic-normalize.js"
 import { trigramJaccard } from "./similarity.js"
@@ -75,10 +76,7 @@ export class SimilarTopicError extends Error {
 
   constructor(attempted: string, candidates: SimilarTopicCandidate[]) {
     const lines = candidates
-      .map(
-        (c) =>
-          `  - "${c.name}" (similarity ${c.similarity.toFixed(2)}, id: ${c.id})`
-      )
+      .map((c) => `  - "${c.name}" (similarity ${c.similarity.toFixed(2)}, id: ${c.id})`)
       .join("\n")
     super(
       `Topic "${attempted}" looks similar to ${candidates.length} existing topic${candidates.length === 1 ? "" : "s"} in this project:\n` +
@@ -125,12 +123,12 @@ export class TopicService {
     // can't mask the newly created topic inside the same TTL window.
     // Key on the decoded name so we evict whatever `findByName` cached.
     this.nameCache.delete(name)
-    return this.pageToTopic(page as PageObjectResponse)
+    return await this.pageToTopic(page as PageObjectResponse)
   }
 
   async getById(id: string): Promise<Topic> {
     const page = await this.client.pages.retrieve({ page_id: id })
-    return this.pageToTopic(page as PageObjectResponse)
+    return await this.pageToTopic(page as PageObjectResponse)
   }
 
   async listByProject(projectId: string): Promise<Topic[]> {
@@ -148,10 +146,10 @@ export class TopicService {
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToTopic(p))
+    return Promise.all(results.map((p) => this.pageToTopic(p)))
   }
 
   /**
@@ -175,10 +173,10 @@ export class TopicService {
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    return results.map((p) => this.pageToTopic(p))
+    return Promise.all(results.map((p) => this.pageToTopic(p)))
   }
 
   /**
@@ -232,7 +230,7 @@ export class TopicService {
         )
       }
 
-      return this.pageToTopic(pages[0])
+      return await this.pageToTopic(pages[0])
     }
 
     if (projectId) return fetch()
@@ -421,7 +419,8 @@ export class TopicService {
     this.nameCache.clear()
   }
 
-  private pageToTopic(page: PageObjectResponse): Topic {
+  private async pageToTopic(page: PageObjectResponse): Promise<Topic> {
+    page = await hydrateRelationProperties(this.client, page, ["Project"])
     const props = page.properties
     return {
       id: page.id,

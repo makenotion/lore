@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
-import type { Client, PageObjectResponse } from "@notionhq/client"
+import type {
+  Client,
+  GetPagePropertyResponse,
+  PageObjectResponse,
+} from "@notionhq/client"
 import {
   findDuplicateTopicNames,
   findEncodedTopicNames,
@@ -18,6 +22,8 @@ function topicPage(
   opts: {
     name: string
     projectIds?: string[]
+    projectHasMore?: boolean
+    projectPropertyId?: string
     createdAt?: string
   }
 ): PageObjectResponse {
@@ -35,8 +41,10 @@ function topicPage(
         title: [{ plain_text: opts.name }],
       } as unknown,
       Project: {
+        id: opts.projectPropertyId ?? "project",
         type: "relation",
         relation: (opts.projectIds ?? []).map((pid) => ({ id: pid })),
+        has_more: opts.projectHasMore,
       } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
@@ -60,6 +68,27 @@ function memoryPage(id: string, topicId: string): PageObjectResponse {
   } as PageObjectResponse
 }
 
+function relationPropertyResponse(ids: string[]): GetPagePropertyResponse {
+  return {
+    object: "list",
+    type: "property_item",
+    property_item: {
+      id: "project",
+      type: "relation",
+      relation: {},
+      next_url: null,
+    },
+    results: ids.map((id) => ({
+      object: "property_item",
+      id: "project",
+      type: "relation",
+      relation: { id },
+    })),
+    has_more: false,
+    next_cursor: null,
+  } as GetPagePropertyResponse
+}
+
 const TOPICS_DB: DatabaseRef = {
   databaseId: "topics-db-id",
   dataSourceId: "topics-ds-id",
@@ -70,9 +99,16 @@ const MEMORIES_DB: DatabaseRef = {
   dataSourceId: "memories-ds-id",
 }
 
-function createMockClient(opts: {
-  queryResponses?: Array<{ results: PageObjectResponse[]; has_more?: boolean; next_cursor?: string | null }>
-} = {}) {
+function createMockClient(
+  opts: {
+    queryResponses?: Array<{
+      results: PageObjectResponse[]
+      has_more?: boolean
+      next_cursor?: string | null
+    }>
+    propertyRetrieveResponses?: GetPagePropertyResponse[]
+  } = {}
+) {
   const queryMock = vi.fn()
   const responses = opts.queryResponses ?? []
   for (const r of responses) {
@@ -98,11 +134,17 @@ function createMockClient(opts: {
     parent: { type: "database_id", database_id: "topics-db" },
     properties: {},
   }))
+  const propertyRetrieveMock = vi.fn()
+  for (const r of opts.propertyRetrieveResponses ?? []) {
+    propertyRetrieveMock.mockResolvedValueOnce(r)
+  }
+  propertyRetrieveMock.mockResolvedValue(relationPropertyResponse([]))
 
   return {
     pages: {
       update: vi.fn().mockResolvedValue({}),
       create: createMock,
+      properties: { retrieve: propertyRetrieveMock },
     },
     dataSources: {
       query: queryMock,
@@ -111,6 +153,7 @@ function createMockClient(opts: {
     pages: {
       update: ReturnType<typeof vi.fn>
       create: ReturnType<typeof vi.fn>
+      properties: { retrieve: ReturnType<typeof vi.fn> }
     }
     dataSources: { query: ReturnType<typeof vi.fn> }
   }
@@ -214,10 +257,7 @@ describe("findDuplicateTopicNames", () => {
     const client = createMockClient({
       queryResponses: [
         {
-          results: [
-            topicPage("t1", { name: "auth" }),
-            topicPage("t2", { name: "auth" }),
-          ],
+          results: [topicPage("t1", { name: "auth" }), topicPage("t2", { name: "auth" })],
           has_more: false,
           next_cursor: "stale-cursor",
         },
@@ -584,9 +624,7 @@ describe("findEncodedTopicNames", () => {
 describe("fixTopicEncoding", () => {
   it("is a no-op on a clean vault", async () => {
     const client = createMockClient({
-      queryResponses: [
-        { results: [topicPage("t1", { name: "auth" })] },
-      ],
+      queryResponses: [{ results: [topicPage("t1", { name: "auth" })] }],
     })
 
     const results = await fixTopicEncoding(client, TOPICS_DB)
@@ -808,31 +846,25 @@ describe("validateTopicAliasMergePlans", () => {
 
   it("rejects empty alias", () => {
     expect(() =>
-      validateTopicAliasMergePlans([
-        { canonical: "A", aliases: ["valid", ""] },
-      ])
+      validateTopicAliasMergePlans([{ canonical: "A", aliases: ["valid", ""] }])
     ).toThrow(/empty alias/i)
   })
 
   it("rejects missing aliases", () => {
-    expect(() =>
-      validateTopicAliasMergePlans([{ canonical: "A", aliases: [] }])
-    ).toThrow(/no aliases/i)
+    expect(() => validateTopicAliasMergePlans([{ canonical: "A", aliases: [] }])).toThrow(
+      /no aliases/i
+    )
   })
 
   it("rejects alias equal to canonical", () => {
     expect(() =>
-      validateTopicAliasMergePlans([
-        { canonical: "MCP", aliases: ["MCP"] },
-      ])
+      validateTopicAliasMergePlans([{ canonical: "MCP", aliases: ["MCP"] }])
     ).toThrow(/equals its canonical/i)
   })
 
   it("rejects duplicate alias in the same plan", () => {
     expect(() =>
-      validateTopicAliasMergePlans([
-        { canonical: "A", aliases: ["dup", "dup"] },
-      ])
+      validateTopicAliasMergePlans([{ canonical: "A", aliases: ["dup", "dup"] }])
     ).toThrow(/listed twice/i)
   })
 
@@ -1058,10 +1090,7 @@ describe("mergeTopicsByAliasPlans", () => {
     const client = createMockClient({
       queryResponses: [
         {
-          results: [
-            topicPage("t1", { name: "MCP" }),
-            topicPage("t2", { name: "MCP" }),
-          ],
+          results: [topicPage("t1", { name: "MCP" }), topicPage("t2", { name: "MCP" })],
         },
       ],
     })
@@ -1310,21 +1339,18 @@ describe("mergeSimilarTopics", () => {
       queryResponses: [{ results: [t1, t2] }],
     })
     // pages.retrieve returns the same rows for the apply-time refetch.
-    ;(client.pages as unknown as { retrieve: ReturnType<typeof vi.fn> }).retrieve =
-      vi.fn().mockImplementation(async ({ page_id }: { page_id: string }) => {
+    ;(client.pages as unknown as { retrieve: ReturnType<typeof vi.fn> }).retrieve = vi
+      .fn()
+      .mockImplementation(async ({ page_id }: { page_id: string }) => {
         if (page_id === "t1") return t1
         if (page_id === "t2") return t2
         throw new Error(`unexpected retrieve: ${page_id}`)
       })
 
     const groups = await findSimilarTopicGroups(client, TOPICS_DB)
-    const results = await mergeSimilarTopics(
-      client,
-      TOPICS_DB,
-      MEMORIES_DB,
-      groups,
-      { dryRun: true }
-    )
+    const results = await mergeSimilarTopics(client, TOPICS_DB, MEMORIES_DB, groups, {
+      dryRun: true,
+    })
 
     expect(results).toHaveLength(1)
     expect(results[0].canonicalId).toBe("t1")
@@ -1377,13 +1403,9 @@ describe("mergeSimilarTopics", () => {
     }
 
     const groups = await findSimilarTopicGroups(client, TOPICS_DB)
-    const results = await mergeSimilarTopics(
-      client,
-      TOPICS_DB,
-      MEMORIES_DB,
-      groups,
-      { dryRun: false }
-    )
+    const results = await mergeSimilarTopics(client, TOPICS_DB, MEMORIES_DB, groups, {
+      dryRun: false,
+    })
 
     expect(results).toHaveLength(1)
     expect(results[0].canonicalProjectIds).toEqual(["p1", "p2"])
@@ -1393,6 +1415,57 @@ describe("mergeSimilarTopics", () => {
     // Writes: 1 to extend canonical's projects, 2 to re-point memories,
     // 1 to archive sibling — 4 update calls total.
     expect(client.pages.update).toHaveBeenCalledTimes(4)
+  })
+
+  it("hydrates truncated project relations before unioning similar topics", async () => {
+    const t1 = topicPage("t1", {
+      name: "Evals & Testing",
+      projectIds: ["p1"],
+      projectHasMore: true,
+      createdAt: "2026-04-20T10:00:00.000Z",
+    })
+    const t2 = topicPage("t2", {
+      name: "Eval & Testing",
+      projectIds: ["p2"],
+      projectHasMore: true,
+      createdAt: "2026-04-21T10:00:00.000Z",
+    })
+
+    const client = createMockClient({
+      queryResponses: [
+        // findSimilarTopicGroups initial scan
+        { results: [t1, t2] },
+        // listMemoryIdsByTopic for sibling t2
+        { results: [] },
+      ],
+      propertyRetrieveResponses: [
+        relationPropertyResponse(["p1", "p3"]),
+        relationPropertyResponse(["p2", "p4"]),
+      ],
+    })
+    ;(client.pages as unknown as { retrieve: ReturnType<typeof vi.fn> }).retrieve = vi
+      .fn()
+      .mockImplementation(async ({ page_id }: { page_id: string }) => {
+        if (page_id === "t1") return t1
+        if (page_id === "t2") return t2
+        throw new Error(`unexpected retrieve: ${page_id}`)
+      })
+
+    const groups = await findSimilarTopicGroups(client, TOPICS_DB)
+    const results = await mergeSimilarTopics(client, TOPICS_DB, MEMORIES_DB, groups, {
+      dryRun: false,
+    })
+
+    expect(results[0].canonicalProjectIds).toEqual(["p1", "p3", "p2", "p4"])
+    expect(client.pages.properties.retrieve).toHaveBeenCalledTimes(2)
+    expect(client.pages.update).toHaveBeenNthCalledWith(1, {
+      page_id: "t1",
+      properties: {
+        Project: {
+          relation: [{ id: "p1" }, { id: "p3" }, { id: "p2" }, { id: "p4" }],
+        },
+      },
+    })
   })
 
   it("is idempotent — a second scan after apply finds no groups", async () => {
@@ -1409,4 +1482,3 @@ describe("mergeSimilarTopics", () => {
     expect(groups).toEqual([])
   })
 })
-

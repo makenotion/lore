@@ -11,13 +11,14 @@ No domain logic lives here -- that belongs in `src/core/`.
 
 ## Files
 
-| File            | Responsibility                                                            |
-| --------------- | ------------------------------------------------------------------------- |
-| `client.ts`     | Creates a configured `Client` instance with custom timeout and User-Agent |
-| `rate-limit.ts` | Proxy wrapper that caps outbound concurrency via `p-limit`                |
-| `schema.ts`     | Database property definitions + page property builder functions           |
-| `extractors.ts` | Type-safe property value extractors for `PageObjectResponse`              |
-| `setup.ts`      | Creates and verifies the four-database vault structure                    |
+| File                     | Responsibility                                                            |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `client.ts`              | Creates a configured `Client` instance with custom timeout and User-Agent |
+| `rate-limit.ts`          | Proxy wrapper that caps outbound concurrency via `p-limit`                |
+| `schema.ts`              | Database property definitions + page property builder functions           |
+| `extractors.ts`          | Type-safe property value extractors for `PageObjectResponse`              |
+| `relation-properties.ts` | Paginates relation property values when page responses are truncated      |
+| `setup.ts`               | Creates and verifies the four-database vault structure                    |
 
 ## Notion SDK v5.x Specifics
 
@@ -136,6 +137,13 @@ property access logic.
 | `extractMultiSelect(prop)`      | `multi_select`      | `string[]`       |
 | `extractRelationIds(prop)`      | `relation`          | `string[]`       |
 | `extractDate(prop)`             | `date`              | `string \| null` |
+
+`extractRelationIds()` is intentionally synchronous and only reads IDs already
+present on a page response. When a relation property has `has_more: true`, use
+`hydrateRelationProperties()` from `relation-properties.ts` before mapping the
+page into a domain type. Batch hydration is concurrency-limited to mirror the
+Notion client rate-limit gate; avoid bypassing it with ad hoc `Promise.all`
+loops around `pages.properties.retrieve`.
 
 The `isFullPage()` type guard narrows `QueryDataSourceResponse` results to
 `PageObjectResponse` before extraction.
@@ -283,7 +291,7 @@ nested method saves the next regression.
 
 **When the new path lands in a hot fan-out** (a paginated walk, a
 batch-fetch helper that issues many calls to the same SDK method),
-add a *pacing* test alongside the *concurrency* test — the existing
+add a _pacing_ test alongside the _concurrency_ test — the existing
 "caps concurrency on top-level client methods" tests use the
 `RATE_GATE_DISABLED` options bag to bypass pacing for clean cap
 assertions, so a fan-out path that should respect rps needs its own

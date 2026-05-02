@@ -35,7 +35,7 @@ import {
   warnLivePageCapFired,
 } from "../notion/live-pages.js"
 import { isFullPage, isLiveFullPage } from "../notion/extractors.js"
-import { pageToMemory } from "./memory.js"
+import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
 
 /** Days to push `Review By` forward when `reviewCompleted` is called with no explicit date. */
@@ -67,10 +67,7 @@ type DecisionStructuralField =
 
 type RequiredDecisionTextField = "decision" | "rationale"
 type DecisionTextField = Exclude<keyof CreateDecisionInput, DecisionStructuralField>
-type OptionalDecisionTextField = Exclude<
-  DecisionTextField,
-  RequiredDecisionTextField
->
+type OptionalDecisionTextField = Exclude<DecisionTextField, RequiredDecisionTextField>
 type DecodedDecisionTextFields = Record<RequiredDecisionTextField, string> & {
   [K in OptionalDecisionTextField]: string | undefined
 }
@@ -231,7 +228,7 @@ export class DecisionService {
     // The page we just created is guaranteed to have `Kind = decision` because
     // we set it explicitly above — the cast is safe by construction.
     const decision = pageToMemory(
-      page as PageObjectResponse,
+      await hydrateMemoryRelationProperties(this.client, page as PageObjectResponse),
       decoded.rationale
     ) as Decision
     // A fresh id is unlikely to collide with a cached entry, but a
@@ -259,7 +256,10 @@ export class DecisionService {
         throw new Error(`Decision ${id} could not be loaded as a full Notion page.`)
       }
       const md = await this.client.pages.retrieveMarkdown({ page_id: id })
-      const memory = pageToMemory(page, md.markdown)
+      const memory = pageToMemory(
+        await hydrateMemoryRelationProperties(this.client, page),
+        md.markdown
+      )
       if (memory.kind !== "decision") {
         throw new Error(
           `Memory ${id} is not a decision (kind: ${memory.kind}). ` +
@@ -334,8 +334,8 @@ export class DecisionService {
     })
 
     return {
-      items: result.pages.map((page) =>
-        toDecisionSummary(pageToMemory(page, "") as Decision),
+      items: await Promise.all(
+        result.pages.map((page) => pageToDecisionSummary(this.client, page))
       ),
       nextCursor: result.nextCursor,
       capped: result.capped,
@@ -412,7 +412,8 @@ export class DecisionService {
    * date if provided, otherwise 90 days from today.
    */
   async reviewCompleted(id: string, newReviewBy?: string): Promise<void> {
-    const reviewDate = newReviewBy ?? addDaysISO(new Date(), DEFAULT_REVIEW_EXTENSION_DAYS)
+    const reviewDate =
+      newReviewBy ?? addDaysISO(new Date(), DEFAULT_REVIEW_EXTENSION_DAYS)
     await this.client.pages.update({
       page_id: id,
       properties: {
@@ -482,8 +483,8 @@ export class DecisionService {
     }
 
     return {
-      items: result.pages.map((page) =>
-        toDecisionSummary(pageToMemory(page, "") as Decision),
+      items: await Promise.all(
+        result.pages.map((page) => pageToDecisionSummary(this.client, page))
       ),
       capped: result.capped,
     }
@@ -504,6 +505,14 @@ function addDaysISO(base: Date, days: number): string {
   const next = new Date(base)
   next.setDate(next.getDate() + days)
   return next.toISOString().split("T")[0]
+}
+
+async function pageToDecisionSummary(
+  client: Client,
+  page: PageObjectResponse
+): Promise<DecisionSummary> {
+  const hydrated = await hydrateMemoryRelationProperties(client, page)
+  return toDecisionSummary(pageToMemory(hydrated, "") as Decision)
 }
 
 function toDecisionSummary(decision: Decision): DecisionSummary {

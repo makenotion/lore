@@ -45,14 +45,8 @@ import {
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
-import {
-  fixMemoryEncoding,
-  type MemoryEncodingReport,
-} from "./memory-encoding.js"
-import {
-  normalizeAgents,
-  type AgentNormalizationReport,
-} from "./agent-normalization.js"
+import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
+import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
 import {
   backfillSynopses,
   type BackfillOptions,
@@ -79,6 +73,10 @@ import {
   extractNumber,
 } from "../notion/extractors.js"
 import { collectLivePages, warnLivePageCapFired } from "../notion/live-pages.js"
+import {
+  hydrateRelationProperties,
+  hydrateRelationPropertiesForPages,
+} from "../notion/relation-properties.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  *  30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -98,6 +96,28 @@ const TITLE_CACHE_TTL_MS = 60_000
  * the second Notion round-trip.
  */
 export const HYBRID_FALLBACK_THRESHOLD = 3
+
+const MEMORY_RELATION_PROPERTIES = [
+  "Project",
+  "Topic",
+  "Supersedes",
+  "Affects",
+  "Compared With",
+] as const
+
+export async function hydrateMemoryRelationProperties(
+  client: Client,
+  page: PageObjectResponse
+): Promise<PageObjectResponse> {
+  return hydrateRelationProperties(client, page, MEMORY_RELATION_PROPERTIES)
+}
+
+export async function hydrateMemoryRelationPropertiesForPages(
+  client: Client,
+  pages: readonly PageObjectResponse[]
+): Promise<PageObjectResponse[]> {
+  return hydrateRelationPropertiesForPages(client, pages, MEMORY_RELATION_PROPERTIES)
+}
 
 /**
  * Maximum number of `client.search()` pages `fetchSemanticPages` is
@@ -261,11 +281,11 @@ export function tieBreakingRrfCompare(a: RrfEntry, b: RrfEntry): number {
  */
 function rerankByConfidence(
   pages: PageObjectResponse[],
-  branchKind: "contains" | "semantic",
+  branchKind: "contains" | "semantic"
 ): PageObjectResponse[] {
   if (pages.length === 0) return pages
   const allUnscored = pages.every(
-    (page) => extractNumber(page.properties["Confidence Score"]) === null,
+    (page) => extractNumber(page.properties["Confidence Score"]) === null
   )
   if (allUnscored) return pages
   return pages
@@ -327,11 +347,11 @@ function rejectionToLogLine(reason: unknown): string {
  */
 function debugLogHybridBranchFailure(
   branch: "contains" | "semantic",
-  reason: unknown,
+  reason: unknown
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
-    `[lore] partial-failure: branch=${branch} error=${rejectionToLogLine(reason)} source=hybrid-search\n`,
+    `[lore] partial-failure: branch=${branch} error=${rejectionToLogLine(reason)} source=hybrid-search\n`
   )
 }
 
@@ -354,11 +374,11 @@ function debugLogHybridBranchFailure(
 function debugLogSemanticSearchCapFired(
   pages: number,
   accumulated: number,
-  limit: number,
+  limit: number
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
-    `[lore] semantic-search-cap-fired: pages=${pages} accumulated=${accumulated} limit=${limit} source=fetch-semantic-pages\n`,
+    `[lore] semantic-search-cap-fired: pages=${pages} accumulated=${accumulated} limit=${limit} source=fetch-semantic-pages\n`
   )
 }
 
@@ -378,7 +398,7 @@ function debugLogSemanticSearchCapFired(
  */
 function logHybridBothFailure(containsReason: unknown, semanticReason: unknown): void {
   process.stderr.write(
-    `[lore] both-failure: contains=${rejectionToLogLine(containsReason)} semantic=${rejectionToLogLine(semanticReason)} source=hybrid-search\n`,
+    `[lore] both-failure: contains=${rejectionToLogLine(containsReason)} semantic=${rejectionToLogLine(semanticReason)} source=hybrid-search\n`
   )
 }
 
@@ -414,12 +434,17 @@ function decodeMemoryTextFields(input: CreateMemoryInput): {
     title: decodeTextEntities(input.title),
     content: input.content ? decodeTextEntities(input.content) : "",
     alternatives:
-      input.alternatives !== undefined ? decodeTextEntities(input.alternatives) : undefined,
+      input.alternatives !== undefined
+        ? decodeTextEntities(input.alternatives)
+        : undefined,
     consequences:
-      input.consequences !== undefined ? decodeTextEntities(input.consequences) : undefined,
+      input.consequences !== undefined
+        ? decodeTextEntities(input.consequences)
+        : undefined,
     author: input.author !== undefined ? decodeTextEntities(input.author) : undefined,
     agent: input.agent !== undefined ? decodeTextEntities(input.agent) : undefined,
-    keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+    keywords:
+      input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
     synopsis:
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
     session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
@@ -455,10 +480,15 @@ function decodeUpdateTextFields(input: UpdateMemoryInput): {
     title: input.title !== undefined ? decodeTextEntities(input.title) : undefined,
     content: input.content !== undefined ? decodeTextEntities(input.content) : undefined,
     alternatives:
-      input.alternatives !== undefined ? decodeTextEntities(input.alternatives) : undefined,
+      input.alternatives !== undefined
+        ? decodeTextEntities(input.alternatives)
+        : undefined,
     consequences:
-      input.consequences !== undefined ? decodeTextEntities(input.consequences) : undefined,
-    keywords: input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+      input.consequences !== undefined
+        ? decodeTextEntities(input.consequences)
+        : undefined,
+    keywords:
+      input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
     synopsis:
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
     blockedBy:
@@ -493,7 +523,7 @@ export class RekeyAuditError extends Error {
       oldTopicKey: string
       newTopicKey: string
       cause: unknown
-    },
+    }
   ) {
     super(message)
     this.name = "RekeyAuditError"
@@ -531,10 +561,7 @@ export class PartialUpdateError extends Error {
   readonly contentApplied: true
   readonly rekeyError: unknown
 
-  constructor(
-    message: string,
-    details: { memoryId: string; rekeyError: unknown },
-  ) {
+  constructor(message: string, details: { memoryId: string; rekeyError: unknown }) {
     super(message)
     this.name = "PartialUpdateError"
     this.memoryId = details.memoryId
@@ -626,7 +653,7 @@ export class MemoryCreatePartialFailureError extends Error {
       cleanedUp: boolean
       bodyWriteError: unknown
       cleanupError?: unknown
-    },
+    }
   ) {
     super(message)
     this.name = "MemoryCreatePartialFailureError"
@@ -736,7 +763,7 @@ function topicUpsertFingerprint(input: TopicUpsertSnapshot): string {
         source: input.source,
         confidence: input.confidence,
         author: input.author,
-      }),
+      })
     )
     .digest("hex")
 }
@@ -744,7 +771,7 @@ function topicUpsertFingerprint(input: TopicUpsertSnapshot): string {
 function parseAppendedTopicRevision(
   markdown: string,
   blockStart: number,
-  revisionCount: number,
+  revisionCount: number
 ): LatestTopicRevision | null {
   const headerStart = blockStart + "\n---\n\n".length
   const headerEnd = markdown.indexOf("\n", headerStart)
@@ -792,7 +819,7 @@ function parseAppendedTopicRevision(
 
 function extractLatestAppendedTopicRevision(
   markdown: string,
-  options: { requireFingerprint?: boolean } = {},
+  options: { requireFingerprint?: boolean } = {}
 ): LatestTopicRevision | null {
   const revisionStart = /\n---\n\n## Revision (\d+) \([^)]+\)/g
   const matches: RegExpExecArray[] = []
@@ -818,7 +845,7 @@ function extractLatestAppendedTopicRevision(
 
 function extractAppendedTopicRevisionByCount(
   markdown: string,
-  revisionCount: number,
+  revisionCount: number
 ): LatestTopicRevision | null {
   const revisionPrefix = `\n---\n\n## Revision ${revisionCount} (`
   const blockStart = markdown.indexOf(revisionPrefix)
@@ -831,7 +858,7 @@ function extractAppendedTopicRevisionByCount(
 
 function extractLatestTopicRevision(
   markdown: string,
-  storedRevisionCount: number,
+  storedRevisionCount: number
 ): LatestTopicRevision | null {
   const fingerprintedRevision = extractLatestAppendedTopicRevision(markdown, {
     requireFingerprint: true,
@@ -853,7 +880,7 @@ function extractLatestTopicRevision(
 function analyzeLatestTopicUpsert(
   input: TopicUpsertSnapshot,
   existing: Memory,
-  markdown: string,
+  markdown: string
 ): TopicUpsertAnalysis {
   const latestRevision = extractLatestTopicRevision(markdown, existing.revisionCount)
   if (!latestRevision) {
@@ -994,7 +1021,7 @@ export class MemoryService {
    */
   private readonly titleCache = new LruCache<string, string | null>(
     TITLE_CACHE_MAX,
-    TITLE_CACHE_TTL_MS,
+    TITLE_CACHE_TTL_MS
   )
   private readonly pendingTitles = new Map<string, Promise<string | null>>()
   /**
@@ -1101,9 +1128,7 @@ export class MemoryService {
           : `Memory create partial failure: the Memories DB row was ` +
             `created (page ${page.id}) but the body write failed: ${cause}. ` +
             `The cleanup archive also failed (${
-              cleanupError instanceof Error
-                ? cleanupError.message
-                : String(cleanupError)
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
             }); the orphan row remains live in the vault. Archive it ` +
             `manually before retrying to avoid a duplicate row.`
         throw new MemoryCreatePartialFailureError(message, {
@@ -1115,7 +1140,7 @@ export class MemoryService {
       }
     }
 
-    return this.pageToMemory(page as PageObjectResponse, decoded.content ?? "")
+    return await this.pageToMemory(page as PageObjectResponse, decoded.content ?? "")
   }
 
   async getById(id: string): Promise<Memory> {
@@ -1123,7 +1148,7 @@ export class MemoryService {
       this.client.pages.retrieve({ page_id: id }),
       this.client.pages.retrieveMarkdown({ page_id: id }),
     ])
-    return this.pageToMemory(page as PageObjectResponse, md.markdown)
+    return await this.pageToMemory(page as PageObjectResponse, md.markdown)
   }
 
   /**
@@ -1143,7 +1168,7 @@ export class MemoryService {
    */
   async getPropertiesById(id: string): Promise<Memory> {
     const page = await this.client.pages.retrieve({ page_id: id })
-    return this.pageToMemory(page as PageObjectResponse, "")
+    return await this.pageToMemory(page as PageObjectResponse, "")
   }
 
   /**
@@ -1186,11 +1211,11 @@ export class MemoryService {
       distinct.map(async (id) => {
         try {
           const page = await this.client.pages.retrieve({ page_id: id })
-          return this.pageToMemory(page as PageObjectResponse, "")
+          return await this.pageToMemory(page as PageObjectResponse, "")
         } catch {
           return null
         }
-      }),
+      })
     )
     return results.filter((m): m is Memory => m !== null)
   }
@@ -1284,17 +1309,18 @@ export class MemoryService {
       for (const r of page.results) {
         if (isLiveFullPage(r)) allResults.push(r)
       }
-      cursor = page.has_more ? page.next_cursor ?? undefined : undefined
+      cursor = page.has_more ? (page.next_cursor ?? undefined) : undefined
     } while (cursor !== undefined)
 
     const inputSet = new Set(input.projectIds)
-    const matches = allResults
-      .map((page) => this.pageToMemory(page, ""))
-      .filter(
-        (m) =>
-          m.projectIds.length === inputSet.size &&
-          m.projectIds.every((id) => inputSet.has(id)),
-      )
+    const memories = await Promise.all(
+      allResults.map((page) => this.pageToMemory(page, ""))
+    )
+    const matches = memories.filter(
+      (m) =>
+        m.projectIds.length === inputSet.size &&
+        m.projectIds.every((id) => inputSet.has(id))
+    )
 
     matches.sort((a, b) => {
       if (a.revisionCount !== b.revisionCount) {
@@ -1407,7 +1433,7 @@ export class MemoryService {
     if (input.projectIds.length === 0) {
       throw new Error(
         "topicKey requires at least one projectId. " +
-          "Projectless memories cannot upsert.",
+          "Projectless memories cannot upsert."
       )
     }
 
@@ -1470,7 +1496,7 @@ export class MemoryService {
       throw new Error(
         `Kind cannot change on upsert. Existing: '${existing.kind}'; ` +
           `input: '${input.kind}'. Pick a new topicKey for the new ` +
-          `kind, or supersede via lore-decision action='create'.`,
+          `kind, or supersede via lore-decision action='create'.`
       )
     }
 
@@ -1509,7 +1535,7 @@ export class MemoryService {
     const upsertAnalysis = analyzeLatestTopicUpsert(
       upsertSnapshot,
       existing,
-      existingBody.markdown,
+      existingBody.markdown
     )
 
     if (
@@ -1827,7 +1853,7 @@ export class MemoryService {
     if (memory.projectIds.length === 0) {
       throw new Error(
         "Cannot re-key a memory with empty projectIds. " +
-          "Topic-key identity requires at least one project.",
+          "Topic-key identity requires at least one project."
       )
     }
 
@@ -1839,7 +1865,7 @@ export class MemoryService {
       throw new Error(
         `Re-key target '${input.newTopicKey}' is already in use by ` +
           `memory ${collision.id} in this project-set. ` +
-          `Lore does not auto-merge — archive one or pick a different key.`,
+          `Lore does not auto-merge — archive one or pick a different key.`
       )
     }
 
@@ -1937,7 +1963,7 @@ export class MemoryService {
           oldTopicKey,
           newTopicKey: input.newTopicKey,
           cause: err,
-        },
+        }
       )
     }
 
@@ -2022,7 +2048,7 @@ export class MemoryService {
 
   private async fetchTitleAndCache(
     id: string,
-    startEpoch: number,
+    startEpoch: number
   ): Promise<string | null> {
     let page: Awaited<ReturnType<typeof this.client.pages.retrieve>>
     try {
@@ -2209,9 +2235,7 @@ export class MemoryService {
    * `memory-encoding.ts` so the CLI doesn't need to reach past the
    * service boundary for the client + DatabaseRef.
    */
-  async fixEncoding(
-    options: { dryRun?: boolean } = {}
-  ): Promise<MemoryEncodingReport> {
+  async fixEncoding(options: { dryRun?: boolean } = {}): Promise<MemoryEncodingReport> {
     return fixMemoryEncoding(this.client, this.db, options)
   }
 
@@ -2301,15 +2325,12 @@ export class MemoryService {
     opts?: {
       today?: string
       onError?: (memoryId: string, error: unknown) => void
-    },
+    }
   ): Promise<void> {
     const today = opts?.today ?? todayUtc()
     await Promise.all(
       memories.map(async (memory) => {
-        if (
-          memory.lastReferencedAt === today &&
-          memory.confidenceScore !== null
-        ) {
+        if (memory.lastReferencedAt === today && memory.confidenceScore !== null) {
           return
         }
         try {
@@ -2319,7 +2340,7 @@ export class MemoryService {
             const decayed = decayConfidenceScore(
               seeded,
               memory.createdAt.slice(0, 10),
-              today,
+              today
             )
             nextScore = bumpConfidenceScore(decayed)
           } else {
@@ -2331,7 +2352,7 @@ export class MemoryService {
             const decayed = decayConfidenceScore(
               memory.confidenceScore,
               memory.lastReferencedAt,
-              today,
+              today
             )
             nextScore = bumpConfidenceScore(decayed)
           }
@@ -2345,7 +2366,7 @@ export class MemoryService {
         } catch (error) {
           opts?.onError?.(memory.id, error)
         }
-      }),
+      })
     )
   }
 
@@ -2381,7 +2402,7 @@ export class MemoryService {
       Memory,
       "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
     >,
-    opts?: { today?: string; compareNotes?: string },
+    opts?: { today?: string; compareNotes?: string }
   ): Promise<number> {
     const today = opts?.today ?? todayUtc()
     // Mirror `touchOnRead`'s structure: gate only on the null-score
@@ -2393,16 +2414,12 @@ export class MemoryService {
     let current: number
     if (memory.confidenceScore === null) {
       const seeded = seedConfidenceScore(memory.confidence)
-      current = decayConfidenceScore(
-        seeded,
-        memory.createdAt.slice(0, 10),
-        today,
-      )
+      current = decayConfidenceScore(seeded, memory.createdAt.slice(0, 10), today)
     } else {
       current = decayConfidenceScore(
         memory.confidenceScore,
         memory.lastReferencedAt,
-        today,
+        today
       )
     }
     const next = decrementConfidenceScore(current)
@@ -2563,7 +2580,7 @@ export class MemoryService {
               rich_text: encodeCompareNotesRichText(nextNotesA),
             },
           },
-        }),
+        })
       )
     }
     if (shouldWriteB) {
@@ -2584,7 +2601,7 @@ export class MemoryService {
               rich_text: encodeCompareNotesRichText(nextNotesB),
             },
           },
-        }),
+        })
       )
     }
 
@@ -2625,14 +2642,14 @@ export class MemoryService {
    * project-scoped run also covers repo-wide unscoped rows that belong
    * to no project.
    */
-  async *listAllForBackfill(opts: {
-    projectId?: string
-  } = {}): AsyncGenerator<Memory, void, void> {
+  async *listAllForBackfill(
+    opts: {
+      projectId?: string
+    } = {}
+  ): AsyncGenerator<Memory, void, void> {
     let cursor: string | undefined
     do {
-      const filter = opts.projectId
-        ? projectOrUnscopedFilter(opts.projectId)
-        : undefined
+      const filter = opts.projectId ? projectOrUnscopedFilter(opts.projectId) : undefined
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: filter as QueryDataSourceParameters["filter"],
@@ -2641,9 +2658,9 @@ export class MemoryService {
         start_cursor: cursor,
       })
       for (const page of response.results.filter(isLiveFullPage)) {
-        yield this.pageToMemory(page, "")
+        yield await this.pageToMemory(page, "")
       }
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
   }
 
@@ -2662,7 +2679,7 @@ export class MemoryService {
   async applyBackfillScore(
     memoryId: string,
     score: number,
-    lastReferencedAt: string,
+    lastReferencedAt: string
   ): Promise<void> {
     await this.client.pages.update({
       page_id: memoryId,
@@ -2808,7 +2825,7 @@ export class MemoryService {
     today: string
   }): Promise<Memory[]> {
     const neglectCutoff = new Date(
-      new Date(opts.today).getTime() - STALE_CONFIDENCE_DAYS * MS_PER_DAY,
+      new Date(opts.today).getTime() - STALE_CONFIDENCE_DAYS * MS_PER_DAY
     )
       .toISOString()
       .slice(0, 10)
@@ -2882,7 +2899,7 @@ export class MemoryService {
       })
     }
 
-    return result.pages.map((page) => this.pageToMemory(page, ""))
+    return Promise.all(result.pages.map((page) => this.pageToMemory(page, "")))
   }
 
   /**
@@ -2975,19 +2992,19 @@ export class MemoryService {
             runningTotal: pages.length,
           })
         }
-        cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+        cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
       } while (cursor !== undefined)
 
       if (opts.includeBodies) {
         const memories = await Promise.all(
           pages.map(async (page) => {
             const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
-            return this.pageToMemory(page, md.markdown)
-          }),
+            return await this.pageToMemory(page, md.markdown)
+          })
         )
         result.push(memories)
       } else {
-        result.push(pages.map((page) => this.pageToMemory(page, "")))
+        result.push(await Promise.all(pages.map((page) => this.pageToMemory(page, ""))))
       }
     }
 
@@ -3129,7 +3146,9 @@ export class MemoryService {
         this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,
           filter: filter as QueryDataSourceParameters["filter"],
-          sorts: [{ timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" }],
+          sorts: [
+            { timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" },
+          ],
           page_size,
           start_cursor,
         }),
@@ -3137,7 +3156,7 @@ export class MemoryService {
 
     if (opts?.includeContent === false) {
       return {
-        items: result.pages.map((page) => this.pageToMemory(page, "")),
+        items: await Promise.all(result.pages.map((page) => this.pageToMemory(page, ""))),
         nextCursor: result.nextCursor,
         capped: result.capped,
       }
@@ -3146,7 +3165,7 @@ export class MemoryService {
     const items = await Promise.all(
       result.pages.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
-        return this.pageToMemory(page, md.markdown)
+        return await this.pageToMemory(page, md.markdown)
       })
     )
     return { items, nextCursor: result.nextCursor, capped: result.capped }
@@ -3231,7 +3250,7 @@ export class MemoryService {
    * one method so the row order is identical between the two surfaces.
    */
   private async runSearch(
-    input: SearchMemoriesInput,
+    input: SearchMemoriesInput
   ): Promise<{ memories: Memory[]; explain: SearchExplain[]; capped: boolean }> {
     const requested: SearchMode = input.mode ?? "hybrid"
     const mode: SearchMode =
@@ -3278,9 +3297,7 @@ export class MemoryService {
     const selectedPages = pages.slice(0, limit)
     const memories = await this.materializeMemories(selectedPages, input.includeContent)
     const explain = selectedPages.map((page, i): SearchExplain => {
-      const factor = confidenceFactor(
-        extractNumber(page.properties["Confidence Score"]),
-      )
+      const factor = confidenceFactor(extractNumber(page.properties["Confidence Score"]))
       if (explainBranch === "contains-only") {
         return {
           memoryId: page.id,
@@ -3346,7 +3363,7 @@ export class MemoryService {
    * `"hybrid"` fallback.
    */
   private async fetchContainsPages(
-    input: SearchMemoriesInput,
+    input: SearchMemoriesInput
   ): Promise<SearchPagesResult> {
     const limit = Math.min(input.limit ?? 10, 100)
     const filters: Array<Record<string, unknown>> = []
@@ -3369,7 +3386,7 @@ export class MemoryService {
                 property: "Tags",
                 multi_select: { contains: t },
               })),
-            },
+            }
       )
     }
     if (input.kind) {
@@ -3471,7 +3488,7 @@ export class MemoryService {
    */
   private async fetchSemanticPages(
     input: SearchMemoriesInput,
-    intent: string | null,
+    intent: string | null
   ): Promise<PageObjectResponse[]> {
     // Compose `client.search`'s `query` from the caller's `query` plus
     // any normalized intent. The `[query.trim(), intent].filter(Boolean)`
@@ -3537,9 +3554,9 @@ export class MemoryService {
         start_cursor: cursor,
       })
 
-      for (const page of this.applySemanticPostFilters(
+      for (const page of await this.applySemanticPostFilters(
         response.results as PageObjectResponse[],
-        input,
+        input
       )) {
         if (seen.has(page.id)) continue
         seen.add(page.id)
@@ -3570,11 +3587,7 @@ export class MemoryService {
       // empty / short result" can distinguish the cap-fired pathological
       // case from genuine no-matches. The `LORE_DEBUG` gate keeps the
       // common (non-pathological) path silent.
-      debugLogSemanticSearchCapFired(
-        SEMANTIC_SEARCH_MAX_PAGES,
-        accumulated.length,
-        limit,
-      )
+      debugLogSemanticSearchCapFired(SEMANTIC_SEARCH_MAX_PAGES, accumulated.length, limit)
     }
 
     // Return WITHOUT a final `slice(0, limit)` trim. The saturation gate
@@ -3617,10 +3630,10 @@ export class MemoryService {
    * paginating walker applies (`findByTopicKey`, `listAllForBackfill`,
    * `listForScan`, `fetchContainsPages`).
    */
-  private applySemanticPostFilters(
+  private async applySemanticPostFilters(
     pages: PageObjectResponse[],
-    input: SearchMemoriesInput,
-  ): PageObjectResponse[] {
+    input: SearchMemoriesInput
+  ): Promise<PageObjectResponse[]> {
     // Filter results to only pages in our Memories database. Notion SDK v5
     // returns two parent-type shapes depending on how the page was created /
     // what the workspace has since been upgraded to: classic `database_id`
@@ -3642,6 +3655,17 @@ export class MemoryService {
 
     // Apply additional filters (project, topic, tags, kind, status). The
     // search API has no property-filter support, so these are post-filters.
+    const filterRelationProperties: string[] = []
+    if (input.projectId) filterRelationProperties.push("Project")
+    if (input.topicId) filterRelationProperties.push("Topic")
+    if (filterRelationProperties.length > 0) {
+      filtered = await hydrateRelationPropertiesForPages(
+        this.client,
+        filtered,
+        filterRelationProperties
+      )
+    }
+
     if (input.projectId) {
       filtered = filtered.filter((page) => {
         const ids = extractRelationIds(page.properties["Project"])
@@ -3662,13 +3686,13 @@ export class MemoryService {
     }
     if (input.kind) {
       filtered = filtered.filter(
-        (page) => extractSelect(page.properties["Kind"], "note") === input.kind,
+        (page) => extractSelect(page.properties["Kind"], "note") === input.kind
       )
     }
     if (input.status) {
       filtered = filtered.filter(
         (page) =>
-          extractSelect(page.properties["Status"], "informational") === input.status,
+          extractSelect(page.properties["Status"], "informational") === input.status
       )
     }
 
@@ -3698,7 +3722,7 @@ export class MemoryService {
    * ordering when every row is unscored, we short-circuit early.
    */
   private async searchByContainsPages(
-    input: SearchMemoriesInput,
+    input: SearchMemoriesInput
   ): Promise<SearchPagesResult> {
     const result = await this.fetchContainsPages(input)
     return {
@@ -3715,7 +3739,7 @@ export class MemoryService {
    */
   private async searchBySemanticPages(
     input: SearchMemoriesInput,
-    intent: string | null,
+    intent: string | null
   ): Promise<SearchPagesResult> {
     const pages = await this.fetchSemanticPages(input, intent)
     return { pages: rerankByConfidence(pages, "semantic"), capped: false }
@@ -3771,7 +3795,7 @@ export class MemoryService {
   private async searchByHybridPages(
     input: SearchMemoriesInput,
     limit: number,
-    intent: string | null,
+    intent: string | null
   ): Promise<{
     pages: PageObjectResponse[]
     branch: "contains-saturated" | "rrf"
@@ -3847,7 +3871,7 @@ export class MemoryService {
           semanticRank: null,
           rrfScore: null,
           confidenceFactor: confidenceFactor(
-            extractNumber(page.properties["Confidence Score"]),
+            extractNumber(page.properties["Confidence Score"])
           ),
         })
       })
@@ -3878,7 +3902,7 @@ export class MemoryService {
     const accumulate = (
       branchPages: PageObjectResponse[],
       branchKind: "contains" | "semantic",
-      weight = 1,
+      weight = 1
     ) => {
       branchPages.forEach((page, rank) => {
         const prev = scored.get(page.id)
@@ -3946,21 +3970,24 @@ export class MemoryService {
    */
   private async materializeMemories(
     pages: PageObjectResponse[],
-    includeContent: boolean | undefined,
+    includeContent: boolean | undefined
   ): Promise<Memory[]> {
     if (includeContent === false) {
-      return pages.map((page) => this.pageToMemory(page, ""))
+      return Promise.all(pages.map((page) => this.pageToMemory(page, "")))
     }
     return Promise.all(
       pages.map(async (page) => {
         const md = await this.client.pages.retrieveMarkdown({ page_id: page.id })
-        return this.pageToMemory(page, md.markdown)
-      }),
+        return await this.pageToMemory(page, md.markdown)
+      })
     )
   }
 
-  private pageToMemory(page: PageObjectResponse, content?: string): Memory {
-    return pageToMemory(page, content)
+  private async pageToMemory(
+    page: PageObjectResponse,
+    content?: string
+  ): Promise<Memory> {
+    return pageToMemory(await hydrateMemoryRelationProperties(this.client, page), content)
   }
 }
 
@@ -4117,16 +4144,13 @@ function appendCompareNotesEntry(existing: string, entry: unknown): string {
         `total length to ${next.length} chars (cap ` +
         `${COMPARE_NOTES_MAX_CHARS}). The memory is over-compared; ` +
         `consolidate via lore-memory action='archive' on duplicate ` +
-        `pairs or split the topic.`,
+        `pairs or split the topic.`
     )
   }
   return next
 }
 
-export function appendCompareNote(
-  existing: string,
-  entry: CompareNoteEntry,
-): string {
+export function appendCompareNote(existing: string, entry: CompareNoteEntry): string {
   return appendCompareNotesEntry(existing, entry)
 }
 
@@ -4163,7 +4187,7 @@ export function buildCompareDispatchLedgerEntry(input: {
 
 export function appendCompareDispatchLedgerEntry(
   existing: string,
-  entry: CompareDispatchLedgerEntry,
+  entry: CompareDispatchLedgerEntry
 ): string {
   return appendCompareNotesEntry(existing, entry)
 }
@@ -4210,7 +4234,7 @@ export function appendCompareDispatchLedgerEntry(
  */
 export function hasMatchingCompareNote(
   notesNdjson: string,
-  match: { target: string; verdict: string; affected: string | null },
+  match: { target: string; verdict: string; affected: string | null }
 ): boolean {
   if (notesNdjson.length === 0) return false
   for (const line of notesNdjson.split("\n")) {
@@ -4246,7 +4270,7 @@ export function hasMatchingCompareNote(
 
 export function hasCompareDispatchLedgerEntry(
   notesNdjson: string,
-  match: { dispatchKey: string; step: "confidence_decrement" },
+  match: { dispatchKey: string; step: "confidence_decrement" }
 ): boolean {
   if (notesNdjson.length === 0) return false
   for (const line of notesNdjson.split("\n")) {
@@ -4281,7 +4305,7 @@ export function hasCompareDispatchLedgerEntry(
  * so the fact lands as agent-reasoned-but-not-strongly-asserted.
  */
 function factConfidenceFromJudge(
-  score: number | undefined,
+  score: number | undefined
 ): "certain" | "likely" | "speculative" {
   if (score === undefined) return "likely"
   if (score >= 0.85) return "certain"
@@ -4311,7 +4335,7 @@ export interface CompareDispatchServices {
         Memory,
         "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
       >,
-      opts?: { today?: string; compareNotes?: string },
+      opts?: { today?: string; compareNotes?: string }
     ): Promise<number>
   }
   facts: {
@@ -4429,7 +4453,7 @@ export async function recordContradiction(
       Partial<Pick<Memory, "compareNotes">>
     sourceMemory: Pick<Memory, "id" | "title" | "projectIds">
     judgeConfidence: number | undefined
-  },
+  }
 ): Promise<{
   factId: string
   affectedCompareNotes: string
@@ -4451,7 +4475,7 @@ export async function recordContradiction(
 
   const sharedProjects = intersectProjects(
     input.sourceMemory.projectIds,
-    input.contradictedMemory.projectIds,
+    input.contradictedMemory.projectIds
   )
   // Step 1: emit the fact. `createWithDedup` is idempotent on the
   // triple hash, so a retry that races against a partial-success on
@@ -4538,10 +4562,7 @@ export async function recordContradiction(
 export async function recordSupersedence(
   services: CompareDispatchServices,
   input: {
-    supersedingMemory: Pick<
-      Memory,
-      "id" | "title" | "projectIds" | "confidence"
-    >
+    supersedingMemory: Pick<Memory, "id" | "title" | "projectIds" | "confidence">
     supersededMemory: Pick<
       Memory,
       | "id"
@@ -4554,7 +4575,7 @@ export async function recordSupersedence(
     > &
       Partial<Pick<Memory, "compareNotes">>
     judgeConfidence: number | undefined
-  },
+  }
 ): Promise<{
   factId: string
   affectedCompareNotes: string
@@ -4580,12 +4601,12 @@ export async function recordSupersedence(
   // and the old decision's Status would stay at "accepted."
   await services.decisions.supersede(
     input.supersedingMemory.id,
-    input.supersededMemory.id,
+    input.supersededMemory.id
   )
 
   const sharedProjects = intersectProjects(
     input.supersedingMemory.projectIds,
-    input.supersededMemory.projectIds,
+    input.supersededMemory.projectIds
   )
 
   // Step 2: emit the fact. Subject = superseding memory's id (matches
