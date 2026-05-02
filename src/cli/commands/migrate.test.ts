@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Fact, Memory } from "../../types.js"
 import type { TopicAliasMergeResult } from "../../core/topic-merge.js"
@@ -21,6 +22,7 @@ import {
   runSynopsisBackfill,
   summarizeConfidenceScorePlan,
 } from "./migrate.js"
+import { migrationLockPath } from "../migration-lock.js"
 import type { BuildConfidenceScoresPlan } from "../../core/confidence-migration.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
 import type { BackfillReport } from "../../core/synopsis-backfill.js"
@@ -1004,8 +1006,18 @@ describe("printAliasMergeResults", () => {
 describe("runBuildEntitiesMigration", () => {
   let logs: string[]
   let logSpy: ReturnType<typeof vi.spyOn>
+  const configRoot = "/tmp/lore-migrate-test"
+  const vaultPageId = "vault-page-entity-test"
+  const lockStateDir = join(
+    tmpdir(),
+    `lore-migrate-command-lock-test-${process.pid}`,
+  )
+  let originalStateDir: string | undefined
 
   beforeEach(() => {
+    originalStateDir = process.env["LORE_HOOK_STATE_DIR"]
+    process.env["LORE_HOOK_STATE_DIR"] = lockStateDir
+    rmSync(lockStateDir, { recursive: true, force: true })
     logs = []
     logSpy = vi
       .spyOn(console, "log")
@@ -1015,10 +1027,41 @@ describe("runBuildEntitiesMigration", () => {
   })
   afterEach(() => {
     logSpy.mockRestore()
+    rmSync(lockStateDir, { recursive: true, force: true })
+    if (originalStateDir === undefined) {
+      delete process.env["LORE_HOOK_STATE_DIR"]
+    } else {
+      process.env["LORE_HOOK_STATE_DIR"] = originalStateDir
+    }
   })
 
+  function addLockFields(
+    services: object,
+  ): object & { configRoot: string; config: { vault: { pageId: string } } } {
+    return {
+      configRoot,
+      config: { vault: { pageId: vaultPageId } },
+      ...services,
+    }
+  }
+
+  function entityLockPath(): string {
+    return migrationLockPath({
+      name: "build-entities",
+      configRoot,
+      vaultPageId,
+    })
+  }
+
+  function seedEntityLock(pid: number): string {
+    const path = entityLockPath()
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, pid.toString())
+    return path
+  }
+
   it("plan-only mode without an Entities DB refuses with directive", async () => {
-    const services = {
+    const services = addLockFields({
       entities: null,
       vault: {
         ensureEntitiesDatabase: vi.fn(),
@@ -1027,7 +1070,7 @@ describe("runBuildEntitiesMigration", () => {
       facts: {
         queryBySubject: vi.fn().mockResolvedValue([]),
       },
-    } as never
+    }) as never
 
     const result = await runBuildEntitiesMigration(services, { apply: false })
     expect(result).toBeNull()
@@ -1042,7 +1085,7 @@ describe("runBuildEntitiesMigration", () => {
   })
 
   it("emits 'No fact subjects/objects' when the graph is empty", async () => {
-    const services = {
+    const services = addLockFields({
       entities: {
         listAll: vi.fn().mockResolvedValue([]),
         clearNameCache: vi.fn(),
@@ -1054,10 +1097,79 @@ describe("runBuildEntitiesMigration", () => {
         ensureEntitiesDatabase: vi.fn(),
         getClient: vi.fn(),
       },
-    } as never
+    }) as never
 
     await runBuildEntitiesMigration(services, { apply: false })
     expect(logs.join("\n")).toContain("nothing to canonicalize")
+  })
+
+  it("apply mode fails fast when the build-entities lock is held", async () => {
+    const lockPath = seedEntityLock(process.pid)
+    const services = addLockFields({
+      entities: {
+        listAll: vi.fn().mockResolvedValue([]),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([]),
+      },
+      vault: {
+        ensureEntitiesDatabase: vi.fn(),
+        getClient: vi.fn(),
+      },
+    }) as never
+
+    await expect(
+      runBuildEntitiesMigration(services, { apply: true }),
+    ).rejects.toThrow(/Another build-entities migration is already active/)
+    expect(existsSync(lockPath)).toBe(true)
+    expect(
+      (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
+        .queryBySubject,
+    ).not.toHaveBeenCalled()
+  })
+
+  it("apply mode releases the build-entities lock when finished", async () => {
+    const services = addLockFields({
+      entities: {
+        listAll: vi.fn().mockResolvedValue([]),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([]),
+      },
+      vault: {
+        ensureEntitiesDatabase: vi.fn(),
+        getClient: vi.fn(),
+      },
+    }) as never
+
+    await runBuildEntitiesMigration(services, { apply: true })
+
+    expect(existsSync(entityLockPath())).toBe(false)
+    expect(logs.join("\n")).toContain("nothing to canonicalize")
+  })
+
+  it("plan-only mode remains lock-free", async () => {
+    const lockPath = seedEntityLock(process.pid)
+    const services = addLockFields({
+      entities: {
+        listAll: vi.fn().mockResolvedValue([]),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([]),
+      },
+      vault: {
+        ensureEntitiesDatabase: vi.fn(),
+        getClient: vi.fn(),
+      },
+    }) as never
+
+    await runBuildEntitiesMigration(services, { apply: false })
+
+    expect(existsSync(lockPath)).toBe(true)
+    expect(
+      (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
+        .queryBySubject,
+    ).toHaveBeenCalled()
   })
 })
 
@@ -1634,4 +1746,3 @@ describe("runBuildConfidenceScores", () => {
     expect(services.memories.applyBackfillScore).not.toHaveBeenCalled()
   })
 })
-
