@@ -791,7 +791,8 @@ Distinct from `MemoryService.list` (which is recall-shaped):
 ## The mine Command
 
 `mine` is the most complex command. It walks a directory tree, filters for
-text files by extension, and creates one memory per file. Key details:
+text files by extension, and creates or updates one memory per file. Key
+details:
 
 - Skips directories: `node_modules`, `dist`, `build`, `.git`, `.next`, `__pycache__`
 - Skips files: `.lore.yaml`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`
@@ -801,3 +802,107 @@ text files by extension, and creates one memory per file. Key details:
 - Each memory is created with source `"file"` and keywords `"<extension> mined <relPath>"` — `tags` is left empty because file extensions are free-form tokens, not part of the closed tag vocabulary
 - Content is wrapped in a markdown code block with the file extension as language
 - Supports `--dry-run` to preview files without creating memories
+
+### Pattern and limit validation
+
+- `--pattern <glob>` filters the walker's output before the `--limit`
+  slice, so `--pattern src/**/*.ts --limit 10` returns the first 10
+  *matching* files rather than the first 10 files of any type. The
+  matcher (`globToRegExp` in `commands/mine.ts`) supports `**`
+  (multi-segment globstar; only when surrounded by path boundaries),
+  `*` (within-segment), `?`, and POSIX-style character classes
+  (`[abc]` / `[!abc]`). Mid-segment `**` (e.g. `foo**bar`) collapses
+  to single-`*` semantics so it does not silently match across path
+  boundaries. Raw `/` inside a character class is stripped so a class
+  like `[a/b]` cannot leak through and match the path separator. Brace
+  expansion (`{a,b}`) is intentionally NOT supported — brace literals
+  are escaped through.
+- Path matching is case-sensitive; the `TEXT_EXTENSIONS` filter is
+  case-insensitive. A mixed-case file (`Foo.TS`) passes the extension
+  filter but only matches a pattern whose path segment also says
+  `Foo.TS`. This is the safer behavior on case-sensitive filesystems
+  (Linux); operators on macOS / Windows can write the case that
+  matches their actual filenames.
+- `--limit` validates as a strict positive integer via the same
+  digit-only regex posture as `parseScanCliOptions` in
+  `commands/conflicts.ts`. Rejects `0`, `-1`, `3abc`, `3.7`, `1e3`,
+  `+5`, empty string, and values past `Number.MAX_SAFE_INTEGER`
+  with a clear error message.
+
+### Project resolution: explicit `--project` is fatal-strict
+
+`resolveMineProject` (`commands/mine.ts`) is called BEFORE any file
+walk or upsert work. An explicit `--project <name>` that doesn't
+resolve throws — matching the posture of `resolveScanProjects` in
+`commands/conflicts.ts`. Without that gate, a typo like
+`--project Mial` would fall through to the catch-all branch and
+silently dispatch unscoped writes that could collide with another
+project's existing mined memories.
+
+### Idempotency: per-file upsert keyed on `(title, source, projectIds)`
+
+Repeated `lore mine` runs over the same tree do NOT accumulate
+duplicate memories. Before each create, `findExistingFileMemory`
+(`commands/mine.ts`) issues a single
+`MemoryService.search({ mode: "contains", query: relPath, limit: 100 })`
+and post-filters on three gates:
+
+- `source === "file"` rejects user-curated memories that happen to
+  mention the relPath (different source = different upsert lineage).
+- `title === expectedTitle` (`<basename> — <relPath>`) rejects mined
+  files whose path is a substring of the queried one (e.g.
+  `src/foo.ts` substring-matches `src/foo.ts.bak`).
+- `projectIdsEqual(memory.projectIds, expected)` enforces project-set
+  equality — `[A]` does not match `[A, B]` and unscoped (`[]`) does
+  not match `[A]`. Mirrors `MemoryService.upsertByTopicKey`'s
+  `(Topic Key, Project-set)` equality contract. Without this gate,
+  `lore mine --project Foo` could match an unscoped row and rewrite
+  it into Foo's scope, silently merging two upsert lineages.
+
+`FIND_EXISTING_LIMIT = 100` is the Notion-side `dataSources.query`
+`page_size` cap. The 25-row default that shipped earlier could
+paginate the previously-mined row out of the candidate window on a
+busy vault, breaking the idempotency contract; 100 is the largest
+single-round-trip recall the API supports.
+
+### Topic preservation on re-mine
+
+The upsert path passes `topicId` through to `MemoryService.update`
+ONLY when a current `--topic` resolves. Re-mining a file without
+`--topic` therefore leaves the row's existing Topic relation in
+place — same posture as `MemoryService.upsertByTopicKey`'s
+"Topic preserves silently on upsert" rule. An operator who wants to
+retire a stale topic on a mined memory uses
+`lore-memory action='update'` directly; the mine path is
+content-replication, not metadata-curation.
+
+### Per-file failure isolation and bounded concurrency
+
+`runMineUpsert` chunks files into batches sized to
+`config.notion.rateLimit.concurrency` (default
+`DEFAULT_NOTION_CONCURRENCY = 3`) and dispatches each batch via
+`Promise.all`. Per-file failures resolve as `kind: "failed"`
+outcomes via `processOneFile`'s outer try/catch — a single 429 or
+read error does NOT abort the batch. Sequential `for await` would
+serialize round-trips end-to-end; the bounded chunked dispatch makes
+the operator's `notion.rateLimit.concurrency` knob actually move the
+wall-clock needle.
+
+### Concurrent-mine race (uncovered)
+
+Two parallel `lore mine` runs against the same project for the same
+file can both observe an empty `findExistingFileMemory` and both
+create — Notion has no per-key uniqueness primitive on the Memories
+DB. Single-operator serial use is the common case. The
+`lore migrate --dedup-keys --merge` pass is fact-side dedup, not
+memory-side, so it does NOT collapse mine duplicates. If real-vault
+data shows the race matters, a follow-up adds a per-vault lock via
+`src/hooks/lock.ts`.
+
+### Output format (additively-compatible with pre-PR)
+
+`formatMineSummary` keeps the pre-PR `Indexed N files.` /
+`Done. Indexed N/M files (K failed).` shapes byte-stable for
+log-scrape parsers. The `(N new, M updated)` clause is appended
+ONLY when at least one update landed, so a fresh-vault first run
+emits identical output to the pre-PR shape.
