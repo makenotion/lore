@@ -466,7 +466,18 @@ export class FactService {
 
     // Parallel boolean flags for the three mutations. Hoisted so the
     // post-write mirror block doesn't re-evaluate the same conditions.
-    const extendingReview = Boolean(reviewBy) && reviewBy !== existing.reviewBy
+    //
+    // Review By is monotonic: a dedup hit must only ever push the date
+    // forward. Without the strict `>` comparison, a stale or repeated
+    // agent write whose `reviewBy` predates `existing.reviewBy` would
+    // overwrite it with the older value, regressing the row into a
+    // premature overdue/audit window. ISO `YYYY-MM-DD` strings compare
+    // lexicographically as dates so `>` is a date comparison; the null
+    // branch lets an initial `reviewBy` land on a deduped row.
+    const extendingReview =
+      reviewBy !== undefined &&
+      reviewBy !== "" &&
+      (existing.reviewBy === null || reviewBy > existing.reviewBy)
     const missingProjectIds = (decodedInput.projectIds ?? []).filter(
       (id) => !existing.projectIds.includes(id)
     )

@@ -567,6 +567,72 @@ describe("FactService.createWithDedup", () => {
     expect(client.pages.update).not.toHaveBeenCalled()
   })
 
+  it("skips the extend write when the incoming review date is older than existing", async () => {
+    // Review By is monotonic on dedup hit: a stale or repeated agent write
+    // whose reviewBy predates the existing row must not regress the runway.
+    // Otherwise a re-asserted fact would surface as overdue earlier than
+    // the prior write intended.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          subject: "AuthService",
+          predicate: "uses",
+          object: "JWT",
+          reviewBy: "2026-05-01",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      reviewBy: "2026-04-01",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(result.fact.reviewBy).toBe("2026-05-01")
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("sets Review By when the existing fact has no review date", async () => {
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "live-fact",
+          subject: "AuthService",
+          predicate: "uses",
+          object: "JWT",
+          reviewBy: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      reviewBy: "2026-04-01",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toContain("extended review to 2026-04-01")
+    expect(result.fact.reviewBy).toBe("2026-04-01")
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "live-fact",
+      properties: {
+        "Review By": { date: { start: "2026-04-01" } },
+      },
+    })
+  })
+
   it("writes a new fact when only invalidated matches exist", async () => {
     // Probe filters on Valid Until is_empty, so invalidated rows are not
     // returned — the service sees an empty result and creates a fresh row.
