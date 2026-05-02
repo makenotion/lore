@@ -1,0 +1,7 @@
+[features]
+codex_hooks = true
+
+[mcp_servers.lore]
+command = "bash"
+args = ["-c", "node \"${HOME}/.lore/dist/mcp.js\""]
+env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME"]

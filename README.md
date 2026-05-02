@@ -123,6 +123,37 @@ and prints `MCP server: upgraded (legacy → bin-dispatch)` in the install
 summary. The 0.12.0 release will remove `--legacy-paths` and the
 absolute-path code path together.
 
+#### Working on lore itself (this repo's committed configs)
+
+Lore's source repo is its own consumer, and lore can't bin-dispatch
+through itself — there's no `node_modules/.bin/lore` in the repo
+that's *publishing* `lore`. The committed `.mcp.json`,
+`.cursor/mcp.json`, `.codex/config.toml`, and `.codex/hooks.json`
+therefore use the legacy `${HOME}/.lore/...` absolute-path shape
+deliberately. They assume the team-wide convention that every
+internal contributor keeps a stable `~/.lore` clone (built with
+`npm install && npm run build`) for assistant integration; a
+worktree under `~/Developer/...` or anywhere else is independent
+and does not affect the committed config.
+
+If you re-run `lore install` from a different lore checkout it
+will rewrite these files to point at that checkout's path — do
+**not** commit that diff. The expected workflow is:
+
+1. Maintain a stable `~/.lore` clone for editor / agent integration.
+2. Hack on lore from any worktree you like (`~/Developer/lore`,
+   `git worktree add`, etc.).
+3. The committed `${HOME}/.lore/...` paths remain stable for
+   every contributor.
+
+The committed env passthrough lists every key in
+`RUNTIME_FORWARDED_KEYS` (see `src/auth/forwarded-env.ts`) so any
+contributor's resolved auth — `NOTION_API_TOKEN` (canonical),
+ntn-issued (`auth.json`, no env forwarding needed),
+`LORE_NOTION_TOKEN` (legacy), workspace + environment selectors,
+`LORE_USER_NAME` attribution — reaches the spawned MCP server
+unchanged.
+
 ### 2. Create a Vault
 
 Lore is currently internal-Notion dogfood. The recommended internal auth path is

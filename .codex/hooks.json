@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LORE_AGENT_NAME=Codex \"${HOME}/.lore/hooks/wakeup.sh\"",
+            "statusMessage": "Loading Lore context"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "LORE_AGENT_NAME=Codex \"${HOME}/.lore/hooks/autosave.sh\"",
+            "timeout": 30,
+            "statusMessage": "Saving Lore context"
+          }
+        ]
+      }
+    ]
+  }
+}

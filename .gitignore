@@ -18,9 +18,14 @@ Thumbs.db
 *.swp
 *.swo
 
-# Claude Code project settings (contains absolute paths)
+# Per-developer Claude Code state. `lore install` writes hooks under
+# `~/.claude/projects/<encoded>/settings.json` (the per-user-per-project
+# location), so a project-scoped `.claude/settings.json` here is whatever
+# Claude Code itself generates locally for the operator and is not part of
+# the committed integration surface. `settings.local.json` carries the
+# per-developer Bash() permission allowlist.
 .claude/settings.json
-.mcp.json
+.claude/settings.local.json
 
 # Ad-hoc / empirical verification scripts — intentionally not part of the
 # build or test surface. Use for one-off Notion API experiments.
