@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
+  TaskCreatePartialFailureError,
   TaskService,
   formatTaskSummary,
   isCleared,
@@ -67,25 +68,39 @@ function taskPage(
   })
 }
 
+function archivedPage(page: PageObjectResponse): PageObjectResponse {
+  return { ...page, archived: true }
+}
+
 interface MockClientOpts {
   retrievedPages?: Record<string, PageObjectResponse>
   queryResults?: PageObjectResponse[]
   createReturn?: PageObjectResponse
+  createError?: unknown
   markdown?: string
+  updateMarkdownError?: unknown
+  updateError?: unknown
 }
 
 function createMockClient(opts: MockClientOpts = {}) {
   const defaultCreate = makePage({ id: "new-task-id" })
   return {
     pages: {
-      create: vi.fn().mockResolvedValue(opts.createReturn ?? defaultCreate),
+      create:
+        opts.createError !== undefined
+          ? vi.fn().mockRejectedValue(opts.createError)
+          : vi.fn().mockResolvedValue(opts.createReturn ?? defaultCreate),
       retrieve: vi.fn().mockImplementation(({ page_id }: { page_id: string }) => {
         const page = opts.retrievedPages?.[page_id]
         if (!page) return Promise.reject(new Error(`Mock: no page registered for ${page_id}`))
         return Promise.resolve(page)
       }),
-      update: vi.fn().mockResolvedValue({}),
-      updateMarkdown: vi.fn().mockResolvedValue({}),
+      update: opts.updateError !== undefined
+        ? vi.fn().mockRejectedValue(opts.updateError)
+        : vi.fn().mockResolvedValue({}),
+      updateMarkdown: opts.updateMarkdownError !== undefined
+        ? vi.fn().mockRejectedValue(opts.updateMarkdownError)
+        : vi.fn().mockResolvedValue({}),
       retrieveMarkdown: vi.fn().mockResolvedValue({ markdown: opts.markdown ?? "" }),
     },
     dataSources: {
@@ -128,6 +143,8 @@ describe("TaskService.create", () => {
     expect(args.properties.Title).toEqual({
       title: [{ text: { content: "Rotate keys" } }],
     })
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    expect(client.pages.update).not.toHaveBeenCalled()
   })
 
   it("writes description as page body via updateMarkdown", async () => {
@@ -219,6 +236,88 @@ describe("TaskService.create", () => {
       rich_text: [{ text: { content: "Foo & Bar" } }],
     })
   })
+
+  it("archives the created task and throws a structured error when description write fails", async () => {
+    const created = taskPage("new-task-id")
+    const bodyWriteError = new Error("markdown unavailable")
+    const client = createMockClient({
+      createReturn: created,
+      updateMarkdownError: bodyWriteError,
+    })
+    const service = new TaskService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.create({
+        subject: "Rotate keys",
+        description: "Rotate the JWT signing key.",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(TaskCreatePartialFailureError)
+    const partial = caught as TaskCreatePartialFailureError
+    expect(partial.pageId).toBe("new-task-id")
+    expect(partial.cleanedUp).toBe(true)
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.cleanupError).toBeUndefined()
+    expect(partial.message).toContain("retry the create")
+    expect(partial.message).toMatch(/archived to keep the vault consistent/)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "new-task-id",
+      archived: true,
+    })
+  })
+
+  it("carries cleanup failure details when archiving the partial task fails", async () => {
+    const created = taskPage("new-task-id")
+    const bodyWriteError = new Error("markdown unavailable")
+    const cleanupError = new Error("archive unavailable")
+    const client = createMockClient({
+      createReturn: created,
+      updateMarkdownError: bodyWriteError,
+      updateError: cleanupError,
+    })
+    const service = new TaskService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.create({
+        subject: "Rotate keys",
+        description: "Rotate the JWT signing key.",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(TaskCreatePartialFailureError)
+    const partial = caught as TaskCreatePartialFailureError
+    expect(partial.pageId).toBe("new-task-id")
+    expect(partial.cleanedUp).toBe(false)
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.cleanupError).toBe(cleanupError)
+    expect(partial.message).toContain("Archive it manually before retrying")
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "new-task-id",
+      archived: true,
+    })
+  })
+
+  it("pages.create rejection bubbles untouched with no cleanup or description write", async () => {
+    const createError = new Error("create unavailable")
+    const client = createMockClient({ createError })
+    const service = new TaskService(client, DB)
+
+    await expect(
+      service.create({
+        subject: "Rotate keys",
+        description: "Rotate the JWT signing key.",
+      }),
+    ).rejects.toBe(createError)
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
 })
 
 describe("TaskService.list", () => {
@@ -299,6 +398,20 @@ describe("TaskService.list", () => {
     for (const item of items) {
       expect((item as Record<string, unknown>).content).toBeUndefined()
     }
+  })
+
+  it("excludes archived task pages from list results", async () => {
+    const client = createMockClient({
+      queryResults: [
+        archivedPage(taskPage("archived-task", { title: "Archived task" })),
+        taskPage("live-task", { title: "Live task" }),
+      ],
+    })
+    const service = new TaskService(client, DB)
+
+    const { items } = await service.list({})
+
+    expect(items.map((item) => item.id)).toEqual(["live-task"])
   })
 })
 
@@ -855,6 +968,20 @@ describe("TaskService.countClosedSince", () => {
     )
   })
 
+  it("excludes archived task pages from the closed-since count", async () => {
+    const client = createMockClient({
+      queryResults: [
+        archivedPage(taskPage("archived-closed", { state: "done" })),
+        taskPage("live-closed", { state: "done" }),
+      ],
+    })
+    const service = new TaskService(client, DB)
+
+    const total = await service.countClosedSince("2026-03-30")
+
+    expect(total).toBe(1)
+  })
+
   it("excludes re-opened tasks via a Task State in (done, cancelled) filter", async () => {
     // `Done At` is preserved across re-open by design — `update({
     // state: 'open' })` keeps the prior closure timestamp as
@@ -929,6 +1056,30 @@ describe("TaskService.countClosedSince", () => {
     const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
       .calls[0][0]
     expect(JSON.stringify(args.filter)).toContain("proj-mail")
+  })
+})
+
+describe("TaskService.queryOverdue", () => {
+  it("excludes archived task pages from overdue results", async () => {
+    const client = createMockClient({
+      queryResults: [
+        archivedPage(
+          taskPage("archived-overdue", {
+            state: "open",
+            reviewBy: "2026-01-01",
+          }),
+        ),
+        taskPage("live-overdue", {
+          state: "open",
+          reviewBy: "2026-01-01",
+        }),
+      ],
+    })
+    const service = new TaskService(client, DB)
+
+    const results = await service.queryOverdue()
+
+    expect(results.map((item) => item.id)).toEqual(["live-overdue"])
   })
 })
 

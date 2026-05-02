@@ -59,6 +59,7 @@ export {
   RekeyAuditError,
   PartialUpdateError,
 } from "./core/memory.js"
+export { TaskCreatePartialFailureError } from "./core/task.js"
 export { FactService } from "./core/fact.js"
 export { DecisionService } from "./core/decision.js"
 export { EntityService } from "./core/entity.js"

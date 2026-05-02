@@ -76,6 +76,36 @@ export function isCleared(value: string | null | undefined): boolean {
   return value === null || value.trim() === ""
 }
 
+/**
+ * Thrown when task properties land in Notion but the description body
+ * write fails. `pageId` names the row created by `pages.create`;
+ * `cleanedUp` tells callers whether Lore archived that row before
+ * surfacing the failure.
+ */
+export class TaskCreatePartialFailureError extends Error {
+  readonly pageId: string
+  readonly cleanedUp: boolean
+  readonly bodyWriteError: unknown
+  readonly cleanupError: unknown
+
+  constructor(
+    message: string,
+    details: {
+      pageId: string
+      cleanedUp: boolean
+      bodyWriteError: unknown
+      cleanupError?: unknown
+    },
+  ) {
+    super(message)
+    this.name = "TaskCreatePartialFailureError"
+    this.pageId = details.pageId
+    this.cleanedUp = details.cleanedUp
+    this.bodyWriteError = details.bodyWriteError
+    this.cleanupError = details.cleanupError
+  }
+}
+
 export class TaskService {
   constructor(
     private client: Client,
@@ -137,11 +167,49 @@ export class TaskService {
     })
 
     if (description) {
-      await this.client.pages.updateMarkdown({
-        page_id: page.id,
-        type: "insert_content",
-        insert_content: { content: description },
-      })
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: page.id,
+          type: "insert_content",
+          insert_content: { content: description },
+        })
+      } catch (bodyWriteError) {
+        let cleanedUp = false
+        let cleanupError: unknown
+        try {
+          await this.client.pages.update({
+            page_id: page.id,
+            archived: true,
+          })
+          cleanedUp = true
+        } catch (err) {
+          cleanupError = err
+        }
+
+        const cause =
+          bodyWriteError instanceof Error
+            ? bodyWriteError.message
+            : String(bodyWriteError)
+        const message = cleanedUp
+          ? `Task create partial failure: the task row was ` +
+            `created (page ${page.id}) but the description write failed: ${cause}. ` +
+            `The orphan task row was archived to keep the vault consistent; ` +
+            `retry the create to land a fresh row.`
+          : `Task create partial failure: the task row was ` +
+            `created (page ${page.id}) but the description write failed: ${cause}. ` +
+            `The cleanup archive ALSO failed (${
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError)
+            }); the orphan task row remains live in the vault. Archive it ` +
+            `manually before retrying to avoid a duplicate row.`
+        throw new TaskCreatePartialFailureError(message, {
+          pageId: page.id,
+          cleanedUp,
+          bodyWriteError,
+          cleanupError,
+        })
+      }
     }
 
     return pageToMemory(
@@ -243,7 +311,7 @@ export class TaskService {
       start_cursor: opts?.startCursor,
     })
 
-    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    const pages = livePages(response.results)
     const nextCursor =
       response.has_more && response.next_cursor ? response.next_cursor : undefined
 
@@ -498,7 +566,7 @@ export class TaskService {
           page_size: 100,
           start_cursor: cursor,
         })
-        total += response.results.length
+        total += livePages(response.results).length
         cursor =
           response.has_more && response.next_cursor
             ? response.next_cursor
@@ -538,9 +606,15 @@ export class TaskService {
       sorts: [{ property: "Review By", direction: "ascending" }],
     })
 
-    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    const pages = livePages(response.results)
     return pages.map((page) => toTaskSummary(pageToMemory(page, "") as Task))
   }
+}
+
+function livePages(results: Array<Parameters<typeof isFullPage>[0]>): PageObjectResponse[] {
+  return (results.filter(isFullPage) as PageObjectResponse[]).filter(
+    (page) => !page.archived,
+  )
 }
 
 function toTaskSummary(task: Task): TaskSummary {
