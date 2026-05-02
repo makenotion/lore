@@ -496,10 +496,17 @@ export async function runNoArgInit(opts: {
       console.log("")
     }
 
-    // Offer ntn login.
-    const ok = await confirmPrompt("Run `ntn login` now? [Y/n] ", yesFlag)
+    // Offer ntn login. If the operator declines the Lore-spawned path,
+    // the manual fallback must include NOTION_KEYRING=0; otherwise ntn
+    // can write to the macOS keychain where Lore cannot read the token.
+    const manualLoginCommand = ntnEnv
+      ? `NOTION_KEYRING=0 NOTION_ENV=${ntnEnv} ntn login`
+      : "NOTION_KEYRING=0 ntn login"
+    const ok = await confirmPrompt(`Run \`${manualLoginCommand}\` now? [Y/n] `, yesFlag)
     if (!ok) {
-      console.error("ntn login is required to initialize a vault. Run it manually,")
+      console.error(
+        `ntn login is required to initialize a vault. Run \`${manualLoginCommand}\` manually,`
+      )
       console.error("then re-run `lore init`.")
       process.exit(1)
       return
@@ -557,7 +564,7 @@ export async function runNoArgInit(opts: {
     if (auth.source === "ntn-auth-json") {
       // ntn owns auth.json's contents; the right move is to logout +
       // re-login under the requested env so config.json reflects it.
-      console.error(`  ntn logout && NOTION_ENV=${ntnEnv} ntn login`)
+      console.error(`  ntn logout && NOTION_KEYRING=0 NOTION_ENV=${ntnEnv} ntn login`)
       console.error("  (then re-run lore init)")
     } else if (auth.source === "env-notion-api-token") {
       // The operator pasted a token into NOTION_API_TOKEN env that
@@ -571,12 +578,11 @@ export async function runNoArgInit(opts: {
     } else if (auth.source === "env-lore-notion-token") {
       // Soft-deprecated path. The right migration is `lore auth
       // --migrate` once Phase 2 #07 ships; for now the operator
-      // unsets and re-logs.
+      // unsets and re-logs. Unlike NOTION_API_TOKEN, this legacy path
+      // does not honor LORE_NOTION_BASE_URL from operator env.
       console.error("  Unset LORE_NOTION_TOKEN to fall through to ntn-resolved auth,")
-      console.error(`  or set LORE_NOTION_BASE_URL to the ${ntnEnv} endpoint:`)
-      console.error(
-        `    export LORE_NOTION_BASE_URL=${expectedBaseUrlForEnv(ntnEnv) ?? "https://api.notion.so"}`
-      )
+      console.error("  or migrate legacy auth before retrying:")
+      console.error("    lore auth --migrate")
     } else {
       // `config-auth-token` — structurally unreachable from the no-arg
       // init flow because resolveAuth is called with config=undefined

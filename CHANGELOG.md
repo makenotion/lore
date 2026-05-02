@@ -18,8 +18,8 @@ log is the canonical source for those.
   carries engineer identity now that ntn-issued tokens make it
   reliably resolvable. New `src/auth/identity.ts` resolves the
   display name once at MCP server startup via `LORE_USER_NAME` env
-  override (synchronous, wins over `users.me`) → `users.me().bot.
-  owner.user.name` fallback. `lore-memory action='save'`,
+  override (synchronous, wins over `users.me`) → bot owner user-name
+  fallback. `lore-memory action='save'`,
   `lore-decision action='create'`, and `lore-task action='create'`
   default `author` from the resolved identity when the caller
   omits it; an explicit `author` argument always wins. The
@@ -40,8 +40,8 @@ log is the canonical source for those.
 
   **Operational note:** Lore now makes one `users.me` API call at
   every Lore process startup unless `LORE_USER_NAME` is set —
-  including one-shot CLI invocations (`lore status`,
-  `lore digest --dry-run`, etc.) that don't write Memories. The
+  including one-shot CLI invocations like `lore status` or
+  `lore digest --dry-run` that don't write Memories. The
   resolver is per-process memoized; long-running surfaces (the
   MCP server) pay the cost once at startup. Operators on slow
   networks who want the synchronous path export `LORE_USER_NAME`
@@ -228,10 +228,9 @@ move atomically per the release-coordinator pattern (#13).
   `Compare Notes` membership check, not via global fact existence —
   re-issuing the same verdict against the same pair short-circuits to
   `alreadyJudged: true` with no writes. Actionable verdicts dispatch
-  through the existing `lore-correct` (`conflicts_with`) and
-  `lore-supersede` (`supersedes`) code paths so confidence-decrement
-  algebra and decision-status flips remain in one place. (Issue
-  0.9.0/05.)
+  through the compare dispatch helpers for `conflicts_with` and
+  `supersedes` so confidence-decrement algebra and decision-status
+  flips remain in one place. (Issue 0.9.0/05.)
 - **New `lore conflicts scan` CLI for on-demand candidate detection.**
   Lexical-candidate generator surfaces memory pairs that share enough
   signal to warrant comparison. Output includes a self-describing
@@ -301,17 +300,17 @@ move atomically per the release-coordinator pattern (#13).
 - **New error subclasses exported from `src/core/memory.ts`:**
   - `RekeyAuditError` — raised by `MemoryService.rekeyTopicKey`
     when the Topic Key property write succeeded but the body
-    audit-block append failed. Carries `{memoryId, oldTopicKey,
-    newTopicKey, cause}`. The re-key persisted; only the audit
-    trail is missing. A retry short-circuits via the no-op guard
-    because the property already matches the new key.
+    audit-block append failed. Carries `memoryId`, `oldTopicKey`,
+    `newTopicKey`, and `cause`. The re-key persisted; only the
+    audit trail is missing. A retry short-circuits via the no-op
+    guard because the property already matches the new key.
   - `PartialUpdateError` — raised by the MCP `handleUpdate` when
     a combined `topicKey + content` call has the content delta
     persist successfully but the subsequent re-key reject (race
     with another agent grabbing the slot, transient Notion
     failure, or post-update `projectIds` change exposing a fresh
-    collision). Carries `{memoryId, contentApplied: true,
-    rekeyError}`. The content mutation is durable on Notion; the
+    collision). Carries `memoryId`, `contentApplied: true`, and
+    `rekeyError`. The content mutation is durable on Notion; the
     re-key did not happen.
 
   Both are `instanceof`-checkable for future operator tooling.
@@ -323,11 +322,13 @@ move atomically per the release-coordinator pattern (#13).
 - **Promotion-advisory footer on upsert responses.** When an upsert
   pushes the row past a revision-count or body-length threshold, the
   response appends an advisory line nudging the agent to consider
-  promoting the synthesis into a formal `lore-decide` (with
-  `supersedesIds` referencing the upserted memory). No
-  auto-promotion fires — the advisory is informational only and
-  emits exclusively on the upsert path, not on the create path or
-  the re-key path. (Issue 0.9.0/15.)
+  promoting the synthesis into a formal `lore-decision action='create'`.
+  Decision-kind chains include `supersedesIds` referencing the upserted
+  decision memory; non-decision chains deliberately omit `supersedesIds`
+  because decision creation resolves those ids through `DecisionService.getById`.
+  No auto-promotion fires — the advisory is informational only and emits
+  exclusively on the upsert path, not on the create path or the re-key path.
+  (Issue 0.9.0/15.)
 
 #### Workstream C — Background-autosave learning extraction
 
@@ -373,13 +374,13 @@ move atomically per the release-coordinator pattern (#13).
 
 - **`lore-memory` (and every MCP tool that accepts `topicName`) no
   longer silently fans out near-duplicate topic pages.** Previously,
-  `TopicService.getOrCreate` only checked for *exact-name* matches,
+  `TopicService.getOrCreate` only checked for _exact-name_ matches,
   so an agent that drifted casing, pluralization, `&` vs `and`, or
   punctuation across saves accumulated sibling topic rows — the
   issue #109 Mail-vault audit found four such siblings produced in
   a single session. The slow path (no exact match) now normalizes
-  the input (lowercase + NFC + HTML-decode + plural-strip + `&`↔`and`
-  + punctuation-strip), scans every topic in the resolved projects,
+  the input (lowercase, NFC, HTML-decode, plural-strip, `&`↔`and`,
+  and punctuation-strip), scans every topic in the resolved projects,
   and silently extends any row whose stored name shares the
   normalized key (`Eval & Testing` and `Evals & Testing` collapse
   onto the oldest row). Names that survive normalization but score
@@ -399,17 +400,19 @@ move atomically per the release-coordinator pattern (#13).
 
 ### Fixed
 
-- **`lore-audit` now returns the complete set of overdue facts and
-  decisions on large vaults.** Previously, `FactService.queryOverdue` and
-  `DecisionService.queryOverdue` issued a single un-paginated
+- **`lore-query action='audit'` now returns the complete set of overdue
+  facts and decisions on large vaults.** Previously,
+  `FactService.queryOverdue` and `DecisionService.queryOverdue` issued a
+  single un-paginated
   `dataSources.query`, so Notion's default 100-row page silently capped
   the result set. Both methods now paginate to exhaustion and accept an
   optional `limit`. Because both queries sort `Review By asc`, the rows
-  that were previously dropped are the *least* overdue tail (and
+  that were previously dropped are the _least_ overdue tail (and
   no-review-date rows) — the most-overdue head was always returned. On
-  vaults with more than 100 overdue rows, expect `lore-audit` to surface
-  rows it previously did not; the newly-visible rows are the ones with
-  the latest `Review By` dates (or no date at all). See
+  vaults with more than 100 overdue rows, expect
+  `lore-query action='audit'` to surface rows it previously did not; the
+  newly-visible rows are the ones with the latest `Review By` dates (or no
+  date at all). See
   [PR #96](https://github.com/makenotion/lore/pull/96) for the underlying
   fix.
 

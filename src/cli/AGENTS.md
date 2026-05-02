@@ -10,20 +10,22 @@ debugging, manual search).
 
 ## Files
 
-| File | Responsibility |
-|------|---------------|
-| `index.ts` | CLI entry point: creates the `lore` program, registers commands |
-| `commands/init.ts` | `lore init <page-id>` -- create vault databases in Notion |
-| `commands/auth.ts` | `lore auth` -- check/display authentication status |
-| `commands/search.ts` | `lore search <query>` -- semantic search across memories |
-| `commands/mine.ts` | `lore mine [path]` -- index project files as memories |
-| `commands/status.ts` | `lore status` -- vault status + subcommands (projects, topics) |
-| `commands/install.ts` | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`) |
-| `commands/migrate.ts` | `lore migrate` -- add missing schema properties to vault data sources |
-| `commands/digest.ts` | `lore digest` -- gather digest data + spawn background synthesizer |
-| `commands/tasks.ts` | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`) |
-| `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`) |
-| `commands/entities.ts` | `lore entities` -- entity registry subcommands (currently: `merge`) |
+| File                    | Responsibility                                                                                                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`              | CLI entry point: creates the `lore` program, registers commands                                                                                                             |
+| `commands/init.ts`      | `lore init [page-id]` -- create a workspace-level vault or initialize databases under an existing Notion page                                                               |
+| `commands/auth.ts`      | `lore auth` -- check/display authentication status                                                                                                                          |
+| `commands/search.ts`    | `lore search <query>` -- semantic search across memories                                                                                                                    |
+| `commands/mine.ts`      | `lore mine [path]` -- index project files as memories                                                                                                                       |
+| `commands/status.ts`    | `lore status` -- vault status + subcommands (projects, topics)                                                                                                              |
+| `commands/install.ts`   | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`) |
+| `commands/migrate.ts`   | `lore migrate` -- add missing schema properties to vault data sources                                                                                                       |
+| `commands/digest.ts`    | `lore digest` -- gather digest data + spawn background synthesizer                                                                                                          |
+| `commands/tasks.ts`     | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`)                                                                                                         |
+| `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`)                                                                                                         |
+| `commands/entities.ts`  | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                         |
+| `commands/mcp.ts`       | `lore mcp` -- start the MCP stdio server for host assistant integrations                                                                                                    |
+| `commands/hooks.ts`     | `lore hooks` -- dispatch host-assistant hook events (`wakeup`, `autosave`, `session-end`)                                                                                   |
 
 ## Commander Patterns
 
@@ -62,7 +64,7 @@ vault, and resolves the current project context.
 **Exception**: The `auth` command does not call `initServices()` because it
 only checks whether the token is available, without connecting to Notion.
 **Updated for 0.10.0**: `auth --status`, `auth --whoami`, and
-`auth --migrate` *do* connect to Notion (for vault preflight, identity
+`auth --migrate` _do_ connect to Notion (for vault preflight, identity
 lookup, and migration verification, respectively), but they construct
 their own client directly rather than going through `initServices`.
 `--status` runs `verifyVaultAccess` by default — operators run it rarely
@@ -86,6 +88,7 @@ try {
 ```
 
 **Rules**:
+
 - Log errors with `console.error`, not `console.log`.
 - Exit with code 1 on failure.
 - Extract the `.message` from Error instances for clean output.
@@ -121,23 +124,13 @@ plain to keep names selectable for copy-paste; only the top-level `lore
 status` and `lore search` surfaces wrap titles. `lore mine` has nothing
 title-shaped to link.
 
-## Command Reference
+## Command Overview
 
-| Command | Arguments | Key Options | Description |
-|---------|-----------|-------------|-------------|
-| `lore init <page-id>` | Notion page ID | `--token <token>` | Create vault databases, write `.lore.yaml` |
-| `lore auth` | none | `--login`, `--status`, `--whoami`, `--logout`, `--migrate`, `-y, --yes` | One-command auth flow (`--login`: auto-installs ntn if missing, runs `ntn login`, runs post-flow vault preflight); auth status display (`--status`); identity lookup via `users.me` (`--whoami`); logout pointer to `ntn logout` (`--logout`); migration from `LORE_NOTION_TOKEN` to ntn (`--migrate`); `--yes` skips confirmation prompts for non-interactive automation |
-| `lore search <query>` | Search query | `-p`, `-t`, `-n` | Semantic search across memories |
-| `lore mine [path]` | Directory path | `-p`, `-t`, `--pattern`, `--dry-run`, `-n` | Index project files as memories |
-| `lore status` | none | none | Show vault status, database counts, active projects, and per-project digest watermarks |
-| `lore status projects` | none | `-a, --all` | List all projects |
-| `lore status topics [project]` | Project name | none | List topics in a project |
-| `lore install` | none | `--client`, `--project`, `--cursor-global`, `--print-config`, `-y` | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor` for Cursor-only; `--cursor-global` writes Cursor config under `~/.cursor/mcp.json`; `--print-config json\|toml` prints a paste-ready snippet for unsupported hosts). See **The install Command** below for the 0.10.0 ntn detection and MCP env-forwarding posture. |
-| `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
-| `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
-| `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
-| `lore conflicts scan` | none | `-p, --project`, `-n, --limit`, `--raw-limit`, `--include-bodies`, `--json`, `--exhaustive` | Walk the vault, surface candidate conflict pairs for in-context judgment by the calling agent (read-only; emits prompt-ready output) |
-| `lore entities merge --from <loser-id> --into <winner-id>` | Loser Entity ID, winner Entity ID | `--yes`, `--dry-run` | Preview/apply a duplicate Entity merge. Plan-only by default; `--yes` repoints Facts from loser to winner, appends loser lookup forms to winner aliases, writes a merge note, then archives the loser. Legacy positional ids are still accepted. |
+The canonical command overview table lives in
+[`../../docs/cli.md`](../../docs/cli.md). Keep this subsystem guide focused on
+CLI implementation conventions and per-command gotchas; when adding, removing,
+or changing registered commands in `src/cli/index.ts`, update `docs/cli.md` in
+the same patch.
 
 ## The auth Command
 
@@ -219,9 +212,9 @@ second run reports zero rows once the vault is canonicalized.
 The write-time canonicalizer in `src/hooks/agent-identity.ts` is the
 single source of truth for the canonical-variant table. New Lore-produced
 Agent strings route through it inside `deriveAgentName`, so the migration
-exists to canonicalize *historical* rows. Future agent integrations
+exists to canonicalize _historical_ rows. Future agent integrations
 should set `LORE_AGENT_NAME=<Name>` explicitly — only add to the
-canonical table when a new *default-detection* variant appears in the
+canonical table when a new _default-detection_ variant appears in the
 wild.
 
 ### Synopsis backfill (`--backfill-synopses`)
@@ -241,9 +234,9 @@ Two backends, selected by `--synopsis-backend`:
   preflight runs **only on the apply path** — operators without `claude`
   installed can still preview the candidate count via the cheap dry-run
   pass. Body-fetch / synthesis / sanitize / write failures all
-  continue-and-log to stderr (`[lore] synopsis-backfill: id=… phase=…
-  error=…`); the failed row's Synopsis stays empty so the next run picks
-  it up.
+  continue-and-log to stderr with entries shaped like
+  `[lore] synopsis-backfill: id=... phase=... error=...`; the failed row's
+  Synopsis stays empty so the next run picks it up.
 - `placeholder`: writes the `SYNOPSIS_PLACEHOLDER_SENTINEL` constant
   (`"[awaiting backfill]"`) directly to every non-archived candidate
   row. Skips body fetches entirely — the sentinel doesn't consult body
@@ -251,8 +244,8 @@ Two backends, selected by `--synopsis-backend`:
   also usable by operators who want to flag every legacy row on a large
   vault before committing to LLM cost. **One-way state**: once the
   sentinel lands, the `Synopsis is_empty` discovery filter excludes the
-  row on every subsequent run. Re-clear via `lore-memory action='update'
-  synopsis: ""` to re-target a row, or wait on a future
+  row on every subsequent run. Re-clear via `lore-memory action='update'`
+  with `synopsis: ""` to re-target a row, or wait on a future
   `--backfill-only-placeholders` flag (out of scope for 0.7.0).
 
 The fetch-time counters (`bodyOversizeSkipped`, `emptyBodySkipped`)
@@ -332,21 +325,24 @@ is unfixable at the migration layer without LLM-assisted relabeling
 this matters: re-grade specific rows via `lore-memory action='update'
 confidence=...` before running the backfill (the migration honors
 the explicit categorical), or after running it via the same update
-path followed by `lore-correct` to halve the seeded score on rows
-the operator wants to push lower. The Stale Confidence section (#10)
-surfaces these rows for triage in the natural course of work.
+path. Structured confidence-decrement now happens through
+`lore-memory action='compare'` asymmetric verdicts and fact/decision
+invalidation paths, not a standalone correction command. The Stale
+Confidence section (#10) surfaces these rows for triage in the natural
+course of work.
 
 ## The digest Command
 
 `digest` gathers recent project activity and spawns a background `claude -p`
 synthesizer that saves a distilled `source: digest` memory back to the vault.
-The digest is what `lore-wake-up`'s fast path surfaces at session start, so
-the goal is signal density (non-obvious findings, decisions landed, top-5
-active tasks, emerging themes) — not a chronological session log.
+The digest is what `lore-context action='wake-up'` surfaces in its fast path
+at session start, so the goal is signal density (non-obvious findings,
+decisions landed, top-5 active tasks, emerging themes) — not a chronological
+session log.
 
 Mechanics:
 
-- Data gathering is shared with the `lore-digest` MCP tool via
+- Data gathering is shared with `lore-context action='digest'` via
   `src/core/digest.ts` (`gatherDigestData`).
 - The synthesizer prompt lives in `src/hooks/prompts.ts`
   (`buildDigestPrompt`) and uses the same untrusted-content framing as
@@ -363,9 +359,9 @@ Mechanics:
   projects that hover below the digest-worthy bar week-over-week — the
   Stop-triggered scheduler's quiet-week branch keeps touching the marker
   for those, so no `source: "digest"` memory ever lands and
-  `lore-wake-up`'s fast path stays dark. The CLI re-touches the same
-  marker after spawning, so a manual run debounces the next Stop
-  hook's auto-path correctly.
+  `lore-context action='wake-up'` has no digest memory to surface in its fast
+  path. The CLI re-touches the same marker after spawning, so a manual run
+  debounces the next Stop hook's auto-path correctly.
 
 Operators invoke `lore digest --project Mail` (or any configured
 sub-project). It's the explicit path; the Stop hook fires it implicitly
@@ -479,11 +475,11 @@ A symmetric **Drift check** section (`formatDriftStatus` /
 `loadDriftStatus`) follows Digests. Three points only that aren't
 obvious from the rendered output:
 
-- Wording is "next fire on next *debounced session*", not "Stop hook"
+- Wording is "next fire on next _debounced session_", not "Stop hook"
   like digest, because drift fires on every debounced caller (MCP
-  server, shell hooks, digest scheduler) — not just Stop.
+  server, hook runner, digest scheduler) — not just Stop.
 - `lore status` itself runs with `driftCheck: true`, so
-  `resolveDriftCheck` touches the marker *before* the loader reads it.
+  `resolveDriftCheck` touches the marker _before_ the loader reads it.
   The section therefore reflects what debounced callers will see on
   their next fire — not what `lore status` itself triggered. Looks
   like a bug if you don't know to expect it.
@@ -503,7 +499,8 @@ obvious from the rendered output:
    program.addCommand(fooCommand)
    ```
 4. Remember the `.js` extension in the import path.
-5. Add the command to the table in this file and in the root `README.md`.
+5. Add the command to `docs/cli.md` and update the root README summary when the
+   command belongs in the quick-start list.
 
 ## The install Command
 
@@ -513,12 +510,9 @@ The behavior below is the 0.10.0 target shape — implemented
 across #01 (`resolveAuth` rewrite + deprecation warnings), #02
 (ntn detection + auto-install + auto-login), #03
 (`verifyVaultAccess` preflight), and #08 (this section's MCP
-env-forwarding rewrite). Read this with the merge-train context
-in mind: claims about `LORE_CONFIG_ROOT` /
-`LORE_SUPPRESS_DEPRECATIONS=1` forwarding describe the post-#08
-shape; before #08 lands, install forwards only `LORE_NOTION_TOKEN`
-and `LORE_NOTION_BASE_URL` per the 0.9.x `LORE_MCP_ENV_VARS`
-constant.
+env-forwarding rewrite). Runtime env names come from
+`RUNTIME_FORWARDED_KEYS` in `src/auth/forwarded-env.ts`; the static
+entries are assembled by `buildMcpEnv()` in `src/cli/commands/install.ts`.
 
 Install detects ntn install / login state and prompts on missing
 pieces (auto-install via `curl -fsSL https://ntn.dev | bash` with
@@ -528,13 +522,17 @@ on static token forwarding for ntn-source operators. Conditional
 `LORE_NOTION_TOKEN` forwarding is preserved when the legacy env
 var is set in the install-time environment (with a `lore auth
 --migrate` recommendation), so legacy operators don't lose access
-by upgrading. Always-forwarded values (post-#08): `LORE_CONFIG_ROOT`
-(so the MCP child resolves the right `.lore.yaml`) and
-`LORE_SUPPRESS_DEPRECATIONS=1` (silences per-session warnings
-from spawned children — emitted by #01's `resolveAuth`). Install
-runs `verifyVaultAccess` post-resolution and refuses to write MCP
-config on `not-found`, so operators don't end up with
-installed-but-broken state.
+by upgrading. Static values from `buildMcpEnv()` include
+`LORE_SUPPRESS_DEPRECATIONS=1` (silences per-session warnings from spawned
+children — emitted by #01's `resolveAuth`) and `LORE_CONFIG_ROOT` for bare-bin,
+legacy, Cursor global-scope, and bare/legacy print-config shapes. Those shapes
+need the static root because the host may launch the MCP child from an
+unpredictable cwd. Project-scoped Yarn/PnP snippets for Claude, Codex, Cursor,
+and `--print-config --yarn-pnp` intentionally omit `LORE_CONFIG_ROOT`; they
+launch from the workspace root and rely on the upward `.lore.yaml` search
+instead. Install runs `verifyVaultAccess` post-resolution and refuses to write
+MCP config on `not-found`, so operators don't end up with installed-but-broken
+state.
 
 ### Assistant targets
 
@@ -565,19 +563,21 @@ installed-but-broken state.
   include stack traces (an unexpected failure mode worth surfacing
   without making the default operator output noisy).
 - Hook-script prerequisites (`hooks/autosave.sh`, `hooks/wakeup.sh`) are
-  per-client. Claude and Codex runners verify them at the start of their
-  branch; Cursor does not (Cursor's MCP runtime doesn't use them). A
-  missing or non-writable hook script does NOT block a Cursor-only
-  install, and under `--client all` it surfaces through the per-client
-  captured-error path so the Cursor branch still installs cleanly.
+  checked only under `--legacy-paths`. Default Claude and Codex installs use
+  bin dispatch (`lore hooks ...`, or `yarn run -T lore hooks ...` under Yarn
+  PnP) and do not require the checked-in shell wrappers. Cursor never checks
+  the scripts because its MCP runtime does not use hooks. A missing or
+  non-writable legacy hook script does NOT block a Cursor-only install, and
+  under `--client all` it surfaces through the per-client captured-error path
+  so non-legacy branches still install cleanly.
 
 Cursor's MCP file location is documented at
 <https://docs.cursor.com/context/mcp> — the installer reads the project-
 scoped `<projectDir>/.cursor/mcp.json` by default and the global
 `~/.cursor/mcp.json` under `--cursor-global`. The JSON shape is identical
 to Claude Code's `.mcp.json` (`command` / `args` / `cwd` / `env`); the
-installer reuses `LORE_MCP_ENV_VARS` so values resolve at runtime via the
-same `${VAR}` placeholders.
+installer reuses `buildMcpEnv()` and `RUNTIME_FORWARDED_KEYS` so runtime
+values resolve through the same `${VAR}` placeholders.
 
 #### `--cursor-global` precedence rules
 
@@ -599,13 +599,19 @@ same `${VAR}` placeholders.
 
 For MCP hosts not directly supported via `--client` (Gemini-CLI, OpenCode,
 Windsurf, Antigravity, Copilot, etc.), `--print-config` emits a paste-ready
-config snippet to stdout. Pure stdout-emitter — no files written, `--client`
-and `--project` are accepted as no-ops alongside it.
+config snippet to stdout. Pure stdout-emitter — no files written. `--client`
+is accepted as a no-op; `--project` selects the config root embedded as
+`LORE_CONFIG_ROOT` for bare/legacy printed snippets. Yarn/PnP printed snippets
+omit that static env and rely on launch from the workspace root, so pass
+`--yarn-pnp` only when the unsupported host will run the snippet from the repo
+root. `--yarn-pnp` / `--no-yarn-pnp` select the printed command shape.
 
 - `--print-config json` calls `buildClaudeMcpEntry` and wraps the result in
-  `{ "mcpServers": { "lore": ... } }`. Byte-identical to what
-  `--client claude` writes to `.mcp.json`.
-- `--print-config toml` calls `buildCodexMcpSection`. Byte-identical to what
+  `{ "mcpServers": { "lore": ... } }`. For the same `--project` and
+  Yarn/PnP shape, it is byte-identical to what `--client claude` writes to
+  `.mcp.json`.
+- `--print-config toml` calls `buildCodexMcpSection`. For the same
+  `--project` and Yarn/PnP shape, it is byte-identical to what
   `--client codex` appends to `.codex/config.toml`.
 
 Reuse — not parallel formatters — is the contract: drift between the
@@ -683,22 +689,22 @@ Windows; revisit if Codex ships a Windows-native hook runner.
 `conflicts scan` (issue 0.9.0/#09) walks the vault, runs lexical
 candidate generation per project (delegating to
 `findConflictCandidates`), filters out pairs already judged via
-`Compared With`, and emits *prompt-ready* output the calling agent
+`Compared With`, and emits _prompt-ready_ output the calling agent
 reads and dispatches back via `lore-memory action='compare'`.
 
 The CLI does NOT call any LLM and does NOT call the compare tool —
 it produces structured material the agent acts on. Engram's
 analog (`engram conflicts scan`) shells out to a fresh agent CLI
 via `ENGRAM_AGENT_CLI`; lore inverts the design because the MCP
-server is invoked *by* the current Claude session already, so the
-natural judge is the *current* session, not a subprocess.
+server is invoked _by_ the current Claude session already, so the
+natural judge is the _current_ session, not a subprocess.
 
 ### Pipeline
 
 `list → generate → dedup → filter → sort → truncate → render`
 
 Order is load-bearing: filtering before truncation ensures
-`--limit` budgets the *useful* candidate set, not the raw set.
+`--limit` budgets the _useful_ candidate set, not the raw set.
 An earlier draft of the spec applied filters after truncation and
 silently under-surfaced candidates when the top-similarity raw
 slice contained already-judged pairs.
@@ -709,7 +715,7 @@ The scan uses two distinct caps that an operator must keep
 separate when reasoning about coverage:
 
 - **`--raw-limit` (default `SCAN_RAW_CANDIDATE_CAP = 500`)** is
-  the *coverage* knob — passed into `findConflictCandidates` as
+  the _coverage_ knob — passed into `findConflictCandidates` as
   `pairLimit` per project. Bounds the per-project candidate
   **accumulator** (the generator uses bounded top-K accumulation so
   a high-overlap project allocates O(`pairLimit`)
@@ -727,7 +733,7 @@ separate when reasoning about coverage:
   `--exhaustive`, `--exhaustive` wins and the CLI emits a one-line
   stderr note rather than failing.
 - **`--limit` (default `CONFLICT_PAIR_LIMIT = 50`)** is the
-  *prompt budget* knob — applied AFTER dedup + comparedWith
+  _prompt budget_ knob — applied AFTER dedup + comparedWith
   filter + sort. Bounds the agent's per-run reasoning surface.
 
 Passing `--limit` to the generator (instead of
@@ -814,7 +820,7 @@ details:
 
 - `--pattern <glob>` filters the walker's output before the `--limit`
   slice, so `--pattern src/**/*.ts --limit 10` returns the first 10
-  *matching* files rather than the first 10 files of any type. The
+  _matching_ files rather than the first 10 files of any type. The
   matcher (`globToRegExp` in `commands/mine.ts`) supports `**`
   (multi-segment globstar; only when surrounded by path boundaries),
   `*` (within-segment), `?`, and POSIX-style character classes

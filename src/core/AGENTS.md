@@ -10,34 +10,34 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 
 ## Files
 
-| File          | Class/Function     | Responsibility                                             |
-| ------------- | ------------------ | ---------------------------------------------------------- |
-| `vault.ts`    | `VaultManager`     | Init/load vault, get database IDs, count stats, drift check |
-| `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
-| `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
-| `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper shared by #06's upsert and #14's re-key — `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set — and `rekeyTopicKey` (0.9.0/#14) — re-key path that appends a `## Re-keyed (date)` audit block, validates collision via `findByTopicKey`, and writes only the `Topic Key` column. Hosts `recordCompared` — symmetric two-page `pages.update` writing `Compared With` + `Compare Notes` on both sides of a judged pair (0.9.0/#05); accepts an `affected` field (loser id for asymmetric verdicts, `null` for symmetric) so direction is part of the pair-scoped idempotency key. Module also exports the standalone dispatch helpers `recordContradiction` / `recordSupersedence` — `recordContradiction` runs `createWithDedup` first (idempotent on the triple hash) then `decrementConfidence` with an atomic `compare_dispatch` ledger marker in `Compare Notes`; `recordSupersedence` adds `decisions.supersede` as step 1 ahead of fact + ledgered decrement, routing through the existing `lore-decision action='supersede'` semantics so the new decision's `Supersedes` relation and the old decision's `Status` flip alongside the contradiction signal. Both throw `CompareDispatchPartialFailureError` with `step` / `affectedMemoryId` / `factId` fields when a step lands but a successor fails — surfaces retry diagnostics rather than requiring manual repair. Prompt-version provenance survives only via the final Compare Notes audit trail; `FactService` has no body column in 0.9.0 so the helpers do NOT thread `reason` / `promptVersion` into the emitted fact. Module also exports the pair-scoped final-audit helper `hasMatchingCompareNote`, the dispatch-ledger helpers (`buildCompareDispatchLedgerEntry`, `hasCompareDispatchLedgerEntry`), and the structural `CompareDispatchServices` type the helpers accept |
-| `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity; includes `repointEntity` for entity merges |
-| `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
-| `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
-| `task-reconcile.ts` | `reconcileActiveTasks()` / `scoreCandidate()` / `formatReconcileOutput()` | Operator-pulled batch reconciliation (issue 0.7.0/14): scan active tasks against recent memories with resolution-shaped cues, score by entity / cue / recency, surface ranked candidate closures. Read-only; one-shot vault cleanup. Hosts the `MAX_RECONCILE_TASKS` / `RECONCILE_PER_TASK_LIMIT` / cue-pattern constants and the `mapWithConcurrency` fan-out helper. Shared by `lore-task action='reconcile'` and `lore tasks reconcile`. |
-| `entity.ts`   | `EntityService`    | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases, archive. Optional service — `null` on legacy vaults that pre-date the Entities DB. |
-| `entity-merge.ts` | `mergeEntities()` | Operator-driven duplicate Entity merge: preview/apply plan, repoint facts from loser to winner, append loser lookup forms to winner aliases, write a merge note, archive loser only after earlier steps succeed, then re-scan for late fact writes. |
-| `entity-migration.ts` | `buildEntities()` | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`. |
-| `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
-| `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + active-task-related memories for wake-up surfaces (MCP tool + shell hook) |
-| `project-context.ts` | `composeProjectContext()` / `renderProjectContextLines()` | Renders the per-project framing block (name + description + siblings + catch-all warning) for `lore-context action='wake-up'`, `lore-query action='ask'`, and the shell wake-up hook. Synchronous; takes an already-resolved `Project` so no Notion call. (Issue 0.6.0/18.) |
-| `cache.ts`    | `LruCache<K, V>`   | Minimal in-process LRU + TTL used by name→id resolvers     |
-| `fact-encoding.ts`   | `fixFactEncoding()`   | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions |
-| `memory-encoding.ts` | `fixMemoryEncoding()` | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB |
-| `agent-normalization.ts` | `normalizeAgents()` | `lore migrate --normalize-agents` — collapse fragmented `Agent` strings onto their canonical form (PF3-02) |
-| `synopsis-backfill.ts` | `backfillSynopses()` | `lore migrate --backfill-synopses` — synthesize a 1–2 sentence synopsis for memories whose `Synopsis` is empty; pluggable `claude` / `placeholder` backends (issue 0.7.0/05) |
-| `confidence-migration.ts` | `runBuildConfidenceScoresMigration()` | `lore migrate --build-confidence-scores` — baseline-seed every memory's `Confidence Score` from its categorical `Confidence` and write `Last Referenced At = created_time`, then realize accrued decay. Plan-then-execute; `--yes` applies. Project-scoped via `--project <name>` (strict-resolve, fails fast on unknown names). (Issue 0.8.0/11.) |
-| `similarity.ts` | `titleTrigrams`, `trigramJaccard`, `tagOverlap` | Pure helpers for the write-path near-duplicate probe |
-| `near-duplicate.ts` | `findNearDuplicates()` | Advisory probe used by `lore-remember` / `lore-decide` to surface similar rows |
-| `conflict.ts` | `findConflictCandidates()` | Lexical conflict-candidate generator (0.9.0 issue #03). Pure function over a `Memory[]` snapshot — no Notion access. Consumed by #05 (`lore-memory action='compare'`) and #09 (`lore conflicts scan`). Returns pairs whose title-blob trigram OR tag overlap crosses threshold; the caller filters on `comparedWith` / archive state |
-| `prompts/conflict-judge.ts` | `renderConflictJudgePrompt()` + `CONFLICT_JUDGE_PROMPT_VERSION` | Locked judgment-prompt template for the conflict-detection workflow (0.9.0 issue #03). Borrowed from engram's `internal/llm/prompt.go` discipline; see "Locked LLM prompts (`src/core/prompts/`)" below |
-| `decay.ts` | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor`. The migration in `confidence-migration.ts` consumes `seedConfidenceScore` + `decayConfidenceScore` for baseline backfill |
-| `topic-key.ts` | `suggestTopicKey()` | Pure heuristic over (title, kind) → kebab-case `${family}/${noun-phrase}` key (issue 0.9.0/#07). No I/O, no Notion access. Backs `lore-memory action='suggest-topic-key'`. Family from a closed `Record<MemoryKind, string \| null>` — `note` and `task` map to `null`. Noun phrase is the title's first 4 tokens after NFKD ASCII fold + stoplist + preposition-break filtering, with `YYYY-MM-DD` dates pre-stripped, then truncated at a 48-char hyphen-aware boundary. Deterministic; same input always returns the same key |
+| File                        | Class/Function                                                                                                                               | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `vault.ts`                  | `VaultManager`                                                                                                                               | Init/load vault, get database IDs, count stats, drift check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `project.ts`                | `ProjectService`                                                                                                                             | CRUD for projects, findByPath, findByName                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `topic.ts`                  | `TopicService`                                                                                                                               | CRUD for topics, getOrCreate, listByProject                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `memory.ts`                 | `MemoryService`                                                                                                                              | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper shared by #06's upsert and #14's re-key — `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set — and `rekeyTopicKey` (0.9.0/#14) — re-key path that appends a `## Re-keyed (date)` audit block, validates collision via `findByTopicKey`, and writes only the `Topic Key` column. Hosts `recordCompared` — symmetric two-page `pages.update` writing `Compared With` + `Compare Notes` on both sides of a judged pair (0.9.0/#05); accepts an `affected` field (loser id for asymmetric verdicts, `null` for symmetric) so direction is part of the pair-scoped idempotency key. Module also exports the standalone dispatch helpers `recordContradiction` / `recordSupersedence` — `recordContradiction` runs `createWithDedup` first (idempotent on the triple hash) then `decrementConfidence` with an atomic `compare_dispatch` ledger marker in `Compare Notes`; `recordSupersedence` adds `decisions.supersede` as step 1 ahead of fact + ledgered decrement, routing through the existing `lore-decision action='supersede'` semantics so the new decision's `Supersedes` relation and the old decision's `Status` flip alongside the contradiction signal. Both throw `CompareDispatchPartialFailureError` with `step` / `affectedMemoryId` / `factId` fields when a step lands but a successor fails — surfaces retry diagnostics rather than requiring manual repair. Prompt-version provenance survives only via the final Compare Notes audit trail; `FactService` has no body column in 0.9.0 so the helpers do NOT thread `reason` / `promptVersion` into the emitted fact. Module also exports the pair-scoped final-audit helper `hasMatchingCompareNote`, the dispatch-ledger helpers (`buildCompareDispatchLedgerEntry`, `hasCompareDispatchLedgerEntry`), and the structural `CompareDispatchServices` type the helpers accept |
+| `fact.ts`                   | `FactService`                                                                                                                                | Knowledge graph triples with temporal validity; includes `repointEntity` for entity merges                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `decision.ts`               | `DecisionService`                                                                                                                            | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `task.ts`                   | `TaskService`                                                                                                                                | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `task-reconcile.ts`         | `reconcileActiveTasks()` / `scoreCandidate()` / `formatReconcileOutput()`                                                                    | Operator-pulled batch reconciliation (issue 0.7.0/14): scan active tasks against recent memories with resolution-shaped cues, score by entity / cue / recency, surface ranked candidate closures. Read-only; one-shot vault cleanup. Hosts the `MAX_RECONCILE_TASKS` / `RECONCILE_PER_TASK_LIMIT` / cue-pattern constants and the `mapWithConcurrency` fan-out helper. Shared by `lore-task action='reconcile'` and `lore tasks reconcile`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `entity.ts`                 | `EntityService`                                                                                                                              | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases, archive. Optional service — `null` on legacy vaults that pre-date the Entities DB.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `entity-merge.ts`           | `mergeEntities()`                                                                                                                            | Operator-driven duplicate Entity merge: preview/apply plan, repoint facts from loser to winner, append loser lookup forms to winner aliases, write a merge note, archive loser only after earlier steps succeed, then re-scan for late fact writes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `entity-migration.ts`       | `buildEntities()`                                                                                                                            | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `context.ts`                | `resolveProject()`                                                                                                                           | Match cwd to a project via longest prefix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `wakeup.ts`                 | `loadWakeUpData()`                                                                                                                           | Aggregate digest + memories + facts + decisions + active-task-related memories for wake-up surfaces (MCP tool + shell hook)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `project-context.ts`        | `composeProjectContext()` / `renderProjectContextLines()`                                                                                    | Renders the per-project framing block (name + description + siblings + catch-all warning) for `lore-context action='wake-up'`, `lore-query action='ask'`, and the shell wake-up hook. Synchronous; takes an already-resolved `Project` so no Notion call. (Issue 0.6.0/18.)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `cache.ts`                  | `LruCache<K, V>`                                                                                                                             | Minimal in-process LRU + TTL used by name→id resolvers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `fact-encoding.ts`          | `fixFactEncoding()`                                                                                                                          | `lore migrate --fix-fact-encoding` — decode Subject/Object + recompute DedupKey, gated by post-decode collisions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `memory-encoding.ts`        | `fixMemoryEncoding()`                                                                                                                        | `lore migrate --fix-memory-encoding` — decode Title + body markdown; skips archived and body >100 KB                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `agent-normalization.ts`    | `normalizeAgents()`                                                                                                                          | `lore migrate --normalize-agents` — collapse fragmented `Agent` strings onto their canonical form (PF3-02)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `synopsis-backfill.ts`      | `backfillSynopses()`                                                                                                                         | `lore migrate --backfill-synopses` — synthesize a 1–2 sentence synopsis for memories whose `Synopsis` is empty; pluggable `claude` / `placeholder` backends (issue 0.7.0/05)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `confidence-migration.ts`   | `runBuildConfidenceScoresMigration()`                                                                                                        | `lore migrate --build-confidence-scores` — baseline-seed every memory's `Confidence Score` from its categorical `Confidence` and write `Last Referenced At = created_time`, then realize accrued decay. Plan-then-execute; `--yes` applies. Project-scoped via `--project <name>` (strict-resolve, fails fast on unknown names). (Issue 0.8.0/11.)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `similarity.ts`             | `titleTrigrams`, `trigramJaccard`, `tagOverlap`                                                                                              | Pure helpers for the write-path near-duplicate probe                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `near-duplicate.ts`         | `findNearDuplicates()`                                                                                                                       | Advisory probe used by memory and decision write paths (`lore-memory action='save'`, `lore-decision action='create'`) to surface similar rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `conflict.ts`               | `findConflictCandidates()`                                                                                                                   | Lexical conflict-candidate generator (0.9.0 issue #03). Pure function over a `Memory[]` snapshot — no Notion access. Consumed by #05 (`lore-memory action='compare'`) and #09 (`lore conflicts scan`). Returns pairs whose title-blob trigram OR tag overlap crosses threshold; the caller filters on `comparedWith` / archive state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `prompts/conflict-judge.ts` | `renderConflictJudgePrompt()` + `CONFLICT_JUDGE_PROMPT_VERSION`                                                                              | Locked judgment-prompt template for the conflict-detection workflow (0.9.0 issue #03). Borrowed from engram's `internal/llm/prompt.go` discipline; see "Locked LLM prompts (`src/core/prompts/`)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `decay.ts`                  | `clampConfidenceScore`, `seedConfidenceScore`, `bumpConfidenceScore`, `decrementConfidenceScore`, `decayConfidenceScore`, `confidenceFactor` | Pure-algebra helpers for the dynamic-confidence workstream (0.8.0/#03). I/O wrappers `MemoryService.touchOnRead` and `MemoryService.decrementConfidence` consume them; #08's RRF reads `confidenceFactor`. The migration in `confidence-migration.ts` consumes `seedConfidenceScore` + `decayConfidenceScore` for baseline backfill                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `topic-key.ts`              | `suggestTopicKey()`                                                                                                                          | Pure heuristic over (title, kind) → kebab-case `${family}/${noun-phrase}` key (issue 0.9.0/#07). No I/O, no Notion access. Backs `lore-memory action='suggest-topic-key'`. Family from a closed `Record<MemoryKind, string \| null>` — `note` and `task` map to `null`. Noun phrase is the title's first 4 tokens after NFKD ASCII fold + stoplist + preposition-break filtering, with `YYYY-MM-DD` dates pre-stripped, then truncated at a 48-char hyphen-aware boundary. Deterministic; same input always returns the same key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ## Service Class Pattern
 
@@ -126,10 +126,10 @@ the match.
 
 **Two paths, one return shape**:
 
-| Branch | Behavior | `upserted` |
-|--------|----------|------------|
-| No existing match | `create` with `revisionCount: 1` and the topic key seeded onto the new row | `false` |
-| Existing match | Append `## Revision N (YYYY-MM-DD)` block to the page body via `replace_content_range`, then property update with new title + revision count | `true` |
+| Branch            | Behavior                                                                                                                                     | `upserted` |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| No existing match | `create` with `revisionCount: 1` and the topic key seeded onto the new row                                                                   | `false`    |
+| Existing match    | Append `## Revision N (YYYY-MM-DD)` block to the page body via `replace_content_range`, then property update with new title + revision count | `true`     |
 
 **Kind-mismatch validation runs BEFORE any Notion write.** The
 acceptance criterion is "kind mismatch throws before any Notion
@@ -159,9 +159,9 @@ benign — not justified.
   Project-set is handled by the lookup contract above; not a
   separate throw at this layer.
 - **PRESERVE silently** (input dropped, no warning, no property write):
-  Status, Topic relation. State transitions belong on `lore-memory
-  action='update'`; the upsert path treats these as forgotten-to-omit
-  envelopes.
+  Status, Topic relation. State transitions belong on
+  `lore-memory action='update'`; the upsert path treats these as
+  forgotten-to-omit envelopes.
 - **REPLACE on every save** (latest write wins): Title, Synopsis,
   Keywords, Source. Confidence (categorical) bumps if input provides
   one; otherwise the existing categorical is written back.
@@ -278,7 +278,7 @@ non-`topicKey` saves both return `promotionAdvisory: null`
 regardless of body length. The advisory is specifically about
 revision-chain accumulation — a one-shot write with a long body is
 a different signal that warrants a different surface (out of scope
-for 0.9.0). The 5KB body threshold is a *human-readability*
+for 0.9.0). The 5KB body threshold is a _human-readability_
 heuristic, NOT a Notion structural cap; resisting a precise
 block-limit claim is deliberate because Notion's documented limits
 drift between releases. Both thresholds are exported consts so a
@@ -319,8 +319,8 @@ in `Compared With`, the relation only points from A to B. The reverse
 
 **Calling code is responsible for symmetric writes** for any consumer
 that depends on the bidirectional invariant. The compare workstream
-(0.9.0/#05, future) is the canonical example: `lore conflicts scan`
-(0.9.0/#09, future) checks whether **either side** names the other in
+(0.9.0/#05) is the canonical example: `lore conflicts scan`
+(0.9.0/#09) checks whether **either side** names the other in
 `Compared With` and skips the pair on a hit. So a half-written A → B
 relation (A names B, but B does not name A) is enough to suppress the
 next scan — re-judgment is not the failure mode. The actual harm is
@@ -345,11 +345,10 @@ actionable verdicts) → audit-marker write. Final audit entries and
 dispatch ledger entries both live in `Compare Notes`, but they are
 different NDJSON shapes:
 
-- Final audit line: `{ verdict, target, affected, reason, judgedAt,
-  promptVersion }`
-- Dispatch ledger line:
-  `{ entryType: "compare_dispatch", dispatchKey, step:
-  "confidence_decrement", verdict, source, affected }`
+- Final audit line fields: `verdict`, `target`, `affected`, `reason`,
+  `judgedAt`, and `promptVersion`.
+- Dispatch ledger line fields: `entryType`, `dispatchKey`, `step`,
+  `verdict`, `source`, and `affected`; `step` is `confidence_decrement`.
 
 `hasMatchingCompareNote` ignores ledger lines, so only final audit
 lines can make the pair "already judged." `hasCompareDispatchLedgerEntry`
@@ -487,9 +486,9 @@ row entirely untouched:
    held by a task or decision under the same key surfaces as a
    collision. The error names the colliding memory's ID so the
    operator can act on it directly. Lore does NOT auto-merge
-   two topic chains; merge policy is non-trivial (which
-   `Revision Count` survives? whose title? whose `Confidence
-   Score`?) and 0.9.0 declines to invent.
+   two topic chains; merge policy is non-trivial. Which
+   `Revision Count` survives? Whose title or `Confidence Score`?
+   0.9.0 declines to invent that policy.
 
 **Skip-self in collision check.** A memory whose `Topic Key`
 already equals `newTopicKey` would otherwise self-collide. The
@@ -520,8 +519,8 @@ property-first, the failure modes are:
    the no-op guard without re-attempting the audit. The audit
    block is permanently lost — but the row's structural state
    is correct and self-consistent. The thrown error is a
-   `RekeyAuditError` carrying `{memoryId, oldTopicKey,
-   newTopicKey, cause}` so callers can distinguish "re-key
+   `RekeyAuditError` carrying `memoryId`, `oldTopicKey`,
+   `newTopicKey`, and `cause`, so callers can distinguish "re-key
    didn't happen" from "re-key happened but audit is missing."
 
 `RekeyAuditError` is a named subclass of `Error` exported
@@ -559,12 +558,12 @@ the service helper:
   split the chain across two kinds. The handler throws at the
   boundary; the service helper never sees the combined input.
 - **Preflight the re-key BEFORE applying any content delta.**
-  Calls `MemoryService.validateRekey` to validate
-  `(non-empty projectIds, no collision under current
-  project-set)` against the pre-update memory state. A
-  preflight rejection throws cleanly before the content update
-  runs, so the operator never sees a half-persisted state for
-  the common collision/empty-projectIds failure modes. The
+  Calls `MemoryService.validateRekey` to validate non-empty
+  `projectIds` and no collision under the current project set
+  against the pre-update memory state. If preflight rejects, it
+  throws cleanly before the content update runs, so the operator
+  never sees a half-persisted state for the common
+  collision/empty-projectIds failure modes. The
   preflight is non-mutating: one `getById` plus (only when the
   new key differs from old) one `dataSources.query`.
   `validateRekey` is exported as a service method so direct
@@ -601,9 +600,9 @@ the service helper:
   /etc.), the handler must NOT call the general-purpose update
   service path — that would issue a no-op `pages.retrieve` and
   surface no signal but burn round-trips. The handler
-  destructures the framing fields (`action`, `memoryId`,
-  `topicKey`) and gates the residual update on `Object.values(
-  contentDelta).some((v) => v !== undefined)`.
+  destructures the framing fields (`action`, `memoryId`, `topicKey`)
+  and gates the residual update on whether `contentDelta` has any
+  defined value.
 
 **No-op acknowledgment in the response.** When the preflight
 returns `willRekey: false` (the new key matches the existing
@@ -630,9 +629,9 @@ Issues a `dataSources.query` against the Memories DS only — never touches
 - Tags: any-match `OR` across tag values (single value collapses to a flat
   `multi_select.contains`).
 - Kind / Status: server-side `select.equals`.
-- Text clause: `(Title contains query) OR (Keywords contains query) OR
-  (Synopsis contains query)`. Synopsis joins the precision lane (issue
-  0.7.0/01–02) because it's agent-curated, short, and high-signal — a
+- Text clause: title, keywords, or synopsis contains the query.
+  Synopsis joins the precision lane (issue 0.7.0/01–02) because it's
+  agent-curated, short, and high-signal — a
   phrase absent from title and keywords but present in a synopsis would
   otherwise miss the contains lane entirely. All three branches share
   Notion's case-insensitive `contains` semantics on `rich_text`/`title`.
@@ -696,15 +695,16 @@ double-credit would inflate the fused score) and the semantic-only
 caller (rendering the same row twice is a visible correctness bug). Pre-
 pagination this couldn't happen — single page meant single observation.
 
-**Returns the full pagination accumulator without an early `slice(0,
-limit)`.** The saturation gate bounds `accumulated.length` to `[0, limit
-+ page_size − 1]`; trimming inside `fetchSemanticPages` would silently
-narrow the hybrid RRF pool. A row at semantic-rank 11 that ALSO appears
-in contains contributes its `1/(RRF_K + 11 + 1)` to the fused score
-and can plausibly beat a contains-only row — but only if it survives
-long enough to reach the accumulator. `runSearch`'s `pages.slice(0,
-limit)` at the call boundary is the authoritative final cap for
-semantic-only callers; hybrid consumes the wider pool. Pre-PR the
+**Returns the full pagination accumulator without an early slice.**
+The saturation gate bounds `accumulated.length` to the range from 0
+through `limit + pageSize - 1`; trimming inside `fetchSemanticPages`
+would silently narrow the hybrid RRF pool. A row at semantic-rank 11
+that also appears in contains contributes its `1 / (RRF_K + 11 + 1)`
+to the fused score and can plausibly beat a contains-only row — but
+only if it survives long enough to reach the accumulator. `runSearch`
+applies `pages.slice(0, limit)` at the call boundary as the
+authoritative final cap for semantic-only callers; hybrid consumes the
+wider pool. Pre-PR the
 equivalent narrowing was structural (single page of 100 trimmed to
 limit), so this is a recall improvement on the same axis pagination
 opened up, not a fix-for-regression.
@@ -765,9 +765,10 @@ Once both settle:
   only one branch (`1/61`). The earlier concat-then-fill heuristic
   discarded that signal.
 
-  **Tie-break order** (deterministic, fixture-pinned): score → best-rank
-  → contains-presence → page id ascending. `bestRank = min(containsRank
-  ?? Infinity, semanticRank ?? Infinity)`. The contains-presence rule
+  **Tie-break order** (deterministic, fixture-pinned): score →
+  best-rank → contains-presence → page id ascending. `bestRank` is the
+  minimum of contains rank and semantic rank, with missing ranks treated
+  as infinity. The contains-presence rule
   preserves the "contains is precision" intuition the prior heuristic
   encoded — a contains-present row beats a semantic-only row when score
   AND best-rank are tied. A future contributor tempted to "make
@@ -779,6 +780,7 @@ Once both settle:
   contains nails it (file names, PR numbers, function names) skips RRF
   entirely and returns contains rows in their original order. The
   saturation gate is the first decision; RRF is the second.
+
 - **Single-branch failure (PF3-03).** A rejected branch degrades to an
   empty result; the surviving branch's rows pass through unchanged. A
   transient `429`/`5xx` from `client.search` no longer takes down a
@@ -786,12 +788,12 @@ Once both settle:
   `dataSources.query` no longer takes down a semantic query that
   returned. `LORE_DEBUG=1` emits one stderr line per failed branch
   (`[lore] partial-failure: branch=<contains|semantic> error=<message>
-  source=hybrid-search`) so an operator can distinguish a transient
+source=hybrid-search`) so an operator can distinguish a transient
   blip from a pathological loop. **Both branches rejected** still
   surfaces an error so a fully broken search subsystem doesn't
   masquerade as "no results found." The both-fail path additionally
   writes `[lore] both-failure: contains=<message> semantic=<message>
-  source=hybrid-search` **unconditionally** — not gated on
+source=hybrid-search` **unconditionally** — not gated on
   `LORE_DEBUG` — because there is no surviving response to mask
   noise on, the caller's `try/catch` only sees one chosen `throw`,
   and an operator triaging a real outage needs both rejection
@@ -820,8 +822,8 @@ Once both settle:
   scoped to their surface.
 
 The earlier sequential design (run contains, then run semantic if it
-under-shot) traded latency *against* itself in the under-shooting case,
-which is the *common* case for phrase-shaped queries. Parallelism
+under-shot) traded latency _against_ itself in the under-shooting case,
+which is the _common_ case for phrase-shaped queries. Parallelism
 restores the pre-PR worst-case wall-clock while keeping the precision
 of contains when it produces enough signal. Switching from `Promise.all`
 to `Promise.allSettled` preserves the wall-clock guarantee while
@@ -951,12 +953,12 @@ The explain shape (`SearchExplain` in `src/types.ts`) carries:
 
 **Branch-field rules** (pinned by tests):
 
-| Resolved mode | `branch` | `containsRank` | `semanticRank` | `rrfScore` |
-|---|---|---|---|---|
-| `"contains"` | `contains-only` | row position in contains | `null` | `null` |
-| `"semantic"` (incl. kill-switch) | `semantic-only` | `null` | row position in semantic | `null` |
-| `"hybrid"`, saturated | `contains-saturated` | row position in contains | **always `null`** | `null` |
-| `"hybrid"`, RRF | `rrf` | actual rank or `null` | actual rank or `null` | fused score |
+| Resolved mode                    | `branch`             | `containsRank`           | `semanticRank`           | `rrfScore`  |
+| -------------------------------- | -------------------- | ------------------------ | ------------------------ | ----------- |
+| `"contains"`                     | `contains-only`      | row position in contains | `null`                   | `null`      |
+| `"semantic"` (incl. kill-switch) | `semantic-only`      | `null`                   | row position in semantic | `null`      |
+| `"hybrid"`, saturated            | `contains-saturated` | row position in contains | **always `null`**        | `null`      |
+| `"hybrid"`, RRF                  | `rrf`                | actual rank or `null`    | actual rank or `null`    | fused score |
 
 The "saturated → semanticRank null" rule is load-bearing: the semantic
 branch ran in parallel and may have returned the same id, but the
@@ -996,13 +998,13 @@ date / tags (e.g. the shell wake-up hook's related-memories section).
 The single-branch and hybrid paths each apply `confidenceFactor` to the
 RRF score **exactly once**. The split keeps that contract enforceable:
 
-| Layer | Function | Confidence-aware? |
-|---|---|---|
-| Fetch | `fetchContainsPages(input)` | No — raw Notion result |
-| Fetch | `fetchSemanticPages(input, intent)` | No — raw Notion result |
-| Public | `searchByContainsPages(input)` | Yes — fetch + factor + sort |
-| Public | `searchBySemanticPages(input, intent)` | Yes — fetch + factor + sort |
-| Public | `searchByHybridPages(...)` | Yes — composes raw fetch + factor in RRF accumulator |
+| Layer  | Function                               | Confidence-aware?                                    |
+| ------ | -------------------------------------- | ---------------------------------------------------- |
+| Fetch  | `fetchContainsPages(input)`            | No — raw Notion result                               |
+| Fetch  | `fetchSemanticPages(input, intent)`    | No — raw Notion result                               |
+| Public | `searchByContainsPages(input)`         | Yes — fetch + factor + sort                          |
+| Public | `searchBySemanticPages(input, intent)` | Yes — fetch + factor + sort                          |
+| Public | `searchByHybridPages(...)`             | Yes — composes raw fetch + factor in RRF accumulator |
 
 Hybrid composes the **raw** fetch helpers, not the public confidence-
 aware wrappers. If hybrid called `searchByContainsPages` /
@@ -1084,13 +1086,13 @@ RRF contribution. The asymmetry is what the design review caught.
 
 ### Algebra (`src/core/decay.ts`)
 
-| Helper | Algebra | Where it fires |
-|--------|---------|----------------|
-| `seedConfidenceScore(c)` | `CONFIDENCE_SEED[c]` (0.9 / 0.6 / 0.3) | First touch on a never-scored row; bulk migration |
-| `bumpConfidenceScore(s)` | `s + (1 − s) * BUMP_RATE` (`BUMP_RATE = 0.05`) | After decay realization, on every read-citation |
-| `decrementConfidenceScore(s)` | `s * DECREMENT_FACTOR` (`= 0.5`) | After decay realization, on `lore-correct` / `lore-supersede` |
-| `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days − STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In-flight on every touch / decrement / migration |
-| `confidenceFactor(s)` | `CONFIDENCE_FACTOR_MIN + (1 − CONFIDENCE_FACTOR_MIN) * s`, null → 1 | Read-side, in RRF accumulator (#08) |
+| Helper                                | Algebra                                                                                      | Where it fires                                                                                           |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `seedConfidenceScore(c)`              | `CONFIDENCE_SEED[c]` (0.9 / 0.6 / 0.3)                                                       | First touch on a never-scored row; bulk migration                                                        |
+| `bumpConfidenceScore(s)`              | `s + (1 − s) * BUMP_RATE` (`BUMP_RATE = 0.05`)                                               | After decay realization, on every read-citation                                                          |
+| `decrementConfidenceScore(s)`         | `s * DECREMENT_FACTOR` (`= 0.5`)                                                             | After decay realization, on `lore-memory action='compare'` asymmetric verdicts and decision supersession |
+| `decayConfidenceScore(s, ref, today)` | `s * DECAY_RATE^max(0, days − STALE_CONFIDENCE_DAYS)` (`DECAY_RATE = 0.99`, grace = 60 days) | In-flight on every touch / decrement / migration                                                         |
+| `confidenceFactor(s)`                 | `CONFIDENCE_FACTOR_MIN + (1 − CONFIDENCE_FACTOR_MIN) * s`, null → 1                          | Read-side, in RRF accumulator (#08)                                                                      |
 
 The asymmetry — slow recovery (BUMP_RATE = 0.05), slow decay (DECAY_RATE
 = 0.99 per stale day), aggressive contradiction (DECREMENT_FACTOR = 0.5)
@@ -1192,13 +1194,13 @@ signal). All methods exclude invalidated facts by default.
 
 ### Retrieval (paginating)
 
-| Method                          | Behavior                                                                       |
-| ------------------------------- | ------------------------------------------------------------------------------ |
-| `queryBySubject(subject, opts)` | Finds facts where `Subject` title contains the string; paginates until exhausted or `limit` is reached |
-| `queryByObject(object, opts)`   | Same shape as `queryBySubject` but matches the `Object` rich-text property     |
-| `queryBySourceMemory(id, opts)` | Finds facts whose `Source` relation points at a given memory page              |
+| Method                          | Behavior                                                                                                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `queryBySubject(subject, opts)` | Finds facts where `Subject` title contains the string; paginates until exhausted or `limit` is reached                                                                                                                                                       |
+| `queryByObject(object, opts)`   | Same shape as `queryBySubject` but matches the `Object` rich-text property                                                                                                                                                                                   |
+| `queryBySourceMemory(id, opts)` | Finds facts whose `Source` relation points at a given memory page                                                                                                                                                                                            |
 | `queryByEntity(entity, opts)`   | Finds facts where the entity appears as either Subject or Object, deduplicates. `limit` is forwarded into both underlying branches as a `page_size` clamp + early-stop, then re-applied as a post-dedup slice so `limit: 25` never returns more than 25 rows |
-| `queryOrphans(opts)`            | Returns current facts whose `Source` relation is empty. Used by `lore migrate --backfill-fact-sources` |
+| `queryOrphans(opts)`            | Returns current facts whose `Source` relation is empty. Used by `lore migrate --backfill-fact-sources`                                                                                                                                                       |
 
 All paginating retrieval methods derive their per-request `page_size`
 via the shared `clampNotionPageSize(limit)` helper in `fact.ts` —
@@ -1209,17 +1211,17 @@ and not a general clamp utility.
 
 ### Hot-path listing (single page)
 
-| Method                          | Behavior                                                                       |
-| ------------------------------- | ------------------------------------------------------------------------------ |
-| `listRecent(opts)`              | Single-page, server-filtered `created_time desc`. Returns `{ items, hasMore }` so callers can detect truncation without a second round-trip. |
+| Method             | Behavior                                                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listRecent(opts)` | Single-page, server-filtered `created_time desc`. Returns `{ items, hasMore }` so callers can detect truncation without a second round-trip. |
 
 ### Writes on existing facts
 
-| Method                           | Behavior                                           |
-| -------------------------------- | -------------------------------------------------- |
-| `extendReview(id, reviewBy)`     | Push forward the `Review By` date                  |
-| `invalidate(id)`                 | Mark no-longer-true (sets `Valid Until` = today)   |
-| `setSource(id, sourceMemoryId)`  | Overwrite the `Source` relation with one memory    |
+| Method                          | Behavior                                         |
+| ------------------------------- | ------------------------------------------------ |
+| `extendReview(id, reviewBy)`    | Push forward the `Review By` date                |
+| `invalidate(id)`                | Mark no-longer-true (sets `Valid Until` = today) |
+| `setSource(id, sourceMemoryId)` | Overwrite the `Source` relation with one memory  |
 
 ### Recent knowledge facts on the wake-up hot path
 
@@ -1256,10 +1258,10 @@ its docstring for the double-back-door rationale.
 
 The Facts DB carries two parallel canonicalization columns by design:
 
-| Column | Type | Role |
-|---|---|---|
-| `SubjectKey` | rich_text | Lowercased + NFC + whitespace-collapsed + trailing-punct-stripped form of `Subject`. Populated by `FactService.create` and the `--dedup-keys` migration. Backs the substring-fallback path in `queryBySubject` for vaults that haven't run `--build-entities`. |
-| `SubjectEntity` / `ObjectEntity` | relation → Entities | Canonical entity row IDs. Populated by `lore-fact action='create'` after `EntityService.resolveOrCreateEntity` and by the `--build-entities` migration. Backs `queryByEntityId` for vaults that have. |
+| Column                           | Type                | Role                                                                                                                                                                                                                                                           |
+| -------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SubjectKey`                     | rich_text           | Lowercased + NFC + whitespace-collapsed + trailing-punct-stripped form of `Subject`. Populated by `FactService.create` and the `--dedup-keys` migration. Backs the substring-fallback path in `queryBySubject` for vaults that haven't run `--build-entities`. |
+| `SubjectEntity` / `ObjectEntity` | relation → Entities | Canonical entity row IDs. Populated by `lore-fact action='create'` after `EntityService.resolveOrCreateEntity` and by the `--build-entities` migration. Backs `queryByEntityId` for vaults that have.                                                          |
 
 Why both columns coexist for one release cycle:
 
@@ -1268,7 +1270,7 @@ Why both columns coexist for one release cycle:
    hit on rows whose entity relations are still empty (i.e. rows
    `--build-entities` hasn't re-pointed yet). Dropping `SubjectKey`
    immediately would silently lose every un-backfilled row from
-   `lore-ask` results.
+   `lore-query action='ask'` results.
 2. **Safety net for PF3-01 bugs.** If the entity-resolution path
    surfaces a regression in production, operators can flip back to the
    substring path by archiving the Entities DB. The fallback only
@@ -1371,15 +1373,16 @@ of triple length, sidestepping Notion's 2000-char `rich_text` truncation.
     `Source`. Backfills legacy / partially migrated rows opportunistically
     on every dedup hit so the migration's coverage doesn't depend on a
     one-shot `lore migrate --build-entities` run capturing every row.
-  All applicable mutations ship as a single atomic `pages.update` —
-  Notion's API is per-request atomic, so either every mutated property
-  lands or none does. A zero-mutation match (everything already present)
-  issues no update at all.
+    All applicable mutations ship as a single atomic `pages.update` —
+    Notion's API is per-request atomic, so either every mutated property
+    lands or none does. A zero-mutation match (everything already present)
+    issues no update at all.
 
   Returns `{ deduped: true, enriched: [...] }` where `enriched` names the
   fields that were mutated. An empty `enriched` array means the probe
   matched but nothing new was added — callers should render "matched,
   no-op" instead of implying a write.
+
 - **Invalidated match** (`Valid Until` set) → deliberately ignored; the
   caller writes a fresh live row so history stays intact when a triple is
   re-asserted after correction.
@@ -1410,9 +1413,10 @@ false and no entity write happens here). Operators do not need to
 quiesce live writes before running `--build-entities`.
 
 **Rule**: Callers that need to tell the user "this was a dedup, not a new
-row" (e.g. `lore-learn`) should use `createWithDedup()` and inspect the
-`deduped` and `enriched` fields. `create()` is preserved for callers that
-don't care (decision-graph reachability sync, `decided_by` auto-links).
+row" (for example, `lore-fact action='create'`) should use
+`createWithDedup()` and inspect the `deduped` and `enriched` fields.
+`create()` is preserved for callers that don't care (decision-graph
+reachability sync, `decided_by` auto-links).
 
 ## HTML-entity Decode Migrations
 
@@ -1423,11 +1427,11 @@ written before that guard shipped still carry encoded payloads. Three
 `lore migrate` flags decode pre-existing rows in place — all idempotent,
 all support `--dry-run`:
 
-| Flag | Target | Module | Apply mode |
-| ---- | ------ | ------ | ---------- |
-| `--fix-topic-encoding` | Topics.Name | `topic-merge.ts:fixTopicEncoding` | Applies unless `--dry-run`. Pair with `--merge-duplicate-topics` when cross-encoding pairs would collide post-decode. |
-| `--fix-fact-encoding`  | Facts.Subject + .Object + .DedupKey | `fact-encoding.ts:fixFactEncoding` | **Plan-only by default; `--yes` applies.** Collision-gated against post-decode dedup-key conflicts — see below. |
-| `--fix-memory-encoding` | Memories.Title + body markdown | `memory-encoding.ts:fixMemoryEncoding` | **Plan-only by default; `--yes` applies.** Skips archived memories; skips body rewrite (Title still fixed) when body exceeds `BODY_SIZE_CAP_BYTES` (100 KB). |
+| Flag                    | Target                              | Module                                 | Apply mode                                                                                                                                                   |
+| ----------------------- | ----------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--fix-topic-encoding`  | Topics.Name                         | `topic-merge.ts:fixTopicEncoding`      | Applies unless `--dry-run`. Pair with `--merge-duplicate-topics` when cross-encoding pairs would collide post-decode.                                        |
+| `--fix-fact-encoding`   | Facts.Subject + .Object + .DedupKey | `fact-encoding.ts:fixFactEncoding`     | **Plan-only by default; `--yes` applies.** Collision-gated against post-decode dedup-key conflicts — see below.                                              |
+| `--fix-memory-encoding` | Memories.Title + body markdown      | `memory-encoding.ts:fixMemoryEncoding` | **Plan-only by default; `--yes` applies.** Skips archived memories; skips body rewrite (Title still fixed) when body exceeds `BODY_SIZE_CAP_BYTES` (100 KB). |
 
 The plan-then-execute posture on the fact and memory flags matches
 `--dedup-keys --merge --yes`: both rewrite historical rows at larger blast
@@ -1439,8 +1443,8 @@ re-runs with `--yes` once they've reviewed the collision report.
 Fact encoding is the subtle one. Decoding `Subject`/`Object` changes the
 dedup key, so the rewrite path must recompute `DedupKey` in the same
 `pages.update` atom as the Subject/Object write. Otherwise a future
-`lore-learn` with the already-decoded input misses the probe and creates
-a fresh duplicate.
+`lore-fact action='create'` call with the already-decoded input misses the
+probe and creates a fresh duplicate.
 
 **Collision gate**. Before any Fact rewrite lands,
 `findPostDecodeFactCollisions` groups every live row by its post-decode
@@ -1481,7 +1485,7 @@ The closed-table approach is intentional. The `LORE_AGENT_NAME` env
 override (PF1-04) is the explicit-over-inferred path for third-party
 integrators (Codex, Cline, Cursor, Aider). Their names don't match the
 Claude regex and pass through unchanged, preserving attribution. Only add
-to the canonical table when a new *default-detection* variant appears in
+to the canonical table when a new _default-detection_ variant appears in
 the wild — i.e., another Claude string we ourselves produce.
 
 Two ingest points:
@@ -1506,7 +1510,7 @@ separate Agents DB row in this issue.
 **Future model families**: The regex closes around `code` and `opus`-versioned
 spellings only. When Anthropic ships a Claude family Claude Code routes to
 (Sonnet, Haiku, three-component versions like `4.7.1`), autosave starts
-producing strings the regex *intentionally* leaves unchanged — re-fragmenting
+producing strings the regex _intentionally_ leaves unchanged — re-fragmenting
 the Agent column. The extension recipe lives next to the regex in
 `src/hooks/agent-identity.ts` (the JSDoc on `CLAUDE_VARIANTS`), with
 companion no-match tests in `agent-identity.test.ts:future-families` that
@@ -1542,7 +1546,7 @@ Key behaviors:
 facts. The `decided_by` and `supersedes_decision` graph edges are created at
 the MCP tool layer (`src/mcp/tools/decisions.ts`) where the tool handler
 orchestrates `decisions` + `facts` together — consistent with how
-`lore-remember` orchestrates `topics` + `memories`.
+`lore-memory action='save'` orchestrates `topics` + `memories`.
 
 ## Resolver Caching
 
@@ -1552,12 +1556,12 @@ conversation. `src/core/cache.ts` provides `LruCache<K, V>`, a minimal
 LRU + TTL cache; four resolvers use it — three migrated to `getOrLoad`
 and one that deliberately opted out (see notes below the table):
 
-| Resolver                        | Keyed on    | TTL  | Cap |
-| ------------------------------- | ----------- | ---- | --- |
-| `ProjectService.findByName`     | name        | 60s  | 200 |
-| `TopicService.findByName`       | name¹       | 60s  | 500 |
-| `MemoryService.getTitleById`    | memory id²  | 60s  | 500 |
-| `DecisionService.getById`       | decision id | 30s  | 500 |
+| Resolver                     | Keyed on    | TTL | Cap |
+| ---------------------------- | ----------- | --- | --- |
+| `ProjectService.findByName`  | name        | 60s | 200 |
+| `TopicService.findByName`    | name¹       | 60s | 500 |
+| `MemoryService.getTitleById` | memory id²  | 60s | 500 |
+| `DecisionService.getById`    | decision id | 30s | 500 |
 
 ¹ Only unscoped (no `projectId`) lookups are cached. The scoped variant is
 a legacy-vault safety valve with different result shape, and by design
@@ -1607,7 +1611,7 @@ the moment of invalidation no longer poisons the writer's merge base.
 - `TopicService.create` invalidates by name; `getOrCreate` proactively
   `set`s the post-extend refetched topic so subsequent lookups see the
   authoritative relation.
-- `MemoryService.update` evicts the id's title cache entry *before* the
+- `MemoryService.update` evicts the id's title cache entry _before_ the
   write so a concurrent `getTitleById` can't re-cache the stale title.
   `archive` also evicts so a follow-up read returns `null`, not the
   last-known-good title.
@@ -1623,8 +1627,8 @@ round-trip for the next `findByName`. Do not "normalize" the create
 paths to write-through — they don't have the refetched value in hand.
 
 **Do not cache `MemoryService.getById`.** Memory bodies can be updated via
-`lore-update` from any tool; a stale body is a real correctness hazard,
-not just a latency one.
+`lore-memory action='update'` from any tool; a stale body is a real
+correctness hazard, not just a latency one.
 
 Tests call `clearServiceCaches(services)` in `src/services.ts` to
 force-fresh between fixtures. Production code never calls it — TTLs do
@@ -1642,18 +1646,18 @@ surrounding save.
 
 Scoping rules:
 
-- **Memory path** (`lore-remember`): project + top-2 tags, trigram
+- **Memory path** (`lore-memory action='save'`): project + top-2 tags, trigram
   threshold `0.7`, `excludeKinds: ["decision"]` so decisions surface
-  only through `lore-decide` and the response stays focused on
-  `lore-update` as the corrective action. Deliberately **does not**
-  narrow by `kind` — the P2-03 spec's motivating duplicate chain
-  spans `note` / `note` / `agent_diary`, which a server-side `kind`
-  filter would mask.
-- **Decision path** (`lore-decide`): project + (topic if resolved) +
-  `Kind = decision`, client-side status filter to `accepted` /
-  `proposed`, trigram threshold `0.6`. Superseded / deprecated /
-  rejected decisions are deliberately excluded — they are not valid
-  supersession targets.
+  only through `lore-decision action='create'` and the response stays
+  focused on `lore-memory action='update'` as the corrective action.
+  Deliberately **does not** narrow by `kind` — the P2-03 spec's motivating
+  duplicate chain spans `note` / `note` / `agent_diary`, which a server-side
+  `kind` filter would mask.
+- **Decision path** (`lore-decision action='create'`): project + (topic if
+  resolved) + `Kind = decision`, client-side status filter to `accepted` /
+  `proposed`, trigram threshold `0.6`. Superseded / deprecated / rejected
+  decisions are deliberately excluded — they are not valid supersession
+  targets.
 - **Autosave atomic-learning path**: session + optional project +
   `Source = conversation` + `Kind = note` + `Confidence = likely`,
   body-fetch enabled. Unlike the general probe, this is blocking: a
@@ -1669,7 +1673,7 @@ Scoping rules:
 **`kind` and `excludeKinds` are mutually exclusive by design.** The
 memory path sets `excludeKinds: ["decision"]` (client-side filter),
 the decision path sets `kind: "decision"` (server-side narrowing).
-A probe that sets both would apply a server-side filter *and then*
+A probe that sets both would apply a server-side filter _and then_
 a client-side filter, which is either redundant (same kind) or
 self-contradicting (kind included then excluded). Call sites pick
 one axis.
@@ -1731,8 +1735,7 @@ keeps the advisory memory / decision probes enabled.
 half of the 0.9.0 conflict-detection workflow (issue #03). Pure
 function over a `Memory[]` snapshot — no Notion access, no service
 state, no `client.` imports. Consumed by `lore-memory
-action='compare'` (#05) and `lore conflicts scan` (#09); shipped
-in Phase 1 ahead of either consumer.
+action='compare'` (#05) and `lore conflicts scan` (#09).
 
 The function returns pairs whose `title + " " + keywords` trigram
 similarity OR tag-overlap crosses threshold AND that share at least
@@ -1866,8 +1869,8 @@ by an `Entity contains` server-side OR probe; helpers include:
 - **URLs**: `https?:\/\/[a-zA-Z0-9][^\s]*` plus a trailing-punct
   strip (`URL_TRAILING_PUNCT`) so `See https://x.com/foo,` produces
   `https://x.com/foo` not `https://x.com/foo,`. The leading
-  `[a-zA-Z0-9]` after `://` rejects bare-scheme stubs like `Just
-  https://.` — `Entity contains "https://"` would substring-hit
+  `[a-zA-Z0-9]` after `://` rejects bare-scheme stubs such as
+  `Just https://.` because `Entity contains "https://"` would substring-hit
   every URL-bearing task entity in the vault.
 - **Capitalized phrases**: split into multi-word and single-word
   patterns gated by `isMeaningfulCapitalizedMatch`. A leading-word
@@ -1922,8 +1925,9 @@ on `FactPredicate` for type coverage and on the `Predicate` select
 column for storage, but the `PREDICATE_VALUES` allowlist in
 `tools/knowledge.ts` excludes it — `decided_by` /
 `supersedes_decision` / `informs` get the same treatment. Auto-emitted
-facts ship at `confidence: speculative` so `lore-ask` preferentially
-surfaces agent-curated edges when both exist on the same entity.
+facts ship at `confidence: speculative` so `lore-query action='ask'`
+preferentially surfaces agent-curated edges when both exist on the same
+entity.
 
 **Subject is the saved memory's title.** Matches the existing
 `decided_by` shape on `lore-decision action='create'` (subject is the
@@ -1964,11 +1968,11 @@ is by Object alone, deliberately: a title-only update changes
 every existing fact's subject text but emits zero new rows.
 **Stale facts (entities removed by the update) are NOT cleaned
 up** — diff-and-invalidate would extend the auto-fact contract
-with invalidation behavior that today only `lore-correct`
-carries; that surface is its own design decision, not part of
-this follow-up. The advisory footer mirrors save (`Auto-mentions:
-N new` / `Auto-mentions: K/N new attempted`) with the `new`
-suffix distinguishing update-time emission from save-time. Same
+with invalidation behavior owned by the explicit fact invalidation and
+memory-compare surfaces; that contract is its own design decision, not
+part of this follow-up. The advisory footer mirrors save
+(`Auto-mentions: N new` / `Auto-mentions: K/N new attempted`) with the
+`new` suffix distinguishing update-time emission from save-time. Same
 `LORE_DISABLE_AUTO_MENTIONS=1` kill switch.
 
 **Out of scope: decision-side emission.** `lore-decision
@@ -1992,22 +1996,22 @@ The check is **opt-in** as of 0.6.0 (issue 02): it is gated by an explicit
 `driftCheck` boolean on `VaultManager.load`, resolved at the
 `initServicesFromConfig` seam from the tri-state `DriftCheckMode`:
 
-| Mode (`InitServicesOptions.driftCheck`) | Behavior |
-|------|----------|
-| `true` | Always run; bypass the marker; touch the marker so a sibling debounced caller skips. |
-| `false` (default) | Always skip; don't read or touch the marker. |
-| `"debounced"` | Run only if the per-config-root drift marker is ≥ `DRIFT_DEBOUNCE_DAYS` (7) old. Optimistically touch before returning. |
+| Mode (`InitServicesOptions.driftCheck`) | Behavior                                                                                                                |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `true`                                  | Always run; bypass the marker; touch the marker so a sibling debounced caller skips.                                    |
+| `false` (default)                       | Always skip; don't read or touch the marker.                                                                            |
+| `"debounced"`                           | Run only if the per-config-root drift marker is ≥ `DRIFT_DEBOUNCE_DAYS` (7) old. Optimistically touch before returning. |
 
 Per-surface policy:
 
-| Surface | Mode | Why |
-|---------|------|-----|
-| MCP server (`src/mcp/server.ts`) | `"debounced"` | Hot startup path; every reconnecting client would otherwise re-run the scan. |
-| Hooks wake-up (`src/hooks/helpers.ts`) | `"debounced"` | Fires on every session start / first user prompt. |
-| Digest scheduler (`src/hooks/digest-scheduler.ts`) | `"debounced"` | Same hot path as wake-up. |
-| `lore status` (`src/cli/commands/status.ts`) | `true` | Canonical operator-facing drift surface. |
-| `lore migrate` (`src/cli/commands/migrate.ts`) | `true` | Operator-facing drift surface. |
-| Other CLI (`search`, `mine`, `digest`, status subcommands) | (default) `false` | Don't surface drift; don't pay for it. |
+| Surface                                                    | Mode              | Why                                                                          |
+| ---------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| MCP server (`src/mcp/server.ts`)                           | `"debounced"`     | Hot startup path; every reconnecting client would otherwise re-run the scan. |
+| Hooks wake-up (`src/hooks/helpers.ts`)                     | `"debounced"`     | Fires on every session start / first user prompt.                            |
+| Digest scheduler (`src/hooks/digest-scheduler.ts`)         | `"debounced"`     | Same hot path as wake-up.                                                    |
+| `lore status` (`src/cli/commands/status.ts`)               | `true`            | Canonical operator-facing drift surface.                                     |
+| `lore migrate` (`src/cli/commands/migrate.ts`)             | `true`            | Operator-facing drift surface.                                               |
+| Other CLI (`search`, `mine`, `digest`, status subcommands) | (default) `false` | Don't surface drift; don't pay for it.                                       |
 
 Why this layering rather than option 3 (a separate low-priority client):
 the drift work is short-lived enough that a once-per-week run on the same
@@ -2027,14 +2031,13 @@ All services import property extractors from `src/notion/extractors.ts`. The
 private `pageToFoo()` methods on each service convert a `PageObjectResponse`
 into a domain type using these extractors.
 
-| Service          | Converter         | Domain type |
-| ---------------- | ----------------- | ----------- |
-| `ProjectService` | `pageToProject()` | `Project`   |
-| `TopicService`   | `pageToTopic()`   | `Topic`     |
-| `MemoryService`  | `pageToMemory()` (module-level exported) | `Memory`    |
-| `FactService`    | `pageToFact()`    | `Fact`      |
-| `DecisionService` | uses `pageToMemory()` + type-narrowing cast | `Decision` |
-| `FactService`    | `pageToFact()`    | `Fact`      |
+| Service           | Converter                                   | Domain type |
+| ----------------- | ------------------------------------------- | ----------- |
+| `ProjectService`  | `pageToProject()`                           | `Project`   |
+| `TopicService`    | `pageToTopic()`                             | `Topic`     |
+| `MemoryService`   | `pageToMemory()` (module-level exported)    | `Memory`    |
+| `FactService`     | `pageToFact()`                              | `Fact`      |
+| `DecisionService` | uses `pageToMemory()` + type-narrowing cast | `Decision`  |
 
 **Rule**: If you add a new database property, you must:
 

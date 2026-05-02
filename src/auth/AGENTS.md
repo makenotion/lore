@@ -17,10 +17,10 @@ resolution-mode-specific helpers `resolveAuth` calls into.
 
 ## Files
 
-| File | Responsibility |
-|------|---------------|
-| `oauth.ts` | Two roles: legacy OAuth helpers from 0.9.x (`runOAuthFlow`, `loadCredentials`, `getAuthorizationUrl`, `exchangeCode`, `getBaseUrl`) for the BYO-integration rollback path; AND the new `verifyVaultAccess` post-resolution preflight (#03). OAuth-flow primitives are no longer the canonical auth path under ntn-first; they remain reachable for legacy operators in 0.10.0 and removal is plausibly 1.0.0 contingent on telemetry. The filename reflects historical content; renaming is a separate cleanup. |
-| `ntn.ts` | ntn integration module (#02). `loadNtnToken` reads `~/.config/notion/auth.json` for token resolution; `runNtnLogin` shells out to `ntn login` interactively; `installNtn` auto-installs via `curl -fsSL https://ntn.dev \| bash`; `getNtnVersion` / `checkNtnVersion` report the installed version. Exports `MIN_NTN_VERSION` and `NTN_INSTALL_COMMAND`. |
+| File          | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oauth.ts`    | Two roles: legacy OAuth helpers from 0.9.x (`runOAuthFlow`, `loadCredentials`, `getAuthorizationUrl`, `exchangeCode`, `getBaseUrl`) for the BYO-integration rollback path; AND the new `verifyVaultAccess` post-resolution preflight (#03). OAuth-flow primitives are no longer the canonical auth path under ntn-first; they remain reachable for legacy operators in 0.10.0 and removal is plausibly 1.0.0 contingent on telemetry. The filename reflects historical content; renaming is a separate cleanup.                                                                                                                  |
+| `ntn.ts`      | ntn integration module (#02). `loadNtnToken` reads `~/.config/notion/auth.json` for token resolution; `runNtnLogin` shells out to `ntn login` interactively; `installNtn` auto-installs via `curl -fsSL https://ntn.dev \| bash`; `getNtnVersion` / `checkNtnVersion` report the installed version. Exports `MIN_NTN_VERSION` and `NTN_INSTALL_COMMAND`.                                                                                                                                                                                                                                                                         |
 | `identity.ts` | Engineer-identity resolver for the per-user attribution path (DEFERRED-ATTRIBUTION). `resolveAuthorIdentity(client)` is memoized per-process: `LORE_USER_NAME` env override (synchronous, wins) → `users.me().bot.owner.user.name` fallback → `null`. Failures collapse to `{ author: null }` and never throw — the Author column is advisory; an unattributed memory beats a save that fails because identity resolution hit a transient blip. Public surface is `resolveAuthorIdentity` + `resetIdentityCache` (tests); the JSON-shape walker is private (tests reach every failure-mode branch via mocked `client.users.me`). |
 
 ## Identity resolution vs. `renderWhoamiIdentity` — deliberate divergence
@@ -35,14 +35,14 @@ returns `null` when missing.
 The divergence is intentional and load-bearing:
 
 - **`renderWhoamiIdentity`** drives `lore auth --whoami`, a CLI
-  diagnostic where the operator wants *some* identity string back —
+  diagnostic where the operator wants _some_ identity string back —
   even the bot's workspace label is more useful than `<unknown>` in
   that surface. Falling back through the three layers is correct
   there because the consumer is a human reading the output.
 - **`resolveAuthorIdentity`** drives the `Author` Memory column. The
-  column is per-engineer attribution; falling back to `bot.owner.
-  user.id` (a UUID) would stamp every row with an opaque hex string,
-  and falling back to `bot.workspace_name` would re-fragment
+  column is per-engineer attribution; falling back to the bot owner
+  user id would stamp every row with an opaque UUID, and falling back
+  to `bot.workspace_name` would re-fragment
   attribution to per-team granularity (the same workspace label
   every engineer in the team would resolve). Returning `null`
   preserves the empty-Author signal so an operator can fix the
@@ -56,10 +56,10 @@ match — the difference is the contract.
 
 `src/auth/ntn.ts` reads ntn's private storage at
 `~/.config/notion/auth.json`. **This is a deliberate bridge until
-`ntn` ships a supported token-export command** (`ntn auth token
---plain` or equivalent). Every read site in this directory carries a
-`// TODO(ntn-export):` comment pointing at DEFERRED-OFFICIAL-EXPORT
-in the milestone DEFERRED.md.
+`ntn` ships a supported token-export command.** The expected shape is
+`ntn auth token --plain` or equivalent. Every read site in this
+directory carries a `// TODO(ntn-export):` comment pointing at
+DEFERRED-OFFICIAL-EXPORT in the milestone DEFERRED.md.
 
 When the supported command lands, `loadNtnToken`'s body changes to a
 `child_process.execFile` call. The function signature stays the
@@ -72,8 +72,8 @@ swap is ~10 lines of code.
 
 - A new ntn version ships an `auth.json` shape change Lore needs to
   handle (read-shape compatibility), OR
-- DEFERRED-OFFICIAL-EXPORT lands and Lore prefers `ntn auth token
-  --plain` (consume-shape compatibility).
+- DEFERRED-OFFICIAL-EXPORT lands and Lore prefers the supported ntn
+  token-export command (consume-shape compatibility).
 
 Lore prefers the operator's existing ntn install. The CLI never
 auto-upgrades; `checkNtnVersion()` returns `"too-old"`
@@ -88,21 +88,19 @@ self-update error message.
 
 Two helpers wrap interactive ntn invocations:
 
-- `runNtnLogin()` — `child_process.spawn("ntn", ["login"], {
-  stdio: "inherit", env: { ...process.env, NOTION_KEYRING: "0" } })`.
-  Operator interacts with ntn's prompts directly; Lore captures the
-  exit code only. The forced `NOTION_KEYRING=0` is the load-bearing
-  piece — engineers don't need the env var in their shell rc for the
-  Lore install path. Without it, ntn defaults to the macOS keychain
-  on darwin and `auth.json` never gets written.
+- `runNtnLogin()` — spawns `ntn login` with inherited stdio and forces
+  `NOTION_KEYRING=0` in the child env. The operator interacts with ntn's
+  prompts directly; Lore captures the exit code only. Engineers don't
+  need the env var in their shell rc for the Lore install path. Without
+  the forced env, ntn defaults to the macOS keychain on darwin and
+  `auth.json` never gets written.
 - `installNtn()` — runs `NTN_INSTALL_COMMAND` via shell with
   `stdio: "inherit"`, also setting `NOTION_KEYRING=0` for parity.
   Operator must explicitly confirm before this is called (via the
   consumer's prompt) — never curl-pipe-bash without explicit consent.
 
-Both return discriminated `{ kind: "success" | "exit-non-zero" |
-"spawn-error" }` outcomes so consumers route differently on each
-failure mode.
+Both return discriminated outcomes: `success`, `exit-non-zero`, or
+`spawn-error`. Consumers route differently on each failure mode.
 
 ## Vault preflight
 
@@ -120,8 +118,8 @@ page" differently from "transient 5xx." Used by `lore install`,
 `lore init`, `lore auth --status` (default-on; the diagnostic
 value of the round-trip outweighs the ~one-call cost since
 operators run `--status` rarely — a `--no-verify` opt-out is a
-plausible follow-up if telemetry surfaces friction), and `lore
-auth --migrate` (post-migration verify).
+plausible follow-up if telemetry surfaces friction), and auth
+migration's post-flow verify.
 
 ## Things that don't live here
 
@@ -191,8 +189,8 @@ semantics — this wrapper is intentional, NOT a duplicate table:
 `auth.ts:envNameBaseUrl` (used by migrate's `resolveNtnEnvBaseUrl` /
 `resolveLoginTargetBaseUrl`) is a pure delegation to `ntnEnvBaseUrl`
 with no prod-special-case — explicit `NOTION_ENV=prod` returns the
-canonical prod URL, NOT `undefined`. **Do not reintroduce a `prod →
-undefined` shortcut here**: collapsing prod to `undefined` lets a
+canonical prod URL, NOT `undefined`. **Do not reintroduce a shortcut
+that collapses prod to `undefined` here**: that lets a
 stale `auth.baseUrl: <dev URL>` win over an explicit
 `NOTION_ENV=prod` via `computeNtnLoginEnvOverride`'s
 `resolveNtnEnvBaseUrl(env) ?? configBaseUrl` fallback (round-7

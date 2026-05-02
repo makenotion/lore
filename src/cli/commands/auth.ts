@@ -514,8 +514,8 @@ export async function runLogin(opts: { yes: boolean }): Promise<void> {
   }
   console.log(
     ntnEnv
-      ? `Running \`NOTION_ENV=${ntnEnv} ntn login\`...`
-      : "Running `ntn login`...",
+      ? `Running \`NOTION_KEYRING=0 NOTION_ENV=${ntnEnv} ntn login\`...`
+      : "Running `NOTION_KEYRING=0 ntn login`...",
   )
   console.log("")
   const loginResult = await runNtnLogin(ntnEnv ? { env: ntnEnv } : {})
@@ -1441,7 +1441,7 @@ export async function runMigrate(
   // regardless of whether ntn persists the env to its config.json.
   const step3EffectiveBaseUrl =
     loginEnvOverride?.["NOTION_BASE_URL"] ?? resolveNtnEnvBaseUrl(env)
-  deps.log("Step 3/4 — Running `ntn login`...")
+  deps.log("Step 3/4 — Running `NOTION_KEYRING=0 ntn login`...")
   deps.log("")
   if (loginEnvOverride) {
     // Surface the override so the operator knows which environment
@@ -1529,7 +1529,10 @@ export async function runMigrate(
         "    1. You authenticated against the wrong workspace during ntn login.",
       )
       deps.error(
-        `       Run \`ntn login\` again, picking the workspace containing ${config.vault.pageId}.`,
+        `       Re-run \`lore auth --migrate\`, picking the workspace containing ${config.vault.pageId}.`,
+      )
+      deps.error(
+        "       Lore will force NOTION_KEYRING=0 and preserve the same target environment.",
       )
       deps.error("    2. The vault page isn't shared with you (your Notion identity)")
       deps.error("       in this workspace. ntn-first auth inherits your personal")
@@ -1541,11 +1544,13 @@ export async function runMigrate(
       // 401 / 403 — rare immediately after `ntn login`. Most plausible
       // cause: the operator picked a workspace during login that
       // doesn't authorize the token Lore is trying to use, OR ntn
-      // wrote a malformed entry to auth.json. `ntn login` again is
-      // the right next step.
+      // wrote a malformed entry to auth.json. Retrying through Lore is
+      // the right next step because it preserves file-mode auth.json writes.
       deps.error("  The ntn-issued token is invalid or expired (401 / 403). This is")
       deps.error("  rare immediately after `ntn login` — the most plausible cause is")
-      deps.error(`  picking the wrong workspace during login. Run \`ntn login\` again,`)
+      deps.error(
+        `  picking the wrong workspace during login. Re-run \`lore auth --migrate\`,`,
+      )
       deps.error(`  picking the workspace containing ${config.vault.pageId}.`)
     } else if (cls === "throttle") {
       deps.error("  Notion rate-limited the request (429). Wait a moment, then")

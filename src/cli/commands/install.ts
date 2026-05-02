@@ -1942,7 +1942,8 @@ export async function ensurePrerequisites(
       console.error("    non-prod project would land you on the generic vault-not-accessible")
       console.error("    error after install.")
       console.error("")
-      console.error("    Recovery: run `NOTION_ENV=<env> ntn login` directly with the right env")
+      console.error("    Recovery: run `NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`")
+      console.error("    directly with the right env")
       console.error("    selector for your workspace, then re-run `lore install`.")
       return { ready: false }
     }
@@ -1970,8 +1971,8 @@ export async function ensurePrerequisites(
   console.log("")
   const promptLabel =
     resolvedNtnEnv && resolvedNtnEnvSource !== "operator-env"
-      ? `    Run \`NOTION_ENV=${resolvedNtnEnv} ntn login\` now? [Y/n] `
-      : "    Run `ntn login` now? [Y/n] "
+      ? `    Run \`NOTION_KEYRING=0 NOTION_ENV=${resolvedNtnEnv} ntn login\` now? [Y/n] `
+      : "    Run `NOTION_KEYRING=0 ntn login` now? [Y/n] "
   const okLogin = opts.yes ?? (await confirmPrompt(promptLabel))
   if (!okLogin) {
     // `lore auth --login` (issue #06) wraps this same flow with the

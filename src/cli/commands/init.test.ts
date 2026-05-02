@@ -790,7 +790,7 @@ describe("runNoArgInit", () => {
     expect(stderr).toContain("--ntn-env dev requested")
     expect(stderr).toContain("Auth source: ntn-auth-json")
     // ntn-source recovery copy: logout + re-login under the requested env.
-    expect(stderr).toContain("ntn logout && NOTION_ENV=dev ntn login")
+    expect(stderr).toContain("ntn logout && NOTION_KEYRING=0 NOTION_ENV=dev ntn login")
   })
 
   it("with --ntn-env dev + env-notion-api-token auth: exits 1 with LORE_NOTION_BASE_URL recovery copy", async () => {
@@ -835,7 +835,8 @@ describe("runNoArgInit", () => {
     const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
     expect(stderr).toContain("Auth source: env-lore-notion-token")
     expect(stderr).toContain("Unset LORE_NOTION_TOKEN")
-    expect(stderr).toContain("LORE_NOTION_BASE_URL=https://api-dev.notion.com")
+    expect(stderr).toContain("lore auth --migrate")
+    expect(stderr).not.toContain("LORE_NOTION_BASE_URL=https://api-dev.notion.com")
   })
 
   it("with --ntn-env prod + dev-baseUrl auth: exits 1 (mismatch in the other direction)", async () => {
@@ -859,7 +860,7 @@ describe("runNoArgInit", () => {
     const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
     expect(stderr).toContain("--ntn-env prod requested")
     expect(stderr).toContain("https://api-dev.notion.com")
-    expect(stderr).toContain("ntn logout && NOTION_ENV=prod ntn login")
+    expect(stderr).toContain("ntn logout && NOTION_KEYRING=0 NOTION_ENV=prod ntn login")
   })
 
   it("with --ntn-env prod + undefined baseUrl auth: gate is silent (undefined === prod default)", async () => {
@@ -1369,6 +1370,7 @@ describe("runNoArgInit", () => {
     expect(runNtnLogin).not.toHaveBeenCalled()
     const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
     expect(stderr).toContain("ntn login is required to initialize a vault")
+    expect(stderr).toContain("NOTION_KEYRING=0 ntn login")
   })
 })
 

@@ -5,14 +5,14 @@
 
 ## Subsystem Guides
 
-| Area | Guide | Scope |
-|------|-------|-------|
-| MCP server | [`src/mcp/AGENTS.md`](src/mcp/AGENTS.md) | Tool registration, error handling, server startup |
-| Domain services | [`src/core/AGENTS.md`](src/core/AGENTS.md) | Service pattern, context resolution, fact invalidation |
-| Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics |
-| CLI | [`src/cli/AGENTS.md`](src/cli/AGENTS.md) | Commander patterns, command reference, output formatting |
-| Hook runner | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md) | Stop autosave, Stop-triggered auto-digest, background spawn, lockfiles |
-| Auth layer | [`src/auth/AGENTS.md`](src/auth/AGENTS.md) | ntn-first auth, `auth.json` coupling, vault preflight, legacy OAuth helpers |
+| Area             | Guide                                          | Scope                                                                       |
+| ---------------- | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| MCP server       | [`src/mcp/AGENTS.md`](src/mcp/AGENTS.md)       | Tool registration, error handling, server startup                           |
+| Domain services  | [`src/core/AGENTS.md`](src/core/AGENTS.md)     | Service pattern, context resolution, fact invalidation                      |
+| Notion SDK layer | [`src/notion/AGENTS.md`](src/notion/AGENTS.md) | Client, schema, extractors, vault setup, SDK v5 specifics                   |
+| CLI              | [`src/cli/AGENTS.md`](src/cli/AGENTS.md)       | Commander patterns, command reference, output formatting                    |
+| Hook runner      | [`src/hooks/AGENTS.md`](src/hooks/AGENTS.md)   | Stop autosave, Stop-triggered auto-digest, background spawn, lockfiles      |
+| Auth layer       | [`src/auth/AGENTS.md`](src/auth/AGENTS.md)     | ntn-first auth, `auth.json` coupling, vault preflight, legacy OAuth helpers |
 
 ## Repo-Wide Reference
 
@@ -52,23 +52,23 @@ substring path on un-backfilled rows.
 
 ### Quick Start Commands
 
-| Command | What it does |
-|---------|-------------|
-| `npm run build` | tsup build (ESM, 4 entry points) |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint` | `eslint src/` |
-| `npm run test` | `vitest run` |
-| `npm run test:watch` | `vitest` (watch mode) |
-| `npm run dev` | `tsup --watch` |
+| Command              | What it does                     |
+| -------------------- | -------------------------------- |
+| `npm run build`      | tsup build (ESM, 4 entry points) |
+| `npm run typecheck`  | `tsc --noEmit`                   |
+| `npm run lint`       | `eslint src/`                    |
+| `npm run test`       | `vitest run`                     |
+| `npm run test:watch` | `vitest` (watch mode)            |
+| `npm run dev`        | `tsup --watch`                   |
 
 Build produces four entry points via tsup:
 
-| Entry | Source | Output |
-|-------|--------|--------|
-| `index` | `src/index.ts` | `dist/index.js` (library exports) |
-| `mcp` | `src/mcp/server.ts` | `dist/mcp.js` (MCP stdio server) |
-| `cli` | `src/cli/index.ts` | `dist/cli.js` (CLI binary, has shebang) |
-| `hooks/helpers` | `src/hooks/helpers.ts` | `dist/hooks/helpers.js` |
+| Entry           | Source                 | Output                                  |
+| --------------- | ---------------------- | --------------------------------------- |
+| `index`         | `src/index.ts`         | `dist/index.js` (library exports)       |
+| `mcp`           | `src/mcp/server.ts`    | `dist/mcp.js` (MCP stdio server)        |
+| `cli`           | `src/cli/index.ts`     | `dist/cli.js` (CLI binary, has shebang) |
+| `hooks/helpers` | `src/hooks/helpers.ts` | `dist/hooks/helpers.js`                 |
 
 ### Key Conventions
 
@@ -77,13 +77,13 @@ Build produces four entry points via tsup:
 This project uses `@notionhq/client` v5.x which has significant API differences
 from v4 and earlier. Do not use v4 patterns.
 
-| Operation | Correct (v5) | Wrong (v4) |
-|-----------|-------------|------------|
-| Query a database | `client.dataSources.query({ data_source_id })` | `client.databases.query({ database_id })` |
-| Create a database | `databases.create({ initial_data_source: { properties } })` | `databases.create({ properties })` |
-| Read page content | `client.pages.retrieveMarkdown({ page_id })` | block children iteration |
-| Write page content | `client.pages.updateMarkdown({ page_id, ... })` | append block children |
-| Parent discriminant | `{ type: "page_id", page_id }` | `{ page_id }` |
+| Operation           | Correct (v5)                                                | Wrong (v4)                                |
+| ------------------- | ----------------------------------------------------------- | ----------------------------------------- |
+| Query a database    | `client.dataSources.query({ data_source_id })`              | `client.databases.query({ database_id })` |
+| Create a database   | `databases.create({ initial_data_source: { properties } })` | `databases.create({ properties })`        |
+| Read page content   | `client.pages.retrieveMarkdown({ page_id })`                | block children iteration                  |
+| Write page content  | `client.pages.updateMarkdown({ page_id, ... })`             | append block children                     |
+| Parent discriminant | `{ type: "page_id", page_id }`                              | `{ page_id }`                             |
 
 #### ESM-Only
 
@@ -116,17 +116,17 @@ from v4 and earlier. Do not use v4 patterns.
 
 ### Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `dataSources is undefined` | Using v4 SDK patterns | Use `client.dataSources.query()` not `client.databases.query()` |
-| `pages.retrieveMarkdown is not a function` | Notion SDK < 5.x | Ensure `@notionhq/client` is ^5.1.0 |
-| `initial_data_source` type error | Missing cast or wrong shape | Use `createDbArgs()` from `setup.ts` as a reference |
-| Import without `.js` extension | ESM requires explicit extensions | Add `.js` to all relative import paths |
-| `No .lore.yaml found` | Config search failed | Ensure `.lore.yaml` exists in cwd or any parent directory |
-| `filter` type errors in queries | Complex filter needs cast | Cast to `QueryDataSourceParameters["filter"]` |
-| `Vault already initialized` | Running `lore init` twice | Use `lore status` to verify, or `VaultManager.load()` |
-| Codex does not load Lore tools | Project not trusted or hooks feature disabled | Trust the project, start a new Codex session, and ensure `.codex/config.toml` sets `features.codex_hooks = true` |
-| `No Notion auth configured` | Every source in the priority chain returned empty | Run `lore auth --login` (auto-installs ntn if missing) or set `NOTION_API_TOKEN`. See **Authentication** for the full chain. |
+| Symptom                                    | Cause                                             | Fix                                                                                                                          |
+| ------------------------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `dataSources is undefined`                 | Using v4 SDK patterns                             | Use `client.dataSources.query()` not `client.databases.query()`                                                              |
+| `pages.retrieveMarkdown is not a function` | Notion SDK < 5.x                                  | Ensure `@notionhq/client` is ^5.1.0                                                                                          |
+| `initial_data_source` type error           | Missing cast or wrong shape                       | Use `createDbArgs()` from `setup.ts` as a reference                                                                          |
+| Import without `.js` extension             | ESM requires explicit extensions                  | Add `.js` to all relative import paths                                                                                       |
+| `No .lore.yaml found`                      | Config search failed                              | Ensure `.lore.yaml` exists in cwd or any parent directory                                                                    |
+| `filter` type errors in queries            | Complex filter needs cast                         | Cast to `QueryDataSourceParameters["filter"]`                                                                                |
+| `Vault already initialized`                | Running `lore init` twice                         | Use `lore status` to verify, or `VaultManager.load()`                                                                        |
+| Codex does not load Lore tools             | Project not trusted or hooks feature disabled     | Trust the project, start a new Codex session, and ensure `.codex/config.toml` sets `features.codex_hooks = true`             |
+| `No Notion auth configured`                | Every source in the priority chain returned empty | Run `lore auth --login` (auto-installs ntn if missing) or set `NOTION_API_TOKEN`. See **Authentication** for the full chain. |
 
 ## Operating Contract
 
@@ -146,7 +146,7 @@ Rule #1: If you want an exception to ANY rule below, STOP and get explicit permi
 **What to save in Lore:**
 
 - **Decisions** (`lore-decision action='create'`): Architectural choices with their rationale, alternatives, consequences, and review date. Prefer this over `lore-memory action='save'` for decisions — records participate in `lore-query action='audit'`, `lore-context action='wake-up'`, and supersession workflows. Pass `affects: [...]` with affected entity names to auto-create `decided_by` facts so the decision surfaces via `lore-query action='ask'`.
-- **Memories** (`lore-memory action='save'`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights — anything that *isn't* a decision with formal rationale.
+- **Memories** (`lore-memory action='save'`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights — anything that _isn't_ a decision with formal rationale.
 - **Facts** (`lore-fact action='create'`): Relationships between system components (`uses`, `depends_on`, `is_a`). Save a supporting memory first and pass `sourceMemoryId`, or pass `agent` + `session` so Lore can auto-link the fact to the earlier memory in the same process. For tracked work — open PRs, blocked dependencies, follow-up investigations — use `lore-task action='create'` instead; tracking predicates were dropped from `FactPredicate` in 0.6.0. Invalidate facts with `lore-fact action='invalidate'` when they become stale. **`lore-fact action='invalidate'` also halves the `Confidence Score` of the memory the fact came from (0.8.0+) — facts don't carry a score; the decrement lands on the originating memory. Use it precisely, not as a soft "maybe" signal.**
 
 ### Confidence: categorical vs. numeric (0.8.0+)
@@ -165,7 +165,7 @@ The rule of thumb: **write the categorical to express your stance; let the numer
 
 - After resolving a non-obvious bug or build issue → `lore-memory action='save'`
 - When you discover an undocumented convention or constraint → `lore-memory action='save'`
-- When an architectural decision is made → `lore-decision action='create'` (capture the *why*, not just the *what*)
+- When an architectural decision is made → `lore-decision action='create'` (capture the _why_, not just the _what_)
 - When a new decision supersedes an older one → `lore-decision action='create'` with `supersedesIds` or `lore-decision action='supersede'`. **Supersession also halves the superseded decision's `Confidence Score` (0.8.0+) — the earlier decision still exists for historical reading but retrieval ranks against it.**
 - When you identify work that needs to happen but is out of scope → `lore-task action='create'` (with `state: "open"` and an `entity` naming the subject)
 
@@ -188,10 +188,9 @@ symmetric verdicts, omit `affectedMemoryId`.
   `lore-fact action='invalidate'` confidence-halving algebra
   (`MemoryService.decrementConfidence`) and emits a fresh
   `conflicts_with` fact (subject = winner's title, object =
-  loser's title) — it is NOT literally a `lore-fact
-  action='invalidate'` invocation: fact invalidation invalidates
-  an existing fact, while `compare` creates a new contradiction
-  edge.
+  loser's title) — it is NOT literally the `invalidate` action on
+  `lore-fact`: fact invalidation invalidates an existing fact,
+  while `compare` creates a new contradiction edge.
 - **`supersedes` (asymmetric)** — Decision-kind affected
   targets ONLY. The other memory is the later, more accurate
   statement; the affected (decision) memory should be retired.
@@ -206,28 +205,28 @@ symmetric verdicts, omit `affectedMemoryId`.
   incorporate the other via `lore-memory action='update'` (no
   structured merge primitive ships — `update` is a body-edit
   surface, not a merge engine), OR promote the synthesis into a
-  formal decision via `lore-decision action='create'` and
-  archive the non-decision memory afterward via `lore-memory
-  action='archive'`. **`supersedesIds` cannot reference the
+  formal decision via `lore-decision action='create'` and archive
+  the non-decision memory afterward via the `archive` action on
+  `lore-memory`. **`supersedesIds` cannot reference the
   non-decision memory** — `lore-decision action='create'`
   resolves every `supersedesIds` entry through
   `DecisionService.getById`, which throws on non-decision kinds.
   The supersession is therefore structural (archive + new
   decision) rather than relational (linked via the
-  `Supersedes` relation). Calling `compare` with `verdict:
-  'supersedes'` and a non-decision affected memory throws.
+  `Supersedes` relation). Calling `compare` with the `supersedes`
+  verdict and a non-decision affected memory throws.
 - **`scoped` (symmetric)** — A and B differ but the
   differences are explained by scope (project, time,
-  environment). Recorded via `Compared With` and `Compare
-  Notes` (no confidence change). Omit `affectedMemoryId`.
+  environment). Recorded via `Compared With` and `Compare Notes`
+  (no confidence change). Omit `affectedMemoryId`.
 - **`related` (symmetric)** — A and B share a subject but make
   non-overlapping claims. `Compared With` and `Compare Notes`
   only. Omit `affectedMemoryId`.
 - **`compatible` (symmetric)** — A and B make near-identical
   claims. Redundant but not in conflict. `Compared With` and
-  `Compare Notes` only. **Consider `lore-memory
-  action='update'` to merge one's body into the other if one
-  is clearly canonical.** Omit `affectedMemoryId`.
+  `Compare Notes` only. **Consider `lore-memory action='update'`
+  to merge one's body into the other if one is clearly canonical.**
+  Omit `affectedMemoryId`.
 - **`not_conflict` (symmetric)** — A and B are about unrelated
   subjects. `Compared With` and `Compare Notes` only. Omit
   `affectedMemoryId`. The candidate generator surfaced them by
@@ -241,7 +240,7 @@ them.
 
 ### Topic keys for evolving memories (0.9.0+)
 
-When saving a memory about a *recurring topic* — a governance
+When saving a memory about a _recurring topic_ — a governance
 decision that may revise, a runbook that gets refined, a policy
 that evolves — pass `topicKey` to `lore-memory action='save'`.
 The save upserts on `(Topic Key + Project-set equality)`: if a
@@ -270,7 +269,7 @@ default and don't form recurring topics; tasks transition through
 lifecycle states, not revisions. The kind is preserved across
 upsert calls; saving with a different `kind` against an existing
 upsert chain is rejected at the save path. Topic keys are for
-*categories* of recurring writes, not for individual saves.
+_categories_ of recurring writes, not for individual saves.
 
 When the upserted memory's body grows past ~5KB (or the chain
 hits 5+ revisions), the save response surfaces a **promotion
@@ -546,14 +545,14 @@ Implications for future design:
 
 ### Where to look when auth is broken
 
-| Symptom | Where to look |
-|---------|---------------|
-| `No Notion auth configured` | `resolveAuth` in `src/config.ts` — walk the priority chain; check token sources in order |
-| `lore auth --status` shows ntn auth.json carrying multiple workspaces | Set `NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml` |
-| 401 mid-session | ntn-issued token expired. Run `lore auth --login`; the running service re-runs auth resolution after the first 401, rebuilds its Notion client when the token or base URL changed, and retries the failed request once. If the refreshed auth is unchanged or still rejected, restart the assistant after re-auth. |
-| `auth.json` is malformed or absent | `loadNtnToken` in `src/auth/ntn.ts` returns null + stderr hint. Run `lore auth --login` to spawn ntn login with `NOTION_KEYRING=0` and refresh the file. |
-| ntn installed under keychain mode (engineer ran `ntn login` outside Lore) | `auth.json` doesn't carry the workspace token. Re-run `lore auth --login` to refresh, or add `NOTION_KEYRING=0` to shell rc for permanent consistency. |
-| Hook-spawned `claude -p` can't read vault | `spawnBackgroundSave` in `src/hooks/background.ts` runs the child in `event.cwd` with a minimal env (`PATH`, `HOME`, `LORE_AUTOSAVE=false`, `LORE_BACKGROUND_AGENT=true`, plus every non-empty key from `RUNTIME_FORWARDED_KEYS`, including `NOTION_API_TOKEN`, `NOTION_WORKSPACE_ID`, and Notion base-url selectors). The child's `findConfigFile` walks upward from `cwd` to locate `.lore.yaml`. Verify `cwd` is correct and that the upward-search lands on the expected config. |
+| Symptom                                                                   | Where to look                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `No Notion auth configured`                                               | `resolveAuth` in `src/config.ts` — walk the priority chain; check token sources in order                                                                                                                                                                                                                                                                                                                                                                                             |
+| `lore auth --status` shows ntn auth.json carrying multiple workspaces     | Set `NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml`                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 401 mid-session                                                           | ntn-issued token expired. Run `lore auth --login`; the running service re-runs auth resolution after the first 401, rebuilds its Notion client when the token or base URL changed, and retries the failed request once. If the refreshed auth is unchanged or still rejected, restart the assistant after re-auth.                                                                                                                                                                   |
+| `auth.json` is malformed or absent                                        | `loadNtnToken` in `src/auth/ntn.ts` returns null + stderr hint. Run `lore auth --login` to spawn ntn login with `NOTION_KEYRING=0` and refresh the file.                                                                                                                                                                                                                                                                                                                             |
+| ntn installed under keychain mode (engineer ran `ntn login` outside Lore) | `auth.json` doesn't carry the workspace token. Re-run `lore auth --login` to refresh, or add `NOTION_KEYRING=0` to shell rc for permanent consistency.                                                                                                                                                                                                                                                                                                                               |
+| Hook-spawned `claude -p` can't read vault                                 | `spawnBackgroundSave` in `src/hooks/background.ts` runs the child in `event.cwd` with a minimal env (`PATH`, `HOME`, `LORE_AUTOSAVE=false`, `LORE_BACKGROUND_AGENT=true`, plus every non-empty key from `RUNTIME_FORWARDED_KEYS`, including `NOTION_API_TOKEN`, `NOTION_WORKSPACE_ID`, and Notion base-url selectors). The child's `findConfigFile` walks upward from `cwd` to locate `.lore.yaml`. Verify `cwd` is correct and that the upward-search lands on the expected config. |
 
 ## Lore MCP Tools
 

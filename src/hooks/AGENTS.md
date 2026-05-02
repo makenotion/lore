@@ -1,31 +1,33 @@
 # AGENTS.md -- src/hooks/
 
-> Read the root `AGENTS.md` first. This file covers the shell-hook layer only.
+> Read the root `AGENTS.md` first. This file covers the hook runner layer only.
 
 ## Purpose
 
-This directory implements Lore's hook runner. Shell hooks (Claude Code and
-Codex) invoke `node dist/hooks/helpers.js <action>` at defined lifecycle
-events; the helper reads the hook event from env vars, loads `.lore.yaml`,
-and either injects context (`wakeup`) or spawns a background save
-(`autosave`). The Stop hook also spawns a detached `auto-digest` helper
-that owns digest synthesis off the hot path. The `session-end` action is
-an exit-0 compatibility shim for stale Claude Code settings written before
-0.6.0 dropped active SessionEnd registration.
+This directory implements Lore's hook runner. Default Claude Code and Codex
+installs invoke `lore hooks <action>` at defined lifecycle events (or
+`yarn run -T lore hooks <action>` under Yarn PnP); legacy `--legacy-paths`
+installs invoke `node dist/hooks/helpers.js <action>` through the checked-in
+`hooks/*.sh` scripts. The helper reads the hook event from env vars, loads
+`.lore.yaml`, and either injects context (`wakeup`) or spawns a background
+save (`autosave`). The Stop hook also spawns a detached `auto-digest` helper
+that owns digest synthesis off the hot path. The `session-end` action is an
+exit-0 compatibility shim for stale Claude Code settings written before 0.6.0
+dropped active SessionEnd registration.
 
 ## Files
 
-| File              | Responsibility                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------ |
-| `helpers.ts`      | Entry point: routes to `autosave` / `wakeup` / `auto-digest` / `session-end` handlers                  |
-| `prompts.ts`      | Pure prompt builders for background-save sub-agents                                                    |
-| `transcript.ts`   | Parse Claude Code / Codex transcript formats into messages                                             |
-| `lock.ts`         | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir |
-| `config.ts`       | `.lore.yaml` `hooks` section defaults + merge                                                          |
-| `digest-scheduler.ts` | `fireDigestIfStale` (in-child digest logic) + `scheduleAutoDigestSpawn` (parent-side detached fork off Stop) |
-| `digest-marker.ts`| Per-config-root debounce marker for the auto-digest scheduler                                          |
-| `drift-marker.ts` | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)          |
-| `marker-key.ts`   | Shared `configKey()` and `safeFilenameSegment()` helpers for every filesystem marker, lock, log, and count file in this dir |
+| File                  | Responsibility                                                                                                              |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `helpers.ts`          | Entry point: routes to `autosave` / `wakeup` / `auto-digest` / `session-end` handlers                                       |
+| `prompts.ts`          | Pure prompt builders for background-save sub-agents                                                                         |
+| `transcript.ts`       | Parse Claude Code / Codex transcript formats into messages                                                                  |
+| `lock.ts`             | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir                       |
+| `config.ts`           | `.lore.yaml` `hooks` section defaults + merge                                                                               |
+| `digest-scheduler.ts` | `fireDigestIfStale` (in-child digest logic) + `scheduleAutoDigestSpawn` (parent-side detached fork off Stop)                |
+| `digest-marker.ts`    | Per-config-root debounce marker for the auto-digest scheduler                                                               |
+| `drift-marker.ts`     | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)                               |
+| `marker-key.ts`       | Shared `configKey()` and `safeFilenameSegment()` helpers for every filesystem marker, lock, log, and count file in this dir |
 
 New marker modules under `src/hooks/` derive their config key and
 sanitize free-form name segments via `marker-key.ts` rather than
@@ -68,7 +70,7 @@ Operators swap the binary by name (preset args resolve automatically):
 ```yaml
 hooks:
   backgroundAgent:
-    command: codex   # picks up CODEX_BACKGROUND_ARGS preset (`exec --full-auto`)
+    command: codex # picks up CODEX_BACKGROUND_ARGS preset (`exec --full-auto`)
 ```
 
 Or via env (ad-hoc):
@@ -88,9 +90,9 @@ hooks:
 
 Resolution order:
 
-| Field | Precedence (highest first) |
-|---|---|
-| `command` | `LORE_BACKGROUND_COMMAND` env > `hooks.backgroundAgent.command` in `.lore.yaml` > derived from `LORE_AGENT_NAME` (via `AGENT_BACKGROUND_COMMAND`) > `"claude"` |
+| Field     | Precedence (highest first)                                                                                                                                                        |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command` | `LORE_BACKGROUND_COMMAND` env > `hooks.backgroundAgent.command` in `.lore.yaml` > derived from `LORE_AGENT_NAME` (via `AGENT_BACKGROUND_COMMAND`) > `"claude"`                    |
 | `args`    | `hooks.backgroundAgent.args` in `.lore.yaml` > preset for the resolved `command` (`lookupCommandPreset` — basename-aware) > `DEFAULT_BACKGROUND_ARGS` (Claude-shaped fallthrough) |
 
 The agent-context tier (tier 3 on `command`) is what makes Codex installs
@@ -165,8 +167,8 @@ Autosave fires on `Stop` only and spawns a detached `claude -p` sub-agent
 that writes structured content via lore-\* MCP tools. The main agent is
 **never** blocked.
 
-| Hook              | Trigger                                                                         | Prompt builder            |
-| ----------------- | ------------------------------------------------------------------------------- | ------------------------- |
+| Hook              | Trigger                                                                         | Prompt builder              |
+| ----------------- | ------------------------------------------------------------------------------- | --------------------------- |
 | `Stop` (autosave) | `userMessages - lastSavedAt >= saveInterval` (first save: min(saveInterval, 2)) | `buildBackgroundSavePrompt` |
 
 Before P2-05 the `Stop` path injected `{"decision": "block"}` and forced an
@@ -188,16 +190,16 @@ the priority chain. **No `LORE_CONFIG_ROOT` is forwarded** —
 config-root discovery is the same upward-search the parent did.
 
 This is **not** the same env contract as the long-running MCP
-server child that `lore install` writes config for: that one
-*does* receive `LORE_CONFIG_ROOT` (post-#08; see
-`src/cli/AGENTS.md`'s `## The install Command` →
-`### 0.10.0 ntn detection and MCP env forwarding`). The two
-spawn paths have different env contracts because they have
-different lifetimes — the hook autosave child runs once per
-Stop and inherits the parent's cwd, so upward search is
-sufficient; the MCP server child is launched by the host
-assistant from a cwd Lore can't predict, so the
-`.lore.yaml` location must be passed explicitly.
+server child that `lore install` writes config for. Bare-bin, legacy,
+Cursor global-scope, and bare/legacy print-config shapes include static
+`LORE_CONFIG_ROOT` so the MCP child can resolve the right `.lore.yaml` from a
+host-controlled cwd. Project-scoped Yarn/PnP snippets for Claude, Codex,
+Cursor, and `--print-config --yarn-pnp` intentionally omit `LORE_CONFIG_ROOT`;
+they launch from the workspace root and rely on the same upward `.lore.yaml`
+search instead. The two spawn paths have different env contracts because they
+have different lifetimes — the hook autosave child runs once per Stop and
+inherits the parent's cwd, while the MCP server child is launched by the host
+assistant.
 
 The parent's env passthrough is deliberately minimal:
 `spawnBackgroundSave` builds a `safeEnv` with `PATH`, `HOME`,
@@ -270,7 +272,7 @@ token to reach hook workers.
 
 The autosave prompt asks the spawned sub-agent to do two things in one
 spawn: write the session synopsis it has always written, AND identify
-*atomic learnings* — single-fact discoveries from the session ("bcrypt
+_atomic learnings_ — single-fact discoveries from the session ("bcrypt
 cost=12 is the right balance for our load.") — and save each as its own
 `note` memory. Extraction happens entirely inside the background
 sub-agent's reasoning. The foreground agent has no convention to learn
@@ -310,8 +312,8 @@ matching fact edge. `lore-query` stays in the autosave's
 The block does not introduce a new `MemorySource` value. Atomic
 learnings inherit `source: "conversation"` (the existing autosave
 default). Differentiating learnings from other conversation-sourced
-memories at the schema level would surface a *mechanism* (autosave
-extracted this) rather than a *kind*, and the existing source values
+memories at the schema level would surface a _mechanism_ (autosave
+extracted this) rather than a _kind_, and the existing source values
 track mechanisms, not kinds.
 
 **Compaction interaction.** Claude Code compaction reduces the
@@ -390,16 +392,18 @@ assistant before the first reply. P3-05 changed it from a context-blind
 session-start dump into a relevance-ranked surface seeded by the user's
 actual question.
 
-| Hook                            | Trigger                  | User query? |
-| ------------------------------- | ------------------------ | ----------- |
-| Claude Code `UserPromptSubmit`  | First user message       | Yes (`event.prompt`) |
-| Codex `SessionStart`            | Session startup / resume | No (fallback path) |
+| Hook                           | Trigger                  | User query?          |
+| ------------------------------ | ------------------------ | -------------------- |
+| Claude Code `UserPromptSubmit` | First user message       | Yes (`event.prompt`) |
+| Codex `SessionStart`           | Session startup / resume | No (fallback path)   |
 
-`wakeup.sh` reads the JSON event off stdin (Claude Code) and forwards it
-to the helper as `LORE_WAKEUP_EVENT`. Codex's `SessionStart` event has
-no user message yet — stdin is typically empty and the helper's parser
-returns `undefined`, dropping wake-up to the unranked output that
-matches the pre-P3-05 shape exactly.
+The `lore hooks wakeup` dispatcher reads the JSON event off stdin (Claude Code)
+and calls the helper directly with `wakeup({ event: stdin })`. The legacy
+`hooks/wakeup.sh` wrapper uses the env-var bridge, forwarding stdin as
+`LORE_WAKEUP_EVENT` before invoking the helper. Codex's `SessionStart` event
+has no user message yet — stdin is typically empty and the helper's parser
+returns `undefined`, dropping wake-up to the unranked output that matches the
+pre-P3-05 shape exactly.
 
 `parseUserQueryFromEvent` (in `helpers.ts`) is the single point that
 extracts the prompt; pin its tests when changing the parsing contract.
@@ -442,10 +446,10 @@ line in `src/mcp/AGENTS.md`. Two variants:
 The ranked variant reports the per-section caps applied so an operator
 triaging "why is wake-up surfacing only 3 memories?" can confirm the
 ranked path fired without chasing the constant. The fallback variant
-distinguishes the wakeup.sh-not-forwarding case from a ranked-but-
+distinguishes the event-forwarder-not-forwarding case from a ranked-but-
 surprising-hits case — directing operators to fix the forwarder vs.
 inspect the relevance index. Gated behind `LORE_DEBUG=1` because Codex
-`SessionStart` *always* hits the fallback path, and an unconditional
+`SessionStart` _always_ hits the fallback path, and an unconditional
 log would flood stderr on every Codex session.
 
 ## Concurrency guard

@@ -1209,6 +1209,9 @@ describe("runMigrate", () => {
     const err = run.stderr.join("\n")
     expect(err).toContain("ntn-issued token cannot reach")
     expect(err).toContain("authenticated against the wrong workspace")
+    expect(err).toContain("Re-run `lore auth --migrate`")
+    expect(err).toContain("NOTION_KEYRING=0")
+    expect(err).not.toContain("Run `ntn login` again")
     expect(err).toContain("LORE_NOTION_TOKEN is unchanged")
   })
 
@@ -2220,7 +2223,7 @@ describe("runLogin", () => {
     // Pin the bare-call so an operator without NOTION_ENV set targets
     // ntn's own default environment.
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({})
-    expect(stdoutText()).toContain("Running `ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 ntn login`...")
     expect(stdoutText()).not.toContain("--env")
   })
 
@@ -2239,7 +2242,7 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "dev" })
-    expect(stdoutText()).toContain("Running `NOTION_ENV=dev ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`...")
   })
 
   it("threads NOTION_ENV=stg through (not just dev) — pin so a future hard-coded `dev` regresses loudly", async () => {
@@ -2252,7 +2255,7 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "stg" })
-    expect(stdoutText()).toContain("Running `NOTION_ENV=stg ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`...")
   })
 
   it("infers `--env dev` from .lore.yaml `auth.baseUrl` when shell NOTION_ENV is unset (Mail-style dev project)", async () => {
@@ -2282,7 +2285,7 @@ describe("runLogin", () => {
     expect(stdoutText()).toContain(
       "(Inferring `NOTION_ENV=dev` from auth.baseUrl in .lore.yaml.)",
     )
-    expect(stdoutText()).toContain("Running `NOTION_ENV=dev ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`...")
   })
 
   it("shell NOTION_ENV beats config-derived env (operator override wins)", async () => {
@@ -2306,7 +2309,7 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({ env: "stg" })
-    expect(stdoutText()).toContain("Running `NOTION_ENV=stg ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=stg ntn login`...")
     expect(stdoutText()).not.toContain("Inferring `NOTION_ENV=")
   })
 
@@ -2331,7 +2334,7 @@ describe("runLogin", () => {
     await runLogin({ yes: true })
 
     expect(ntnMocks.runNtnLogin).toHaveBeenCalledWith({})
-    expect(stdoutText()).toContain("Running `ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 ntn login`...")
     expect(stdoutText()).not.toContain("Inferring")
   })
 
@@ -2384,7 +2387,7 @@ describe("runLogin", () => {
     expect(stdoutText()).toContain(
       "(Inferring `NOTION_ENV=dev` from auth.baseUrl in .lore.yaml.)",
     )
-    expect(stdoutText()).toContain("Running `NOTION_ENV=dev ntn login`...")
+    expect(stdoutText()).toContain("Running `NOTION_KEYRING=0 NOTION_ENV=dev ntn login`...")
 
     // Step 4 — createClient receives the ntn-resolved (dev) baseUrl.
     // This is the round-6 reviewer's specific ask: prove that the

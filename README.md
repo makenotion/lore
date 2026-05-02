@@ -5,7 +5,7 @@ AI memory backed by Notion.
 Lore stores knowledge as Notion pages organized across four core databases —
 Projects, Topics, Memories, and Facts — plus an optional fifth database
 (Entities, PF3-01) for canonical-handle resolution. It provides an MCP server
-for AI assistants, a CLI for humans, and shell hooks for automated context
+for AI assistants, a CLI for humans, and hook commands for automated context
 loading and session saving.
 
 ## Quick Start
@@ -16,118 +16,19 @@ loading and session saving.
 npm install makenotion/lore
 ```
 
-### Using `@makenotion/lore` as a devDep (internal consumers)
+### Using `@makenotion/lore` as a Dev Dependency
 
-Internal repos can pin `@makenotion/lore` as a devDependency from
-GitHub Packages, then commit team-shared assistant config that works on
-every engineer's checkout without per-engineer absolute-path rewrites.
-
-#### Engineer setup (one-time, ~30 seconds)
-
-If you're already authed with the [`gh` CLI](https://cli.github.com/):
-
-```bash
-gh auth refresh -h github.com -s read:packages
-echo 'export GITHUB_PACKAGES_TOKEN="$(gh auth token)"' >> ~/.zshrc   # or ~/.bashrc
-source ~/.zshrc
-```
-
-That's it. `gh` already manages the token, you just expose it under the
-name `.yarnrc.yml` / `.npmrc` reads.
-
-<details>
-<summary>If you don't use the <code>gh</code> CLI (or your org disables OAuth tokens for packages)</summary>
-
-Create a Personal Access Token instead:
-
-1. Visit <https://github.com/settings/tokens/new> (Classic) or
-   <https://github.com/settings/personal-access-tokens/new>
-   (Fine-grained — preferred for least-privilege).
-2. Scope: **`read:packages`** (Classic) or **Repository → Packages:
-   Read-only** scoped to the package's source repo (Fine-grained).
-3. `export GITHUB_PACKAGES_TOKEN=<the-token>` in your shell rc.
-
-Both forms produce a token GitHub Packages accepts as a Bearer token.
-The PAT path is also what CI typically uses, via
-`secrets.GITHUB_TOKEN`.
-</details>
-
-#### Wiring the consumer repo (one-time, by whoever lands the migration)
-
-1. **Configure the registry mapping.** For Yarn 4 / Berry, add to
-   `.yarnrc.yml`:
-
-   ```yaml
-   npmScopes:
-     makenotion:
-       npmRegistryServer: "https://npm.pkg.github.com"
-       npmAuthToken: "${GITHUB_PACKAGES_TOKEN:-}"
-   ```
-
-   For npm / Yarn 1, copy `.npmrc.example` and adapt — see that file
-   for the details.
-
-   The `${VAR:-}` default-value form is load-bearing: it lets unrelated
-   yarn invocations (`yarn run -T lore mcp`, `yarn lint`, etc.) load the file
-   without a token. Only registry fetches need it.
-
-2. **Add the devDep.**
-
-   ```bash
-   yarn add -D @makenotion/lore        # or `npm install -D @makenotion/lore`
-   ```
-
-3. **Run `lore install` once locally.** From inside the consumer repo:
-
-   ```bash
-   yarn lore install -y      # Yarn PnP consumers
-   npx lore install -y       # npm / Yarn 1 consumers
-   ```
-
-   This writes the **bin-dispatch** config shape:
-   - `.mcp.json` with `{ "command": "yarn", "args": ["run", "-T", "lore", "mcp"] }`
-     for Yarn PnP, or `{ "command": "lore", "args": ["mcp"] }` for
-     npm / Yarn 1 (auto-detected via `.pnp.cjs`).
-   - `.claude/settings.json` hooks with `"command": "cd \"$CLAUDE_PROJECT_DIR\" && yarn run -T lore hooks <event>"`
-     (PnP) or `"command": "cd \"$CLAUDE_PROJECT_DIR\" && lore hooks <event>"`
-     (npm).
-
-   No absolute paths and no `${HOME}` placeholders — the file is
-   portable across every engineer's machine.
-
-4. **Teach the repo's agents to prefer Lore.** Add a short
-   "Memory and note-taking" section to the repo's `AGENTS.md` and
-   `CLAUDE.md` so agents know when to call Lore tools instead of
-   writing local-only notes. See [Quick Start step 5](#5-teach-your-agents-to-use-lore)
-   for a pasteable starter.
-
-5. **Commit the resulting diff.** The committed config now Just Works
-   on any teammate's fresh checkout: `yarn install` resolves
-   `@makenotion/lore` from GitHub Packages (using each engineer's
-   `GITHUB_PACKAGES_TOKEN`), and the host assistant resolves `lore`
-   through Yarn's PnPAPI (or `node_modules/.bin/lore` for non-PnP
-   consumers).
-
-> **Don't have a global `lore` install on the same machine.** A global
-> `npm install -g @makenotion/lore` would shadow the project-local
-> devDep on PATH for shells that don't put `node_modules/.bin` ahead
-> of global bins. Stick to one source of truth per machine.
-
-#### Migrating from a `~/.lore` deployment
-
-Legacy `~/.lore` installs (where every engineer cloned lore to home and
-the committed config used absolute paths) still work — `lore install
---legacy-paths` opts back into the 0.10.x absolute-path output for one
-release. Default `lore install` rewrites legacy entries to bin-dispatch
-and prints `MCP server: upgraded (legacy → bin-dispatch)` in the install
-summary. The 0.12.0 release will remove `--legacy-paths` and the
-absolute-path code path together.
+Internal repos can pin `@makenotion/lore` from GitHub Packages and commit
+portable assistant config that works across every engineer's checkout. See
+[`docs/dev-dependency-install.md`](docs/dev-dependency-install.md) for the
+GitHub Packages token setup, Yarn/npm wiring, and legacy `~/.lore` migration
+notes.
 
 #### Working on lore itself (this repo's committed configs)
 
 Lore's source repo is its own consumer, and lore can't bin-dispatch
 through itself — there's no `node_modules/.bin/lore` in the repo
-that's *publishing* `lore`. The committed `.mcp.json`,
+that's _publishing_ `lore`. The committed `.mcp.json`,
 `.cursor/mcp.json`, `.codex/config.toml`, and `.codex/hooks.json`
 therefore use the legacy `${HOME}/.lore/...` absolute-path shape
 deliberately. They assume the team-wide convention that every
@@ -197,10 +98,11 @@ environment — the flag sets `NOTION_ENV` for the spawned `ntn login` so the
 resulting `auth.json` and `config.json` reflect the requested env.
 
 If your existing ntn auth points at a different environment than `--ntn-env`,
-Lore exits 1 with recovery copy (typically `ntn logout && NOTION_ENV=<env> ntn
-login`) rather than silently creating a vault in the wrong environment. Either
-init path creates the five databases inside the page (Projects, Topics,
-Memories, Entities, Facts) and writes a `.lore.yaml` config file.
+Lore exits 1 with recovery copy (typically
+`ntn logout && NOTION_KEYRING=0 NOTION_ENV=<env> ntn login`) rather than
+silently creating a vault in the wrong environment. Either init path creates the
+five databases inside the page (Projects, Topics, Memories, Entities, Facts)
+and writes a `.lore.yaml` config file.
 
 For direct non-ntn integration tokens, set the canonical Notion SDK env var and
 share the page with that integration before `lore init <page-id>`. This path is
@@ -265,41 +167,12 @@ so the Cursor installer only writes the MCP entry; the Stop-triggered
 autosave and the detached auto-digest spawn run only under Claude Code or
 Codex. Recall / save / scan paths work identically across all three.
 
-### Other MCP hosts
+### Other MCP Hosts
 
-For agents not directly supported by `lore install --client`, use
-`--print-config` to emit a paste-ready snippet for the appropriate format:
-
-```bash
-lore install --print-config json   # JSON `mcpServers` block
-lore install --print-config toml   # TOML `[mcp_servers.lore]` section
-```
-
-The snippet's `cwd` and env-placeholder list are byte-identical to what
-`--client claude` writes to `.mcp.json` and what `--client codex` appends
-to `.codex/config.toml`. No files are written; pipe the output into your
-agent's MCP config file by hand.
-
-> **Note:** Per-host config paths below are **best-effort references**, not
-> contracts. Each host owns its own config schema and may relocate the file
-> between releases. Verify against your agent's official documentation
-> before pasting; lore only commits to producing the canonical JSON / TOML
-> shape.
-
-- **Gemini-CLI** — typically a TOML file under `~/.config/gemini/`. Run
-  `lore install --print-config toml`, paste the output into the appropriate
-  section per the agent's current docs.
-- **OpenCode** — TOML under `~/.opencode/` or `<project>/.opencode/`. Same
-  workflow.
-- **Windsurf** — JSON. Run `lore install --print-config json`, paste into
-  Windsurf's `mcpServers` block per its docs.
-- **Antigravity, Copilot, etc.** — locate your agent's MCP config file
-  (host docs), pick the right format, paste.
-
-> **Hooks are host-specific.** Claude Code and Codex installs wire
-> Stop-triggered autosave, wake-up injection, and detached auto-digest helpers.
-> Cursor and `--print-config` hosts get the MCP tool surface but not background
-> hooks.
+For agents not directly supported by `lore install --client`, run
+`lore install --print-config json` or `lore install --print-config toml` and
+paste the emitted MCP server snippet into the host's config file. See
+[`docs/mcp-hosts.md`](docs/mcp-hosts.md) for host notes and hook limitations.
 
 ### 5. Teach Your Agents to Use Lore
 
@@ -342,12 +215,12 @@ devDependency, tell agents to run CLI commands as
 A vault is a Notion page containing four core databases plus an optional
 fifth (Entities, PF3-01):
 
-| Database     | Title Property | Key Properties                                         | Relations                                    |
-| ------------ | -------------- | ------------------------------------------------------ | -------------------------------------------- |
-| **Projects** | Name           | Type (project/person/agent), Path, Status, Description | --                                           |
-| **Topics**   | Name           | Description                                            | Project                                      |
-| **Memories** | Title          | Source, Author, Agent, Tags, Session + page body       | Project, Topic                               |
-| **Entities** | Name           | Aliases, Kind, Description                             | Project, Source (Memory)                     |
+| Database     | Title Property | Key Properties                                         | Relations                                             |
+| ------------ | -------------- | ------------------------------------------------------ | ----------------------------------------------------- |
+| **Projects** | Name           | Type (project/person/agent), Path, Status, Description | --                                                    |
+| **Topics**   | Name           | Description                                            | Project                                               |
+| **Memories** | Title          | Source, Author, Agent, Tags, Session + page body       | Project, Topic                                        |
+| **Entities** | Name           | Aliases, Kind, Description                             | Project, Source (Memory)                              |
 | **Facts**    | Subject        | Predicate, Object, Valid From, Valid Until, Confidence | Project, Source (Memory), SubjectEntity, ObjectEntity |
 
 **Entities** is created automatically by `lore init` on new vaults. Existing
@@ -402,196 +275,43 @@ Lore exposes seven polymorphic tools, each multiplexing several actions
 behind one MCP registration: `lore-context`, `lore-memory`, `lore-query`,
 `lore-fact`, `lore-decision`, `lore-project`, and `lore-task`. The prior
 single-purpose tool names and task aliases were removed in the 0.6.0
-deprecation purge; see `src/mcp/AGENTS.md` for the historical timeline.
-
-### `lore-context` — vault context
-
-| Action     | Description |
-| ---------- | ----------- |
-| `status`   | Show vault status, database counts, and active project |
-| `wake-up`  | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, and memories related to active tasks |
-| `digest`   | Gather raw activity data for synthesis into a `source: "digest"` memory |
-
-### `lore-memory` — memory mutations + batch hydration
-
-| Action    | Description |
-| --------- | ----------- |
-| `save`    | Save a new memory (markdown content stored as page body) |
-| `update`  | Update a memory's title, content, tags, or categorization |
-| `archive` | Soft-delete a memory by ID |
-| `expand`  | Batch-fetch memory bodies by ID (up to 20, parallelized) |
-| `suggest-topic-key` | Suggest a stable topic key for recurring memory topics |
-| `compare` | Record a conflict/compatibility verdict on a pair of memories |
-
-### `lore-query` — vault read paths
-
-| Action       | Description |
-| ------------ | ----------- |
-| `recall`     | List recent memories with optional filters |
-| `search`     | Semantic search across memories using Notion's search API |
-| `ask`        | Query facts and tasks about an entity |
-| `audit`      | List overdue facts, decisions, and tasks past their review date |
-
-### `lore-fact` — knowledge graph mutations
-
-| Action       | Description |
-| ------------ | ----------- |
-| `create`     | Add a subject-predicate-object fact triple. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task action='create'` instead. |
-| `invalidate` | Invalidate a fact (sets Valid Until date, preserves history) |
-| `extend`     | Push a fact's review-by date forward |
-
-After P3-02, `lore-query action='ask'` also surfaces tasks touching the
-entity. For tracked work triage, use `lore-task action='list'`.
-Un-migrated vaults may still contain historical tracking-predicate facts;
-`lore status` reports those rows for manual remediation.
-
-### `lore-task` — tracked work
-
-`Kind = task` memories supersede the legacy tracking-predicate facts (`needs_action` / `waiting_on` / `blocked_by`). The description lives in the page body (no rich_text length cap) and the subject is structurally indexed, so structural queries actually work.
-
-| Action      | Description                                                            |
-| ----------- | ---------------------------------------------------------------------- |
-| `create`    | Create a task with subject, description, state, blocker, and due date  |
-| `update`    | Update a task's state, blocker, due date, subject, or description      |
-| `close`     | Mark a task done (or cancelled — distinguished for metrics)            |
-| `list`      | List tasks with Overdue/Active sections; filters by entity, state, due |
-| `reconcile` | Surface likely active tasks that can be closed from newer evidence     |
-
-The old single-purpose task aliases were removed in 0.6.0; use the polymorphic
-`lore-task` dispatcher.
-
-Current releases no longer ship the tracking-predicate migration command. If
-`lore status` reports historical tracking facts, restore that migration from
-git history and run it manually against the vault, or hand-edit the Notion rows
-into tasks.
-
-### `lore-decision` — decision lifecycle
-
-| Action      | Description |
-| ----------- | ----------- |
-| `create`    | Record a decision with rationale, alternatives, consequences; auto-creates `decided_by` facts |
-| `list`      | Index-tier listing of decisions (no body fetch) |
-| `get`       | Load full rationale + metadata for a specific decision |
-| `context`   | Find every decision governing an entity via the facts graph |
-| `supersede` | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact |
-| `review`    | Mark a decision as reviewed, push `Review By` forward |
-
-### `lore-project` — project read paths
-
-| Action | Description |
-| ------ | ----------- |
-| `list` | List all projects in the vault |
-| `get`  | Get project details, topics, and recent activity |
+deprecation purge. See [`docs/mcp-tools.md`](docs/mcp-tools.md) for the action
+reference and task/fact migration notes.
 
 ## CLI Commands
 
-| Command                        | Description                                                      |
-| ------------------------------ | ---------------------------------------------------------------- |
-| `lore init [page-id]`          | Create vault databases and write `.lore.yaml`. Pass `<page-id>` for team / repo-scoped vaults (recommended); omit to create a workspace-level page via the active auth source, bootstrapping ntn only when no auth resolves. `--name <name>` overrides the default repo-derived title; `--ntn-env <prod\|dev\|stg>` bootstraps against a non-prod Notion environment; `--yes` auto-confirms ntn install / login prompts |
-| `lore install`                 | Install Lore assistant integrations (defaults to Claude Code + Codex + Cursor; `--client cursor`, `--cursor-global` for Cursor-only setup; `--print-config json\|toml` prints a paste-ready snippet for unsupported MCP hosts) |
-| `lore auth`                    | Check authentication status                                      |
-| `lore auth --login`            | In a repo with `.lore.yaml`, authenticate via ntn, auto-installing ntn if needed and verifying vault access |
-| `lore search <query>`          | Semantic search across memories (`-p`, `-t`, `-n` flags)         |
-| `lore mine [path]`             | Index project files as memories (`--dry-run`, `--pattern`, `-n`) |
-| `lore status`                  | Show vault status, database counts, and active projects          |
-| `lore status projects`         | List all projects (`-a` for archived)                            |
-| `lore status topics [project]` | List topics in a project                                         |
-| `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, etc.) |
-| `lore entities merge --from <loser-id> --into <winner-id>` | Preview/apply a duplicate Entity merge. Plan-only by default; `--yes` repoints Facts from loser to winner, appends loser lookup forms to winner aliases, writes a merge note, then archives the loser. Legacy positional ids are still accepted. |
-| `lore conflicts scan`          | Walk the vault and surface candidate conflict pairs for in-context judgment (`-p`, `-n`, `--raw-limit`, `--include-bodies`, `--json`, `--exhaustive`). Read-only — emits prompt-ready output the calling agent dispatches back via `lore-memory action='compare'`. |
+Core commands:
 
-### Conflict detection
+- `lore init [page-id]` creates vault databases and writes `.lore.yaml`.
+- `lore install` writes assistant MCP config and supported hooks.
+- `lore auth --login` refreshes ntn auth and verifies vault access.
+- `lore search <query>` searches memories.
+- `lore status` reports vault health and active project resolution.
+- `lore migrate` runs schema and one-shot data migrations.
+- `lore entities merge --from <loser-id> --into <winner-id>` previews or applies
+  duplicate Entity merges.
+- `lore conflicts scan` surfaces read-only conflict candidates for agent
+  judgment.
 
-`lore conflicts scan` is a read-only operator-pulled scanner that
-walks the vault, identifies pairs of memories whose titles +
-keywords trigram-overlap (or whose tags overlap) above threshold,
-filters out pairs already judged via `Compared With`, and emits
-**prompt-ready output** the calling agent reads and dispatches
-back via `lore-memory action='compare'`. The CLI itself does NOT
-call any LLM and does NOT call the compare tool.
-
-Compare verdicts are a closed vocabulary. `conflicts_with` and `supersedes` are
-asymmetric and require `affectedMemoryId` naming the memory whose confidence
-score should be reduced. `scoped`, `related`, `compatible`, and `not_conflict`
-are symmetric and must omit `affectedMemoryId`. The `--json` output includes a
-`compareContract` block, and [`AGENTS.md`](AGENTS.md#conflict-verdicts-090)
-has the canonical verdict definitions.
-
-The scan is bounded by two distinct caps:
-
-- `--raw-limit` (default `SCAN_RAW_CANDIDATE_CAP = 500`) per
-  project — coverage knob; bounds the per-project candidate
-  accumulator (top-K accumulation, so a high-overlap project
-  allocates O(raw-limit) candidates, not O(N²)). Increase it to
-  continue bounded scanning beyond the first raw window, or lift it
-  entirely with `--exhaustive`.
-- `--limit` (default 50) — prompt-budget knob; applied AFTER
-  dedup + Compared-With filter + sort, so it always budgets the
-  *useful* candidate set.
-
-Typical workflow:
-
-```bash
-# Surface a batch the agent can reason about:
-lore conflicts scan --project Mail --limit 50
-
-# Agent judges each pair via lore-memory action='compare'.
-
-# Re-run; already-judged pairs drop out, next batch surfaces:
-lore conflicts scan --project Mail --limit 50
-
-# If the no-results report says "Raw limit reached: yes" and suggests
-# a higher raw window, continue bounded scanning without going fully
-# exhaustive:
-lore conflicts scan --project Mail --raw-limit 1000 --limit 50
-
-# Repeat until the scan returns zero, then optionally:
-lore conflicts scan --project Mail --exhaustive --limit 50
-# Lifts the raw-candidate per-project cap to confirm full
-# coverage on extremely overlapping projects.
-```
-
-`--json` swaps the markdown report for a JSON document carrying a
-top-level `compareContract` block (asymmetric vs symmetric verdict
-split, direction rules, back-reference to CLAUDE.md for canonical
-verdict definitions). Progress messages route to stderr so
-`--json` is pipe-clean.
+See [`docs/cli.md`](docs/cli.md) for a compact CLI command overview. See
+[`docs/conflict-detection.md`](docs/conflict-detection.md) for conflict verdict
+rules, scan caps, and the repeat-until-clean workflow.
 
 ## Hooks
 
-Shell hooks for automated integration with AI coding assistants:
+Lore installs hook commands for supported AI coding assistants:
 
-- **Auto-save** (`hooks/autosave.sh`): Runs on the assistant `Stop` hook and
-  continues the session with a Lore save prompt after enough user messages.
-  Works in both Claude Code and Codex. The Stop hook also schedules a
-  detached auto-digest helper (off the hot path) so a stale weekly project
-  digest is regenerated without blocking the user's next turn.
+- **Auto-save** (`lore hooks autosave`) runs on assistant `Stop` and saves
+  the session after enough user messages.
+- **Wake-up** (`lore hooks wakeup`) loads the latest digest, recent memories,
+  active facts, and task-matched context at the start of a session.
 
-- **Wake-up** (`hooks/wakeup.sh`): Loads the latest project digest (if one was
-  saved in the last 7 days), plus recent memories, active facts, and any
-  memories relevance-matched against active task entities — one semantic query
-  scored against memory titles and bodies, so the context behind each
-  outstanding task comes in alongside the task itself.
-  Claude Code injects it on `UserPromptSubmit`; Codex injects it on
-  `SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to skip this
-  injection for both assistants. If `.lore.yaml` fails to parse, the hook falls
-  back to the default (on) and writes a `[lore]` warning to stderr.
-
-Hooks resolve Notion auth through the same priority chain as the CLI and MCP
-server. `lore install` forwards the `RUNTIME_FORWARDED_KEYS` allowlist from
-`src/auth/forwarded-env.ts` into spawned children (auth tokens, workspace
-selector, base-URL selectors, and user attribution override), while ntn-backed
-setups read `~/.config/notion/auth.json` from the operator's home directory. If
-no source resolves, the hook exits with the same "No Notion auth configured"
-guidance as the foreground CLI.
-
-`hooks/session-end.sh` is kept as an exit-0 compatibility shim for Claude
-Code settings written before 0.6.0; new installs no longer register a
-SessionEnd hook. Re-running `lore install --client claude` strips any stale
-Lore-owned SessionEnd entries from `~/.claude/.../settings.json`.
-
-Codex also requires the project to be trusted before it will load
-project-scoped `.codex/*` files.
+Claude Code and Codex installs wire hooks automatically using bin dispatch
+(`lore hooks ...`, or `yarn run -T lore hooks ...` under Yarn PnP). The
+`hooks/autosave.sh` and `hooks/wakeup.sh` scripts are legacy `--legacy-paths`
+entrypoints. Cursor and `--print-config` hosts only get the MCP tool surface.
+See [`docs/hooks.md`](docs/hooks.md) for host timing, auth forwarding, auto-digest
+behavior, and compatibility notes.
 
 ## Configuration
 
@@ -649,16 +369,16 @@ implementation, ntn version policy, and keychain-mode workaround.
 
 ### Environment variables
 
-| Variable | Effect |
-|----------|--------|
-| `NOTION_API_TOKEN` | Canonical Notion bearer token env var. Takes precedence over ntn `auth.json` |
-| `NOTION_WORKSPACE_ID` | Selects a workspace from a multi-workspace ntn `auth.json` |
-| `LORE_NOTION_TOKEN` | Soft-deprecated legacy Notion token fallback. Prefer ntn auth or `NOTION_API_TOKEN`; removal is plausibly 0.11.0 or 1.0.0, contingent on telemetry |
-| `LORE_AGENT_NAME` | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`) |
-| `LORE_USER_NAME` | Override the `Author:` field on saved memories with a human display name. When unset, Lore resolves the engineer identity from `users.me` on the active ntn-issued token. |
-| `LORE_AUTO_DIGEST=false` | Suppress the Stop-triggered auto-digest scheduler (CLI `lore digest` still works) |
-| `LORE_NO_HYPERLINKS=1` | Skip OSC 8 clickable hyperlinks in `lore search` and `lore status` output, even under TTY. Same fallback as the non-TTY path. `=0`, `=false`, and empty string are treated as not set |
-| `NO_COLOR=1` | Honored alongside `LORE_NO_HYPERLINKS` to skip OSC 8 emission |
+| Variable                 | Effect                                                                                                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NOTION_API_TOKEN`       | Canonical Notion bearer token env var. Takes precedence over ntn `auth.json`                                                                                                          |
+| `NOTION_WORKSPACE_ID`    | Selects a workspace from a multi-workspace ntn `auth.json`                                                                                                                            |
+| `LORE_NOTION_TOKEN`      | Soft-deprecated legacy Notion token fallback. Prefer ntn auth or `NOTION_API_TOKEN`; removal is plausibly 0.11.0 or 1.0.0, contingent on telemetry                                    |
+| `LORE_AGENT_NAME`        | Override the `Agent:` field on saved memories (e.g., `LORE_AGENT_NAME=Codex`)                                                                                                         |
+| `LORE_USER_NAME`         | Override the `Author:` field on saved memories with a human display name. When unset, Lore resolves the engineer identity from `users.me` on the active ntn-issued token.             |
+| `LORE_AUTO_DIGEST=false` | Suppress the Stop-triggered auto-digest scheduler (CLI `lore digest` still works)                                                                                                     |
+| `LORE_NO_HYPERLINKS=1`   | Skip OSC 8 clickable hyperlinks in `lore search` and `lore status` output, even under TTY. Same fallback as the non-TTY path. `=0`, `=false`, and empty string are treated as not set |
+| `NO_COLOR=1`             | Honored alongside `LORE_NO_HYPERLINKS` to skip OSC 8 emission                                                                                                                         |
 
 ## Monorepo Support
 

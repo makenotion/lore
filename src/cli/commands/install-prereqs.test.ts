@@ -508,7 +508,7 @@ describe("ensurePrerequisites — ntn env derivation for ntn login", () => {
     expect(runNtnLogin).not.toHaveBeenCalled()
     const err = captured(consoleErrorSpy)
     expect(err).toMatch(/doesn't[\s\S]*match a known ntn environment/)
-    expect(err).toMatch(/NOTION_ENV=<env> ntn login/)
+    expect(err).toMatch(/NOTION_KEYRING=0 NOTION_ENV=<env> ntn login/)
   })
 
   it("operator's explicit NOTION_ENV bypasses the non-canonical-baseUrl refusal", async () => {
@@ -537,7 +537,7 @@ describe("ensurePrerequisites — ntn env derivation for ntn login", () => {
 
   it("offer-login skip surfaces the inferred env in the manual-fallback copy", async () => {
     // Operator declines the auto-login. The recovery copy must name
-    // the inferred env so the manual `NOTION_ENV=... ntn login`
+    // the inferred env so the manual `NOTION_KEYRING=0 NOTION_ENV=... ntn login`
     // command they paste back matches what auto-login would have
     // done.
     vi.mocked(findConfigFile).mockResolvedValue({
