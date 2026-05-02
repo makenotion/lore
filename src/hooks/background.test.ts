@@ -1,29 +1,75 @@
 /**
- * Tests for `spawnBackgroundSave`'s `safeEnv` construction (#188).
+ * Tests for `spawnBackgroundSave`.
  *
- * The Stop-hook autosave / digest paths spawn a detached `claude -p`
- * with a deliberately minimal env. Pre-#188 only the legacy
- * `LORE_NOTION_TOKEN` / `LORE_NOTION_BASE_URL` / `LORE_USER_NAME`
- * keys were forwarded, so an operator authenticated via
- * `NOTION_API_TOKEN` (the canonical 0.10.0 path) — or a
- * multi-workspace ntn user with `NOTION_WORKSPACE_ID` — saw their
- * foreground CLI / MCP calls succeed while hook workers silently
- * failed auth or selected the wrong workspace.
+ * Two separate concerns covered in this file:
  *
- * These tests pin the post-#188 contract: every key in
- * `RUNTIME_FORWARDED_KEYS` (the shared install/hooks allowlist —
- * `src/auth/forwarded-env.ts`) forwards conditionally from
- * `process.env` into the spawned child's env, mirroring the
- * placeholder set `lore install` writes into MCP host config.
+ * 1. **`safeEnv` env forwarding (#188).** The Stop-hook autosave / digest
+ *    paths spawn a detached `claude -p` with a deliberately minimal env.
+ *    Pre-#188 only the legacy `LORE_NOTION_TOKEN` /
+ *    `LORE_NOTION_BASE_URL` / `LORE_USER_NAME` keys were forwarded, so an
+ *    operator authenticated via `NOTION_API_TOKEN` (the canonical 0.10.0
+ *    path) — or a multi-workspace ntn user with `NOTION_WORKSPACE_ID` —
+ *    saw their foreground CLI / MCP calls succeed while hook workers
+ *    silently failed auth or selected the wrong workspace. The
+ *    `safeEnv` describe block pins the post-#188 contract: every key in
+ *    `RUNTIME_FORWARDED_KEYS` (the shared install/hooks allowlist —
+ *    `src/auth/forwarded-env.ts`) forwards conditionally from
+ *    `process.env` into the spawned child's env.
+ *
+ * 2. **Prompt-file preparation cleanup (#195).** The prep block creates a
+ *    temp file under $TMPDIR via O_EXCL, writes the prompt content
+ *    (which includes session transcript text), closes and re-opens for
+ *    read, then unlinks. If any step after the initial `openSync` throws,
+ *    the catch path must close any open fd and unlink the temp file
+ *    before returning `{ kind: "tempfile-failed" }` — without that
+ *    cleanup, sensitive session text leaks under /tmp. The prep-failure
+ *    describe block injects failures at each step by overriding the
+ *    mocked `node:fs` exports; defaults pass through to real impls so a
+ *    real temp file is created and cleaned up.
+ *
+ * The `node:fs` mock is shared across both suites: defaults pass through
+ * to actual implementations so the safeEnv tests' `mkdtempSync` / `rmSync`
+ * still work, and only the prep-failure tests reconfigure the openSync /
+ * writeSync / closeSync / unlinkSync mocks per-test.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+// Per-process state-dir override so this test file's lock + log markers
+// don't collide with sibling test files running in parallel. Hoisted so
+// the assignment runs before `./lock.js` reads the env var.
 vi.hoisted(() => {
   process.env["LORE_HOOK_STATE_DIR"] =
     `${process.env["TMPDIR"] ?? "/tmp"}/lore-background-state-${process.pid}-${Date.now()}`
+})
+
+const realFs = vi.hoisted(() => {
+  return {
+    openSync: undefined as unknown as typeof import("node:fs").openSync,
+    writeSync: undefined as unknown as typeof import("node:fs").writeSync,
+    closeSync: undefined as unknown as typeof import("node:fs").closeSync,
+    unlinkSync: undefined as unknown as typeof import("node:fs").unlinkSync,
+    existsSync: undefined as unknown as typeof import("node:fs").existsSync,
+  }
+})
+
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+  realFs.openSync = actual.openSync
+  realFs.writeSync = actual.writeSync
+  realFs.closeSync = actual.closeSync
+  realFs.unlinkSync = actual.unlinkSync
+  realFs.existsSync = actual.existsSync
+  return {
+    ...actual,
+    openSync: vi.fn(actual.openSync),
+    writeSync: vi.fn(actual.writeSync),
+    closeSync: vi.fn(actual.closeSync),
+    unlinkSync: vi.fn(actual.unlinkSync),
+    existsSync: vi.fn(actual.existsSync),
+  }
 })
 
 const { spawnMock, execFileSyncMock } = vi.hoisted(() => ({
@@ -37,9 +83,15 @@ vi.mock("node:child_process", async () => {
   return { ...actual, spawn: spawnMock, execFileSync: execFileSyncMock }
 })
 
+import * as fs from "node:fs"
 import { RUNTIME_FORWARDED_KEYS } from "../auth/forwarded-env.js"
 import { spawnBackgroundSave } from "./background.js"
 import { getStateDir } from "./lock.js"
+
+const openSyncMock = fs.openSync as unknown as ReturnType<typeof vi.fn>
+const writeSyncMock = fs.writeSync as unknown as ReturnType<typeof vi.fn>
+const closeSyncMock = fs.closeSync as unknown as ReturnType<typeof vi.fn>
+const unlinkSyncMock = fs.unlinkSync as unknown as ReturnType<typeof vi.fn>
 
 function fakeLiveChild(): {
   pid: number
@@ -260,5 +312,302 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
     } finally {
       delete process.env["LORE_AGENT_NAME"]
     }
+  })
+})
+
+interface PrepProbe {
+  /** Per-call openSync arguments observed (path-only, both wx+ and r). */
+  paths: string[]
+  /** Per-call openSync return values (the fds the prep block sees). */
+  fds: number[]
+  /** Per-call closeSync arguments — what the cleanup path actually closed. */
+  closedFds: number[]
+  /** Per-call unlinkSync arguments — what the cleanup path tried to delete. */
+  unlinkedPaths: string[]
+}
+
+/**
+ * Wires every fs primitive used by the prep block to a single shared
+ * recorder. Each step (openSync call #n, writeSync, closeSync, unlinkSync)
+ * delegates to either the real implementation or a per-step throw,
+ * configured via the `failAt` option. This avoids the
+ * `mockImplementationOnce`-queue subtlety where a queued second-openSync
+ * mock never fires when a prior step throws.
+ */
+function setupPrepProbe(opts: {
+  failAt?:
+    | { kind: "writeSync" }
+    | { kind: "closeSync"; nth: number }
+    | { kind: "openSync"; nth: number }
+    | { kind: "unlinkSync"; nth: number }
+}): PrepProbe {
+  const probe: PrepProbe = {
+    paths: [],
+    fds: [],
+    closedFds: [],
+    unlinkedPaths: [],
+  }
+  let openCalls = 0
+  let closeCalls = 0
+  let unlinkCalls = 0
+
+  openSyncMock.mockImplementation(
+    (
+      path: Parameters<typeof realFs.openSync>[0],
+      flags?: Parameters<typeof realFs.openSync>[1],
+      mode?: Parameters<typeof realFs.openSync>[2]
+    ) => {
+      const n = ++openCalls
+      if (opts.failAt?.kind === "openSync" && opts.failAt.nth === n) {
+        throw new Error(`simulated openSync failure at call ${n}`)
+      }
+      const fd = realFs.openSync(path, flags as never, mode as never)
+      if (typeof path === "string" && path.includes("lore-prompt-")) {
+        probe.paths.push(path)
+        probe.fds.push(fd)
+      }
+      return fd
+    }
+  )
+
+  writeSyncMock.mockImplementation(
+    (
+      fd: Parameters<typeof realFs.writeSync>[0],
+      buf: Parameters<typeof realFs.writeSync>[1],
+      ...rest: unknown[]
+    ) => {
+      if (opts.failAt?.kind === "writeSync") {
+        throw new Error("simulated writeSync failure")
+      }
+      // The real signature is overloaded; pass through the variadic tail.
+      return (realFs.writeSync as unknown as (...args: unknown[]) => number)(
+        fd,
+        buf,
+        ...rest
+      )
+    }
+  )
+
+  closeSyncMock.mockImplementation((fd: number) => {
+    const n = ++closeCalls
+    probe.closedFds.push(fd)
+    if (opts.failAt?.kind === "closeSync" && opts.failAt.nth === n) {
+      throw new Error(`simulated closeSync failure at call ${n}`)
+    }
+    realFs.closeSync(fd)
+  })
+
+  unlinkSyncMock.mockImplementation(
+    (path: Parameters<typeof realFs.unlinkSync>[0]) => {
+      const n = ++unlinkCalls
+      if (typeof path === "string") probe.unlinkedPaths.push(path)
+      if (opts.failAt?.kind === "unlinkSync" && opts.failAt.nth === n) {
+        throw new Error(`simulated unlinkSync failure at call ${n}`)
+      }
+      realFs.unlinkSync(path)
+    }
+  )
+
+  return probe
+}
+
+describe("spawnBackgroundSave prompt-file cleanup on prep failure (#195)", () => {
+  beforeEach(() => {
+    // Default spawn returns a fake live child so the post-prep success path
+    // can complete without forking a real process. Uses our own pid so the
+    // lock liveness check (when the test passes a lockKey) sees the child
+    // as alive.
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => fakeLiveChild())
+  })
+
+  afterEach(() => {
+    // Reset the chained `mockImplementation` calls between tests so leftover
+    // step counters from a prior `setupPrepProbe` don't leak into the
+    // safeEnv tests' default-passthrough expectations.
+    openSyncMock.mockReset()
+    writeSyncMock.mockReset()
+    closeSyncMock.mockReset()
+    unlinkSyncMock.mockReset()
+    // Re-bind to passthrough so the safeEnv tests (which run with these
+    // mocks at default) keep working — `mockReset` clears even the
+    // default implementation.
+    openSyncMock.mockImplementation(realFs.openSync)
+    writeSyncMock.mockImplementation(realFs.writeSync)
+    closeSyncMock.mockImplementation(realFs.closeSync)
+    unlinkSyncMock.mockImplementation(realFs.unlinkSync)
+  })
+
+  it("unlinks the temp file when writeSync throws after the initial open", () => {
+    const probe = setupPrepProbe({ failAt: { kind: "writeSync" } })
+
+    const result = spawnBackgroundSave("/tmp", "sensitive transcript content")
+
+    expect(result.kind).toBe("tempfile-failed")
+    expect(probe.paths.length).toBe(1)
+    // Cleanup must remove the file the wx+ open created.
+    expect(realFs.existsSync(probe.paths[0]!)).toBe(false)
+  })
+
+  it("closes the open fd when writeSync throws", () => {
+    const probe = setupPrepProbe({ failAt: { kind: "writeSync" } })
+
+    const result = spawnBackgroundSave("/tmp", "sensitive content")
+
+    expect(result.kind).toBe("tempfile-failed")
+    expect(probe.fds.length).toBe(1)
+    // The fd from the wx+ open must be closed by the cleanup path.
+    expect(probe.closedFds).toContain(probe.fds[0]!)
+  })
+
+  it("unlinks the temp file when the second openSync (read mode) throws", () => {
+    const probe = setupPrepProbe({ failAt: { kind: "openSync", nth: 2 } })
+
+    const result = spawnBackgroundSave("/tmp", "sensitive content")
+
+    expect(result.kind).toBe("tempfile-failed")
+    // Only the first open succeeded, so we recorded one path.
+    expect(probe.paths.length).toBe(1)
+    // Cleanup must still find the file via `needsUnlink` and remove it
+    // even though no fd is currently open at this failure point.
+    expect(realFs.existsSync(probe.paths[0]!)).toBe(false)
+    expect(probe.unlinkedPaths).toContain(probe.paths[0]!)
+  })
+
+  it("closes the read fd and retries unlink when the production unlinkSync throws", () => {
+    // Force the mock to throw on every unlinkSync call so both the
+    // production unlink (the throwing one we're simulating) AND the
+    // cleanup-path retry hit the failure branch. This pins that the
+    // function does not propagate even when the cleanup retry fails.
+    const probe: PrepProbe = {
+      paths: [],
+      fds: [],
+      closedFds: [],
+      unlinkedPaths: [],
+    }
+    let openCalls = 0
+    openSyncMock.mockImplementation(
+      (
+        path: Parameters<typeof realFs.openSync>[0],
+        flags?: Parameters<typeof realFs.openSync>[1],
+        mode?: Parameters<typeof realFs.openSync>[2]
+      ) => {
+        openCalls++
+        const fd = realFs.openSync(path, flags as never, mode as never)
+        if (typeof path === "string" && path.includes("lore-prompt-")) {
+          probe.paths.push(path)
+          probe.fds.push(fd)
+        }
+        return fd
+      }
+    )
+    closeSyncMock.mockImplementation((fd: number) => {
+      probe.closedFds.push(fd)
+      realFs.closeSync(fd)
+    })
+    unlinkSyncMock.mockImplementation(
+      (path: Parameters<typeof realFs.unlinkSync>[0]) => {
+        if (typeof path === "string") probe.unlinkedPaths.push(path)
+        throw new Error("simulated unlinkSync failure")
+      }
+    )
+
+    const result = spawnBackgroundSave("/tmp", "sensitive content")
+    try {
+      expect(result.kind).toBe("tempfile-failed")
+      expect(openCalls).toBe(2)
+      expect(probe.fds.length).toBe(2)
+      // The read fd (second open) must be closed by cleanup.
+      expect(probe.closedFds).toContain(probe.fds[1]!)
+      // Production unlink (1st call) threw; cleanup retried (2nd call), which
+      // also threw and was swallowed. spawnBackgroundSave returned cleanly.
+      expect(probe.unlinkedPaths.filter((p) => p.includes("lore-prompt-")).length).toBe(2)
+    } finally {
+      // The mock threw on every unlink, so the file was never actually
+      // removed. Clean up directly even if an assertion above failed —
+      // otherwise this test leaves forensic state under /tmp between runs.
+      if (probe.paths[0] && realFs.existsSync(probe.paths[0])) {
+        realFs.unlinkSync(probe.paths[0])
+      }
+    }
+  })
+
+  it("cleans up when the production closeSync (between writeSync and reopen) throws", () => {
+    // The trickiest cleanup case: production closeSync at line 207 throws,
+    // so `openFd = null` (line 208) never runs — `openFd` still references
+    // the wx+ fd. Cleanup re-calls closeSync on it, which Node already
+    // released and now yields EBADF. The inner try/catch must swallow.
+    const probe = setupPrepProbe({ failAt: { kind: "closeSync", nth: 1 } })
+
+    const result = spawnBackgroundSave("/tmp", "sensitive content")
+
+    expect(result.kind).toBe("tempfile-failed")
+    expect(probe.fds.length).toBe(1)
+    // Cleanup attempted to close the wx+ fd — that's the second closeSync
+    // observation (production close was the first).
+    expect(probe.closedFds).toContain(probe.fds[0]!)
+    // File must still be unlinked even though the close path threw.
+    expect(realFs.existsSync(probe.paths[0]!)).toBe(false)
+  })
+
+  it("does no cleanup when the initial openSync(wx+) throws", () => {
+    // No file was created and no fd was opened, so neither cleanup branch
+    // should run. Pins the contract that `needsUnlink`/`openFd` start
+    // false/null and a never-reached prep block doesn't try to delete a
+    // path that doesn't exist on disk.
+    const probe = setupPrepProbe({ failAt: { kind: "openSync", nth: 1 } })
+
+    const result = spawnBackgroundSave("/tmp", "content")
+
+    expect(result.kind).toBe("tempfile-failed")
+    expect(probe.fds.length).toBe(0)
+    expect(probe.closedFds.length).toBe(0)
+    expect(probe.unlinkedPaths.length).toBe(0)
+  })
+
+  it("swallows a closeSync failure inside the cleanup path without throwing", () => {
+    // writeSync throws → cleanup path tries closeSync(openFd). Force the
+    // *cleanup* closeSync to throw — the function must not propagate, and
+    // the postconditions (kind=tempfile-failed, file removed) must still
+    // hold even though the cleanup close was useless.
+    const probe = setupPrepProbe({ failAt: { kind: "writeSync" } })
+    let trackedFd: number | null = null
+    closeSyncMock.mockImplementationOnce((fd: number) => {
+      // Genuinely close the fd so we don't leak it to the test runner;
+      // then throw to exercise the cleanup-close swallow path.
+      trackedFd = fd
+      try {
+        realFs.closeSync(fd)
+      } catch {
+        // already closed by something upstream — fine.
+      }
+      throw new Error("simulated EBADF on cleanup close")
+    })
+
+    let result: ReturnType<typeof spawnBackgroundSave> | undefined
+    expect(() => {
+      result = spawnBackgroundSave("/tmp", "content")
+    }).not.toThrow()
+
+    expect(result?.kind).toBe("tempfile-failed")
+    expect(probe.paths.length).toBe(1)
+    // Cleanup close threw, but cleanup unlink ran and removed the file.
+    expect(realFs.existsSync(probe.paths[0]!)).toBe(false)
+    expect(trackedFd).toBe(probe.fds[0])
+  })
+
+  it("does not leak the prompt file on a successful spawn (regression guard)", () => {
+    const probe = setupPrepProbe({})
+
+    const result = spawnBackgroundSave("/tmp", "ordinary prompt")
+
+    expect(result.kind).toBe("spawned")
+    // Prep opens the same temp path twice (wx+ then r); both observations
+    // must point at the same file.
+    expect(probe.paths.length).toBe(2)
+    expect(probe.paths[0]).toBe(probe.paths[1])
+    // Production code unlinks the file after the read-fd open. Verify the
+    // file is gone after the call returns successfully.
+    expect(realFs.existsSync(probe.paths[0]!)).toBe(false)
   })
 })

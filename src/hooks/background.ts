@@ -195,14 +195,47 @@ export function spawnBackgroundSave(
     `lore-prompt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}.txt`
   )
   let stdinFd: number
+  // Tracked separately so the catch path can clean up after a failure at
+  // any point in the prep sequence: the open fd (if any) and the temp
+  // file (if it was created but not yet unlinked) would otherwise leak
+  // session transcript content under /tmp.
+  let openFd: number | null = null
+  let needsUnlink = false
   try {
-    stdinFd = openSync(promptFile, "wx+", 0o600)
-    writeSync(stdinFd, prompt)
-    closeSync(stdinFd)
-    stdinFd = openSync(promptFile, "r")
+    openFd = openSync(promptFile, "wx+", 0o600)
+    needsUnlink = true
+    writeSync(openFd, prompt)
+    closeSync(openFd)
+    // Production close succeeded — clear `openFd` so that if the reopen
+    // below throws, the catch path skips its `closeSync(openFd)` branch
+    // instead of trying to close a fd Node already released (EBADF). The
+    // separate failure mode where production `closeSync` itself throws
+    // is handled by the catch path's inner try/catch around the cleanup
+    // close.
+    openFd = null
+    openFd = openSync(promptFile, "r")
     // Unlink immediately — child still reads via its inherited fd copy (Unix)
     unlinkSync(promptFile)
+    needsUnlink = false
+    stdinFd = openFd
   } catch (err) {
+    if (openFd !== null) {
+      try {
+        closeSync(openFd)
+      } catch {
+        // Best-effort: Node releases the fd before throwing on real close
+        // errors, so a second close yields EBADF — which we deliberately
+        // swallow to keep `tempfile-failed` as the single observable
+        // outcome.
+      }
+    }
+    if (needsUnlink) {
+      try {
+        unlinkSync(promptFile)
+      } catch {
+        // Best-effort: file may have been removed by another process.
+      }
+    }
     process.stderr.write(
       `[lore] ${logLabel}: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`
     )
