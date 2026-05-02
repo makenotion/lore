@@ -118,6 +118,44 @@ function buildTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummar
   return { ...base, ...overrides }
 }
 
+function filterAndSortTasks(
+  tasks: TaskSummary[],
+  opts: ListTasksOpts,
+): TaskSummary[] {
+  const filtered = tasks.filter((task) => {
+    if (opts.dueBefore && (!task.reviewBy || task.reviewBy > opts.dueBefore)) {
+      return false
+    }
+    if (
+      opts.dueAfterOrEmpty &&
+      task.reviewBy &&
+      task.reviewBy <= opts.dueAfterOrEmpty
+    ) {
+      return false
+    }
+    return true
+  })
+  return filtered.sort((a, b) => {
+    if (opts.sortBy === "updatedAtAsc") {
+      return compareIso(a.updatedAt, b.updatedAt) || compareReviewBy(a, b)
+    }
+    if (opts.sortBy === "updatedAtDesc") {
+      return compareIso(b.updatedAt, a.updatedAt) || compareReviewBy(a, b)
+    }
+    return compareReviewBy(a, b)
+  })
+}
+
+function compareIso(a: string, b: string): number {
+  return a.localeCompare(b)
+}
+
+function compareReviewBy(a: TaskSummary, b: TaskSummary): number {
+  const aDue = a.reviewBy ?? "\uffff"
+  const bDue = b.reviewBy ?? "\uffff"
+  return aDue.localeCompare(bDue) || b.createdAt.localeCompare(a.createdAt)
+}
+
 type ListCall = {
   projectId?: string
   source?: MemorySource
@@ -235,7 +273,14 @@ function stubServices(opts: {
     tasks: {
       list: vi.fn(async (listOpts?: ListTasksOpts) => {
         tasksListCalls.push(listOpts ?? {})
-        return { items: opts.tasks ?? [] }
+        const all = filterAndSortTasks(opts.tasks ?? [], listOpts ?? {})
+        const limit = listOpts?.limit
+        const items =
+          typeof limit === "number" && limit >= 0 ? all.slice(0, limit) : all
+        return {
+          items,
+          nextCursor: items.length < all.length ? "next-cursor" : undefined,
+        }
       }),
     },
     memoriesCalls,
@@ -872,19 +917,25 @@ describe("loadWakeUpData", () => {
   })
 
   describe("tasks over-fetch (issue 0.7.0/12)", () => {
-    it("over-fetches tasks at min(taskLimit * 4, 100) so renderers have bucketing headroom", async () => {
+    it("over-fetches each task bucket at min(taskLimit * 4, 100)", async () => {
       // The MCP renderer buckets tasks into Overdue / Stale / Active and
-      // applies `taskLimit` per bucket. Without an over-fetched window
-      // a fetch limited to `taskLimit` rows would let one bucket starve
-      // the others. 4× the cap matches the precedent in
-      // `lore-task action='list'` and absorbs realistic bucket-skew on
-      // the Mail vault.
+      // applies `taskLimit` per bucket. Each bucket gets a bounded 4×
+      // window so wake-up can report hidden lower-bound counts without
+      // letting one bucket's sort order hide another bucket entirely.
       const services = stubServices({ tasks: [] })
 
       await loadWakeUpData(services, { projectId: "p1", taskLimit: 10, now: NOW })
 
-      const tasksCall = services.tasksListCalls[0]
-      expect(tasksCall?.limit).toBe(40)
+      expect(services.tasksListCalls.map((call) => call.limit)).toEqual([
+        40,
+        40,
+        40,
+      ])
+      expect(services.tasksListCalls.map((call) => call.sortBy)).toEqual([
+        "reviewByAsc",
+        "updatedAtAsc",
+        "updatedAtDesc",
+      ])
     })
 
     it("clamps the over-fetch window to the Notion 100-row ceiling", async () => {
@@ -896,8 +947,11 @@ describe("loadWakeUpData", () => {
 
       await loadWakeUpData(services, { projectId: "p1", taskLimit: 50, now: NOW })
 
-      const tasksCall = services.tasksListCalls[0]
-      expect(tasksCall?.limit).toBe(100)
+      expect(services.tasksListCalls.map((call) => call.limit)).toEqual([
+        100,
+        100,
+        100,
+      ])
     })
 
     it("skips the tasks query when taskLimit is 0", async () => {
@@ -944,6 +998,52 @@ describe("loadWakeUpData", () => {
         "stale-1",
         "active-1",
       ])
+    })
+
+    it("does not let due-dated tasks starve null-date stale and active tasks", async () => {
+      const tasks: TaskSummary[] = []
+      for (let i = 0; i < 41; i++) {
+        tasks.push(
+          buildTask({
+            id: `overdue-${i}`,
+            reviewBy: `2026-03-${String(20 - (i % 20)).padStart(2, "0")}`,
+            updatedAt: "2026-04-19T00:00:00Z",
+          }),
+        )
+      }
+      for (let i = 0; i < 5; i++) {
+        tasks.push(
+          buildTask({
+            id: `stale-${i}`,
+            reviewBy: null,
+            updatedAt: "2026-02-01T00:00:00Z",
+          }),
+        )
+      }
+      for (let i = 0; i < 5; i++) {
+        tasks.push(
+          buildTask({
+            id: `active-${i}`,
+            reviewBy: null,
+            updatedAt: "2026-04-19T00:00:00Z",
+          }),
+        )
+      }
+      const services = stubServices({ tasks })
+
+      const data = await loadWakeUpData(services, {
+        projectId: "p1",
+        taskLimit: 10,
+        now: NOW,
+      })
+
+      expect(data.tasks.map((t) => t.id)).toContain("stale-0")
+      expect(data.tasks.map((t) => t.id)).toContain("active-0")
+      expect(data.taskBucketCoverage).toEqual({
+        overdueCapped: true,
+        staleCapped: false,
+        activeCapped: false,
+      })
     })
   })
 

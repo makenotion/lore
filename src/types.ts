@@ -952,6 +952,13 @@ export interface ListTasksOpts {
   states?: TaskState[]
   /** Only tasks with `Review By` on or before this date. */
   dueBefore?: string
+  /** Only tasks whose `Review By` is after this date, or empty. */
+  dueAfterOrEmpty?: string
+  /**
+   * Sort order for index-tier task listings. Defaults to `reviewByAsc`,
+   * the triage-list order used by `lore-task action='list'`.
+   */
+  sortBy?: "reviewByAsc" | "updatedAtAsc" | "updatedAtDesc"
   limit?: number
   startCursor?: string
 }

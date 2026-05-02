@@ -5,6 +5,7 @@ import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
 import type {
   DecisionSummary,
   Fact,
+  ListTasksOpts,
   Memory,
   Project,
   TaskSummary,
@@ -143,6 +144,44 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
     updatedAt: "2026-04-20T00:00:00Z",
   }
   return { ...base, ...overrides }
+}
+
+function filterAndSortTasks(
+  tasks: TaskSummary[],
+  opts: ListTasksOpts,
+): TaskSummary[] {
+  const filtered = tasks.filter((task) => {
+    if (opts.dueBefore && (!task.reviewBy || task.reviewBy > opts.dueBefore)) {
+      return false
+    }
+    if (
+      opts.dueAfterOrEmpty &&
+      task.reviewBy &&
+      task.reviewBy <= opts.dueAfterOrEmpty
+    ) {
+      return false
+    }
+    return true
+  })
+  return filtered.sort((a, b) => {
+    if (opts.sortBy === "updatedAtAsc") {
+      return compareIso(a.updatedAt, b.updatedAt) || compareReviewBy(a, b)
+    }
+    if (opts.sortBy === "updatedAtDesc") {
+      return compareIso(b.updatedAt, a.updatedAt) || compareReviewBy(a, b)
+    }
+    return compareReviewBy(a, b)
+  })
+}
+
+function compareIso(a: string, b: string): number {
+  return a.localeCompare(b)
+}
+
+function compareReviewBy(a: TaskSummary, b: TaskSummary): number {
+  const aDue = a.reviewBy ?? "\uffff"
+  const bDue = b.reviewBy ?? "\uffff"
+  return aDue.localeCompare(bDue) || b.createdAt.localeCompare(a.createdAt)
 }
 
 function createMockServer() {
@@ -306,12 +345,15 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       // handed (`tasksFetchLimit` from `loadWakeUpData`); the mock
       // mirrors that posture so the renderer's saturation marker can
       // be exercised end-to-end without a real Notion client.
-      list: vi.fn(async (opts?: { limit?: number }) => {
-        const all = overrides.tasks ?? []
+      list: vi.fn(async (opts?: ListTasksOpts) => {
+        const all = filterAndSortTasks(overrides.tasks ?? [], opts ?? {})
         const limit = opts?.limit
         const items =
           typeof limit === "number" && limit >= 0 ? all.slice(0, limit) : all
-        return { items }
+        return {
+          items,
+          nextCursor: items.length < all.length ? "next-cursor" : undefined,
+        }
       }),
       countActive: vi.fn(async () => ({
         total: 0,
@@ -1861,10 +1903,9 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
 
   it("prefixes bucket counts with ≥ when the over-fetched window saturates", async () => {
     // Default `taskLimit` is 10, so the data layer over-fetches at
-    // `min(100, 10 * 4) = 40`. A 40-row stale fixture saturates that
-    // window exactly: every row lands in Stale, and the renderer can
-    // no longer claim a precise inventory — the vault might have
-    // hundreds of stale rows beyond the over-fetch ceiling. The `≥`
+    // `min(100, 10 * 4) = 40`. A 41-row stale fixture overflows that
+    // window: every fetched row lands in Stale, and the renderer can
+    // no longer claim a precise inventory. The `≥`
     // prefix on both the total and the hidden count signals "lower
     // bound, not inventory" so the agent's triage view stays honest
     // about what the wake-up window can actually see. `lore-task
@@ -1872,7 +1913,7 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
     // the triage view, and the saturation marker is its claim to
     // that scope.
     const tasks: TaskSummary[] = []
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 41; i++) {
       tasks.push(
         makeTask({
           id: `stale-${i}`,
@@ -1898,6 +1939,36 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
     expect(text).toContain("Stale task 0")
     expect(text).toContain("Stale task 9")
     expect(text).not.toContain("Stale task 10")
+  })
+
+  it("omits the ≥ prefix when a bucket exactly fills a complete window", async () => {
+    // Exact-limit is not saturation when the data layer has no cursor.
+    // The heading should be precise rather than a lower-bound claim.
+    const tasks: TaskSummary[] = []
+    for (let i = 0; i < 40; i++) {
+      tasks.push(
+        makeTask({
+          id: `stale-${i}`,
+          title: `Exact stale task ${i}`,
+          reviewBy: null,
+          updatedAt: daysAgoFrozen(45),
+        }),
+      )
+    }
+
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ tasks })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain(
+      "### Stale (10 shown of 40 active tasks untouched ≥30 days, hiding 30) — consider closing if resolved",
+    )
+    expect(text).not.toContain("≥40")
+    expect(text).not.toContain("hiding ≥30")
   })
 
   it("omits the ≥ prefix when the over-fetched window has headroom", async () => {
@@ -1934,32 +2005,17 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
     expect(text).not.toContain("hiding ≥")
   })
 
-  it("starves null-due Stale and Active rows when due-dated rows fill the over-fetch window", async () => {
+  it("surfaces null-due Stale and Active rows when due-dated rows fill the overdue window", async () => {
     // Realistic sort-skew fixture: `TaskService.list` sorts by
     // `Review By ascending` and Notion places null-date rows AFTER
-    // non-null rows. A vault with 40 due-dated active tasks therefore
-    // consumes the entire `tasksFetchLimit = 40` over-fetch window
-    // before any null-due Stale or Active row can appear. The
-    // implementation is correct (bucketing precedence is honest about
-    // its window); this test pins the contract so a future change to
-    // the over-fetch multiplier or the sort order is caught here
-    // rather than discovered on the Mail vault.
-    //
-    // **Why this differs from Part H's "does not starve" test.** That
-    // test (8 overdue + 1 stale + 1 active = 10 rows) sits comfortably
-    // inside the 40-row over-fetch window, so all three buckets render.
-    // The new fixture (40 + 5 + 5 = 50 rows) over-shoots the window —
-    // the mock's `limit`-honoring slice drops the last 10 rows
-    // (mirroring what `TaskService.list` would do against Notion), and
-    // the dropped rows are precisely the null-due ones. Both tests are
-    // valid: Part H's pins "the over-fetch window is wide enough for
-    // the small case"; this one pins "the over-fetch window is narrow
-    // enough that the saturation marker is load-bearing on a real
-    // vault."
+    // non-null rows. Wake-up now avoids that starvation by loading
+    // bounded task windows per bucket: overdue by due date, stale by
+    // oldest untouched non-overdue rows, and active by newest
+    // non-overdue rows.
     const tasks: TaskSummary[] = []
-    // 40 due-dated overdue rows, sort-position first (the real
+    // 41 due-dated overdue rows, sort-position first (the real
     // `TaskService.list` ordering surfaces these before null-due rows).
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 41; i++) {
       tasks.push(
         makeTask({
           id: `overdue-${i}`,
@@ -1974,7 +2030,7 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
       tasks.push(
         makeTask({
           id: `stale-${i}`,
-          title: `Starved stale ${i}`,
+          title: `Null-date stale ${i}`,
           reviewBy: null,
           updatedAt: daysAgoFrozen(45),
         }),
@@ -1985,7 +2041,7 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
       tasks.push(
         makeTask({
           id: `active-${i}`,
-          title: `Starved active ${i}`,
+          title: `Null-date active ${i}`,
           reviewBy: null,
           updatedAt: daysAgoFrozen(2),
         }),
@@ -2003,13 +2059,10 @@ describe("lore-wake-up — Part H follow-ups: saturation marker + sort-order sta
     // Saturation: 40 overdue, taskCap = 10, hidden = ≥30. Both the
     // total and the hidden count carry the `≥` lower-bound marker.
     expect(text).toContain("### Overdue (10 shown of ≥40, hiding ≥30)")
-    // Stale and Active never reach the renderer — they were starved
-    // by the sort order. Their headings stay absent because the
-    // buckets are empty (`renderBucket` no-ops on `rows.length === 0`).
-    expect(text).not.toContain("### Stale")
-    expect(text).not.toContain("### Active")
-    expect(text).not.toContain("Starved stale")
-    expect(text).not.toContain("Starved active")
+    expect(text).toContain("### Stale (5 active tasks untouched ≥30 days)")
+    expect(text).toContain("### Active (5)")
+    expect(text).toContain("Null-date stale 0")
+    expect(text).toContain("Null-date active 0")
   })
 })
 

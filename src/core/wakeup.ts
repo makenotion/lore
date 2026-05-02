@@ -33,7 +33,8 @@ import type {
   MemorySource,
   TaskSummary,
 } from "../types.js"
-import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT } from "../types.js"
+import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT, STALE_TASK_DAYS } from "../types.js"
+import { taskDaysOverdue, taskDaysStale } from "./task.js"
 // Re-exported so existing callers that import `MS_PER_DAY` from
 // `wakeup.ts` keep working — the canonical declaration moved to
 // `types.ts` (issue 0.8.0/#10 follow-up) so day-arithmetic across
@@ -128,28 +129,21 @@ const MAX_USER_QUERY_LENGTH = 1000
 const NOTION_PAGE_SIZE = 100
 
 /**
- * Multiplier applied to `taskLimit` when the data layer over-fetches active
- * tasks for the bucketing pass in the MCP renderer. Three buckets that each
- * cap at `taskLimit` need at least `3 × taskLimit` candidates to render the
- * spec's intent; 4× absorbs realistic bucket-skew on the Mail vault's
- * 271-task profile per the precedent in `lore-task action='list'`.
+ * Multiplier applied to `taskLimit` when the data layer fetches each active
+ * task bucket for wake-up. The renderer caps each bucket at `taskLimit`; 4×
+ * leaves room to report hidden lower-bound counts while keeping every query
+ * to one Notion page.
  */
 const WAKEUP_TASK_OVERFETCH_MULTIPLIER = 4
 
 /**
- * Compute the over-fetch row cap for the active-tasks query. Single source
- * of truth shared by `loadWakeUpData` (which fires the query) and the MCP
- * renderer (which compares the resolved row count against this cap to
- * detect saturation: `tasks.length >= computeTasksFetchLimit(taskLimit)`
- * means the window is full and bucket counts are lower bounds, not
- * inventory). Returns `0` when `taskLimit` is `0` or negative — the
- * caller skips the Notion query entirely in that case.
+ * Compute the per-bucket row cap for wake-up task queries. Single source of
+ * truth shared by `loadWakeUpData` and the MCP renderer's saturation
+ * fallback. Returns `0` when `taskLimit` is `0` or negative — the caller
+ * skips task queries entirely in that case.
  *
- * The renderer's saturation gate uses `>=` rather than `===` to defend
- * against a future change inside `TaskService.list` (e.g. an internal
- * `while has_more` paginating wrapper) returning more rows than the
- * caller asked for; today Notion's `page_size` is a strict upper bound,
- * so under the current contract `>=` and `===` are equivalent.
+ * The result stays bounded by Notion's per-page ceiling so each bucket is
+ * predictable on the wake-up hot path.
  */
 export function computeTasksFetchLimit(taskLimit: number): number {
   return taskLimit > 0
@@ -217,8 +211,16 @@ export interface WakeUpServices {
     }): Promise<DecisionSummary[]>
   }
   tasks: {
-    list(opts?: ListTasksOpts): Promise<{ items: TaskSummary[]; nextCursor?: string }>
+    list(
+      opts?: ListTasksOpts
+    ): Promise<{ items: TaskSummary[]; nextCursor?: string; capped?: boolean }>
   }
+}
+
+export interface WakeUpTaskBucketCoverage {
+  overdueCapped: boolean
+  staleCapped: boolean
+  activeCapped: boolean
 }
 
 export interface WakeUpOptions {
@@ -315,17 +317,18 @@ export interface WakeUpData {
    */
   relatedMemories: Memory[]
   /**
-   * Active task memories (Kind = task), the over-fetched window of
-   * `min(taskLimit * 4, 100)` rows so renderers that bucket into
-   * Overdue / Stale / Active have headroom to apply per-bucket caps
-   * without one bucket starving the others. Sorted by due-date
-   * ascending so most-pressing rows are first.
+   * Active task memories (Kind = task), fetched via bounded per-bucket
+   * windows so a large due-dated set cannot starve Stale / Active rows.
+   * Ordered Overdue, Stale, Active so flat renderers still lead with the
+   * strongest urgency signal.
    *
    * Flat-rendering callers should slice this array to `taskLimit`
    * before iterating; bucketed renderers should bucket first and
    * slice each bucket to `taskLimit`.
    */
   tasks: TaskSummary[]
+  /** Whether any task bucket hit its bounded fetch window. */
+  taskBucketCoverage: WakeUpTaskBucketCoverage
   /**
    * Memories relevance-matched against the user's first message
    * (`userQuery`). Notion's vector index scores titles AND bodies against
@@ -405,32 +408,12 @@ export async function loadWakeUpData(
     userQuery && taskMemoryLimit > 0
       ? Math.min(NOTION_PAGE_SIZE, taskMemoryLimit + taskFetchSlack)
       : 0
-  // Over-fetch active tasks so the bucketing pass in the renderer
-  // (`src/mcp/tools/context.ts`) has headroom for Overdue / Stale /
-  // Active without the dominant bucket starving the others. Three
-  // buckets that each cap at `taskLimit` need at least `3 * taskLimit`
-  // candidates in the fetched window to render the spec's intent;
-  // 4× covers realistic bucket-skew on the Mail vault's 271-task
-  // profile per the precedent in `lore-task action='list'`
-  // (`src/mcp/tools/tasks.ts`'s `fetchLimit` computation: "4× absorbs
-  // realistic bucket-skew on the Mail vault's 271 open loops without
-  // paying a second query"). Bounded by Notion's per-page ceiling so
-  // this hot-path query never paginates.
-  //
-  // Flat-rendering callers (the shell wake-up hook) slice the
-  // returned `tasks` array to `taskLimit` before iterating; bucketed
-  // callers (the MCP `lore-context action='wake-up'` tool) bucket
-  // first and slice each bucket to `taskLimit`.
-  //
-  // **Sort-order invariant.** `TaskService.list` sorts the active set by
-  // `Review By ascending`, and Notion places null-date rows AFTER non-
-  // null rows. A vault with `tasksFetchLimit` due-dated active tasks
-  // therefore consumes the entire over-fetch window before any null-due
-  // Stale or Active row can appear. The renderer reflects this honestly
-  // via the saturation marker (`tasks.length === computeTasksFetchLimit(...)`
-  // → `≥` prefix on bucket counts); `lore-task action='reconcile'` is
-  // the audit surface for vaults where the over-fetch window is too
-  // tight to characterize the inventory.
+  // Fetch active tasks through bounded per-bucket windows instead of one
+  // due-date-sorted window. Notion sorts null `Review By` dates after
+  // dated rows, so one active due-dated cluster can otherwise fill the
+  // whole wake-up task budget before null-date Stale / Active rows appear.
+  // The three bucket queries run in the same fan-out below, each capped by
+  // `computeTasksFetchLimit(taskLimit)` so latency remains predictable.
   const tasksFetchLimit = computeTasksFetchLimit(taskLimit)
   // `taskCandidates: Memory[]` — annotated explicitly because this is the
   // only entry in the fan-out whose two arms (a real `services.memories.search`
@@ -462,7 +445,7 @@ export async function loadWakeUpData(
     { items: knowledgeFacts },
     { items: proposedDecisions },
     overdueDecisionWindow,
-    { items: tasks },
+    taskWindow,
     taskCandidates,
     staleConfidence,
   ]: [
@@ -471,7 +454,7 @@ export async function loadWakeUpData(
     { items: Fact[]; hasMore: boolean },
     { items: DecisionSummary[] },
     { items: DecisionSummary[]; capped: boolean },
-    { items: TaskSummary[] },
+    { tasks: TaskSummary[]; coverage: WakeUpTaskBucketCoverage },
     Memory[],
     Memory[],
   ] = await Promise.all([
@@ -512,12 +495,15 @@ export async function loadWakeUpData(
       ? queryOverdueDecisionWindow(services.decisions, { projectId })
       : Promise.resolve({ items: [] as DecisionSummary[], capped: false }),
     projectId && tasksFetchLimit > 0
-      ? services.tasks.list({
+      ? loadWakeUpTaskWindow(services.tasks, {
           projectId,
-          // Default `states` (active set) lives inside `TaskService.list`.
+          today: todayDate,
           limit: tasksFetchLimit,
         })
-      : Promise.resolve({ items: [] as TaskSummary[] }),
+      : Promise.resolve({
+          tasks: [] as TaskSummary[],
+          coverage: emptyTaskBucketCoverage(),
+        }),
     projectId && userQuery && taskFetchLimit > 0
       ? services.memories.search({
           query: userQuery,
@@ -528,6 +514,7 @@ export async function loadWakeUpData(
       : Promise.resolve([] as Memory[]),
     staleConfidenceQuery,
   ])
+  const tasks = taskWindow.tasks
   const overdueDecisions = overdueDecisionWindow.items
 
   const latestDigest = latestDigestList[0] ?? null
@@ -631,8 +618,103 @@ export async function loadWakeUpData(
     overdueDecisionsCapped: overdueDecisionWindow.capped,
     relatedMemories,
     tasks,
+    taskBucketCoverage: taskWindow.coverage,
     taskMemories,
     staleConfidence,
+  }
+}
+
+async function loadWakeUpTaskWindow(
+  tasks: WakeUpServices["tasks"],
+  opts: { projectId: string; today: string; limit: number },
+): Promise<{ tasks: TaskSummary[]; coverage: WakeUpTaskBucketCoverage }> {
+  // Three bounded windows are intentional. Notion gives one sort order
+  // per query, while wake-up needs the soonest overdue rows, the oldest
+  // non-overdue rows for Stale, and the newest non-overdue rows for
+  // Active. Collapsing these would reintroduce the null-date starvation
+  // this loader exists to prevent.
+  const [overdueWindow, staleCandidatesWindow, activeCandidatesWindow] =
+    await Promise.all([
+      tasks.list({
+        projectId: opts.projectId,
+        dueBefore: opts.today,
+        limit: opts.limit,
+        sortBy: "reviewByAsc",
+      }),
+      tasks.list({
+        projectId: opts.projectId,
+        dueAfterOrEmpty: opts.today,
+        limit: opts.limit,
+        sortBy: "updatedAtAsc",
+      }),
+      tasks.list({
+        projectId: opts.projectId,
+        dueAfterOrEmpty: opts.today,
+        limit: opts.limit,
+        sortBy: "updatedAtDesc",
+      }),
+    ])
+
+  const overdue = overdueWindow.items.filter(
+    (task) => taskDaysOverdue(task, opts.today) !== null,
+  )
+  const stale = staleCandidatesWindow.items.filter((task) => {
+    if (taskDaysOverdue(task, opts.today) !== null) return false
+    const staleDays = taskDaysStale(task, opts.today)
+    return staleDays !== null && staleDays >= STALE_TASK_DAYS
+  })
+  const active = activeCandidatesWindow.items.filter((task) => {
+    if (taskDaysOverdue(task, opts.today) !== null) return false
+    const staleDays = taskDaysStale(task, opts.today)
+    return staleDays === null || staleDays < STALE_TASK_DAYS
+  })
+
+  return {
+    tasks: dedupeTaskBuckets([overdue, stale, active]),
+    coverage: {
+      overdueCapped: taskWindowCapped(overdueWindow),
+      // Candidate-window saturation alone is not enough for Stale /
+      // Active lower-bound claims. Because the two candidate queries
+      // sort away from the opposite bucket, a saturated window with
+      // fewer than `limit` survivors means later pages cannot fill that
+      // bucket.
+      staleCapped:
+        taskWindowCapped(staleCandidatesWindow) &&
+        stale.length >= opts.limit,
+      activeCapped:
+        taskWindowCapped(activeCandidatesWindow) &&
+        active.length >= opts.limit,
+    },
+  }
+}
+
+function dedupeTaskBuckets(buckets: TaskSummary[][]): TaskSummary[] {
+  // Current filters make overlap structurally impossible, but keep the
+  // merge defensive against future filter loosening, timezone edge cases,
+  // or eventual-consistency duplicates from Notion.
+  const seen = new Set<string>()
+  const merged: TaskSummary[] = []
+  for (const bucket of buckets) {
+    for (const task of bucket) {
+      if (seen.has(task.id)) continue
+      seen.add(task.id)
+      merged.push(task)
+    }
+  }
+  return merged
+}
+
+function taskWindowCapped(
+  window: { items: TaskSummary[]; nextCursor?: string; capped?: boolean },
+): boolean {
+  return Boolean(window.capped || window.nextCursor)
+}
+
+function emptyTaskBucketCoverage(): WakeUpTaskBucketCoverage {
+  return {
+    overdueCapped: false,
+    staleCapped: false,
+    activeCapped: false,
   }
 }
 

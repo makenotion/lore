@@ -306,8 +306,39 @@ export class TaskService {
         date: { on_or_before: opts.dueBefore },
       })
     }
+    if (opts?.dueAfterOrEmpty) {
+      filters.push({
+        or: [
+          {
+            property: "Review By",
+            date: { is_empty: true },
+          },
+          {
+            property: "Review By",
+            date: { after: opts.dueAfterOrEmpty },
+          },
+        ],
+      })
+    }
 
     const filter = filters.length > 1 ? { and: filters } : filters[0]
+    const sorts: QueryDataSourceParameters["sorts"] =
+      opts?.sortBy === "updatedAtAsc"
+        ? [
+            { timestamp: "last_edited_time", direction: "ascending" },
+            { property: "Review By", direction: "ascending" },
+            { timestamp: "created_time", direction: "descending" },
+          ]
+        : opts?.sortBy === "updatedAtDesc"
+          ? [
+              { timestamp: "last_edited_time", direction: "descending" },
+              { property: "Review By", direction: "ascending" },
+              { timestamp: "created_time", direction: "descending" },
+            ]
+          : [
+              { property: "Review By", direction: "ascending" },
+              { timestamp: "created_time", direction: "descending" },
+            ]
 
     const limit = Math.min(opts?.limit ?? 20, 100)
     if (limit <= 0) {
@@ -322,13 +353,12 @@ export class TaskService {
         this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,
           filter: filter as QueryDataSourceParameters["filter"],
-          // Sort by `Review By` ascending so most-overdue / soonest-due rows
-          // float to the top — same default `lore-query action='audit'`
-          // uses, and the right answer for a triage list.
-          sorts: [
-            { property: "Review By", direction: "ascending" },
-            { timestamp: "created_time", direction: "descending" },
-          ],
+          // Default sort is due-date triage order: most-overdue /
+          // soonest-due rows float to the top, matching the
+          // `lore-query action='audit'` default. Wake-up passes
+          // last-edited variants to load Stale / Active bucket windows
+          // without due-date ordering hiding null-due rows.
+          sorts,
           page_size,
           start_cursor,
         }),

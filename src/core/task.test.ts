@@ -385,6 +385,45 @@ describe("TaskService.list", () => {
     expect(JSON.stringify(args.filter)).not.toContain('"Entity"')
   })
 
+  it("filters to tasks due after a date or without a due date", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.list({ dueAfterOrEmpty: "2026-04-20" })
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const filter = JSON.stringify(args.filter)
+    expect(filter).toContain('"Review By"')
+    expect(filter).toContain('"is_empty":true')
+    expect(filter).toContain('"after":"2026-04-20"')
+  })
+
+  it("can sort by oldest last-edited time for stale-task wake-up loading", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.list({ sortBy: "updatedAtAsc" })
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.sorts[0]).toEqual({
+      timestamp: "last_edited_time",
+      direction: "ascending",
+    })
+  })
+
+  it("can sort by newest last-edited time for active-task wake-up loading", async () => {
+    const client = createMockClient()
+    const service = new TaskService(client, DB)
+
+    await service.list({ sortBy: "updatedAtDesc" })
+
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(args.sorts[0]).toEqual({
+      timestamp: "last_edited_time",
+      direction: "descending",
+    })
+  })
+
   it("strips body content from summaries (no retrieveMarkdown calls)", async () => {
     const client = createMockClient({
       queryResults: [taskPage("t1"), taskPage("t2")],

@@ -47,7 +47,45 @@ vi.mock("../core/wakeup.js", async () => {
 })
 
 import { wakeup } from "./helpers.js"
-import type { Project } from "../types.js"
+import type { Project, TaskSummary } from "../types.js"
+
+function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
+  const base: TaskSummary = {
+    id: overrides.id,
+    title: overrides.title ?? `Task ${overrides.id}`,
+    projectIds: [],
+    topicId: null,
+    source: "manual",
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
+    confidenceScore: null,
+    reviewBy: null,
+    doneAt: null,
+    decidedAt: null,
+    lastReferencedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    synopsis: "",
+    session: "",
+    taskState: "open",
+    blockedBy: "",
+    entity: "",
+    topicKey: "",
+    revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
+    createdAt: "2026-04-20T00:00:00Z",
+    updatedAt: "2026-04-20T00:00:00Z",
+  }
+  return { ...base, ...overrides }
+}
 
 // Tests use the full `Project` type from production rather than a
 // hand-rolled shape so the fixture stays in lockstep with the type. If
@@ -57,6 +95,7 @@ function setupMocks(opts: {
   project: Project | null
   isCatchAllFallback: boolean
   configProjects: Array<{ name: string; path: string }>
+  tasks?: TaskSummary[]
 }): void {
   findConfigFileMock.mockResolvedValue({
     path: "/tmp/.lore.yaml",
@@ -82,7 +121,12 @@ function setupMocks(opts: {
   loadWakeUpDataMock.mockResolvedValue({
     digest: null,
     memories: [],
-    tasks: [],
+    tasks: opts.tasks ?? [],
+    taskBucketCoverage: {
+      overdueCapped: false,
+      staleCapped: false,
+      activeCapped: false,
+    },
     knowledgeFacts: [],
     relatedMemories: [],
     taskMemories: [],
@@ -223,5 +267,73 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     // skipped. This pins the "no synthetic content for missing data"
     // contract.
     expect(stdout).not.toHaveBeenCalled()
+  })
+
+  it("renders a fair task subset when overdue rows dominate the wake-up window", async () => {
+    function daysAgo(n: number): string {
+      return new Date(Date.now() - n * 86_400_000).toISOString()
+    }
+    function daysAgoDate(n: number): string {
+      return daysAgo(n).split("T")[0]
+    }
+
+    const tasks: TaskSummary[] = []
+    for (let i = 0; i < 12; i++) {
+      tasks.push(
+        makeTask({
+          id: `overdue-${i}`,
+          title: `Overdue task ${i}`,
+          reviewBy: daysAgoDate(7 + i),
+          updatedAt: daysAgo(2),
+        }),
+      )
+    }
+    tasks.push(
+      makeTask({
+        id: "stale-1",
+        title: "Null-date stale task",
+        reviewBy: null,
+        updatedAt: daysAgo(45),
+      }),
+    )
+    tasks.push(
+      makeTask({
+        id: "active-1",
+        title: "Null-date active task",
+        reviewBy: null,
+        updatedAt: daysAgo(2),
+      }),
+    )
+
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      tasks,
+    })
+
+    await wakeup()
+
+    expect(stdout).toHaveBeenCalledTimes(1)
+    const written = String(stdout.mock.calls[0][0])
+    expect(written).toContain("Null-date stale task")
+    expect(written).toContain("Null-date active task")
+    expect(written).toContain("Overdue task 0")
+    expect(written).toContain("Overdue task 7")
+    expect(written).not.toContain("Overdue task 8")
+
+    const firstOverdue = written.indexOf("- Overdue task 0")
+    const stale = written.indexOf("- Null-date stale task")
+    const active = written.indexOf("- Null-date active task")
+    expect(firstOverdue).toBeGreaterThan(-1)
+    expect(stale).toBeGreaterThan(firstOverdue)
+    expect(active).toBeGreaterThan(stale)
   })
 })

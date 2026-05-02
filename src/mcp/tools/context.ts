@@ -409,6 +409,7 @@ async function handleWakeUp(
       overdueDecisionsCapped,
       relatedMemories,
       tasks,
+      taskBucketCoverage,
       taskMemories,
       staleConfidence,
     } = await loadWakeUpData(services, {
@@ -668,16 +669,12 @@ async function handleWakeUp(
       const staleShown = staleBucket.slice(0, bucketedTaskLimit)
       const activeShown = activeBucket.slice(0, bucketedTaskLimit)
 
-      // Saturation marker. When the resolved row count fills the
-      // over-fetch window computed by `computeTasksFetchLimit`, both
-      // bucket totals and hidden counts are lower bounds, not
+      // Saturation marker. When a bucket fills its bounded fetch window,
+      // that bucket's total and hidden count are lower bounds, not
       // inventory claims. Prefix with `≥` so the heading signals the
-      // over-fetch bound rather than overstating coverage.
-      // `lore-task action='reconcile'` is the proper audit surface;
-      // the wake-up Tasks section is the triage view, and the marker
-      // is its claim to that scope.
+      // per-bucket bound rather than overstating coverage.
       const tasksFetchLimit = computeTasksFetchLimit(bucketedTaskLimit)
-      const saturated =
+      const fallbackSaturated =
         tasksFetchLimit > 0 && tasks.length >= tasksFetchLimit
 
       // Heading-suffix count: when the bucket is truncated, surface
@@ -694,15 +691,16 @@ async function handleWakeUp(
       // hidden count.
       //
       // Shown is exact — we know what we rendered. Total and hidden
-      // are lower bounds under saturation — we know we hit the
-      // over-fetch ceiling, not what's beyond it — so the `bound`
+      // are lower bounds for capped buckets — we know we hit that
+      // bucket's ceiling, not what's beyond it — so the `bound`
       // prefix attaches to those two and not to shown.
-      const bound = saturated ? "≥" : ""
       const countLabel = (
         bucket: BucketedTask[],
         rows: BucketedTask[],
         descriptor: string,
+        capped: boolean,
       ): string => {
+        const bound = capped ? "≥" : ""
         const total = `${bound}${bucket.length}${descriptor ? ` ${descriptor}` : ""}`
         const hidden = bucket.length - rows.length
         return hidden > 0
@@ -730,18 +728,33 @@ async function handleWakeUp(
         sections.push("## Tasks\n")
         renderBucket(
           overdueShown,
-          `### Overdue (${countLabel(overdueBucket, overdueShown, "")})\n`,
+          `### Overdue (${countLabel(
+            overdueBucket,
+            overdueShown,
+            "",
+            taskBucketCoverage?.overdueCapped ?? fallbackSaturated,
+          )})\n`,
         )
         const staleDescriptor =
           `active task${staleBucket.length === 1 ? "" : "s"} ` +
           `untouched ≥${STALE_TASK_DAYS} days`
         renderBucket(
           staleShown,
-          `### Stale (${countLabel(staleBucket, staleShown, staleDescriptor)}) — consider closing if resolved\n`,
+          `### Stale (${countLabel(
+            staleBucket,
+            staleShown,
+            staleDescriptor,
+            taskBucketCoverage?.staleCapped ?? fallbackSaturated,
+          )}) — consider closing if resolved\n`,
         )
         renderBucket(
           activeShown,
-          `### Active (${countLabel(activeBucket, activeShown, "")})\n`,
+          `### Active (${countLabel(
+            activeBucket,
+            activeShown,
+            "",
+            taskBucketCoverage?.activeCapped ?? fallbackSaturated,
+          )})\n`,
         )
       }
     }

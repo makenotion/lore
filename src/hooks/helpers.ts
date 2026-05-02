@@ -32,7 +32,7 @@ import {
   type TranscriptInspection,
 } from "./transcript.js"
 import { initServicesFromConfig } from "../services.js"
-import { type LoreConfig } from "../types.js"
+import { STALE_TASK_DAYS, type LoreConfig, type TaskSummary } from "../types.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
 import {
@@ -45,6 +45,7 @@ import {
   composeProjectContext,
   renderProjectContextLines,
 } from "../core/project-context.js"
+import { taskDaysOverdue, taskDaysStale } from "../core/task.js"
 import { spawnBackgroundSave } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
 import { getStateDir } from "./lock.js"
@@ -726,12 +727,14 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
 
   if (tasks.length > 0) {
     const today = new Date().toISOString().split("T")[0]
-    // The data layer over-fetches by 4× so the MCP renderer can bucket
-    // into Overdue / Stale / Active without one bucket starving the
-    // others. The shell hook flat-renders, so slice back to the visible
-    // cap before iterating — without this, the hook would emit up to
-    // 40 task lines on every session start.
-    const visibleTasks = tasks.slice(0, DEFAULT_WAKEUP_TASK_LIMIT)
+    // The data layer may return far more rows than the hook should print.
+    // Pick an urgency-ordered visible subset with reserved space for
+    // Stale / Active so a large overdue set doesn't hide null-date work.
+    const visibleTasks = selectHookWakeUpTasks(
+      tasks,
+      DEFAULT_WAKEUP_TASK_LIMIT,
+      today,
+    )
     sections.push("\n## Tasks")
     for (const task of visibleTasks) {
       const stateLabel = task.taskState ?? "open"
@@ -767,6 +770,68 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     sections.unshift("# Lore Context")
     console.log(sections.join("\n"))
   }
+}
+
+function selectHookWakeUpTasks(
+  tasks: TaskSummary[],
+  limit: number,
+  today: string,
+): TaskSummary[] {
+  if (limit <= 0) return []
+  const overdue: TaskSummary[] = []
+  const stale: TaskSummary[] = []
+  const active: TaskSummary[] = []
+  for (const task of tasks) {
+    if (taskDaysOverdue(task, today) !== null) {
+      overdue.push(task)
+      continue
+    }
+    const staleDays = taskDaysStale(task, today)
+    if (staleDays !== null && staleDays >= STALE_TASK_DAYS) {
+      stale.push(task)
+      continue
+    }
+    active.push(task)
+  }
+
+  const buckets = [overdue, stale, active]
+  const quotas = visibleTaskQuotas(limit)
+  const selectedByBucket = buckets.map(() => [] as TaskSummary[])
+  const offsets = [0, 0, 0]
+
+  const take = (bucketIndex: number, count: number): number => {
+    let taken = 0
+    const bucket = buckets[bucketIndex]
+    const selected = selectedByBucket[bucketIndex]
+    while (taken < count && offsets[bucketIndex] < bucket.length) {
+      selected.push(bucket[offsets[bucketIndex]])
+      offsets[bucketIndex] += 1
+      taken += 1
+    }
+    return taken
+  }
+
+  for (let i = 0; i < buckets.length; i++) {
+    take(i, quotas[i])
+  }
+
+  let remaining =
+    limit - selectedByBucket.reduce((sum, bucket) => sum + bucket.length, 0)
+  for (let i = 0; i < buckets.length && remaining > 0; i++) {
+    remaining -= take(i, remaining)
+  }
+
+  return selectedByBucket.flat()
+}
+
+function visibleTaskQuotas(limit: number): [number, number, number] {
+  if (limit <= 0) return [0, 0, 0]
+  const overdue = Math.min(limit, Math.max(1, Math.floor(limit * 0.6)))
+  const staleBudget = limit - overdue
+  const stale =
+    staleBudget > 0 ? Math.min(staleBudget, Math.max(1, Math.floor(limit * 0.3))) : 0
+  const active = limit - overdue - stale
+  return [overdue, stale, active]
 }
 
 // ---------------------------------------------------------------------------
