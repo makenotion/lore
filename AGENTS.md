@@ -145,17 +145,17 @@ Rule #1: If you want an exception to ANY rule below, STOP and get explicit permi
 
 **What to save in Lore:**
 
-- **Decisions** (`lore-decide`): Architectural choices with their rationale, alternatives, consequences, and review date. Prefer this over `lore-remember` for decisions — records participate in `lore-audit`, `lore-wake-up`, and supersession workflows. Pass `affects: [...]` with affected entity names to auto-create `decided_by` facts so the decision surfaces via `lore-ask`.
-- **Memories** (`lore-remember`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights — anything that *isn't* a decision with formal rationale.
-- **Facts** (`lore-learn`): Relationships between system components (`uses`, `depends_on`, `is_a`). For tracked work — open PRs, blocked dependencies, follow-up investigations — use `lore-task action='create'` instead; tracking predicates were dropped from `FactPredicate` in 0.6.0. Invalidate facts with `lore-correct` when they become stale. **`lore-correct` also halves the `Confidence Score` of the memory the fact came from (0.8.0+) — facts don't carry a score; the decrement lands on the originating memory. Use it precisely, not as a soft "maybe" signal.**
+- **Decisions** (`lore-decision action='create'`): Architectural choices with their rationale, alternatives, consequences, and review date. Prefer this over `lore-memory action='save'` for decisions — records participate in `lore-query action='audit'`, `lore-context action='wake-up'`, and supersession workflows. Pass `affects: [...]` with affected entity names to auto-create `decided_by` facts so the decision surfaces via `lore-query action='ask'`.
+- **Memories** (`lore-memory action='save'`): Non-obvious discoveries that would save someone else time. Gotchas, workarounds, architectural patterns, debugging insights — anything that *isn't* a decision with formal rationale.
+- **Facts** (`lore-fact action='create'`): Relationships between system components (`uses`, `depends_on`, `is_a`). Save a supporting memory first and pass `sourceMemoryId`, or pass `agent` + `session` so Lore can auto-link the fact to the earlier memory in the same process. For tracked work — open PRs, blocked dependencies, follow-up investigations — use `lore-task action='create'` instead; tracking predicates were dropped from `FactPredicate` in 0.6.0. Invalidate facts with `lore-fact action='invalidate'` when they become stale. **`lore-fact action='invalidate'` also halves the `Confidence Score` of the memory the fact came from (0.8.0+) — facts don't carry a score; the decrement lands on the originating memory. Use it precisely, not as a soft "maybe" signal.**
 
 ### Confidence: categorical vs. numeric (0.8.0+)
 
 The Memories DB carries two confidence columns. They are NOT interchangeable.
 
-- **`Confidence` (categorical, agent-set).** A select column with three values — `certain`, `likely`, `speculative`. You set this on write to capture your stance: "I'm sure" / "this seems true but I haven't fully verified it" / "this is a guess." It is the agent-curated, human-readable signal. Set it explicitly on every `lore-decide` and `lore-remember` call when the default (`certain`) doesn't match your actual stance — being honest about speculation is more valuable than overstating certainty.
+- **`Confidence` (categorical, agent-set).** A select column with three values — `certain`, `likely`, `speculative`. You set this on write to capture your stance: "I'm sure" / "this seems true but I haven't fully verified it" / "this is a guess." It is the agent-curated, human-readable signal. Set it explicitly on every `lore-decision action='create'` and `lore-memory action='save'` call when the default (`certain`) doesn't match your actual stance — being honest about speculation is more valuable than overstating certainty.
 
-- **`Confidence Score` (numeric, system-managed).** A 0–1 score the system maintains. It is bumped on every read-citation (`lore-query action='ask'`, `'recall'`, `lore-context action='wake-up'` surfacing the row), decremented on every contradiction signal (`lore-correct`, `lore-supersede`), and decays toward zero when a memory is untouched past 60 days. RRF-based retrieval ranks by this score (lower-score rows surface less).
+- **`Confidence Score` (numeric, system-managed).** A 0–1 score the system maintains. It is bumped on every read-citation (`lore-query action='ask'`, `'recall'`, `lore-context action='wake-up'` surfacing the row), decremented on every contradiction signal (`lore-fact action='invalidate'`, `lore-decision action='supersede'`), and decays toward zero when a memory is untouched past 60 days. RRF-based retrieval ranks by this score (lower-score rows surface less).
 
   **You do not write this column directly.** It is system-managed, and the MCP tool surface deliberately does not accept it as a `lore-memory` / `lore-decision` / `lore-task` parameter. Trying to set it would either silently fail (no parameter to bind) or, worse, force the system's accumulated-evidence signal into the agent's stance — collapsing the two axes into one.
 
@@ -163,10 +163,10 @@ The rule of thumb: **write the categorical to express your stance; let the numer
 
 **When to save:**
 
-- After resolving a non-obvious bug or build issue → `lore-remember`
-- When you discover an undocumented convention or constraint → `lore-remember`
-- When an architectural decision is made → `lore-decide` (capture the *why*, not just the *what*)
-- When a new decision supersedes an older one → `lore-decide` with `supersedesIds` or `lore-supersede`. **Supersession also halves the superseded decision's `Confidence Score` (0.8.0+) — the earlier decision still exists for historical reading but retrieval ranks against it.**
+- After resolving a non-obvious bug or build issue → `lore-memory action='save'`
+- When you discover an undocumented convention or constraint → `lore-memory action='save'`
+- When an architectural decision is made → `lore-decision action='create'` (capture the *why*, not just the *what*)
+- When a new decision supersedes an older one → `lore-decision action='create'` with `supersedesIds` or `lore-decision action='supersede'`. **Supersession also halves the superseded decision's `Confidence Score` (0.8.0+) — the earlier decision still exists for historical reading but retrieval ranks against it.**
 - When you identify work that needs to happen but is out of scope → `lore-task action='create'` (with `state: "open"` and an `entity` naming the subject)
 
 ### Conflict verdicts (0.9.0+)
@@ -184,18 +184,19 @@ symmetric verdicts, omit `affectedMemoryId`.
 - **`conflicts_with` (asymmetric)** — A and B make incompatible
   factual claims about the same subject in the same scope.
   Pass `affectedMemoryId` naming the contradicted memory (the
-  one to lose confidence). The compare flow shares
-  `lore-correct`'s halving algebra (`MemoryService.decrementConfidence`)
-  and emits a fresh `conflicts_with` fact (subject = winner's
-  title, object = loser's title) — it is NOT literally a
-  `lore-correct` invocation: `lore-correct` invalidates an
-  existing fact, while `compare` creates a new contradiction
+  one to lose confidence). The compare flow shares the
+  `lore-fact action='invalidate'` confidence-halving algebra
+  (`MemoryService.decrementConfidence`) and emits a fresh
+  `conflicts_with` fact (subject = winner's title, object =
+  loser's title) — it is NOT literally a `lore-fact
+  action='invalidate'` invocation: fact invalidation invalidates
+  an existing fact, while `compare` creates a new contradiction
   edge.
 - **`supersedes` (asymmetric)** — Decision-kind affected
   targets ONLY. The other memory is the later, more accurate
   statement; the affected (decision) memory should be retired.
   Pass `affectedMemoryId` naming the superseded decision.
-  Routes through `lore-supersede`'s code path
+  Routes through `lore-decision action='supersede'`'s code path
   (`DecisionService.supersede`): the new decision's `Supersedes`
   relation gains the old decision's id, the old decision's
   `Status` flips to `superseded`, a `supersedes_decision` fact
@@ -338,11 +339,12 @@ happens out-of-band in the background sub-agent.
 
 **What this means for you:**
 
-- Continue calling `lore-remember` / `lore-decide` explicitly
+- Continue calling `lore-memory action='save'` /
+  `lore-decision action='create'` explicitly
   for the things you specifically want preserved — the autosave
   extraction is a safety net, not a replacement.
 - **Do not** double-save: if you already called
-  `lore-remember` for a discovery, the autosave prompt is
+  `lore-memory action='save'` for a discovery, the autosave prompt is
   instructed to check for near-matches and skip its own write
   when it finds one (best-effort, prompt-only — duplicates
   are still possible).
@@ -557,18 +559,18 @@ Implications for future design:
 
 When working in this project, you have access to `lore-*` MCP tools. Use them:
 
-- **At session start**: call `lore-wake-up` to load recent project context (includes proposed + overdue decisions)
-- **When making a decision**: call `lore-decide` — captures rationale, alternatives, consequences, review date, and auto-creates `decided_by` facts. This is the preferred path for architectural choices.
-- **When superseding an old decision**: pass `supersedesIds` to `lore-decide`, or call `lore-supersede` after.
-- **When an entity is about to be edited**: call `lore-decision-context` with the entity name to surface governing decisions first.
-- **When saving general knowledge** (not a formal decision): call `lore-remember` for gotchas, workarounds, debugging insights.
-- **When learning facts**: call `lore-learn` to record entity relationships (e.g., "MemoryService uses dataSources.query")
+- **At session start**: call `lore-context action='wake-up'` to load recent project context (includes proposed + overdue decisions)
+- **When making a decision**: call `lore-decision action='create'` — captures rationale, alternatives, consequences, review date, and auto-creates `decided_by` facts. This is the preferred path for architectural choices.
+- **When superseding an old decision**: pass `supersedesIds` to `lore-decision action='create'`, or call `lore-decision action='supersede'` after.
+- **When an entity is about to be edited**: call `lore-decision action='context'` with the entity name to surface governing decisions first.
+- **When saving general knowledge** (not a formal decision): call `lore-memory action='save'` for gotchas, workarounds, debugging insights.
+- **When learning facts**: call `lore-fact action='create'` to record entity relationships (e.g., "MemoryService uses dataSources.query"). Save a supporting memory first and pass `sourceMemoryId`, or pass `agent` + `session` so Lore can auto-link to the memory saved earlier in the same process.
 - **When two memories appear in tension** (a scan surfaces them, or you notice the conflict mid-task): call `lore-memory action='compare'` with one of the six verdicts. See "Conflict verdicts" above.
 - **At session end**: the Stop autosave hook fires a background save automatically — no manual call required
 
 ### Scheduled digest synthesis
 
-The Stop hook fires a background `claude -p` digest synthesizer at most once per project per 7 days (filesystem-marker debounced) when the cwd resolves to a single sub-project. The synthesizer runs in a detached node child the Stop hook spawns (the parent never initializes Notion or gathers digest data inline), so digest scheduling never blocks the user's next turn. The digest writes a `source: "digest"` memory that `lore-wake-up`'s fast path surfaces at session start and uses to trim the recent-memories section to 3.
+The Stop hook fires a background `claude -p` digest synthesizer at most once per project per 7 days (filesystem-marker debounced) when the cwd resolves to a single sub-project. The synthesizer runs in a detached node child the Stop hook spawns (the parent never initializes Notion or gathers digest data inline), so digest scheduling never blocks the user's next turn. The digest writes a `source: "digest"` memory that `lore-context action='wake-up'`'s fast path surfaces at session start and uses to trim the recent-memories section to 3.
 
 - **Manual invocation**: `lore digest --project <name>` (`--dry-run` previews the raw data without spawning; `--period day|week` controls the window).
 - **Sustained-low-volume escape**: a project that averages 1–2 memories per week never accumulates digest-worthy content within the auto-path's 7-day window, so the scheduler's quiet-week branch keeps touching the marker and no `source: "digest"` memory ever lands. Run `lore digest --since YYYY-MM-DD` to widen the window past the debounce — the CLI re-touches the marker after spawning so the next Stop hook won't immediately retry.

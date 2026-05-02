@@ -95,7 +95,13 @@ The PAT path is also what CI typically uses, via
    No absolute paths and no `${HOME}` placeholders — the file is
    portable across every engineer's machine.
 
-4. **Commit the resulting diff.** The committed config now Just Works
+4. **Teach the repo's agents to prefer Lore.** Add a short
+   "Memory and note-taking" section to the repo's `AGENTS.md` and
+   `CLAUDE.md` so agents know when to call Lore tools instead of
+   writing local-only notes. See [Quick Start step 5](#5-teach-your-agents-to-use-lore)
+   for a pasteable starter.
+
+5. **Commit the resulting diff.** The committed config now Just Works
    on any teammate's fresh checkout: `yarn install` resolves
    `@makenotion/lore` from GitHub Packages (using each engineer's
    `GITHUB_PACKAGES_TOKEN`), and the host assistant resolves `lore`
@@ -264,6 +270,42 @@ agent's MCP config file by hand.
 > Cursor and `--print-config` hosts get the MCP tool surface but not background
 > hooks.
 
+### 5. Teach Your Agents to Use Lore
+
+`lore install` wires the MCP server and hooks into the assistant host, but
+agents still need repo-local instructions that tell them to prefer the shared
+Lore vault for team knowledge. Add a "Memory and note-taking" section to the
+root `AGENTS.md` and, when the repo uses Claude Code, mirror it in
+`CLAUDE.md`.
+
+A minimal starter:
+
+```markdown
+### Memory and note-taking
+
+- Use Lore for cross-session and cross-team knowledge. Lore stores memories,
+  facts, decisions, and tasks in the shared vault, so every team member and
+  agent session benefits. Prefer Lore over file-based memory for anything the
+  team should know.
+- Use file-based memory only for personal preferences or local-only context
+  that should not be shared.
+- At session start, call `lore-context` with `action: "wake-up"` to load recent
+  project context when the tool is available.
+- Save non-obvious discoveries with `lore-memory` and `action: "save"`.
+- Record architectural decisions with `lore-decision` and `action: "create"`.
+- Record durable component relationships with `lore-fact` and
+  `action: "create"` after saving a supporting memory; pass
+  `sourceMemoryId`, or pass `agent` + `session` so Lore can auto-link the
+  fact to the earlier memory in the same process.
+- Track follow-up work with `lore-task` and `action: "create"`; close tasks
+  with `action: "close"` as soon as the work is done or cancelled.
+```
+
+Adapt the snippet to the repo. For example, if Lore is installed as a Yarn PnP
+devDependency, tell agents to run CLI commands as
+`yarn run -T lore <subcommand>` while still calling MCP tools by their normal
+`lore-*` names.
+
 ## Data Model
 
 A vault is a Notion page containing four core databases plus an optional
@@ -282,13 +324,13 @@ vaults from before PF3-01 can opt in via `lore migrate --build-entities --yes`,
 which also adds the `SubjectEntity` / `ObjectEntity` relation columns to Facts
 and re-points historical rows in one pass.
 
-**Predicate values**: `is_a`, `has_a`, `uses`, `depends_on`, `related_to`,
-`created_by`, `owned_by`, `replaces`, `extends`, `conflicts_with`.
-System-managed predicates are `decided_by`, `supersedes_decision`, `informs`
-(`lore-decision action='create'` / `supersede`) and `mentions`
-(`lore-memory action='save'`). Historical tracking predicates
-(`needs_action`, `waiting_on`, `blocked_by`) are legacy row values only; use
-`lore-task action='create'` for tracked work.
+**Predicate values accepted by `lore-fact action='create'`**: `is_a`, `has_a`,
+`uses`, `depends_on`, `related_to`, `created_by`, `owned_by`, `replaces`,
+`extends`, `conflicts_with`. System-managed predicates are `decided_by`,
+`supersedes_decision`, `informs` (`lore-decision action='create'` /
+`supersede`) and `mentions` (`lore-memory action='save'`). Historical tracking
+predicates (`needs_action`, `waiting_on`, `blocked_by`) are legacy row values
+only; use `lore-task action='create'` for tracked work.
 
 **Confidence (categorical)**: `certain`, `likely`, `speculative`. This is the
 agent-writable categorical stance. The separate numeric `Confidence Score`
@@ -388,8 +430,9 @@ The old single-purpose task aliases were removed in 0.6.0; use the polymorphic
 `lore-task` dispatcher.
 
 Current releases no longer ship the tracking-predicate migration command. If
-`lore status` reports historical tracking facts, convert them to tasks by hand
-or run the old migration code from git history against the vault.
+`lore status` reports historical tracking facts, restore that migration from
+git history and run it manually against the vault, or hand-edit the Notion rows
+into tasks.
 
 ### `lore-decision` — decision lifecycle
 
