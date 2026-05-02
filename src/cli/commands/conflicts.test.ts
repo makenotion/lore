@@ -9,6 +9,7 @@ import {
   runScan,
   type ScanCliOptions,
   type ScanReport,
+  type ScanStats,
 } from "./conflicts.js"
 import type { LoreServices } from "../../services.js"
 import type { Memory } from "../../types.js"
@@ -52,6 +53,19 @@ function memShape(overrides: Partial<Memory> & { id: string; title: string }): M
   }
 }
 
+function scanStats(overrides: Partial<ScanStats> = {}): ScanStats {
+  return {
+    rawCandidateLimit: SCAN_RAW_CANDIDATE_CAP,
+    rawCandidateLimitReached: false,
+    rawCandidateLimitReachedProjects: [],
+    rawCandidates: 0,
+    dedupedCandidates: 0,
+    alreadyJudgedCandidates: 0,
+    survivingCandidates: 0,
+    ...overrides,
+  }
+}
+
 interface MakeServicesOpts {
   projectsByName?: Record<string, { id: string; name: string }>
   projectsList?: Array<{ id: string; name: string }>
@@ -87,7 +101,7 @@ function makeServices(opts: MakeServicesOpts): LoreServices {
         result.push(opts.memoriesByProjectId?.[id] ?? [])
       }
       return result
-    },
+    }
   )
   return {
     projects: { findByName, list },
@@ -101,6 +115,7 @@ describe("parseScanCliOptions", () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value.limit).toBe(50)
+      expect(result.value.rawLimit).toBeUndefined()
       expect(result.value.includeBodies).toBe(false)
       expect(result.value.json).toBe(false)
       expect(result.value.exhaustive).toBe(false)
@@ -167,6 +182,21 @@ describe("parseScanCliOptions", () => {
     if (result.ok) expect(result.value.limit).toBe(7)
   })
 
+  it("accepts --raw-limit as an operator-controlled raw candidate cap", () => {
+    const result = parseScanCliOptions({ rawLimit: "750" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.rawLimit).toBe(750)
+  })
+
+  it("rejects malformed --raw-limit values with the flag name", () => {
+    const result = parseScanCliOptions({ rawLimit: "5.5" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--raw-limit")
+      expect(result.message).toContain("decimal integer")
+    }
+  })
+
   it("forwards boolean flags verbatim", () => {
     const result = parseScanCliOptions({
       project: "Mail",
@@ -180,6 +210,7 @@ describe("parseScanCliOptions", () => {
       expect(result.value).toEqual<ScanCliOptions>({
         projectName: "Mail",
         limit: 5,
+        rawLimit: undefined,
         includeBodies: true,
         json: true,
         exhaustive: true,
@@ -200,7 +231,7 @@ describe("resolveScanProjects", () => {
   it("throws with a 'lore status' hint when --project is unknown", async () => {
     const services = makeServices({ projectsByName: {} })
     await expect(resolveScanProjects(services, "Nope")).rejects.toThrow(
-      /Project "Nope" not found.*lore status/,
+      /Project "Nope" not found.*lore status/
     )
   })
 
@@ -440,7 +471,7 @@ describe("runScan — pipeline shape", () => {
     spy.mockRestore()
   })
 
-  it("calls findConflictCandidates with pairLimit: SCAN_RAW_CANDIDATE_CAP by default", async () => {
+  it("requests one sentinel candidate beyond SCAN_RAW_CANDIDATE_CAP by default for cap detection", async () => {
     const spy = vi.spyOn(conflictModule, "findConflictCandidates")
     spy.mockReturnValue([])
 
@@ -455,10 +486,29 @@ describe("runScan — pipeline shape", () => {
       json: false,
       exhaustive: false,
     })
-    expect(spy).toHaveBeenCalledWith(
-      expect.any(Array),
-      { pairLimit: SCAN_RAW_CANDIDATE_CAP },
-    )
+    expect(spy).toHaveBeenCalledWith(expect.any(Array), {
+      pairLimit: SCAN_RAW_CANDIDATE_CAP + 1,
+    })
+    spy.mockRestore()
+  })
+
+  it("requests one sentinel candidate beyond --raw-limit when provided for cap detection", async () => {
+    const spy = vi.spyOn(conflictModule, "findConflictCandidates")
+    spy.mockReturnValue([])
+
+    const services = makeServices({
+      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      memoriesByProjectId: { "p-mail": [] },
+    })
+    await runScan(services, {
+      projectName: "Mail",
+      limit: 5,
+      rawLimit: 750,
+      includeBodies: false,
+      json: false,
+      exhaustive: false,
+    })
+    expect(spy).toHaveBeenCalledWith(expect.any(Array), { pairLimit: 751 })
     spy.mockRestore()
   })
 
@@ -477,10 +527,39 @@ describe("runScan — pipeline shape", () => {
       json: false,
       exhaustive: true,
     })
-    expect(spy).toHaveBeenCalledWith(
-      expect.any(Array),
-      { pairLimit: Number.POSITIVE_INFINITY },
+    expect(spy).toHaveBeenCalledWith(expect.any(Array), {
+      pairLimit: Number.POSITIVE_INFINITY,
+    })
+    spy.mockRestore()
+  })
+
+  it("warns and ignores --raw-limit under --exhaustive", async () => {
+    const spy = vi.spyOn(conflictModule, "findConflictCandidates")
+    spy.mockReturnValue([])
+    const messages: string[] = []
+
+    const services = makeServices({
+      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      memoriesByProjectId: { "p-mail": [] },
+    })
+    const report = await runScan(
+      services,
+      {
+        projectName: "Mail",
+        limit: 50,
+        rawLimit: 1000,
+        includeBodies: false,
+        json: false,
+        exhaustive: true,
+      },
+      (msg) => messages.push(msg)
     )
+
+    expect(spy).toHaveBeenCalledWith(expect.any(Array), {
+      pairLimit: Number.POSITIVE_INFINITY,
+    })
+    expect(report.stats.rawCandidateLimit).toBeNull()
+    expect(messages.some((msg) => msg.includes("--raw-limit is ignored"))).toBe(true)
     spy.mockRestore()
   })
 
@@ -507,7 +586,9 @@ describe("runScan — pipeline shape", () => {
       exhaustive: false,
     })
 
-    const listForScanSpy = (services.memories as unknown as { listForScan: ReturnType<typeof vi.fn> }).listForScan
+    const listForScanSpy = (
+      services.memories as unknown as { listForScan: ReturnType<typeof vi.fn> }
+    ).listForScan
     expect(listForScanSpy.mock.calls[0]![0].includeBodies).toBe(true)
     expect(report.pairs[0]!.memoryA.body).toBe("Body of m1")
     expect(report.pairs[0]!.memoryB.body).toBe("Body of m2")
@@ -530,7 +611,7 @@ describe("runScan — pipeline shape", () => {
     expect(r1.scanId).not.toBe(r2.scanId)
     // RFC 4122 v4 UUID surface check.
     expect(r1.scanId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     )
   })
 
@@ -561,9 +642,10 @@ describe("runScan — pipeline shape", () => {
           })
         }
         return [[]]
-      },
+      }
     )
-    ;(services.memories as unknown as { listForScan: typeof listForScan }).listForScan = listForScan
+    ;(services.memories as unknown as { listForScan: typeof listForScan }).listForScan =
+      listForScan
 
     await runScan(
       services,
@@ -574,7 +656,7 @@ describe("runScan — pipeline shape", () => {
         json: false,
         exhaustive: false,
       },
-      (msg) => messages.push(msg),
+      (msg) => messages.push(msg)
     )
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain("Mail")
@@ -672,15 +754,125 @@ describe("runScan — pipeline shape", () => {
       exhaustive: false,
     })
     expect(r1.pairs).toHaveLength(SCAN_RAW_CANDIDATE_CAP)
+    expect(r1.stats.rawCandidateLimitReached).toBe(true)
 
     const r2 = await runScan(services, {
+      projectName: "Mail",
+      limit: 1000,
+      rawLimit: 600,
+      includeBodies: false,
+      json: false,
+      exhaustive: false,
+    })
+    expect(r2.pairs).toHaveLength(600)
+
+    const r3 = await runScan(services, {
       projectName: "Mail",
       limit: 1000,
       includeBodies: false,
       json: false,
       exhaustive: true,
     })
-    expect(r2.pairs).toHaveLength(600)
+    expect(r3.pairs).toHaveLength(600)
+
+    spy.mockRestore()
+  })
+
+  it("resumes beyond the first raw window when already-judged pairs consume the default cap", async () => {
+    const candidates = Array.from({ length: SCAN_RAW_CANDIDATE_CAP + 25 }, (_, i) => {
+      const judged = i < SCAN_RAW_CANDIDATE_CAP
+      return {
+        memoryA: memShape({
+          id: `a${i}`,
+          title: `t${i}`,
+          comparedWith: judged ? [`b${i}`] : [],
+        }),
+        memoryB: memShape({
+          id: `b${i}`,
+          title: `t${i}`,
+          comparedWith: judged ? [`a${i}`] : [],
+        }),
+        similarity: 1 - i / 1000,
+        signals: ["title trigram: 1.00"],
+      }
+    })
+    const spy = vi.spyOn(conflictModule, "findConflictCandidates")
+    spy.mockImplementation((_memories, options) => {
+      const cap = options?.pairLimit ?? 50
+      return candidates.slice(0, cap)
+    })
+
+    const services = makeServices({
+      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      memoriesByProjectId: {
+        "p-mail": [memShape({ id: "any", title: "any" })],
+      },
+    })
+
+    const firstWindow = await runScan(services, {
+      projectName: "Mail",
+      limit: 50,
+      includeBodies: false,
+      json: false,
+      exhaustive: false,
+    })
+    expect(firstWindow.pairs).toEqual([])
+    expect(firstWindow.stats.rawCandidateLimitReached).toBe(true)
+    expect(firstWindow.stats.alreadyJudgedCandidates).toBe(SCAN_RAW_CANDIDATE_CAP)
+
+    const followUp = await runScan(services, {
+      projectName: "Mail",
+      limit: 50,
+      rawLimit: SCAN_RAW_CANDIDATE_CAP + 25,
+      includeBodies: false,
+      json: false,
+      exhaustive: false,
+    })
+    expect(followUp.pairs).toHaveLength(25)
+    expect(followUp.pairs[0]!.memoryA.id).toBe(`a${SCAN_RAW_CANDIDATE_CAP}`)
+
+    spy.mockRestore()
+  })
+
+  it("does not mark the raw limit reached when the generator exhausts exactly at the requested window", async () => {
+    const candidates = Array.from({ length: SCAN_RAW_CANDIDATE_CAP }, (_, i) => ({
+      memoryA: memShape({
+        id: `a${i}`,
+        title: `t${i}`,
+        comparedWith: [`b${i}`],
+      }),
+      memoryB: memShape({
+        id: `b${i}`,
+        title: `t${i}`,
+        comparedWith: [`a${i}`],
+      }),
+      similarity: 1 - i / 1000,
+      signals: ["title trigram: 1.00"],
+    }))
+    const spy = vi.spyOn(conflictModule, "findConflictCandidates")
+    spy.mockImplementation((_memories, options) => {
+      const cap = options?.pairLimit ?? 50
+      return candidates.slice(0, cap)
+    })
+
+    const services = makeServices({
+      projectsByName: { Mail: { id: "p-mail", name: "Mail" } },
+      memoriesByProjectId: {
+        "p-mail": [memShape({ id: "any", title: "any" })],
+      },
+    })
+
+    const report = await runScan(services, {
+      projectName: "Mail",
+      limit: 50,
+      includeBodies: false,
+      json: false,
+      exhaustive: false,
+    })
+
+    expect(report.pairs).toEqual([])
+    expect(report.stats.rawCandidates).toBe(SCAN_RAW_CANDIDATE_CAP)
+    expect(report.stats.rawCandidateLimitReached).toBe(false)
 
     spy.mockRestore()
   })
@@ -692,6 +884,7 @@ describe("renderScanJson", () => {
       scanId: "test-scan-id",
       scannedAt: "2026-04-30T12:34:56.000Z",
       promptVersion: "1",
+      stats: scanStats(),
       pairs: [],
       ...overrides,
     }
@@ -711,6 +904,24 @@ describe("renderScanJson", () => {
       "compatible",
       "not_conflict",
     ])
+  })
+
+  it("emits scan stats for programmatic no-results handling", () => {
+    const out = JSON.parse(
+      renderScanJson(
+        buildReport({
+          stats: scanStats({
+            rawCandidateLimit: 750,
+            rawCandidateLimitReached: true,
+            rawCandidateLimitReachedProjects: ["Mail"],
+            alreadyJudgedCandidates: 750,
+          }),
+        })
+      )
+    )
+    expect(out.stats.rawCandidateLimit).toBe(750)
+    expect(out.stats.rawCandidateLimitReached).toBe(true)
+    expect(out.stats.rawCandidateLimitReachedProjects).toEqual(["Mail"])
   })
 
   it("documents direction rules (unordered labels, affectedMemoryId for asymmetric, supersedes-decision)", () => {
@@ -756,8 +967,8 @@ describe("renderScanJson", () => {
               signals: ["title trigram: 0.78"],
             },
           ],
-        }),
-      ),
+        })
+      )
     )
     expect(out.pairs[0].memoryA.kind).toBe("decision")
     expect(out.pairs[0].memoryB.kind).toBe("note")
@@ -776,6 +987,7 @@ describe("renderScanMarkdown", () => {
       scanId: "id-1",
       scannedAt: "2026-04-30T12:34:56.000Z",
       promptVersion: "1",
+      stats: scanStats(),
       pairs: [],
     })
     // Plural "pairs" when length === 0 (English plural for zero
@@ -784,7 +996,30 @@ describe("renderScanMarkdown", () => {
     expect(md).toContain("Conflict verdicts (0.9.0+)")
     expect(md).toContain("lore-memory action='compare'")
     expect(md).toContain("No candidate pairs to surface")
+    expect(md).toContain("exhausted the scan scope")
     expect(md.endsWith("\n")).toBe(true)
+  })
+
+  it("emits a bounded-window no-pairs message with a --raw-limit continuation hint", () => {
+    const md = renderScanMarkdown({
+      scanId: "id-1",
+      scannedAt: "2026-04-30T12:34:56.000Z",
+      promptVersion: "1",
+      stats: scanStats({
+        rawCandidateLimit: SCAN_RAW_CANDIDATE_CAP,
+        rawCandidateLimitReached: true,
+        rawCandidateLimitReachedProjects: ["Mail"],
+        rawCandidates: SCAN_RAW_CANDIDATE_CAP,
+        dedupedCandidates: SCAN_RAW_CANDIDATE_CAP,
+        alreadyJudgedCandidates: SCAN_RAW_CANDIDATE_CAP,
+        survivingCandidates: 0,
+      }),
+      pairs: [],
+    })
+    expect(md).toContain("hit the raw-candidate limit")
+    expect(md).toContain("Mail")
+    expect(md).toContain("--raw-limit <higher n>")
+    expect(md).toContain("--exhaustive")
   })
 
   it("emits a 1-pair report with action prompt + per-memory metadata + signals", () => {
@@ -792,6 +1027,7 @@ describe("renderScanMarkdown", () => {
       scanId: "id-1",
       scannedAt: "2026-04-30T12:34:56.000Z",
       promptVersion: "1",
+      stats: scanStats(),
       pairs: [
         {
           memoryA: {
@@ -823,6 +1059,9 @@ describe("renderScanMarkdown", () => {
     expect(md).toContain("1 pair surfaced")
     expect(md).not.toContain("1 pairs surfaced")
     expect(md).toContain("Pair 1 — similarity 0.78")
+    expect(md).toContain("Scan stats")
+    expect(md).toContain("Raw candidate limit")
+    expect(md).toContain("Raw candidates retained")
     expect(md).toContain('Memory A: "JWT auth model"')
     expect(md).toContain('Memory B: "Switched auth to session cookies"')
     expect(md).toContain("score 0.65")
@@ -843,6 +1082,7 @@ describe("renderScanMarkdown", () => {
       scanId: "id-1",
       scannedAt: "2026-04-30T12:34:56.000Z",
       promptVersion: "1",
+      stats: scanStats(),
       pairs: [
         {
           memoryA: {
@@ -895,6 +1135,7 @@ describe("renderScanMarkdown", () => {
       scanId: "id-1",
       scannedAt: "2026-04-30T12:34:56.000Z",
       promptVersion: "1",
+      stats: scanStats(),
       pairs: [
         {
           memoryA: {

@@ -31,23 +31,22 @@ import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge
 import type { Memory } from "../../types.js"
 
 /**
- * Raw-candidate cap passed into `findConflictCandidates`. INTENTIONALLY
- * larger than `--limit` / `CONFLICT_PAIR_LIMIT` so the generator returns
- * enough raw candidates to survive dedup + already-judged filtering with
- * `--limit` worth of survivors. If the generator is given the same
- * `--limit` the CLI surfaces, the post-filter set could be < `--limit`
- * even when more useful candidates exist — the bug an earlier draft of
- * this issue had.
+ * Default raw-candidate cap passed into `findConflictCandidates`.
+ * INTENTIONALLY larger than `--limit` / `CONFLICT_PAIR_LIMIT` so the
+ * generator returns enough raw candidates to survive dedup +
+ * already-judged filtering with `--limit` worth of survivors. If the
+ * generator is given the same `--limit` the CLI surfaces, the post-filter
+ * set could be < `--limit` even when more useful candidates exist — the
+ * bug an earlier draft of this issue had.
  *
  * 500 is a starting point: comfortable above any realistic `--limit`
  * value while bounded enough that the per-project candidate accumulator
  * stays cheap. `findConflictCandidates` honors the cap as a true
  * top-K bound (see its docstring) so a high-overlap project allocates
- * O(`SCAN_RAW_CANDIDATE_CAP`) `ConflictCandidate` objects, NOT
- * O(N²) — the per-pair similarity computation is still O(N²)
- * (inherent to lexical-pair comparison) but the memory blow-up is
- * closed. Tune if real-vault scans surface more lexical candidates
- * than expected.
+ * O(raw-limit) `ConflictCandidate` objects, NOT O(N²) — the per-pair
+ * similarity computation is still O(N²) (inherent to lexical-pair
+ * comparison) but the memory blow-up is closed. Operators can raise this
+ * with `--raw-limit` without going fully `--exhaustive`.
  */
 export const SCAN_RAW_CANDIDATE_CAP = 500
 
@@ -55,6 +54,7 @@ export const SCAN_RAW_CANDIDATE_CAP = 500
 export interface ScanCliOptions {
   projectName: string | undefined
   limit: number
+  rawLimit?: number
   includeBodies: boolean
   json: boolean
   exhaustive: boolean
@@ -68,68 +68,68 @@ export interface ScanCliOptions {
 export function parseScanCliOptions(raw: {
   project?: string
   limit?: string
+  rawLimit?: string
   includeBodies?: boolean
   json?: boolean
   exhaustive?: boolean
-}):
-  | { ok: true; value: ScanCliOptions }
-  | { ok: false; message: string } {
+}): { ok: true; value: ScanCliOptions } | { ok: false; message: string } {
   let limit = CONFLICT_PAIR_LIMIT
   if (raw.limit !== undefined) {
-    // Validate the raw string with a digit-only regex BEFORE numeric
-    // conversion. Looser approaches each have a silent-acceptance
-    // failure mode:
-    //
-    // - `parseInt("3.7", 10)` silently rounds to 3.
-    // - `parseInt("3abc", 10)` silently truncates to 3.
-    // - `Number("3.7")` returns 3.7 — `Number.isInteger` rejects, so
-    //   THIS case is caught — but `Number("1e3")` returns 1000, which
-    //   is a valid integer and silently passes `Number.isInteger`.
-    //   Exponent notation is the failure mode that motivates the
-    //   string-side check: an operator typing `--limit 1e3` expecting
-    //   an error gets a 1000-pair scan instead.
-    // - `Number("+5")` returns 5 — a leading-`+` would silently pass.
-    //
-    // The regex `/^[0-9]+$/` accepts only decimal-digit strings —
-    // rejects `"3.7"`, `"3abc"`, `"1e3"`, `"+5"`, `"-5"`, `""`,
-    // `"  5"`, and any non-decimal notation. `"007"` is accepted
-    // (leading zeros are unconventional but not ambiguous; no reason
-    // to reject what `parseInt` would accept).
-    if (!/^[0-9]+$/.test(raw.limit)) {
-      return {
-        ok: false,
-        message: `--limit must be a positive decimal integer, got "${raw.limit}"`,
-      }
-    }
-    const n = Number(raw.limit)
-    if (n < 1) {
-      return {
-        ok: false,
-        message: `--limit must be a positive integer, got ${n}`,
-      }
-    }
-    if (!Number.isSafeInteger(n)) {
-      // `Number("9999999999999999999")` returns 1e19 — past
-      // `Number.MAX_SAFE_INTEGER` (2^53 - 1). The regex accepts
-      // arbitrarily long decimal strings; the safe-integer check
-      // rejects what would silently lose precision.
-      return {
-        ok: false,
-        message: `--limit exceeds the safe integer range, got "${raw.limit}"`,
-      }
-    }
-    limit = n
+    const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
+    if (!parsedLimit.ok) return parsedLimit
+    limit = parsedLimit.value
+  }
+
+  let rawLimit: number | undefined
+  if (raw.rawLimit !== undefined) {
+    const parsedRawLimit = parsePositiveDecimalInteger("--raw-limit", raw.rawLimit)
+    if (!parsedRawLimit.ok) return parsedRawLimit
+    rawLimit = parsedRawLimit.value
   }
   return {
     ok: true,
     value: {
       projectName: raw.project,
       limit,
+      rawLimit,
       includeBodies: !!raw.includeBodies,
       json: !!raw.json,
       exhaustive: !!raw.exhaustive,
     },
   }
+}
+
+/**
+ * Validate a positive decimal integer flag BEFORE numeric conversion.
+ * Looser approaches each silently accept malformed values:
+ * `parseInt("3.7", 10)` floors, `parseInt("3abc", 10)` truncates,
+ * `Number("1e3")` accepts exponent notation, and `Number("+5")`
+ * accepts a leading sign. The raw string check keeps CLI flags strict.
+ */
+function parsePositiveDecimalInteger(
+  flag: string,
+  raw: string
+): { ok: true; value: number } | { ok: false; message: string } {
+  if (!/^[0-9]+$/.test(raw)) {
+    return {
+      ok: false,
+      message: `${flag} must be a positive decimal integer, got "${raw}"`,
+    }
+  }
+  const n = Number(raw)
+  if (n < 1) {
+    return {
+      ok: false,
+      message: `${flag} must be a positive integer, got ${n}`,
+    }
+  }
+  if (!Number.isSafeInteger(n)) {
+    return {
+      ok: false,
+      message: `${flag} exceeds the safe integer range, got "${raw}"`,
+    }
+  }
+  return { ok: true, value: n }
 }
 
 /** Per-pair output shape, shared by markdown and JSON renderers. */
@@ -157,7 +157,18 @@ export interface ScanReport {
   scanId: string
   scannedAt: string
   promptVersion: string
+  stats: ScanStats
   pairs: ScanPair[]
+}
+
+export interface ScanStats {
+  rawCandidateLimit: number | null
+  rawCandidateLimitReached: boolean
+  rawCandidateLimitReachedProjects: string[]
+  rawCandidates: number
+  dedupedCandidates: number
+  alreadyJudgedCandidates: number
+  survivingCandidates: number
 }
 
 /**
@@ -185,13 +196,13 @@ export interface ScanProjectRef {
 
 export async function resolveScanProjects(
   services: LoreServices,
-  projectName: string | undefined,
+  projectName: string | undefined
 ): Promise<ScanProjectRef[]> {
   if (projectName) {
     const found = await services.projects.findByName(projectName)
     if (!found) {
       throw new Error(
-        `Project "${projectName}" not found. Run \`lore status\` to list configured projects.`,
+        `Project "${projectName}" not found. Run \`lore status\` to list configured projects.`
       )
     }
     return [{ id: found.id, label: found.name }]
@@ -218,8 +229,12 @@ export async function resolveScanProjects(
 export async function runScan(
   services: LoreServices,
   opts: ScanCliOptions,
-  log: (msg: string) => void = (msg) => process.stderr.write(msg + "\n"),
+  log: (msg: string) => void = (msg) => process.stderr.write(msg + "\n")
 ): Promise<ScanReport> {
+  if (opts.exhaustive && opts.rawLimit !== undefined) {
+    log("--raw-limit is ignored when --exhaustive is set; using exhaustive scan.")
+  }
+
   const projects = await resolveScanProjects(services, opts.projectName)
 
   // 1. List memories per project. `listForScan` strict-scopes by project
@@ -233,35 +248,51 @@ export async function runScan(
     includeBodies: opts.includeBodies,
     onProgress: ({ projectLabel, pageIndex, runningTotal }) => {
       log(
-        `Scanning project '${projectLabel}': page ${pageIndex}, ${runningTotal} memories…`,
+        `Scanning project '${projectLabel}': page ${pageIndex}, ${runningTotal} memories…`
       )
     },
   })
 
-  // 2. For each project, run findConflictCandidates with the raw cap
-  //    (NOT --limit). The generator's pairLimit is its internal
-  //    sort+truncate budget; passing --limit here would pre-truncate
-  //    before dedup and the already-judged filter run, leaving the
-  //    final surfaced set too small.
+  // 2. For each project, run findConflictCandidates with the raw
+  //    coverage cap (NOT --limit). The generator's pairLimit is its
+  //    internal sort+truncate budget; passing --limit here would
+  //    pre-truncate before dedup and the already-judged filter run,
+  //    leaving the final surfaced set too small.
   //
   //    Under `--exhaustive`, pass `pairLimit: Number.POSITIVE_INFINITY`
   //    — the explicit unbounded sentinel per `findConflictCandidates`'s
   //    contract. Omitting the option entirely would default to
   //    CONFLICT_PAIR_LIMIT = 50 — explicitly the wrong behavior for
   //    `--exhaustive`. The cap exists for CPU/memory safety on large
-  //    vaults; the flag is for operators who've already judged the
-  //    bounded scan's output and want to confirm no remaining lexical
-  //    candidates exist beyond the cap.
+  //    vaults; `--raw-limit` lets operators raise that bounded window
+  //    after already-judged pairs consume the default 500. Bounded
+  //    scans request one extra sentinel candidate so the renderer can
+  //    distinguish exact exhaustion from "more candidates exist past
+  //    this window"; the sentinel is dropped before dedup/filter/render.
+  const rawCandidateLimit = opts.rawLimit ?? SCAN_RAW_CANDIDATE_CAP
   const generatorPairLimit = opts.exhaustive
     ? Number.POSITIVE_INFINITY
-    : SCAN_RAW_CANDIDATE_CAP
+    : sentinelPairLimit(rawCandidateLimit)
   const rawCandidates: ProjectScopedCandidate[] = []
+  const rawCandidateLimitReachedProjects: string[] = []
   for (let i = 0; i < memoriesByProject.length; i++) {
     const memories = memoriesByProject[i]!
     const projectLabel = projects[i]!.label
-    for (const c of findConflictCandidates(memories, {
+    const projectCandidatesWithSentinel = findConflictCandidates(memories, {
       pairLimit: generatorPairLimit,
-    })) {
+    })
+    const rawLimitReached =
+      !opts.exhaustive && projectCandidatesWithSentinel.length > rawCandidateLimit
+    if (rawLimitReached) {
+      rawCandidateLimitReachedProjects.push(projectLabel)
+    }
+    const projectCandidates = rawLimitReached
+      ? projectCandidatesWithSentinel.slice(0, rawCandidateLimit)
+      : projectCandidatesWithSentinel
+    // The extra candidate is a sentinel only: dropping it preserves the
+    // requested bounded memory window. The cap-hit stats tell operators
+    // to raise `--raw-limit` when that next candidate might matter.
+    for (const c of projectCandidates) {
       rawCandidates.push({ candidate: c, projectLabel })
     }
   }
@@ -294,15 +325,14 @@ export async function runScan(
       !candidate.memoryB.comparedWith.includes(candidate.memoryA.id)
     )
   })
+  const alreadyJudgedCandidates = dedupedCandidates.length - filteredCandidates.length
 
   // 5. Sort across projects by similarity desc; truncate to `--limit`
   //    (the surfaced cap, distinct from SCAN_RAW_CANDIDATE_CAP). This
   //    is the only place the operator-facing limit applies — by the
   //    time we get here, the candidate set is post-dedup, post-filter,
   //    so `--limit` budgets the *useful* candidates.
-  filteredCandidates.sort(
-    (a, b) => b.candidate.similarity - a.candidate.similarity,
-  )
+  filteredCandidates.sort((a, b) => b.candidate.similarity - a.candidate.similarity)
   const surfaced = filteredCandidates.slice(0, opts.limit)
 
   // 6. Build the wire-shape report.
@@ -317,14 +347,28 @@ export async function runScan(
     scanId: randomUUID(),
     scannedAt: new Date().toISOString(),
     promptVersion: CONFLICT_JUDGE_PROMPT_VERSION,
+    stats: {
+      rawCandidateLimit: opts.exhaustive ? null : rawCandidateLimit,
+      rawCandidateLimitReached: rawCandidateLimitReachedProjects.length > 0,
+      rawCandidateLimitReachedProjects,
+      rawCandidates: rawCandidates.length,
+      dedupedCandidates: dedupedCandidates.length,
+      alreadyJudgedCandidates,
+      survivingCandidates: filteredCandidates.length,
+    },
     pairs,
   }
+}
+
+function sentinelPairLimit(rawLimit: number): number {
+  // Defend against overflow if a non-CLI caller bypasses parse validation.
+  return rawLimit >= Number.MAX_SAFE_INTEGER ? rawLimit : rawLimit + 1
 }
 
 function toScanPairMemory(
   m: Memory,
   projectLabel: string,
-  includeBody: boolean,
+  includeBody: boolean
 ): ScanPairMemory {
   const out: ScanPairMemory = {
     id: m.id,
@@ -351,39 +395,51 @@ function toScanPairMemory(
 export function renderScanMarkdown(report: ScanReport): string {
   const lines: string[] = []
   const pluralizedPairs = report.pairs.length === 1 ? "pair" : "pairs"
-  lines.push(
-    `# Conflict scan — ${report.pairs.length} ${pluralizedPairs} surfaced`,
-  )
+  lines.push(`# Conflict scan — ${report.pairs.length} ${pluralizedPairs} surfaced`)
   lines.push("")
   lines.push(`**Scan ID:** \`${report.scanId}\``)
   lines.push(`**Scanned at:** ${report.scannedAt}`)
   lines.push(`**Prompt version:** ${report.promptVersion}`)
   lines.push("")
-  lines.push(
-    `**Verdict vocabulary:** see CLAUDE.md "Conflict verdicts (0.9.0+)".`,
-  )
+  lines.push(`**Verdict vocabulary:** see CLAUDE.md "Conflict verdicts (0.9.0+)".`)
   // One line for each prose paragraph rather than splitting mid-
   // sentence: backtick boundaries inside soft wraps read awkwardly,
   // and Markdown collapses the soft break into a space at render time
   // anyway, so there's no width budget being saved.
   lines.push(
-    "**Action:** judge each pair below; call `lore-memory action='compare'` once per pair with one of the six verdicts.",
+    "**Action:** judge each pair below; call `lore-memory action='compare'` once per pair with one of the six verdicts."
   )
   lines.push("")
   lines.push(
-    "**Direction:** for `conflicts_with` and `supersedes`, pass `affectedMemoryId` naming the loser memory whose Confidence Score should halve. For symmetric verdicts (`scoped`, `related`, `compatible`, `not_conflict`), omit `affectedMemoryId`. The A/B labels below are unordered — order does NOT encode direction.",
+    "**Direction:** for `conflicts_with` and `supersedes`, pass `affectedMemoryId` naming the loser memory whose Confidence Score should halve. For symmetric verdicts (`scoped`, `related`, `compatible`, `not_conflict`), omit `affectedMemoryId`. The A/B labels below are unordered — order does NOT encode direction."
   )
+  lines.push("")
+  lines.push(...renderScanStatsMarkdown(report.stats))
   lines.push("")
 
   if (report.pairs.length === 0) {
     lines.push("---")
     lines.push("")
-    lines.push("No candidate pairs to surface. Either the vault has no")
-    lines.push("similarity-overlapping memories, every overlap has already")
-    lines.push("been judged (`Compared With` populated on both sides), or")
-    lines.push("the bounded `--exhaustive`-less scan capped before reaching")
-    lines.push("them. Re-run with `--exhaustive` to lift the per-project")
-    lines.push("`SCAN_RAW_CANDIDATE_CAP = 500` raw-candidate ceiling.")
+    lines.push("No candidate pairs to surface.")
+    lines.push("")
+    if (report.stats.rawCandidateLimitReached) {
+      const limit = report.stats.rawCandidateLimit ?? SCAN_RAW_CANDIDATE_CAP
+      const projects = report.stats.rawCandidateLimitReachedProjects.join(", ")
+      lines.push(
+        `The bounded scan hit the raw-candidate limit (${limit})` +
+          (projects ? ` for: ${projects}.` : ".")
+      )
+      lines.push(
+        `${report.stats.alreadyJudgedCandidates} candidate pairs were filtered as already judged before any useful pair survived.`
+      )
+      lines.push("Later unjudged pairs may exist beyond this window. Re-run with")
+      lines.push("`--raw-limit <higher n>` to continue bounded scanning, or use")
+      lines.push("`--exhaustive` to lift the raw-candidate ceiling.")
+    } else {
+      lines.push("The raw candidate generator exhausted the scan scope; no")
+      lines.push("bounded raw-candidate ceiling was reached. Within this scope,")
+      lines.push("no similarity-overlapping unjudged pairs remain.")
+    }
     return lines.join("\n") + "\n"
   }
 
@@ -392,9 +448,7 @@ export function renderScanMarkdown(report: ScanReport): string {
 
   let i = 1
   for (const pair of report.pairs) {
-    lines.push(
-      `## Pair ${i} — similarity ${pair.similarity.toFixed(2)}`,
-    )
+    lines.push(`## Pair ${i} — similarity ${pair.similarity.toFixed(2)}`)
     lines.push("")
     lines.push(...renderPairMemoryMarkdown("A", pair.memoryA))
     lines.push("")
@@ -421,19 +475,33 @@ export function renderScanMarkdown(report: ScanReport): string {
   return lines.join("\n") + "\n"
 }
 
-function renderPairMemoryMarkdown(
-  label: "A" | "B",
-  m: ScanPairMemory,
-): string[] {
+function renderScanStatsMarkdown(stats: ScanStats): string[] {
+  const limit =
+    stats.rawCandidateLimit === null ? "exhaustive" : stats.rawCandidateLimit.toString()
+  const reachedProjects = stats.rawCandidateLimitReachedProjects.join(", ")
+  return [
+    "**Scan stats:**",
+    `- **Raw candidate limit:** ${limit}`,
+    `- **Raw candidates retained:** ${stats.rawCandidates} (after sentinel slice)`,
+    `- **Deduped candidates:** ${stats.dedupedCandidates}`,
+    `- **Already judged filtered:** ${stats.alreadyJudgedCandidates}`,
+    `- **Unjudged candidates after filtering:** ${stats.survivingCandidates}`,
+    `- **Raw limit reached:** ${
+      stats.rawCandidateLimitReached
+        ? `yes${reachedProjects ? ` (${reachedProjects})` : ""}`
+        : "no"
+    }`,
+  ]
+}
+
+function renderPairMemoryMarkdown(label: "A" | "B", m: ScanPairMemory): string[] {
   const lines: string[] = []
   lines.push(`### Memory ${label}: "${m.title}"`)
   lines.push(`- **ID:** \`${m.id}\``)
   lines.push(`- **Project:** ${m.project}`)
   lines.push(`- **Kind:** ${m.kind}`)
   const scoreSuffix =
-    m.confidenceScore !== null
-      ? ` (score ${m.confidenceScore.toFixed(2)})`
-      : ""
+    m.confidenceScore !== null ? ` (score ${m.confidenceScore.toFixed(2)})` : ""
   lines.push(`- **Confidence:** ${m.confidence}${scoreSuffix}`)
   if (m.synopsis) {
     lines.push(`- **Synopsis:** ${m.synopsis}`)
@@ -494,6 +562,7 @@ export function renderScanJson(report: ScanReport): string {
         scanId: report.scanId,
         scannedAt: report.scannedAt,
         promptVersion: report.promptVersion,
+        stats: report.stats,
         compareContract: {
           tool: "lore-memory",
           action: "compare",
@@ -513,31 +582,35 @@ export function renderScanJson(report: ScanReport): string {
         pairs: report.pairs,
       },
       null,
-      2,
+      2
     ) + "\n"
   )
 }
 
 const scanSubcommand = new Command("scan")
-  .description("Walk the vault and surface candidate conflict pairs for in-context judgment")
-  .option(
-    "-p, --project <name>",
-    "Restrict scan to one project (defaults to all projects)",
+  .description(
+    "Walk the vault and surface candidate conflict pairs for in-context judgment"
   )
   .option(
-    "-n, --limit <n>",
-    `Max pairs to surface (default ${CONFLICT_PAIR_LIMIT})`,
+    "-p, --project <name>",
+    "Restrict scan to one project (defaults to all projects)"
+  )
+  .option("-n, --limit <n>", `Max pairs to surface (default ${CONFLICT_PAIR_LIMIT})`)
+  .option(
+    "--raw-limit <n>",
+    `Raw candidates to inspect per project before filtering (default ${SCAN_RAW_CANDIDATE_CAP}; ignored by --exhaustive)`
   )
   .option("--include-bodies", "Include each memory's full body in the output")
   .option("--json", "Emit JSON instead of human-readable markdown")
   .option(
     "--exhaustive",
-    `Bypass SCAN_RAW_CANDIDATE_CAP (${SCAN_RAW_CANDIDATE_CAP}) for full O(n²) coverage`,
+    `Bypass SCAN_RAW_CANDIDATE_CAP (${SCAN_RAW_CANDIDATE_CAP}) for full O(n²) coverage`
   )
   .action(
     async (raw: {
       project?: string
       limit?: string
+      rawLimit?: string
       includeBodies?: boolean
       json?: boolean
       exhaustive?: boolean
@@ -561,13 +634,10 @@ const scanSubcommand = new Command("scan")
           process.stdout.write(renderScanMarkdown(report))
         }
       } catch (err) {
-        console.error(
-          "Conflict scan failed:",
-          err instanceof Error ? err.message : err,
-        )
+        console.error("Conflict scan failed:", err instanceof Error ? err.message : err)
         process.exit(1)
       }
-    },
+    }
   )
 
 export const conflictsCommand = new Command("conflicts")

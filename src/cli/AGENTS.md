@@ -135,7 +135,7 @@ title-shaped to link.
 | `lore migrate` | none | `--dry-run`, `--upgrade-decision-tags`, `--normalize-agents`, `--backfill-synopses`, `--build-confidence-scores` | Add missing schema properties and select options; backfill canonical Agent strings (add-only, idempotent); backfill 1–2 sentence synopses on legacy memories; baseline-seed Confidence Score + Last Referenced At from categorical Confidence + creation date |
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
-| `lore conflicts scan` | none | `-p, --project`, `-n, --limit`, `--include-bodies`, `--json`, `--exhaustive` | Walk the vault, surface candidate conflict pairs for in-context judgment by the calling agent (read-only; emits prompt-ready output) |
+| `lore conflicts scan` | none | `-p, --project`, `-n, --limit`, `--raw-limit`, `--include-bodies`, `--json`, `--exhaustive` | Walk the vault, surface candidate conflict pairs for in-context judgment by the calling agent (read-only; emits prompt-ready output) |
 
 ## The auth Command
 
@@ -706,25 +706,30 @@ slice contained already-judged pairs.
 The scan uses two distinct caps that an operator must keep
 separate when reasoning about coverage:
 
-- **`SCAN_RAW_CANDIDATE_CAP = 500`** is the *coverage* knob —
-  passed into `findConflictCandidates` as `pairLimit` per project.
-  Bounds the per-project candidate **accumulator** (the generator
-  uses bounded top-K accumulation so a high-overlap project
-  allocates O(`pairLimit`) `ConflictCandidate` objects, not O(N²);
-  see `findConflictCandidates` in `src/core/conflict.ts`). The
-  per-pair similarity computation itself is still O(N²) — that's
-  inherent to lexical-pair comparison and only an index over the
-  corpus could change it — but the memory blow-up is closed.
-  Lifted by `--exhaustive` (which passes
+- **`--raw-limit` (default `SCAN_RAW_CANDIDATE_CAP = 500`)** is
+  the *coverage* knob — passed into `findConflictCandidates` as
+  `pairLimit` per project. Bounds the per-project candidate
+  **accumulator** (the generator uses bounded top-K accumulation so
+  a high-overlap project allocates O(`pairLimit`)
+  `ConflictCandidate` objects, not O(N²); see
+  `findConflictCandidates` in `src/core/conflict.ts`). The per-pair
+  similarity computation itself is still O(N²) — that's inherent to
+  lexical-pair comparison and only an index over the corpus could
+  change it — but the memory blow-up is closed. Increase
+  `--raw-limit` to continue bounded scanning beyond the previous raw
+  window after those candidates are already judged. Lifted by
+  `--exhaustive` (which passes
   `pairLimit: Number.POSITIVE_INFINITY` per #03's contract — NOT
   an empty options object, which would default to
-  `CONFLICT_PAIR_LIMIT = 50`).
+  `CONFLICT_PAIR_LIMIT = 50`). When `--raw-limit` is combined with
+  `--exhaustive`, `--exhaustive` wins and the CLI emits a one-line
+  stderr note rather than failing.
 - **`--limit` (default `CONFLICT_PAIR_LIMIT = 50`)** is the
   *prompt budget* knob — applied AFTER dedup + comparedWith
   filter + sort. Bounds the agent's per-run reasoning surface.
 
 Passing `--limit` to the generator (instead of
-`SCAN_RAW_CANDIDATE_CAP`) would pre-truncate before dedup and
+the raw-candidate coverage cap) would pre-truncate before dedup and
 filtering, yielding a final surfaced set < `--limit` even when
 more useful candidates exist. The two-cap design is what the
 acceptance criteria pin via `findConflictCandidates`-spy
@@ -732,14 +737,14 @@ assertions.
 
 ### Bounded coverage limitation
 
-A project with more than `SCAN_RAW_CANDIDATE_CAP` lexical
-candidates has unjudged pairs ranked 501+ that the bounded scan
-never surfaces. Once an operator has judged every pair the
-bounded scan returns, the run keeps returning zero pairs even
-though similarity-ranked candidates 501+ remain unjudged. This
-is intentional CPU/memory safety for typical vaults; it's a
-real coverage gap on extremely overlapping projects.
-`--exhaustive` lifts the bound at the cost of unbounded O(n²)
+A project with more lexical candidates than the current
+`--raw-limit` can have unjudged pairs ranked after that raw
+window. Once an operator has judged every pair the bounded scan
+returns, the run can return zero pairs even though deeper
+similarity-ranked candidates remain unjudged. The no-results
+message distinguishes this cap-hit state from true exhaustion and
+points operators at a larger `--raw-limit` for the next bounded
+run. `--exhaustive` lifts the bound at the cost of unbounded O(n²)
 generation (a 5,000-memory project produces up to ~12.5M pairs).
 
 ### Output shapes
