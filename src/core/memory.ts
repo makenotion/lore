@@ -379,6 +379,8 @@ function logHybridBothFailure(containsReason: unknown, semanticReason: unknown):
  * in a Memory page. Run them through `decodeTextEntities` before writing
  * so doubly-encoded autosave input (`&amp;amp;`) resolves to plain text
  * and future similarity / embedding surfaces see consistent values.
+ * Sibling: `decodeDecisionTextFields` in `decision.ts` — keep shared
+ * field coverage in lockstep.
  *
  * Coverage is deliberately explicit rather than derived from
  * `CreateMemoryInput` so a future plain-text field addition fails the

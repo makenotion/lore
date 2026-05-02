@@ -44,6 +44,64 @@ const DEFAULT_REVIEW_EXTENSION_DAYS = 90
 const DECISION_CACHE_TTL_MS = 30_000
 const DECISION_CACHE_MAX = 500
 
+type DecisionStructuralField =
+  | "projectIds"
+  | "topicId"
+  | "status"
+  | "confidence"
+  | "reviewBy"
+  | "decidedAt"
+  | "supersedesIds"
+  | "affectsIds"
+  | "tags"
+
+type RequiredDecisionTextField = "decision" | "rationale"
+type DecisionTextField = Exclude<keyof CreateDecisionInput, DecisionStructuralField>
+type OptionalDecisionTextField = Exclude<
+  DecisionTextField,
+  RequiredDecisionTextField
+>
+type DecodedDecisionTextFields = Record<RequiredDecisionTextField, string> & {
+  [K in OptionalDecisionTextField]: string | undefined
+}
+
+/**
+ * Decode every user-authored text field at the decision write boundary.
+ * Doubly-encoded autosave input like `&amp;amp;` lands in Notion as plain
+ * text, matching the broader Memory write discipline.
+ *
+ * Sibling: `decodeMemoryTextFields` in `memory.ts` — keep shared field
+ * coverage in lockstep. `rationale` mirrors memory `content`: it
+ * normalizes missing/falsy body text to `""` so create can skip the
+ * markdown write while returning a string-backed Decision.
+ *
+ * The decoded field set is derived from `CreateDecisionInput` by excluding
+ * structural IDs/selects/dates. Adding any new decision input field must
+ * either classify it as structural above or decode it here, so coverage
+ * drift fails typecheck instead of silently reaching Notion.
+ */
+function decodeDecisionTextFields(input: CreateDecisionInput): DecodedDecisionTextFields {
+  return {
+    decision: decodeTextEntities(input.decision),
+    rationale: input.rationale ? decodeTextEntities(input.rationale) : "",
+    alternatives:
+      input.alternatives !== undefined
+        ? decodeTextEntities(input.alternatives)
+        : undefined,
+    consequences:
+      input.consequences !== undefined
+        ? decodeTextEntities(input.consequences)
+        : undefined,
+    author: input.author !== undefined ? decodeTextEntities(input.author) : undefined,
+    agent: input.agent !== undefined ? decodeTextEntities(input.agent) : undefined,
+    keywords:
+      input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined,
+    synopsis:
+      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined,
+    session: input.session !== undefined ? decodeTextEntities(input.session) : undefined,
+  }
+}
+
 export class DecisionService {
   private readonly idCache = new LruCache<string, Decision>(
     DECISION_CACHE_MAX,
@@ -59,15 +117,12 @@ export class DecisionService {
     const decidedAt = input.decidedAt ?? todayISO()
     const status = input.status ?? "accepted"
     const confidence = input.confidence ?? "certain"
-    // Decode at the write boundary so doubly-encoded autosave input
-    // (`&amp;amp;`) lands clean.
-    const synopsis =
-      input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined
+    const decoded = decodeDecisionTextFields(input)
 
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildMemoryProps({
-        title: input.decision,
+        title: decoded.decision,
         projectIds: input.projectIds,
         topicId: input.topicId,
         source: "manual",
@@ -78,22 +133,22 @@ export class DecisionService {
         decidedAt,
         supersedesIds: input.supersedesIds,
         affectsIds: input.affectsIds,
-        alternatives: input.alternatives,
-        consequences: input.consequences,
-        author: input.author,
-        agent: input.agent,
+        alternatives: decoded.alternatives,
+        consequences: decoded.consequences,
+        author: decoded.author,
+        agent: decoded.agent,
         tags: input.tags,
-        keywords: input.keywords,
-        synopsis,
-        session: input.session,
+        keywords: decoded.keywords,
+        synopsis: decoded.synopsis,
+        session: decoded.session,
       }),
     })
 
-    if (input.rationale) {
+    if (decoded.rationale) {
       await this.client.pages.updateMarkdown({
         page_id: page.id,
         type: "insert_content",
-        insert_content: { content: input.rationale },
+        insert_content: { content: decoded.rationale },
       })
     }
 
@@ -101,7 +156,7 @@ export class DecisionService {
     // we set it explicitly above — the cast is safe by construction.
     const decision = pageToMemory(
       page as PageObjectResponse,
-      input.rationale ?? ""
+      decoded.rationale
     ) as Decision
     // A fresh id is unlikely to collide with a cached entry, but a
     // supersede-and-recreate flow in the same session could. Drop

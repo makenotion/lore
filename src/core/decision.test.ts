@@ -167,11 +167,55 @@ describe("DecisionService.create", () => {
     expect(props.Affects.relation).toEqual([{ id: "mem-a" }, { id: "mem-b" }])
   })
 
+  it("decodes every user-authored text field on create", async () => {
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.create({
+      decision: "Cache &amp;amp; reuse project resolutions",
+      rationale: "Prefer decoded bodies &amp;amp; stable markdown.",
+      alternatives: "Re-query &amp;amp; duplicate",
+      consequences: "Cleaner recall &amp;amp; search",
+      author: "R&amp;amp;D",
+      agent: "Planner &amp;amp; Reviewer",
+      keywords: "cache &amp;amp; project",
+      synopsis: "Foo &amp;amp; Bar",
+      session: "session &amp;amp; 214",
+    })
+
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    expect(props.Title.title[0].text.content).toBe("Cache & reuse project resolutions")
+    expect(props.Alternatives).toEqual({
+      rich_text: [{ text: { content: "Re-query & duplicate" } }],
+    })
+    expect(props.Consequences).toEqual({
+      rich_text: [{ text: { content: "Cleaner recall & search" } }],
+    })
+    expect(props.Author).toEqual({
+      rich_text: [{ text: { content: "R&D" } }],
+    })
+    expect(props.Agent).toEqual({
+      rich_text: [{ text: { content: "Planner & Reviewer" } }],
+    })
+    expect(props.Keywords).toEqual({
+      rich_text: [{ text: { content: "cache & project" } }],
+    })
+    expect(props.Synopsis).toEqual({
+      rich_text: [{ text: { content: "Foo & Bar" } }],
+    })
+    expect(props.Session).toEqual({
+      rich_text: [{ text: { content: "session & 214" } }],
+    })
+
+    const markdownArgs = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(markdownArgs.insert_content.content).toBe(
+      "Prefer decoded bodies & stable markdown."
+    )
+  })
+
   it("decodes doubly-encoded synopsis at the write boundary", async () => {
-    // Through-path proof of the inline `decodeTextEntities` seam at
-    // `decision.ts:create`. The rest of `DecisionService` doesn't decode
-    // any fields today, so this is the lone seam — a future contributor
-    // dropping the wrapper has nothing else to catch the regression.
+    // Pinned independently of the bulk-decode test so a refactor that
+    // accidentally removes synopsis from the helper still fails here.
     const client = createMockClient()
     const service = new DecisionService(client, DB)
 
