@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
@@ -1312,33 +1313,67 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       revisionCount?: number
       kind?: string
       title?: string
+      source?: string
+      confidence?: string
+      synopsis?: string
+      keywords?: string
+      author?: string
     },
   ): PageObjectResponse {
+    const properties: Record<string, unknown> = {
+      Title: {
+        type: "title",
+        title: [{ plain_text: opts.title ?? `Memory ${id}` }],
+      },
+      Project: {
+        type: "relation",
+        relation: opts.projectIds.map((pid) => ({ id: pid })),
+      },
+      "Topic Key": {
+        type: "rich_text",
+        rich_text: [{ plain_text: opts.topicKey }],
+      },
+      "Revision Count": {
+        type: "number",
+        number: opts.revisionCount ?? 1,
+      },
+      Kind: { type: "select", select: { name: opts.kind ?? "note" } },
+    }
+    if (opts.source !== undefined) {
+      properties.Source = { type: "select", select: { name: opts.source } }
+    }
+    if (opts.confidence !== undefined) {
+      properties.Confidence = {
+        type: "select",
+        select: { name: opts.confidence },
+      }
+    }
+    if (opts.synopsis !== undefined) {
+      properties.Synopsis = {
+        type: "rich_text",
+        rich_text: [{ plain_text: opts.synopsis }],
+      }
+    }
+    if (opts.keywords !== undefined) {
+      properties.Keywords = {
+        type: "rich_text",
+        rich_text: [{ plain_text: opts.keywords }],
+      }
+    }
+    if (opts.author !== undefined) {
+      properties.Author = {
+        type: "rich_text",
+        rich_text: [{ plain_text: opts.author }],
+      }
+    }
+
     return {
       object: "page",
       id,
       created_time: "2026-01-01T00:00:00.000Z",
       last_edited_time: "2026-02-01T00:00:00.000Z",
       archived: false,
-      properties: {
-        Title: {
-          type: "title",
-          title: [{ plain_text: opts.title ?? `Memory ${id}` }],
-        },
-        Project: {
-          type: "relation",
-          relation: opts.projectIds.map((pid) => ({ id: pid })),
-        },
-        "Topic Key": {
-          type: "rich_text",
-          rich_text: [{ plain_text: opts.topicKey }],
-        },
-        "Revision Count": {
-          type: "number",
-          number: opts.revisionCount ?? 1,
-        },
-        Kind: { type: "select", select: { name: opts.kind ?? "note" } },
-      },
+      properties,
       parent: { type: "database_id", database_id: db.databaseId },
       url: `https://notion.so/${id}`,
     } as unknown as PageObjectResponse
@@ -1397,6 +1432,32 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       retrieveMarkdownSpy,
       updateMarkdownSpy,
     }
+  }
+
+  function testTopicUpsertFingerprint(input: {
+    kind?: string
+    title: string
+    content: string
+    synopsis: string
+    keywords: string
+    source: string
+    confidence: string
+    author: string
+  }): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          kind: input.kind ?? "decision",
+          title: input.title,
+          content: input.content,
+          synopsis: input.synopsis,
+          keywords: input.keywords,
+          source: input.source,
+          confidence: input.confidence,
+          author: input.author,
+        }),
+      )
+      .digest("hex")
   }
 
   it("creates a fresh memory with Revision Count: 1 when no existing match is found", async () => {
@@ -1505,6 +1566,694 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(updateArgs.properties["Title"]).toEqual({
       title: [{ text: { content: "JWT auth model with refresh rotation" } }],
     })
+  })
+
+  it("does not append a duplicate revision when retry input matches revision 1", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model",
+      synopsis: "JWT decision.",
+      keywords: "jwt,auth",
+      source: "manual",
+      confidence: "certain",
+      author: "Hesham Salman",
+    })
+    const { client, retrieveMarkdownSpy, updateMarkdownSpy, updateSpy } =
+      makeUpsertClient({
+        findResults: [existing],
+        existingBody: "We chose JWT.",
+      })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "We chose JWT.",
+      kind: "decision",
+      synopsis: "JWT decision.",
+      keywords: "jwt,auth",
+      source: "manual",
+      confidence: "certain",
+      author: "Hesham Salman",
+    })
+
+    expect(result.upserted).toBe(true)
+    expect(result.revisionCount).toBe(1)
+    expect(result.memory.id).toBe("existing-mem")
+    expect(result.promotionAdvisory).toBeNull()
+    expect(retrieveMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("does not append when empty input.author is the only difference", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model",
+      author: "Engineer A",
+    })
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody: "We chose JWT.",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "We chose JWT.",
+      kind: "decision",
+      author: "",
+    })
+
+    expect(result.revisionCount).toBe(1)
+    expect(result.memory.author).toBe("Engineer A")
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("does not append a duplicate revision when retry input matches the latest appended revision", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "decision",
+      title: "JWT auth model with refresh rotation",
+      synopsis: "Refresh rotation adopted.",
+      keywords: "jwt,refresh",
+      source: "manual",
+      confidence: "likely",
+      author: "Hesham Salman",
+    })
+    const existingBody = [
+      "Initial body about JWT.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      `<!-- lore-topic-upsert-sha256: ${testTopicUpsertFingerprint({
+        title: "JWT auth model with refresh rotation",
+        content: "Now we rotate refresh tokens.",
+        synopsis: "Refresh rotation adopted.",
+        keywords: "jwt,refresh",
+        source: "manual",
+        confidence: "likely",
+        author: "Hesham Salman",
+      })} -->`,
+      "",
+      "**Title at this revision:** JWT auth model with refresh rotation",
+      "",
+      "Now we rotate refresh tokens.",
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision",
+      synopsis: "Refresh rotation adopted.",
+      keywords: "jwt,refresh",
+      source: "manual",
+      confidence: "likely",
+      author: "Hesham Salman",
+    })
+
+    expect(result.revisionCount).toBe(2)
+    expect(result.memory.title).toBe("JWT auth model with refresh rotation")
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("repairs stale properties without appending when retry follows a body-write-only partial failure", async () => {
+    // Failure shape: the previous attempt landed `updateMarkdown`
+    // (body now contains Revision 2), but timed out before
+    // `pages.update` bumped Revision Count and metadata. Retrying the
+    // same save must complete the property write, not append another
+    // Revision 2/3 block.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model",
+      synopsis: "Old synopsis.",
+      keywords: "old,keywords",
+      source: "manual",
+      confidence: "certain",
+      author: "Engineer A",
+    })
+    const existingBody = [
+      "Initial body about JWT.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      `<!-- lore-topic-upsert-sha256: ${testTopicUpsertFingerprint({
+        title: "JWT auth model with refresh rotation",
+        content: "Now we rotate refresh tokens.",
+        synopsis: "Refresh rotation adopted.",
+        keywords: "jwt,refresh",
+        source: "manual",
+        confidence: "likely",
+        author: "Engineer B",
+      })} -->`,
+      "",
+      "**Title at this revision:** JWT auth model with refresh rotation",
+      "",
+      "Now we rotate refresh tokens.",
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision",
+      synopsis: "Refresh rotation adopted.",
+      keywords: "jwt,refresh",
+      source: "manual",
+      confidence: "likely",
+      author: "Engineer B",
+    })
+
+    expect(result.revisionCount).toBe(2)
+    expect(result.memory.title).toBe("JWT auth model with refresh rotation")
+    expect(result.memory.synopsis).toBe("Refresh rotation adopted.")
+    expect(result.memory.keywords).toBe("jwt,refresh")
+    expect(result.memory.confidence).toBe("likely")
+    expect(result.memory.author).toBe("Engineer B")
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Revision Count"]).toEqual({ number: 2 })
+    expect(updateArgs.properties["Title"]).toEqual({
+      title: [{ text: { content: "JWT auth model with refresh rotation" } }],
+    })
+    expect(updateArgs.properties["Synopsis"]).toEqual({
+      rich_text: [{ text: { content: "Refresh rotation adopted." } }],
+    })
+    expect(updateArgs.properties["Keywords"]).toEqual({
+      rich_text: [{ text: { content: "jwt,refresh" } }],
+    })
+    expect(updateArgs.properties["Confidence"]).toEqual({
+      select: { name: "likely" },
+    })
+    expect(updateArgs.properties["Author"]).toEqual({
+      rich_text: [{ text: { content: "Engineer B" } }],
+    })
+  })
+
+  it("recovers after pages.update fails following a successful body append", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model",
+      synopsis: "Old synopsis.",
+      keywords: "old,keywords",
+      source: "manual",
+      confidence: "certain",
+      author: "Engineer A",
+    })
+    const clientOpts = {
+      findResults: [existing],
+      existingBody: "Initial body about JWT.",
+    }
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient(clientOpts)
+    updateSpy.mockRejectedValueOnce(new Error("property update timed out"))
+    const service = new MemoryService(client, db)
+    const input = {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision" as const,
+      synopsis: "Refresh rotation adopted.",
+      keywords: "jwt,refresh",
+      source: "manual" as const,
+      confidence: "likely" as const,
+      author: "Engineer B",
+      today: "2026-04-30",
+    }
+
+    await expect(service.upsertByTopicKey(input)).rejects.toThrow(
+      /property update timed out/,
+    )
+    const firstWriteArgs = updateMarkdownSpy.mock.calls[0]![0] as {
+      replace_content_range: { content: string }
+    }
+    clientOpts.existingBody = firstWriteArgs.replace_content_range.content
+
+    const result = await service.upsertByTopicKey(input)
+
+    expect(result.revisionCount).toBe(2)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).toHaveBeenCalledTimes(2)
+    const repairArgs = updateSpy.mock.calls[1]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(repairArgs.properties["Revision Count"]).toEqual({ number: 2 })
+    expect(repairArgs.properties["Title"]).toEqual({
+      title: [{ text: { content: "JWT auth model with refresh rotation" } }],
+    })
+    expect(repairArgs.properties["Synopsis"]).toEqual({
+      rich_text: [{ text: { content: "Refresh rotation adopted." } }],
+    })
+    expect(repairArgs.properties["Keywords"]).toEqual({
+      rich_text: [{ text: { content: "jwt,refresh" } }],
+    })
+  })
+
+  it("appends from the markdown revision count when body is ahead but input metadata is new", async () => {
+    // Body already contains Revision 2, but the row properties still
+    // say Revision Count: 1. Because the incoming metadata does not
+    // match Revision 2's fingerprint, this is a new save on top of the
+    // body-ahead state; it must append Revision 3, not another
+    // Revision 2.
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model",
+      synopsis: "Old synopsis.",
+      keywords: "old,keywords",
+      source: "manual",
+      confidence: "certain",
+      author: "Engineer A",
+    })
+    const existingBody = [
+      "Initial body about JWT.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      `<!-- lore-topic-upsert-sha256: ${testTopicUpsertFingerprint({
+        title: "JWT auth model with refresh rotation",
+        content: "Now we rotate refresh tokens.",
+        synopsis: "Refresh rotation adopted.",
+        keywords: "jwt,refresh",
+        source: "manual",
+        confidence: "likely",
+        author: "Engineer B",
+      })} -->`,
+      "",
+      "**Title at this revision:** JWT auth model with refresh rotation",
+      "",
+      "Now we rotate refresh tokens.",
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision",
+      synopsis: "Refresh rotation adopted with a caveat.",
+      keywords: "jwt,refresh,caveat",
+      source: "manual",
+      confidence: "likely",
+      author: "Engineer B",
+      today: "2026-05-01",
+    })
+
+    expect(result.revisionCount).toBe(3)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
+      replace_content_range: { content: string }
+    }
+    expect(mdArgs.replace_content_range.content).toContain(
+      "## Revision 3 (2026-05-01)",
+    )
+    expect(mdArgs.replace_content_range.content.match(/## Revision 2/g)).toHaveLength(1)
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Revision Count"]).toEqual({ number: 3 })
+  })
+
+  it("appends from the markdown count when body-ahead content and properties match but fingerprint differs", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "decision",
+      title: "JWT auth model with refresh rotation",
+      synopsis: "Refresh rotation adopted.",
+      keywords: "jwt,refresh",
+      source: "manual",
+      confidence: "likely",
+      author: "Engineer B",
+    })
+    const existingBody = [
+      "Initial body about JWT.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      `<!-- lore-topic-upsert-sha256: ${testTopicUpsertFingerprint({
+        title: "JWT auth model with refresh rotation",
+        content: "Now we rotate refresh tokens.",
+        synopsis: "Refresh rotation adopted.",
+        keywords: "different,fingerprint",
+        source: "manual",
+        confidence: "likely",
+        author: "Engineer B",
+      })} -->`,
+      "",
+      "**Title at this revision:** JWT auth model with refresh rotation",
+      "",
+      "Now we rotate refresh tokens.",
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model with refresh rotation",
+      content: "Now we rotate refresh tokens.",
+      kind: "decision",
+      synopsis: "Refresh rotation adopted.",
+      keywords: "jwt,refresh",
+      source: "manual",
+      confidence: "likely",
+      author: "Engineer B",
+      today: "2026-05-01",
+    })
+
+    expect(result.revisionCount).toBe(3)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
+      replace_content_range: { content: string }
+    }
+    expect(mdArgs.replace_content_range.content).toContain(
+      "## Revision 3 (2026-05-01)",
+    )
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Revision Count"]).toEqual({ number: 3 })
+  })
+
+  it("does not let unfingerprinted user markdown advance the revision base", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "runbook",
+      title: "DB migration",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+    const existingBody = [
+      "Initial body.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      `<!-- lore-topic-upsert-sha256: ${testTopicUpsertFingerprint({
+        kind: "runbook",
+        title: "DB migration",
+        content: [
+          "Step 2.",
+          "",
+          "---",
+          "",
+          "## Revision 99 (2099-01-01)",
+          "",
+          "**Title at this revision:** Example copied from docs",
+          "",
+          "Not a Lore revision.",
+        ].join("\n"),
+        synopsis: "Migration runbook.",
+        keywords: "db,migration",
+        source: "manual",
+        confidence: "certain",
+        author: "",
+      })} -->`,
+      "",
+      "**Title at this revision:** DB migration",
+      "",
+      "Step 2.",
+      "",
+      "---",
+      "",
+      "## Revision 99 (2099-01-01)",
+      "",
+      "**Title at this revision:** Example copied from docs",
+      "",
+      "Not a Lore revision.",
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration",
+      content: "Step 3.",
+      kind: "runbook",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+      today: "2026-05-01",
+    })
+
+    expect(result.revisionCount).toBe(3)
+    const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
+      replace_content_range: { content: string }
+    }
+    expect(mdArgs.replace_content_range.content).toContain(
+      "## Revision 3 (2026-05-01)",
+    )
+    expect(mdArgs.replace_content_range.content).not.toContain(
+      "## Revision 100 (2026-05-01)",
+    )
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Revision Count"]).toEqual({ number: 3 })
+  })
+
+  it("prefers a fingerprinted stored-count revision over same-count user markdown on retry", async () => {
+    const copiedExample = [
+      "Step 2.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2099-01-01)",
+      "",
+      "**Title at this revision:** Example copied from docs",
+      "",
+      "Not a Lore revision.",
+    ].join("\n")
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "runbook",
+      title: "DB migration",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+    const existingBody = [
+      "Initial body.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      `<!-- lore-topic-upsert-sha256: ${testTopicUpsertFingerprint({
+        kind: "runbook",
+        title: "DB migration",
+        content: copiedExample,
+        synopsis: "Migration runbook.",
+        keywords: "db,migration",
+        source: "manual",
+        confidence: "certain",
+        author: "",
+      })} -->`,
+      "",
+      "**Title at this revision:** DB migration",
+      "",
+      copiedExample,
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration",
+      content: copiedExample,
+      kind: "runbook",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+
+    expect(result.revisionCount).toBe(2)
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("legacy unfingerprinted stored-count retry uses the canonical revision before later user-pasted lookalikes", async () => {
+    const copiedExample = [
+      "Step 2.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2099-01-01)",
+      "",
+      "**Title at this revision:** Example copied from docs",
+      "",
+      "Not a Lore revision.",
+    ].join("\n")
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 2,
+      kind: "runbook",
+      title: "DB migration",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+    const existingBody = [
+      "Initial body.",
+      "",
+      "---",
+      "",
+      "## Revision 2 (2026-04-30)",
+      "",
+      "**Title at this revision:** DB migration",
+      "",
+      copiedExample,
+    ].join("\n")
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody,
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration",
+      content: copiedExample,
+      kind: "runbook",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+
+    expect(result.revisionCount).toBe(2)
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("appends a revision when content changes but title and metadata match", async () => {
+    const existing = buildExistingMemoryPage("existing-mem", {
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      revisionCount: 1,
+      kind: "runbook",
+      title: "DB migration",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+    const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+      findResults: [existing],
+      existingBody: "Step 1 only.",
+    })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "runbook/db-migration",
+      projectIds: ["P1"],
+      title: "DB migration",
+      content: "Step 1 and step 2.",
+      kind: "runbook",
+      synopsis: "Migration runbook.",
+      keywords: "db,migration",
+    })
+
+    expect(result.revisionCount).toBe(2)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("appends a revision when synopsis or keywords change even if title and content match", async () => {
+    for (const changed of ["synopsis", "keywords"] as const) {
+      const existing = buildExistingMemoryPage(`existing-${changed}`, {
+        topicKey: `runbook/db-migration-${changed}`,
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "runbook",
+        title: "DB migration",
+        synopsis: "Old synopsis.",
+        keywords: "old,keywords",
+      })
+      const { client, updateMarkdownSpy, updateSpy } = makeUpsertClient({
+        findResults: [existing],
+        existingBody: "Step 1 only.",
+      })
+      const service = new MemoryService(client, db)
+
+      const result = await service.upsertByTopicKey({
+        topicKey: `runbook/db-migration-${changed}`,
+        projectIds: ["P1"],
+        title: "DB migration",
+        content: "Step 1 only.",
+        kind: "runbook",
+        synopsis: changed === "synopsis" ? "New synopsis." : "Old synopsis.",
+        keywords: changed === "keywords" ? "new,keywords" : "old,keywords",
+      })
+
+      expect(result.revisionCount).toBe(2)
+      expect(updateMarkdownSpy, changed).toHaveBeenCalledTimes(1)
+      expect(updateSpy, changed).toHaveBeenCalledTimes(1)
+    }
   })
 
   // -------------------------------------------------------------------
@@ -1624,6 +2373,37 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       content: "...",
       kind: "decision",
       // No `author` field — service-layer caller signals "preserve."
+    })
+
+    const updateArgs = updateSpy.mock.calls[0]![0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArgs.properties["Author"]).toEqual({
+      rich_text: [{ text: { content: "Engineer A" } }],
+    })
+    expect(result.memory.author).toBe("Engineer A")
+  })
+
+  it("append-revision: empty input.author preserves the existing Author in writes and return shape", async () => {
+    // `buildMemoryProps` omits empty author values, so the service must
+    // normalize empty input to the existing author before both the
+    // property write and the returned Memory shape. Otherwise a retry
+    // with author="" would report a value Notion never stored.
+    const existing = buildExistingMemoryPageWithAuthor("existing-mem", {
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      author: "Engineer A",
+    })
+    const { client, updateSpy } = makeUpsertClient({ findResults: [existing] })
+    const service = new MemoryService(client, db)
+
+    const result = await service.upsertByTopicKey({
+      topicKey: "decision/jwt-auth",
+      projectIds: ["P1"],
+      title: "JWT auth model",
+      content: "...",
+      kind: "decision",
+      author: "",
     })
 
     const updateArgs = updateSpy.mock.calls[0]![0] as {

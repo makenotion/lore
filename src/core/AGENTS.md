@@ -205,13 +205,33 @@ topic-key upsert. `findByTopicKey` returns null on empty projects, but
 `insert_content` for fresh writes on a page with no body and
 `replace_content_range` with `content_range: "full_page"` for edits
 to an existing body (per `src/notion/CLAUDE.md`). The upsert path
-therefore always reads existing markdown via `retrieveMarkdown` and
-writes back the concatenation via `replace_content_range` with
-`allow_deleting_content: true`. Two API calls per upsert.
+therefore reads existing markdown via `retrieveMarkdown` before any
+append decision. When a new revision is needed, it writes back the
+concatenation via `replace_content_range` with
+`allow_deleting_content: true`.
 
-**Idempotency NOT guaranteed**. Calling upsert twice with identical
-inputs produces revisions 2 and 3, not the same revision twice — upsert
-is *append*, not idempotent.
+**Retry idempotency**. Calling upsert twice with identical effective
+inputs does NOT append a second revision. The service compares the
+caller input against the current row properties plus the latest stored
+body/revision block; when title/content and replace-on-save metadata
+(synopsis, keywords, source, confidence, author) already match, it
+returns the existing revision without `pages.updateMarkdown` or
+`pages.update` only when the body is not ahead of row properties. If a
+previous attempt landed the markdown body append but failed before the
+property update, the body can be ahead of the `Revision Count` column.
+New revision blocks include a SHA-256 fingerprint of the effective
+kind + title/content + replace-on-save metadata; a retry repairs the
+row properties only when that fingerprint matches the incoming
+effective input. Only fingerprinted revision blocks may advance the
+append base beyond the stored `Revision Count`; legacy unfingerprinted
+blocks are parsed at the stored count for no-op compatibility but
+cannot make the count jump. Otherwise body-ahead saves append from the
+markdown revision count, not the stale property count. A body, title,
+synopsis, keywords, source, confidence, or author change on a complete
+chain still appends a revision and preserves the existing
+promotion-advisory behavior. Upsert does not throw a structured
+partial-state error like update/re-key paths do because retry repairs
+the landed markdown state idempotently.
 
 **Returned memory shape carries post-write title / synopsis / keywords**.
 The MCP layer's auto-mentions emitter reads `memory.title`,

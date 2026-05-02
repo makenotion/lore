@@ -10,6 +10,7 @@
  * embedded, and indexed. We search via the Notion search API.
  */
 
+import { createHash } from "node:crypto"
 import type { Client } from "@notionhq/client"
 import type {
   PageObjectResponse,
@@ -695,6 +696,198 @@ export interface PromotionAdvisory {
   suggestion: string
 }
 
+interface LatestTopicRevision {
+  revisionCount: number
+  title: string | null
+  content: string
+  fingerprint: string | null
+}
+
+interface TopicUpsertSnapshot {
+  kind: MemoryKind
+  title: string
+  content: string
+  synopsis: string
+  keywords: string
+  source: MemorySource
+  confidence: MemoryConfidence
+  author: string
+}
+
+interface TopicUpsertAnalysis {
+  latestRevision: LatestTopicRevision | null
+  bodyMatches: boolean
+  propertiesMatch: boolean
+  fingerprintMatches: boolean
+  bodyAheadOfProperties: boolean
+}
+
+const TOPIC_UPSERT_FINGERPRINT_PREFIX = "<!-- lore-topic-upsert-sha256: "
+
+function topicUpsertFingerprint(input: TopicUpsertSnapshot): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        kind: input.kind,
+        title: input.title,
+        content: input.content,
+        synopsis: input.synopsis,
+        keywords: input.keywords,
+        source: input.source,
+        confidence: input.confidence,
+        author: input.author,
+      }),
+    )
+    .digest("hex")
+}
+
+function parseAppendedTopicRevision(
+  markdown: string,
+  blockStart: number,
+  revisionCount: number,
+): LatestTopicRevision | null {
+  const headerStart = blockStart + "\n---\n\n".length
+  const headerEnd = markdown.indexOf("\n", headerStart)
+  if (headerEnd < 0) {
+    return null
+  }
+
+  const titlePrefix = "**Title at this revision:** "
+  const afterHeader = markdown.slice(headerEnd + 1)
+  const lines = afterHeader.split("\n")
+  let lineIndex = 0
+  while (lines[lineIndex] === "") {
+    lineIndex += 1
+  }
+
+  let fingerprint: string | null = null
+  const fingerprintLine = lines[lineIndex]
+  if (fingerprintLine?.startsWith(TOPIC_UPSERT_FINGERPRINT_PREFIX)) {
+    fingerprint = fingerprintLine
+      .slice(TOPIC_UPSERT_FINGERPRINT_PREFIX.length)
+      .replace(/ -->$/, "")
+    lineIndex += 1
+    if (lines[lineIndex] === "") {
+      lineIndex += 1
+    }
+  }
+
+  const titleLine = lines[lineIndex]
+  if (!titleLine?.startsWith(titlePrefix)) {
+    return null
+  }
+
+  lineIndex += 1
+  if (lines[lineIndex] === "") {
+    lineIndex += 1
+  }
+
+  return {
+    revisionCount,
+    title: titleLine.slice(titlePrefix.length),
+    content: lines.slice(lineIndex).join("\n"),
+    fingerprint,
+  }
+}
+
+function extractLatestAppendedTopicRevision(
+  markdown: string,
+  options: { requireFingerprint?: boolean } = {},
+): LatestTopicRevision | null {
+  const revisionStart = /\n---\n\n## Revision (\d+) \([^)]+\)/g
+  const matches: RegExpExecArray[] = []
+  let match: RegExpExecArray | null
+
+  while ((match = revisionStart.exec(markdown)) !== null) {
+    matches.push(match)
+  }
+
+  for (const candidate of matches.reverse()) {
+    if (candidate.index === undefined) continue
+
+    const revisionCount = Number.parseInt(candidate[1] ?? "", 10)
+    if (!Number.isFinite(revisionCount)) continue
+
+    const parsed = parseAppendedTopicRevision(markdown, candidate.index, revisionCount)
+    if (options.requireFingerprint && !parsed?.fingerprint) continue
+    if (parsed) return parsed
+  }
+
+  return null
+}
+
+function extractAppendedTopicRevisionByCount(
+  markdown: string,
+  revisionCount: number,
+): LatestTopicRevision | null {
+  const revisionPrefix = `\n---\n\n## Revision ${revisionCount} (`
+  const blockStart = markdown.indexOf(revisionPrefix)
+  if (blockStart < 0) {
+    return null
+  }
+
+  return parseAppendedTopicRevision(markdown, blockStart, revisionCount)
+}
+
+function extractLatestTopicRevision(
+  markdown: string,
+  storedRevisionCount: number,
+): LatestTopicRevision | null {
+  const fingerprintedRevision = extractLatestAppendedTopicRevision(markdown, {
+    requireFingerprint: true,
+  })
+  if (
+    fingerprintedRevision &&
+    fingerprintedRevision.revisionCount >= storedRevisionCount
+  ) {
+    return fingerprintedRevision
+  }
+
+  if (storedRevisionCount <= 1) {
+    return { revisionCount: 1, title: null, content: markdown, fingerprint: null }
+  }
+
+  return extractAppendedTopicRevisionByCount(markdown, storedRevisionCount)
+}
+
+function analyzeLatestTopicUpsert(
+  input: TopicUpsertSnapshot,
+  existing: Memory,
+  markdown: string,
+): TopicUpsertAnalysis {
+  const latestRevision = extractLatestTopicRevision(markdown, existing.revisionCount)
+  if (!latestRevision) {
+    return {
+      latestRevision: null,
+      bodyMatches: false,
+      propertiesMatch: false,
+      fingerprintMatches: false,
+      bodyAheadOfProperties: false,
+    }
+  }
+
+  const bodyTitleMatches =
+    latestRevision.title === null
+      ? existing.title === input.title
+      : latestRevision.title === input.title
+  const bodyMatches = bodyTitleMatches && latestRevision.content === input.content
+  const propertiesMatch =
+    existing.title === input.title &&
+    existing.synopsis === input.synopsis &&
+    existing.keywords === input.keywords &&
+    existing.source === input.source &&
+    existing.confidence === input.confidence &&
+    existing.author === input.author
+
+  return {
+    latestRevision,
+    bodyMatches,
+    propertiesMatch,
+    fingerprintMatches: latestRevision.fingerprint === topicUpsertFingerprint(input),
+    bodyAheadOfProperties: latestRevision.revisionCount > existing.revisionCount,
+  }
+}
+
 /**
  * Pure helper that returns a `PromotionAdvisory` when at least one
  * threshold is met, or `null` when neither is. The boundary semantics
@@ -1168,9 +1361,23 @@ export class MemoryService {
    * upsert path always reads existing markdown and writes back the
    * concatenation. Two API calls per upsert.
    *
-   * **Idempotency NOT guaranteed.** Calling upsert twice with
-   * identical inputs produces revisions 2 and 3, not the same revision
-   * twice — upsert is *append*, not idempotent.
+   * **Retry idempotency.** Calling upsert twice with identical
+   * effective inputs does NOT append a second revision. The append
+   * branch reads the latest stored body and skips the write when the
+   * caller's title/content plus replace-on-save metadata already match
+   * the row's current state. If a previous attempt landed the body
+   * append but failed before the property update, the retry repairs the
+   * row properties only when the revision's stored fingerprint matches
+   * the effective retry input. Otherwise body-ahead saves append from
+   * the markdown revision count, not the stale property count. Only
+   * fingerprinted revisions can advance that base beyond the stored
+   * `Revision Count`; legacy unfingerprinted revisions remain readable
+   * at the stored count for no-op compatibility. A body, title,
+   * synopsis, keywords, source, confidence, or author change on a
+   * complete chain still appends a new revision. Full-match retries
+   * return no advisory because the original successful write already
+   * surfaced it; repair retries recompute the advisory because the
+   * original response never reached the caller.
    */
   async upsertByTopicKey(input: {
     topicKey: string
@@ -1278,33 +1485,128 @@ export class MemoryService {
       input.synopsis !== undefined ? decodeTextEntities(input.synopsis) : undefined
     const decodedKeywords =
       input.keywords !== undefined ? decodeTextEntities(input.keywords) : undefined
+    const decodedAuthor =
+      input.author !== undefined ? decodeTextEntities(input.author) : undefined
+    const authorForUpdate = decodedAuthor || existing.author
 
-    // Title-cache sandwich (mirrors `update()`). The upsert always
-    // bumps Title, so the same write-epoch + delete pattern that
-    // protects `update()` from concurrent `getTitleById` callers
-    // applies here. Without this, render-layer resolvers would keep
-    // returning the pre-upsert title from `titleCache` until the 60s
-    // TTL expired even though the new title has landed in Notion.
-    // The pre-write bump invalidates any in-flight reader's commit-
-    // time epoch check; the delete clears the stored value; the
-    // post-write `set` installs the authoritative new title; the
-    // post-write bump closes the dispatched-during-write window.
-    this.bumpWriteEpoch()
-    this.titleCache.delete(existing.id)
-
-    // Read + append + write. Notion's v5 markdown API has no append
-    // mode (per `src/notion/CLAUDE.md`); replace_content_range with
-    // allow_deleting_content is the canonical edit-existing-body path.
+    // Read before deciding whether to append. Notion's v5 markdown API
+    // has no append mode (per `src/notion/CLAUDE.md`), and the body is
+    // the only place the latest revision content lives.
     const existingBody = await this.client.pages.retrieveMarkdown({
       page_id: existing.id,
     })
-    const nextRevision = existing.revisionCount + 1
+
+    const upsertSnapshot = {
+      kind: input.kind,
+      title: decodedTitle,
+      content: decodedContent,
+      synopsis: decodedSynopsis ?? existing.synopsis,
+      keywords: decodedKeywords ?? existing.keywords,
+      source: input.source ?? existing.source,
+      confidence: input.confidence ?? existing.confidence,
+      author: authorForUpdate,
+    }
+    const upsertAnalysis = analyzeLatestTopicUpsert(
+      upsertSnapshot,
+      existing,
+      existingBody.markdown,
+    )
+
+    if (
+      upsertAnalysis.bodyMatches &&
+      upsertAnalysis.bodyAheadOfProperties &&
+      upsertAnalysis.fingerprintMatches
+    ) {
+      const repairedRevisionCount = upsertAnalysis.latestRevision!.revisionCount
+      const titleChanged = decodedTitle !== existing.title
+      if (titleChanged) {
+        this.bumpWriteEpoch()
+        this.titleCache.delete(existing.id)
+      }
+      await this.client.pages.update({
+        page_id: existing.id,
+        properties: buildMemoryProps({
+          title: decodedTitle,
+          revisionCount: repairedRevisionCount,
+          synopsis: decodedSynopsis,
+          keywords: decodedKeywords,
+          source: input.source,
+          confidence: input.confidence ?? existing.confidence,
+          author: authorForUpdate,
+        }) as CreatePageParameters["properties"],
+      })
+      if (titleChanged) {
+        this.titleCache.set(existing.id, decodedTitle || null)
+        this.bumpWriteEpoch()
+      }
+
+      const promotionAdvisory = computePromotionAdvisory({
+        revisionCount: repairedRevisionCount,
+        bodyLength: existingBody.markdown.length,
+        kind: input.kind,
+      })
+
+      return {
+        memory: {
+          ...existing,
+          title: decodedTitle,
+          revisionCount: repairedRevisionCount,
+          synopsis: decodedSynopsis ?? existing.synopsis,
+          keywords: decodedKeywords ?? existing.keywords,
+          source: input.source ?? existing.source,
+          confidence: input.confidence ?? existing.confidence,
+          author: authorForUpdate,
+        },
+        revisionCount: repairedRevisionCount,
+        upserted: true,
+        promotionAdvisory,
+      }
+    }
+
+    if (
+      upsertAnalysis.bodyMatches &&
+      upsertAnalysis.propertiesMatch &&
+      !upsertAnalysis.bodyAheadOfProperties
+    ) {
+      return {
+        memory: existing,
+        revisionCount: existing.revisionCount,
+        upserted: true,
+        promotionAdvisory: null,
+      }
+    }
+
+    // Title-cache sandwich (mirrors `update()`). Upserts that reach
+    // the write branch always bump Title, so the same write-epoch +
+    // delete pattern that protects `update()` from concurrent
+    // `getTitleById` callers applies here. Without this, render-layer
+    // resolvers would keep returning the pre-upsert title from
+    // `titleCache` until the 60s TTL expired even though the new title
+    // has landed in Notion. The pre-write bump invalidates any
+    // in-flight reader's commit-time epoch check; the delete clears
+    // the stored value; the post-write `set` installs the authoritative
+    // new title; the post-write bump closes the dispatched-during-write
+    // window.
+    this.bumpWriteEpoch()
+    this.titleCache.delete(existing.id)
+
+    // Append + write. Notion's v5 markdown API has no append mode;
+    // replace_content_range with allow_deleting_content is the
+    // canonical edit-existing-body path.
+    const baseRevisionCount =
+      upsertAnalysis.latestRevision &&
+      upsertAnalysis.latestRevision.revisionCount > existing.revisionCount
+        ? upsertAnalysis.latestRevision.revisionCount
+        : existing.revisionCount
+    const nextRevision = baseRevisionCount + 1
     const today = input.today ?? todayUtc()
     const revisionBlock = [
       "",
       "---",
       "",
       `## Revision ${nextRevision} (${today})`,
+      "",
+      `${TOPIC_UPSERT_FINGERPRINT_PREFIX}${topicUpsertFingerprint(upsertSnapshot)} -->`,
       "",
       `**Title at this revision:** ${decodedTitle}`,
       "",
@@ -1334,12 +1636,11 @@ export class MemoryService {
     // `services.identity.author` as the default when no explicit
     // override is given, so an in-process MCP save under ntn-resolved
     // identity always backfills the column. Falls back to existing on
-    // input.author === undefined so a service-layer caller (migration,
-    // internal tooling) that omits it preserves the prior value rather
-    // than clobbering with null. Empty string from the input is treated
-    // as "leave alone" via the `buildMemoryProps` truthy gate, matching
-    // the `agent` field's posture.
-    const authorForUpdate = input.author ?? existing.author
+    // decodedAuthor is empty/undefined so a service-layer caller
+    // (migration, internal tooling) that omits it preserves the prior
+    // value rather than clobbering with null. Empty string from the
+    // input is treated as "leave alone", matching the `agent` field's
+    // posture.
     await this.client.pages.update({
       page_id: existing.id,
       properties: buildMemoryProps({
