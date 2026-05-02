@@ -46,6 +46,7 @@ import {
   extractTitle,
   extractRichText,
   extractSelect,
+  extractRelationIds,
 } from "../notion/extractors.js"
 import { LruCache } from "./cache.js"
 
@@ -102,7 +103,20 @@ export interface ResolveOptions {
   autoCreate?: boolean
   /** Optional kind hint for newly-created entities. */
   kind?: EntityKind
-  /** Optional project scope to attach to a freshly-created Entity. */
+  /**
+   * Project scope to attach to the resolved Entity row. Two paths:
+   *
+   * - **No match → auto-create:** the new row is minted with these
+   *   projects on the `Project` relation.
+   * - **Match (byName, or single byAlias) → union:** the existing row's
+   *   `Project` relation is unioned with these ids, so a canonical
+   *   entity touched repeatedly from different project-scoped fact
+   *   creates accumulates union scope rather than staying frozen at
+   *   whichever project first auto-created it. No-op when every id
+   *   is already present.
+   *
+   * Ambiguous matches are not touched — there is no single target.
+   */
   projectIds?: string[]
 }
 
@@ -274,6 +288,7 @@ export class EntityService {
         aliases: input.aliases ?? [],
         kind: input.kind,
         description: input.description,
+        projectIds: input.projectIds,
       }),
     })
 
@@ -436,15 +451,37 @@ export class EntityService {
   /**
    * Resolve a free-form input string to a canonical Entity row.
    *
-   * - Exact-name match → return.
-   * - Alias hit on exactly one entity → return.
+   * - Exact-name match → return; if `options.projectIds` carries new
+   *   ids, union them into the existing row's `Project` relation
+   *   first.
+   * - Alias hit on exactly one entity → return; same union-on-touch
+   *   semantics.
    * - Multiple alias hits → return ambiguous; caller decides whether
-   *   to surface candidates or pick deterministically.
-   * - No match → auto-create unless `autoCreate: false`.
+   *   to surface candidates or pick deterministically. NO project
+   *   union — there is no single target.
+   * - No match → auto-create unless `autoCreate: false`. New row
+   *   carries `options.projectIds` on its `Project` relation.
    *
    * `Name` always matches with priority over `Aliases` so an entity
    * deliberately renamed (its old name moved into `Aliases`) still
    * resolves to itself when the agent uses the new name.
+   *
+   * The union-on-match semantics close the multi-project case: an
+   * entity first auto-created from project A and later touched from a
+   * fact scoped to project B accumulates `[A, B]` rather than staying
+   * frozen at `[A]`.
+   *
+   * **Concurrent-create race is benign.** Two parallel `lore-fact
+   * action='create'` calls on the same fresh subject can both pass
+   * `findByName` / `findByAlias`'s probe miss, both auto-create, and
+   * produce two Entity rows under different ids — Notion has no
+   * unique-index primitive and the resolver does not lock. Same
+   * posture as the documented concurrent-upsert risk on
+   * `MemoryService.upsertByTopicKey`. The failure mode is duplicate
+   * rows (not data loss); the authoritative collapse is `lore migrate
+   * --build-entities`, which groups every fact's subject/object
+   * strings by normalized key and re-points each fact's
+   * `SubjectEntity` / `ObjectEntity` relation to the canonical row.
    */
   async resolveOrCreateEntity(
     input: string,
@@ -462,15 +499,21 @@ export class EntityService {
 
     const byName = await this.findByName(trimmed)
     if (byName) {
-      return { entity: byName, ambiguous: false, candidates: [byName], created: false }
+      const merged = options.projectIds?.length
+        ? await this.addProjectIds(byName, options.projectIds)
+        : byName
+      return { entity: merged, ambiguous: false, candidates: [merged], created: false }
     }
 
     const byAlias = await this.findByAlias(trimmed)
     if (byAlias.length === 1) {
+      const merged = options.projectIds?.length
+        ? await this.addProjectIds(byAlias[0], options.projectIds)
+        : byAlias[0]
       return {
-        entity: byAlias[0],
+        entity: merged,
         ambiguous: false,
-        candidates: byAlias,
+        candidates: [merged],
         created: false,
       }
     }
@@ -511,6 +554,7 @@ export class EntityService {
       name: trimmed,
       aliases: [],
       kind: options.kind,
+      projectIds: options.projectIds,
     })
     return {
       entity,
@@ -545,6 +589,69 @@ export class EntityService {
     })
 
     const updated: Entity = { ...existing, aliases: merged }
+    this.invalidateAllKeys(existing)
+    this.cacheEntity(updated)
+    return updated
+  }
+
+  /**
+   * Union new project ids into an existing entity's `Project` relation.
+   * Mirror of `addAliases`: dedup against the existing list, no-op when
+   * every requested id is already present, otherwise issue one
+   * `pages.update` writing the merged relation. Used by
+   * `resolveOrCreateEntity`'s match branches to grow scope on touch
+   * (the multi-project canonical-handle case).
+   *
+   * Pass an in-memory `existing` snapshot (typically the entity that
+   * just came out of `findByName` / `findByAlias`) to skip the
+   * `pages.retrieve` round-trip — the resolver already has it. Cache
+   * mutates fall through `cacheEntity` so the next lookup sees the
+   * unioned ids without paying a Notion read.
+   *
+   * **No body audit trail.** Unlike `MemoryService.upsertByTopicKey`'s
+   * `## Revision N (date)` blocks or `MemoryService.rekeyTopicKey`'s
+   * `## Re-keyed (date)` blocks, this helper writes the relation
+   * silently and leaves no trace of "this entity was scoped to project
+   * B on YYYY-MM-DD because a fact in B referenced it." The Entities
+   * DB is a registry, not a document — body fields are reserved for
+   * agent-curated descriptions, and stamping a relation-write entry on
+   * every fact-create touch would generate audit noise dwarfing the
+   * actual content. Deliberate non-decision; if a future operator
+   * surface needs this, the right shape is a separate "scope history"
+   * column on the Entities DB, not a body block.
+   *
+   * **`existing.projectIds` is optional on the exported `Entity` type**
+   * (preserved across this PR for source-compat with external
+   * consumers — see `Entity` JSDoc). Service-internal entities flowing
+   * out of `pageToEntity` always carry a populated array, but the
+   * `?? []` normalization here means a partially-constructed external
+   * Entity (test fixture, adapter mock) doesn't crash the helper.
+   */
+  async addProjectIds(existing: Entity, projectIds: string[]): Promise<Entity> {
+    // Walk via a single Set seeded with the existing list so we drop both
+    // ids already on the entity AND duplicates within `projectIds` itself.
+    // `filter` alone would keep intra-input duplicates and produce a
+    // merged list with repeats — silently breaking the union contract.
+    const existingIds = existing.projectIds ?? []
+    const seen = new Set(existingIds)
+    const fresh: string[] = []
+    for (const id of projectIds) {
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      fresh.push(id)
+    }
+    if (fresh.length === 0) return existing
+
+    const merged = [...existingIds, ...fresh]
+    await this.client.pages.update({
+      page_id: existing.id,
+      properties: buildEntityProps({
+        name: existing.name,
+        projectIds: merged,
+      }),
+    })
+
+    const updated: Entity = { ...existing, projectIds: merged }
     this.invalidateAllKeys(existing)
     this.cacheEntity(updated)
     return updated
@@ -598,6 +705,7 @@ export class EntityService {
       aliases: parseAliases(extractRichText(props["Aliases"])),
       kind,
       description: extractRichText(props["Description"]),
+      projectIds: extractRelationIds(props["Project"]),
     }
   }
 }

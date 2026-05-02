@@ -33,6 +33,7 @@ function makeEntity(overrides: Partial<Entity>): Entity {
     aliases: overrides.aliases ?? [],
     kind: overrides.kind ?? null,
     description: overrides.description ?? "",
+    projectIds: overrides.projectIds ?? [],
   }
 }
 

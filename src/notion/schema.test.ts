@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
+  buildEntityProps,
+  buildFactProps,
   buildMemoryProps,
   COMPARE_NOTES_MAX_CHARS,
   factsProperties,
@@ -515,6 +517,69 @@ describe("buildMemoryProps — comparedWith + compareNotes emission (0.9.0/02)",
     expect(() => buildMemoryProps({ title: "x", compareNotes: overCap })).toThrow(
       /Compare Notes overflow/,
     )
+  })
+})
+
+describe("projectIds shared `?.length` gate across builders", () => {
+  // `buildMemoryProps`, `buildFactProps`, and `buildEntityProps` all gate
+  // the Project relation write on `input.projectIds?.length`. Pin the
+  // empty-vs-undefined contract at the source-of-truth layer here, not
+  // just at one consumer's call-site test, so a future refactor that
+  // changes the gate (e.g. to `!== undefined`) trips a single shared
+  // assertion instead of leaving two of three builders silently emitting
+  // empty `relation: []` payloads.
+
+  it("buildMemoryProps: undefined projectIds omits Project property", () => {
+    const built = buildMemoryProps({ title: "x" }) as Record<string, unknown>
+    expect(built).not.toHaveProperty("Project")
+  })
+
+  it("buildMemoryProps: empty array omits Project property (same as undefined)", () => {
+    const built = buildMemoryProps({ title: "x", projectIds: [] }) as Record<
+      string,
+      unknown
+    >
+    expect(built).not.toHaveProperty("Project")
+  })
+
+  it("buildFactProps: undefined projectIds omits Project property", () => {
+    const built = buildFactProps({
+      subject: "s",
+      predicate: "uses",
+      object: "o",
+    }) as Record<string, unknown>
+    expect(built).not.toHaveProperty("Project")
+  })
+
+  it("buildFactProps: empty array omits Project property", () => {
+    const built = buildFactProps({
+      subject: "s",
+      predicate: "uses",
+      object: "o",
+      projectIds: [],
+    }) as Record<string, unknown>
+    expect(built).not.toHaveProperty("Project")
+  })
+
+  it("buildEntityProps: undefined projectIds omits Project property", () => {
+    const built = buildEntityProps({ name: "Foo" }) as Record<string, unknown>
+    expect(built).not.toHaveProperty("Project")
+  })
+
+  it("buildEntityProps: empty array omits Project property", () => {
+    const built = buildEntityProps({ name: "Foo", projectIds: [] }) as Record<
+      string,
+      unknown
+    >
+    expect(built).not.toHaveProperty("Project")
+  })
+
+  it("buildEntityProps: populated array writes the Project relation verbatim", () => {
+    const built = buildEntityProps({
+      name: "Foo",
+      projectIds: ["a", "b"],
+    }) as Record<string, unknown>
+    expect(built.Project).toEqual({ relation: [{ id: "a" }, { id: "b" }] })
   })
 })
 

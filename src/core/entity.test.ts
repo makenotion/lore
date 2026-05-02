@@ -19,6 +19,7 @@ interface EntityPageOverrides {
   name?: string
   aliases?: string
   kind?: string
+  projectIds?: string[]
 }
 
 function entityPage(overrides: EntityPageOverrides = {}): PageObjectResponse {
@@ -50,6 +51,10 @@ function entityPage(overrides: EntityPageOverrides = {}): PageObjectResponse {
       Description: {
         type: "rich_text",
         rich_text: [],
+      } as unknown,
+      Project: {
+        type: "relation",
+        relation: (overrides.projectIds ?? []).map((id) => ({ id })),
       } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
@@ -223,6 +228,358 @@ describe("EntityService.resolveOrCreateEntity", () => {
     expect(resolution.ambiguous).toBe(false)
     expect(resolution.created).toBe(false)
     expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("auto-create forwards options.projectIds onto the new Entity row", async () => {
+    const client = createMockClient()
+    // findByName: equals miss, contains miss.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    // findByAlias: nothing.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      entityPage({ id: "ent-scoped", name: "ScopedService" }),
+    )
+
+    const service = new EntityService(client, DB)
+    const resolution = await service.resolveOrCreateEntity("ScopedService", {
+      projectIds: ["proj-a", "proj-b"],
+    })
+    expect(resolution.created).toBe(true)
+    expect(client.pages.create).toHaveBeenCalledTimes(1)
+    const callArg = client.pages.create.mock.calls[0][0] as {
+      properties: Record<string, unknown>
+    }
+    expect(callArg.properties.Project).toEqual({
+      relation: [{ id: "proj-a" }, { id: "proj-b" }],
+    })
+  })
+
+  it("auto-create with an empty projectIds array still leaves Project unset", async () => {
+    // Pins `buildEntityProps`'s `input.projectIds?.length` gate at the
+    // call-site test layer: an empty array must behave the same as
+    // `undefined`. Otherwise a caller passing `projectIds: []` for "no
+    // project scope" would silently emit a relation property with an
+    // empty `relation: []` payload.
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      entityPage({ id: "ent-empty", name: "EmptyScopeService" }),
+    )
+
+    const service = new EntityService(client, DB)
+    await service.resolveOrCreateEntity("EmptyScopeService", { projectIds: [] })
+    const callArg = client.pages.create.mock.calls[0][0] as {
+      properties: Record<string, unknown>
+    }
+    expect(callArg.properties).not.toHaveProperty("Project")
+  })
+
+  it("auto-create without projectIds leaves Project unset on the new row", async () => {
+    const client = createMockClient()
+    // findByName: equals miss, contains miss.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    // findByAlias: nothing.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.create.mockResolvedValueOnce(
+      entityPage({ id: "ent-unscoped", name: "UnscopedService" }),
+    )
+
+    const service = new EntityService(client, DB)
+    await service.resolveOrCreateEntity("UnscopedService")
+    const callArg = client.pages.create.mock.calls[0][0] as {
+      properties: Record<string, unknown>
+    }
+    expect(callArg.properties).not.toHaveProperty("Project")
+  })
+
+  it("byName match unions options.projectIds into the existing entity's Project relation", async () => {
+    const client = createMockClient()
+    // findByName: case-insensitive equals miss, contains hit returns
+    // existing entity scoped to project A.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-existing",
+          name: "AuthService",
+          projectIds: ["proj-a"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    const resolution = await service.resolveOrCreateEntity("AuthService", {
+      projectIds: ["proj-b"],
+    })
+    expect(resolution.created).toBe(false)
+    expect(resolution.entity?.id).toBe("ent-existing")
+    expect(resolution.entity?.projectIds).toEqual(["proj-a", "proj-b"])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const updateArg = client.pages.update.mock.calls[0][0] as {
+      page_id: string
+      properties: Record<string, unknown>
+    }
+    expect(updateArg.page_id).toBe("ent-existing")
+    expect(updateArg.properties.Project).toEqual({
+      relation: [{ id: "proj-a" }, { id: "proj-b" }],
+    })
+  })
+
+  it("byName match with already-included project is a no-op (no pages.update)", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-already",
+          name: "AuthService",
+          projectIds: ["proj-a", "proj-b"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    const resolution = await service.resolveOrCreateEntity("AuthService", {
+      projectIds: ["proj-a"],
+    })
+    expect(resolution.entity?.projectIds).toEqual(["proj-a", "proj-b"])
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("byAlias single match unions options.projectIds into the existing entity", async () => {
+    const client = createMockClient()
+    // findByName: equals miss, contains miss.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    // findByAlias: one entity scoped to project A.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-aliased",
+          name: "AuthService",
+          aliases: "AuthSvc",
+          projectIds: ["proj-a"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    const resolution = await service.resolveOrCreateEntity("AuthSvc", {
+      projectIds: ["proj-c"],
+    })
+    expect(resolution.entity?.id).toBe("ent-aliased")
+    expect(resolution.entity?.projectIds).toEqual(["proj-a", "proj-c"])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const updateArg = client.pages.update.mock.calls[0][0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArg.properties.Project).toEqual({
+      relation: [{ id: "proj-a" }, { id: "proj-c" }],
+    })
+  })
+
+  it("ambiguous alias match does not union project ids onto either candidate", async () => {
+    const client = createMockClient()
+    // findByName: equals miss, contains miss.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    // findByAlias: two entities both alias `User`.
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-auth",
+          name: "User (auth)",
+          aliases: "User",
+          projectIds: ["proj-a"],
+        }),
+        entityPage({
+          id: "ent-db",
+          name: "User (db)",
+          aliases: "User",
+          projectIds: ["proj-b"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    const resolution = await service.resolveOrCreateEntity("User", {
+      projectIds: ["proj-c"],
+    })
+    expect(resolution.ambiguous).toBe(true)
+    expect(resolution.entity).toBeNull()
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("byName match with no projectIds option is a pure read (no pages.update)", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-pure-read",
+          name: "AuthService",
+          projectIds: ["proj-a"],
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    await service.resolveOrCreateEntity("AuthService")
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+})
+
+describe("EntityService.addProjectIds", () => {
+  it("issues no pages.update when every requested id is already present", async () => {
+    const client = createMockClient()
+    const service = new EntityService(client, DB)
+    const existing = {
+      id: "ent-noop",
+      name: "AuthService",
+      aliases: [],
+      kind: null,
+      description: "",
+      projectIds: ["proj-a", "proj-b"],
+    }
+    const result = await service.addProjectIds(existing, ["proj-a"])
+    expect(result).toBe(existing)
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("dedupes duplicates within the requested ids", async () => {
+    const client = createMockClient()
+    const service = new EntityService(client, DB)
+    const existing = {
+      id: "ent-dedupe",
+      name: "AuthService",
+      aliases: [],
+      kind: null,
+      description: "",
+      projectIds: ["proj-a"],
+    }
+    const result = await service.addProjectIds(existing, [
+      "proj-b",
+      "proj-b",
+      "proj-a",
+    ])
+    expect(result.projectIds).toEqual(["proj-a", "proj-b"])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+  })
+
+  it("normalizes a partially-constructed Entity without projectIds (optional public field)", async () => {
+    // External consumers (test fixtures, adapter mocks) construct
+    // `Entity`-shaped objects without populating every field. The
+    // exported type has `projectIds?: string[]` for source-compat
+    // (see `types.ts`). The service must read the missing field as
+    // `[]` rather than throw on `[...undefined]` or `new Set(undefined)`.
+    const client = createMockClient()
+    const service = new EntityService(client, DB)
+    const partial = {
+      id: "ent-partial",
+      name: "PartialEntity",
+      aliases: [],
+      kind: null,
+      description: "",
+      // projectIds: undefined  — deliberately omitted
+    }
+    const result = await service.addProjectIds(partial, ["proj-x"])
+    expect(result.projectIds).toEqual(["proj-x"])
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    const updateArg = client.pages.update.mock.calls[0][0] as {
+      properties: Record<string, unknown>
+    }
+    expect(updateArg.properties.Project).toEqual({
+      relation: [{ id: "proj-x" }],
+    })
+  })
+})
+
+describe("EntityService.create", () => {
+  it("writes the Project relation when projectIds is supplied directly", async () => {
+    const client = createMockClient()
+    client.pages.create.mockResolvedValueOnce(
+      entityPage({ id: "ent-direct", name: "DirectScopedService" }),
+    )
+
+    const service = new EntityService(client, DB)
+    await service.create({
+      name: "DirectScopedService",
+      projectIds: ["proj-direct"],
+    })
+    const callArg = client.pages.create.mock.calls[0][0] as {
+      properties: Record<string, unknown>
+    }
+    expect(callArg.properties.Project).toEqual({
+      relation: [{ id: "proj-direct" }],
+    })
   })
 })
 

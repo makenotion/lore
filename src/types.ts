@@ -1002,6 +1002,23 @@ export interface Entity {
   aliases: string[]
   kind: EntityKind | null
   description: string
+  /**
+   * Notion `Project` relation ids. A single canonical entity can be
+   * scoped to multiple projects (a class referenced by facts in
+   * several services accumulates union scope on each touch — see
+   * `EntityService.resolveOrCreateEntity`'s match branches). Empty
+   * array means vault-wide.
+   *
+   * **Optional on the exported type** so external consumers
+   * constructing `Entity`-shaped fixtures, mocks, or adapter objects
+   * stay source-compatible across this addition. Internal callers can
+   * rely on the runtime always populating it (`pageToEntity` calls
+   * `extractRelationIds(Project)` which returns `[]` on absent /
+   * legacy rows), but reads should normalize via `?? []` anyway so a
+   * partially-constructed external Entity doesn't blow up the
+   * service.
+   */
+  projectIds?: string[]
 }
 
 export interface CreateEntityInput {
@@ -1009,6 +1026,15 @@ export interface CreateEntityInput {
   aliases?: string[]
   kind?: EntityKind
   description?: string
+  /**
+   * Project scope for the new Entity row. The auto-create path in
+   * `EntityService.resolveOrCreateEntity` forwards the originating fact's
+   * project ids through here so canonical handles minted from a
+   * project-scoped fact carry the same relation, instead of landing as
+   * unscoped (vault-wide) rows. Empty / omitted leaves the relation empty
+   * for genuinely unscoped callers.
+   */
+  projectIds?: string[]
 }
 
 /**
