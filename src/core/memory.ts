@@ -544,6 +544,42 @@ export class PartialUpdateError extends Error {
 }
 
 /**
+ * Structured partial-state error raised by `MemoryService.update`
+ * when the Notion property update lands but the body markdown write
+ * fails afterward. The durable hazard is asymmetry: title/tags/status
+ * or other state-like properties may now reflect the attempted update
+ * while the body remains at its prior value, so a caller should inspect
+ * before repeating non-idempotent property transitions.
+ *
+ * The literal `failedPhase` / `persisted` fields intentionally mirror
+ * the class name so structured in-process callers do not need to parse
+ * the message. The message is prefixed with the class name because MCP
+ * transports flatten errors to text.
+ */
+export class MemoryUpdatePartialFailureError extends Error {
+  readonly memoryId: string
+  readonly failedPhase: "body"
+  readonly persisted: { readonly properties: true; readonly body: false }
+  readonly bodyWriteError: unknown
+
+  constructor(
+    message: string,
+    details: { memoryId: string; bodyWriteError: unknown },
+  ) {
+    super(
+      message.startsWith("MemoryUpdatePartialFailureError: ")
+        ? message
+        : `MemoryUpdatePartialFailureError: ${message}`,
+    )
+    this.name = "MemoryUpdatePartialFailureError"
+    this.memoryId = details.memoryId
+    this.failedPhase = "body"
+    this.persisted = { properties: true, body: false }
+    this.bodyWriteError = details.bodyWriteError
+  }
+}
+
+/**
  * Structured partial-state error raised by `MemoryService.create`
  * when the `pages.create` call landed (a Memories DB row exists) but
  * the follow-up `pages.updateMarkdown` body-write rejected. Notion's
@@ -2165,23 +2201,46 @@ export class MemoryService {
       }
     }
 
+    let propertiesApplied = false
     if (Object.keys(props).length > 0) {
       await this.client.pages.update({
         page_id: id,
         // Cast needed: we're building update props dynamically
         properties: props as CreatePageParameters["properties"],
       })
+      propertiesApplied = true
     }
 
-    if (decoded.content) {
-      await this.client.pages.updateMarkdown({
-        page_id: id,
-        type: "replace_content",
-        replace_content: {
-          new_str: decoded.content,
-          allow_deleting_content: true,
-        },
-      })
+    if (decoded.content !== undefined) {
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: id,
+          type: "replace_content",
+          replace_content: {
+            new_str: decoded.content,
+            allow_deleting_content: true,
+          },
+        })
+      } catch (bodyWriteError) {
+        if (!propertiesApplied) {
+          throw bodyWriteError
+        }
+        if (decoded.title !== undefined) {
+          this.titleCache.set(id, decoded.title || null)
+          this.bumpWriteEpoch()
+        }
+        const cause =
+          bodyWriteError instanceof Error
+            ? bodyWriteError.message
+            : String(bodyWriteError)
+        throw new MemoryUpdatePartialFailureError(
+          `Memory update partial failure: properties for memory ${id} ` +
+            `persisted, but the body write failed during phase "body": ${cause}. ` +
+            `The property changes are already on Notion; the body content was ` +
+            `not written. Inspect the row before retrying the update.`,
+          { memoryId: id, bodyWriteError },
+        )
+      }
     }
 
     const updated = await this.getById(id)

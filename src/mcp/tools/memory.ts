@@ -40,6 +40,7 @@ import {
   buildCompareDispatchLedgerEntry,
   hasCompareDispatchLedgerEntry,
   hasMatchingCompareNote,
+  MemoryUpdatePartialFailureError,
   PartialUpdateError,
   recordContradiction,
   recordSupersedence,
@@ -773,24 +774,44 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
         topicLabel = topic.name
       }
 
-      updated = await services.memories.update(args.memoryId, {
-        title: args.title,
-        content: args.content,
-        tags: args.tags,
-        keywords: args.keywords,
-        synopsis: args.synopsis,
-        projectIds,
-        topicId,
-        kind: args.kind as MemoryKind | undefined,
-        status: args.status as MemoryStatus | undefined,
-        confidence: args.confidence as MemoryConfidence | undefined,
-        reviewBy: args.reviewBy,
-        decidedAt: args.decidedAt,
-        supersedesIds: args.supersedesIds,
-        affectsIds: args.affectsIds,
-        alternatives: args.alternatives,
-        consequences: args.consequences,
-      })
+      try {
+        updated = await services.memories.update(args.memoryId, {
+          title: args.title,
+          content: args.content,
+          tags: args.tags,
+          keywords: args.keywords,
+          synopsis: args.synopsis,
+          projectIds,
+          topicId,
+          kind: args.kind as MemoryKind | undefined,
+          status: args.status as MemoryStatus | undefined,
+          confidence: args.confidence as MemoryConfidence | undefined,
+          reviewBy: args.reviewBy,
+          decidedAt: args.decidedAt,
+          supersedesIds: args.supersedesIds,
+          affectsIds: args.affectsIds,
+          alternatives: args.alternatives,
+          consequences: args.consequences,
+        })
+      } catch (err) {
+        if (
+          err instanceof MemoryUpdatePartialFailureError &&
+          args.topicKey !== undefined &&
+          preflight?.willRekey !== false
+        ) {
+          throw new MemoryUpdatePartialFailureError(
+            `${err.message} The requested re-key to '${args.topicKey}' ` +
+              `was not attempted because the body write failed before ` +
+              `the re-key step. Re-issue the re-key separately after ` +
+              `repairing the body update.`,
+            {
+              memoryId: err.memoryId,
+              bodyWriteError: err.bodyWriteError,
+            },
+          )
+        }
+        throw err
+      }
     }
 
     // Re-key SECOND. `rekeyTopicKey` reads the post-content body

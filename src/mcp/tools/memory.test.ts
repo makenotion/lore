@@ -7,6 +7,7 @@ import {
   appendCompareDispatchLedgerEntry,
   buildCompareDispatchLedgerEntry,
   COMPARE_NOTES_MAX_CHARS,
+  MemoryUpdatePartialFailureError,
   RekeyAuditError,
 } from "../../core/memory.js"
 import type { Memory, Topic } from "../../types.js"
@@ -3103,6 +3104,50 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(text).toContain("Auto-mentions: 1/2 new attempted")
   })
 
+  it("surfaces structured memory update partial-failure messages as MCP errors", async () => {
+    const mockServer = createMockServer()
+    const bodyWriteError = new Error("notion 503")
+    const update = vi.fn().mockRejectedValue(
+      new MemoryUpdatePartialFailureError(
+        `Memory update partial failure: properties for memory mem-partial ` +
+          `persisted, but the body write failed during phase "body": notion 503. ` +
+          `The property changes are already on Notion; the body content was ` +
+          `not written. Inspect the row before retrying the update.`,
+        { memoryId: "mem-partial", bodyWriteError },
+      ),
+    )
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-partial",
+      title: "Updated title",
+      content: "Updated body",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain("Error: MemoryUpdatePartialFailureError")
+    expect(text).toContain("Memory update partial failure")
+    expect(text).toContain("properties for memory mem-partial persisted")
+    expect(text).toContain('phase "body"')
+    expect(text).toContain("body content was not written")
+    expect(services.facts.queryBySourceMemory).not.toHaveBeenCalled()
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+  })
+
   it("update succeeds when the pre-query for existing mentions fails (degrades to assume-nothing-covered)", async () => {
     // A `queryBySourceMemory` failure must not block the update or
     // the surrounding emission — degrade to "assume nothing covered"
@@ -5281,6 +5326,59 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     expect(text).toContain(
       "Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'",
     )
+  })
+
+  it("combined re-key + partial body-write failure says the re-key was skipped", async () => {
+    const mockServer = createMockServer()
+    const validateRekey = vi.fn().mockResolvedValue({
+      memory: makeMemory("mem-1", {
+        topicKey: "decision/old",
+        projectIds: ["P1"],
+      }),
+      oldTopicKey: "decision/old",
+      willRekey: true,
+    })
+    const bodyWriteError = new Error("notion 503")
+    const update = vi.fn().mockRejectedValue(
+      new MemoryUpdatePartialFailureError(
+        `Memory update partial failure: properties for memory mem-1 ` +
+          `persisted, but the body write failed during phase "body": notion 503. ` +
+          `The property changes are already on Notion; the body content was ` +
+          `not written. Inspect the row before retrying the update.`,
+        { memoryId: "mem-1", bodyWriteError },
+      ),
+    )
+    const rekeyTopicKey = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new",
+      content: "New body content",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(update).toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain("Error: MemoryUpdatePartialFailureError")
+    expect(text).toContain("properties for memory mem-1 persisted")
+    expect(text).toContain("body content was not written")
+    expect(text).toContain("requested re-key to 'decision/new' was not attempted")
+    expect(text).toContain("before the re-key step")
   })
 
   it("surfaces a collision error from validateRekey BEFORE any content update lands", async () => {

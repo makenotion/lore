@@ -56,10 +56,14 @@ export { TopicService } from "./core/topic.js"
 export {
   MemoryService,
   MemoryCreatePartialFailureError,
+  MemoryUpdatePartialFailureError,
   RekeyAuditError,
   PartialUpdateError,
 } from "./core/memory.js"
-export { TaskCreatePartialFailureError } from "./core/task.js"
+export {
+  TaskCreatePartialFailureError,
+  TaskUpdatePartialFailureError,
+} from "./core/task.js"
 export { FactService } from "./core/fact.js"
 export { DecisionCreatePartialFailureError, DecisionService } from "./core/decision.js"
 export { EntityService } from "./core/entity.js"

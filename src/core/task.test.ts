@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   TaskCreatePartialFailureError,
+  TaskUpdatePartialFailureError,
   TaskService,
   formatTaskSummary,
   isCleared,
@@ -604,6 +605,75 @@ describe("TaskService.close", () => {
 })
 
 describe("TaskService.update", () => {
+  it("throws a structured partial-failure error when properties land but description write fails", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const client = createMockClient({ updateMarkdownError: bodyWriteError })
+    const service = new TaskService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.update("task-id", {
+        state: "in-progress",
+        description: "Updated description",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
+    expect(
+      (client.pages.update as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0],
+    )
+    expect(client.pages.retrieve).not.toHaveBeenCalled()
+    expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
+    expect(caught).toBeInstanceOf(TaskUpdatePartialFailureError)
+    const partial = caught as TaskUpdatePartialFailureError
+    expect(partial.taskId).toBe("task-id")
+    expect(partial.failedPhase).toBe("body")
+    expect(partial.persisted).toEqual({ properties: true, body: false })
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.message).toContain("properties for task task-id persisted")
+    expect(partial.message).toContain('phase "body"')
+    expect(partial.message).toContain("description body was not written")
+  })
+
+  it("does not wrap description-only failures because no earlier update persisted", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const client = createMockClient({ updateMarkdownError: bodyWriteError })
+    const service = new TaskService(client, DB)
+
+    await expect(
+      service.update("task-id", { description: "Updated description" }),
+    ).rejects.toBe(bodyWriteError)
+    expect(client.pages.update).not.toHaveBeenCalled()
+    expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
+  })
+
+  it("includes non-Error description-write rejections in the structured message", async () => {
+    const bodyWriteError = "notion string failure"
+    const client = createMockClient({ updateMarkdownError: bodyWriteError })
+    const service = new TaskService(client, DB)
+
+    let caught: unknown
+    try {
+      await service.update("task-id", {
+        state: "in-progress",
+        description: "Updated description",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(TaskUpdatePartialFailureError)
+    const partial = caught as TaskUpdatePartialFailureError
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.message).toContain("notion string failure")
+  })
+
   it("clears the due date when dueDate is null", async () => {
     const updatedPage = taskPage("task-id", { state: "open" })
     const client = createMockClient({

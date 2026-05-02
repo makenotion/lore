@@ -4,6 +4,7 @@ import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   MemoryService,
   MemoryCreatePartialFailureError,
+  MemoryUpdatePartialFailureError,
   pageToMemory,
   tieBreakingRrfCompare,
   appendCompareNote,
@@ -634,6 +635,156 @@ describe("MemoryService.update — Confidence Score write semantics (#01)", () =
 
     const props = updateSpy.mock.calls[0]![0].properties
     expect(props["Confidence Score"]).toEqual({ number: 0 })
+  })
+})
+
+describe("MemoryService.update — partial-failure on body write", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("throws a structured partial-failure error when properties land but body write fails", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const updateSpy = vi.fn(async () => ({}))
+    const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const retrieveSpy = vi.fn()
+    const retrieveMarkdownSpy = vi.fn()
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.update("mem-1", {
+        title: "Updated title",
+        content: "Updated body",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      updateMarkdownSpy.mock.invocationCallOrder[0],
+    )
+    expect(retrieveSpy).not.toHaveBeenCalled()
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+    expect(caught).toBeInstanceOf(MemoryUpdatePartialFailureError)
+    const partial = caught as MemoryUpdatePartialFailureError
+    expect(partial.memoryId).toBe("mem-1")
+    expect(partial.failedPhase).toBe("body")
+    expect(partial.persisted).toEqual({ properties: true, body: false })
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.message).toContain("properties for memory mem-1 persisted")
+    expect(partial.message).toContain('phase "body"')
+    expect(partial.message).toContain("body content was not written")
+
+    const cachedTitle = await service.getTitleById("mem-1")
+    expect(cachedTitle).toBe("Updated title")
+    expect(retrieveSpy).not.toHaveBeenCalled()
+  })
+
+  it("treats empty content as an explicit body clear on the partial-failure path", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const updateSpy = vi.fn(async () => ({}))
+    const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.update("mem-1", {
+        title: "Updated title",
+        content: "",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy.mock.calls[0]![0].replace_content.new_str).toBe("")
+    expect(caught).toBeInstanceOf(MemoryUpdatePartialFailureError)
+    const partial = caught as MemoryUpdatePartialFailureError
+    expect(partial.persisted).toEqual({ properties: true, body: false })
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+  })
+
+  it("does not wrap body-only failures because no earlier update persisted", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const updateSpy = vi.fn()
+    const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.update("mem-1", { content: "Updated body" })).rejects.toBe(
+      bodyWriteError,
+    )
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("includes non-Error body-write rejections in the structured message", async () => {
+    const bodyWriteError = "notion string failure"
+    const updateSpy = vi.fn(async () => ({}))
+    const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.update("mem-1", {
+        title: "Updated title",
+        content: "Updated body",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(MemoryUpdatePartialFailureError)
+    const partial = caught as MemoryUpdatePartialFailureError
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.message).toContain("notion string failure")
+  })
+
+  it("keeps body-only empty-content failures raw because no earlier update persisted", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const updateSpy = vi.fn()
+    const updateMarkdownSpy = vi.fn().mockRejectedValue(bodyWriteError)
+    const client = {
+      pages: {
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.update("mem-1", { content: "" })).rejects.toBe(
+      bodyWriteError,
+    )
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy.mock.calls[0]![0].replace_content.new_str).toBe("")
   })
 })
 

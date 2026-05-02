@@ -111,6 +111,41 @@ export class TaskCreatePartialFailureError extends Error {
   }
 }
 
+/**
+ * Structured partial-state error raised by `TaskService.update`
+ * when task properties land but the description body write fails.
+ * State/title/due-date/etc. may already be visible in Notion while
+ * the prose description remains unchanged, so a caller should inspect
+ * before repeating non-idempotent state transitions.
+ *
+ * The literal `failedPhase` / `persisted` fields intentionally mirror
+ * the class name so structured in-process callers do not need to parse
+ * the message. The message is prefixed with the class name because MCP
+ * transports flatten errors to text.
+ */
+export class TaskUpdatePartialFailureError extends Error {
+  readonly taskId: string
+  readonly failedPhase: "body"
+  readonly persisted: { readonly properties: true; readonly body: false }
+  readonly bodyWriteError: unknown
+
+  constructor(
+    message: string,
+    details: { taskId: string; bodyWriteError: unknown },
+  ) {
+    super(
+      message.startsWith("TaskUpdatePartialFailureError: ")
+        ? message
+        : `TaskUpdatePartialFailureError: ${message}`,
+    )
+    this.name = "TaskUpdatePartialFailureError"
+    this.taskId = details.taskId
+    this.failedPhase = "body"
+    this.persisted = { properties: true, body: false }
+    this.bodyWriteError = details.bodyWriteError
+  }
+}
+
 export interface OverdueTaskWindow {
   items: TaskSummary[]
   capped: boolean
@@ -451,22 +486,41 @@ export class TaskService {
         : { date: { start: input.dueDate as string } }
     }
 
+    let propertiesApplied = false
     if (Object.keys(props).length > 0) {
       await this.client.pages.update({
         page_id: id,
         properties: props as CreatePageParameters["properties"],
       })
+      propertiesApplied = true
     }
 
     if (input.description !== undefined) {
-      await this.client.pages.updateMarkdown({
-        page_id: id,
-        type: "replace_content",
-        replace_content: {
-          new_str: decodeTextEntities(input.description),
-          allow_deleting_content: true,
-        },
-      })
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: id,
+          type: "replace_content",
+          replace_content: {
+            new_str: decodeTextEntities(input.description),
+            allow_deleting_content: true,
+          },
+        })
+      } catch (bodyWriteError) {
+        if (!propertiesApplied) {
+          throw bodyWriteError
+        }
+        const cause =
+          bodyWriteError instanceof Error
+            ? bodyWriteError.message
+            : String(bodyWriteError)
+        throw new TaskUpdatePartialFailureError(
+          `Task update partial failure: properties for task ${id} persisted, ` +
+            `but the description write failed during phase "body": ${cause}. ` +
+            `The property changes are already on Notion; the description body ` +
+            `was not written. Inspect the row before retrying the update.`,
+          { taskId: id, bodyWriteError },
+        )
+      }
     }
 
     return this.getById(id)

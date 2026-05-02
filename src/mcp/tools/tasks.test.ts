@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerTaskTools } from "./tasks.js"
+import { TaskUpdatePartialFailureError } from "../../core/task.js"
 import type { Task, TaskSummary } from "../../types.js"
 
 function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary {
@@ -549,6 +550,38 @@ describe("lore-task-update", () => {
       "task-id",
       expect.objectContaining({ dueDate: null })
     )
+  })
+
+  it("surfaces structured task update partial-failure messages as MCP errors", async () => {
+    const bodyWriteError = new Error("notion 503")
+    const svc = services()
+    svc.tasks.update = vi.fn().mockRejectedValue(
+      new TaskUpdatePartialFailureError(
+        `Task update partial failure: properties for task task-id persisted, ` +
+          `but the description write failed during phase "body": notion 503. ` +
+          `The property changes are already on Notion; the description body ` +
+          `was not written. Inspect the row before retrying the update.`,
+        { taskId: "task-id", bodyWriteError },
+      ),
+    )
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = (await handler({
+      action: "update",
+      taskId: "task-id",
+      state: "in-progress",
+      description: "Updated description",
+    } as never)) as { isError?: boolean; content: Array<{ text: string }> }
+
+    const text = result.content[0].text
+    expect(result.isError).toBe(true)
+    expect(text).toContain("Error: TaskUpdatePartialFailureError")
+    expect(text).toContain("Task update partial failure")
+    expect(text).toContain("properties for task task-id persisted")
+    expect(text).toContain('phase "body"')
+    expect(text).toContain("description body was not written")
   })
 })
 
