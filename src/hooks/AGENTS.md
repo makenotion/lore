@@ -80,14 +80,27 @@ assistant from a cwd Lore can't predict, so the
 The parent's env passthrough is deliberately minimal:
 `spawnBackgroundSave` builds a `safeEnv` with `PATH`, `HOME`,
 `LORE_AUTOSAVE: "false"` (so the child can't recursively trigger
-its own autosave), and conditionally `LORE_NOTION_TOKEN` /
-`LORE_NOTION_BASE_URL` / `LORE_USER_NAME` when the parent has them
-set. The legacy token forwarding preserves access for operators
-still on `LORE_NOTION_TOKEN` while they migrate; under ntn-first the
-child ntn-resolves directly off `auth.json` because that file is on
-disk where the child can read it. If the parent refreshed ntn (e.g.,
-the operator re-ran `ntn login`) before spawning the child, the
-child sees the updated `auth.json` at startup.
+its own autosave), and every key in the shared
+`RUNTIME_FORWARDED_KEYS` list (`src/auth/forwarded-env.ts`) when
+the parent has it set: `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
+`LORE_NOTION_BASE_URL`, `NOTION_WORKSPACE_ID`, `NOTION_ENV`,
+`NOTION_BASE_URL`, `NOTION_API_BASE_URL`, and `LORE_USER_NAME`.
+The same list drives `lore install`'s `${VAR}` placeholders for
+MCP host config, so a foreground CLI run, a host-spawned MCP
+child, and a hook worker all reach the same Notion workspace
+and environment — pre-#188 the hook path forwarded only the three
+Lore-namespaced legacy keys, leaving canonical `NOTION_API_TOKEN`
+operators and multi-workspace ntn users with silent auth /
+workspace divergence between foreground and hook code paths. The
+legacy `LORE_NOTION_TOKEN` forwarding preserves access for
+operators still on the soft-deprecated env var while they migrate;
+under ntn-first the child ntn-resolves directly off `auth.json`
+because that file is on disk where the child can read it. If the
+parent refreshed ntn (e.g., the operator re-ran `ntn login`)
+before spawning the child, the child sees the updated `auth.json`
+at startup. Empty-string values are skipped to mirror the install
+allowlist's posture — a declared-but-empty var would otherwise
+short-circuit `resolveAuth`'s priority chain in the spawned child.
 
 `LORE_USER_NAME` (DEFERRED-ATTRIBUTION) is forwarded so the spawned
 MCP child resolves engineer identity via the synchronous env path
@@ -106,6 +119,22 @@ synchronous env path resolves identity for free.
 resolved its credentials, it does not re-read `auth.json`. A 401
 mid-spawn surfaces as the Notion call failing; the next autosave
 fire after `lore auth --login` picks up the refreshed token.
+
+**Canonical-path child never reads `auth.json` at all (#188).** When
+the parent has `NOTION_API_TOKEN` set, the forward lands in the
+child's `safeEnv` and `resolveAuth` priority 1 wins at child startup
+— the child never reaches the ntn-resolve branch. So an `auth.json`
+refresh that lands between the Stop fire and the child's first
+Notion call doesn't reach the child. This matches the existing
+"mid-process re-resolution is deferred" posture, but tightens the
+asymmetry between the two auth sources: ntn-source children read
+disk fresh on each spawn (and pick up a between-spawn refresh on
+the next fire); canonical-token children inherit the parent's
+snapshot of `NOTION_API_TOKEN` and only see a refresh once the
+parent's env catches up. For short-lived autosave windows this is
+the right tradeoff; operators on the canonical path who rotate
+tokens mid-session must restart the parent assistant for the new
+token to reach hook workers.
 
 ### Atomic-learning extraction (0.9.0/08)
 

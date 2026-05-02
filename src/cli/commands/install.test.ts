@@ -63,6 +63,7 @@ import {
   type InstallContext,
   type InstallRunners,
 } from "./install.js"
+import { RUNTIME_FORWARDED_KEYS } from "../../auth/forwarded-env.js"
 
 /**
  * Deterministic test fixtures so unit tests don't depend on the
@@ -2082,16 +2083,32 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     expect(build.forwarded).toContain("NOTION_API_BASE_URL")
   })
 
-  it("forwards all seven runtime keys when the operator has the full ntn-dev shell environment", () => {
+  it("forwards NOTION_WORKSPACE_ID so a multi-workspace ntn MCP child picks the same workspace as the foreground CLI (#188)", () => {
+    // Multi-workspace ntn engineers select their workspace via
+    // `NOTION_WORKSPACE_ID`; without forwarding, the spawned MCP
+    // child's `loadNtnToken` would fall back to the single-workspace
+    // auto-pick (which throws with a "specify a workspace" hint when
+    // auth.json carries multiple) or pick the wrong one. Same shape
+    // as the other ntn-native vars.
+    const env: NodeJS.ProcessEnv = { NOTION_WORKSPACE_ID: "ws_abc" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
+    expect(build.env["NOTION_WORKSPACE_ID"]).toBe("${NOTION_WORKSPACE_ID}")
+    expect(build.forwarded).toContain("NOTION_WORKSPACE_ID")
+  })
+
+  it("forwards all eight runtime keys when the operator has the full ntn-dev shell environment", () => {
     // Pathological-but-real: a dev operator with everything set.
-    // All seven keys forward as `${VAR}` placeholders. Includes
+    // All eight keys forward as `${VAR}` placeholders. Includes
     // LORE_USER_NAME (DEFERRED-ATTRIBUTION) — operators who set the
     // attribution override at install time keep it on the spawned
-    // MCP child without an extra `users.me` round-trip.
+    // MCP child without an extra `users.me` round-trip — and
+    // NOTION_WORKSPACE_ID (#188) so multi-workspace ntn engineers'
+    // hook workers and MCP children pick the same workspace.
     const env: NodeJS.ProcessEnv = {
       NOTION_API_TOKEN: "api-tok",
       LORE_NOTION_TOKEN: "lore-tok",
       LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
+      NOTION_WORKSPACE_ID: "ws_abc",
       NOTION_ENV: "dev",
       NOTION_BASE_URL: "https://api-dev.notion.com",
       NOTION_API_BASE_URL: "https://api-dev.notion.com",
@@ -2102,6 +2119,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       NOTION_API_TOKEN: "${NOTION_API_TOKEN}",
       LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
       LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
+      NOTION_WORKSPACE_ID: "${NOTION_WORKSPACE_ID}",
       NOTION_ENV: "${NOTION_ENV}",
       NOTION_BASE_URL: "${NOTION_BASE_URL}",
       NOTION_API_BASE_URL: "${NOTION_API_BASE_URL}",
@@ -2112,6 +2130,7 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
       "NOTION_API_TOKEN",
       "LORE_NOTION_TOKEN",
       "LORE_NOTION_BASE_URL",
+      "NOTION_WORKSPACE_ID",
       "NOTION_ENV",
       "NOTION_BASE_URL",
       "NOTION_API_BASE_URL",
@@ -2391,9 +2410,11 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     NOTION_API_TOKEN: "secret_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfG",
     LORE_NOTION_TOKEN: "secret_legacy_lore_token_must_not_leak_into_config",
     LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
+    NOTION_WORKSPACE_ID: "ws_pnp_real_operator_workspace",
     NOTION_ENV: "dev",
     NOTION_BASE_URL: "https://api-dev.notion.com",
     NOTION_API_BASE_URL: "https://api-dev.notion.com",
+    LORE_USER_NAME: "Real Operator",
   }
 
   // Probes that should never appear in committed PnP config:
@@ -2410,6 +2431,10 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
   //   - The dev base-URL value catches the same family of leak on
   //     the auth-base-url forwarder. The dev-env name `dev` is too
   //     short / too generic to probe for safely.
+  //   - The workspace ID and display-name sentinels are operator
+  //     identifiers; same byte-identity contract — finding either
+  //     literal in committed config means a forwarder regressed
+  //     and started emitting values instead of `${VAR}`.
   const FORBIDDEN_SUBSTRINGS = [
     "/Users/",
     "${HOME}",
@@ -2417,6 +2442,8 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     "secret_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfG",
     "secret_legacy_lore_token_must_not_leak_into_config",
     "https://api-dev.notion.com",
+    "ws_pnp_real_operator_workspace",
+    "Real Operator",
   ]
 
   for (const host of PNP_HOSTS) {
@@ -2441,24 +2468,36 @@ describe("PnP MCP entries carry no per-engineer absolute paths", () => {
     })
   }
 
-  it("PnP entries still emit ${VAR} placeholders for the runtime forwarders", () => {
-    // Inverse of the leak probes above: confirm the host actually
-    // emits the placeholder names so the MCP-host substitution flow
-    // works at runtime. Without this, a regression that suppressed
-    // the entire env block would pass the no-leak assertions
-    // trivially.
+  it("PnP entries still emit ${VAR} placeholders for every runtime forwarder on every host", () => {
+    // Inverse of the leak probes above: confirm each host actually
+    // emits the placeholder names for every key in the forwarded
+    // allowlist so the MCP-host substitution flow works at runtime.
+    // Iterating `RUNTIME_FORWARDED_KEYS` (instead of hand-listing) is
+    // the load-bearing piece — the next addition to the allowlist
+    // automatically gets per-host placeholder coverage. Without this,
+    // a regression that suppressed the entire env block would pass
+    // the no-leak assertions trivially, and a regression that dropped
+    // a single host's forwarder for one key would slip past a
+    // hand-listed assertion that didn't enumerate the new key.
     const claude = buildClaudeMcpEntry("yarn", PROJECT_ABS_PATH, REAL_OPERATOR_ENV)
-    expect(claude.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
-    expect(claude.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
-    expect(claude.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
-
     const cursor = buildCursorMcpEntry("yarn", PROJECT_ABS_PATH, REAL_OPERATOR_ENV)
-    expect(cursor.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
-
     const codex = buildCodexMcpSection("yarn", PROJECT_ABS_PATH, REAL_OPERATOR_ENV)
-    // Codex's env_vars carries name-only references; the placeholder
-    // form lives implicitly there.
-    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL"]')
+
+    for (const key of RUNTIME_FORWARDED_KEYS) {
+      const placeholder = `\${${key}}`
+      expect(claude.env[key], `claude PnP did not emit ${placeholder}`).toBe(placeholder)
+      expect(cursor.env[key], `cursor PnP did not emit ${placeholder}`).toBe(placeholder)
+      // Codex's env_vars is a name-only allowlist; the placeholder
+      // form lives implicitly there. Probe each name as a quoted
+      // literal so a future formatting refactor can't accidentally
+      // emit it as a bare token.
+      expect(codex, `codex PnP did not include "${key}" in env_vars`).toContain(`"${key}"`)
+    }
+
+    // Pin the full env_vars line shape to catch ordering regressions
+    // — the per-key probe above would still pass if a refactor
+    // shuffled the array.
+    expect(codex).toContain('env_vars = ["NOTION_API_TOKEN", "LORE_NOTION_TOKEN", "LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV", "NOTION_BASE_URL", "NOTION_API_BASE_URL", "LORE_USER_NAME"]')
   })
 })
 

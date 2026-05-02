@@ -26,6 +26,7 @@ import {
 } from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
+import { RUNTIME_FORWARDED_KEYS } from "../auth/forwarded-env.js"
 import {
   activeSaveCount,
   hasActiveSessionLock,
@@ -218,33 +219,26 @@ export function spawnBackgroundSave(
     "sonnet",
   ]
 
-  // Minimal env — only what the background process needs
+  // Minimal env — only what the background process needs. Auth /
+  // workspace / environment selectors flow through the shared
+  // `RUNTIME_FORWARDED_KEYS` list (see `src/auth/forwarded-env.ts`)
+  // so the spawned `claude -p` and the MCP child it in turn launches
+  // both reach the same Notion workspace and environment the
+  // foreground CLI / MCP host resolves. Empty-string values are
+  // skipped for parity with the `lore install` placeholder shape —
+  // a declared-but-empty var would otherwise short-circuit
+  // `resolveAuth`'s priority chain in the spawned child.
   const safeEnv: Record<string, string> = {
     PATH: process.env["PATH"] ?? "",
     HOME: process.env["HOME"] ?? "",
     LORE_AUTOSAVE: "false",
   }
-  const notionToken = process.env["LORE_NOTION_TOKEN"]
-  if (notionToken) safeEnv["LORE_NOTION_TOKEN"] = notionToken
-  const notionBaseUrl = process.env["LORE_NOTION_BASE_URL"]
-  if (notionBaseUrl) safeEnv["LORE_NOTION_BASE_URL"] = notionBaseUrl
-  // DEFERRED-ATTRIBUTION: forward the operator's `LORE_USER_NAME`
-  // override so the spawned MCP child resolves identity via the
-  // synchronous env path (cheap) rather than paying a `users.me`
-  // round-trip on every autosave-triggered process startup. Same
-  // posture as `LORE_NOTION_TOKEN` / `LORE_NOTION_BASE_URL` —
-  // operator-controlled scalar values that survive the hop into the
-  // detached child without leaking sensitive credentials beyond what
-  // the parent already had. `LORE_AGENT_NAME` is deliberately NOT
-  // forwarded here: the existing agent-name flow carries it via the
-  // prompt text (`Agent: <name>` line + `Pass agent: "..." verbatim`
-  // instruction), and the spawned MCP child's `users.me`-equivalent
-  // for agent identity (CLAUDE_CODE_* markers) falls through to
-  // `Claude Code` regardless. Operator-set `LORE_AGENT_NAME` reaches
-  // the saved memory through args.agent at the MCP boundary, not
-  // through the child's own `deriveAgentName`.
-  const userName = process.env["LORE_USER_NAME"]
-  if (userName) safeEnv["LORE_USER_NAME"] = userName
+  for (const key of RUNTIME_FORWARDED_KEYS) {
+    const value = process.env[key]
+    if (typeof value === "string" && value.length > 0) {
+      safeEnv[key] = value
+    }
+  }
 
   // Redirect stderr to a per-key log so crashes are recoverable without
   // someone actively watching stderr. Truncate per save: each spawn is

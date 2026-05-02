@@ -19,6 +19,10 @@ import {
   parseNtnEnv,
   runNtnLogin,
 } from "../../auth/ntn.js"
+import {
+  RUNTIME_FORWARDED_KEYS,
+  type RuntimeForwardedKey,
+} from "../../auth/forwarded-env.js"
 
 export type InstallClient = "claude" | "codex" | "cursor" | "all"
 
@@ -66,62 +70,6 @@ export type HookStatus = "current" | "legacy-current" | "stale" | "missing"
  * remains unchanged through the deprecation window.
  */
 export type BinDispatchShape = "bare" | "yarn"
-
-/**
- * Runtime-resolved env keys forwarded into MCP entries as `${VAR}`
- * placeholders the host (Claude / Cursor / Codex) substitutes from the
- * operator's environment at MCP-spawn time. Each is conditional on the
- * key being set in the install-time process env so the committed entry
- * documents which auth source the operator was on at install time and
- * an unintentional re-route through a stale env var doesn't happen.
- *
- * The set carries three families:
- *
- * - **Auth tokens** (`NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`) — the
- *   canonical and legacy bearer-token sources `resolveAuth` walks.
- * - **ntn-native environment selectors** (`NOTION_ENV`,
- *   `NOTION_BASE_URL`, `NOTION_API_BASE_URL`) plus the
- *   Lore-namespaced base-URL override (`LORE_NOTION_BASE_URL`).
- *   Forwarded so a dev / staging operator's MCP child resolves
- *   against the same Notion environment the install-time preflight
- *   succeeded against — without these, an operator with
- *   `NOTION_ENV=dev` (or a `NOTION_BASE_URL` override) in their
- *   shell would pass the install preflight but the spawned MCP
- *   child would silently default to prod. `resolveOperatorBaseUrl`
- *   in `auth/oauth.ts` consumes the three base-URL names in
- *   priority order.
- * - **Per-user attribution override** (`LORE_USER_NAME`) — engineer
- *   display name stamped on Memory `Author` (DEFERRED-ATTRIBUTION).
- *   Forwarded so an operator with `LORE_USER_NAME` set at install
- *   time keeps the override on the spawned MCP child — without this,
- *   the child's `resolveAuthorIdentity` would fall through to
- *   `users.me` and stamp a different name (or `null` if the
- *   ntn-issued token's `users.me` shape doesn't carry an owner).
- *   Same shape as the auth-token forwarding: install-time `${VAR}`
- *   placeholder, host resolves from operator env at MCP spawn.
- *
- * Static-value forwards (`LORE_CONFIG_ROOT`, `LORE_SUPPRESS_DEPRECATIONS`)
- * are NOT in this list — they go through `staticEnv` because their
- * values are literal strings, not references to the operator's env.
- */
-type RuntimeForwardedKey =
-  | "NOTION_API_TOKEN"
-  | "LORE_NOTION_TOKEN"
-  | "LORE_NOTION_BASE_URL"
-  | "NOTION_ENV"
-  | "NOTION_BASE_URL"
-  | "NOTION_API_BASE_URL"
-  | "LORE_USER_NAME"
-
-const RUNTIME_FORWARDED_KEYS: ReadonlyArray<RuntimeForwardedKey> = [
-  "NOTION_API_TOKEN",
-  "LORE_NOTION_TOKEN",
-  "LORE_NOTION_BASE_URL",
-  "NOTION_ENV",
-  "NOTION_BASE_URL",
-  "NOTION_API_BASE_URL",
-  "LORE_USER_NAME",
-]
 
 export interface McpEnvBuild {
   /**
