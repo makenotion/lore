@@ -462,6 +462,100 @@ export class PartialUpdateError extends Error {
 }
 
 /**
+ * Structured partial-state error raised by `MemoryService.create`
+ * when the `pages.create` call landed (a Memories DB row exists) but
+ * the follow-up `pages.updateMarkdown` body-write rejected. Notion's
+ * SDK splits memory creation across two calls — properties first, body
+ * second — and a failure between them would otherwise leave a
+ * properties-only orphan in the vault that a naive retry would
+ * duplicate rather than reuse.
+ *
+ * **Strategy: best-effort archive, then structured error.** Three
+ * options were on the table when this surface was added (issue #190):
+ *
+ * 1. *Archive/delete the orphan and throw a structured error.* The
+ *    chosen path. Mirrors `MemoryService.archive`'s soft-delete
+ *    posture — the row is removed from queries but remains
+ *    inspectable in Notion's trash, preserving audit signal for
+ *    operators triaging a partial-failure burst. Idempotent on the
+ *    hot path (a successful retry creates a fresh row, no
+ *    duplicate-resolution needed).
+ * 2. *Throw a structured error without cleanup.* Rejected because the
+ *    issue's acceptance criterion is "no silently-unrecoverable
+ *    orphan." Naive callers retrying the same `lore-memory
+ *    action='save'` would land a duplicate row alongside the orphan
+ *    until an operator manually archived the original.
+ * 3. *Idempotency key / session-aware retry path.* Rejected because
+ *    it would extend the schema with a new column (or co-opt an
+ *    existing one) for a defensive guardrail that fires on a rare
+ *    transient failure mode. Heavyweight relative to the bug.
+ *
+ * The cleanup is best-effort: a second failure leaves the orphan
+ * live and surfaces as `cleanedUp: false` so the operator finishes
+ * what the system couldn't.
+ *
+ * The `cleanedUp` flag distinguishes the two surviving partial-state
+ * shapes:
+ *
+ * - **`cleanedUp: true`** — the orphan row is soft-deleted on Notion.
+ *   The vault is consistent with "create never happened" from a query
+ *   perspective; a retry of the original operation will create a fresh
+ *   row without any operator action. The error still surfaces so the
+ *   caller can decide whether to retry or surface the body-write
+ *   failure to the user.
+ * - **`cleanedUp: false`** — both the body-write AND the cleanup
+ *   archive failed. The properties-only row remains live in the vault.
+ *   A retry without operator intervention would create a duplicate
+ *   row. The `pageId` field names the orphan; `cleanupError` carries
+ *   the archive failure so an operator can act on it directly.
+ *
+ * The `bodyWriteError` field is always populated and carries the
+ * underlying `updateMarkdown` failure that triggered the partial
+ * state. Distinct from `cleanupError`, which is `undefined` on
+ * `cleanedUp: true`.
+ *
+ * **Auto-mentions / decided_by fact emission is correctly skipped on
+ * partial failure.** Fact emission for `mentions` (issue 0.8.0/#07)
+ * and `decided_by` (decision auto-edges) is a sibling-of-create
+ * concern at the MCP handler layer (`src/mcp/tools/memory.ts`,
+ * `src/mcp/tools/decisions.ts`) — those handlers fire fact creates
+ * AFTER `services.memories.create` resolves so the `Source` relation
+ * can point at the just-created row. A `MemoryCreatePartialFailureError`
+ * thrown inside `create()` escapes the handler's `await` before fact
+ * emission runs, so no orphan facts pointing at an archived (or
+ * partially-archived) source land. Confirmed correct by inspection;
+ * not load-bearing on any test in this file.
+ *
+ * Distinct from `RekeyAuditError` ("re-key persisted, audit missing")
+ * and `PartialUpdateError` ("content delta persisted, re-key did not
+ * happen"). Callers branch on `instanceof` to distinguish the three
+ * shapes.
+ */
+export class MemoryCreatePartialFailureError extends Error {
+  readonly pageId: string
+  readonly cleanedUp: boolean
+  readonly bodyWriteError: unknown
+  readonly cleanupError: unknown
+
+  constructor(
+    message: string,
+    details: {
+      pageId: string
+      cleanedUp: boolean
+      bodyWriteError: unknown
+      cleanupError?: unknown
+    },
+  ) {
+    super(message)
+    this.name = "MemoryCreatePartialFailureError"
+    this.pageId = details.pageId
+    this.cleanedUp = details.cleanedUp
+    this.bodyWriteError = details.bodyWriteError
+    this.cleanupError = details.cleanupError
+  }
+}
+
+/**
  * Per-side outcome of `MemoryService.recordCompared`. Each flag is
  * `true` when this call actually issued a `pages.update` for that side
  * (the loaded snapshot did NOT already carry a matching `(target,
@@ -688,13 +782,63 @@ export class MemoryService {
       }),
     })
 
-    // Write content via markdown API
+    // Write content via markdown API. The SDK splits memory creation
+    // across two calls — properties above, body below — so a rejection
+    // here would otherwise leave a properties-only orphan that a naive
+    // retry would duplicate. Best-effort archive the orphan, then
+    // surface a structured error carrying enough state for the caller
+    // to retry safely or surface the failure to the operator. See
+    // `MemoryCreatePartialFailureError`.
     if (decoded.content) {
-      await this.client.pages.updateMarkdown({
-        page_id: page.id,
-        type: "insert_content",
-        insert_content: { content: decoded.content },
-      })
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: page.id,
+          type: "insert_content",
+          insert_content: { content: decoded.content },
+        })
+      } catch (bodyWriteError) {
+        // Direct `pages.update` rather than `MemoryService.archive()`:
+        // the page was just created in this same call, so the
+        // title-cache eviction + write-epoch sandwich `archive()`
+        // performs to protect concurrent readers cannot apply — no
+        // consumer has had time to cache the title or dispatch a
+        // racing read against this id. Inlining keeps the cleanup a
+        // single round-trip with no incidental cache work.
+        let cleanedUp = false
+        let cleanupError: unknown
+        try {
+          await this.client.pages.update({
+            page_id: page.id,
+            archived: true,
+          })
+          cleanedUp = true
+        } catch (err) {
+          cleanupError = err
+        }
+        const cause =
+          bodyWriteError instanceof Error
+            ? bodyWriteError.message
+            : String(bodyWriteError)
+        const message = cleanedUp
+          ? `Memory create partial failure: the Memories DB row was ` +
+            `created (page ${page.id}) but the body write failed: ${cause}. ` +
+            `The orphan row was archived to keep the vault consistent; ` +
+            `retry the create to land a fresh row.`
+          : `Memory create partial failure: the Memories DB row was ` +
+            `created (page ${page.id}) but the body write failed: ${cause}. ` +
+            `The cleanup archive ALSO failed (${
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError)
+            }); the orphan row remains live in the vault. Archive it ` +
+            `manually before retrying to avoid a duplicate row.`
+        throw new MemoryCreatePartialFailureError(message, {
+          pageId: page.id,
+          cleanedUp,
+          bodyWriteError,
+          cleanupError,
+        })
+      }
     }
 
     return this.pageToMemory(page as PageObjectResponse, decoded.content ?? "")

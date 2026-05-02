@@ -1,6 +1,7 @@
 import { Command } from "commander"
 import { readFile, readdir, stat } from "node:fs/promises"
 import { resolve, relative, basename, extname, join } from "node:path"
+import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import { initServices, type LoreServices } from "../../services.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../../notion/rate-limit.js"
 import type { Memory } from "../../types.js"
@@ -86,6 +87,53 @@ const IGNORED_FILES = new Set([
   "pnpm-lock.yaml",
 ])
 
+export interface MineFailure {
+  file: string
+  error: string
+  partialPageId?: string
+  partialCleanedUp?: boolean
+}
+
+export interface MineFailureRecord {
+  failure: MineFailure
+  lineMessage: string
+  orphanPageId: string | null
+}
+
+export function classifyMineFailure(file: string, err: unknown): MineFailureRecord {
+  if (err instanceof MemoryCreatePartialFailureError) {
+    const orphanTag = err.cleanedUp
+      ? ""
+      : ` [orphan ${err.pageId} requires manual archive]`
+    return {
+      failure: {
+        file,
+        error: err.message,
+        partialPageId: err.pageId,
+        partialCleanedUp: err.cleanedUp,
+      },
+      lineMessage: `  Failed ${file}: ${err.message}${orphanTag}`,
+      orphanPageId: err.cleanedUp ? null : err.pageId,
+    }
+  }
+  const msg = err instanceof Error ? err.message : String(err)
+  return {
+    failure: { file, error: msg },
+    lineMessage: `  Failed ${file}: ${msg}`,
+    orphanPageId: null,
+  }
+}
+
+export function formatOrphanSummary(orphanedPageIds: ReadonlyArray<string>): string[] {
+  if (orphanedPageIds.length === 0) return []
+  return [
+    "",
+    `Orphan pages from cleanup-archive failures (${orphanedPageIds.length}):`,
+    ...orphanedPageIds.map((id) => `  ${id}`),
+    "Archive these manually before re-running `lore mine` to avoid duplicate rows.",
+  ]
+}
+
 /** Parsed and validated `lore mine` flags. */
 export interface MineCliOptions {
   project: string | undefined
@@ -115,9 +163,7 @@ export function parseMineCliOptions(raw: {
   pattern?: string
   dryRun?: boolean
   limit?: string
-}):
-  | { ok: true; value: MineCliOptions }
-  | { ok: false; message: string } {
+}): { ok: true; value: MineCliOptions } | { ok: false; message: string } {
   let limit = DEFAULT_MINE_LIMIT
   if (raw.limit !== undefined) {
     // String-side digit-only check rejects:
@@ -325,7 +371,7 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
 export function selectMineFiles(
   files: readonly string[],
   pattern: string,
-  limit: number,
+  limit: number
 ): string[] {
   return files
     .filter((f) => TEXT_EXTENSIONS.has(extname(f).toLowerCase()))
@@ -350,14 +396,14 @@ export function selectMineFiles(
  */
 export async function resolveMineProject(
   services: LoreServices,
-  explicitName: string | undefined,
+  explicitName: string | undefined
 ): Promise<{ id: string } | null> {
   if (explicitName) {
     const found = await services.projects.findByName(explicitName)
     if (!found) {
       throw new Error(
         `Project "${explicitName}" not found. ` +
-          "Run `lore status projects` to list configured projects.",
+          "Run `lore status projects` to list configured projects."
       )
     }
     return { id: found.id }
@@ -410,7 +456,7 @@ export async function findExistingFileMemory(
   services: LoreServices,
   expectedTitle: string,
   relPath: string,
-  projectId: string | undefined,
+  projectId: string | undefined
 ): Promise<string | null> {
   const results = await services.memories.search({
     query: relPath,
@@ -424,7 +470,7 @@ export async function findExistingFileMemory(
     (m: Memory) =>
       m.source === "file" &&
       m.title === expectedTitle &&
-      projectIdsEqual(m.projectIds, expectedProjectIds),
+      projectIdsEqual(m.projectIds, expectedProjectIds)
   )
   return match?.id ?? null
 }
@@ -436,7 +482,7 @@ export type MineFileOutcome =
   | { kind: "indexed"; file: string }
   | { kind: "updated"; file: string }
   | { kind: "skipped"; file: string; reason: string }
-  | { kind: "failed"; file: string; error: string }
+  | ({ kind: "failed"; lineMessage: string; orphanPageId: string | null } & MineFailure)
 
 /** Aggregate result of a mine run. */
 export interface MineSummary {
@@ -455,7 +501,7 @@ async function processOneFile(
   dir: string,
   file: string,
   projectId: string | undefined,
-  topicId: string | undefined,
+  topicId: string | undefined
 ): Promise<MineFileOutcome> {
   try {
     const fullPath = resolve(dir, file)
@@ -479,12 +525,7 @@ async function processOneFile(
     const title = `${basename(file)} — ${relPath}`
     const body = `# ${relPath}\n\n\`\`\`${ext}\n${content}\n\`\`\``
 
-    const existingId = await findExistingFileMemory(
-      services,
-      title,
-      relPath,
-      projectId,
-    )
+    const existingId = await findExistingFileMemory(services, title, relPath, projectId)
 
     if (existingId) {
       // Topic preservation: when the rerun has no `--topic` (or
@@ -517,8 +558,13 @@ async function processOneFile(
     })
     return { kind: "indexed", file }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { kind: "failed", file, error: msg }
+    const record = classifyMineFailure(file, err)
+    return {
+      kind: "failed",
+      ...record.failure,
+      lineMessage: record.lineMessage,
+      orphanPageId: record.orphanPageId,
+    }
   }
 }
 
@@ -550,6 +596,7 @@ export async function runMineUpsert(
   projectId: string | undefined,
   topicId: string | undefined,
   log: (msg: string) => void = (msg) => process.stdout.write(msg + "\n"),
+  logError: (msg: string) => void = (msg) => process.stderr.write(msg + "\n")
 ): Promise<MineSummary> {
   const concurrency =
     services.config.notion?.rateLimit?.concurrency ?? DEFAULT_NOTION_CONCURRENCY
@@ -559,7 +606,7 @@ export async function runMineUpsert(
   for (let i = 0; i < files.length; i += concurrency) {
     const batch = files.slice(i, i + concurrency)
     const results = await Promise.all(
-      batch.map((file) => processOneFile(services, dir, file, projectId, topicId)),
+      batch.map((file) => processOneFile(services, dir, file, projectId, topicId))
     )
     outcomes.push(...results)
 
@@ -567,7 +614,7 @@ export async function runMineUpsert(
     // sees them at the moment they happen rather than at end-of-run.
     for (const r of results) {
       if (r.kind === "skipped") log(`  Skipping ${r.file} (${r.reason})`)
-      else if (r.kind === "failed") log(`  Failed ${r.file}: ${r.error}`)
+      else if (r.kind === "failed") logError(r.lineMessage)
       if (r.kind === "indexed" || r.kind === "updated") writes++
     }
     if (writes >= nextProgressMark) {
@@ -600,8 +647,7 @@ export async function runMineUpsert(
  */
 export function formatMineSummary(s: MineSummary, totalFiles: number): string {
   const total = s.indexed + s.updated
-  const breakdown =
-    s.updated > 0 ? ` (${s.indexed} new, ${s.updated} updated)` : ""
+  const breakdown = s.updated > 0 ? ` (${s.indexed} new, ${s.updated} updated)` : ""
   if (s.failed > 0) {
     return `Done. Indexed ${total}/${totalFiles} files${breakdown} (${s.failed} failed).`
   }
@@ -615,7 +661,7 @@ async function walkDirectory(dir: string, base: string): Promise<string[]> {
     if (entry.isDirectory()) {
       if (!IGNORED_DIRS.has(entry.name)) {
         results.push(
-          ...(await walkDirectory(join(dir, entry.name), join(base, entry.name))),
+          ...(await walkDirectory(join(dir, entry.name), join(base, entry.name)))
         )
       }
     } else if (!IGNORED_FILES.has(entry.name)) {
@@ -633,13 +679,13 @@ export const mineCommand = new Command("mine")
   .option(
     "--pattern <glob>",
     "File glob pattern (relative to indexed root)",
-    DEFAULT_MINE_PATTERN,
+    DEFAULT_MINE_PATTERN
   )
   .option("--dry-run", "Preview files without indexing")
   .option(
     "-n, --limit <n>",
     `Max files to index (default ${DEFAULT_MINE_LIMIT})`,
-    String(DEFAULT_MINE_LIMIT),
+    String(DEFAULT_MINE_LIMIT)
   )
   .action(
     async (
@@ -706,15 +752,18 @@ export const mineCommand = new Command("mine")
         }
 
         console.log(`Indexing ${textFiles.length} files...`)
-        const summary = await runMineUpsert(
-          services,
-          dir,
-          textFiles,
-          projectId,
-          topicId,
-        )
+        const summary = await runMineUpsert(services, dir, textFiles, projectId, topicId)
 
         console.log(formatMineSummary(summary, textFiles.length))
+        for (const line of formatOrphanSummary(
+          summary.outcomes.flatMap((outcome) =>
+            outcome.kind === "failed" && outcome.orphanPageId
+              ? [outcome.orphanPageId]
+              : []
+          )
+        )) {
+          console.error(line)
+        }
         if (summary.failed > 0) {
           process.exitCode = 1
         }

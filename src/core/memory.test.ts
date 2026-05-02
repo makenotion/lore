@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   MemoryService,
+  MemoryCreatePartialFailureError,
   pageToMemory,
   tieBreakingRrfCompare,
   appendCompareNote,
@@ -292,6 +293,267 @@ describe("MemoryService.create — Confidence Score write semantics (#01)", () =
 
     const props = createSpy.mock.calls[0]![0].properties
     expect("Confidence Score" in props).toBe(false)
+  })
+})
+
+describe("MemoryService.create — partial-failure on body write (issue #190)", () => {
+  // The Notion SDK splits memory creation across two calls: properties
+  // first via `pages.create`, body second via `pages.updateMarkdown`.
+  // A failure between them used to leave a properties-only orphan that
+  // a naive retry would duplicate. These pins cover the structured
+  // partial-failure handling that replaced the silent-orphan behavior.
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makePartialFailureClient(opts: {
+    bodyWriteError: Error
+    cleanupError?: Error
+  }) {
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-orphan",
+        created_time: "2026-05-02T00:00:00.000Z",
+        last_edited_time: "2026-05-02T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      }),
+    )
+    const updateMarkdownSpy = vi.fn(async () => {
+      throw opts.bodyWriteError
+    })
+    const updateSpy = vi.fn(async (_args: { page_id: string; archived?: boolean }) => {
+      if (opts.cleanupError) throw opts.cleanupError
+      return {}
+    })
+    const client = {
+      pages: {
+        create: createSpy,
+        updateMarkdown: updateMarkdownSpy,
+        update: updateSpy,
+      },
+    } as unknown as Client
+    return { client, createSpy, updateMarkdownSpy, updateSpy }
+  }
+
+  it("body-write failure with successful cleanup: archives the orphan and throws MemoryCreatePartialFailureError(cleanedUp=true)", async () => {
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const { client, updateSpy, updateMarkdownSpy } = makePartialFailureClient({
+      bodyWriteError,
+    })
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.create({ title: "x", content: "body prose" })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(MemoryCreatePartialFailureError)
+    const partial = caught as MemoryCreatePartialFailureError
+    expect(partial.pageId).toBe("mem-orphan")
+    expect(partial.cleanedUp).toBe(true)
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.cleanupError).toBeUndefined()
+    expect(partial.message).toMatch(/Memories DB row was created/)
+    expect(partial.message).toContain("mem-orphan")
+    expect(partial.message).toMatch(/archived to keep the vault consistent/)
+    expect(partial.message).toMatch(/retry the create/)
+
+    // Body write was attempted; cleanup archive followed.
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy.mock.calls[0]![0]).toEqual({
+      page_id: "mem-orphan",
+      archived: true,
+    })
+  })
+
+  it("body-write failure with cleanup also failing: throws MemoryCreatePartialFailureError(cleanedUp=false) carrying both errors", async () => {
+    // The orphan remains live in the vault. The error must surface the
+    // page id AND the cleanup failure so an operator can finish what
+    // the system couldn't, and the message must direct them to manual
+    // archive before retry to avoid a duplicate row.
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const cleanupError = new Error("Notion archive failed (429)")
+    const { client, updateSpy } = makePartialFailureClient({
+      bodyWriteError,
+      cleanupError,
+    })
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.create({ title: "x", content: "body prose" })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(MemoryCreatePartialFailureError)
+    const partial = caught as MemoryCreatePartialFailureError
+    expect(partial.pageId).toBe("mem-orphan")
+    expect(partial.cleanedUp).toBe(false)
+    expect(partial.bodyWriteError).toBe(bodyWriteError)
+    expect(partial.cleanupError).toBe(cleanupError)
+    expect(partial.message).toMatch(/cleanup archive ALSO failed/)
+    expect(partial.message).toMatch(/Archive it manually before retrying/)
+    expect(partial.message).toContain("mem-orphan")
+
+    // Cleanup archive was attempted exactly once even though it failed
+    // — best-effort, not retried inside the create path.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("no body content: skips updateMarkdown entirely so a body-write surface cannot fail", async () => {
+    // The partial-failure path is gated on `decoded.content`. A create
+    // with no body must not touch `pages.updateMarkdown` at all — pin
+    // the no-op so a future "always insert empty body" refactor can't
+    // silently re-introduce the partial-failure surface for properties-
+    // only memories (e.g. the wake-up digest's task-summary rows).
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-empty",
+        created_time: "2026-05-02T00:00:00.000Z",
+        last_edited_time: "2026-05-02T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      }),
+    )
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: {
+        create: createSpy,
+        updateMarkdown: updateMarkdownSpy,
+        update: updateSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.create({ title: "x", content: "" })
+
+    expect(result.id).toBe("mem-empty")
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("happy path: body write succeeds, no cleanup attempted", async () => {
+    // Pins that the partial-failure path is dormant on the success
+    // case — `pages.update` is NOT called when the body write resolves.
+    // Without this pin, a future "always archive on create" refactor
+    // could ship without anyone noticing.
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-ok",
+        created_time: "2026-05-02T00:00:00.000Z",
+        last_edited_time: "2026-05-02T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      }),
+    )
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: {
+        create: createSpy,
+        updateMarkdown: updateMarkdownSpy,
+        update: updateSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.create({ title: "x", content: "prose" })
+
+    expect(result.id).toBe("mem-ok")
+    expect(result.content).toBe("prose")
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("non-Error thrown values fall back through String() in the message", async () => {
+    // Notion SDK rejections are typically `Error` instances, but
+    // network-layer wrappers and custom retry shims can surface a
+    // bare string or number. Pin the `String(...)` fallback path so
+    // a future "throw new MyCustomError" refactor doesn't silently
+    // regress message quality. The structured `bodyWriteError` field
+    // still carries the raw value for callers that want it.
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-string-throw",
+        created_time: "2026-05-02T00:00:00.000Z",
+        last_edited_time: "2026-05-02T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      }),
+    )
+    const updateMarkdownSpy = vi.fn(async () => {
+      throw "503 Service Unavailable"
+    })
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: {
+        create: createSpy,
+        updateMarkdown: updateMarkdownSpy,
+        update: updateSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.create({ title: "x", content: "prose" })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(MemoryCreatePartialFailureError)
+    const partial = caught as MemoryCreatePartialFailureError
+    expect(partial.bodyWriteError).toBe("503 Service Unavailable")
+    expect(partial.message).toContain("503 Service Unavailable")
+    expect(partial.cleanedUp).toBe(true)
+  })
+
+  it("pages.create rejection bubbles untouched: no cleanup, no body-write attempt, no structured wrap", async () => {
+    // The partial-failure surface is gated on a SUCCESSFUL `pages.create`
+    // followed by a FAILED body write. A rejection at the create call
+    // means no orphan row exists — there is nothing to clean up, and
+    // wrapping the create error in `MemoryCreatePartialFailureError`
+    // would falsely imply a partial state that does not exist. Pin
+    // the bubble-through behavior so a future "wrap every create
+    // failure" refactor can't regress this.
+    const createError = new Error("Notion 400: invalid relation")
+    const createSpy = vi.fn(async () => {
+      throw createError
+    })
+    const updateMarkdownSpy = vi.fn(async () => ({}))
+    const updateSpy = vi.fn(async () => ({}))
+    const client = {
+      pages: {
+        create: createSpy,
+        updateMarkdown: updateMarkdownSpy,
+        update: updateSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.create({ title: "x", content: "prose" })).rejects.toBe(
+      createError,
+    )
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(updateSpy).not.toHaveBeenCalled()
   })
 })
 

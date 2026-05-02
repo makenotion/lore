@@ -53,7 +53,12 @@ export { projectOrUnscopedFilter } from "./notion/filters.js"
 export type { LoreServices } from "./services.js"
 export { initServices } from "./services.js"
 export { TopicService } from "./core/topic.js"
-export { MemoryService } from "./core/memory.js"
+export {
+  MemoryService,
+  MemoryCreatePartialFailureError,
+  RekeyAuditError,
+  PartialUpdateError,
+} from "./core/memory.js"
 export { FactService } from "./core/fact.js"
 export { DecisionService } from "./core/decision.js"
 export { EntityService } from "./core/entity.js"

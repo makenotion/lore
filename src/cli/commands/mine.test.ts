@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { relative } from "node:path"
+import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import {
   DEFAULT_MINE_LIMIT,
   DEFAULT_MINE_PATTERN,
   FIND_EXISTING_LIMIT,
+  classifyMineFailure,
+  formatOrphanSummary,
   findExistingFileMemory,
   formatMineSummary,
   globToRegExp,
@@ -349,8 +352,7 @@ describe("resolveMineProject", () => {
 
   it("returns the project when --project resolves", async () => {
     const services = makeServices({
-      findByName: async (n) =>
-        n === "Mail" ? { id: "p-mail", name: "Mail" } : null,
+      findByName: async (n) => (n === "Mail" ? { id: "p-mail", name: "Mail" } : null),
     })
     const result = await resolveMineProject(services, "Mail")
     expect(result).toEqual({ id: "p-mail" })
@@ -363,7 +365,7 @@ describe("resolveMineProject", () => {
     // with another project's existing rows.
     const services = makeServices({ findByName: async () => null })
     await expect(resolveMineProject(services, "Mial")).rejects.toThrow(
-      /Project "Mial" not found.*lore status projects/,
+      /Project "Mial" not found.*lore status projects/
     )
   })
 
@@ -440,7 +442,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBe("m1")
   })
@@ -451,7 +453,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -472,7 +474,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -493,7 +495,7 @@ describe("findExistingFileMemory", () => {
       services,
       "foo.ts — src/foo.ts",
       "src/foo.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -516,7 +518,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -538,7 +540,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -558,7 +560,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p1",
+      "p1"
     )
     expect(id).toBeNull()
   })
@@ -579,7 +581,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      undefined,
+      undefined
     )
     expect(id).toBe("m1")
   })
@@ -596,7 +598,7 @@ describe("findExistingFileMemory", () => {
       services,
       "mine.ts — src/cli/commands/mine.ts",
       "src/cli/commands/mine.ts",
-      "p-mail",
+      "p-mail"
     )
     expect(search).toHaveBeenCalledTimes(1)
     expect(search).toHaveBeenCalledWith(
@@ -606,9 +608,103 @@ describe("findExistingFileMemory", () => {
         projectId: "p-mail",
         limit: FIND_EXISTING_LIMIT,
         includeContent: false,
-      }),
+      })
     )
     expect(FIND_EXISTING_LIMIT).toBe(100)
+  })
+})
+
+describe("classifyMineFailure", () => {
+  it("records archived partial-create failures without orphan follow-up", () => {
+    const err = new MemoryCreatePartialFailureError(
+      "Memory create partial failure: body write failed",
+      {
+        pageId: "p-1",
+        cleanedUp: true,
+        bodyWriteError: new Error("oops"),
+      }
+    )
+
+    const record = classifyMineFailure("foo.ts", err)
+
+    expect(record.failure).toEqual({
+      file: "foo.ts",
+      error: err.message,
+      partialPageId: "p-1",
+      partialCleanedUp: true,
+    })
+    expect(record.lineMessage).toBe(`  Failed foo.ts: ${err.message}`)
+    expect(record.lineMessage).not.toMatch(/\[orphan/)
+    expect(record.orphanPageId).toBeNull()
+  })
+
+  it("records live orphan partial-create failures for manual cleanup", () => {
+    const err = new MemoryCreatePartialFailureError(
+      "Memory create partial failure: cleanup also failed",
+      {
+        pageId: "p-2",
+        cleanedUp: false,
+        bodyWriteError: new Error("oops"),
+        cleanupError: new Error("boom"),
+      }
+    )
+
+    const record = classifyMineFailure("bar.py", err)
+
+    expect(record.failure.partialPageId).toBe("p-2")
+    expect(record.failure.partialCleanedUp).toBe(false)
+    expect(record.failure.error).toBe(err.message)
+    expect(record.lineMessage).toContain("[orphan p-2 requires manual archive]")
+    expect(record.lineMessage.startsWith("  Failed bar.py:")).toBe(true)
+    expect(record.orphanPageId).toBe("p-2")
+  })
+
+  it("keeps generic errors in the pre-existing failure shape", () => {
+    const record = classifyMineFailure(
+      "baz.md",
+      new Error("Notion 400: invalid relation")
+    )
+
+    expect(record.failure.partialPageId).toBeUndefined()
+    expect(record.failure.partialCleanedUp).toBeUndefined()
+    expect(record.failure.error).toBe("Notion 400: invalid relation")
+    expect(record.lineMessage).toBe("  Failed baz.md: Notion 400: invalid relation")
+    expect(record.orphanPageId).toBeNull()
+  })
+
+  it("stringifies non-Error thrown values", () => {
+    const record = classifyMineFailure("qux.json", "503 Service Unavailable")
+
+    expect(record.failure.error).toBe("503 Service Unavailable")
+    expect(record.failure.partialPageId).toBeUndefined()
+    expect(record.failure.partialCleanedUp).toBeUndefined()
+    expect(record.lineMessage).toBe("  Failed qux.json: 503 Service Unavailable")
+    expect(record.orphanPageId).toBeNull()
+  })
+})
+
+describe("formatOrphanSummary", () => {
+  it("returns no lines when there are no orphaned pages", () => {
+    expect(formatOrphanSummary([])).toEqual([])
+  })
+
+  it("renders a manual cleanup block for orphaned pages", () => {
+    const lines = formatOrphanSummary(["p-2", "p-3", "p-4"])
+
+    expect(lines[0]).toBe("")
+    expect(lines[1]).toBe("Orphan pages from cleanup-archive failures (3):")
+    expect(lines[2]).toBe("  p-2")
+    expect(lines[3]).toBe("  p-3")
+    expect(lines[4]).toBe("  p-4")
+    expect(lines[5]).toContain("Archive these manually")
+    expect(lines[5]).toContain("`lore mine`")
+    expect(lines).toHaveLength(6)
+  })
+
+  it("keeps the summary header stable for one orphaned page", () => {
+    const lines = formatOrphanSummary(["only-one"])
+    expect(lines[1]).toBe("Orphan pages from cleanup-archive failures (1):")
+    expect(lines[2]).toBe("  only-one")
   })
 })
 
@@ -628,37 +724,34 @@ describe("formatMineSummary", () => {
     // Backwards compat anchor: scripts and CI logs scraping for
     // `Indexed N files.` keep working unchanged on a no-update mine.
     expect(formatMineSummary(summary({ indexed: 12 }), 12)).toBe(
-      "Done! Indexed 12 files.",
+      "Done! Indexed 12 files."
     )
   })
 
   it("appends the breakdown clause only when at least one update landed", () => {
-    expect(
-      formatMineSummary(summary({ indexed: 8, updated: 4 }), 12),
-    ).toBe("Done! Indexed 12 files (8 new, 4 updated).")
+    expect(formatMineSummary(summary({ indexed: 8, updated: 4 }), 12)).toBe(
+      "Done! Indexed 12 files (8 new, 4 updated)."
+    )
   })
 
   it("does NOT emit the breakdown clause when only fresh creates", () => {
     expect(formatMineSummary(summary({ indexed: 12, updated: 0 }), 12)).toBe(
-      "Done! Indexed 12 files.",
+      "Done! Indexed 12 files."
     )
   })
 
   it("emits 'Done. Indexed N/M files (K failed).' on partial failure", () => {
     // Period (not exclamation) when failures are present — mirrors
     // pre-PR shape so log-scrape parsers stay stable.
-    expect(
-      formatMineSummary(summary({ indexed: 8, failed: 2 }), 10),
-    ).toBe("Done. Indexed 8/10 files (2 failed).")
+    expect(formatMineSummary(summary({ indexed: 8, failed: 2 }), 10)).toBe(
+      "Done. Indexed 8/10 files (2 failed)."
+    )
   })
 
   it("includes the breakdown clause alongside failures when both apply", () => {
-    expect(
-      formatMineSummary(
-        summary({ indexed: 4, updated: 4, failed: 2 }),
-        10,
-      ),
-    ).toBe("Done. Indexed 8/10 files (4 new, 4 updated) (2 failed).")
+    expect(formatMineSummary(summary({ indexed: 4, updated: 4, failed: 2 }), 10)).toBe(
+      "Done. Indexed 8/10 files (4 new, 4 updated) (2 failed)."
+    )
   })
 })
 
@@ -741,7 +834,7 @@ describe("runMineUpsert (orchestration)", () => {
 
   async function withFixture(
     files: Record<string, string>,
-    test: (dir: string) => Promise<void>,
+    test: (dir: string) => Promise<void>
   ) {
     const tmp = await mkdtemp(`${tmpdir()}/lore-mine-test-`)
     try {
@@ -760,24 +853,21 @@ describe("runMineUpsert (orchestration)", () => {
 
   it("creates fresh memories on a vault with no existing matches", async () => {
     const { services, updateCalls, createCalls } = makeServices({})
-    await withFixture(
-      { "a.ts": "// a", "b.ts": "// b" },
-      async (dir) => {
-        const summary = await runMineUpsert(
-          services,
-          dir,
-          ["a.ts", "b.ts"],
-          undefined,
-          undefined,
-          () => {},
-        )
-        expect(summary.indexed).toBe(2)
-        expect(summary.updated).toBe(0)
-        expect(summary.failed).toBe(0)
-        expect(createCalls).toHaveLength(2)
-        expect(updateCalls).toHaveLength(0)
-      },
-    )
+    await withFixture({ "a.ts": "// a", "b.ts": "// b" }, async (dir) => {
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["a.ts", "b.ts"],
+        undefined,
+        undefined,
+        () => {}
+      )
+      expect(summary.indexed).toBe(2)
+      expect(summary.updated).toBe(0)
+      expect(summary.failed).toBe(0)
+      expect(createCalls).toHaveLength(2)
+      expect(updateCalls).toHaveLength(0)
+    })
   })
 
   it("updates existing memories on a second run (idempotent upsert)", async () => {
@@ -797,7 +887,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       expect(first.indexed).toBe(1)
       expect(first.updated).toBe(0)
@@ -813,7 +903,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined,
-        () => {},
+        () => {}
       )
       expect(second.indexed).toBe(0)
       expect(second.updated).toBe(1)
@@ -830,27 +920,25 @@ describe("runMineUpsert (orchestration)", () => {
     // failure. Modeled by a `create` that rejects on a specific
     // file path — every other file must still process and the
     // summary's `failed` counter increments.
-    await withFixture(
-      { "good.ts": "// ok", "bad.ts": "// will-fail" },
-      async (dir) => {
-        const { services, update, create } = makeServices({})
-        // Override `create` to reject on bad.ts.
-        create.mockImplementationOnce(async () => {
-          throw new Error("simulated 429")
-        })
-        const summary = await runMineUpsert(
-          services,
-          dir,
-          ["bad.ts", "good.ts"], // bad first so it lands in the same batch
-          undefined,
-          undefined,
-          () => {},
-        )
-        expect(summary.indexed).toBe(1)
-        expect(summary.failed).toBe(1)
-        expect(update).not.toHaveBeenCalled()
-      },
-    )
+    await withFixture({ "good.ts": "// ok", "bad.ts": "// will-fail" }, async (dir) => {
+      const { services, update, create } = makeServices({})
+      // Override `create` to reject on bad.ts.
+      create.mockImplementationOnce(async () => {
+        throw new Error("simulated 429")
+      })
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["bad.ts", "good.ts"], // bad first so it lands in the same batch
+        undefined,
+        undefined,
+        () => {},
+        () => {}
+      )
+      expect(summary.indexed).toBe(1)
+      expect(summary.failed).toBe(1)
+      expect(update).not.toHaveBeenCalled()
+    })
   })
 
   it("skips files larger than the 100KB cap with kind: 'skipped' (no Notion call)", async () => {
@@ -867,14 +955,14 @@ describe("runMineUpsert (orchestration)", () => {
           ["big.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
         expect(summary.skipped).toBe(1)
         expect(summary.indexed).toBe(0)
         expect(summary.failed).toBe(0)
         expect(create).not.toHaveBeenCalled()
         expect(update).not.toHaveBeenCalled()
-      },
+      }
     )
   })
 
@@ -899,7 +987,7 @@ describe("runMineUpsert (orchestration)", () => {
         ["a.ts"],
         undefined,
         undefined, // no --topic on rerun
-        () => {},
+        () => {}
       )
       expect(updateCalls).toHaveLength(1)
       const payload = updateCalls[0]?.input as { topicId?: string }
@@ -945,12 +1033,12 @@ describe("runMineUpsert (orchestration)", () => {
           ["1.ts", "2.ts", "3.ts", "4.ts", "5.ts"],
           undefined,
           undefined,
-          () => {},
+          () => {}
         )
         // Peak concurrency must equal the configured value, not 1
         // (sequential) and not all-N (unbounded).
         expect(Math.max(...inFlight)).toBe(2)
-      },
+      }
     )
   })
 })
