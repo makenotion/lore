@@ -11,6 +11,15 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-02
+
+The 0.11.0 train rolls up the post-ntn dogfood reliability work:
+attributed writes, confidence propagation, safer Notion traffic, stricter
+partial-failure handling, and more exact MCP/CLI output. It also carries the
+version bump from the unpublished 0.10.1 package state to the next minor
+release so the GitHub Package can be cut from a matching `v0.11.0` release
+tag.
+
 ### Added
 
 - **Per-user attribution on every Memory write
@@ -47,6 +56,65 @@ log is the canonical source for those.
   networks who want the synchronous path export `LORE_USER_NAME`
   in shell rc; failures collapse to `{ author: null }` and never
   block startup.
+- **Dynamic confidence now mirrors onto Facts.** Facts derived from
+  Memories carry the current numeric confidence signal, keeping fact
+  graph inspection aligned with the adaptive-confidence model rather
+  than forcing operators to jump back to the originating Memory row.
+- **Outbound Notion calls are rate-limited and retry 429s.** A shared
+  token bucket and bounded backoff keep CLI, MCP, and hook surfaces from
+  stampeding Notion when a workflow fans out across many pages.
+- **Background autosave agents are configurable.** Hook users can point
+  the detached background save/extraction path at a different agent
+  command without editing the hook runner code.
+- **`lore-query action='audit'` includes overdue tasks.** Wake-up and
+  audit flows now surface stale tracked work alongside overdue memories,
+  facts, and decisions.
+- **MCP startup diagnostics stay connected on interactive init errors.**
+  If `initServices()` fails in an interactive MCP host, Lore registers
+  diagnostic stubs for all seven `lore-*` dispatchers instead of dropping
+  the client connection; hook-spawned background MCP children still fail
+  fast.
+- **Semantic memory search paginates before client-side filtering.** The
+  search path walks enough Notion pages to avoid dropping relevant rows
+  merely because early pages were filtered out locally.
+
+### Changed
+
+- **Trust indicators now cover the remaining decision and task list
+  surfaces.** Low-confidence rows are called out consistently across the
+  read surfaces that already participate in adaptive confidence.
+- **Task-list totals now identify exact vs. lower-bound counts.**
+  `lore-task action='list'` labels headers as exact or capped and uses
+  `>=` only for saturated buckets, so triage output does not overstate
+  precision.
+- **Operator docs now document package-consumer and agent setup paths.**
+  README/AGENTS guidance covers GitHub Packages consumption, assistant
+  config portability, and the current Lore agent setup expectations.
+
+### Fixed
+
+- **Auth and hook reliability.** Background hook workers forward the
+  canonical Notion auth env, ntn sessions re-resolve auth once after a
+  mid-session 401, and the OAuth authorization URL receives the configured
+  client id.
+- **Partial write failures are handled across Memory, Decision, and Task
+  creation.** If a Notion page write succeeds but a later indexing step
+  fails, Lore reports the partial state instead of pretending the create
+  fully succeeded.
+- **Archived memory rows are filtered consistently.** Memory list/search
+  paths and query surfaces no longer surface archived rows.
+- **Fact and entity edge cases no longer corrupt graph state.** Deduped
+  fact writes preserve longer review dates, entity relations are
+  backfilled on dedup hits, and entity resolution forwards and unions
+  project ids correctly.
+- **Wake-up and mining edge cases behave as requested.** `knowledgeFactLimit:
+  0` now means zero loaded facts, and `lore mine` honors `--pattern` while
+  validating `--limit`.
+- **Hook state paths and tempfiles are safer.** Session keys are sanitized
+  before building state-file paths, and background prompt tempfiles are
+  cleaned up when preparation fails.
+- **Decision write-boundary fields decode correctly.** Encoded rich-text
+  boundary values now round-trip before Decision writes reach Notion.
 
 ## [0.10.0] - 2026-05-01
 
@@ -432,7 +500,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/makenotion/lore/compare/v0.6.0...v0.9.0
 [0.6.0]: https://github.com/makenotion/lore/compare/v0.5.1...v0.6.0

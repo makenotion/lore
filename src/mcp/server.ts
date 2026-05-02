@@ -80,7 +80,7 @@ export async function startServer(): Promise<void> {
   // but degraded startup now presents the same dispatcher names with setup
   // recovery text instead of disconnecting the client.
   const server = new McpServer(
-    { name: "lore", version: "0.10.1" },
+    { name: "lore", version: "0.11.0" },
     {
       capabilities: {
         tools: {},

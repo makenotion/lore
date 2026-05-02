@@ -6,7 +6,7 @@ import {
   type Logger,
 } from "@notionhq/client"
 
-const USER_AGENT = "lore/0.10.1"
+const USER_AGENT = "lore/0.11.0"
 
 export interface ClientAuthSnapshot {
   token: string
