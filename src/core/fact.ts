@@ -23,6 +23,7 @@ import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
+import { withEntityRelationLocks } from "./entity-relation-lock.js"
 import {
   runFactDedupBackfill,
   type FactDedupBackfillResult,
@@ -76,6 +77,27 @@ const NOTION_MAX_PAGE_SIZE = 100
 // are 0-or-1 relation columns, so they cannot be truncated by Notion's
 // inline relation limit.
 const FACT_RELATION_PROPERTIES = ["Project"] as const
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from(
+    { length: Math.min(Math.max(concurrency, 1), items.length) },
+    async () => {
+      while (next < items.length) {
+        const index = next
+        next += 1
+        results[index] = await mapper(items[index]!)
+      }
+    }
+  )
+  await Promise.all(workers)
+  return results
+}
 
 /**
  * Clamp a caller-supplied `limit` to a Notion-safe `page_size`. Six
@@ -154,6 +176,42 @@ export interface CreateFactResult {
   fact: Fact
   deduped: boolean
   enriched: string[]
+}
+
+export interface FactEntityRepointPlan {
+  factId: string
+  subject: boolean
+  object: boolean
+}
+
+export interface FactEntityRepointResult {
+  plans: FactEntityRepointPlan[]
+  factsMatched: number
+  factsRepointed: number
+  subjectRelationsRepointed: number
+  objectRelationsRepointed: number
+  errors: Array<{ factId: string; message: string }>
+  planOnly: boolean
+}
+
+export interface RepointEntityOptions {
+  fromEntityId: string
+  toEntityId: string
+  apply: boolean
+  /**
+   * Defaults to true so entity merges preserve historical fact graph
+   * relations as well as live rows. Callers doing live-only maintenance can
+   * opt out explicitly.
+   */
+  includeInvalidated?: boolean
+}
+
+export const REPOINT_ENTITY_CONCURRENCY = 8
+
+interface RawEntityRelationHit {
+  factId: string
+  subjectEntityId: string | null
+  objectEntityId: string | null
 }
 
 /**
@@ -252,6 +310,156 @@ export class FactService {
       page_id: id,
       properties: properties as UpdatePageParameters["properties"],
     })
+  }
+
+  /**
+   * Move every SubjectEntity and/or ObjectEntity reference from one Entity row
+   * to another. Plan-only by default at the operator layer; when `apply` is
+   * true this keeps per-fact failure isolated so a transient Notion error
+   * does not block unrelated facts from being repaired.
+   */
+  async repointEntity(
+    options: RepointEntityOptions
+  ): Promise<FactEntityRepointResult> {
+    if (!options.fromEntityId) {
+      throw new Error("FactService.repointEntity: fromEntityId is required")
+    }
+    if (!options.toEntityId) {
+      throw new Error("FactService.repointEntity: toEntityId is required")
+    }
+    if (options.fromEntityId === options.toEntityId) {
+      throw new Error(
+        "FactService.repointEntity: fromEntityId and toEntityId must differ"
+      )
+    }
+
+    const facts = await this.queryRawEntityRelationHits(options.fromEntityId, {
+      includeInvalidated: options.includeInvalidated ?? true,
+    })
+    const plans = facts
+      .map(
+        (fact): FactEntityRepointPlan => ({
+          factId: fact.factId,
+          subject: fact.subjectEntityId === options.fromEntityId,
+          object: fact.objectEntityId === options.fromEntityId,
+        }),
+      )
+      .filter((plan) => plan.subject || plan.object)
+
+    const plannedSubject = plans.filter((p) => p.subject).length
+    const plannedObject = plans.filter((p) => p.object).length
+
+    if (!options.apply) {
+      return {
+        plans,
+        factsMatched: facts.length,
+        factsRepointed: plans.length,
+        subjectRelationsRepointed: plannedSubject,
+        objectRelationsRepointed: plannedObject,
+        errors: [],
+        planOnly: true,
+      }
+    }
+
+    const outcomes = await mapWithConcurrency(
+      plans,
+      REPOINT_ENTITY_CONCURRENCY,
+      async (plan) => {
+        const updates: {
+          subjectEntityId?: string
+          objectEntityId?: string
+        } = {}
+        if (plan.subject) updates.subjectEntityId = options.toEntityId
+        if (plan.object) updates.objectEntityId = options.toEntityId
+
+        try {
+          await this.setEntityRelations(plan.factId, updates)
+          return { plan, error: null }
+        } catch (err) {
+          return { plan, error: err }
+        }
+      }
+    )
+
+    let factsRepointed = 0
+    let subjectRelationsRepointed = 0
+    let objectRelationsRepointed = 0
+    const errors: Array<{ factId: string; message: string }> = []
+
+    for (const outcome of outcomes) {
+      if (outcome.error) {
+        errors.push({
+          factId: outcome.plan.factId,
+          message:
+            outcome.error instanceof Error
+              ? outcome.error.message
+              : String(outcome.error),
+        })
+        continue
+      }
+
+      factsRepointed += 1
+      if (outcome.plan.subject) subjectRelationsRepointed += 1
+      if (outcome.plan.object) objectRelationsRepointed += 1
+    }
+
+    return {
+      plans,
+      factsMatched: facts.length,
+      factsRepointed,
+      subjectRelationsRepointed,
+      objectRelationsRepointed,
+      errors,
+      planOnly: false,
+    }
+  }
+
+  private async queryRawEntityRelationHits(
+    entityId: string,
+    opts?: {
+      includeInvalidated?: boolean
+    }
+  ): Promise<RawEntityRelationHit[]> {
+    const filters: Array<Record<string, unknown>> = [
+      {
+        or: [
+          { property: "SubjectEntity", relation: { contains: entityId } },
+          { property: "ObjectEntity", relation: { contains: entityId } },
+        ],
+      },
+    ]
+
+    if (!opts?.includeInvalidated) {
+      filters.push({
+        property: "Valid Until",
+        date: { is_empty: true },
+      })
+    }
+
+    const filter = filters.length > 1 ? { and: filters } : filters[0]
+    const hits: RawEntityRelationHit[] = []
+    let cursor: string | undefined = undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "descending" }],
+        page_size: NOTION_MAX_PAGE_SIZE,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        hits.push({
+          factId: page.id,
+          subjectEntityId:
+            extractRelationIds(page.properties["SubjectEntity"])[0] ?? null,
+          objectEntityId:
+            extractRelationIds(page.properties["ObjectEntity"])[0] ?? null,
+        })
+      }
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+
+    return hits
   }
 
   /**
@@ -360,6 +568,15 @@ export class FactService {
    * path for any duplicates that slip through.
    */
   async createWithDedup(input: CreateFactInput): Promise<CreateFactResult> {
+    return withEntityRelationLocks(
+      [input.subjectEntityId, input.objectEntityId],
+      () => this.createWithDedupLocked(input),
+    )
+  }
+
+  private async createWithDedupLocked(
+    input: CreateFactInput
+  ): Promise<CreateFactResult> {
     // Decode at the write boundary so a doubly-encoded `Foo &amp;amp; Bar`
     // input flowing in from the autosave/markdown path lands in Notion as
     // `Foo & Bar`. Idempotent — a clean value passes through unchanged.
@@ -370,15 +587,17 @@ export class FactService {
       subject: decodeTextEntities(input.subject),
       object: decodeTextEntities(input.object),
     }
+    const relationSafeInput =
+      await this.dropArchivedEntityRelations(decodedInput)
 
-    const reviewBy = decodedInput.reviewBy
+    const reviewBy = relationSafeInput.reviewBy
 
     const dedupKey = computeFactDedupKey({
-      subject: decodedInput.subject,
-      predicate: decodedInput.predicate,
-      object: decodedInput.object,
+      subject: relationSafeInput.subject,
+      predicate: relationSafeInput.predicate,
+      object: relationSafeInput.object,
     })
-    const subjectKey = computeSubjectKey(decodedInput.subject)
+    const subjectKey = computeSubjectKey(relationSafeInput.subject)
 
     const existing = await this.findLiveByDedupKey(dedupKey).catch((err) => {
       // Probe failure (e.g. transient network blip, or a pre-migration vault
@@ -391,21 +610,26 @@ export class FactService {
     })
 
     if (existing) {
-      const enriched = await this.mergeOntoExisting(existing, decodedInput, reviewBy)
+      const enriched = await this.mergeOntoExisting(
+        existing,
+        relationSafeInput,
+        reviewBy,
+      )
       return { fact: existing, deduped: true, enriched }
     }
 
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildFactProps({
-        subject: decodedInput.subject,
-        predicate: decodedInput.predicate,
-        object: decodedInput.object,
-        projectIds: decodedInput.projectIds,
-        validFrom: decodedInput.validFrom ?? new Date().toISOString().split("T")[0],
+        subject: relationSafeInput.subject,
+        predicate: relationSafeInput.predicate,
+        object: relationSafeInput.object,
+        projectIds: relationSafeInput.projectIds,
+        validFrom:
+          relationSafeInput.validFrom ?? new Date().toISOString().split("T")[0],
         reviewBy,
-        sourceMemoryId: decodedInput.sourceMemoryId,
-        confidence: decodedInput.confidence ?? "certain",
+        sourceMemoryId: relationSafeInput.sourceMemoryId,
+        confidence: relationSafeInput.confidence ?? "certain",
         dedupKey,
         subjectKey,
         // PF3-01 — optional entity ids. When the caller has resolved
@@ -414,8 +638,8 @@ export class FactService {
         // with canonical relations from day one. Omitted callers
         // (legacy paths, internal decision-graph helpers) still write
         // valid rows; the migration backfills relations later.
-        subjectEntityId: decodedInput.subjectEntityId,
-        objectEntityId: decodedInput.objectEntityId,
+        subjectEntityId: relationSafeInput.subjectEntityId,
+        objectEntityId: relationSafeInput.objectEntityId,
       }),
     })
 
@@ -425,6 +649,43 @@ export class FactService {
       fact: (await this.pageToFact(page as PageObjectResponse))!,
       deduped: false,
       enriched: [],
+    }
+  }
+
+  private async dropArchivedEntityRelations(
+    input: CreateFactInput
+  ): Promise<CreateFactInput> {
+    const [subjectEntityId, objectEntityId] = await Promise.all([
+      this.liveEntityRelationId(input.subjectEntityId),
+      this.liveEntityRelationId(input.objectEntityId),
+    ])
+    if (
+      subjectEntityId === input.subjectEntityId &&
+      objectEntityId === input.objectEntityId
+    ) {
+      return input
+    }
+
+    // Avoid half-canonical rows. `queryByEntity`'s text fallback is
+    // relation-empty scoped; writing only one side would hide the dropped
+    // side from both the relation branch and the fallback branch.
+    if (
+      (input.subjectEntityId && !subjectEntityId && objectEntityId) ||
+      (input.objectEntityId && !objectEntityId && subjectEntityId)
+    ) {
+      return { ...input, subjectEntityId: undefined, objectEntityId: undefined }
+    }
+
+    return { ...input, subjectEntityId, objectEntityId }
+  }
+
+  private async liveEntityRelationId(id: string | undefined): Promise<string | undefined> {
+    if (!id) return undefined
+    try {
+      const page = await this.client.pages.retrieve({ page_id: id })
+      return isFullPage(page) && !page.archived ? id : undefined
+    } catch {
+      return undefined
     }
   }
 

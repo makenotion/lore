@@ -16,11 +16,12 @@ interfaces (MCP, CLI, hooks) and the Notion SDK layer (`src/notion/`).
 | `project.ts`  | `ProjectService`   | CRUD for projects, findByPath, findByName                  |
 | `topic.ts`    | `TopicService`     | CRUD for topics, getOrCreate, listByProject                |
 | `memory.ts`   | `MemoryService`    | CRUD + list + semantic search for memories. Hosts `touchOnRead` and `decrementConfidence` — the I/O wrappers around the `decay.ts` algebra (0.8.0/#03). Hosts `listAllForBackfill` (paginating async iterator over non-archived memories) and `applyBackfillScore` (single-call write of `Confidence Score` + `Last Referenced At`) for the 0.8.0/#11 baseline migration. Hosts `confidenceStats` — single-pass `Confidence Score` aggregator backing the `lore status` confidence-summary line (DEFERRED-04); reuses `listAllForBackfill` so the migration and the status surface share one walker. Hosts `findByTopicKey` (0.9.0/#01) — `(Topic Key, Project-set)` lookup helper shared by #06's upsert and #14's re-key — `upsertByTopicKey` (0.9.0/#06) — append-revision-on-match save path consumed by `lore-memory action='save'` when `topicKey` is set — and `rekeyTopicKey` (0.9.0/#14) — re-key path that appends a `## Re-keyed (date)` audit block, validates collision via `findByTopicKey`, and writes only the `Topic Key` column. Hosts `recordCompared` — symmetric two-page `pages.update` writing `Compared With` + `Compare Notes` on both sides of a judged pair (0.9.0/#05); accepts an `affected` field (loser id for asymmetric verdicts, `null` for symmetric) so direction is part of the pair-scoped idempotency key. Module also exports the standalone dispatch helpers `recordContradiction` / `recordSupersedence` — `recordContradiction` runs `createWithDedup` first (idempotent on the triple hash) then `decrementConfidence` with an atomic `compare_dispatch` ledger marker in `Compare Notes`; `recordSupersedence` adds `decisions.supersede` as step 1 ahead of fact + ledgered decrement, routing through the existing `lore-decision action='supersede'` semantics so the new decision's `Supersedes` relation and the old decision's `Status` flip alongside the contradiction signal. Both throw `CompareDispatchPartialFailureError` with `step` / `affectedMemoryId` / `factId` fields when a step lands but a successor fails — surfaces retry diagnostics rather than requiring manual repair. Prompt-version provenance survives only via the final Compare Notes audit trail; `FactService` has no body column in 0.9.0 so the helpers do NOT thread `reason` / `promptVersion` into the emitted fact. Module also exports the pair-scoped final-audit helper `hasMatchingCompareNote`, the dispatch-ledger helpers (`buildCompareDispatchLedgerEntry`, `hasCompareDispatchLedgerEntry`), and the structural `CompareDispatchServices` type the helpers accept |
-| `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity             |
+| `fact.ts`     | `FactService`      | Knowledge graph triples with temporal validity; includes `repointEntity` for entity merges |
 | `decision.ts` | `DecisionService`  | Decision lifecycle (Kind=decision memories): create, list (index tier), supersede, chain walk, review |
 | `task.ts`     | `TaskService`     | Task CRUD (Kind=task memories): create, list (index tier), update, close, queryOverdue, countActive, countClosedSince. Hosts `taskDaysOverdue` / `taskDaysStale` helpers and the `taskStats` + `formatTaskSummary` pair shared by `lore status` and `lore-context action='status'`. Canonical surface for tracked work (P3-02). |
 | `task-reconcile.ts` | `reconcileActiveTasks()` / `scoreCandidate()` / `formatReconcileOutput()` | Operator-pulled batch reconciliation (issue 0.7.0/14): scan active tasks against recent memories with resolution-shaped cues, score by entity / cue / recency, surface ranked candidate closures. Read-only; one-shot vault cleanup. Hosts the `MAX_RECONCILE_TASKS` / `RECONCILE_PER_TASK_LIMIT` / cue-pattern constants and the `mapWithConcurrency` fan-out helper. Shared by `lore-task action='reconcile'` and `lore tasks reconcile`. |
-| `entity.ts`   | `EntityService`    | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases. Optional service — `null` on legacy vaults that pre-date the Entities DB. `merge` was scoped out of PF3-01 because it requires a `FactService.repointEntity` helper that hasn't landed yet. |
+| `entity.ts`   | `EntityService`    | Canonical-entity registry (PF3-01): findByName, findByAlias, resolveOrCreateEntity (with ambiguity surface), addAliases, archive. Optional service — `null` on legacy vaults that pre-date the Entities DB. |
+| `entity-merge.ts` | `mergeEntities()` | Operator-driven duplicate Entity merge: preview/apply plan, repoint facts from loser to winner, append loser lookup forms to winner aliases, write a merge note, archive loser only after earlier steps succeed, then re-scan for late fact writes. |
 | `entity-migration.ts` | `buildEntities()` | One-shot pass that groups every fact's Subject/Object strings by normalized key, picks longest-form canonical, and re-points each fact's `SubjectEntity`/`ObjectEntity` relation. Plan-then-execute via `lore migrate --build-entities --yes`. |
 | `context.ts`  | `resolveProject()` | Match cwd to a project via longest prefix                  |
 | `wakeup.ts`   | `loadWakeUpData()` | Aggregate digest + memories + facts + decisions + active-task-related memories for wake-up surfaces (MCP tool + shell hook) |
@@ -1283,6 +1284,24 @@ post-migration (every live fact has relations, but the safety net
 hasn't been removed yet). `queryByEntity`'s union semantics cover all
 three; `pageToFact` populates `subjectEntityId`/`objectEntityId` from
 the relation column when present and falls through to `null` otherwise.
+
+`EntityService`'s name/alias cache is a performance cache, not an
+authority. Cache hits re-read the cached page before returning it so a
+long-lived MCP or hook process does not keep handing out an Entity row
+that another process archived during `lore entities merge`. If the
+cached row is archived (or no longer carries the lookup key), the
+service evicts the stale keys and falls back to the normal Notion query
+path, which lets the loser's alias resolve to the merge winner.
+
+Entity merges and relation-bearing fact writes also share a filesystem
+lock keyed by Entity id (`entity-relation-lock.ts`). `mergeEntities`
+holds the loser lock from the first repoint through the post-archive
+scan; `FactService.createWithDedup` holds locks for incoming
+`SubjectEntity` / `ObjectEntity` ids and revalidates those pages while
+inside the lock, dropping archived ids before it writes. That pair is
+what closes the cross-process stale-cache window: a writer that
+resolved the loser before the merge waits, then refuses to write the
+archived loser relation after the merge releases the lock.
 
 ### Measuring whether `--build-entities` collapsed the orphan graph
 

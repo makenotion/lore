@@ -65,8 +65,22 @@ export {
   TaskUpdatePartialFailureError,
 } from "./core/task.js"
 export { FactService } from "./core/fact.js"
+export type {
+  FactEntityRepointPlan,
+  FactEntityRepointResult,
+  RepointEntityOptions,
+} from "./core/fact.js"
 export { DecisionCreatePartialFailureError, DecisionService } from "./core/decision.js"
 export { EntityService } from "./core/entity.js"
+export type { ArchiveEntityOptions, GetEntityOptions } from "./core/entity.js"
+export {
+  aliasesForEntityMerge,
+  mergeEntities,
+  type EntityMergeError,
+  type EntityMergeErrorPhase,
+  type EntityMergeOptions,
+  type EntityMergeResult,
+} from "./core/entity-merge.js"
 export {
   resolveProject,
   isCatchAllProject,

@@ -1029,6 +1029,11 @@ export interface Entity {
    * service.
    */
   projectIds?: string[]
+  /**
+   * Whether the underlying Notion page is archived. Optional for source
+   * compatibility; service-produced entities populate it.
+   */
+  archived?: boolean
 }
 
 export interface CreateEntityInput {

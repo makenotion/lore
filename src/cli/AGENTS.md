@@ -23,6 +23,7 @@ debugging, manual search).
 | `commands/digest.ts` | `lore digest` -- gather digest data + spawn background synthesizer |
 | `commands/tasks.ts` | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`) |
 | `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`) |
+| `commands/entities.ts` | `lore entities` -- entity registry subcommands (currently: `merge`) |
 
 ## Commander Patterns
 
@@ -136,6 +137,7 @@ title-shaped to link.
 | `lore digest` | none | `-p, --project`, `--period`, `--since`, `--until`, `--dry-run` | Gather project digest data and spawn a background `claude -p` synthesizer; `--dry-run` prints raw data only |
 | `lore tasks reconcile` | none | `-p, --project`, `--min-score`, `-n, --limit` | Scan active tasks for resolution-shaped memory matches and surface candidate closures (read-only) |
 | `lore conflicts scan` | none | `-p, --project`, `-n, --limit`, `--raw-limit`, `--include-bodies`, `--json`, `--exhaustive` | Walk the vault, surface candidate conflict pairs for in-context judgment by the calling agent (read-only; emits prompt-ready output) |
+| `lore entities merge --from <loser-id> --into <winner-id>` | Loser Entity ID, winner Entity ID | `--yes`, `--dry-run` | Preview/apply a duplicate Entity merge. Plan-only by default; `--yes` repoints Facts from loser to winner, appends loser lookup forms to winner aliases, writes a merge note, then archives the loser. Legacy positional ids are still accepted. |
 
 ## The auth Command
 

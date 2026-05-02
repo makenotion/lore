@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import {
   FactService,
+  REPOINT_ENTITY_CONCURRENCY,
   __resetProbeFailureLogForTests,
   clampNotionPageSize,
 } from "./fact.js"
@@ -41,13 +42,14 @@ function factPage(overrides: {
   sourceMemoryId?: string | null
   subjectEntityId?: string | null
   objectEntityId?: string | null
+  archived?: boolean
 }): PageObjectResponse {
   return {
     object: "page",
     id: overrides.id ?? "fact-id",
     created_time: "2026-01-01T00:00:00.000Z",
     last_edited_time: "2026-02-01T00:00:00.000Z",
-    archived: false,
+    archived: overrides.archived ?? false,
     url: `https://notion.so/${overrides.id ?? "fact-id"}`,
     parent: { type: "database_id", database_id: "facts-db" },
     properties: {
@@ -122,13 +124,17 @@ function factPage(overrides: {
 }
 
 function createMockClient() {
+  const retrieve = vi.fn(async (args: { page_id: string }) =>
+    factPage({ id: args.page_id })
+  )
   return {
     dataSources: { query: vi.fn() },
-    pages: { create: vi.fn(), update: vi.fn() },
+    pages: { create: vi.fn(), retrieve, update: vi.fn() },
   } as unknown as Client & {
     dataSources: { query: ReturnType<typeof vi.fn> }
     pages: {
       create: ReturnType<typeof vi.fn>
+      retrieve: ReturnType<typeof vi.fn>
       update: ReturnType<typeof vi.fn>
     }
   }
@@ -182,6 +188,287 @@ function createClient(responses: Array<{
     calls,
   }
 }
+
+describe("FactService.repointEntity", () => {
+  it("repoints subject-only references", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-subject",
+          subjectEntityId: "ent-loser",
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.factsRepointed).toBe(1)
+    expect(result.subjectRelationsRepointed).toBe(1)
+    expect(result.objectRelationsRepointed).toBe(0)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-subject",
+      properties: {
+        SubjectEntity: { relation: [{ id: "ent-winner" }] },
+      },
+    })
+  })
+
+  it("repoints object-only references", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-object",
+          subjectEntityId: null,
+          objectEntityId: "ent-loser",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.factsRepointed).toBe(1)
+    expect(result.subjectRelationsRepointed).toBe(0)
+    expect(result.objectRelationsRepointed).toBe(1)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-object",
+      properties: {
+        ObjectEntity: { relation: [{ id: "ent-winner" }] },
+      },
+    })
+  })
+
+  it("repoints both sides of one fact with a single update", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-both",
+          subjectEntityId: "ent-loser",
+          objectEntityId: "ent-loser",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.factsRepointed).toBe(1)
+    expect(result.subjectRelationsRepointed).toBe(1)
+    expect(result.objectRelationsRepointed).toBe(1)
+    expect(client.pages.update).toHaveBeenCalledTimes(1)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-both",
+      properties: {
+        SubjectEntity: { relation: [{ id: "ent-winner" }] },
+        ObjectEntity: { relation: [{ id: "ent-winner" }] },
+      },
+    })
+  })
+
+  it("ignores defensive raw hits that no longer reference the loser", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-already",
+          subjectEntityId: "ent-winner",
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.factsMatched).toBe(1)
+    expect(result.plans).toEqual([])
+    expect(result.factsRepointed).toBe(0)
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("paginates raw relation hits before planning", async () => {
+    const client = createMockClient()
+    client.dataSources.query
+      .mockResolvedValueOnce({
+        results: [
+          factPage({
+            id: "fact-page-1",
+            subjectEntityId: "ent-loser",
+          }),
+        ],
+        has_more: true,
+        next_cursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        results: [
+          factPage({
+            id: "fact-page-2",
+            objectEntityId: "ent-loser",
+          }),
+        ],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: false,
+    })
+
+    expect(result.factsMatched).toBe(2)
+    expect(result.plans).toEqual([
+      { factId: "fact-page-1", subject: true, object: false },
+      { factId: "fact-page-2", subject: false, object: true },
+    ])
+    expect(client.dataSources.query).toHaveBeenCalledTimes(2)
+    expect(client.dataSources.query.mock.calls[1][0]).toMatchObject({
+      start_cursor: "cursor-2",
+    })
+  })
+
+  it("repoints raw relation rows even when the predicate is filtered from Fact", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "fact-tracking",
+          predicate: "needs_action" as never,
+          subjectEntityId: "ent-loser",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.factsMatched).toBe(1)
+    expect(result.factsRepointed).toBe(1)
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "fact-tracking",
+      properties: {
+        SubjectEntity: { relation: [{ id: "ent-winner" }] },
+      },
+    })
+  })
+
+  it("continues after a per-fact update failure and reports the partial state", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({ id: "fact-ok", subjectEntityId: "ent-loser" }),
+        factPage({ id: "fact-fail", subjectEntityId: "ent-loser" }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.update
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("notion 429"))
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.plans).toHaveLength(2)
+    expect(result.factsRepointed).toBe(1)
+    expect(result.subjectRelationsRepointed).toBe(1)
+    expect(result.errors).toEqual([
+      { factId: "fact-fail", message: "notion 429" },
+    ])
+  })
+
+  it("bounds concurrent per-fact updates", async () => {
+    const client = createMockClient()
+    const rows = Array.from({ length: REPOINT_ENTITY_CONCURRENCY + 3 }, (_, i) =>
+      factPage({ id: `fact-${i}`, subjectEntityId: "ent-loser" })
+    )
+    client.dataSources.query.mockResolvedValueOnce({
+      results: rows,
+      has_more: false,
+      next_cursor: null,
+    })
+    let inFlight = 0
+    let maxInFlight = 0
+    client.pages.update.mockImplementation(async () => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      inFlight -= 1
+      return {}
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: true,
+    })
+
+    expect(result.factsRepointed).toBe(rows.length)
+    expect(maxInFlight).toBeGreaterThan(1)
+    expect(maxInFlight).toBeLessThanOrEqual(REPOINT_ENTITY_CONCURRENCY)
+  })
+
+  it("does not write in plan-only mode", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [factPage({ id: "fact-plan", subjectEntityId: "ent-loser" })],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new FactService(client, DB)
+
+    const result = await service.repointEntity({
+      fromEntityId: "ent-loser",
+      toEntityId: "ent-winner",
+      apply: false,
+    })
+
+    expect(result.planOnly).toBe(true)
+    expect(result.factsRepointed).toBe(1)
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+})
 
 describe("FactService.listRecent", () => {
   it("runs single-page even when the Notion response reports has_more=true", async () => {
@@ -863,6 +1150,74 @@ describe("FactService.createWithDedup", () => {
       SubjectEntity: { relation: [{ id: "ent-sub" }] },
       ObjectEntity: { relation: [{ id: "ent-obj" }] },
     })
+  })
+
+  it("drops both incoming entity relations when either side is archived", async () => {
+    client.pages.retrieve.mockImplementation(async (args: { page_id: string }) =>
+      factPage({
+        id: args.page_id,
+        archived: args.page_id === "ent-sub-archived",
+      })
+    )
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "legacy-fact",
+          subjectEntityId: null,
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      subjectEntityId: "ent-sub-archived",
+      objectEntityId: "ent-obj",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(result.fact.subjectEntityId).toBeNull()
+    expect(result.fact.objectEntityId).toBeNull()
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("drops both incoming entity relations when relation revalidation fails", async () => {
+    client.pages.retrieve.mockImplementation(async (args: { page_id: string }) => {
+      if (args.page_id === "ent-sub-transient") {
+        throw new Error("notion 503")
+      }
+      return factPage({ id: args.page_id })
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        factPage({
+          id: "legacy-fact",
+          subjectEntityId: null,
+          objectEntityId: null,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const result = await service.createWithDedup({
+      subject: "Sub",
+      predicate: "uses",
+      object: "Obj",
+      subjectEntityId: "ent-sub-transient",
+      objectEntityId: "ent-obj",
+    })
+
+    expect(result.deduped).toBe(true)
+    expect(result.enriched).toEqual([])
+    expect(result.fact.subjectEntityId).toBeNull()
+    expect(result.fact.objectEntityId).toBeNull()
+    expect(client.pages.update).not.toHaveBeenCalled()
   })
 
   it("preserves existing entity relations (first-writer-wins, no clobber)", async () => {

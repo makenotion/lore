@@ -20,6 +20,7 @@ interface EntityPageOverrides {
   aliases?: string
   kind?: string
   projectIds?: string[]
+  archived?: boolean
 }
 
 function entityPage(overrides: EntityPageOverrides = {}): PageObjectResponse {
@@ -28,7 +29,7 @@ function entityPage(overrides: EntityPageOverrides = {}): PageObjectResponse {
     id: overrides.id ?? "ent-1",
     created_time: "2026-04-25T00:00:00.000Z",
     last_edited_time: "2026-04-25T00:00:00.000Z",
-    archived: false,
+    archived: overrides.archived ?? false,
     url: `https://notion.so/${overrides.id ?? "ent-1"}`,
     parent: { type: "database_id", database_id: DB.databaseId },
     properties: {
@@ -63,13 +64,21 @@ function entityPage(overrides: EntityPageOverrides = {}): PageObjectResponse {
 function createMockClient() {
   return {
     dataSources: { query: vi.fn() },
-    pages: { create: vi.fn(), retrieve: vi.fn(), update: vi.fn() },
+    pages: {
+      create: vi.fn(),
+      retrieve: vi.fn(),
+      retrieveMarkdown: vi.fn(),
+      update: vi.fn(),
+      updateMarkdown: vi.fn(),
+    },
   } as unknown as Client & {
     dataSources: { query: ReturnType<typeof vi.fn> }
     pages: {
       create: ReturnType<typeof vi.fn>
       retrieve: ReturnType<typeof vi.fn>
+      retrieveMarkdown: ReturnType<typeof vi.fn>
       update: ReturnType<typeof vi.fn>
+      updateMarkdown: ReturnType<typeof vi.fn>
     }
   }
 }
@@ -127,6 +136,23 @@ describe("EntityService.findByName", () => {
     expect(found!.name).toBe("MemoryService")
   })
 
+  it("ignores archived name matches", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [entityPage({ id: "ent-archived", name: "AuthSvc", archived: true })],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [entityPage({ id: "ent-active", name: "AuthSvc", archived: true })],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    expect(await service.findByName("AuthSvc")).toBeNull()
+  })
+
   it("returns null on whitespace-only input without querying Notion", async () => {
     const client = createMockClient()
     const service = new EntityService(client, DB)
@@ -135,7 +161,136 @@ describe("EntityService.findByName", () => {
   })
 })
 
+describe("EntityService.findByAlias", () => {
+  it("ignores archived alias matches", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-archived",
+          name: "AuthService",
+          aliases: "AuthSvc",
+          archived: true,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    expect(await service.findByAlias("AuthSvc")).toEqual([])
+  })
+})
+
+describe("EntityService.getById", () => {
+  it("rejects archived entity rows", async () => {
+    const client = createMockClient()
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({ id: "ent-archived", archived: true }),
+    )
+
+    const service = new EntityService(client, DB)
+    await expect(service.getById("ent-archived")).rejects.toThrow(/archived/)
+  })
+
+  it("can explicitly read archived rows for merge retries", async () => {
+    const client = createMockClient()
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({ id: "ent-archived", name: "AuthSvc", archived: true }),
+    )
+
+    const service = new EntityService(client, DB)
+    const entity = await service.getById("ent-archived", { includeArchived: true })
+    expect(entity.id).toBe("ent-archived")
+    expect(entity.archived).toBe(true)
+  })
+})
+
 describe("EntityService.resolveOrCreateEntity", () => {
+  it("revalidates cached rows so archived merge losers do not receive new fact relations", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [entityPage({ id: "ent-loser", name: "AuthSvc" })],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    expect((await service.findByName("AuthSvc"))?.id).toBe("ent-loser")
+
+    client.pages.retrieve.mockResolvedValueOnce(
+      entityPage({ id: "ent-loser", name: "AuthSvc", archived: true }),
+    )
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-winner",
+          name: "AuthService",
+          aliases: "AuthSvc",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const resolution = await service.resolveOrCreateEntity("AuthSvc")
+
+    expect(client.pages.retrieve).toHaveBeenCalledWith({ page_id: "ent-loser" })
+    expect(resolution.entity?.id).toBe("ent-winner")
+    expect(resolution.created).toBe(false)
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("falls back to lookup queries when cached row revalidation fails", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [entityPage({ id: "ent-loser", name: "AuthSvc" })],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    expect((await service.findByName("AuthSvc"))?.id).toBe("ent-loser")
+
+    client.pages.retrieve.mockRejectedValueOnce(new Error("object_not_found"))
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        entityPage({
+          id: "ent-winner",
+          name: "AuthService",
+          aliases: "AuthSvc",
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const resolution = await service.resolveOrCreateEntity("AuthSvc")
+
+    expect(resolution.entity?.id).toBe("ent-winner")
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
   it("returns ambiguous when multiple entities share an alias", async () => {
     const client = createMockClient()
     // findByName: nothing.
@@ -597,6 +752,138 @@ describe("EntityService.addAliases", () => {
     // should be appended a second time.
     expect(updated.aliases.filter((a) => a.toLowerCase() === "auth")).toHaveLength(1)
     expect(client.pages.update).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("EntityService.archive", () => {
+  it("writes a merge breadcrumb, archives the page, and evicts name/alias cache entries", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [entityPage({ id: "ent-archive", name: "Auth", aliases: "AuthSvc" })],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.retrieveMarkdown.mockResolvedValueOnce({
+      markdown: "Existing notes",
+    })
+    client.pages.updateMarkdown.mockResolvedValueOnce({})
+    client.pages.update.mockResolvedValueOnce({})
+
+    const service = new EntityService(client, DB)
+    expect(await service.findByName("Auth")).not.toBeNull()
+
+    await service.archive({
+      id: "ent-archive",
+      name: "Auth",
+      aliases: ["AuthSvc"],
+      kind: null,
+      description: "",
+      projectIds: [],
+    }, {
+      mergedInto: { id: "ent-winner", name: "AuthService" },
+      mergedAt: "2026-05-02",
+    })
+
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    expect(client.pages.updateMarkdown).toHaveBeenCalledWith({
+      page_id: "ent-archive",
+      type: "replace_content_range",
+      replace_content_range: {
+        content:
+          "Existing notes\n\n---\n\n" +
+          "## Merged into AuthService\n\n" +
+          "Merged into AuthService (ent-winner) on 2026-05-02.",
+        content_range: "full_page",
+        allow_deleting_content: true,
+      },
+    })
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "ent-archive",
+      archived: true,
+    })
+    expect(
+      client.pages.updateMarkdown.mock.invocationCallOrder[0]
+    ).toBeLessThan(client.pages.update.mock.invocationCallOrder[0])
+    expect(await service.findByName("Auth")).toBeNull()
+  })
+
+  it("does not duplicate an existing merge breadcrumb on archive retry", async () => {
+    const client = createMockClient()
+    client.pages.retrieveMarkdown.mockResolvedValueOnce({
+      markdown:
+        "## Merged into AuthService\n\n" +
+        "Merged into AuthService (ent-winner) on 2026-05-01.",
+    })
+    client.pages.update.mockResolvedValueOnce({})
+
+    const service = new EntityService(client, DB)
+    await service.archive(
+      {
+        id: "ent-archive",
+        name: "Auth",
+        aliases: [],
+        kind: null,
+        description: "",
+        projectIds: [],
+      },
+      {
+        mergedInto: { id: "ent-winner", name: "AuthService" },
+        mergedAt: "2026-05-02",
+      }
+    )
+
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    expect(client.pages.update).toHaveBeenCalledWith({
+      page_id: "ent-archive",
+      archived: true,
+    })
+  })
+
+  it("evicts cache entries before the archive write is attempted", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [entityPage({ id: "ent-archive", name: "Auth", aliases: "AuthSvc" })],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.pages.update.mockRejectedValueOnce(new Error("archive failed"))
+
+    const service = new EntityService(client, DB)
+    expect(await service.findByName("Auth")).not.toBeNull()
+
+    await expect(
+      service.archive({
+        id: "ent-archive",
+        name: "Auth",
+        aliases: ["AuthSvc"],
+        kind: null,
+        description: "",
+        projectIds: [],
+      })
+    ).rejects.toThrow("archive failed")
+
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    expect(await service.findByName("Auth")).toBeNull()
   })
 })
 

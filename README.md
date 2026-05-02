@@ -497,6 +497,7 @@ into tasks.
 | `lore status projects`         | List all projects (`-a` for archived)                            |
 | `lore status topics [project]` | List topics in a project                                         |
 | `lore migrate`                 | Add missing schema properties and run one-shot data migrations (`--dry-run`, `--upgrade-decision-tags`, `--build-entities`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, etc.) |
+| `lore entities merge --from <loser-id> --into <winner-id>` | Preview/apply a duplicate Entity merge. Plan-only by default; `--yes` repoints Facts from loser to winner, appends loser lookup forms to winner aliases, writes a merge note, then archives the loser. Legacy positional ids are still accepted. |
 | `lore conflicts scan`          | Walk the vault and surface candidate conflict pairs for in-context judgment (`-p`, `-n`, `--raw-limit`, `--include-bodies`, `--json`, `--exhaustive`). Read-only — emits prompt-ready output the calling agent dispatches back via `lore-memory action='compare'`. |
 
 ### Conflict detection

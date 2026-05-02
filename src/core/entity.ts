@@ -118,6 +118,15 @@ export interface ResolveOptions {
   projectIds?: string[]
 }
 
+export interface GetEntityOptions {
+  includeArchived?: boolean
+}
+
+export interface ArchiveEntityOptions {
+  mergedInto?: Pick<Entity, "id" | "name">
+  mergedAt?: string
+}
+
 /**
  * Page-size cap when listing entities for a "give me everything" pass
  * (the build-entities migration). Notion's hard ceiling is 100; we
@@ -261,6 +270,12 @@ export function expandEntityQueryVariants(
  */
 const NAME_LOOKUP_MAX_PAGES = 10
 
+function isActiveEntityPage(
+  page: Parameters<typeof isFullPage>[0]
+): page is PageObjectResponse {
+  return isFullPage(page) && !page.archived
+}
+
 export class EntityService {
   /**
    * Name + alias → Entity. Keyed on `normalizeEntityKey(name)` so case
@@ -299,8 +314,14 @@ export class EntityService {
     return entity
   }
 
-  async getById(id: string): Promise<Entity> {
+  async getById(id: string, options: GetEntityOptions = {}): Promise<Entity> {
     const page = await this.client.pages.retrieve({ page_id: id })
+    if (!isFullPage(page)) {
+      throw new Error(`Entity ${id} could not be retrieved as a full Notion page`)
+    }
+    if (page.archived && !options.includeArchived) {
+      throw new Error(`Entity ${id} is archived`)
+    }
     return await this.pageToEntity(page as PageObjectResponse)
   }
 
@@ -320,8 +341,10 @@ export class EntityService {
         page_size: NOTION_MAX_PAGE_SIZE,
         start_cursor: cursor,
       })
-      results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
+      results.push(
+        ...(response.results.filter(isActiveEntityPage) as PageObjectResponse[])
+      )
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
     } while (cursor)
 
     return Promise.all(results.map((p) => this.pageToEntity(p)))
@@ -338,7 +361,7 @@ export class EntityService {
     const key = normalizeEntityKey(name)
     if (!key) return null
 
-    const cached = this.nameCache.get(key)
+    const cached = await this.getActiveCachedEntity(key)
     if (cached) return cached
 
     return this.nameCache.getOrLoad(key, async () => {
@@ -351,7 +374,7 @@ export class EntityService {
         page_size: 5,
       })
 
-      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+      const pages = response.results.filter(isActiveEntityPage) as PageObjectResponse[]
       if (pages.length === 0) {
         // Notion's `title.equals` is case-sensitive. Paginate a
         // case-folded `title.contains` pass against the same-key
@@ -380,7 +403,7 @@ export class EntityService {
           })
           pagesFetched += 1
           const fallbackPages = fallback.results.filter(
-            isFullPage
+            isActiveEntityPage
           ) as PageObjectResponse[]
           for (const page of fallbackPages) {
             const entity = await this.pageToEntity(page)
@@ -432,7 +455,7 @@ export class EntityService {
         start_cursor: cursor,
       })
       pagesFetched += 1
-      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+      const pages = response.results.filter(isActiveEntityPage) as PageObjectResponse[]
       for (const page of pages) {
         const entity = await this.pageToEntity(page)
         if (entity.aliases.some((a) => normalizeEntityKey(a) === key)) {
@@ -653,18 +676,56 @@ export class EntityService {
     return updated
   }
 
-  // `merge(winnerId, loserId)` was drafted on this branch but pulled
-  // before merge: it requires a `FactService.repointEntity` helper to
-  // re-point facts referencing the loser before the loser is archived,
-  // and that helper is not in this PR. Shipping `merge` without the
-  // re-point step would silently strand the loser's facts on a deleted
-  // row. The follow-up issue tracking the operator-driven entity
-  // consolidation surface will land both pieces together. For now,
-  // operators can manually merge by editing the canonical's `Aliases`
-  // in Notion and archiving the loser; downstream
-  // `lore-query action='ask'` calls resolve via `findByName` /
-  // `findByAlias` against the canonical.
-  // Removed per PR #88 review.
+  /**
+   * Archive an Entity row after its fact relations have been re-pointed by
+   * the merge orchestrator. Accepts an existing snapshot so the caller that
+   * already fetched the loser does not pay a second retrieve just to evict
+   * stale name/alias cache entries.
+   */
+  async archive(
+    entityOrId: Entity | string,
+    options: ArchiveEntityOptions = {}
+  ): Promise<void> {
+    const entity =
+      typeof entityOrId === "string"
+        ? await this.getById(entityOrId, { includeArchived: true })
+        : entityOrId
+
+    this.invalidateAllKeys(entity)
+
+    if (entity.archived) return
+
+    if (options.mergedInto) {
+      const mergedAt = options.mergedAt ?? new Date().toISOString().split("T")[0]
+      const existing = await this.client.pages.retrieveMarkdown({
+        page_id: entity.id,
+      })
+      const mergeLine =
+        `Merged into ${options.mergedInto.name} (${options.mergedInto.id})`
+      if (!existing.markdown.includes(mergeLine)) {
+        const mergeBlock =
+          `## Merged into ${options.mergedInto.name}\n\n` +
+          `${mergeLine} on ${mergedAt}.`
+        const separator = existing.markdown.trim() ? "\n\n---\n\n" : ""
+        const content = `${existing.markdown}${separator}${mergeBlock}`
+        await this.client.pages.updateMarkdown({
+          page_id: entity.id,
+          type: "replace_content_range",
+          replace_content_range: {
+            content,
+            content_range: "full_page",
+            allow_deleting_content: true,
+          },
+        })
+      }
+    }
+
+    await this.client.pages.update({
+      page_id: entity.id,
+      archived: true,
+    })
+  }
+
   /** Reset the in-process name/alias cache. Used by tests. */
   clearNameCache(): void {
     this.nameCache.clear()
@@ -688,6 +749,30 @@ export class EntityService {
     }
   }
 
+  private async getActiveCachedEntity(key: string): Promise<Entity | null> {
+    const cached = this.nameCache.get(key)
+    if (!cached) return null
+
+    let page: Awaited<ReturnType<Client["pages"]["retrieve"]>>
+    try {
+      page = await this.client.pages.retrieve({ page_id: cached.id })
+    } catch {
+      this.invalidateAllKeys(cached)
+      return null
+    }
+    if (!isFullPage(page) || page.archived) {
+      this.invalidateAllKeys(cached)
+      return null
+    }
+
+    const entity = await this.pageToEntity(page as PageObjectResponse)
+    this.invalidateAllKeys(cached)
+    this.cacheEntity(entity)
+
+    const activeKeys = [entity.name, ...entity.aliases].map(normalizeEntityKey)
+    return activeKeys.includes(key) ? entity : null
+  }
+
   private async pageToEntity(page: PageObjectResponse): Promise<Entity> {
     page = await hydrateRelationProperties(this.client, page, ["Project"])
     const props = page.properties
@@ -703,6 +788,7 @@ export class EntityService {
       kind,
       description: extractRichText(props["Description"]),
       projectIds: extractRelationIds(props["Project"]),
+      archived: page.archived,
     }
   }
 }
