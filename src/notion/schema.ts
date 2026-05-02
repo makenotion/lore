@@ -448,6 +448,21 @@ export function factsProperties(
         ],
       },
     },
+    // System-managed numeric confidence in [0, 1] mirroring the Memories
+    // DB column (0.8.0/#01). Distinct from the categorical `Confidence`
+    // select above (agent-curated semantic stance). Bumped on read-citation
+    // via `FactService.touchOnRead`; decremented inside `FactService.invalidate`
+    // alongside the `Valid Until` flip so the same atomic write closes the
+    // contradiction signal. Empty until first touch — `pageToFact` returns
+    // `null` when missing so the RRF integration in `lore-ask` distinguishes
+    // "never scored" from "scored zero." (DEFERRED-02.)
+    "Confidence Score": { number: { format: "number" } },
+    // System-managed read-citation timestamp; distinct from
+    // `last_edited_time` which tracks writes. Written by
+    // `FactService.touchOnRead` and `FactService.invalidate` (via
+    // `decrementConfidence`), read by the decay function. Mirrors the
+    // Memories DB column. (DEFERRED-02.)
+    "Last Referenced At": { date: {} },
     // Normalized `subject␟predicate␟object` key used by `FactService.create`
     // to coalesce cosmetic duplicates (case, whitespace, trailing punctuation)
     // into a single row. Pre-migration pages have this blank; the migrate
@@ -924,9 +939,25 @@ export function buildFactProps(input: {
   object: string
   projectIds?: string[]
   validFrom?: string
+  validUntil?: string | null
   reviewBy?: string
   sourceMemoryId?: string
   confidence?: string
+  /**
+   * System-managed numeric confidence (DEFERRED-02). Three-state semantics
+   * mirror the Memories DB `confidenceScore` field: `undefined` leaves the
+   * column untouched, `null` clears the column ("never scored"), a number
+   * writes the value verbatim. Production callers in `FactService` only
+   * emit numbers; the `null` clear path is the test-fixture / migration
+   * path.
+   */
+  confidenceScore?: number | null
+  /**
+   * System-managed read-citation timestamp (DEFERRED-02). YYYY-MM-DD form.
+   * `undefined` leaves the column untouched, `null` clears, a string writes
+   * verbatim.
+   */
+  lastReferencedAt?: string | null
   dedupKey?: string
   subjectKey?: string
   subjectEntityId?: string
@@ -943,6 +974,10 @@ export function buildFactProps(input: {
   if (input.validFrom) {
     props["Valid From"] = { date: { start: input.validFrom } }
   }
+  if (input.validUntil !== undefined) {
+    props["Valid Until"] =
+      input.validUntil === null ? { date: null } : { date: { start: input.validUntil } }
+  }
   if (input.reviewBy) {
     props["Review By"] = { date: { start: input.reviewBy } }
   }
@@ -951,6 +986,20 @@ export function buildFactProps(input: {
   }
   if (input.confidence) {
     props["Confidence"] = { select: { name: input.confidence } }
+  }
+  // Mirror Memories `confidenceScore` semantics (DEFERRED-02):
+  // `undefined` leaves the column untouched; `null` clears; a number writes.
+  if (input.confidenceScore !== undefined) {
+    props["Confidence Score"] =
+      input.confidenceScore === null
+        ? { number: null }
+        : { number: input.confidenceScore }
+  }
+  if (input.lastReferencedAt !== undefined) {
+    props["Last Referenced At"] =
+      input.lastReferencedAt === null
+        ? { date: null }
+        : { date: { start: input.lastReferencedAt } }
   }
   if (input.dedupKey) {
     props["DedupKey"] = { rich_text: [{ text: { content: input.dedupKey } }] }

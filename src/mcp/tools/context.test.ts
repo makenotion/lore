@@ -60,6 +60,7 @@ function makeFact(overrides: Partial<Fact> & { id: string }): Fact {
     reviewBy: null,
     sourceMemoryId: null,
     confidence: "certain",
+    createdAt: "2026-01-01T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
     ...overrides,
@@ -682,6 +683,66 @@ describe("lore-wake-up — Part C: UUID → title resolution", () => {
     const text = extractText(result)
     expect(text).toContain("Adopt OIDC for auth")
     expect(text).not.toContain(DECISION_ID)
+  })
+
+  it("renders the trust label as a separate indented italic line on Active Facts when confidenceScore is below threshold (DEFERRED-02)", async () => {
+    // BLOCKING fix from review 2: the new fact-side score must be
+    // visible in wake-up's Active Facts section, not just affect
+    // ranking. A fact at score 0.15 is "very low confidence" per
+    // `formatTrustLabel`; the trust label renders below the bullet
+    // as `  _very low confidence_` via the shared `renderTrustLine`
+    // helper, matching the decision/task surfaces (DEFERRED-07).
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      facts: [
+        makeFact({
+          id: "fact-decayed",
+          subject: "DecayedSubject",
+          predicate: "uses",
+          object: "DecayedObj",
+          confidence: "certain",
+          confidenceScore: 0.15,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("(certain)")
+    expect(text).toContain("_very low confidence_")
+  })
+
+  it("preserves byte-identical pre-DEFERRED-02 rendering when confidenceScore is null (DEFERRED-02)", async () => {
+    // Pre-migration vault: every fact's `confidenceScore` is null.
+    // Active Facts must render `(certain)` only — no trust line,
+    // no italic indicator. A regression here would visibly change
+    // every wake-up response against an un-backfilled vault.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      facts: [
+        makeFact({
+          id: "fact-legacy",
+          subject: "LegacySubject",
+          predicate: "uses",
+          object: "LegacyObj",
+          confidence: "certain",
+          confidenceScore: null,
+        }),
+      ],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("(certain)")
+    expect(text).not.toContain("_very low confidence_")
+    expect(text).not.toContain("_low confidence_")
+    expect(text).not.toContain("_moderate confidence_")
   })
 })
 
@@ -2536,6 +2597,103 @@ describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
     await wakeUp({})
 
     expect(touchOnRead).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fact touch-on-read wiring (DEFERRED-02)
+//
+// Mirror of the memory-side touch-on-read block above, scoped to the
+// facts surface. Pins the fact-side citation-as-evidence contract: every
+// fact rendered in the Active Facts section bumps `Confidence Score` +
+// `Last Referenced At` via `services.facts.touchOnRead`. Empty fact sets
+// must not call the method at all.
+//
+// The default `makeWakeServices.facts` mock only defines `listRecent` —
+// without an explicit `touchOnRead` stub, `fireFactTouchOnRead`'s outer
+// catch swallows the missing-method TypeError and a regression on the
+// wiring would silently pass. These tests inject the stub explicitly
+// so the call is asserted, not absorbed.
+// ---------------------------------------------------------------------------
+
+describe("lore-wake-up — fact touch-on-read wiring (DEFERRED-02)", () => {
+  function withFactTouch(
+    overrides: WakeServicesOverrides = {},
+    factsTouchOnRead: ReturnType<typeof vi.fn> = vi
+      .fn()
+      .mockResolvedValue(undefined),
+  ) {
+    const services = makeWakeServices(overrides)
+    return {
+      services: {
+        ...services,
+        facts: {
+          ...services.facts,
+          touchOnRead: factsTouchOnRead,
+        },
+      },
+      factsTouchOnRead,
+    }
+  }
+
+  it("touches every Active Fact rendered in the section", async () => {
+    const mockServer = createMockServer()
+    const facts = [
+      makeFact({ id: "fact-1", subject: "FactA", predicate: "uses", object: "Obj" }),
+      makeFact({ id: "fact-2", subject: "FactB", predicate: "uses", object: "Obj" }),
+    ]
+    const { services, factsTouchOnRead } = withFactTouch({ facts })
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    expect(factsTouchOnRead).toHaveBeenCalledTimes(1)
+    const passed = factsTouchOnRead.mock.calls[0]![0] as Fact[]
+    expect(passed.map((f) => f.id)).toEqual(["fact-1", "fact-2"])
+  })
+
+  it("does not call facts.touchOnRead when knowledgeFacts is empty", async () => {
+    // Pre-DEFERRED-02 contract: empty result sets must short-circuit
+    // rather than fire an empty-array touch. `fireFactTouchOnRead`'s
+    // own `rows.length === 0` guard provides this; the test pins it
+    // at the MCP boundary so a future refactor can't silently fire
+    // a no-op Notion call on every wake-up that has no facts.
+    const mockServer = createMockServer()
+    const { services, factsTouchOnRead } = withFactTouch({ facts: [] })
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    await wakeUp({})
+
+    expect(factsTouchOnRead).not.toHaveBeenCalled()
+  })
+
+  it("does not surface a facts.touchOnRead failure as a tool error", async () => {
+    // Advisory contract: fact-touch-on-read failures are silently
+    // swallowed and the wake-up response always lands. Mirror of the
+    // memory-side advisory test above.
+    const mockServer = createMockServer()
+    const { services } = withFactTouch(
+      {
+        facts: [
+          makeFact({
+            id: "fact-1",
+            subject: "FactA",
+            predicate: "uses",
+            object: "Obj",
+          }),
+        ],
+      },
+      vi.fn().mockRejectedValue(new Error("notion 503")),
+    )
+    registerContextTools(mockServer.server, services as never)
+    const wakeUp = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const result = await wakeUp({})
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    const text = extractText(result)
+    expect(text).toContain("## Active Facts")
   })
 })
 

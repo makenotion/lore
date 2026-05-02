@@ -28,6 +28,11 @@ import {
   type BuildConfidenceScoresPlan,
   type BuildConfidenceScoresResult,
 } from "../../core/confidence-migration.js"
+import {
+  runBuildFactConfidenceScoresMigration,
+  type BuildFactConfidenceScoresPlan,
+  type BuildFactConfidenceScoresResult,
+} from "../../core/fact-confidence-migration.js"
 
 export const migrateCommand = new Command("migrate")
   .description("Add missing schema properties to the vault's data sources")
@@ -107,12 +112,16 @@ export const migrateCommand = new Command("migrate")
     "Seed every memory's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and write Last Referenced At = created_time, then realize any neglect-decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope to a single project. Idempotent: rows whose Confidence Score is already non-null (touched by a Phase 2 read path or a prior backfill) are skipped."
   )
   .option(
+    "--build-fact-confidence-scores",
+    "Mirror of `--build-confidence-scores` for the Facts DB (DEFERRED-02). Seeds every fact's Confidence Score from its categorical Confidence (certain → 0.9, likely → 0.6, speculative → 0.3) and writes Last Referenced At = created_time, then realizes any decay accrued since creation. Plan-only by default — re-run with `--yes` to apply. Pair with `--project <name>` to scope. Idempotent: rows already scored are skipped. The Last Referenced At column ships alongside Confidence Score because decay needs a per-fact reference timestamp distinct from Notion's last_edited_time. Last Referenced At = created_time is a fiction (the fact wasn't actually 'referenced' at creation) — operators who want a true read-citation anchor re-run after read traffic naturally bumps the column via touchOnRead."
+  )
+  .option(
     "--project <name>",
-    "Scope `--build-confidence-scores` to a single project. Resolved via `findByName`; unknown / typo'd names abort before any plan or write — the migration refuses to silently fall back to vault-wide because `--yes` consent for one project is not consent to mutate the entire vault. Omit for vault-wide scope."
+    "Scope `--build-confidence-scores` or `--build-fact-confidence-scores` to a single project. Resolved via `findByName`; unknown / typo'd names abort before any plan or write — the migration refuses to silently fall back to vault-wide because `--yes` consent for one project is not consent to mutate the entire vault. Omit for vault-wide scope."
   )
   .option(
     "--yes",
-    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, or `--build-confidence-scores`. Without `--yes`, those flags are plan-only."
+    "Execute the plan for `--merge`, `--fix-fact-encoding`, `--fix-memory-encoding`, `--normalize-agents`, `--build-entities`, `--merge-similar-topics`, `--backfill-synopses`, `--build-confidence-scores`, or `--build-fact-confidence-scores`. Without `--yes`, those flags are plan-only."
   )
   .action(
     async (opts: {
@@ -136,6 +145,7 @@ export const migrateCommand = new Command("migrate")
       synopsisBackend?: string
       synopsisBatchSize?: string
       buildConfidenceScores?: boolean
+      buildFactConfidenceScores?: boolean
       project?: string
     }) => {
       try {
@@ -157,16 +167,21 @@ export const migrateCommand = new Command("migrate")
           !opts.buildEntities &&
           !opts.mergeSimilarTopics &&
           !opts.backfillSynopses &&
-          !opts.buildConfidenceScores
+          !opts.buildConfidenceScores &&
+          !opts.buildFactConfidenceScores
         ) {
           console.error(
-            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, or --build-confidence-scores."
+            "--yes only applies together with --merge, --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --merge-similar-topics, --backfill-synopses, --build-confidence-scores, or --build-fact-confidence-scores."
           )
           process.exit(1)
         }
-        if (opts.project && !opts.buildConfidenceScores) {
+        if (
+          opts.project &&
+          !opts.buildConfidenceScores &&
+          !opts.buildFactConfidenceScores
+        ) {
           console.error(
-            "--project only applies together with --build-confidence-scores."
+            "--project only applies together with --build-confidence-scores or --build-fact-confidence-scores."
           )
           process.exit(1)
         }
@@ -465,6 +480,14 @@ export const migrateCommand = new Command("migrate")
           })
         }
 
+        if (opts.buildFactConfidenceScores) {
+          await runBuildFactConfidenceScores(services, {
+            apply: Boolean(opts.yes) && !opts.dryRun,
+            dryRun: Boolean(opts.dryRun),
+            projectName: opts.project,
+          })
+        }
+
         if (aliasMergePlans) {
           // Dry-run is opt-in via the flag *or* implicit when --apply is
           // omitted: operators who forget a flag get a preview, never a
@@ -522,7 +545,8 @@ export const migrateCommand = new Command("migrate")
             opts.buildEntities ||
             opts.mergeSimilarTopics ||
             opts.backfillSynopses ||
-            opts.buildConfidenceScores
+            opts.buildConfidenceScores ||
+            opts.buildFactConfidenceScores
           if (flagHints.length > 0) {
             console.log(
               `\nDry run — no changes written. Re-run without --dry-run and with ${flagHints.join(" and ")} to apply.`
@@ -1776,6 +1800,128 @@ export async function runBuildConfidenceScores(
     )
   }
   return result
+}
+
+/**
+ * Fact-side mirror of `runBuildConfidenceScores` (DEFERRED-02). Same
+ * plan-then-execute discipline: strict-resolve `--project`, scan
+ * unscored facts via `FactService.listAllForBackfill`, render plan
+ * summary, optionally apply with progress lines.
+ */
+export async function runBuildFactConfidenceScores(
+  services: LoreServices,
+  options: { apply: boolean; dryRun: boolean; projectName?: string }
+): Promise<BuildFactConfidenceScoresResult> {
+  const planOnly = !options.apply
+  if (options.projectName) {
+    const project = await services.projects.findByName(options.projectName)
+    if (project === null) {
+      throw new Error(
+        `lore migrate --build-fact-confidence-scores: project "${options.projectName}" not found. ` +
+          `Run \`lore status\` to list configured projects, or omit --project to ` +
+          `run vault-wide.`
+      )
+    }
+  }
+
+  printDiscoveryBreadcrumb(
+    options.projectName
+      ? `facts without a Confidence Score in project "${options.projectName}"`
+      : "facts without a Confidence Score"
+  )
+
+  const result = await runBuildFactConfidenceScoresMigration({
+    services,
+    apply: options.apply,
+    dryRun: options.dryRun,
+    projectName: options.projectName,
+  })
+  const { plan, written } = result
+
+  console.log(
+    `\n[lore] build-fact-confidence-scores: scanned ${plan.totalFactsScanned} ` +
+      `fact${plan.totalFactsScanned === 1 ? "" : "s"}`
+  )
+  console.log(
+    `       ${plan.rowsToSeed.length} to seed (${plan.rowsAlreadyScored} already scored)`
+  )
+
+  if (plan.rowsToSeed.length === 0) {
+    if (planOnly) {
+      console.log(
+        "\nNo facts need seeding — every row already has a Confidence Score."
+      )
+    } else {
+      console.log(
+        "\nNo facts needed seeding — every row already had a Confidence Score."
+      )
+    }
+    return result
+  }
+
+  const stats = summarizeFactConfidenceScorePlan(plan)
+  console.log(`       avg seeded score:  ${stats.avgSeeded.toFixed(2)}`)
+  console.log(
+    `       avg decayed score: ${stats.avgDecayed.toFixed(2)} ` +
+      `(to-seed avg neglect: ${stats.avgNeglectPastGrace} day${stats.avgNeglectPastGrace === 1 ? "" : "s"} past grace)`
+  )
+
+  const PREVIEW_LIMIT = 10
+  const sortedByDecay = [...plan.rowsToSeed].sort(
+    (a, b) => a.decayedScore - b.decayedScore
+  )
+  const top = sortedByDecay.slice(0, PREVIEW_LIMIT)
+  if (top.length > 0) {
+    console.log(`\n       Top ${top.length} most-decayed (after seed + decay):`)
+    top.forEach((row, i) => {
+      const triple = `${row.subject} ${row.predicate.replace(/_/g, " ")} ${row.object}`
+      console.log(
+        `       ${i + 1}. (${row.decayedScore.toFixed(3)}) ${triple}  —  ${row.daysSinceCreation}d ago`
+      )
+    })
+  }
+
+  if (planOnly) {
+    console.log(
+      "\n[lore] dry-run: no writes performed. Re-run with --yes to apply."
+    )
+  } else {
+    console.log(
+      `\n[lore] build-fact-confidence-scores: wrote ${written} row${written === 1 ? "" : "s"}.`
+    )
+  }
+  return result
+}
+
+/**
+ * Pure summary stats for the build-fact-confidence-scores plan output.
+ * Mirror of `summarizeConfidenceScorePlan` (DEFERRED-02).
+ */
+export function summarizeFactConfidenceScorePlan(
+  plan: BuildFactConfidenceScoresPlan
+): {
+  avgSeeded: number
+  avgDecayed: number
+  avgNeglectPastGrace: number
+} {
+  const n = plan.rowsToSeed.length
+  if (n === 0) {
+    return { avgSeeded: 0, avgDecayed: 0, avgNeglectPastGrace: 0 }
+  }
+  const STALE_GRACE_DAYS = 60
+  let seededSum = 0
+  let decayedSum = 0
+  let neglectPastGraceSum = 0
+  for (const row of plan.rowsToSeed) {
+    seededSum += row.seededScore
+    decayedSum += row.decayedScore
+    neglectPastGraceSum += Math.max(0, row.daysSinceCreation - STALE_GRACE_DAYS)
+  }
+  return {
+    avgSeeded: seededSum / n,
+    avgDecayed: decayedSum / n,
+    avgNeglectPastGrace: Math.round(neglectPastGraceSum / n),
+  }
 }
 
 /**

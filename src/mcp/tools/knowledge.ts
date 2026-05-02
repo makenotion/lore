@@ -7,7 +7,9 @@ import {
   debugLogPartialFailures,
   debugLogContradictionFailure,
   fireTouchOnRead,
+  fireFactTouchOnRead,
 } from "../helpers.js"
+import { confidenceFactor } from "../../core/decay.js"
 import { resolveProjectIds } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import {
@@ -107,7 +109,20 @@ function renderDecidedByLine(fact: Fact, decision: Decision, today: string): str
       : ` (decision review by ${decision.reviewBy})`
     : ""
   const decided = decision.decidedAt ? ` (decided ${decision.decidedAt})` : ""
-  return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
+  // DEFERRED-02 — surface the FACT's numeric trust label between the
+  // title row and the ID footer when the fact's `confidenceScore` has
+  // decayed below `CONFIDENCE_DISPLAY_THRESHOLD`. The decision's own
+  // categorical confidence is already in the heading line; this trust
+  // line reflects the EDGE's accumulated evidence (how often the
+  // entity-decision link has been cited), which is a separate signal
+  // from the decision's stance. Same envelope as `renderGenericTrailing`
+  // and the audit Overdue Facts surface — a `decided_by` fact that's
+  // been heavily decayed should not render as a normal trusted
+  // governance row. Pre-migration / above-threshold rows render
+  // byte-identically to pre-DEFERRED-02.
+  const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
+  const trustSegment = trustLine !== null ? `\n${trustLine}` : ""
+  return `- **${fact.subject}** decided by **${decision.title}** [${decision.status}, ${decision.confidence}]${decided}${review}${trustSegment}\n  Decision ID: ${decision.id} | Fact ID: ${fact.id}`
 }
 
 function renderGenericTrailing(fact: Fact, today: string): string {
@@ -117,7 +132,18 @@ function renderGenericTrailing(fact: Fact, today: string): string {
       ? ` **(OVERDUE — review by ${fact.reviewBy})**`
       : ` (review by ${fact.reviewBy})`
     : ""
-  return `[${fact.confidence}]${validity}${review}\n  ID: ${fact.id}`
+  // DEFERRED-02 — surface the numeric trust label as a separate
+  // indented italic line between the validity/review tail and the
+  // ID footer when the fact's `confidenceScore` has decayed below
+  // `CONFIDENCE_DISPLAY_THRESHOLD`. Same shape as the decision/task
+  // list surfaces (DEFERRED-07) so the visual rhythm stays
+  // consistent. Pre-migration / above-threshold rows: `renderTrustLine`
+  // returns null (null score short-circuits, above-threshold returns
+  // null via `formatTrustLabel`), and the conditional collapses to
+  // the pre-DEFERRED-02 byte-identical output.
+  const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
+  const trustSegment = trustLine !== null ? `\n${trustLine}` : ""
+  return `[${fact.confidence}]${validity}${review}${trustSegment}\n  ID: ${fact.id}`
 }
 
 function compareSortKeyDesc(
@@ -128,6 +154,76 @@ function compareSortKeyDesc(
   if (!a.sortKey) return 1
   if (!b.sortKey) return -1
   return a.sortKey < b.sortKey ? 1 : -1
+}
+
+/**
+ * RRF constant for the fact-side single-branch ranking (DEFERRED-02).
+ * Smaller than memory-side `RRF_K = 60` because lore-ask buckets cap
+ * at ~5–20 visible rows: a constant calibrated for 100-row search
+ * results would compress all per-fact scores into a tiny range and
+ * starve the confidence multiplier of effect at the head of the
+ * list. `RRF_K = 4` keeps the rank-1 / rank-2 score ratio meaningful
+ * (1/5 vs 1/6 ≈ 0.83) so a confidenceFactor of 0.5 can pull a
+ * higher-ranked but heavily-decayed row below a lower-ranked
+ * fully-trusted one.
+ */
+const FACT_RRF_K = 4
+
+/**
+ * Confidence-weighted recency ranking for fact-bucket rendering
+ * (DEFERRED-02). Mirrors memory-side RRF (#08): assign each item a
+ * recency-rank by `validFrom` desc, then compute
+ * `1 / (FACT_RRF_K + rank + 1) * confidenceFactor(score)`, then sort
+ * by composite score desc.
+ *
+ * Why a real RRF pass and not a `validFrom`-tiebreaker. The first
+ * draft used confidence as a same-day tiebreaker only; the score
+ * was inert when `validFrom` differed, so a low-confidence newer fact
+ * always outranked a high-confidence older fact. DEFERRED-02 calls
+ * for `confidenceFactor` to weight ranking per fact, not just on
+ * collisions — a frequently-cited 3-month-old fact should beat a
+ * never-cited 2-week-old fact that's been heavily decayed. The RRF
+ * pass implements that.
+ *
+ * Pre-DEFERRED-02 / un-backfilled vaults preserve byte-identical
+ * recency ordering: `confidenceFactor(null) === 1.0`, so every
+ * composite score collapses to `1 / (FACT_RRF_K + rank + 1)`, which
+ * is monotonically decreasing in rank — i.e. the recency order from
+ * `compareSortKeyDesc`. Once the migration runs, the multiplier
+ * activates and reorders by confidence-weighted recency.
+ *
+ * Stable-sort properties: `Array.prototype.sort` is stable since
+ * ES2019. On exact-tie composite scores (same validFrom AND same
+ * confidence score / both null), the recency-sorted input order is
+ * preserved. The recency sort itself is `compareSortKeyDesc`'s
+ * established discipline.
+ *
+ * The kill switch (`LORE_DISABLE_CONFIDENCE_FACTOR=1`) lives inside
+ * `confidenceFactor`, so a sustained-failure rollback to pre-DEFERRED-02
+ * ordering is one env var away — same posture as memory-side RRF
+ * (#08). With the kill switch active, every score collapses to 1.0
+ * and the RRF pass devolves to monotonic-by-rank == byte-identical
+ * pre-DEFERRED-02 recency ordering.
+ */
+function applyConfidenceWeightedRrf<
+  T extends { sortKey: string | null; fact?: Fact },
+>(items: T[]): T[] {
+  if (items.length <= 1) return items
+  // Recency-sort first to assign deterministic ranks. This is the
+  // same shape `compareSortKeyDesc` already produces; we run it
+  // explicitly so the rank index is captured for the RRF score.
+  const recencyRanked = [...items].sort(compareSortKeyDesc)
+  type Scored = { item: T; score: number }
+  const scored: Scored[] = recencyRanked.map((item, rank) => {
+    const factor = confidenceFactor(item.fact?.confidenceScore ?? null)
+    const score = (1 / (FACT_RRF_K + rank + 1)) * factor
+    return { item, score }
+  })
+  scored.sort((a, b) => {
+    if (a.score === b.score) return 0
+    return a.score < b.score ? 1 : -1
+  })
+  return scored.map((s) => s.item)
 }
 
 /**
@@ -651,16 +747,26 @@ export async function handleAsk(
         fact,
       })),
     ]
-    governanceItems.sort(compareSortKeyDesc)
+    // DEFERRED-02 — confidence-weighted RRF over the recency order.
+    // Primary signal is recency (rank by `validFrom` desc); the
+    // per-fact `confidenceFactor` multiplies the rank score so a
+    // frequently-cited older fact can outrank a low-confidence newer
+    // fact, not just break ties at the same `validFrom`. Pre-migration
+    // vaults (every score `null`) collapse to `factor === 1.0` and the
+    // RRF pass becomes monotonic-by-rank == identical to the
+    // recency-only sort.
+    const rankedGovernance = applyConfidenceWeightedRrf(governanceItems)
 
-    type Structured = { fact: Fact; line: string }
+    type Structured = { fact: Fact; line: string; sortKey: string | null }
     const structureItems: Structured[] = structure.map((fact) => ({
       fact,
       line: renderFact(fact, {
         titleMap,
         trailing: renderGenericTrailing(fact, today),
       }),
+      sortKey: fact.validFrom,
     }))
+    const rankedStructure = applyConfidenceWeightedRrf(structureItems)
 
     const sections: string[] = []
     let anyOverflow = false
@@ -673,8 +779,12 @@ export async function handleAsk(
     let visibleGovernance: Governed[] = []
     let visibleStructure: Structured[] = []
 
+    // Slicing pulls from the RRF-ranked arrays (DEFERRED-02) so the
+    // visible cap shows the highest-scoring rows; section counts stay
+    // on the unranked arrays so `### Governance (N)` reports the true
+    // total. Rank only changes WHICH rows make the cap, not how many.
     if (governanceItems.length > 0) {
-      visibleGovernance = governanceItems.slice(0, cap)
+      visibleGovernance = rankedGovernance.slice(0, cap)
       const hidden = governanceItems.length - visibleGovernance.length
       if (hidden > 0) anyOverflow = true
       const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
@@ -686,7 +796,7 @@ export async function handleAsk(
     }
 
     if (structureItems.length > 0) {
-      visibleStructure = structureItems.slice(0, cap)
+      visibleStructure = rankedStructure.slice(0, cap)
       const hidden = structureItems.length - visibleStructure.length
       if (hidden > 0) anyOverflow = true
       const hiddenSuffix = hidden > 0 ? ` (${hidden} hidden)` : ""
@@ -804,6 +914,19 @@ export async function handleAsk(
       }
     }
 
+    // DEFERRED-02 — fact-side touch-on-read. Mirrors the memory-side
+    // citation-as-evidence wiring above: every fact actually displayed
+    // (visible governance + visible structure, NOT the hidden-overflow
+    // tail) counts as cited and bumps `Confidence Score` +
+    // `Last Referenced At`. The fact objects are already in-memory from
+    // the `queryByEntity` call, so no extra round-trip is needed before
+    // the touch.
+    const visibleFacts: Fact[] = [
+      ...visibleGovernance.flatMap((g) => (g.fact ? [g.fact] : [])),
+      ...visibleStructure.map((s) => s.fact),
+    ]
+    await fireFactTouchOnRead(services.facts, visibleFacts, "lore-query (ask)")
+
     return response
   } catch (err) {
     return toolError(err)
@@ -850,13 +973,20 @@ export async function handleAudit(
             (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000,
           )
           const since = f.validFrom ? ` (since ${f.validFrom})` : ""
-          // TODO(0.8.0/DEFERRED-02): emit `renderTrustLine(f.confidenceScore, "  ")`
-          // between the title row and the Review by row once the Facts DB carries
-          // a Confidence Score column. The symmetric Overdue Decisions block below
-          // already renders the trust line; this site is the paired call site that
-          // 0.8.0/DEFERRED-02 unblocks.
+          // DEFERRED-02 — emit the trust line between the title row
+          // and the Review by row when the fact's `confidenceScore`
+          // has decayed below `CONFIDENCE_DISPLAY_THRESHOLD`. Same
+          // shape as the symmetric Overdue Decisions block below
+          // (DEFERRED-07) so an audit reader sees the trust signal
+          // immediately under the title and BEFORE the staleness
+          // detail. `renderTrustLine` returns null for null /
+          // above-threshold scores, so pre-migration audit output
+          // is byte-identical to pre-DEFERRED-02.
+          const trustLine = renderTrustLine(f.confidenceScore ?? null, "  ")
+          const trustRow = trustLine !== null ? `${trustLine}\n` : ""
           return (
             `- **${f.subject}** ${f.predicate.replace(/_/g, " ")} **${f.object}** [${f.confidence}]${since}\n` +
+            trustRow +
             `  Review by: ${f.reviewBy} (${days} day${days === 1 ? "" : "s"} overdue)\n` +
             `  ID: ${f.id}`
           )

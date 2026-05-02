@@ -5,6 +5,8 @@
 import type { ZodError } from "zod"
 import type { Memory } from "../types.js"
 import type { MemoryService } from "../core/memory.js"
+import type { FactService } from "../core/fact.js"
+import type { Fact } from "../types.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -250,6 +252,48 @@ export async function fireTouchOnRead(
   try {
     await service.touchOnRead(rows, {
       onError: (id, error) => debugLogTouchFailure(tool, id, error),
+    })
+  } catch {
+    // intentionally suppressed — touch is advisory, never blocking
+  }
+}
+
+/**
+ * Fact-side mirror of `debugLogTouchFailure` (DEFERRED-02). Same posture:
+ * gated on `LORE_DEBUG=1`, scrubs control characters, logs
+ * `error.message`. The key is `fact=<id>` so log parsers can
+ * distinguish memory and fact touch failures without re-running the
+ * tool dispatcher.
+ */
+export function debugLogFactTouchFailure(
+  tool: string,
+  factId: string,
+  error: unknown,
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  const rawMessage = error instanceof Error ? error.message : String(error)
+  process.stderr.write(
+    `[lore] fact-touch-failure: fact=${oneLine(factId)} error=${oneLine(rawMessage)} tool=${tool}\n`,
+  )
+}
+
+/**
+ * Fact-side mirror of `fireTouchOnRead` (DEFERRED-02). Used by
+ * `lore-query action='ask'` and `lore-context action='wake-up'` to
+ * bump fact `Confidence Score` + `Last Referenced At` on visible
+ * citations. Same advisory contract — the per-row `onError` drains
+ * data-layer failures, the outer `try/catch` suppresses synchronous
+ * throws.
+ */
+export async function fireFactTouchOnRead(
+  service: Pick<FactService, "touchOnRead">,
+  rows: ReadonlyArray<Fact>,
+  tool: string,
+): Promise<void> {
+  if (rows.length === 0) return
+  try {
+    await service.touchOnRead(rows, {
+      onError: (id, error) => debugLogFactTouchFailure(tool, id, error),
     })
   } catch {
     // intentionally suppressed — touch is advisory, never blocking

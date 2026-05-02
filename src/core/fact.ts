@@ -33,12 +33,20 @@ import {
   type FactEncodingReport,
 } from "./fact-encoding.js"
 import {
+  bumpConfidenceScore,
+  decayConfidenceScore,
+  decrementConfidenceScore,
+  seedConfidenceScore,
+} from "./decay.js"
+import { todayUtc } from "./task.js"
+import {
   isFullPage,
   extractTitle,
   extractRichText,
   extractSelect,
   extractRelationIds,
   extractDate,
+  extractNumber,
 } from "../notion/extractors.js"
 
 type QueryFactsOpts = {
@@ -166,6 +174,41 @@ function logProbeFailureOnce(err: unknown): void {
 /** Reset between tests. Not exported on the public API surface. */
 export function __resetProbeFailureLogForTests(): void {
   probeFailureLogged = false
+}
+
+/**
+ * Read `Fact.createdAt` with an explicit invariant check (DEFERRED-02).
+ *
+ * `Fact.createdAt` is typed as optional on the public boundary so
+ * adding the field doesn't break external consumers building
+ * `Fact`-shaped object literals (the public type is exported via
+ * `src/index.ts`). At runtime, every `Fact` produced by `pageToFact`
+ * carries `createdAt` because the field comes from Notion's built-in
+ * `created_time` page property — present on every page since the
+ * vault was created. So internal helpers (`invalidate`,
+ * `touchOnRead`, the build-fact-confidence-scores migration) can
+ * rely on the runtime guarantee.
+ *
+ * The helper exists to give a meaningful error if the invariant is
+ * violated (a partial `Fact` reaches an internal helper without
+ * `createdAt`) instead of letting `.slice(0, 10)` throw a generic
+ * `Cannot read properties of undefined`. The error names the
+ * affected method so debugging starts at the right call site.
+ */
+function readFactCreatedAt(
+  fact: { id: string; createdAt?: string },
+  callsite: string,
+): string {
+  if (fact.createdAt === undefined) {
+    throw new Error(
+      `FactService.${callsite}: Fact.createdAt is unexpectedly undefined ` +
+        `(fact id=${fact.id}). pageToFact always populates createdAt from ` +
+        `Notion's built-in created_time; a missing value indicates a ` +
+        `partial Fact constructed outside pageToFact reached an internal ` +
+        `helper.`,
+    )
+  }
+  return fact.createdAt
 }
 
 export class FactService {
@@ -1123,13 +1166,252 @@ export class FactService {
     return fixFactEncoding(this.client, this.db, options)
   }
 
+  /**
+   * Invalidate a fact (set `Valid Until = today`) and decrement its
+   * `Confidence Score` (DEFERRED-02).
+   *
+   * Mirrors `MemoryService.decrementConfidence`'s decay-then-decrement
+   * algebra: the helper reads the fact first, lazily seeds from the
+   * categorical `Confidence` when `confidenceScore === null`, realizes
+   * any decay accrued since `lastReferencedAt` (or `createdAt` for
+   * never-touched rows), then halves the result via
+   * `decrementConfidenceScore`. The decremented score, refreshed
+   * `Last Referenced At = today`, AND `Valid Until = today` land in a
+   * single `pages.update` so the WRITE itself is atomic — a transient
+   * failure either lands all three columns or none.
+   *
+   * **The read+compute+write trio is NOT atomic at the Notion API.**
+   * Notion has no compare-and-swap or conditional-write primitive (same
+   * posture as `createWithDedup`'s dedup race). Two concurrent
+   * invalidates of the same fact — cross-process autosaves, or a
+   * `lore-correct` racing a `lore-fact action='invalidate'` in the
+   * same session — both read the same `confidenceScore`, both compute
+   * `s * 0.5`, and the second writer overwrites with the same halved
+   * value rather than a quarter (`s * 0.25`). The decrement is
+   * therefore advisory under concurrency: the invalidate contract
+   * (`Valid Until = today`) holds because the final `pages.update` is
+   * atomic, but the score may end up halved-once instead of
+   * halved-twice. Mirror of `MemoryService.decrementConfidence`'s
+   * concurrency posture; both ship under the same contract.
+   *
+   * The historical-tracking-predicate filter in `pageToFact` returns
+   * `null` for legacy rows whose Predicate is `needs_action` /
+   * `waiting_on` / `blocked_by`. Those rows still need to be invalidated
+   * (operators running cleanup expect the call to land), but there's no
+   * `Fact` shape from which to read the score, so the helper degrades
+   * to a `Valid Until`-only write — the same pre-DEFERRED-02 behavior
+   * for those rows. The score column stays untouched.
+   *
+   * Failure modes:
+   * - `getById` 5xx / 404: the catch routes to a `Valid Until`-only
+   *   write so an invalidate call never fails for a transient read
+   *   problem. The decrement is advisory; the invalidate is the
+   *   contract.
+   * - `extractNumber` returns `null` for missing schema column: same
+   *   path as a never-scored row, the decrement still runs against the
+   *   seeded categorical.
+   */
   async invalidate(id: string): Promise<void> {
+    const today = todayUtc()
+    let fact: Fact | null
+    try {
+      fact = await this.getById(id)
+    } catch {
+      // Fall through: the read failed but the invalidate write must
+      // still happen. The decrement is best-effort.
+      fact = null
+    }
+
+    const properties: Record<string, unknown> = {
+      "Valid Until": { date: { start: today } },
+    }
+
+    if (fact !== null) {
+      // Seed-decay-then-decrement. Mirror MemoryService.decrementConfidence
+      // — the same convergence guarantee: a contradiction landed before
+      // the migration produces the same effective score as one landed
+      // after.
+      let current: number
+      if (fact.confidenceScore == null) {
+        const seeded = seedConfidenceScore(fact.confidence)
+        current = decayConfidenceScore(
+          seeded,
+          readFactCreatedAt(fact, "invalidate").slice(0, 10),
+          today,
+        )
+      } else {
+        current = decayConfidenceScore(
+          fact.confidenceScore,
+          fact.lastReferencedAt ?? null,
+          today,
+        )
+      }
+      const next = decrementConfidenceScore(current)
+      properties["Confidence Score"] = { number: next }
+      properties["Last Referenced At"] = { date: { start: today } }
+    }
+
+    try {
+      await this.client.pages.update({
+        page_id: id,
+        properties: properties as UpdatePageParameters["properties"],
+      })
+    } catch (err) {
+      // If the write failed because the schema column doesn't exist on
+      // legacy vaults that haven't run `lore migrate`, fall back to the
+      // bare `Valid Until` write so the invalidate still lands. The
+      // operator's next migrate run will add the columns; subsequent
+      // invalidates pick up the full atom.
+      if (isMissingPropertyError(err)) {
+        await this.client.pages.update({
+          page_id: id,
+          properties: {
+            "Valid Until": { date: { start: today } },
+          },
+        })
+        return
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Update `Last Referenced At` to today and lazily seed / decay / bump
+   * `Confidence Score` for the given facts (DEFERRED-02). Mirrors
+   * `MemoryService.touchOnRead` — every contract decision documented
+   * there applies here:
+   *
+   * - Same-day short-circuit: `lastReferencedAt === today && confidenceScore !== null`
+   *   issues no Notion call.
+   * - Seed-decay-then-bump on never-scored rows; decay-then-bump on
+   *   stale; lazily realizes accrued decay on every touch.
+   * - Per-row failures route through `onError` and degrade to a no-op
+   *   for that fact. The caller's read result is always preserved;
+   *   `touchOnRead` is advisory, never blocking.
+   * - Bump-once-per-day: a fact cited 50 times in one session bumps
+   *   exactly once.
+   *
+   * Each update is its own `pages.update` (Notion has no batch primitive);
+   * the rate-limit middleware bounds in-flight count.
+   */
+  async touchOnRead(
+    facts: ReadonlyArray<
+      Pick<
+        Fact,
+        "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
+      >
+    >,
+    opts?: {
+      today?: string
+      onError?: (factId: string, error: unknown) => void
+    },
+  ): Promise<void> {
+    const today = opts?.today ?? todayUtc()
+    await Promise.all(
+      facts.map(async (fact) => {
+        if (
+          fact.lastReferencedAt === today &&
+          fact.confidenceScore != null
+        ) {
+          return
+        }
+        try {
+          let nextScore: number
+          if (fact.confidenceScore == null) {
+            const seeded = seedConfidenceScore(fact.confidence)
+            const decayed = decayConfidenceScore(
+              seeded,
+              readFactCreatedAt(fact, "touchOnRead").slice(0, 10),
+              today,
+            )
+            nextScore = bumpConfidenceScore(decayed)
+          } else {
+            const decayed = decayConfidenceScore(
+              fact.confidenceScore,
+              fact.lastReferencedAt ?? null,
+              today,
+            )
+            nextScore = bumpConfidenceScore(decayed)
+          }
+          await this.client.pages.update({
+            page_id: fact.id,
+            properties: {
+              "Last Referenced At": { date: { start: today } },
+              "Confidence Score": { number: nextScore },
+            },
+          })
+        } catch (error) {
+          opts?.onError?.(fact.id, error)
+        }
+      }),
+    )
+  }
+
+  /**
+   * Paginating async iterator over every live (`Valid Until is_empty`)
+   * fact in this service's Facts DB, optionally scoped to a single
+   * project. Yields `Fact` objects in created-time-ascending order so
+   * the migration's plan output is deterministic.
+   *
+   * Used by `runBuildFactConfidenceScoresMigration` (DEFERRED-02). Mirrors
+   * `MemoryService.listAllForBackfill` shape — same projection, same
+   * project-scope semantics, same `null`-tolerant `pageToFact` filter.
+   *
+   * Tracking-predicate facts (filtered by `pageToFact`) are skipped so
+   * the migration doesn't try to seed scores onto historical rows whose
+   * domain shape we no longer recognize.
+   */
+  async *listAllForBackfill(opts: {
+    projectId?: string
+  } = {}): AsyncGenerator<Fact, void, void> {
+    const filters: Array<Record<string, unknown>> = [
+      { property: "Valid Until", date: { is_empty: true } },
+    ]
+    if (opts.projectId) {
+      filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+    const filter = filters.length > 1 ? { and: filters } : filters[0]
+    let cursor: string | undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        sorts: [{ timestamp: "created_time", direction: "ascending" }],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
+        const fact = this.pageToFact(page)
+        if (fact === null) continue
+        yield fact
+      }
+      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    } while (cursor)
+  }
+
+  /**
+   * Single `pages.update` writing both `Confidence Score` and
+   * `Last Referenced At` (DEFERRED-02). Mirrors
+   * `MemoryService.applyBackfillScore`: the migration sets
+   * `Last Referenced At` to the fact's `createdAt` (sliced YYYY-MM-DD),
+   * not today — the migration's contract is "treat creation as the
+   * implicit first reference," so the row's decay anchor IS its creation
+   * date.
+   *
+   * Caller is responsible for clamping `score`. Production callers
+   * (`runBuildFactConfidenceScoresMigration`) hand off scores produced
+   * by `decayConfidenceScore`, which clamps internally.
+   */
+  async applyBackfillScore(
+    factId: string,
+    score: number,
+    lastReferencedAt: string,
+  ): Promise<void> {
     await this.client.pages.update({
-      page_id: id,
+      page_id: factId,
       properties: {
-        "Valid Until": {
-          date: { start: new Date().toISOString().split("T")[0] },
-        },
+        "Confidence Score": { number: score },
+        "Last Referenced At": { date: { start: lastReferencedAt } },
       },
     })
   }
@@ -1253,6 +1535,15 @@ export class FactService {
       reviewBy: extractDate(props["Review By"]),
       sourceMemoryId: sourceIds[0] ?? null,
       confidence: extractSelect(props["Confidence"], "certain") as FactConfidence,
+      // DEFERRED-02 — system-managed numeric mirror of the categorical
+      // `Confidence` select. `null` on pre-migration rows; populated by
+      // `touchOnRead` / `decrementConfidence` / the build-fact-confidence-
+      // scores migration. `extractNumber` returns `null` for missing
+      // columns so legacy vaults that haven't run schema migration deserialize
+      // cleanly.
+      confidenceScore: extractNumber(props["Confidence Score"]),
+      lastReferencedAt: extractDate(props["Last Referenced At"]),
+      createdAt: page.created_time,
       subjectEntityId: subjectEntityIds[0] ?? null,
       objectEntityId: objectEntityIds[0] ?? null,
     }

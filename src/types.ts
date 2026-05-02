@@ -1058,6 +1058,48 @@ export interface Fact {
   sourceMemoryId: string | null
   confidence: FactConfidence
   /**
+   * System-managed numeric confidence in [0, 1]. `null` until the fact has
+   * been touched once by a read path (or backfilled by `lore migrate
+   * --build-fact-confidence-scores`). Mirrors the Memories DB column —
+   * lore-ask reads this as a weighting factor over the existing recency
+   * sort (DEFERRED-02). Distinct from the agent-curated `confidence`
+   * categorical above. Optional on the type for the same backward-compat
+   * reason as `subjectEntityId`: pre-DEFERRED-02 `Fact` JSON would
+   * otherwise fail validation. Internal `pageToFact` always populates
+   * (`null` when the column is absent).
+   */
+  confidenceScore?: number | null
+  /**
+   * Most-recent read-citation date in `YYYY-MM-DD` form; `null` until the
+   * fact has been touched once by a read path (or backfilled by
+   * `lore migrate --build-fact-confidence-scores`). Mirrors the Memories
+   * DB column. Distinct from `validFrom` (relationship-validity start) and
+   * Notion's `last_edited_time` (write timestamp). Optional for backward
+   * compat; `pageToFact` always populates.
+   */
+  lastReferencedAt?: string | null
+  /**
+   * Notion `created_time` propagated through `pageToFact`. Used by
+   * `decrementConfidence`, `touchOnRead`, and the
+   * build-fact-confidence-scores migration as the decay anchor when
+   * `lastReferencedAt` is null (the row has never been touched).
+   *
+   * Optional on the public type (`Fact` is exported from
+   * `src/index.ts`) so adding the field is not a TypeScript source-
+   * compat break for external consumers building `Fact`-shaped object
+   * literals or fixtures. Internal `pageToFact` always populates the
+   * field — every domain-internal callsite reads `fact.createdAt`
+   * after a fresh `pageToFact` deserialization — so the runtime
+   * guarantee is "always present" even though the type permits
+   * `undefined`. The internal helpers that consume this field
+   * (`invalidate`, `touchOnRead`, the migration) assert presence at
+   * the call site; if a future test fixture or external API surface
+   * starts deserializing partial `Fact` objects without `createdAt`,
+   * those call sites will throw a TypeError on the `.slice(0, 10)`
+   * call rather than silently rounding decay to zero.
+   */
+  createdAt?: string
+  /**
    * Entity ID the fact's Subject relates to. Populated post-PF3-01 by
    * the build-entities migration and by `lore-fact action='create'`
    * after the resolver runs. `null` on un-migrated rows; queries that

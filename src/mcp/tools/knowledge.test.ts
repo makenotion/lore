@@ -57,6 +57,7 @@ function makeFact(id: string, overrides: Partial<Fact> = {}): Fact {
     reviewBy: null,
     sourceMemoryId: "decision-id",
     confidence: "certain",
+    createdAt: "2026-04-20T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
     ...overrides,
@@ -575,6 +576,455 @@ describe("lore-ask grouped display (P2-06)", () => {
     // already on the knob, so we don't re-advertise it.
     expect(text).toMatch(/\(5 hidden\)/)
     expect(text).not.toContain("pass limit")
+  })
+})
+
+describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
+  function services(facts: Fact[]) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+        // `handleAsk` fires `fireFactTouchOnRead` after the visible-slice
+        // fact list is rendered; stub `touchOnRead` so the helper
+        // resolves cleanly. Without this stub, `fireFactTouchOnRead`'s
+        // outer try/catch swallows the missing-method TypeError but
+        // every test would emit the same noise.
+        touchOnRead: vi.fn().mockResolvedValue(undefined),
+      },
+      decisions: { getById: vi.fn() },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        // `handleAsk` calls `getManyById` for memory cite-as-evidence;
+        // returning `[]` (no source memories) keeps the test focused
+        // on the fact ordering.
+        getManyById: vi.fn().mockResolvedValue([]),
+        touchOnRead: vi.fn().mockResolvedValue(undefined),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null },
+    }
+  }
+
+  async function invokeAsk(facts: Fact[]): Promise<string> {
+    const mockServer = createMockServer()
+    const svc = services(facts)
+    registerKnowledgeTools(mockServer.server, svc as never)
+    registerQueryTools(mockServer.server, svc as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+    const result = await handler({ entity: "AuthService" } as never)
+    return (result as { content: Array<{ text: string }> }).content[0].text
+  }
+
+  it("preserves byte-identical pre-DEFERRED-02 recency ordering when every score is null", async () => {
+    // Pre-migration vaults: every `confidenceScore` is null. The RRF
+    // pass should behave as a pure recency sort because
+    // `confidenceFactor(null) === 1.0` ties every multiplier and the
+    // RRF score collapses to monotonic-by-rank.
+    const facts: Fact[] = [
+      makeFact("older", {
+        predicate: "uses",
+        object: "OlderObj",
+        validFrom: "2026-04-01",
+        confidenceScore: null,
+      }),
+      makeFact("newer", {
+        predicate: "uses",
+        object: "NewerObj",
+        validFrom: "2026-04-25",
+        confidenceScore: null,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+    const newerIdx = text.indexOf("NewerObj")
+    const olderIdx = text.indexOf("OlderObj")
+    expect(newerIdx).toBeGreaterThan(-1)
+    expect(olderIdx).toBeGreaterThan(-1)
+    // Newer fact renders first under recency-only (the pre-DEFERRED-02
+    // contract). Pin the order so a future refactor that silently
+    // changes the sort comparator can't regress null-score vaults.
+    expect(newerIdx).toBeLessThan(olderIdx)
+  })
+
+  it("ranks high-confidence older facts above low-confidence newer facts", async () => {
+    // The first draft of the comparator only applied confidenceFactor
+    // as a same-day tiebreaker. This pins the BLOCKING fix from review
+    // 2: a high-score older fact must beat a low-score newer fact when
+    // the score gap warrants. With FACT_RRF_K = 4:
+    //   rank 0 (newer), score 0.05 → factor 0.525 → 1/5 * 0.525 = 0.105
+    //   rank 1 (older), score 0.95 → factor 0.975 → 1/6 * 0.975 = 0.1625
+    // Older wins.
+    const facts: Fact[] = [
+      makeFact("newer-decayed", {
+        predicate: "uses",
+        object: "NewerDecayed",
+        validFrom: "2026-04-25",
+        confidenceScore: 0.05,
+      }),
+      makeFact("older-trusted", {
+        predicate: "uses",
+        object: "OlderTrusted",
+        validFrom: "2026-04-01",
+        confidenceScore: 0.95,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+    const trustedIdx = text.indexOf("OlderTrusted")
+    const decayedIdx = text.indexOf("NewerDecayed")
+    expect(trustedIdx).toBeGreaterThan(-1)
+    expect(decayedIdx).toBeGreaterThan(-1)
+    expect(trustedIdx).toBeLessThan(decayedIdx)
+  })
+
+  it("renders the trust label as a separate indented line when confidenceScore < threshold", async () => {
+    // BLOCKING fix from review 2: the new score must be visible in the
+    // user-facing surfaces, not just affect ranking. A fact at score
+    // 0.15 is "very low confidence" per `formatTrustLabel`; the
+    // trust label renders on its own indented italic line below the
+    // bullet (mirroring the decision/task surfaces from DEFERRED-07
+    // via the shared `renderTrustLine` helper).
+    const facts: Fact[] = [
+      makeFact("decayed", {
+        predicate: "uses",
+        object: "DecayedObj",
+        confidence: "certain",
+        confidenceScore: 0.15,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+    expect(text).toContain("[certain]")
+    expect(text).toContain("_very low confidence_")
+  })
+
+  it("does not render a trust label when confidenceScore is null (byte-identical pre-DEFERRED-02)", async () => {
+    // Pre-migration row: render must remain `[certain]` only with the
+    // ID footer immediately below. No trust line, no italic signal.
+    // A regression here would be visible to every agent reading
+    // lore-ask responses against an un-backfilled vault.
+    const facts: Fact[] = [
+      makeFact("legacy", {
+        predicate: "uses",
+        object: "LegacyObj",
+        confidence: "certain",
+        confidenceScore: null,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+    expect(text).toContain("[certain]")
+    expect(text).not.toContain("_very low confidence_")
+    expect(text).not.toContain("_low confidence_")
+    expect(text).not.toContain("_moderate confidence_")
+  })
+
+  it("does not render a trust label when confidenceScore is above threshold", async () => {
+    // 0.8 is fully trusted (above CONFIDENCE_DISPLAY_THRESHOLD = 0.5).
+    // `renderTrustLine` returns null on above-threshold scores, so the
+    // rendered output stays `[certain]` only.
+    const facts: Fact[] = [
+      makeFact("fresh", {
+        predicate: "uses",
+        object: "FreshObj",
+        confidence: "certain",
+        confidenceScore: 0.8,
+      }),
+    ]
+    const text = await invokeAsk(facts)
+    expect(text).toContain("[certain]")
+    expect(text).not.toContain("_very low confidence_")
+    expect(text).not.toContain("_low confidence_")
+    expect(text).not.toContain("_moderate confidence_")
+  })
+})
+
+describe("lore-ask — decided_by trust line (DEFERRED-02)", () => {
+  // The governance bucket renders `decided_by` facts via
+  // `renderDecidedByLine`, which previously emitted only the
+  // decision's `[status, confidence]` categorical label and never
+  // the FACT's numeric trust signal. A `decided_by` fact whose
+  // confidence has decayed (e.g. the entity-decision link has gone
+  // long-uncited) was rendering as a fully trusted governance
+  // statement. The fact-side trust line must surface here too,
+  // mirroring the structure-bucket / Overdue Facts treatment, so
+  // the highest-value governance path participates in the
+  // dynamic-confidence contract.
+
+  function decidedByServices(facts: Fact[], decision: Decision) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+        touchOnRead: vi.fn().mockResolvedValue(undefined),
+      },
+      decisions: {
+        getById: vi.fn().mockResolvedValue(decision),
+      },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById: vi.fn().mockResolvedValue([]),
+        touchOnRead: vi.fn().mockResolvedValue(undefined),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null },
+    }
+  }
+
+  async function invokeAsk(facts: Fact[], decision: Decision): Promise<string> {
+    const mockServer = createMockServer()
+    const svc = decidedByServices(facts, decision)
+    registerKnowledgeTools(mockServer.server, svc as never)
+    registerQueryTools(mockServer.server, svc as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+    const result = await handler({ entity: "AuthService" } as never)
+    return (result as { content: Array<{ text: string }> }).content[0].text
+  }
+
+  it("renders the trust line on a low-confidence decided_by fact", async () => {
+    // Score 0.15 is "very low confidence" per `formatTrustLabel`. The
+    // trust line must surface between the title row and the ID footer
+    // so a heavily-decayed governance link is visibly distinguished
+    // from a freshly-cited one.
+    const decision = makeDecision("dec-1", {
+      title: "Adopt OIDC",
+      status: "accepted",
+      confidence: "certain",
+    })
+    const fact = makeFact("fact-decayed", {
+      subject: "AuthService",
+      predicate: "decided_by",
+      object: "dec-1",
+      sourceMemoryId: "dec-1",
+      confidenceScore: 0.15,
+    })
+    const text = await invokeAsk([fact], decision)
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex(
+      (l) => l.includes("decided by") && l.includes("AuthService"),
+    )
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
+    // ID footer follows the trust line, matching the
+    // title → trust → ID envelope used by every other fact-side surface.
+    expect(lines[titleIdx + 2]).toMatch(/^ {2}Decision ID:/)
+  })
+
+  it("omits the trust line on a null confidenceScore (pre-migration vault)", async () => {
+    // Pre-DEFERRED-02 vault — `renderTrustLine(null, ...)` returns
+    // null and the rendered output is byte-identical to pre-DEFERRED-02
+    // for un-backfilled rows.
+    const decision = makeDecision("dec-2", { title: "Adopt OIDC" })
+    const fact = makeFact("fact-null", {
+      subject: "AuthService",
+      predicate: "decided_by",
+      object: "dec-2",
+      sourceMemoryId: "dec-2",
+      confidenceScore: null,
+    })
+    const text = await invokeAsk([fact], decision)
+    expect(text).toContain("decided by")
+    expect(text).not.toContain("_very low confidence_")
+    expect(text).not.toContain("_low confidence_")
+    expect(text).not.toContain("_moderate confidence_")
+  })
+
+  it("omits the trust line on an above-threshold confidenceScore", async () => {
+    const decision = makeDecision("dec-3", { title: "Adopt OIDC" })
+    const fact = makeFact("fact-fresh", {
+      subject: "AuthService",
+      predicate: "decided_by",
+      object: "dec-3",
+      sourceMemoryId: "dec-3",
+      confidenceScore: 0.85,
+    })
+    const text = await invokeAsk([fact], decision)
+    expect(text).toContain("decided by")
+    expect(text).not.toContain("_very low confidence_")
+    expect(text).not.toContain("_low confidence_")
+    expect(text).not.toContain("_moderate confidence_")
+  })
+})
+
+describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
+  // Pins the citation-as-evidence contract for the fact-side surface:
+  // every fact actually displayed in `lore-query action='ask'` (visible
+  // governance + visible structure, NOT the hidden-overflow tail) bumps
+  // `Confidence Score` + `Last Referenced At` via
+  // `services.facts.touchOnRead`. Mirror of the memory-side wake-up
+  // touch-on-read tests in `context.test.ts`.
+  //
+  // Without these tests, `fireFactTouchOnRead`'s outer try/catch
+  // would swallow a missing-method TypeError on a regression that
+  // dropped the wiring, and the rest of the test suite would still
+  // pass — the contract would be silently broken until production
+  // dynamic-confidence stopped accumulating.
+
+  function services(
+    facts: Fact[],
+    factsTouchOnRead: ReturnType<typeof vi.fn> = vi
+      .fn()
+      .mockResolvedValue(undefined),
+  ) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: {
+        queryByEntity: vi.fn().mockResolvedValue(facts),
+        queryByObject: vi.fn().mockResolvedValue([]),
+        touchOnRead: factsTouchOnRead,
+      },
+      decisions: { getById: vi.fn() },
+      memories: {
+        getTitleById: vi.fn().mockResolvedValue(null),
+        getManyById: vi.fn().mockResolvedValue([]),
+        touchOnRead: vi.fn().mockResolvedValue(undefined),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null },
+    }
+  }
+
+  async function invokeAsk(
+    facts: Fact[],
+    args: Record<string, unknown> = {},
+    factsTouchOnRead?: ReturnType<typeof vi.fn>,
+  ): Promise<{ text: string; touchedIds: string[]; touchCount: number }> {
+    const mockServer = createMockServer()
+    const touchSpy = factsTouchOnRead ?? vi.fn().mockResolvedValue(undefined)
+    const svc = services(facts, touchSpy)
+    registerKnowledgeTools(mockServer.server, svc as never)
+    registerQueryTools(mockServer.server, svc as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+    const result = await handler({ entity: "AuthService", ...args } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    const passed =
+      touchSpy.mock.calls.length > 0
+        ? (touchSpy.mock.calls[0]![0] as Fact[])
+        : []
+    return {
+      text,
+      touchedIds: passed.map((f) => f.id),
+      touchCount: touchSpy.mock.calls.length,
+    }
+  }
+
+  it("touches both visible governance and visible structure facts", async () => {
+    // `handleAsk` partitions facts into governance (decided_by /
+    // supersedes_decision) and structure buckets via
+    // `groupFactsByClass`. The visible-slice contract: every row
+    // shown to the agent counts as cited. Structure-bucket facts
+    // surface via the visible structure slice; governance facts
+    // (here `supersedes_decision`, no decision lookup needed)
+    // surface via the visible governance slice.
+    const facts: Fact[] = [
+      makeFact("gov-1", {
+        subject: "NewDecision",
+        predicate: "supersedes_decision",
+        object: "OldDecision",
+      }),
+      makeFact("struct-1", { predicate: "uses", object: "JWT" }),
+      makeFact("struct-2", { predicate: "depends_on", object: "DB" }),
+    ]
+    const { touchedIds, touchCount } = await invokeAsk(facts)
+    expect(touchCount).toBe(1)
+    expect(new Set(touchedIds)).toEqual(new Set(["gov-1", "struct-1", "struct-2"]))
+  })
+
+  it("does not touch hidden-overflow facts past the per-bucket cap", async () => {
+    // 8 structure facts > the default cap of 5. Only the top 5 are
+    // rendered to the agent; the bottom 3 land in the `(3 hidden)`
+    // suffix and must NOT be touched — bumping their Confidence Score
+    // would inflate signal against rows that were never displayed.
+    const facts: Fact[] = Array.from({ length: 8 }, (_, i) =>
+      makeFact(`s-${i}`, {
+        predicate: "uses",
+        object: `Obj${i}`,
+        // Unique validFrom desc so the top 5 are deterministic.
+        validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
+      }),
+    )
+    const { text, touchedIds, touchCount } = await invokeAsk(facts)
+    expect(touchCount).toBe(1)
+    // The hidden-count suffix proves the slice fired.
+    expect(text).toContain("(3 hidden)")
+    expect(touchedIds).toHaveLength(5)
+    // The visible 5 are the highest validFrom rows (s-3 through s-7).
+    // The hidden 3 (s-0, s-1, s-2) MUST NOT appear.
+    for (const hiddenId of ["s-0", "s-1", "s-2"]) {
+      expect(touchedIds).not.toContain(hiddenId)
+    }
+  })
+
+  it("does not call facts.touchOnRead when there are no facts", async () => {
+    // Empty result set — no facts surfaced, no touch. Pin the
+    // empty-batch short-circuit at the MCP boundary so a future
+    // refactor can't silently fire a no-op Notion call on every
+    // ask response that has no facts.
+    const { touchCount } = await invokeAsk([])
+    expect(touchCount).toBe(0)
+  })
+
+  it("does not call facts.touchOnRead when only tasks surface (non-empty response, zero visible facts)", async () => {
+    // Edge case: queryByEntity returns no facts but the Tasks bucket
+    // has rows. `visibleFacts` is empty, so the empty-batch
+    // short-circuit must still hold and no facts.touchOnRead call
+    // fires. Pinned because the tasks-only path renders a non-empty
+    // response while the fact-side cite list is genuinely empty —
+    // a regression that flattened the guard could leak a no-op call.
+    //
+    // **Tasks must be non-empty.** The handler short-circuits with
+    // `if (facts.length === 0 && tasks.length === 0) return ...`
+    // BEFORE reaching the `fireFactTouchOnRead` call. Stubbing
+    // `tasks.list` with `items: []` would make the test pass for
+    // the wrong reason — through the all-empty early return rather
+    // than through `fireFactTouchOnRead`'s `rows.length === 0`
+    // guard. Inject one task so we actually exercise the
+    // non-empty-response / zero-visible-facts branch.
+    const factsTouchOnRead = vi.fn().mockResolvedValue(undefined)
+    const mockServer = createMockServer()
+    const svc = services([], factsTouchOnRead)
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: "task-only",
+          title: "Rotate JWT keys",
+          taskState: "open",
+          blockedBy: null,
+          reviewBy: null,
+          decidedAt: null,
+          entity: "AuthService",
+        },
+      ],
+    })
+    registerKnowledgeTools(mockServer.server, svc as never)
+    registerQueryTools(mockServer.server, svc as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+    const result = await handler({ entity: "AuthService" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    // Confirm the handler actually rendered the Tasks section — the
+    // assertion that no fact-touch fired is meaningless if the early
+    // all-empty return was hit instead.
+    expect(text).toContain("### Tasks")
+    expect(text).toContain("Rotate JWT keys")
+    expect(factsTouchOnRead).not.toHaveBeenCalled()
+  })
+
+  it("does not surface a facts.touchOnRead failure as a tool error", async () => {
+    // Advisory contract — a touch failure must NEVER fail the
+    // surrounding `ask` response. Mirror of the memory-side advisory
+    // test in `context.test.ts`.
+    const facts: Fact[] = [
+      makeFact("struct-1", { predicate: "uses", object: "JWT" }),
+    ]
+    const factsTouchOnRead = vi.fn().mockRejectedValue(new Error("notion 503"))
+    const mockServer = createMockServer()
+    const svc = services(facts, factsTouchOnRead)
+    registerKnowledgeTools(mockServer.server, svc as never)
+    registerQueryTools(mockServer.server, svc as never)
+    const handler = mockServer.getActionHandler("lore-query", "ask")
+    const result = await handler({ entity: "AuthService" } as never)
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("AuthService")
   })
 })
 
@@ -2185,6 +2635,95 @@ describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEF
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain("Healthy overdue decision")
+    expect(text).not.toContain("confidence_")
+  })
+})
+
+describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRED-02)", () => {
+  // Sibling of the Overdue Decisions trust-indicator block above.
+  // Pre-DEFERRED-02 the Overdue Facts section carried a TODO placeholder
+  // pointing at this surface; once the Facts DB grew a `Confidence Score`
+  // column the placeholder unblocked. Pin the same envelope —
+  // title → trust → review-by → ID — so a future renderer swap or
+  // re-flow doesn't silently drop the audit signal that drove the
+  // operator's attention to this row in the first place.
+
+  function auditServices(facts: Fact[]) {
+    return {
+      projects: { findByName: vi.fn() },
+      facts: { queryOverdue: vi.fn().mockResolvedValue(facts) },
+      decisions: { queryOverdue: vi.fn().mockResolvedValue([]) },
+      context: { project: null },
+    }
+  }
+
+  it("renders the trust line between the title row and the Review by row on a low-confidence fact", async () => {
+    const fact = makeFact("fact-low", {
+      subject: "DecayedSubject",
+      predicate: "uses",
+      object: "DecayedObj",
+      confidence: "certain",
+      confidenceScore: 0.3,
+      reviewBy: "2026-01-01",
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, auditServices([fact]) as never)
+    registerQueryTools(mockServer.server, auditServices([fact]) as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    const lines = text.split("\n")
+    const titleIdx = lines.findIndex((l) => l.includes("**DecayedSubject**"))
+    expect(titleIdx).toBeGreaterThanOrEqual(0)
+    expect(lines[titleIdx + 1]).toBe("  _low confidence_")
+    expect(lines[titleIdx + 2]).toMatch(/^ {2}Review by:/)
+  })
+
+  it("omits the trust line when confidenceScore is null (pre-migration vault)", async () => {
+    // Pre-DEFERRED-02 vault — the `Confidence Score` column hasn't
+    // been backfilled yet, so the field comes back null and
+    // `renderTrustLine` returns null. Audit output stays
+    // byte-identical to pre-DEFERRED-02 for un-migrated vaults.
+    const fact = makeFact("fact-null", {
+      subject: "PreMigrationSubject",
+      predicate: "uses",
+      object: "PreMigrationObj",
+      confidence: "certain",
+      confidenceScore: null,
+      reviewBy: "2026-01-01",
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, auditServices([fact]) as never)
+    registerQueryTools(mockServer.server, auditServices([fact]) as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("PreMigrationSubject")
+    expect(text).not.toContain("confidence_")
+  })
+
+  it("omits the trust line when the score is at or above the display threshold", async () => {
+    const fact = makeFact("fact-healthy", {
+      subject: "FreshSubject",
+      predicate: "uses",
+      object: "FreshObj",
+      confidence: "certain",
+      confidenceScore: 0.7,
+      reviewBy: "2026-01-01",
+    })
+    const mockServer = createMockServer()
+    registerKnowledgeTools(mockServer.server, auditServices([fact]) as never)
+    registerQueryTools(mockServer.server, auditServices([fact]) as never)
+    const handler = mockServer.getActionHandler("lore-query", "audit")
+
+    const result = await handler({} as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(text).toContain("FreshSubject")
     expect(text).not.toContain("confidence_")
   })
 })

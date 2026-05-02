@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import {
+  fireFactTouchOnRead,
   fireTouchOnRead,
   formatDispatchError,
   toolError,
@@ -741,6 +742,20 @@ async function handleWakeUp(
             trailing: `(${fact.confidence})`,
           }),
         )
+        // DEFERRED-02 — surface the numeric trust label as a separate
+        // indented italic line below the bullet when the fact's
+        // `confidenceScore` has decayed below
+        // `CONFIDENCE_DISPLAY_THRESHOLD`. Same shape as the
+        // decision/task surfaces (DEFERRED-07) so the visual rhythm
+        // stays consistent across wake-up sub-sections. Pre-migration
+        // / above-threshold rows: `renderTrustLine` returns null
+        // (null score short-circuits, above-threshold returns null
+        // via `formatTrustLabel`), so output is byte-identical to
+        // pre-DEFERRED-02.
+        const trustLine = renderTrustLine(fact.confidenceScore ?? null, "  ")
+        if (trustLine !== null) {
+          sections.push(trustLine)
+        }
       }
     }
 
@@ -776,6 +791,13 @@ async function handleWakeUp(
       if (memory) surfacedMemories.push(memory)
     }
     await fireTouchOnRead(services.memories, surfacedMemories, "lore-context (wake-up)")
+
+    // DEFERRED-02 — fact-side mirror. Every knowledge fact rendered in
+    // the Active Facts section counts as cited; bumping `Confidence
+    // Score` + `Last Referenced At` keeps the fact-side dynamics in
+    // step with the memory-side wiring above. The facts are already
+    // in-memory from `loadWakeUpData`, so no extra round-trip.
+    await fireFactTouchOnRead(services.facts, knowledgeFacts, "lore-context (wake-up)")
 
     return response
   } catch (err) {

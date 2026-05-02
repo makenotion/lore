@@ -73,6 +73,7 @@ function buildFact(overrides: Partial<Fact>): Fact {
     reviewBy: null,
     sourceMemoryId: null,
     confidence: "certain",
+    createdAt: "2026-01-01T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
     ...overrides,

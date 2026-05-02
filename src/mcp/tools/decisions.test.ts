@@ -54,6 +54,7 @@ function makeFact(id: string): Fact {
     reviewBy: null,
     sourceMemoryId: "decision-id",
     confidence: "certain",
+    createdAt: "2026-04-20T00:00:00.000Z",
     subjectEntityId: null,
     objectEntityId: null,
   }
