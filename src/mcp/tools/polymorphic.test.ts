@@ -211,6 +211,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       getTitleById: vi.fn(),
       decrementConfidence: vi.fn(async () => 0.45),
       queryStaleConfidence: vi.fn(async () => []),
+      countProposed: vi.fn(async () => ({ total: 0, bySource: {}, byAgent: {} })),
     },
     facts: {
       create: opts.factsCreate ?? vi.fn(async () => ({})),
@@ -1551,12 +1552,21 @@ describe("MCP tool surface", () => {
     // Combined ceiling. The surface has moved 7 → 8 → 7 across P3-01,
     // PF3-06, and the 0.6.0 purge; the budget covers the high-water
     // mark plus comfortable headroom so a future action lands without
-    // inviting a surface-doubling regression. Bumped 7000 → 7100 in
-    // #265 to accommodate the `lore-task action='create'` reuse note —
-    // agent-observable behavior change that warrants a one-line schema
-    // signal alongside the response-text vocabulary, per the principal
-    // review.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7100
+    // inviting a surface-doubling regression. Two recent bumps stack:
+    // (a) 7000 → 7100 in #265 to accommodate the `lore-task
+    // action='create'` reuse note — agent-observable behavior change
+    // that warranted a one-line schema signal alongside the
+    // response-text vocabulary; and (b) 7100 → 7200 in issue #281
+    // Phase 1 to absorb the proposed-memory inbox count line in
+    // `lore-context action='status'`'s description (now also names
+    // the `Kind != decision` exclusion so an agent reading the schema
+    // knows proposed-state decisions surface via `lore-decision`
+    // instead). Each delta stays within a "≤ ~200 chars per
+    // single-action-add" envelope; the doc-string clause is the
+    // expensive line, not the action-name addition itself. Future
+    // Phase 2 / 4 description adds will continue to stack the budget
+    // explicitly rather than burning headroom silently.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7200
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1574,6 +1584,73 @@ describe("MCP tool surface", () => {
       total,
       `combined polymorphic description size (${total} chars) exceeds the ${TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT}-char budget`
     ).toBeLessThanOrEqual(TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT)
+  })
+
+  it("each polymorphic tool's description string stays within its per-tool envelope", () => {
+    // Per-tool description ceiling — the mechanical enforcement of
+    // the "≤ ~200 chars per single-action-add" envelope documented
+    // in the combined-budget comment above. The combined ceiling
+    // catches "nobody noticed all 7 descriptions grew slightly";
+    // this per-tool ceiling catches "this one tool got a paragraph
+    // of unstructured commentary added to one bullet." Without it,
+    // a future Phase 5/6 of #281 could add 300+ chars to a single
+    // tool's description with the combined budget still passing —
+    // exactly the failure mode the principal review on PR #453 (r3)
+    // flagged as aspirational rather than mechanical.
+    //
+    // Ceilings are current observed length + ~150 char headroom per
+    // tool. A contributor who hits a ceiling must (a) bump the
+    // tool's mapped ceiling here AND (b) bump the combined ceiling
+    // above, forcing an explicit acknowledgment of the new size and
+    // a comment noting what was added. A budget bump comment that
+    // isn't paired with a per-tool ceiling bump means the addition
+    // landed entirely on a single tool — usually a sign that a
+    // different tool's description should have absorbed the new
+    // content (e.g., approve/reject went on `lore-memory`, not on
+    // `lore-context`).
+    const mock = createMockServer()
+    const services = makeServices() as never
+    registerContextTools(mock.server, services)
+    registerMemoryTools(mock.server, services)
+    registerQueryTools(mock.server, services)
+    registerKnowledgeTools(mock.server, services)
+    registerDecisionTools(mock.server, services)
+    registerProjectTools(mock.server, services)
+    registerTaskTools(mock.server, services)
+
+    // Current observed lengths (Phase 1, post-#281 inbox-count line):
+    // lore-context: 1087, lore-memory: 1368, lore-query: 1038,
+    // lore-fact: 1233, lore-decision: 848, lore-project: 323,
+    // lore-task: 1294. Each ceiling is `current + ~150 chars` —
+    // accommodates one single-action-add at the documented envelope
+    // before the test fails LOUDLY and forces the contributor to
+    // bump the entry here AND the combined ceiling above.
+    //
+    // Sum of per-tool ceilings (~8270) deliberately exceeds the
+    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (7200) so the
+    // combined ceiling stays the real envelope; per-tool ceilings
+    // exist to catch lopsided growth (one tool absorbs all the
+    // additions while the others stay quiet — hides the growth from
+    // the combined-bump bookkeeping).
+    const PER_TOOL_DESCRIPTION_LIMITS: Record<string, number> = {
+      "lore-context": 1240,
+      "lore-memory": 1520,
+      "lore-query": 1190,
+      "lore-fact": 1390,
+      "lore-decision": 1000,
+      "lore-project": 480,
+      "lore-task": 1450,
+    }
+    for (const [name, limit] of Object.entries(PER_TOOL_DESCRIPTION_LIMITS)) {
+      const length = mock.description(name).length
+      expect(
+        length,
+        `${name} description (${length} chars) exceeds the ${limit}-char per-tool envelope. ` +
+          `If this is intentional (a new action / required schema signal), bump the ` +
+          `entry in PER_TOOL_DESCRIPTION_LIMITS AND the combined TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT, ` +
+          `and add a paired bump-history bullet to the combined-ceiling comment above.`,
+      ).toBeLessThanOrEqual(limit)
+    }
   })
 
   it("each polymorphic tool's full registered config (description + inputSchema field descriptions) stays within budget", () => {

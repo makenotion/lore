@@ -250,7 +250,7 @@ export function registerFooTools(server: McpServer, services: LoreServices): voi
 
 | Action    | Purpose                                                                                     | Read-only |
 | --------- | ------------------------------------------------------------------------------------------- | --------- |
-| `status`  | Vault page id, database counts, active project, task summary, wake-up coverage, background hooks, projects | Yes       |
+| `status`  | Vault page id, database counts, active project, task summary, proposed-memory inbox count (proposed learnings; proposed-state decisions surface via `lore-decision` instead), wake-up coverage, background hooks, projects | Yes       |
 | `wake-up` | Load digest + recent memories + active tasks + active facts + decisions requiring attention | Yes       |
 | `digest`  | Gather raw activity data for synthesis into a `source: digest` memory                       | Yes       |
 

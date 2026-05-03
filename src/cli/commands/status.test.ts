@@ -1099,3 +1099,10 @@ describe("formatConfidenceSummary wiring (DEFERRED-04)", () => {
     )
   })
 })
+
+// Phase 1 of issue #281's `formatProposedInboxStatus` /
+// `loadProposedInboxStatus` tests live in
+// `src/core/proposed-inbox.test.ts` — the renderer + loader moved out
+// of `cli/commands/status.ts` to support MCP parity, so the unit
+// tests follow the implementation. See `proposed-inbox.test.ts` for
+// renderer / loader coverage.

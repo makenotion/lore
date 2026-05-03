@@ -433,6 +433,62 @@ read the same project scope, so wall-clock at the orchestration level is
 single-method wall-clock on large vaults; the fan-out is what gives
 us the parallelism, not the iterator.)
 
+A **Proposed memories** line follows the Memory confidence summary
+(issue #281, AC #5). Shape:
+
+```
+Proposed memory: 1 pending review
+Proposed memories: 12 pending review (sources: conversation 8, manual 4 · agents: Claude Code 9, Codex 3)
+```
+
+`MemoryService.countProposed` issues one paginated
+`dataSources.query` against `Status = proposed AND Kind != decision`
+non-archived memories (scoped via `projectOrUnscopedFilter` when
+`--project` is set, vault-wide otherwise) and aggregates the total +
+per-source + per-agent breakdowns in one pass. `Kind != decision` is
+load-bearing: `proposed` is a normal in-flight `decision` lifecycle
+state per `ACTIVE_DECISION_STATUSES` (`src/types.ts`), so counting
+proposed-state decisions as inbox memories would conflate governance
+with auto-extracted learnings. The shared filter literal lives in
+`proposedMemoryFilter()` (`src/core/memory.ts`); subsequent phases of
+this epic (default-recall exclusion, wake-up section) compose the
+same helper rather than re-deriving the predicate. The CLI fans the
+call out via `Promise.all` alongside `taskStats`, `confidenceStats`,
+and `loadWakeUpData` — same posture as the other status probes, so
+wall-clock at the orchestration level is `max(...)` rather than the
+sum.
+
+The renderer (`formatProposedInboxStatus`) and loader
+(`loadProposedInboxStatus`) live in `src/core/proposed-inbox.ts` so
+the same line shape is emitted by both `lore status` (CLI) and
+`lore-context action='status'` (MCP) — identical parity contract to
+`taskStats` / `formatTaskSummary` in `src/core/task.ts`. The renderer
+follows the `formatTrackingPreflight` posture: `total === 0` returns
+`[]` so the caller's single length check suppresses the entire line.
+An empty inbox is the silent path; the line exists to nudge an
+operator with pending review work, not to occupy a row of vault
+state on every status call. The prefix inflects on `total` —
+`Proposed memory:` for `1`, `Proposed memories:` otherwise.
+Single-bucket clusters (one source, one agent) collapse off the
+breakdown — `(sources: conversation 12)` would just duplicate the
+total. Buckets within each cluster sort by descending count, then
+ascending key on ties, so output is deterministic across runs.
+
+Source values include `MemorySource` enum members plus the literal
+`"unknown"` for rows where the `Source` column is missing. The
+`extractSelect` default-to-`"manual"` pattern used by `pageToMemory`
+elsewhere is deliberately bypassed in `countProposed` so the
+operator can distinguish "saved as manual" from "Source column
+empty"; mirrors the Agent `"unknown"` fallback for empty
+rich_text values.
+
+This is the **read-side surface** of the proposed-memory review
+inbox (issue #281). The autosave-writes-as-proposed config, the
+default-recall filter, and the approve/reject CLI/MCP actions ship
+in subsequent phases of the same epic. Same operator-facing pattern
+as the Memory confidence line: shared between CLI and MCP via the
+core renderer + loader.
+
 The **Wake-up coverage** section renders the same content-free
 `formatWakeUpCoverage` line the hook emits under `LORE_DEBUG=1`, prefixed
 with `Wake-up coverage:` for status readability. Status calls

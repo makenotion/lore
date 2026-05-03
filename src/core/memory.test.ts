@@ -9737,6 +9737,249 @@ describe("MemoryService.confidenceStats", () => {
 })
 
 // ---------------------------------------------------------------------------
+// countProposed — `lore status` proposed-memory inbox primitive (issue #281)
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.countProposed", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeProposedPage(
+    id: string,
+    source: string | null,
+    agent: string,
+    overrides: Partial<PageObjectResponse> & { kind?: string } = {}
+  ): PageObjectResponse {
+    const { kind, ...pageOverrides } = overrides
+    const props: Record<string, unknown> = {
+      Title: { type: "title", title: [{ plain_text: id, text: { content: id } }] },
+      Status: { type: "select", select: { name: "proposed" } },
+      Kind: { type: "select", select: kind ? { name: kind } : null },
+      Source: {
+        type: "select",
+        select: source !== null ? { name: source } : null,
+      },
+      Agent: {
+        type: "rich_text",
+        rich_text:
+          agent.length > 0
+            ? [{ type: "text", plain_text: agent, text: { content: agent } }]
+            : [],
+      },
+    }
+    return {
+      object: "page",
+      id,
+      created_time: "2026-01-01T00:00:00.000Z",
+      last_edited_time: "2026-02-01T00:00:00.000Z",
+      archived: false,
+      properties: props as unknown as PageObjectResponse["properties"],
+      parent: { type: "database_id", database_id: "db-id" },
+      url: `https://notion.so/${id}`,
+      ...pageOverrides,
+    } as PageObjectResponse
+  }
+
+  it("returns zeros and empty maps on an empty inbox", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+    expect(result).toEqual({ total: 0, bySource: {}, byAgent: {} })
+  })
+
+  it("aggregates total, per-source, and per-agent counts across one page", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makeProposedPage("m1", "conversation", "Claude Code"),
+        makeProposedPage("m2", "conversation", "Claude Code"),
+        makeProposedPage("m3", "manual", "Codex"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+    expect(result.total).toBe(3)
+    expect(result.bySource).toEqual({ conversation: 2, manual: 1 })
+    expect(result.byAgent).toEqual({ "Claude Code": 2, Codex: 1 })
+  })
+
+  it("paginates through every page until has_more is false", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({
+        results: [makeProposedPage("m1", "conversation", "Claude Code")],
+        has_more: true,
+        next_cursor: "cursor-1",
+      })
+      .mockResolvedValueOnce({
+        results: [makeProposedPage("m2", "manual", "Codex")],
+        has_more: false,
+        next_cursor: null,
+      })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+    expect(result.total).toBe(2)
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(query.mock.calls[1]![0]).toMatchObject({ start_cursor: "cursor-1" })
+  })
+
+  it("filters out archived pages client-side", async () => {
+    // Notion's `archived` flag is on the page object, not a DB column,
+    // so `dataSources.query` cannot exclude it server-side. The count
+    // primitive must skip archived rows itself — same posture as
+    // `listAllForBackfill` and `findByTopicKey`.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makeProposedPage("m-live", "conversation", "Claude Code"),
+        makeProposedPage("m-archived", "conversation", "Claude Code", {
+          archived: true,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+    expect(result.total).toBe(1)
+    expect(result.bySource).toEqual({ conversation: 1 })
+    expect(result.byAgent).toEqual({ "Claude Code": 1 })
+  })
+
+  it("buckets empty / whitespace-only Agent values under 'unknown'", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makeProposedPage("m1", "conversation", ""),
+        makeProposedPage("m2", "manual", "   "),
+        makeProposedPage("m3", "conversation", "Claude Code"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+    expect(result.byAgent).toEqual({ unknown: 2, "Claude Code": 1 })
+  })
+
+  it("filters server-side on Status = proposed AND Kind != decision", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.countProposed()
+    expect(query).toHaveBeenCalledTimes(1)
+    const args = query.mock.calls[0]![0] as { filter: unknown }
+    // The filter must reference the Status property and the literal
+    // `proposed` select option — without these, accepted memories
+    // would inflate the inbox count. It must ALSO exclude
+    // `Kind = decision` so proposed-state decisions (a normal
+    // in-flight lifecycle state per `ACTIVE_DECISION_STATUSES`)
+    // don't conflate with auto-extracted learnings awaiting review.
+    const serialized = JSON.stringify(args.filter)
+    expect(serialized).toContain('"Status"')
+    expect(serialized).toContain('"proposed"')
+    expect(serialized).toContain('"Kind"')
+    expect(serialized).toContain('"does_not_equal":"decision"')
+  })
+
+  it("composes the proposedMemoryFilter helper as flat siblings, not a nested compound", async () => {
+    // Pin the flatness contract: `countProposed` spreads
+    // `proposedMemoryFilter().and` into the outer filter array
+    // rather than pushing the helper as a single nested clause.
+    // Notion accepts both `{ and: [{ and: [a, b] }, c] }` and
+    // `{ and: [a, b, c] }`, but the flat shape is conventional and
+    // easier to debug in API logs. A future refactor that wraps
+    // the helper would silently double-nest under project scope.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.countProposed({ projectId: "proj-1" })
+    const args = query.mock.calls[0]![0] as {
+      filter: { and?: Array<Record<string, unknown>> }
+    }
+    expect(args.filter.and).toBeDefined()
+    // No element of the outer `and:` is itself wrapped in `{ and: }`.
+    for (const clause of args.filter.and!) {
+      expect(clause).not.toHaveProperty("and")
+    }
+  })
+
+  it("buckets a missing Source column under 'unknown' rather than 'manual'", async () => {
+    // `extractSelect` defaults a missing Source to `"manual"` for
+    // `pageToMemory`, but the inbox surface needs to distinguish
+    // "operator saved this as manual" from "Source column was
+    // empty". Bucketing as `"unknown"` mirrors the Agent fallback.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [
+        makeProposedPage("m1", "conversation", "Claude Code"),
+        makeProposedPage("m2", null, "Claude Code"),
+        makeProposedPage("m3", null, "Codex"),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+    expect(result.bySource).toEqual({ conversation: 1, unknown: 2 })
+  })
+
+  it("scopes to a project via the project-or-unscoped filter when projectId is supplied", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.countProposed({ projectId: "project-mail" })
+    expect(query).toHaveBeenCalledTimes(1)
+    const args = query.mock.calls[0]![0] as { filter: unknown }
+    expect(JSON.stringify(args.filter)).toContain("project-mail")
+  })
+
+  it("omits the project clause for vault-wide counts", async () => {
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.countProposed()
+    expect(query).toHaveBeenCalledTimes(1)
+    // No project clause: the filter is the bare Status equality.
+    const args = query.mock.calls[0]![0] as { filter: unknown }
+    expect(JSON.stringify(args.filter)).not.toContain("Project")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // queryStaleConfidence — wake-up Stale Confidence subsection (issue 0.8.0/#10)
 // ---------------------------------------------------------------------------
 

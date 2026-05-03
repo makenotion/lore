@@ -159,6 +159,11 @@ describe("statusCommand", () => {
             averageScore: 0,
             belowThreshold: 0,
           })),
+          countProposed: vi.fn(async () => ({
+            total: 0,
+            bySource: {},
+            byAgent: {},
+          })),
         },
         projects: { list: vi.fn(async () => []) },
       } as never)

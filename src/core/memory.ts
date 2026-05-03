@@ -126,6 +126,37 @@ function sleep(ms: number): Promise<void> {
  */
 export const HYBRID_FALLBACK_THRESHOLD = 3
 
+/**
+ * Server-side filter clause defining the proposed-memory review inbox
+ * (issue #281). Single source of truth so every consumer — the count
+ * primitive (`MemoryService.countProposed`), the wake-up inbox section
+ * (`loadWakeUpData`, Phase 2), the inbox-list CLI (`lore inbox list`,
+ * Phase 4) — composes the same filter literal and never drifts.
+ *
+ * The clause is `Status = proposed AND Kind != decision`:
+ *
+ * - `Status: { equals: "proposed" }` — the inbox state.
+ * - `Kind: { does_not_equal: "decision" }` — `proposed` is also a
+ *   normal in-flight `decision` lifecycle state per
+ *   `ACTIVE_DECISION_STATUSES` (`src/types.ts`); counting those rows
+ *   would conflate governance decisions with auto-extracted
+ *   learnings. Mirrors the `excludeKinds: ["decision"]` posture in
+ *   the memory near-duplicate probe.
+ *
+ * Notion's `does_not_equal` is permissive on null — a row with no
+ * `Kind` column set (a hand-edited or pre-migration page) passes the
+ * filter, since it is by definition not `decision`. Same posture as
+ * the `Status: { does_not_equal: "proposed" }` default-recall filter.
+ */
+export function proposedMemoryFilter(): { and: Array<Record<string, unknown>> } {
+  return {
+    and: [
+      { property: "Status", select: { equals: "proposed" } },
+      { property: "Kind", select: { does_not_equal: "decision" } },
+    ],
+  }
+}
+
 const MEMORY_RELATION_PROPERTIES = [
   "Project",
   "Topic",
@@ -3212,6 +3243,108 @@ export class MemoryService {
     }
     const averageScore = scoredMemories > 0 ? scoreSum / scoredMemories : 0
     return { totalMemories, scoredMemories, averageScore, belowThreshold }
+  }
+
+  /**
+   * Count non-archived `Kind != decision` memories whose `Status =
+   * proposed` — the proposed-memory review inbox primitive backing
+   * the `lore status` and `lore-context action='status'` inbox-count
+   * surfaces (issue #281, AC #5: "report pending proposed-memory
+   * counts by project/source/agent").
+   *
+   * Returns the total count plus per-source and per-agent breakdowns
+   * so the operator can see at a glance where pending review pressure
+   * is coming from. Source is a closed enum (`MemorySource`); the
+   * surface bucket is `string` because rows with a missing `Source`
+   * column bucket as `"unknown"` (mirrors the `Agent` `"unknown"`
+   * fallback below) rather than collapsing into the historical
+   * `extractSelect` `"manual"` default — that default is correct for
+   * `pageToMemory`'s in-memory shape but would silently inflate the
+   * `manual` bucket on the operator-facing inbox line. Agent is a
+   * free-form `rich_text` string canonicalized at write time
+   * (`canonicalizeAgentName` in `src/hooks/agent-identity.ts`), so the
+   * keys reflect whatever historical strings remain in the vault.
+   *
+   * **`Kind != decision` is server-side**, applied via Notion's
+   * `select.does_not_equal: "decision"`. `ACTIVE_DECISION_STATUSES`
+   * (`src/types.ts`) explicitly includes `proposed` as a normal
+   * in-flight decision lifecycle state — counting those rows as
+   * inbox memories would conflate governance with auto-extracted
+   * learnings awaiting review and inflate the operator's review
+   * pressure on every vault that uses `lore-decision action='create'`
+   * with `status: "proposed"`. The exclusion mirrors the
+   * `excludeKinds: ["decision"]` posture that the memory near-duplicate
+   * probe already uses for the same memories-vs-decisions split.
+   *
+   * Server-side filter:
+   *
+   *     Status = proposed
+   *     AND Kind != decision
+   *     AND (when scoped) (Project contains projectId OR Project is_empty)
+   *
+   * Direct `client.dataSources.query` rather than `MemoryService.list`
+   * because the inbox surface only needs the property tuple
+   * (Status / Kind / Source / Agent) and never the markdown body —
+   * paying for `pageToMemory`'s per-row body fetch on every `lore
+   * status` would scale linearly with the inbox depth for zero
+   * rendered benefit. Same posture as `TaskService.countClosedSince`
+   * and `FactService.countByPredicateRaw`.
+   *
+   * Archived rows filtered client-side via `isLiveFullPage` — Notion's
+   * `archived` flag lives on `PageObjectResponse`, not as a DB column,
+   * so a `dataSources.query` cannot exclude it server-side. Archived
+   * proposals are not part of the live inbox.
+   *
+   * Vault-scoping mirrors `MemoryService.list`: when `projectId` is
+   * omitted the project clause is dropped entirely, so the counter
+   * walks every project's proposals (the surface used when no
+   * `--project` flag is supplied to `lore status`). When `projectId`
+   * is supplied, repo-wide unscoped proposals surface in the count
+   * via the OR clause — same posture as recall.
+   */
+  async countProposed(opts: { projectId?: string } = {}): Promise<{
+    total: number
+    bySource: Record<string, number>
+    byAgent: Record<string, number>
+  }> {
+    // Spread `proposedMemoryFilter()`'s `.and` clauses onto the outer
+    // filter array (rather than nesting the helper as a sub-`and`)
+    // so the composed shape is flat — `{ and: [status, kind,
+    // project] }` instead of `{ and: [{ and: [status, kind] }, project] }`.
+    // Notion accepts both, but a flat compound is conventional and
+    // easier to debug in API logs.
+    const filters: Array<Record<string, unknown>> = [
+      ...proposedMemoryFilter().and,
+    ]
+    if (opts.projectId) filters.push(projectOrUnscopedFilter(opts.projectId))
+    const filter = filters.length > 1 ? { and: filters } : filters[0]
+
+    let total = 0
+    const bySource: Record<string, number> = {}
+    const byAgent: Record<string, number> = {}
+    let cursor: string | undefined
+    do {
+      const response = await this.client.dataSources.query({
+        data_source_id: this.db.dataSourceId,
+        filter: filter as QueryDataSourceParameters["filter"],
+        page_size: 100,
+        start_cursor: cursor,
+      })
+      for (const page of response.results.filter(isLiveFullPage)) {
+        total += 1
+        const sourceProp = page.properties["Source"]
+        const sourceKey =
+          sourceProp && sourceProp.type === "select" && sourceProp.select
+            ? sourceProp.select.name
+            : "unknown"
+        bySource[sourceKey] = (bySource[sourceKey] ?? 0) + 1
+        const agentRaw = extractRichText(page.properties["Agent"]).trim()
+        const agentKey = agentRaw.length > 0 ? agentRaw : "unknown"
+        byAgent[agentKey] = (byAgent[agentKey] ?? 0) + 1
+      }
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
+    } while (cursor)
+    return { total, bySource, byAgent }
   }
 
   /**

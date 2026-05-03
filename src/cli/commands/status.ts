@@ -3,6 +3,10 @@ import { initServices } from "../../services.js"
 import type { LoreServices } from "../../services.js"
 import type { FactService } from "../../core/fact.js"
 import {
+  formatProposedInboxStatus,
+  loadProposedInboxStatus,
+} from "../../core/proposed-inbox.js"
+import {
   formatVaultTopologyStatus,
   loadVaultTopologyStatus,
 } from "../../core/topology-status.js"
@@ -121,16 +125,21 @@ export const statusCommand = new Command("status")
         for (const line of backgroundFailureLines) console.log(line)
       }
 
-      // Task summary (issue 0.7.0/13), Memory confidence summary
-      // (DEFERRED-04), and Wake-up coverage fan out via `Promise.all`.
-      // All three read the same project scope, so issuing them in parallel
-      // keeps `lore status`'s wall-clock at
-      // `max(taskStats, confidenceStats, wakeUpCoverage)` rather than the
-      // sum. Pre-#07 vaults silently omit the
-      // closure-rate line — `countClosedSince` returns null on the
-      // missing-property error path. Pre-#11 vaults render the
-      // confidence line with `0 scored` and no avg/below-threshold
-      // suffix; the line itself never disappears.
+      // Status probes fan out via `Promise.all` — task summary
+      // (issue 0.7.0/13), memory confidence summary (DEFERRED-04),
+      // proposed-memory inbox count (issue #281, AC #5), and
+      // wake-up coverage. All probes read the same project scope,
+      // so wall-clock at the orchestration level is `max(probe_i)`
+      // rather than the sum. Adding a future probe extends the
+      // tuple and the destructure; the comment is generic on
+      // purpose so it can't drift on the next addition.
+      // Pre-#07 vaults silently omit the closure-rate line —
+      // `countClosedSince` returns null on the missing-property
+      // error path. Pre-#11 vaults render the confidence line with
+      // `0 scored` and no avg/below-threshold suffix; the line
+      // itself never disappears. The proposed-inbox line is
+      // suppressed entirely on `total === 0` so an empty inbox
+      // doesn't occupy a row of vault state.
       //
       // `Promise.all` (not `allSettled`) is deliberate. A 5xx that
       // takes down one of these calls likely takes down the others —
@@ -138,7 +147,7 @@ export const statusCommand = new Command("status")
       // the same rate-limited client, so
       // any partial-recovery the `allSettled` posture would buy us
       // is mostly the case where exactly one transient failure
-      // happens to the smaller of the two queries. The rate-limit
+      // happens to the smaller of the queries. The rate-limit
       // middleware doesn't retry through 5xx either; an outage
       // surfaces as a thrown error and the outer try/catch renders
       // `Status failed: ...`. Matches `taskStats`'s pre-DEFERRED-04
@@ -147,15 +156,16 @@ export const statusCommand = new Command("status")
       //
       // `confidenceStats` is internally sequential — its pagination
       // dominates wall-clock on large vaults. The fan-out gives us
-      // parallel fan-out of the two top-level calls; it does not
+      // parallel dispatch of the top-level probes; it does not
       // parallelize the iterator inside `confidenceStats`. The
       // method's docstring documents the cost gap.
-      const [tasks, confidence, wakeUp] = await Promise.all([
+      const [tasks, confidence, proposedInbox, wakeUp] = await Promise.all([
         taskStats(services.tasks, {
           projectId: project?.id,
           today: todayUtc(),
         }),
         services.memories.confidenceStats({ projectId: project?.id }),
+        loadProposedInboxStatus(services, { projectId: project?.id }),
         loadWakeUpData(services, {
           projectId: project?.id,
           includeMemoryContent: false,
@@ -164,6 +174,7 @@ export const statusCommand = new Command("status")
       ])
       for (const line of formatTaskSummary(tasks)) console.log(line)
       for (const line of formatConfidenceSummary(confidence)) console.log(line)
+      for (const line of formatProposedInboxStatus(proposedInbox)) console.log(line)
       if (wakeUp.coverage) {
         for (const line of formatWakeUpCoverageReport(wakeUp.coverage)) {
           console.log(line)
@@ -810,3 +821,9 @@ export function formatConfidenceSummary(report: ConfidenceStatsReport): string[]
   }
   return [line]
 }
+
+// Proposed-memory inbox (issue #281, AC #5) — `loadProposedInboxStatus`
+// + `formatProposedInboxStatus` live in `src/core/proposed-inbox.ts` so
+// the CLI and MCP `lore-context action='status'` surfaces emit the same
+// line for the same vault state. Same parity contract as `taskStats` /
+// `formatTaskSummary` in `src/core/task.ts`.

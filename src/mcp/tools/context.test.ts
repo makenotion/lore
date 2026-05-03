@@ -277,6 +277,18 @@ interface WakeServicesOverrides {
    */
   overdueDecisions?: DecisionSummary[]
   overdueDecisionsCapped?: boolean
+  /**
+   * Proposed-memory inbox count returned by
+   * `services.memories.countProposed` for the
+   * `lore-context action='status'` inbox-line surface (issue #281).
+   * Defaults to a zero-row report so tests that don't care about the
+   * inbox line emit the same byte-shape they did pre-#281.
+   */
+  proposedInbox?: {
+    total: number
+    bySource: Record<string, number>
+    byAgent: Record<string, number>
+  }
 }
 
 function makeWakeServices(overrides: WakeServicesOverrides = {}) {
@@ -321,6 +333,11 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
   const findByName = overrides.findByName
     ? vi.fn(overrides.findByName)
     : vi.fn(async () => null)
+  const countProposed = vi.fn(async () => ({
+    total: overrides.proposedInbox?.total ?? 0,
+    bySource: overrides.proposedInbox?.bySource ?? {},
+    byAgent: overrides.proposedInbox?.byAgent ?? {},
+  }))
   return {
     projects: { findByName },
     memories: {
@@ -328,6 +345,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       search: memoriesSearch,
       getTitleById,
       queryStaleConfidence,
+      countProposed,
     },
     facts: {
       listRecent: factsListRecent,
@@ -1452,6 +1470,48 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(services.tasks.list).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: undefined }),
     )
+  })
+
+  it("renders the Proposed memories inbox line on action='status' (issue #281, AC #5)", async () => {
+    // Acceptance criterion: the inbox-count line is byte-identical
+    // between `lore status` (CLI) and `lore-context action='status'`
+    // (MCP) — same parity contract as the Tasks summary above. Pin
+    // both the singular-1 inflection AND the source/agent breakdown
+    // form so a future divergence between the two surfaces fails
+    // here.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      proposedInbox: {
+        total: 5,
+        bySource: { conversation: 3, manual: 2 },
+        byAgent: { "Claude Code": 4, Codex: 1 },
+      },
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain(
+      "Proposed memories: 5 pending review (sources: conversation 3, manual 2 · agents: Claude Code 4, Codex 1)",
+    )
+  })
+
+  it("suppresses the Proposed memories line on action='status' when the inbox is empty", async () => {
+    // The line follows the `formatTrackingPreflight` posture: an
+    // empty inbox is the silent path. Pin that the MCP surface does
+    // not surface a `Proposed memories: 0` line on a clean vault.
+    const mockServer = createMockServer()
+    const services = makeWakeServices()
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).not.toContain("Proposed memories:")
+    expect(text).not.toContain("Proposed memory:")
   })
 
   it("renders the Tasks summary line on action='status' (issue 0.7.0/13)", async () => {

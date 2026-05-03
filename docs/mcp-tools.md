@@ -10,7 +10,7 @@ names and task aliases were removed in the 0.6.0 deprecation purge; see
 
 | Action    | Description                                                                                                                                                              |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `status`  | Show vault status, topology health when configured, database counts, active project, task summary, wake-up coverage counters, configured projects, and background hook failure markers |
+| `status`  | Show vault status, topology health when configured, database counts, active project, task summary, proposed-memory inbox count, wake-up coverage counters, configured projects, and background hook failure markers |
 | `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, and memories related to active tasks |
 | `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                            |
 
