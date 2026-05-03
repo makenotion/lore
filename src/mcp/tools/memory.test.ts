@@ -3679,6 +3679,28 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
     )
   })
 
+  it("normalizes reviewBy: empty string to an explicit clear", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", reviewBy: "" } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ reviewBy: null })
+    )
+  })
+
+  it("normalizes decidedAt: empty string to an explicit clear", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", decidedAt: "" } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ decidedAt: null })
+    )
+  })
+
   it("clears reviewBy and decidedAt in the same update call", async () => {
     const { lore, update } = setUpUpdateHarness()
 
@@ -3717,6 +3739,22 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
     expect(parsed.success).toBe(true)
   })
 
+  it("normalizes empty-string dates in the MCP-visible flat input schema", () => {
+    const { inputSchema } = setUpUpdateHarness()
+
+    const parsed = inputSchema.safeParse({
+      action: "update",
+      memoryId: "mem-1",
+      reviewBy: "",
+      decidedAt: "",
+    })
+
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(parsed.data.reviewBy).toBeNull()
+    expect(parsed.data.decidedAt).toBeNull()
+  })
+
   it("still rejects malformed date strings before any update", async () => {
     const { lore, update } = setUpUpdateHarness()
 
@@ -3752,6 +3790,33 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
       content: "body",
       reviewBy: null,
       decidedAt: null,
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("keeps action='save' empty-string date behavior unchanged", async () => {
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Saved",
+      content: "body",
+      reviewBy: "",
+      decidedAt: "",
     } as never)
 
     expect((result as { isError?: boolean }).isError).toBe(true)

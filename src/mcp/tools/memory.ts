@@ -202,6 +202,20 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as const
 
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
+const ymdDateSchema = z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+const clearableYmdDateSchema = z
+  .string()
+  .transform((value, ctx) => {
+    if (value === "") return null
+    if (YMD_REGEX.test(value)) return value
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Must be YYYY-MM-DD format",
+    })
+    return z.NEVER
+  })
+  .nullable()
 
 const EXPAND_MAX_IDS = 20
 
@@ -2031,8 +2045,8 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
     confidence: z.enum(CONFIDENCES).optional(),
-    reviewBy: z.string().regex(YMD_REGEX).optional(),
-    decidedAt: z.string().regex(YMD_REGEX).optional(),
+    reviewBy: ymdDateSchema.optional(),
+    decidedAt: ymdDateSchema.optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
     synopsis: z.string().max(SYNOPSIS_MAX).optional(),
@@ -2062,8 +2076,8 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
     confidence: z.enum(CONFIDENCES).optional(),
-    reviewBy: z.string().regex(YMD_REGEX).nullable().optional(),
-    decidedAt: z.string().regex(YMD_REGEX).nullable().optional(),
+    reviewBy: clearableYmdDateSchema.optional(),
+    decidedAt: clearableYmdDateSchema.optional(),
     supersedesIds: z.array(z.string()).optional(),
     affectsIds: z.array(z.string()).optional(),
     alternatives: richTextPropertySchema("alternatives").optional(),
@@ -2195,21 +2209,15 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(CONFIDENCES)
           .optional()
           .describe("(save | update) Confidence level (default: certain on save)."),
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .nullable()
+        reviewBy: clearableYmdDateSchema
           .optional()
           .describe(
-            "(save | update) Review-by date YYYY-MM-DD. Update: null clears; omit leaves unchanged."
+            "(save | update) Review-by date YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
           ),
-        decidedAt: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-          .nullable()
+        decidedAt: clearableYmdDateSchema
           .optional()
           .describe(
-            "(save | update) Canonical decision date YYYY-MM-DD. Update: null clears; omit leaves unchanged."
+            "(save | update) Canonical decision date YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
           ),
         tags: tagsSchema.optional().describe("(save | update) Closed-vocabulary tags."),
         keywords: keywordsSchema
