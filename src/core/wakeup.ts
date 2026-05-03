@@ -265,6 +265,8 @@ export interface WakeUpCoverageInput {
   memories: readonly Memory[]
   relatedMemories: readonly Memory[]
   taskMemories: readonly Memory[]
+  /** Rendered task count after applying the task section cap. */
+  renderedTaskCount?: number
   tasks: readonly TaskSummary[]
   knowledgeFacts: readonly Fact[]
   proposedDecisions: readonly DecisionSummary[]
@@ -414,9 +416,10 @@ export interface WakeUpData {
   /**
    * Privacy-conscious wake-up coverage counters for hook debug logging. Null
    * unless `includeCoverage` was requested; MCP callers intentionally ignore
-   * this hook-only observability payload. Counts are post-fetch data-layer
-   * counts, so renderers that hide or re-bucket rows must adjust affected
-   * section counts before logging.
+   * this hook-only observability payload. Counts track rendered section rows;
+   * the `tasks` array can still carry an over-fetched candidate window, but
+   * `coverage.sectionCounts.tasks` is capped to the task rows a flat wake-up
+   * renderer should surface.
    */
   coverage: WakeUpCoverageMetrics | null
 }
@@ -426,6 +429,7 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
   const ranked = Boolean(userQuery && input.rankedSearchAttempted)
   const proposedDecisionCount = input.proposedDecisions.length
   const overdueDecisionCount = input.overdueDecisions.length
+  const taskSectionCount = input.renderedTaskCount ?? input.tasks.length
   const now = input.now ?? Date.now()
   const digestFresh = isFreshDigest(
     input.latestDigest,
@@ -446,7 +450,7 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       currentTaskMemories: input.taskMemories.length,
       recentMemories: input.memories.length,
       relatedMemories: input.relatedMemories.length,
-      tasks: input.tasks.length,
+      tasks: Math.max(0, taskSectionCount),
       knowledgeFacts: input.knowledgeFacts.length,
       // Keep this rollup adjacent to its addends so any new decision bucket
       // updates the aggregate and the per-bucket counters together.
@@ -774,6 +778,7 @@ export async function loadWakeUpData(
         memories,
         relatedMemories,
         taskMemories,
+        renderedTaskCount: taskLimit > 0 ? Math.min(tasks.length, taskLimit) : 0,
         tasks,
         knowledgeFacts,
         proposedDecisions,

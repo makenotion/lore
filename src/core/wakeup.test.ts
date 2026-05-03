@@ -548,6 +548,27 @@ describe("loadWakeUpData", () => {
     })
   })
 
+  it("reports rendered task coverage instead of the over-fetched task window", async () => {
+    const activeTasks = Array.from({ length: 12 }, (_, i) =>
+      buildTask({
+        id: `active-${i}`,
+        reviewBy: null,
+        updatedAt: `2026-04-${String(19 - i).padStart(2, "0")}T00:00:00Z`,
+      }),
+    )
+    const services = stubServices({ tasks: activeTasks })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      taskLimit: 2,
+      includeCoverage: true,
+      now: NOW,
+    })
+
+    expect(data.tasks).toHaveLength(8)
+    expect(data.coverage?.sectionCounts.tasks).toBe(2)
+  })
+
   it("surfaces a fresh digest and trims raw memories", async () => {
     const fresh = buildMemory({
       id: "d1",

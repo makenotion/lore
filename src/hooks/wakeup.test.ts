@@ -345,7 +345,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
           currentTaskMemories: 2,
           recentMemories: 3,
           relatedMemories: 1,
-          tasks: 40,
+          tasks: 2,
           knowledgeFacts: 5,
           decisions: 0,
           proposedDecisions: 0,

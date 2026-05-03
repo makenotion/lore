@@ -814,16 +814,9 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // text. Operators can tune retrieval without leaking vault content
     // into stderr.
     if (coverage) {
-      const renderedCoverage = {
-        ...coverage,
-        sectionCounts: {
-          ...coverage.sectionCounts,
-          tasks: visibleTasks.length,
-        },
-      }
       process.stderr.write(
         `${formatWakeUpCoverage(
-          renderedCoverage,
+          coverage,
           userQuery
             ? {
                 memoryLimit: RANKED_WAKEUP_LIMITS.memoryLimit,
