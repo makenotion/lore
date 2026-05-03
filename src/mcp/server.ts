@@ -84,15 +84,16 @@ export async function startServer(): Promise<void> {
   // retry-safe writes, task/audit/list output fixes, entity merge, and
   // Notion request throttling.
   //
-  // 0.12.0 makes explicit project scope fail closed across MCP and CLI
-  // entry points. Agents now get deterministic errors for typo'd,
-  // archived, inaccessible, or ambiguous project names instead of
-  // silently falling back to auto-detected or vault-wide scope.
+  // Pending release after 0.11.0: explicit project scope fails closed
+  // across MCP and CLI entry points. Agents now get deterministic errors
+  // for typo'd, archived, inaccessible, or ambiguous project names
+  // instead of silently falling back to auto-detected or vault-wide scope.
   //
-  // 0.13.0 flips normal MCP fact creation from warning-only provenance
-  // guidance to hard-error enforcement before fact or Entity writes.
+  // Pending release after 0.11.0: normal MCP fact creation flips from
+  // warning-only provenance guidance to hard-error enforcement before
+  // fact or Entity writes.
   const server = new McpServer(
-    { name: "lore", version: "0.13.0" },
+    { name: "lore", version: "0.11.0" },
     {
       capabilities: {
         tools: {},

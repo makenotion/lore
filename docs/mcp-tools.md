@@ -88,7 +88,7 @@ For tracked work triage, use `lore-task action='list'`. Un-migrated vaults may
 still contain historical tracking-predicate facts; `lore status` reports those
 rows for manual remediation.
 
-This is an agent-observable behavior change in 0.13.0: MCP fact creation
+This is an unreleased agent-observable behavior change: MCP fact creation
 without usable provenance now hard-errors instead of warning and writing a
 source-less fact. This is tool-surface enforcement, not a Notion schema
 invariant; direct Notion writes outside Lore can still create sourceless Fact
