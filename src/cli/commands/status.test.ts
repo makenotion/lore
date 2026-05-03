@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  formatBackgroundFailureStatus,
   formatConfidenceSummary,
   formatDigestStatus,
   formatDriftStatus,
   formatTrackingPreflight,
   groupLatestDigestByProject,
+  loadBackgroundFailureStatus,
   loadDigestStatus,
   loadDriftStatus,
   loadTrackingPreflight,
+  type BackgroundFailureStatusReport,
   type ConfidenceStatsReport,
   type DigestStatusReport,
   type DriftStatusReport,
@@ -15,6 +18,7 @@ import {
   type TrackingPreflightServices,
 } from "./status.js"
 import { DRIFT_DEBOUNCE_DAYS } from "../../hooks/drift-marker.js"
+import type { BackgroundFailureMarker } from "../../hooks/background-failure-marker.js"
 import type { LoreServices } from "../../services.js"
 import type { LoreConfig, Memory, Project } from "../../types.js"
 
@@ -96,6 +100,20 @@ function makeServices(opts: {
   } as unknown as LoreServices
 }
 
+function makeBackgroundFailure(
+  overrides: Partial<BackgroundFailureMarker>
+): BackgroundFailureMarker {
+  return {
+    version: 1,
+    kind: "autosave",
+    occurredAt: "2026-04-24T12:00:00.000Z",
+    configRootKey: "abcdef12",
+    code: "binary-missing",
+    message: "background command not found",
+    ...overrides,
+  }
+}
+
 describe("groupLatestDigestByProject", () => {
   it("keeps the most recent memory per project ID", () => {
     const older = makeMemory({
@@ -131,6 +149,110 @@ describe("groupLatestDigestByProject", () => {
   })
 })
 
+describe("formatBackgroundFailureStatus", () => {
+  it("renders the observed scope when there are no recent failures", () => {
+    const report: BackgroundFailureStatusReport = { failures: [], totalRecent: 0 }
+    expect(formatBackgroundFailureStatus(report)).toEqual([
+      "Background hooks:",
+      "  observed scope: spawn/init/gather only; detached child exits are not tracked.",
+      "  observed failures: none",
+    ])
+  })
+
+  it("renders failure context, log path, and a recovery hint", () => {
+    const report: BackgroundFailureStatusReport = {
+      totalRecent: 1,
+      failures: [
+        makeBackgroundFailure({
+          kind: "digest-scheduler",
+          projectName: "Mail Backend",
+          sessionId: "sess-123",
+          code: "init-failed",
+          message: "init failed: unauthorized",
+          logPath: "/tmp/lore-hook-state/digest-Mail_Backend.log",
+        }),
+      ],
+    }
+
+    const text = formatBackgroundFailureStatus(report).join("\n")
+
+    expect(text).toContain("Background hooks:")
+    expect(text).toContain("detached child exits are not tracked")
+    expect(text).toContain("digest scheduler")
+    expect(text).toContain("project Mail Backend")
+    expect(text).toContain("session sess-123")
+    expect(text).toContain("init-failed: init failed: unauthorized")
+    expect(text).toContain("/tmp/lore-hook-state/digest-Mail_Backend.log")
+    expect(text).toContain("lore auth --status")
+  })
+
+  it("uses digest-specific manual recovery hints for synthesizer failures", () => {
+    const report: BackgroundFailureStatusReport = {
+      totalRecent: 1,
+      failures: [
+        makeBackgroundFailure({
+          kind: "digest-synthesizer",
+          code: "spawn-error",
+          message: "spawn failed: EAGAIN",
+        }),
+      ],
+    }
+
+    const text = formatBackgroundFailureStatus(report).join("\n")
+    expect(text).toContain("digest synthesizer")
+    expect(text).toContain("lore digest")
+  })
+
+  it("renders the total count when recent failures are truncated", () => {
+    const report: BackgroundFailureStatusReport = {
+      totalRecent: 12,
+      failures: Array.from({ length: 10 }, (_, idx) =>
+        makeBackgroundFailure({
+          projectName: `Project ${idx}`,
+          sessionId: `sess-${idx}`,
+        })
+      ),
+    }
+
+    const text = formatBackgroundFailureStatus(report).join("\n")
+    expect(text).toContain("(showing 10 of 12 recent failures)")
+  })
+})
+
+describe("loadBackgroundFailureStatus", () => {
+  it("returns no rows and does not touch the filesystem when configRoot is absent", async () => {
+    const listFailures = vi.fn(async () => [makeBackgroundFailure({})])
+
+    const report = await loadBackgroundFailureStatus(null, { listFailures })
+
+    expect(report).toEqual({ failures: [], totalRecent: 0 })
+    expect(listFailures).not.toHaveBeenCalled()
+  })
+
+  it("delegates to the marker reader with the config root", async () => {
+    const marker = makeBackgroundFailure({ sessionId: "sess-one" })
+    const listFailures = vi.fn(async () => [marker])
+
+    const report = await loadBackgroundFailureStatus("/repo", { listFailures })
+
+    expect(listFailures).toHaveBeenCalledWith("/repo")
+    expect(report).toEqual({ failures: [marker], totalRecent: 1 })
+  })
+
+  it("delegates to the marker collector when provided", async () => {
+    const marker = makeBackgroundFailure({ sessionId: "sess-one" })
+    const collectFailures = vi.fn(async () => ({
+      failures: [marker],
+      totalRecent: 3,
+    }))
+
+    const report = await loadBackgroundFailureStatus("/repo", { collectFailures })
+
+    expect(collectFailures).toHaveBeenCalledWith("/repo")
+    expect(report).toEqual({ failures: [marker], totalRecent: 3 })
+  })
+})
+
 describe("formatDigestStatus", () => {
   it("returns no lines when there are no rows so the section is suppressed", () => {
     const report: DigestStatusReport = {
@@ -157,7 +279,7 @@ describe("formatDigestStatus", () => {
       rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe(
-      "Digests (autoDigest=false via LORE_AUTO_DIGEST=false):",
+      "Digests (autoDigest=false via LORE_AUTO_DIGEST=false):"
     )
   })
 
@@ -168,7 +290,7 @@ describe("formatDigestStatus", () => {
       rows: [{ name: "Mail", lastDigest: null, markerAgeDays: null }],
     }
     expect(formatDigestStatus(report)[0]).toBe(
-      "Digests (autoDigest=false via hooks.autoDigest: false):",
+      "Digests (autoDigest=false via hooks.autoDigest: false):"
     )
   })
 
@@ -226,9 +348,7 @@ describe("formatDigestStatus", () => {
     const report: DigestStatusReport = {
       disabledReason: null,
       truncated: false,
-      rows: [
-        { name: "Edge", lastDigest: null, markerAgeDays: 7 },
-      ],
+      rows: [{ name: "Edge", lastDigest: null, markerAgeDays: 7 }],
     }
     const [, row] = formatDigestStatus(report)
     expect(row).toContain("marker 7d old")
@@ -413,7 +533,7 @@ describe("loadDigestStatus", () => {
     // `memories.list({ source: digest })` saturated and older digests may
     // be missing — surfaced via the truncated flag for the renderer.
     const fifty = Array.from({ length: 50 }, (_, i) =>
-      makeMemory({ id: `d-${i}`, projectIds: ["p-a"] }),
+      makeMemory({ id: `d-${i}`, projectIds: ["p-a"] })
     )
     const services = makeServices({
       config: baseConfig,
@@ -519,7 +639,7 @@ describe("formatDriftStatus", () => {
     }
     const [, row] = formatDriftStatus(report)
     expect(row).toBe(
-      `  marker ${DRIFT_DEBOUNCE_DAYS}d old · next fire on next debounced session`,
+      `  marker ${DRIFT_DEBOUNCE_DAYS}d old · next fire on next debounced session`
     )
   })
 
@@ -668,7 +788,7 @@ describe("formatTrackingPreflight (issue 0.6.0/24)", () => {
 
 describe("loadTrackingPreflight (issue 0.6.0/24)", () => {
   function makePreflightServices(
-    countByPredicateRaw: (strings: string[]) => Promise<number>,
+    countByPredicateRaw: (strings: string[]) => Promise<number>
   ): TrackingPreflightServices {
     return {
       facts: { countByPredicateRaw },
@@ -692,18 +812,15 @@ describe("loadTrackingPreflight (issue 0.6.0/24)", () => {
     await loadTrackingPreflight(makePreflightServices(probe))
     expect(probe).toHaveBeenCalledTimes(1)
     const args = probe.mock.calls[0]![0]
-    expect([...args].sort()).toEqual(
-      ["blocked_by", "needs_action", "waiting_on"],
-    )
+    expect([...args].sort()).toEqual(["blocked_by", "needs_action", "waiting_on"])
   })
 
   it("prefers the injected probe over the services.facts method (test seam)", async () => {
     const serviceProbe = vi.fn(async () => 99)
     const injected = vi.fn(async () => 5)
-    const report = await loadTrackingPreflight(
-      makePreflightServices(serviceProbe),
-      { countByPredicateRaw: injected },
-    )
+    const report = await loadTrackingPreflight(makePreflightServices(serviceProbe), {
+      countByPredicateRaw: injected,
+    })
     expect(injected).toHaveBeenCalledTimes(1)
     expect(serviceProbe).not.toHaveBeenCalled()
     expect(report.count).toBe(5)
@@ -711,9 +828,7 @@ describe("loadTrackingPreflight (issue 0.6.0/24)", () => {
 
   it("falls back to services.facts.countByPredicateRaw when no override is provided", async () => {
     const serviceProbe = vi.fn(async () => 12)
-    const report = await loadTrackingPreflight(
-      makePreflightServices(serviceProbe),
-    )
+    const report = await loadTrackingPreflight(makePreflightServices(serviceProbe))
     expect(serviceProbe).toHaveBeenCalledTimes(1)
     expect(report.count).toBe(12)
   })
@@ -744,11 +859,9 @@ describe("Tasks line wiring (issue 0.7.0/13)", () => {
       closedLast30Days: 14,
     })
     expect(lines[0]).toBe(
-      "Tasks: 271 active (overdue: 25, stale ≥30d: 89, in-progress: 12)",
+      "Tasks: 271 active (overdue: 25, stale ≥30d: 89, in-progress: 12)"
     )
-    expect(lines[1]).toBe(
-      "       Closed last 30 days: 14 (rate: 0.47/day)",
-    )
+    expect(lines[1]).toBe("       Closed last 30 days: 14 (rate: 0.47/day)")
   })
 })
 
@@ -980,7 +1093,7 @@ describe("formatConfidenceSummary wiring (DEFERRED-04)", () => {
       belowThreshold: 412,
     })
     expect(lines[0]).toBe(
-      "Memory confidence: 1247 total, 1023 scored (avg 0.51, 412 below threshold)",
+      "Memory confidence: 1247 total, 1023 scored (avg 0.51, 412 below threshold)"
     )
   })
 })

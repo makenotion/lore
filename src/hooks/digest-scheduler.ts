@@ -45,7 +45,13 @@ import {
   digestMarkerAgeDays,
   touchDigestMarker,
 } from "./digest-marker.js"
+import { logPath } from "./lock.js"
 import { safeFilenameSegment } from "./marker-key.js"
+import {
+  clearBackgroundFailure,
+  recordBackgroundFailure,
+  type BackgroundFailureScope,
+} from "./background-failure-marker.js"
 
 export interface DigestSchedulerState {
   config: LoreConfig
@@ -86,16 +92,18 @@ export interface DigestSchedulerDeps {
     cwd: string,
     configRoot: string,
     config: LoreConfig,
-    options?: InitServicesOptions,
+    options?: InitServicesOptions
   ) => Promise<LoreServices>
   gatherDigest?: (
     services: LoreServices,
-    opts: Parameters<typeof gatherDigestData>[1],
+    opts: Parameters<typeof gatherDigestData>[1]
   ) => Promise<DigestData>
   markerAge?: (configRoot: string, projectName: string) => Promise<number>
   touchMarker?: (configRoot: string, projectName: string) => Promise<void>
   clearMarker?: (configRoot: string, projectName: string) => Promise<void>
   spawn?: typeof spawnBackgroundSave
+  recordFailure?: typeof recordBackgroundFailure
+  clearFailure?: typeof clearBackgroundFailure
   now?: () => Date
   log?: (message: string) => void
 }
@@ -111,7 +119,7 @@ export interface DigestSchedulerDeps {
 export async function fireDigestIfStale(
   cwd: string,
   state: DigestSchedulerState,
-  deps: DigestSchedulerDeps = {},
+  deps: DigestSchedulerDeps = {}
 ): Promise<SchedulerOutcome> {
   const initSvc = deps.initServices ?? initServicesFromConfig
   const gather = deps.gatherDigest ?? gatherDigestData
@@ -119,6 +127,8 @@ export async function fireDigestIfStale(
   const touch = deps.touchMarker ?? touchDigestMarker
   const clear = deps.clearMarker ?? clearDigestMarker
   const spawn = deps.spawn ?? spawnBackgroundSave
+  const recordFailure = deps.recordFailure ?? recordBackgroundFailure
+  const clearFailure = deps.clearFailure ?? clearBackgroundFailure
   const now = deps.now ?? (() => new Date())
   const log = deps.log ?? ((msg) => process.stderr.write(msg))
 
@@ -141,8 +151,14 @@ export async function fireDigestIfStale(
       driftCheck: "debounced",
     })
   } catch (err) {
+    recordFailure(state.configRoot, {
+      kind: "digest-scheduler",
+      projectName: project.name,
+      code: "init-failed",
+      message: `init failed: ${err instanceof Error ? err.message : String(err)}`,
+    })
     log(
-      `[lore] digest scheduler: init failed — ${err instanceof Error ? err.message : err}\n`,
+      `[lore] digest scheduler: init failed — ${err instanceof Error ? err.message : err}\n`
     )
     return "init-failed"
   }
@@ -163,8 +179,14 @@ export async function fireDigestIfStale(
       now,
     })
   } catch (err) {
+    recordFailure(state.configRoot, {
+      kind: "digest-scheduler",
+      projectName: project.name,
+      code: "gather-failed",
+      message: `gather failed: ${err instanceof Error ? err.message : String(err)}`,
+    })
     log(
-      `[lore] digest scheduler: gather failed — ${err instanceof Error ? err.message : err}\n`,
+      `[lore] digest scheduler: gather failed — ${err instanceof Error ? err.message : err}\n`
     )
     return "gather-failed"
   }
@@ -181,6 +203,10 @@ export async function fireDigestIfStale(
     // The explicit escape is `lore digest --since YYYY-MM-DD`, which
     // widens the window past the per-project 7-day debounce.
     await touch(state.configRoot, project.name)
+    const schedulerRecoveredAt = now()
+    await clearFailureMarker(clearFailure, state.configRoot, "digest-scheduler", {
+      projectName: project.name,
+    }, schedulerRecoveredAt)
     return "no-activity"
   }
 
@@ -189,7 +215,7 @@ export async function fireDigestIfStale(
     digest.raw,
     resolved.name,
     today,
-    digest.lastDigestDate,
+    digest.lastDigestDate
   )
 
   // Optimistic touch: claim the marker BEFORE spawning so a sibling Stop
@@ -197,6 +223,10 @@ export async function fireDigestIfStale(
   // marker and skips. Roll back if the spawn itself fails so the next Stop
   // hook retries.
   await touch(state.configRoot, project.name)
+  const schedulerRecoveredAt = now()
+  await clearFailureMarker(clearFailure, state.configRoot, "digest-scheduler", {
+    projectName: project.name,
+  }, schedulerRecoveredAt)
 
   // Synthetic lock key prefixes "digest-" so it never collides with a real
   // session-id. Two Stop-triggered auto-digest spawns for the same project
@@ -215,7 +245,13 @@ export async function fireDigestIfStale(
     agent: state.backgroundAgent,
   })
 
-  if (result.kind === "spawned") return "fired"
+  if (result.kind === "spawned") {
+    const synthesizerRecoveredAt = now()
+    await clearFailureMarker(clearFailure, state.configRoot, "digest-synthesizer", {
+      projectName: project.name,
+    }, synthesizerRecoveredAt)
+    return "fired"
+  }
 
   // Benign races: a peer already holds the per-key lock, the global cap is
   // saturated, or we lost the post-spawn O_EXCL race. The peer's digest
@@ -226,7 +262,45 @@ export async function fireDigestIfStale(
   // Genuine failure (binary missing, tempfile prep failed, spawn threw).
   // Roll back the optimistic touch so the next Stop hook retries.
   await clear(state.configRoot, project.name)
+  recordFailure(state.configRoot, {
+    kind: "digest-synthesizer",
+    projectName: project.name,
+    code: result.kind,
+    message: digestSpawnFailureMessage(result, state.backgroundAgent?.command),
+    logPath: result.kind === "spawn-error" ? logPath(lockKey) : undefined,
+  })
   return "spawn-failed"
+}
+
+function digestSpawnFailureMessage(
+  result: ReturnType<typeof spawnBackgroundSave>,
+  command = "claude"
+): string {
+  switch (result.kind) {
+    case "binary-missing":
+      return `background command "${command}" not found`
+    case "tempfile-failed":
+      return "failed to prepare digest prompt file"
+    case "spawn-error":
+      return `spawn failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
+    default:
+      return `unexpected spawn result: ${result.kind}`
+  }
+}
+
+async function clearFailureMarker(
+  clearFailure: typeof clearBackgroundFailure,
+  configRoot: string,
+  kind: Parameters<typeof clearBackgroundFailure>[1],
+  scope: Parameters<typeof clearBackgroundFailure>[2],
+  before?: Date
+): Promise<void> {
+  try {
+    await clearFailure(configRoot, kind, scope, { before })
+  } catch {
+    // Diagnostic marker cleanup must not turn a successful digest path into
+    // a hook failure.
+  }
 }
 
 /**
@@ -240,7 +314,27 @@ export async function fireDigestIfStale(
  * `fireDigestIfStale` is the only guard against repeated firings — if the
  * spawn here fails, the next Stop hook re-attempts the schedule.
  */
-export function scheduleAutoDigestSpawn(cwd: string): void {
+export interface ScheduleAutoDigestSpawnOptions {
+  configRoot?: string | null
+  projectName?: string | null
+  sessionId?: string | null
+  recordFailure?: typeof recordBackgroundFailure
+  clearFailure?: typeof clearBackgroundFailure
+}
+
+export function scheduleAutoDigestSpawn(
+  cwd: string,
+  opts: ScheduleAutoDigestSpawnOptions = {}
+): void {
+  const failureScope: BackgroundFailureScope = {
+    projectName: opts.projectName,
+  }
+  const failureContext = {
+    ...failureScope,
+    sessionId: opts.sessionId,
+  }
+  const recordFailure = opts.recordFailure ?? recordBackgroundFailure
+  const clearFailure = opts.clearFailure ?? clearBackgroundFailure
   try {
     const helperPath = fileURLToPath(new URL("./helpers.js", import.meta.url))
     const child = forkChildProcess(process.execPath, [helperPath, "auto-digest"], {
@@ -249,9 +343,21 @@ export function scheduleAutoDigestSpawn(cwd: string): void {
       stdio: "ignore",
     })
     child.unref()
+    const recoveredAt = new Date()
+    void clearFailure(opts.configRoot, "auto-digest-helper-spawn", failureScope, {
+      before: recoveredAt,
+    }).catch(() => {
+      // Marker cleanup is diagnostic only; scheduling must stay fail-open.
+    })
   } catch (err) {
+    recordFailure(opts.configRoot, {
+      kind: "auto-digest-helper-spawn",
+      ...failureContext,
+      code: "spawn-error",
+      message: `spawn failed: ${err instanceof Error ? err.message : String(err)}`,
+    })
     process.stderr.write(
-      `[lore] auto-digest scheduler: spawn failed: ${err instanceof Error ? err.message : err}\n`,
+      `[lore] auto-digest scheduler: spawn failed: ${err instanceof Error ? err.message : err}\n`
     )
   }
 }

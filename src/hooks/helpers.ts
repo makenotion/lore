@@ -33,6 +33,7 @@ import {
 } from "./transcript.js"
 import { initServicesFromConfig } from "../services.js"
 import { STALE_TASK_DAYS, type LoreConfig, type TaskSummary } from "../types.js"
+import { resolveProjectPathFromCwd } from "../core/context.js"
 import { mergeHookDefaults, type HookConfig } from "./config.js"
 import { buildBackgroundSavePrompt } from "./prompts.js"
 import {
@@ -46,11 +47,16 @@ import {
   renderProjectContextLines,
 } from "../core/project-context.js"
 import { taskDaysOverdue, taskDaysStale } from "../core/task.js"
-import { spawnBackgroundSave } from "./background.js"
+import { spawnBackgroundSave, type SpawnResult } from "./background.js"
 import { fireDigestIfStale, scheduleAutoDigestSpawn } from "./digest-scheduler.js"
-import { getStateDir } from "./lock.js"
+import { getStateDir, logPath } from "./lock.js"
 import { safeFilenameSegment } from "./marker-key.js"
 import { canonicalizeAgentName } from "./agent-identity.js"
+import {
+  clearBackgroundFailure,
+  recordBackgroundFailure,
+} from "./background-failure-marker.js"
+import type { BackgroundFailureScope } from "./background-failure-marker.js"
 
 /** Hook payload fields shared by Claude Code and Codex. */
 interface HookEvent {
@@ -334,7 +340,7 @@ export async function runAutosave(opts: { event?: string } = {}): Promise<void> 
   }
 
   // Config opt-out: hooks.autoSave: false in .lore.yaml
-  const { hookConfig } = await loadHookState()
+  const { hookConfig, config, configRoot } = await loadHookState()
   if (!hookConfig.autoSave) {
     process.stdout.write("{}\n")
     return
@@ -347,7 +353,7 @@ export async function runAutosave(opts: { event?: string } = {}): Promise<void> 
     event = { last_assistant_message: raw }
   }
 
-  await handleStop(event, hookConfig)
+  await handleStop(event, hookConfig, { config, configRoot })
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +363,50 @@ export async function runAutosave(opts: { event?: string } = {}): Promise<void> 
 interface TranscriptForSave {
   transcript: TranscriptInspection
   userMessageCount: number
+}
+
+interface StopFailureContext {
+  config: LoreConfig | null
+  configRoot: string | null
+}
+
+function projectNameForStopEvent(
+  event: HookEvent,
+  context?: StopFailureContext
+): string | undefined {
+  if (!context?.config || !context.configRoot) return undefined
+  return (
+    resolveProjectPathFromCwd(
+      event.cwd ?? process.cwd(),
+      context.configRoot,
+      context.config
+    )?.name ?? undefined
+  )
+}
+
+function spawnFailureMessage(result: SpawnResult, command: string): string | null {
+  switch (result.kind) {
+    case "binary-missing":
+      return `background command "${command}" not found`
+    case "tempfile-failed":
+      return "failed to prepare prompt file"
+    case "spawn-error":
+      return `spawn failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
+    default:
+      return null
+  }
+}
+
+async function clearStopFailure(
+  configRoot: string | null | undefined,
+  scope: BackgroundFailureScope,
+  before?: Date
+): Promise<void> {
+  try {
+    await clearBackgroundFailure(configRoot, "autosave", scope, { before })
+  } catch {
+    // Marker cleanup is diagnostic only; never block the Stop hot path.
+  }
 }
 
 /**
@@ -404,12 +454,24 @@ async function readTranscriptForSave(
  * a separate detached node child via `scheduleAutoDigestSpawn` so the Stop
  * path never gathers digest data or initializes Notion clients inline.
  */
-export async function handleStop(event: HookEvent, config: HookConfig): Promise<void> {
+export async function handleStop(
+  event: HookEvent,
+  config: HookConfig,
+  failureContext?: StopFailureContext
+): Promise<void> {
   try {
+    const failureScope: BackgroundFailureScope = {
+      projectName: projectNameForStopEvent(event, failureContext),
+      sessionId: event.session_id,
+    }
     const read = await readTranscriptForSave(event, "Stop hook")
     if (!read) {
       process.stdout.write("{}\n")
-      scheduleAutoDigestSpawn(event.cwd ?? process.cwd())
+      scheduleAutoDigestSpawn(event.cwd ?? process.cwd(), {
+        configRoot: failureContext?.configRoot,
+        projectName: failureScope.projectName,
+        sessionId: failureScope.sessionId,
+      })
       return
     }
     const { transcript, userMessageCount: currentCount } = read
@@ -441,7 +503,7 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
           {
             extractLearnings: learningExtractionEnabled,
             authorName: deriveAuthorName(event),
-          },
+          }
         )
         // Only advance the save counter when a background process actually
         // started. Every non-`spawned` result — benign races (lock-held,
@@ -455,10 +517,26 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
           event.cwd ?? process.cwd(),
           prompt,
           event.session_id,
-          { agent: config.backgroundAgent },
+          { agent: config.backgroundAgent }
         )
         if (result.kind === "spawned") {
+          const recoveredAt = new Date()
           await writeSaveCount(event.session_id, currentCount)
+          await clearStopFailure(failureContext?.configRoot, failureScope, recoveredAt)
+        } else {
+          const message = spawnFailureMessage(result, config.backgroundAgent.command)
+          if (message) {
+            recordBackgroundFailure(failureContext?.configRoot, {
+              kind: "autosave",
+              ...failureScope,
+              code: result.kind,
+              message,
+              logPath:
+                result.kind === "spawn-error" && event.session_id
+                  ? logPath(event.session_id)
+                  : undefined,
+            })
+          }
         }
       }
     }
@@ -467,7 +545,11 @@ export async function handleStop(event: HookEvent, config: HookConfig): Promise<
     // hook never pays the cost of `.lore.yaml` parse + Notion init + digest
     // gather. The marker debounce inside the helper guarantees ≤ 1 digest
     // per project per 7 days regardless of how often Stop fires.
-    scheduleAutoDigestSpawn(event.cwd ?? process.cwd())
+    scheduleAutoDigestSpawn(event.cwd ?? process.cwd(), {
+      configRoot: failureContext?.configRoot,
+      projectName: failureScope.projectName,
+      sessionId: failureScope.sessionId,
+    })
   } catch (err) {
     // Fail open: let the AI stop. We intentionally do NOT schedule the
     // auto-digest helper from this branch — an unexpected throw inside
@@ -604,7 +686,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // wakeup`) reads stdin itself and passes the payload via `opts.event`,
   // skipping the env-var indirection.
   const userQuery = parseUserQueryFromEvent(
-    opts.event ?? process.env["LORE_WAKEUP_EVENT"],
+    opts.event ?? process.env["LORE_WAKEUP_EVENT"]
   )
   const debug = process.env["LORE_DEBUG"] === "1"
   if (debug) {
@@ -619,44 +701,31 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // single grep against `[lore] ` parses uniformly across operator logs.
     if (userQuery) {
       process.stderr.write(
-        `[lore] wakeup: ranked=true queryLen=${userQuery.length} memory=${RANKED_WAKEUP_LIMITS.memoryLimit} related=${RANKED_WAKEUP_LIMITS.relatedMemoryLimit} knowledge=${RANKED_WAKEUP_LIMITS.knowledgeFactLimit} taskMemories=${RANKED_WAKEUP_LIMITS.taskMemoryLimit}\n`,
+        `[lore] wakeup: ranked=true queryLen=${userQuery.length} memory=${RANKED_WAKEUP_LIMITS.memoryLimit} related=${RANKED_WAKEUP_LIMITS.relatedMemoryLimit} knowledge=${RANKED_WAKEUP_LIMITS.knowledgeFactLimit} taskMemories=${RANKED_WAKEUP_LIMITS.taskMemoryLimit}\n`
       )
     } else {
-      process.stderr.write(
-        "[lore] wakeup: ranked=false reason=no-user-query\n",
-      )
+      process.stderr.write("[lore] wakeup: ranked=false reason=no-user-query\n")
     }
   }
   const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
 
-  let digest,
-    memories,
-    tasks,
-    knowledgeFacts,
-    relatedMemories,
-    taskMemories
+  let digest, memories, tasks, knowledgeFacts, relatedMemories, taskMemories
   try {
-    ;({
-      digest,
-      memories,
-      tasks,
-      knowledgeFacts,
-      relatedMemories,
-      taskMemories,
-    } = await loadWakeUpData(services, {
-      projectId: project?.id,
-      // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
-      includeMemoryContent: false,
-      // Hook never renders decisions — skip the two Notion queries so
-      // session-start latency doesn't regress on the hot path.
-      includeDecisions: false,
-      // Hook never renders the Stale Confidence section either — skip
-      // the extra Notion query for the same reason. Same posture as
-      // `includeDecisions: false` above.
-      includeStaleConfidence: false,
-      userQuery,
-      ...rankedLimits,
-    }))
+    ;({ digest, memories, tasks, knowledgeFacts, relatedMemories, taskMemories } =
+      await loadWakeUpData(services, {
+        projectId: project?.id,
+        // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
+        includeMemoryContent: false,
+        // Hook never renders decisions — skip the two Notion queries so
+        // session-start latency doesn't regress on the hot path.
+        includeDecisions: false,
+        // Hook never renders the Stale Confidence section either — skip
+        // the extra Notion query for the same reason. Same posture as
+        // `includeDecisions: false` above.
+        includeStaleConfidence: false,
+        userQuery,
+        ...rankedLimits,
+      }))
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
@@ -673,11 +742,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   // `services.context.project` and `services.context.isCatchAllFallback`
   // — there is no explicit-projectName override on this path (Fix 2).
   const projectContextLines = renderProjectContextLines(
-    composeProjectContext(
-      project,
-      hookState.config,
-      services.context.isCatchAllFallback,
-    ),
+    composeProjectContext(project, hookState.config, services.context.isCatchAllFallback)
   )
   if (projectContextLines.length > 0) {
     sections.push(projectContextLines.join("\n"))
@@ -730,11 +795,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     // The data layer may return far more rows than the hook should print.
     // Pick an urgency-ordered visible subset with reserved space for
     // Stale / Active so a large overdue set doesn't hide null-date work.
-    const visibleTasks = selectHookWakeUpTasks(
-      tasks,
-      DEFAULT_WAKEUP_TASK_LIMIT,
-      today,
-    )
+    const visibleTasks = selectHookWakeUpTasks(tasks, DEFAULT_WAKEUP_TASK_LIMIT, today)
     sections.push("\n## Tasks")
     for (const task of visibleTasks) {
       const stateLabel = task.taskState ?? "open"
@@ -744,9 +805,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
           ? `, review by ${task.reviewBy} OVERDUE`
           : `, review by ${task.reviewBy}`
         : ""
-      sections.push(
-        `- ${task.title} [${stateLabel}${blocker}${due}]`,
-      )
+      sections.push(`- ${task.title} [${stateLabel}${blocker}${due}]`)
     }
   }
 
@@ -775,7 +834,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
 function selectHookWakeUpTasks(
   tasks: TaskSummary[],
   limit: number,
-  today: string,
+  today: string
 ): TaskSummary[] {
   if (limit <= 0) return []
   const overdue: TaskSummary[] = []
@@ -815,8 +874,7 @@ function selectHookWakeUpTasks(
     take(i, quotas[i])
   }
 
-  let remaining =
-    limit - selectedByBucket.reduce((sum, bucket) => sum + bucket.length, 0)
+  let remaining = limit - selectedByBucket.reduce((sum, bucket) => sum + bucket.length, 0)
   for (let i = 0; i < buckets.length && remaining > 0; i++) {
     remaining -= take(i, remaining)
   }
@@ -864,6 +922,9 @@ function autoDigestEnvDisabled(): boolean {
 export async function handleAutoDigest(): Promise<void> {
   const state = await loadHookState()
   if (!state.config || !state.configRoot) return
+  const projectName =
+    resolveProjectPathFromCwd(process.cwd(), state.configRoot, state.config)?.name ??
+    undefined
 
   try {
     await fireDigestIfStale(process.cwd(), {
@@ -873,8 +934,14 @@ export async function handleAutoDigest(): Promise<void> {
       backgroundAgent: state.hookConfig.backgroundAgent,
     })
   } catch (err) {
+    recordBackgroundFailure(state.configRoot, {
+      kind: "digest-scheduler",
+      projectName,
+      code: "unexpected-failure",
+      message: `unexpected failure: ${err instanceof Error ? err.message : String(err)}`,
+    })
     process.stderr.write(
-      `[lore] digest scheduler: unexpected failure — ${err instanceof Error ? err.message : err}\n`,
+      `[lore] digest scheduler: unexpected failure — ${err instanceof Error ? err.message : err}\n`
     )
   }
 }

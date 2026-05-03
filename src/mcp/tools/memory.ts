@@ -2267,8 +2267,8 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .optional()
           .describe(
             "Kebab-case path like 'decision/jwt-auth'. On save: upserts when a memory " +
-              "exists with the same key AND identical project-set (appends a revision " +
-              "block, bumps Revision Count); requires `kind` ∈ {decision, runbook, " +
+              "exists with same key/project-set (appends a revision, bumps Revision Count); " +
+              "requires `kind` ∈ {decision, runbook, " +
               "incident, postmortem, policy}. On update: re-keys, appending a " +
               "`## Re-keyed` audit block; cannot be combined with `kind`. " +
               "See docs/memory-workflows.md#topic-keys.",

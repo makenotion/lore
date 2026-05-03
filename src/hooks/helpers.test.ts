@@ -61,7 +61,7 @@ const {
   spawnMock: vi.fn(),
   execFileSyncMock: vi.fn(() => "/mock/bin/claude\n"),
   fireDigestIfStaleMock: vi.fn(async () => "no-project" as const),
-  scheduleAutoDigestSpawnMock: vi.fn<(cwd: string) => void>(),
+  scheduleAutoDigestSpawnMock: vi.fn<(cwd: string, opts?: unknown) => void>(),
   buildBackgroundSavePromptMock: vi.fn(),
 }))
 
@@ -72,8 +72,9 @@ vi.mock("node:child_process", async () => {
 })
 
 vi.mock("./digest-scheduler.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("./digest-scheduler.js")>("./digest-scheduler.js")
+  const actual = await vi.importActual<typeof import("./digest-scheduler.js")>(
+    "./digest-scheduler.js"
+  )
   return {
     ...actual,
     fireDigestIfStale: fireDigestIfStaleMock,
@@ -117,6 +118,11 @@ import {
   statePath,
 } from "./helpers.js"
 import { HOSTILE_SESSION_IDS } from "./path-injection-fixtures.js"
+import {
+  listBackgroundFailures,
+  recordBackgroundFailure,
+} from "./background-failure-marker.js"
+import type { LoreConfig } from "../types.js"
 
 // Stand-in for a spawned `claude -p` process. Returning a live PID (this
 // process) means subsequent lock-aliveness checks see it as "still running",
@@ -175,6 +181,21 @@ function writeTranscript(path: string, userMessages: number): void {
   writeFileSync(path, lines.join("\n"))
 }
 
+function failureContext(tmpDir: string): {
+  config: LoreConfig
+  configRoot: string
+  cwd: string
+} {
+  return {
+    configRoot: tmpDir,
+    cwd: join(tmpDir, "apps/mail/service"),
+    config: {
+      vault: { pageId: "vault-fixture-id" },
+      projects: [{ name: "Mail Backend", path: "apps/mail" }],
+    },
+  }
+}
+
 describe("handleStop", () => {
   let tmpDir: string
   let transcriptPath: string
@@ -211,7 +232,9 @@ describe("handleStop", () => {
     spawnMock.mockImplementation(() => fakeLiveChild())
     scheduleAutoDigestSpawnMock.mockReset()
     buildBackgroundSavePromptMock.mockReset()
-    buildBackgroundSavePromptMock.mockImplementation(() => "[Lore autosave] mocked prompt body")
+    buildBackgroundSavePromptMock.mockImplementation(
+      () => "[Lore autosave] mocked prompt body"
+    )
     delete process.env["LORE_DISABLE_LEARNING_EXTRACTION"]
   })
 
@@ -304,7 +327,7 @@ describe("handleStop", () => {
       },
       defaultConfig({
         backgroundAgent: { command: "codex", args: ["exec", "--full-auto"] },
-      }),
+      })
     )
 
     expect(spawnMock).toHaveBeenCalledTimes(1)
@@ -345,7 +368,7 @@ describe("handleStop", () => {
           command: "codex",
           args: ["exec", "--full-auto", "--tools={{allowedTools}}"],
         },
-      }),
+      })
     )
 
     expect(spawnMock).toHaveBeenCalledTimes(1)
@@ -381,7 +404,7 @@ describe("handleStop", () => {
           transcript_path: transcriptPath,
           cwd: tmpDir,
         },
-        defaultConfig(),
+        defaultConfig()
       )
 
       expect(spawnMock).toHaveBeenCalledTimes(1)
@@ -411,7 +434,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig(),
+      defaultConfig()
     )
 
     expect(spawnMock).toHaveBeenCalledTimes(1)
@@ -546,6 +569,60 @@ describe("handleStop", () => {
     releaseSessionLock(heldLock!)
   })
 
+  it("records an autosave failure marker when the background binary is missing", async () => {
+    const context = failureContext(tmpDir)
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-missing-binary",
+        transcript_path: transcriptPath,
+        cwd: context.cwd,
+      },
+      defaultConfig({
+        backgroundAgent: {
+          command: "/definitely/missing/lore-background-agent",
+          args: [],
+        },
+      }),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    const [marker] = await listBackgroundFailures(context.configRoot)
+    expect(marker).toMatchObject({
+      kind: "autosave",
+      projectName: "Mail Backend",
+      sessionId: "sess-missing-binary",
+      code: "binary-missing",
+    })
+    expect(marker?.message).toContain("background command")
+    expect(marker?.logPath).toBeUndefined()
+  })
+
+  it("clears a prior autosave failure marker once a later session spawn starts", async () => {
+    const context = failureContext(tmpDir)
+    recordBackgroundFailure(context.configRoot, {
+      kind: "autosave",
+      projectName: "Mail Backend",
+      sessionId: "sess-prior-failure",
+      code: "binary-missing",
+      message: "background command missing",
+    })
+    expect(await listBackgroundFailures(context.configRoot)).toHaveLength(1)
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-later-success",
+        transcript_path: transcriptPath,
+        cwd: context.cwd,
+      },
+      defaultConfig(),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    expect(await listBackgroundFailures(context.configRoot)).toEqual([])
+  })
+
   it("acquires the session lock with the child's PID", async () => {
     writeTranscript(transcriptPath, 3)
     const sessionId = "sess-pid-lock"
@@ -580,7 +657,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig(),
+      defaultConfig()
     )
 
     const stateDir = getStateDir()
@@ -611,7 +688,7 @@ describe("handleStop", () => {
     )
 
     expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
-    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledWith(tmpDir)
+    expect(scheduleAutoDigestSpawnMock.mock.calls[0]![0]).toBe(tmpDir)
   })
 
   it("schedules auto-digest even when the save threshold is not reached", async () => {
@@ -663,7 +740,7 @@ describe("handleStop", () => {
 
     expect(spawnMock).not.toHaveBeenCalled()
     expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledTimes(1)
-    expect(scheduleAutoDigestSpawnMock).toHaveBeenCalledWith(tmpDir)
+    expect(scheduleAutoDigestSpawnMock.mock.calls[0]![0]).toBe(tmpDir)
   })
 
   // -----------------------------------------------------------------
@@ -692,7 +769,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig(),
+      defaultConfig()
     )
 
     expect(lastExtractLearnings()).toBe(true)
@@ -708,7 +785,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig(),
+      defaultConfig()
     )
 
     expect(lastExtractLearnings()).toBe(false)
@@ -722,7 +799,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig({ learningExtraction: false }),
+      defaultConfig({ learningExtraction: false })
     )
 
     expect(lastExtractLearnings()).toBe(false)
@@ -738,7 +815,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig({ learningExtraction: false }),
+      defaultConfig({ learningExtraction: false })
     )
 
     expect(lastExtractLearnings()).toBe(false)
@@ -761,7 +838,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig(),
+      defaultConfig()
     )
 
     expect(lastExtractLearnings()).toBe(true)
@@ -777,7 +854,7 @@ describe("handleStop", () => {
         transcript_path: transcriptPath,
         cwd: tmpDir,
       },
-      defaultConfig({ learningExtraction: true }),
+      defaultConfig({ learningExtraction: true })
     )
 
     expect(lastExtractLearnings()).toBe(false)
@@ -924,20 +1001,24 @@ hooks:
     await handleAutoDigest()
 
     expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
-    const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
+    const stateArg = (
+      fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }]
+    )[1]
     expect(stateArg.autoDigest).toBe(false)
   })
 
   it("threads autoDigest=false when hooks.autoDigest is false in .lore.yaml", async () => {
     writeFileSync(
       join(tmpDir, ".lore.yaml"),
-      FIXTURE_YAML.replace("autoDigest: true", "autoDigest: false"),
+      FIXTURE_YAML.replace("autoDigest: true", "autoDigest: false")
     )
 
     await handleAutoDigest()
 
     expect(fireDigestIfStaleMock).toHaveBeenCalledTimes(1)
-    const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
+    const stateArg = (
+      fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }]
+    )[1]
     expect(stateArg.autoDigest).toBe(false)
   })
 
@@ -946,7 +1027,9 @@ hooks:
 
     await handleAutoDigest()
 
-    const stateArg = (fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }])[1]
+    const stateArg = (
+      fireDigestIfStaleMock.mock.calls[0] as unknown as [string, { autoDigest: boolean }]
+    )[1]
     expect(stateArg.autoDigest).toBe(false)
   })
 
@@ -1044,7 +1127,9 @@ describe("parseUserQueryFromEvent", () => {
   it("returns undefined when the prompt field is not a string", () => {
     expect(parseUserQueryFromEvent(JSON.stringify({ prompt: 42 }))).toBeUndefined()
     expect(parseUserQueryFromEvent(JSON.stringify({ prompt: null }))).toBeUndefined()
-    expect(parseUserQueryFromEvent(JSON.stringify({ prompt: { nested: "x" } }))).toBeUndefined()
+    expect(
+      parseUserQueryFromEvent(JSON.stringify({ prompt: { nested: "x" } }))
+    ).toBeUndefined()
   })
 
   it.each([
@@ -1052,14 +1137,17 @@ describe("parseUserQueryFromEvent", () => {
     ["with whitespace", "  /compact  "],
     ["with arguments", "/lore-wake-up --debug"],
     ["another tool slash", "/help"],
-  ])("returns undefined for %s (slash commands are useless as search seeds)", (_label, prompt) => {
-    // Slash commands are meta-instructions to the host assistant, not
-    // task language. Seeding the relevance ranker with `/clear` would
-    // produce noise hits (any memory mentioning "clear") and waste a
-    // Notion round-trip. Drop to the fallback path instead.
-    const raw = JSON.stringify({ prompt })
-    expect(parseUserQueryFromEvent(raw)).toBeUndefined()
-  })
+  ])(
+    "returns undefined for %s (slash commands are useless as search seeds)",
+    (_label, prompt) => {
+      // Slash commands are meta-instructions to the host assistant, not
+      // task language. Seeding the relevance ranker with `/clear` would
+      // produce noise hits (any memory mentioning "clear") and waste a
+      // Notion round-trip. Drop to the fallback path instead.
+      const raw = JSON.stringify({ prompt })
+      expect(parseUserQueryFromEvent(raw)).toBeUndefined()
+    }
+  )
 
   it("preserves prompts that incidentally contain a forward slash", () => {
     // Only LEADING `/` is the slash-command marker. A real task prompt
@@ -1245,7 +1333,7 @@ describe("statePath path injection resistance", () => {
       const segment = path.slice(stateDir.length + 1)
       expect(segment).not.toContain("/")
       expect(segment).not.toContain("\\")
-    },
+    }
   )
 
   it("leaves UUID-shaped sessionIds unchanged", () => {

@@ -7,10 +7,13 @@ import type { Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
 import { digestMarkerAgeDays } from "../../hooks/digest-marker.js"
+import { DRIFT_DEBOUNCE_DAYS, driftMarkerAgeDays } from "../../hooks/drift-marker.js"
 import {
-  DRIFT_DEBOUNCE_DAYS,
-  driftMarkerAgeDays,
-} from "../../hooks/drift-marker.js"
+  collectBackgroundFailures,
+  listBackgroundFailures,
+  type BackgroundFailureKind,
+  type BackgroundFailureMarker,
+} from "../../hooks/background-failure-marker.js"
 import { notionPageUrl, terminalLink } from "../output.js"
 
 /**
@@ -66,6 +69,19 @@ export const statusCommand = new Command("status")
       console.log(`  Topics:   ${stats.topics}`)
       console.log(`  Memories: ${stats.memories}`)
       console.log(`  Facts:    ${stats.facts}`)
+
+      // Background hook markers are filesystem-only operator health, so keep
+      // their scope disclaimer near the top before longer project/digest lists.
+      const backgroundFailureReport = await loadBackgroundFailureStatus(
+        services.configRoot
+      )
+      const backgroundFailureLines = formatBackgroundFailureStatus(
+        backgroundFailureReport
+      )
+      if (backgroundFailureLines.length > 0) {
+        console.log()
+        for (const line of backgroundFailureLines) console.log(line)
+      }
 
       // Task summary (issue 0.7.0/13) and Memory confidence summary
       // (DEFERRED-04) fan out via `Promise.all`. Both walk the Memories
@@ -217,6 +233,109 @@ statusCommand.addCommand(projectsCmd)
 statusCommand.addCommand(topicsCmd)
 
 // ---------------------------------------------------------------------------
+// Background failures section
+// ---------------------------------------------------------------------------
+
+export interface BackgroundFailureStatusReport {
+  failures: BackgroundFailureMarker[]
+  totalRecent: number
+}
+
+export interface BackgroundFailureStatusDeps {
+  collectFailures?: typeof collectBackgroundFailures
+  listFailures?: typeof listBackgroundFailures
+}
+
+export async function loadBackgroundFailureStatus(
+  configRoot: string | null | undefined,
+  deps: BackgroundFailureStatusDeps = {}
+): Promise<BackgroundFailureStatusReport> {
+  if (!configRoot) return { failures: [], totalRecent: 0 }
+  if (deps.collectFailures) return deps.collectFailures(configRoot)
+  if (deps.listFailures) {
+    const failures = await deps.listFailures(configRoot)
+    return { failures, totalRecent: failures.length }
+  }
+  return collectBackgroundFailures(configRoot)
+}
+
+export function formatBackgroundFailureStatus(
+  report: BackgroundFailureStatusReport
+): string[] {
+  const totalRecent = report.totalRecent ?? report.failures.length
+  const lines: string[] = ["Background hooks:"]
+  lines.push(
+    "  observed scope: spawn/init/gather only; detached child exits are not tracked."
+  )
+  if (report.failures.length === 0) {
+    lines.push("  observed failures: none")
+    return lines
+  }
+
+  lines.push("  recent observed failures:")
+  for (const failure of report.failures) {
+    const scope = formatBackgroundFailureScope(failure)
+    const scopeText = scope ? ` · ${scope}` : ""
+    lines.push(
+      `    - ${formatBackgroundFailureKind(failure.kind)} · ${failure.occurredAt}${scopeText} · ${failure.code}: ${failure.message}`
+    )
+    if (failure.logPath) lines.push(`      log: ${failure.logPath}`)
+    lines.push(`      next: ${backgroundFailureHint(failure)}`)
+  }
+  if (totalRecent > report.failures.length) {
+    lines.push(
+      `  (showing ${report.failures.length} of ${totalRecent} recent failures)`
+    )
+  }
+  return lines
+}
+
+function formatBackgroundFailureScope(failure: BackgroundFailureMarker): string {
+  const parts: string[] = []
+  if (failure.projectName) parts.push(`project ${failure.projectName}`)
+  if (failure.sessionId) parts.push(`session ${failure.sessionId}`)
+  return parts.join(" · ")
+}
+
+function formatBackgroundFailureKind(kind: BackgroundFailureKind): string {
+  switch (kind) {
+    case "autosave":
+      return "autosave"
+    case "digest-scheduler":
+      return "digest scheduler"
+    case "digest-synthesizer":
+      return "digest synthesizer"
+    case "auto-digest-helper-spawn":
+      return "auto-digest helper spawn"
+  }
+}
+
+function backgroundFailureHint(failure: BackgroundFailureMarker): string {
+  if (failure.code === "binary-missing") {
+    return "Check hooks.backgroundAgent.command or LORE_BACKGROUND_COMMAND, then trigger the hook again."
+  }
+  if (failure.code === "tempfile-failed") {
+    return "Check the temp/state directory permissions and available disk space."
+  }
+  if (failure.kind === "digest-scheduler" && failure.code === "init-failed") {
+    return "Run `lore auth --status` to verify vault access."
+  }
+  if (failure.kind === "digest-scheduler" && failure.code === "gather-failed") {
+    return "Run `lore digest` manually; if it fails, run `lore auth --status`."
+  }
+  if (failure.kind === "digest-synthesizer") {
+    return "Run `lore digest` manually after fixing the underlying spawn issue."
+  }
+  if (failure.kind === "auto-digest-helper-spawn") {
+    return "Check Node/process limits; run `lore digest` manually to produce the digest now."
+  }
+  if (failure.logPath) {
+    return "Trigger the hook again after fixing the logged issue."
+  }
+  return "Run `lore status` and retry the hook after fixing the underlying issue."
+}
+
+// ---------------------------------------------------------------------------
 // Digests section
 // ---------------------------------------------------------------------------
 
@@ -303,12 +422,12 @@ const DIGEST_LIST_LIMIT = 50
 export async function loadDigestStatus(
   services: LoreServices,
   configRoot: string,
-  deps: DigestStatusDeps = {},
+  deps: DigestStatusDeps = {}
 ): Promise<DigestStatusReport> {
   const subProjects = subProjectNames(services.config)
   const disabledReason = deriveDisabledReason(
     services.config.hooks?.autoDigest,
-    deps.autoDigestEnvOverride,
+    deps.autoDigestEnvOverride
   )
 
   if (subProjects.length === 0) {
@@ -335,7 +454,7 @@ export async function loadDigestStatus(
   const rows = await Promise.all(
     subProjects.map(async (name): Promise<DigestRow> => {
       const project = await services.projects.findByName(name)
-      const latest = project ? latestByProject.get(project.id) ?? null : null
+      const latest = project ? (latestByProject.get(project.id) ?? null) : null
       const ageDays = await markerAge(configRoot, name)
       return {
         name,
@@ -347,7 +466,7 @@ export async function loadDigestStatus(
           : null,
         markerAgeDays: Number.isFinite(ageDays) ? ageDays : null,
       }
-    }),
+    })
   )
 
   return {
@@ -366,7 +485,7 @@ export async function loadDigestStatus(
  * project.
  */
 export function groupLatestDigestByProject(
-  digestMemories: Memory[],
+  digestMemories: Memory[]
 ): Map<string, Memory> {
   const latest = new Map<string, Memory>()
   for (const mem of digestMemories) {
@@ -383,7 +502,7 @@ export function groupLatestDigestByProject(
 
 function deriveDisabledReason(
   configValue: boolean | undefined,
-  envValue: string | undefined,
+  envValue: string | undefined
 ): DigestStatusReport["disabledReason"] {
   if (envValue === "false") {
     return { source: "env", detail: "LORE_AUTO_DIGEST=false" }
@@ -415,19 +534,14 @@ export function formatDigestStatus(report: DigestStatusReport): string[] {
     ? `Digests (autoDigest=false via ${report.disabledReason.detail}):`
     : "Digests:"
 
-  const longestName = report.rows.reduce(
-    (max, row) => Math.max(max, row.name.length),
-    0,
-  )
+  const longestName = report.rows.reduce((max, row) => Math.max(max, row.name.length), 0)
 
   const lines: string[] = [header]
   for (const row of report.rows) {
     lines.push(formatDigestRow(row, longestName))
   }
   if (report.truncated) {
-    lines.push(
-      `  (showing latest ${DIGEST_LIST_LIMIT} digests; older may be truncated)`,
-    )
+    lines.push(`  (showing latest ${DIGEST_LIST_LIMIT} digests; older may be truncated)`)
   }
   return lines
 }
@@ -507,7 +621,7 @@ export interface DriftStatusDeps {
  */
 export async function loadDriftStatus(
   configRoot: string | null | undefined,
-  deps: DriftStatusDeps = {},
+  deps: DriftStatusDeps = {}
 ): Promise<DriftStatusReport> {
   if (!configRoot) {
     return { markerAgeDays: null, configured: false }
@@ -596,11 +710,10 @@ export type TrackingPreflightServices = {
  */
 export async function loadTrackingPreflight(
   services: TrackingPreflightServices,
-  deps: TrackingPreflightDeps = {},
+  deps: TrackingPreflightDeps = {}
 ): Promise<TrackingPreflightReport> {
   const probe =
-    deps.countByPredicateRaw ??
-    services.facts.countByPredicateRaw.bind(services.facts)
+    deps.countByPredicateRaw ?? services.facts.countByPredicateRaw.bind(services.facts)
   const count = await probe(TRACKING_PREDICATE_PREFLIGHT_VALUES)
   return { count }
 }
@@ -621,9 +734,7 @@ export async function loadTrackingPreflight(
  *
  * Pure function: deterministic in `report`, no I/O.
  */
-export function formatTrackingPreflight(
-  report: TrackingPreflightReport,
-): string[] {
+export function formatTrackingPreflight(report: TrackingPreflightReport): string[] {
   if (report.count <= 0) return []
 
   const noun = report.count === 1 ? "row" : "rows"
@@ -694,9 +805,7 @@ export interface ConfidenceStatsReport {
  *
  * Pure function: deterministic in `report`, no I/O.
  */
-export function formatConfidenceSummary(
-  report: ConfidenceStatsReport,
-): string[] {
+export function formatConfidenceSummary(report: ConfidenceStatsReport): string[] {
   if (report.totalMemories <= 0) return []
 
   // Defense-in-depth on the structural invariants `confidenceStats`
@@ -714,12 +823,9 @@ export function formatConfidenceSummary(
   // `MemoryService.confidenceStats`'s docstring.
   const scoredMemories = Math.min(
     Math.max(0, report.scoredMemories),
-    report.totalMemories,
+    report.totalMemories
   )
-  const belowThreshold = Math.min(
-    Math.max(0, report.belowThreshold),
-    scoredMemories,
-  )
+  const belowThreshold = Math.min(Math.max(0, report.belowThreshold), scoredMemories)
   const averageScore = Math.min(1, Math.max(0, report.averageScore))
 
   // `Memory confidence:` rather than `Memories:` deliberately —

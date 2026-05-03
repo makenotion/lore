@@ -17,17 +17,18 @@ dropped active SessionEnd registration.
 
 ## Files
 
-| File                  | Responsibility                                                                                                              |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `helpers.ts`          | Entry point: routes to `autosave` / `wakeup` / `auto-digest` / `session-end` handlers                                       |
-| `prompts.ts`          | Pure prompt builders for background-save sub-agents                                                                         |
-| `transcript.ts`       | Parse Claude Code / Codex transcript formats into messages                                                                  |
-| `lock.ts`             | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir                       |
-| `config.ts`           | `.lore.yaml` `hooks` section defaults + merge                                                                               |
-| `digest-scheduler.ts` | `fireDigestIfStale` (in-child digest logic) + `scheduleAutoDigestSpawn` (parent-side detached fork off Stop)                |
-| `digest-marker.ts`    | Per-config-root debounce marker for the auto-digest scheduler                                                               |
-| `drift-marker.ts`     | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)                               |
-| `marker-key.ts`       | Shared `configKey()` and `safeFilenameSegment()` helpers for every filesystem marker, lock, log, and count file in this dir |
+| File                           | Responsibility                                                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `helpers.ts`                   | Entry point: routes to `autosave` / `wakeup` / `auto-digest` / `session-end` handlers                                       |
+| `prompts.ts`                   | Pure prompt builders for background-save sub-agents                                                                         |
+| `transcript.ts`                | Parse Claude Code / Codex transcript formats into messages                                                                  |
+| `lock.ts`                      | Per-session concurrency guard for background saves; owns `getStateDir()` for every marker in this dir                       |
+| `config.ts`                    | `.lore.yaml` `hooks` section defaults + merge                                                                               |
+| `digest-scheduler.ts`          | `fireDigestIfStale` (in-child digest logic) + `scheduleAutoDigestSpawn` (parent-side detached fork off Stop)                |
+| `digest-marker.ts`             | Per-config-root debounce marker for the auto-digest scheduler                                                               |
+| `drift-marker.ts`              | Per-config-root debounce marker for `VaultManager.load`'s schema drift check (0.6.0 issue 02)                               |
+| `background-failure-marker.ts` | Bounded per-config-root health markers for detached autosave / digest background failures surfaced by `lore status`         |
+| `marker-key.ts`                | Shared `configKey()` and `safeFilenameSegment()` helpers for every filesystem marker, lock, log, and count file in this dir |
 
 New marker modules under `src/hooks/` derive their config key and
 sanitize free-form name segments via `marker-key.ts` rather than
@@ -42,6 +43,52 @@ lines in `prompts.ts:buildIdentityBlock` so a `sessionId` carrying
 `\n` followed by a fake instruction can't inject prompt content into
 the spawned `claude -p`'s body — same regex policy, parallel exit
 channel.
+
+### Background failure markers
+
+`background-failure-marker.ts` owns the small local health breadcrumbs that
+`lore status` renders under **Background hooks**. Files live in
+`getStateDir()` (`$LORE_HOOK_STATE_DIR` when set, otherwise
+`$TMPDIR/lore-hook-state/`) next to locks, logs, digest markers, and drift
+markers. Their filenames are isolated with the `background-failure.` prefix,
+the config-root key, the failure kind, and a short hash of the
+operator-actionable scope.
+
+The active marker key is **recoverable scope**, not session scope:
+`kind + config root + project name` (project omitted for vault-level cases).
+The latest `sessionId` stays in the JSON body for diagnosis, but it must not
+make a new file per Stop hook session. A later success for the same kind and
+project clears only markers whose `occurredAt` is older than that success, so
+a concurrent fresh failure survives stale success cleanup. Writers use
+sync tmp-file + POSIX rename on the Stop hot path; same-key concurrent writes
+are intentionally last-writer-wins because the status surface is "latest
+observed failure for this scope." Readers prune malformed, unknown-version,
+unknown-kind, wrong-root, and stale files. Stale means older than 14 days,
+chosen as one missed weekly digest window plus slack for an operator to run
+`lore status`.
+
+Current `BackgroundFailureKind` values:
+
+| Kind                       | Observes                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------- |
+| `autosave`                 | Foreground Stop hook failures before the detached autosave child successfully starts      |
+| `digest-scheduler`         | Detached auto-digest helper init/gather failures before synthesis spawn                   |
+| `digest-synthesizer`       | Auto-digest synthesis spawn setup failures (`binary-missing`, tempfile, spawn exception) |
+| `auto-digest-helper-spawn` | Foreground Stop hook failure to fork the detached `helpers.js auto-digest` child          |
+
+The supervision boundary is narrow by design: markers cover failures the
+foreground process or helper can directly observe at spawn/init/gather time.
+Lore does **not** supervise detached background agents through final process
+exit, so a child that spawns successfully and later crashes will not create a
+background-failure marker. Keep that caveat visible in any user-facing status
+renderer; the honest clean state is "no observed failures," not "healthy."
+
+When adding a new kind, update the `BackgroundFailureKind` union,
+`BACKGROUND_FAILURE_KINDS`, `formatBackgroundFailureKind`, and
+`backgroundFailureHint`, then add tests for write/read/clear, stale pruning,
+and status rendering. Only attach `logPath` when the target log file can
+exist; `binary-missing` and tempfile setup failures happen before child
+stderr is opened.
 
 **POSIX-only.** The sanitizer is not Windows-safe: NTFS reserved device
 names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) pass

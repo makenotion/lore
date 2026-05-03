@@ -68,6 +68,8 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
     touch: ReturnType<typeof vi.fn>
     clear: ReturnType<typeof vi.fn>
     spawn: ReturnType<typeof vi.fn>
+    recordFailure: ReturnType<typeof vi.fn>
+    clearFailure: ReturnType<typeof vi.fn>
     log: ReturnType<typeof vi.fn>
   }
 } {
@@ -82,6 +84,8 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
     touch: vi.fn(async () => {}),
     clear: vi.fn(async () => {}),
     spawn: vi.fn(() => ({ kind: "spawned" as const })),
+    recordFailure: vi.fn(),
+    clearFailure: vi.fn(async () => {}),
     log: vi.fn(),
   }
   return {
@@ -93,6 +97,8 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
       touchMarker: calls.touch,
       clearMarker: calls.clear,
       spawn: calls.spawn,
+      recordFailure: calls.recordFailure,
+      clearFailure: calls.clearFailure,
       now: () => new Date("2026-04-24T12:00:00.000Z"),
       log: calls.log,
       ...overrides,
@@ -145,6 +151,29 @@ describe("fireDigestIfStale", () => {
     expect(spawnCwd).toBe(SUB_PROJECT_CWD)
     expect(prompt).toContain("Digest — 2026-04-24 — Mail Backend")
     expect(prompt).toContain("first one")
+    const recovered = { before: new Date("2026-04-24T12:00:00.000Z") }
+    expect(calls.clearFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      "digest-scheduler",
+      {
+        projectName: "Mail Backend",
+      },
+      recovered
+    )
+    expect(calls.clearFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      "digest-synthesizer",
+      {
+        projectName: "Mail Backend",
+      },
+      recovered
+    )
+    expect(calls.clearFailure).not.toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      "auto-digest-helper-spawn",
+      expect.anything(),
+      expect.anything()
+    )
   })
 
   it("rolls back the marker when the binary is missing so the next session retries", async () => {
@@ -156,6 +185,15 @@ describe("fireDigestIfStale", () => {
     expect(calls.touch).toHaveBeenCalledTimes(1)
     expect(calls.clear).toHaveBeenCalledTimes(1)
     expect(calls.clear).toHaveBeenCalledWith(CONFIG_ROOT, "Mail Backend")
+    expect(calls.recordFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      expect.objectContaining({
+        kind: "digest-synthesizer",
+        projectName: "Mail Backend",
+        code: "binary-missing",
+      })
+    )
+    expect(calls.recordFailure.mock.calls[0]![1].logPath).toBeUndefined()
   })
 
   it("rolls back the marker when spawn itself throws", async () => {
@@ -168,6 +206,9 @@ describe("fireDigestIfStale", () => {
     const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     expect(outcome).toBe("spawn-failed")
     expect(calls.clear).toHaveBeenCalledTimes(1)
+    expect(calls.recordFailure.mock.calls[0]![1].logPath).toContain(
+      "digest-Mail_Backend"
+    )
   })
 
   it("rolls back the marker when temp-file preparation fails", async () => {
@@ -177,6 +218,7 @@ describe("fireDigestIfStale", () => {
     const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     expect(outcome).toBe("spawn-failed")
     expect(calls.clear).toHaveBeenCalledTimes(1)
+    expect(calls.recordFailure.mock.calls[0]![1].logPath).toBeUndefined()
   })
 
   it("keeps the marker fresh and reports skipped-peer-active when a peer holds the lock", async () => {
@@ -227,6 +269,14 @@ describe("fireDigestIfStale", () => {
     expect(calls.touch).toHaveBeenCalledTimes(1)
     expect(calls.spawn).not.toHaveBeenCalled()
     expect(calls.clear).not.toHaveBeenCalled()
+    expect(calls.clearFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      "digest-scheduler",
+      {
+        projectName: "Mail Backend",
+      },
+      { before: new Date("2026-04-24T12:00:00.000Z") }
+    )
   })
 
   it("returns 'init-failed' and logs when services init throws", async () => {
@@ -239,6 +289,14 @@ describe("fireDigestIfStale", () => {
     expect(outcome).toBe("init-failed")
     expect(calls.log).toHaveBeenCalledTimes(1)
     expect(calls.log.mock.calls[0]![0]).toContain("init failed — notion down")
+    expect(calls.recordFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      expect.objectContaining({
+        kind: "digest-scheduler",
+        projectName: "Mail Backend",
+        code: "init-failed",
+      })
+    )
     expect(calls.spawn).not.toHaveBeenCalled()
     expect(calls.touch).not.toHaveBeenCalled()
   })
@@ -263,6 +321,14 @@ describe("fireDigestIfStale", () => {
     const outcome = await fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)
     expect(outcome).toBe("gather-failed")
     expect(calls.log.mock.calls[0]![0]).toContain("gather failed — rate limit")
+    expect(calls.recordFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      expect.objectContaining({
+        kind: "digest-scheduler",
+        projectName: "Mail Backend",
+        code: "gather-failed",
+      })
+    )
     expect(calls.spawn).not.toHaveBeenCalled()
     expect(calls.touch).not.toHaveBeenCalled()
   })
@@ -384,5 +450,60 @@ describe("scheduleAutoDigestSpawn", () => {
     expect(stderrChunks.join("")).toContain("EAGAIN")
 
     stderrSpy.mockRestore()
+  })
+
+  it("records a helper-spawn failure marker when the detached fork throws", () => {
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => {
+      throw new Error("EAGAIN")
+    })
+    const recordFailure = vi.fn()
+    const clearFailure = vi.fn(async () => {})
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+
+    scheduleAutoDigestSpawn("/proj", {
+      configRoot: CONFIG_ROOT,
+      projectName: "Mail Backend",
+      sessionId: "sess-digest",
+      recordFailure,
+      clearFailure,
+    })
+
+    expect(recordFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      expect.objectContaining({
+        kind: "auto-digest-helper-spawn",
+        projectName: "Mail Backend",
+        sessionId: "sess-digest",
+        code: "spawn-error",
+      })
+    )
+    expect(clearFailure).not.toHaveBeenCalled()
+    stderrSpy.mockRestore()
+  })
+
+  it("clears a stale helper-spawn marker once the detached fork succeeds", () => {
+    spawnMock.mockReset()
+    spawnMock.mockReturnValue(fakeChild())
+    const recordFailure = vi.fn()
+    const clearFailure = vi.fn(async () => {})
+
+    scheduleAutoDigestSpawn("/proj", {
+      configRoot: CONFIG_ROOT,
+      projectName: "Mail Backend",
+      sessionId: "sess-digest",
+      recordFailure,
+      clearFailure,
+    })
+
+    expect(recordFailure).not.toHaveBeenCalled()
+    expect(clearFailure).toHaveBeenCalledWith(
+      CONFIG_ROOT,
+      "auto-digest-helper-spawn",
+      {
+        projectName: "Mail Backend",
+      },
+      { before: expect.any(Date) }
+    )
   })
 })
