@@ -213,7 +213,10 @@ export const PER_SPAWN_LEARNING_LIMIT = 5
  * DS — so it would miss any foreground `lore-memory action='save'` row
  * whose title doesn't already have a matching fact edge.
  */
-function buildLearningExtractionGuidance(): string {
+function buildLearningExtractionGuidance(opts?: { proposeByDefault?: boolean }): string {
+  const statusLine = opts?.proposeByDefault === true
+    ? `\n  - status: "proposed" (review-inbox routing — this fleet is configured to gate auto-extracted learnings on human or authorized-agent approval before they enter default recall)`
+    : ""
   return `In addition to a session-level synopsis, identify *atomic learnings* — single-fact discoveries from this session that would help a future session even without context. Examples:
 
   - "bcrypt cost=12 is the right balance for server CPU at our load."
@@ -224,7 +227,7 @@ For each atomic learning, call \`lore-memory action='save'\` with:
   - title: short verb-or-noun-led phrase ≤ 80 chars
   - content: 1-3 sentences with the fact + minimal context
   - kind: "note"
-  - confidence: "likely" (required for autosave learning dedup; do not omit or bump to "certain" on atomic-learning saves, because the default would overstate inference-derived facts and opt the row out of the structural duplicate gate)
+  - confidence: "likely" (required for autosave learning dedup; do not omit or bump to "certain" on atomic-learning saves, because the default would overstate inference-derived facts and opt the row out of the structural duplicate gate)${statusLine}
 
 A learning must be:
   1. **Atomic.** One fact, one memory. Compound observations split into multiple saves.
@@ -251,6 +254,14 @@ If this session produced no atomic learnings (a routine task, status check, unbl
  * switches (`LORE_DISABLE_LEARNING_EXTRACTION=1` env var or
  * `hooks.learningExtraction: false` in `.lore.yaml`); see `helpers.ts`.
  *
+ * `options.proposeLearnings` — when true (default false) instructs
+ * the sub-agent to set `status: "proposed"` on every atomic-learning
+ * save so the rows land in the review inbox instead of default
+ * recall (issue #281, AC #1). Resolved by the helper layer from
+ * `hooks.proposeAutosaveLearnings` in `.lore.yaml`. Has no effect
+ * when `extractLearnings` is false — the learning block is omitted
+ * entirely in that case.
+ *
  * `options.authorName` — engineer-author display name to inject into
  * the identity block (DEFERRED-ATTRIBUTION). Resolved by the caller
  * (`deriveAuthorName` in `helpers.ts`) from `LORE_USER_NAME` env;
@@ -262,13 +273,19 @@ export function buildBackgroundSavePrompt(
   sessionContent: string,
   sessionId?: string,
   agentName?: string,
-  options?: { extractLearnings?: boolean; authorName?: string }
+  options?: {
+    extractLearnings?: boolean
+    proposeLearnings?: boolean
+    authorName?: string
+  }
 ): string {
   const identitySection = buildIdentityBlock(sessionId, agentName, options?.authorName)
   const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)
   const filter = buildExtractionFilter()
   const learningGuidance =
-    options?.extractLearnings !== false ? `\n\n${buildLearningExtractionGuidance()}` : ""
+    options?.extractLearnings !== false
+      ? `\n\n${buildLearningExtractionGuidance({ proposeByDefault: options?.proposeLearnings === true })}`
+      : ""
   const tools = buildToolGuidance()
 
   return `[Lore autosave] You are reviewing a Claude Code or Codex session in progress.

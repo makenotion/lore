@@ -25,12 +25,14 @@ import { confirmPrompt } from "./init-prompt.js"
  * assert the comment placement without spinning up the Notion-touching
  * command path.
  *
- * The 0.9.0/08 `learningExtraction` knob is surfaced as a *commented*
- * default inside the `hooks:` block — operators see the field exists
- * without it changing behavior on a fresh install. The comment is
- * attached to the `hooks` YAMLMap node (not concatenated onto the file
- * tail) so it lands under `hooks:` regardless of future top-level key
- * additions or yaml-lib output reordering.
+ * The 0.9.0/08 `learningExtraction` knob and the issue #281
+ * `proposeAutosaveLearnings` knob are surfaced as *commented*
+ * defaults inside the `hooks:` block — operators see the fields
+ * exist without them changing behavior on a fresh install. The
+ * comments are attached to the `hooks` YAMLMap node (not
+ * concatenated onto the file tail) so they land under `hooks:`
+ * regardless of future top-level key additions or yaml-lib output
+ * reordering.
  *
  * `workspaceId` is the optional ntn-source workspace id surfaced by
  * `ResolvedAuth`. When set, the generated config carries an
@@ -58,9 +60,12 @@ export function buildInitConfigYaml(pageId: string, workspaceId?: string): strin
     // YAMLMap.comment renders after the map's last child at the map's
     // own indent — i.e., as the final line inside the `hooks:` block.
     // Leading space is required: yaml-lib prefixes `# ` so the rendered
-    // line reads `  # learningExtraction: true …`.
+    // line reads `  # learningExtraction: true …`. Two commented
+    // defaults so a fresh install advertises both the on/off
+    // extraction knob and the inbox-routing knob.
     hooks.comment =
-      " learningExtraction: true  # 0.9.0/08 — autosave atomic-learning extraction"
+      " learningExtraction: true  # 0.9.0/08 — autosave atomic-learning extraction\n" +
+      " proposeAutosaveLearnings: false  # issue #281 — route auto-extracted learnings through the proposed-memory review inbox"
   }
   return doc.toString()
 }

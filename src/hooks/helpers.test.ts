@@ -150,6 +150,7 @@ function defaultConfig(overrides: Partial<HookConfig> = {}): HookConfig {
     wakeUp: true,
     autoDigest: true,
     learningExtraction: true,
+    proposeAutosaveLearnings: false,
     backgroundAgent: {
       command: DEFAULT_BACKGROUND_COMMAND,
       args: [...DEFAULT_BACKGROUND_ARGS],

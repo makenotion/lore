@@ -185,6 +185,16 @@ export interface HookConfig {
    */
   learningExtraction: boolean
   /**
+   * Whether the Stop-spawn autosave sub-agent should write atomic
+   * learnings as `status: "proposed"` (issue #281, AC #1). Default
+   * `false` so existing installs see byte-identical autosave
+   * behavior. When `true` AND `learningExtraction` is also `true`,
+   * the prompt builder instructs the sub-agent to add `status:
+   * "proposed"` to every atomic-learning save so the rows land in
+   * the review inbox.
+   */
+  proposeAutosaveLearnings: boolean
+  /**
    * Resolved background-agent shape (issue #194). Defaults to
    * `{ command: "claude", args: <DEFAULT_BACKGROUND_ARGS> }`. Honors
    * `LoreConfig.hooks.backgroundAgent.{command,args}` overrides plus the
@@ -231,6 +241,7 @@ export function mergeHookDefaults(
     wakeUp: hooks?.wakeUp ?? true,
     autoDigest: hooks?.autoDigest ?? true,
     learningExtraction: hooks?.learningExtraction ?? true,
+    proposeAutosaveLearnings: hooks?.proposeAutosaveLearnings ?? false,
     backgroundAgent: resolveBackgroundAgent(hooks?.backgroundAgent, envSource),
     catchAllName,
     subProjects,

@@ -31,6 +31,23 @@ describe("mergeHookDefaults", () => {
     expect(config.autoDigest).toBe(true)
   })
 
+  it("defaults proposeAutosaveLearnings to false (issue #281, AC #1)", () => {
+    // Phase 3 of the proposed-memory inbox epic. Default-off so
+    // existing installs see byte-identical autosave behavior — only
+    // operators who explicitly opt in via `hooks.proposeAutosaveLearnings: true`
+    // route auto-extracted learnings through the review inbox.
+    const config = mergeHookDefaults(undefined)
+    expect(config.proposeAutosaveLearnings).toBe(false)
+  })
+
+  it("respects hooks.proposeAutosaveLearnings: true without affecting other knobs", () => {
+    const config = mergeHookDefaults({ proposeAutosaveLearnings: true })
+    expect(config.proposeAutosaveLearnings).toBe(true)
+    expect(config.learningExtraction).toBe(true)
+    expect(config.autoSave).toBe(true)
+    expect(config.autoDigest).toBe(true)
+  })
+
   it("respects hooks.autoDigest: false without affecting autoSave", () => {
     const config = mergeHookDefaults({ autoDigest: false })
     expect(config.autoDigest).toBe(false)

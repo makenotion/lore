@@ -1337,6 +1337,27 @@ export interface LoreConfig {
      * to disabled wins (AND-of-permissive).
      */
     learningExtraction?: boolean
+    /**
+     * Whether the Stop-spawn autosave sub-agent should write atomic
+     * learnings as `status: "proposed"` (issue #281, AC #1). Default
+     * is `false` — the historical "auto-extracted learnings land
+     * directly in the shared vault" posture is preserved. When `true`,
+     * the prompt instructs the sub-agent to set `status: "proposed"`
+     * on every atomic-learning save, routing the row into the review
+     * inbox surfaced by `lore status`'s `Proposed memories` line and
+     * the wake-up `Proposed Memories` section. Has no effect when
+     * `learningExtraction` is `false` — there are no learning saves
+     * to gate.
+     *
+     * The trust boundary this knob enables: a fleet of agents
+     * managed by many engineers can opt into review-before-share so
+     * a noisy session cannot pollute recall for everyone before a
+     * human or authorized agent approves it. Phase 1 / 2 / 4 of the
+     * #281 epic ship the inbox-count surface, the default-recall
+     * exclusion, and the approve / reject actions respectively;
+     * this flag is the corresponding write-side opt-in.
+     */
+    proposeAutosaveLearnings?: boolean
     /** Real user messages between structured AI-driven saves. Default: 5. */
     saveInterval?: number
     /**

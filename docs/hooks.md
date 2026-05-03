@@ -14,6 +14,25 @@ both Claude Code and Codex; Yarn PnP installs invoke it as
 auto-digest helper, off the hot path, so a stale weekly project digest is
 regenerated without blocking the user's next turn.
 
+The autosave sub-agent extracts atomic learnings from the session and saves
+each as its own `note` memory. Two `.lore.yaml` flags govern this behavior:
+
+- `hooks.learningExtraction: false` — disable atomic-learning extraction
+  entirely. The autosave reverts to the synopsis-only shape. Default `true`.
+  Also honored via `LORE_DISABLE_LEARNING_EXTRACTION=1` env override; either
+  knob set to disabled wins.
+- `hooks.proposeAutosaveLearnings: true` — route every auto-extracted
+  learning through the proposed-memory review inbox (`Status = proposed`).
+  Default `false` so existing installs see byte-identical autosave behavior.
+  When enabled, the rows are filtered out of default
+  `lore-query action='recall'` / `lore-context action='wake-up'` until a
+  reviewer approves or rejects them; inbox depth surfaces in `lore status`'s
+  Proposed memories line and the wake-up Proposed Memories section. Has no
+  effect when `learningExtraction` is `false`.
+
+See [`internal-rollout.md`](internal-rollout.md) for shared-vault rollout
+guidance on which knob to set.
+
 ## Wake-Up
 
 `lore hooks wakeup` loads the latest project digest, if one was saved in the

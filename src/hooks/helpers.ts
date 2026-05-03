@@ -519,6 +519,14 @@ export async function handleStop(
         const learningExtractionEnabled =
           process.env["LORE_DISABLE_LEARNING_EXTRACTION"] !== "1" &&
           config.learningExtraction
+        // Phase 3 of issue #281, AC #1. The flag is false by default,
+        // so existing installs see byte-identical autosave behavior.
+        // Operators opt in via `hooks.proposeAutosaveLearnings: true`
+        // in `.lore.yaml` to route auto-extracted learnings through
+        // the review inbox instead of writing them directly to
+        // accepted recall.
+        const proposeLearnings =
+          learningExtractionEnabled && config.proposeAutosaveLearnings
         const prompt = buildBackgroundSavePrompt(
           config.subProjects,
           config.catchAllName,
@@ -527,6 +535,7 @@ export async function handleStop(
           deriveAgentName(event),
           {
             extractLearnings: learningExtractionEnabled,
+            proposeLearnings,
             authorName: deriveAuthorName(event),
           }
         )

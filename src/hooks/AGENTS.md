@@ -418,6 +418,29 @@ captures the disabling state), `helpers.ts` passes
 prompt reproduces the 0.8.x synopsis-only shape byte-for-byte. Same
 posture as the existing `hooks.autoDigest: false` knob.
 
+#### Proposed-by-default routing (issue #281, AC #1)
+
+`hooks.proposeAutosaveLearnings: true` in `.lore.yaml` opts a fleet
+into routing every auto-extracted learning through the
+proposed-memory review inbox. When set, `mergeHookDefaults`
+resolves `proposeAutosaveLearnings: true` on the merged
+`HookConfig`, `helpers.ts` derives `proposeLearnings = true` (gated
+on `learningExtraction` being permissive — there's no learning
+block to gate when extraction is off), and the prompt builder adds
+a `status: "proposed"` instruction to the per-learning save block.
+The autosave sub-agent then writes every atomic learning with
+`Status = proposed`, which keeps the row out of default recall
+(see `MemoryService.list` / `search` / `queryStaleConfidence`'s
+`includeProposed` flag) and surfaces it in the wake-up
+`Proposed Memories` section and the `lore status` inbox-count line
+until a reviewer approves it via the Phase 4 actions.
+
+Default is `false` — existing installs see byte-identical autosave
+behavior. The trust boundary this knob enables: a fleet of agents
+managed by many engineers can opt into review-before-share so a
+noisy session cannot pollute recall for everyone before a human or
+authorized agent approves the learning.
+
 ### Auto-digest (Stop-triggered, detached)
 
 After every accepted `Stop` event the hook also spawns a separate detached

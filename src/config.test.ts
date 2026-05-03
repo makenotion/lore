@@ -66,6 +66,45 @@ hooks:
     expect(on.config.hooks).toEqual({ learningExtraction: true })
   })
 
+  it("parses hooks.proposeAutosaveLearnings as a boolean (issue #281, AC #1)", () => {
+    // Phase 3 of the proposed-memory inbox epic ships the
+    // `hooks.proposeAutosaveLearnings` flag for routing
+    // auto-extracted learnings through the review inbox. The Zod
+    // schema must accept the field; without it Zod's default strip
+    // mode silently drops the key and `mergeHookDefaults` falls back
+    // to `false`, defeating the operator's opt-in.
+    const off = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+hooks:
+  proposeAutosaveLearnings: false
+`)
+    expect(off.warnings).toEqual([])
+    expect(off.config.hooks).toEqual({ proposeAutosaveLearnings: false })
+
+    const on = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+hooks:
+  proposeAutosaveLearnings: true
+`)
+    expect(on.warnings).toEqual([])
+    expect(on.config.hooks).toEqual({ proposeAutosaveLearnings: true })
+  })
+
+  it("rejects non-boolean hooks.proposeAutosaveLearnings the same way it rejects other invalid hook flags", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+hooks:
+  proposeAutosaveLearnings: maybe
+`)
+
+    expect(config.vault.pageId).toBe("abc123")
+    expect(config.hooks).toBeUndefined()
+    expect(warnings).toEqual(["Ignoring invalid hooks config and using hook defaults."])
+  })
+
   it("rejects non-boolean hooks.learningExtraction the same way it rejects other invalid hook flags", () => {
     // Same fail-open posture as the existing wakeUp regression: a
     // typo'd value drops the entire hooks section and warns rather

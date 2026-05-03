@@ -103,29 +103,43 @@ describe("buildInitConfigYaml", () => {
     )
   })
 
-  it("places the learningExtraction comment AFTER the saveInterval entry inside hooks", () => {
+  it("includes the proposeAutosaveLearnings commented-default line under hooks: (issue #281)", () => {
+    // Pinned alongside `learningExtraction` so a fresh install
+    // advertises the inbox-routing opt-in. Default-`false` so the
+    // line stays commented and doesn't change autosave behavior.
+    const text = buildInitConfigYaml("abc123")
+    expect(text).toContain(
+      "  # proposeAutosaveLearnings: false  # issue #281 — route auto-extracted learnings through the proposed-memory review inbox"
+    )
+  })
+
+  it("places both commented-default lines AFTER the saveInterval entry inside hooks", () => {
     // Order is contract: an operator scanning the hooks: block reads
-    // the active settings first, then the commented opt-out. Snapshotting
-    // the slice from `hooks:` to the comment defends against a future
-    // reordering that would land the comment above the active fields.
+    // the active settings first, then the commented opt-outs. Snapshotting
+    // the slice from `hooks:` to the comments defends against a future
+    // reordering that would land the comments above the active fields.
     const text = buildInitConfigYaml("abc123")
     const hooksIdx = text.indexOf("hooks:")
     const saveIntervalIdx = text.indexOf("saveInterval: 5")
     const commentIdx = text.indexOf("# learningExtraction:")
+    const proposeIdx = text.indexOf("# proposeAutosaveLearnings:")
     expect(hooksIdx).toBeGreaterThan(-1)
     expect(saveIntervalIdx).toBeGreaterThan(hooksIdx)
     expect(commentIdx).toBeGreaterThan(saveIntervalIdx)
+    expect(proposeIdx).toBeGreaterThan(commentIdx)
   })
 
   it("emits a YAML document whose comment-stripped re-parse matches the typed shape", () => {
     // Defense against a future yaml-lib upgrade that changes how
-    // `YAMLMap.comment` renders: if the comment somehow leaks into the
-    // active config (e.g. wrong escape, missing `#`), `yamlParse` would
-    // either throw or return an extra `learningExtraction` key. Both
+    // `YAMLMap.comment` renders: if either commented line somehow
+    // leaked into the active config (e.g. wrong escape, missing `#`),
+    // `yamlParse` would either throw or return an extra
+    // `learningExtraction` / `proposeAutosaveLearnings` key. Both
     // would fail this assertion.
     const text = buildInitConfigYaml("abc123")
     const parsed = yamlParse(text) as { hooks: Record<string, unknown> }
     expect(parsed.hooks).not.toHaveProperty("learningExtraction")
+    expect(parsed.hooks).not.toHaveProperty("proposeAutosaveLearnings")
     expect(Object.keys(parsed.hooks).sort()).toEqual([
       "autoSave",
       "saveInterval",

@@ -450,6 +450,63 @@ describe("buildBackgroundSavePrompt", () => {
     )
     expect(omitted).toBe(explicit)
   })
+
+  // ---------------------------------------------------------------------
+  // Phase 3 of issue #281, AC #1 — proposeLearnings prompt option
+  // ---------------------------------------------------------------------
+
+  it("default omits the status: proposed instruction (review-inbox routing off)", () => {
+    // Existing installs see byte-identical autosave behavior. The
+    // status: "proposed" line ships only when the operator has
+    // explicitly opted in via `hooks.proposeAutosaveLearnings: true`.
+    const prompt = buildBackgroundSavePrompt([], null, "transcript")
+    expect(prompt).not.toContain('status: "proposed"')
+    expect(prompt).not.toContain("review-inbox routing")
+  })
+
+  it("proposeLearnings: false matches the omit-options default byte-identically", () => {
+    // The flag is opt-in. Passing `false` explicitly must produce the
+    // same prompt as omitting it.
+    const omitted = buildBackgroundSavePrompt([], null, "transcript")
+    const explicit = buildBackgroundSavePrompt(
+      [],
+      null,
+      "transcript",
+      undefined,
+      undefined,
+      { proposeLearnings: false }
+    )
+    expect(omitted).toBe(explicit)
+  })
+
+  it("proposeLearnings: true adds a status: proposed instruction to the learning block", () => {
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "transcript",
+      undefined,
+      undefined,
+      { proposeLearnings: true }
+    )
+    expect(prompt).toContain('status: "proposed"')
+    expect(prompt).toContain("review-inbox routing")
+  })
+
+  it("proposeLearnings: true is suppressed when extractLearnings is false", () => {
+    // No learning block to gate when extraction is off — the proposed
+    // routing has nothing to attach to. The prompt must not surface
+    // the inbox copy in that case.
+    const prompt = buildBackgroundSavePrompt(
+      [],
+      null,
+      "transcript",
+      undefined,
+      undefined,
+      { extractLearnings: false, proposeLearnings: true }
+    )
+    expect(prompt).not.toContain('status: "proposed"')
+    expect(prompt).not.toContain("atomic learnings")
+  })
 })
 
 describe("buildDigestPrompt", () => {
