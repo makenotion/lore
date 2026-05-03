@@ -418,6 +418,156 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     )
   })
 
+  it("rejects unresolved explicit projectName before update topicName warning", async () => {
+    const mockServer = createMockServer()
+    const findByName = vi.fn().mockResolvedValue(null)
+    const getOrCreate = vi.fn()
+    const getById = vi.fn()
+    const update = vi.fn()
+
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate },
+      memories: { update, getById },
+      context: {
+        project: { id: "proj-context", name: "Context" },
+        isCatchAllFallback: false,
+      },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateMemory({
+      memoryId: "mem-unscoped-update",
+      content: "body changed",
+      topicName: "Eval & Testing",
+      projectName: "Missing",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(findByName).toHaveBeenCalledWith("Missing")
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(text).not.toContain('Topic "Eval & Testing" skipped')
+    expect(getById).not.toHaveBeenCalled()
+    expect(getOrCreate).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("uses explicit projectName scope when update resolves topicName", async () => {
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-scoped-update", {
+      title: "scoped topic update",
+      projectIds: ["proj-specific"],
+      topicId: "topic-eval",
+    })
+    const topic = makeTopic("topic-eval", { name: "Eval & Testing" })
+    const findByName = vi
+      .fn()
+      .mockResolvedValue({ id: "proj-specific", name: "Specific" })
+    const getOrCreate = vi.fn().mockResolvedValue(topic)
+    const getById = vi.fn()
+    const update = vi.fn().mockResolvedValue(updated)
+
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate },
+      memories: { update, getById },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateMemory({
+      memoryId: "mem-scoped-update",
+      content: "body changed",
+      topicName: "Eval & Testing",
+      projectName: "Specific",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(findByName).toHaveBeenCalledWith("Specific")
+    expect(getById).not.toHaveBeenCalled()
+    expect(getOrCreate).toHaveBeenCalledWith("Eval & Testing", ["proj-specific"], {
+      forceNew: undefined,
+    })
+    expect(update).toHaveBeenCalledWith(
+      "mem-scoped-update",
+      expect.objectContaining({
+        content: "body changed",
+        projectIds: ["proj-specific"],
+        topicId: "topic-eval",
+      })
+    )
+    expect(text).toContain('Updated memory: "scoped topic update"')
+    expect(text).toContain("Topic: Eval & Testing")
+    expect(text).not.toContain("Warnings:")
+  })
+
+  it("uses context project when update topicName has no existing memory scope", async () => {
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-context-update", {
+      title: "context topic update",
+      projectIds: [],
+      topicId: "topic-context",
+    })
+    const current = makeMemory("mem-context-update", {
+      title: "before",
+      projectIds: [],
+    })
+    const topic = makeTopic("topic-context", { name: "Eval & Testing" })
+    const getOrCreate = vi.fn().mockResolvedValue(topic)
+    const update = vi.fn().mockResolvedValue(updated)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate },
+      memories: { update, getById: vi.fn().mockResolvedValue(current) },
+      context: {
+        project: { id: "proj-context", name: "Context" },
+        isCatchAllFallback: false,
+      },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateMemory({
+      memoryId: "mem-context-update",
+      content: "body changed",
+      topicName: "Eval & Testing",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(services.memories.getById).toHaveBeenCalledWith("mem-context-update")
+    expect(getOrCreate).toHaveBeenCalledWith("Eval & Testing", ["proj-context"], {
+      forceNew: undefined,
+    })
+    expect(update).toHaveBeenCalledWith(
+      "mem-context-update",
+      expect.objectContaining({
+        content: "body changed",
+        projectIds: undefined,
+        topicId: "topic-context",
+      })
+    )
+    expect(text).toContain('Updated memory: "context topic update"')
+    expect(text).toContain("Topic: Eval & Testing")
+    expect(text).not.toContain("Warnings:")
+  })
+
   it("surfaces the SimilarTopicError message back through toolError", async () => {
     // When the probe rejects, getOrCreate throws; the tool layer's
     // try/catch routes the message into the `Error: ...` content.
