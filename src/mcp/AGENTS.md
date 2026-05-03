@@ -185,10 +185,19 @@ export function registerFooTools(server: McpServer, services: LoreServices): voi
 3. **inputSchema**: Always uses Zod objects. Each field must have a `.describe()`
    call explaining the parameter to the AI.
 
-4. **annotations**: Set `readOnlyHint: true` for tools that only read data.
+4. **Clear sentinels**: For optional update fields, omission always means
+   "leave unchanged." For clearable non-string Notion properties, `null` is the
+   canonical clear sentinel; MCP schemas may also accept `""` as an
+   agent-friendly alias, but must normalize it to `null` before calling domain
+   services. For string / rich-text properties such as `synopsis`,
+   `alternatives`, and `consequences`, `""` is the clear value because the
+   field domain is text. The field `.describe()` copy must state the keep /
+   clear behavior whenever a parameter can clear existing data.
+
+5. **annotations**: Set `readOnlyHint: true` for tools that only read data.
    Set `destructiveHint: true` for tools that delete or archive.
 
-5. **Project resolution**: Most tools accept an optional `projectName` /
+6. **Project resolution**: Most tools accept an optional `projectName` /
    `projectNames` parameter. Explicit project scope is strict: if the
    caller passes a name, every named project must resolve or the tool must
    return an error before reading or writing scoped data. For **write**
@@ -212,10 +221,10 @@ export function registerFooTools(server: McpServer, services: LoreServices): voi
    existing `Warnings: …` line in save tool responses — no display-layer
    changes needed per tool.
 
-6. **Return format**: Always return `{ content: [{ type: "text", text: "..." }] }`.
+7. **Return format**: Always return `{ content: [{ type: "text", text: "..." }] }`.
    Format output as readable markdown when returning multiple items.
 
-7. **Tags are a closed vocabulary.** Any tool that accepts `tags` must use
+8. **Tags are a closed vocabulary.** Any tool that accepts `tags` must use
    `tagsSchema` from `tools/tag-schema.ts` (backed by `TAG_VOCABULARY` in
    `types.ts`). Pair it with `keywordsSchema` so callers have a home for
    free-form tokens (PR numbers, ticket IDs, file paths, class names).
