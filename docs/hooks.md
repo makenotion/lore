@@ -47,6 +47,9 @@ only the retrieval mode, ranked caps, digest freshness, and per-section counts.
 Use `mode=ranked|default` to verify whether the user-query ranker actually ran,
 `digestFresh` / `digestAgeDays` to judge whether the digest is carrying the
 session, and `sections.*` counts to spot when wake-up is too noisy or too thin.
+Operators with alerts or saved greps for the older `reason=no-user-query` key
+should update them to `reason=no-ranked-search`, which covers every unranked
+wake-up fallback.
 These are per-firing counters, not relevance-quality scores; aggregate multiple
 lines before tuning caps, and use the eval harness for precision / recall /
 memory-lift quality measurements.
