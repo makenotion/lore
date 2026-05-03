@@ -101,6 +101,15 @@ committed-config policy because they can reveal private workspace context; scrub
 them from the working copy and decide with the page owner whether to replace the
 page or rewrite history.
 
+The Lore repo also installs a Git pre-commit guard during `npm install`. The
+guard reads the staged `.lore.yaml` from the Git index and blocks commits that
+add `auth.token` or replace the approved shared team `vault.pageId`. Fresh
+checkouts with only Git's sample hooks use `core.hooksPath=.githooks`;
+checkouts that already have active default `.git/hooks` or a custom hook path
+get a small wrapper installed there when no active `pre-commit` hook exists. If
+an active `pre-commit` hook already exists, chain `.githooks/pre-commit` from
+that hook.
+
 ## Rate Limits
 
 Notion rate limits are enforced per access token, not per integration. The

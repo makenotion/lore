@@ -234,8 +234,22 @@ describe("committed .lore.yaml", () => {
     expect(serializedConfig).not.toMatch(/ntn_|secret_/)
   })
 
-  it("fails fast at config load time until the placeholder is replaced", async () => {
-    await expect(loadConfig(".lore.yaml")).rejects.toThrow(/starter placeholder/)
+  it("fails fast at config load time until a placeholder is replaced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lore-placeholder-config-"))
+    const path = join(dir, ".lore.yaml")
+    writeFileSync(
+      path,
+      `
+vault:
+  pageId: "<your-vault-page-id>"
+`,
+    )
+
+    try {
+      await expect(loadConfig(path)).rejects.toThrow(/starter placeholder/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
