@@ -62,7 +62,9 @@ function writeRaceWorker(): string {
   const moduleUrl = pathToFileURL(join(process.cwd(), "src/cli/migration-lock.ts")).href
   writeFileSync(
     workerPath,
-    `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
+    `import { existsSync } from "node:fs"
+import { setTimeout as sleep } from "node:timers/promises"
+import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
 const result = tryAcquireMigrationLock(scope)
@@ -73,9 +75,16 @@ process.stdout.write(JSON.stringify({
 }) + "\\n")
 
 if (result.acquired) {
-  await new Promise((resolve) =>
-    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "30000"))
-  )
+  const releasePath = process.env["LOCK_RELEASE_PATH"]
+  if (!releasePath) {
+    await sleep(Number(process.env["LOCK_HOLD_MS"] ?? "30000"))
+  } else {
+    const timeoutMs = Number(process.env["LOCK_HOLD_TIMEOUT_MS"] ?? "25000")
+    const deadline = Date.now() + timeoutMs
+    while (!existsSync(releasePath) && Date.now() < deadline) {
+      await sleep(25)
+    }
+  }
 }
 `
   )
@@ -136,6 +145,10 @@ async function runWorkerRace(
   lockScope: MigrationLockScope
 ): Promise<WorkerRaceResult[]> {
   const workerPath = writeRaceWorker()
+  const releasePath = join(
+    TEST_STATE_DIR,
+    `migration-lock-release-${Date.now()}-${Math.random()}`
+  )
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
   const children = Array.from({ length: 2 }, () => {
     return spawn(process.execPath, [viteNode, workerPath], {
@@ -149,6 +162,8 @@ async function runWorkerRace(
         // making the peer's stale-PID reclaim legitimate rather than
         // a failed exclusion check.
         LOCK_HOLD_MS: "30000",
+        LOCK_RELEASE_PATH: releasePath,
+        LOCK_HOLD_TIMEOUT_MS: "25000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -157,6 +172,7 @@ async function runWorkerRace(
   try {
     return await Promise.all(children.map(waitForWorkerResult))
   } finally {
+    writeFileSync(releasePath, "release")
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill()

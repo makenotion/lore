@@ -37,6 +37,7 @@ import {
 } from "./ntn.js"
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "lore-ntn-test-"))
+const AUTH_JSON_FULL_SUITE_TIMEOUT_MS = 15_000
 
 afterAll(() => {
   rmSync(SCRATCH, { recursive: true, force: true })
@@ -101,15 +102,19 @@ describe("loadNtnToken", () => {
     expect(stderrText()).toBe("")
   })
 
-  it("returns the single workspace's token when auth.json has one entry", async () => {
-    setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
-    const result = await loadNtnToken()
-    expect(result).toEqual({
-      token: "tok-1",
-      workspaceId: "ws-1",
-      baseUrl: undefined,
-    })
-  })
+  it(
+    "returns the single workspace's token when auth.json has one entry",
+    async () => {
+      setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1" }))
+      const result = await loadNtnToken()
+      expect(result).toEqual({
+        token: "tok-1",
+        workspaceId: "ws-1",
+        baseUrl: undefined,
+      })
+    },
+    AUTH_JSON_FULL_SUITE_TIMEOUT_MS
+  )
 
   it("returns null with stderr hint when auth.json has multiple entries and no selector", async () => {
     setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-1", "ws-2": "tok-2" }))

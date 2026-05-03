@@ -144,7 +144,7 @@ promotionTargets:
 
 describe("committed .lore.yaml", () => {
   it("ships without live vault locators or credentials in this source repo", () => {
-    const raw = readFileSync(".lore.yaml", "utf-8")
+    const raw = readFileSync(new URL("../.lore.yaml", import.meta.url), "utf-8")
     const parsed = parseYaml(raw) as {
       auth?: { token?: unknown }
       vault?: { pageId?: unknown }
