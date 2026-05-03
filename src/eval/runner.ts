@@ -253,15 +253,39 @@ function buildRetrievalResult(input: {
   }
 }
 
+/**
+ * Memory statuses that the fixture-runner suppresses from retrieval.
+ * Production retrieval today is status-blind (Notion's `dataSources.query`
+ * and `client.search` do not filter on the `Status` column), so this is
+ * the eval's enforced contract: a status-aware retriever MUST drop
+ * superseded/deprecated/rejected rows before they reach an agent.
+ * Tracked under #284's temporal-correctness work; the Notion-backed
+ * runner exercises whatever production actually does and may report
+ * harm > 0 until that lands.
+ */
+const SUPPRESSED_RETRIEVAL_STATUSES = new Set([
+  "superseded",
+  "deprecated",
+  "rejected",
+])
+
+function isStatusRetrievable(memory: Memory): boolean {
+  return !SUPPRESSED_RETRIEVAL_STATUSES.has(memory.status)
+}
+
 function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
   const memories = scenario.memories.map(fixtureMemoryToMemory)
   return {
     memories: {
       list: async (opts) => {
-        const filtered = opts.source
+        const sourceFiltered = opts.source
           ? memories.filter((memory) => memory.source === opts.source)
           : memories
-        return { items: filtered.slice(0, opts.limit) }
+        // Status filter mirrors the same suppression applied to search:
+        // a status-aware retriever does not surface superseded/deprecated
+        // rows on the recents (memories.list) path either.
+        const statusFiltered = sourceFiltered.filter(isStatusRetrievable)
+        return { items: statusFiltered.slice(0, opts.limit) }
       },
       search: async (input) =>
         searchFixtureMemories(input.query, memories).slice(0, input.limit),
@@ -328,6 +352,7 @@ function fixtureMemoryToMemory(memory: EvalFixtureMemory, index: number): Memory
 function searchFixtureMemories(query: string, memories: Memory[]): Memory[] {
   const queryTokens = tokenize(query)
   return memories
+    .filter(isStatusRetrievable)
     .map((memory, index) => ({
       memory,
       index,

@@ -24,6 +24,17 @@ log is the canonical source for those.
   versioned YAML suites, runs deterministic retrieval evals against
   fixture-backed services, and writes JSON artifacts without live Notion
   access. (#306)
+- **`stale-memory` ablation scenario for the committed eval suite.** The
+  `lore-core` retrieval suite now ships three tasks (auth decision,
+  test runner, error-handling shape) with paired helpful-memory,
+  noisy-memory, and stale-memory fixtures. The fixture runner enforces
+  status-aware retrieval as the contract: rows whose `status` is
+  `superseded`, `deprecated`, or `rejected` are dropped from
+  `searchFixtureMemories` and `memories.list`, so a stale-memory task's
+  `shouldNotSurface` lists the actual stale id and the assertion fires
+  if a future change drops the filter. The Notion-backed runner can
+  still report `memoryHarm > 0` against the same suite — that gap is
+  the temporal-recall work tracked under #284. (#450)
 - **Self-service Entities bootstrap for legacy vaults.** A new vault repair
   command creates the Entities database on four-database vaults and runs
   additive schema migration so Facts gains the `SubjectEntity` /

@@ -1,0 +1,31 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A relevant error-handling decision is available before the task.
+memories:
+  - id: decision/error-handling-result-type
+    title: Return Result types from service boundaries
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+      - reliability
+    keywords: result type error handling service boundary ok err
+    synopsis: |
+      Service boundaries return Result<T, E> rather than throwing; callers branch
+      on ok/err. Do not introduce throw-based error propagation at boundaries.
+    content: |
+      The project has an accepted decision: every service boundary returns a
+      Result type. New service methods must follow this pattern so callers can
+      handle failure paths explicitly.
+  - id: note/structured-log-fields
+    title: Structured log field nomenclature
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - observability
+    keywords: log field severity timestamp
+    synopsis: Lowercase snake_case keys remain canonical across all module logs.
+    content: |
+      This note is intentionally about log field naming hygiene.

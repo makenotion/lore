@@ -1,0 +1,20 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: stale-memory
+description: A previously-accepted test runner decision that has since been superseded.
+memories:
+  - id: decision/test-runner-jest-superseded
+    title: Use jest as the project's test runner (superseded)
+    kind: decision
+    status: superseded
+    confidence: certain
+    tags:
+      - tooling
+      - testing
+    keywords: jest karma legacy test runner superseded
+    synopsis: |
+      Earlier accepted decision to use jest. Superseded by the move to vitest;
+      do not adopt this for new work.
+    content: |
+      This decision committed the project to jest. It was superseded by the
+      vitest decision; new tests must follow the current runner choice. Old
+      jest fixtures remain only until they are migrated.

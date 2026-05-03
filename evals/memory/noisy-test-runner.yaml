@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: noisy-memory
+description: Plausible but irrelevant memories for the test-runner task.
+memories:
+  - id: note/snapshot-fixture-pruning
+    title: Snapshot fixture pruning
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: snapshot fixture prune orphan
+    synopsis: Periodically prune orphan snapshot files from removed modules.
+  - id: runbook/ci-flake-triage
+    title: CI flake triage runbook
+    kind: runbook
+    status: informational
+    confidence: likely
+    tags:
+      - reliability
+    keywords: ci flake triage rerun
+    synopsis: Steps to triage CI flakiness; rerun the failing job once before opening an issue.

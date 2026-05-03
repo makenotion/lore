@@ -1,0 +1,28 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A relevant architecture decision is available before the task.
+memories:
+  - id: decision/test-runner-vitest
+    title: Adopt vitest as the project's test runner
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - tooling
+      - testing
+    keywords: vitest test runner unit suite
+    synopsis: Vitest is the standard test runner for unit work; do not add new jest tests.
+    content: |
+      The project has standardized on vitest for unit tests. New tests must be
+      authored against the vitest runner; jest fixtures are being retired.
+  - id: note/yaml-snapshot-hygiene
+    title: YAML snapshot hygiene
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: yaml snapshot prune orphan
+    synopsis: Periodically prune orphan YAML snapshots from removed modules.
+    content: |
+      This note is intentionally about snapshot file hygiene only.

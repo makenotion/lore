@@ -57,6 +57,24 @@ Every task must include the `no-lore`, `empty-lore`, and `helpful-memory`
 ablations. Additional scenarios such as `noisy-memory` and `stale-memory` are
 allowed as the suite grows.
 
+`stale-memory` is the ablation that captures temporal correctness: the
+fixture contains a previously-accepted decision (or other memory) that has
+since been superseded or deprecated. The expectation is that retrieval does
+not promote the stale row over the current one. The fixture runner enforces
+this contract by suppressing rows whose `status` is `superseded`,
+`deprecated`, or `rejected` from `searchFixtureMemories` and `memories.list`
+before scoring. Stale-memory tasks should therefore list the **stale memory
+id** under `stale-memory.shouldNotSurface` — when the status filter holds,
+the row never surfaces, the assertion passes, and `memoryHarm` stays 0; if
+a future change drops the filter (or surfaces the row another way), the
+assertion fires and `memoryHarm` flags the regression.
+
+This is the eval's enforced ideal. Production retrieval today is
+status-blind (Notion's `dataSources.query` and `client.search` do not
+filter on the `Status` column), so the Notion-backed runner can report
+`memoryHarm > 0` against the same suite — that gap is what #284 (temporal
+recall) tracks.
+
 The suite `version` is required. Retrieval mode is deterministic and requires
 `trials: 1`; the CLI rejects other trial counts until a nondeterministic runner
 exists.

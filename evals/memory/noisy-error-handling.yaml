@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: noisy-memory
+description: Plausible but irrelevant memories for the error-handling task.
+memories:
+  - id: note/log-correlation-ids
+    title: Log correlation ids stay across spans
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - observability
+    keywords: log correlation span trace
+    synopsis: Propagate the correlation id through every log emit on a request span.
+  - id: runbook/oncall-escalation
+    title: On-call escalation runbook
+    kind: runbook
+    status: informational
+    confidence: likely
+    tags:
+      - reliability
+    keywords: oncall escalation page rotation
+    synopsis: When a page goes unacknowledged for 5 minutes, escalate to the secondary.
