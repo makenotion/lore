@@ -35,3 +35,9 @@ scripts/
 # Local eval run artifacts. Commit suite and memory fixtures, not generated
 # run output.
 evals/results/
+
+# Defensive: the autosave-learning dedup lock dir lives under
+# `LORE_HOOK_STATE_DIR` (default: tmpdir). An interim version of the dedup
+# code wrote into cwd; this guard keeps any future regression from
+# leaking lock state into the repo.
+autosave-learning-locks/
