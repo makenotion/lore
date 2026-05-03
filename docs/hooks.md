@@ -41,6 +41,13 @@ context. Set `hooks.wakeUp: false` in `.lore.yaml` to skip automatic injection
 for supported assistants. If `.lore.yaml` fails to parse, the hook falls back to
 the default (on) and writes a `[lore]` warning to stderr.
 
+The debounce marker is intentionally not a lock. Its body is the literal `1`;
+it carries no owner PID, has no SessionEnd cleanup, and is not swept by the
+autosave lock liveness probe. Codex session ids are unique and the default
+state directory is under the OS temp directory, so stale `.wakeup` files are
+bounded by temp cleanup and only prevent repeated automatic wake-up attempts
+for that finished session id.
+
 Set `LORE_DEBUG=1` to inspect wake-up coverage counters on stderr. The log line
 does not include query text, memory titles, facts, or page bodies; it reports
 only the retrieval mode, ranked caps, digest freshness, and per-section counts.

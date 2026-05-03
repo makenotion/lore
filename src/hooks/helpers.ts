@@ -157,6 +157,12 @@ export function statePath(sessionId: string): string {
  * Per-session attempt marker for prompt-bearing wake-up hooks. Codex's
  * `UserPromptSubmit` currently lacks Claude Code's `runOnce`, so the helper
  * owns the debounce that keeps wake-up to the first enabled prompt event.
+ *
+ * Unlike the autosave/digest `.lock` files, this is not a liveness marker:
+ * `tryMarkWakeupRun` writes the literal `"1"` atomically and no SessionEnd
+ * cleanup or PID sweep reaps it. Codex session ids are already unique, and
+ * the state dir lives under tmpdir by default, so stale `.wakeup` files are a
+ * bounded debounce artifact rather than a held resource.
  */
 export function wakeupStatePath(sessionId: string): string {
   return join(getStateDir(), `${safeFilenameSegment(sessionId)}.wakeup`)
