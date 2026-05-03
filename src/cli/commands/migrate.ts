@@ -5,7 +5,8 @@ import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { initServices, type LoreServices } from "../../services.js"
 import {
-  formatUnresolvedProjectScopeError,
+  PROJECT_SCOPE_MIGRATION_DOC,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { mergeHookDefaults, type BackgroundAgentConfig } from "../../hooks/config.js"
@@ -120,7 +121,15 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--project <name>",
-    "Scope `--build-confidence-scores` or `--build-fact-confidence-scores` to a single project. Resolved via `findByName`; unknown / typo'd names abort before any plan or write — the migration refuses to silently fall back to vault-wide because `--yes` consent for one project is not consent to mutate the entire vault. Omit for vault-wide scope."
+    "Scope project-capable migrations to a single project. Unknown / typo'd names abort before any plan or write; see docs/memory-workflows.md#migrating-from-unscoped-writes."
+  )
+  .option(
+    "--include-archived",
+    "Allow --project to resolve archived projects for operator migrations of retired data. Requires --project."
+  )
+  .option(
+    "--allow-unscoped",
+    "Explicitly permit project-capable migrations to run vault-wide when --project is omitted; see docs/memory-workflows.md#migrating-from-unscoped-writes."
   )
   .option(
     "--yes",
@@ -150,6 +159,8 @@ export const migrateCommand = new Command("migrate")
       buildConfidenceScores?: boolean
       buildFactConfidenceScores?: boolean
       project?: string
+      includeArchived?: boolean
+      allowUnscoped?: boolean
     }) => {
       let buildEntitiesLock: MigrationLock | null = null
       try {
@@ -179,13 +190,27 @@ export const migrateCommand = new Command("migrate")
           )
           process.exit(1)
         }
-        if (
-          opts.project !== undefined &&
-          !opts.buildConfidenceScores &&
-          !opts.buildFactConfidenceScores
-        ) {
+        const scopedMigration = isProjectScopedMigrationRequested(opts)
+        if (opts.project !== undefined && !scopedMigration) {
           console.error(
-            "--project only applies together with --build-confidence-scores or --build-fact-confidence-scores."
+            "--project only applies together with --fix-fact-encoding, --fix-memory-encoding, --normalize-agents, --build-entities, --backfill-fact-sources, --backfill-synopses, --build-confidence-scores, or --build-fact-confidence-scores."
+          )
+          process.exit(1)
+        }
+        if (opts.includeArchived && opts.project === undefined) {
+          console.error("--include-archived requires --project <name>.")
+          process.exit(1)
+        }
+        if (opts.allowUnscoped && opts.project !== undefined) {
+          console.error("--allow-unscoped cannot be combined with --project.")
+          process.exit(1)
+        }
+        if (scopedMigration && opts.project === undefined && !opts.allowUnscoped) {
+          console.error(
+            "Refusing to run project-capable migrations without an explicit scope. " +
+              "Pass --project <name> to target one project, or --allow-unscoped " +
+              "to run vault-wide intentionally. See " +
+              `${PROJECT_SCOPE_MIGRATION_DOC}.`
           )
           process.exit(1)
         }
@@ -207,6 +232,7 @@ export const migrateCommand = new Command("migrate")
         // stderr nudge is informational; the foreground migrate report is
         // the authoritative output.
         const services = await initServices(undefined, { driftCheck: true })
+        const migrationScope = await resolveMigrationProjectScope(services, opts)
 
         if (opts.buildEntities && opts.yes && !opts.dryRun) {
           buildEntitiesLock = acquireBuildEntitiesMigrationLock(services, {
@@ -428,6 +454,7 @@ export const migrateCommand = new Command("migrate")
         if (opts.backfillFactSources) {
           await backfillFactSources(services, {
             apply: opts.apply === true && !opts.dryRun,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -440,6 +467,7 @@ export const migrateCommand = new Command("migrate")
           await runFactEncodingFix(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: opts.dryRun,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -447,6 +475,7 @@ export const migrateCommand = new Command("migrate")
           await runMemoryEncodingFix(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: opts.dryRun,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -454,6 +483,7 @@ export const migrateCommand = new Command("migrate")
           await runAgentNormalization(services, {
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: opts.dryRun,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -462,6 +492,7 @@ export const migrateCommand = new Command("migrate")
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: opts.dryRun,
             lock: buildEntitiesLock ?? undefined,
+            projectId: migrationScope.projectId,
           })
           if (buildEntitiesLock) {
             releaseMigrationLock(buildEntitiesLock)
@@ -489,6 +520,7 @@ export const migrateCommand = new Command("migrate")
             backend: synopsisBackend,
             batchSize: synopsisBatchSize,
             agent: hookConfig.backgroundAgent,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -497,6 +529,7 @@ export const migrateCommand = new Command("migrate")
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: Boolean(opts.dryRun),
             projectName: opts.project,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -505,6 +538,7 @@ export const migrateCommand = new Command("migrate")
             apply: Boolean(opts.yes) && !opts.dryRun,
             dryRun: Boolean(opts.dryRun),
             projectName: opts.project,
+            projectId: migrationScope.projectId,
           })
         }
 
@@ -597,6 +631,74 @@ export const migrateCommand = new Command("migrate")
       }
     }
   )
+
+interface MigrationScopeIntent {
+  fixFactEncoding?: boolean
+  fixMemoryEncoding?: boolean
+  normalizeAgents?: boolean
+  buildEntities?: boolean
+  backfillFactSources?: boolean
+  backfillSynopses?: boolean
+  buildConfidenceScores?: boolean
+  buildFactConfidenceScores?: boolean
+  project?: string
+  includeArchived?: boolean
+}
+
+export interface MigrationProjectScope {
+  projectId?: string
+  projectName?: string
+}
+
+function isProjectScopedMigrationRequested(opts: MigrationScopeIntent): boolean {
+  return Boolean(
+    opts.fixFactEncoding ||
+    opts.fixMemoryEncoding ||
+    opts.normalizeAgents ||
+    opts.buildEntities ||
+    opts.backfillFactSources ||
+    opts.backfillSynopses ||
+    opts.buildConfidenceScores ||
+    opts.buildFactConfidenceScores
+  )
+}
+
+export async function resolveMigrationProjectScope(
+  services: LoreServices,
+  opts: MigrationScopeIntent
+): Promise<MigrationProjectScope> {
+  if (!isProjectScopedMigrationRequested(opts) || opts.project === undefined) {
+    return {}
+  }
+
+  const explicitProjectName = validateExplicitProjectScopeName(
+    opts.project,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+      omittedScopeLabel: "vault-wide scope",
+      includeArchivedHint:
+        "If this is an archived project migration, pass --include-archived",
+      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+    }
+  )
+  if (explicitProjectName === undefined) return {}
+
+  const project = await resolveProjectScopeName(
+    services.projects,
+    explicitProjectName,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+      omittedScopeLabel: "vault-wide scope",
+      includeArchivedHint:
+        "If this is an archived project migration, pass --include-archived",
+      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+      includeArchived: opts.includeArchived,
+    }
+  )
+  return { projectId: project.id, projectName: project.name }
+}
 
 /**
  * Scan every memory, reclassify obvious free-form tags into `Keywords`, and
@@ -770,9 +872,11 @@ export interface FactMatchCandidate {
  */
 export async function backfillFactSources(
   services: LoreServices,
-  opts: { apply: boolean }
+  opts: { apply: boolean; projectId?: string }
 ): Promise<void> {
-  const orphans = await services.facts.queryOrphans()
+  const orphans = opts.projectId
+    ? await services.facts.queryOrphans({ projectId: opts.projectId })
+    : await services.facts.queryOrphans()
 
   if (orphans.length === 0) {
     console.log(
@@ -960,14 +1064,17 @@ export function printDiscoveryBreadcrumb(label: string): void {
  */
 export async function runFactEncodingFix(
   services: LoreServices,
-  options: { apply: boolean; dryRun?: boolean }
+  options: { apply: boolean; dryRun?: boolean; projectId?: string }
 ): Promise<void> {
   // Plan-only means the underlying helper must not write. `apply` is the
   // single-truth bit for the write path; `dryRun` is a caller-intent
   // signal the helper still honors to keep the report shape consistent
   // with every other `--dry-run` surface.
   const planOnly = !options.apply
-  const report = await services.facts.fixEncoding({ dryRun: planOnly })
+  const report = await services.facts.fixEncoding({
+    dryRun: planOnly,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+  })
 
   if (report.encoded.length === 0) {
     console.log(
@@ -1033,11 +1140,14 @@ export async function runFactEncodingFix(
  */
 export async function runMemoryEncodingFix(
   services: LoreServices,
-  options: { apply: boolean; dryRun?: boolean }
+  options: { apply: boolean; dryRun?: boolean; projectId?: string }
 ): Promise<void> {
   const planOnly = !options.apply
   printDiscoveryBreadcrumb("memories with HTML-encoded Title or body")
-  const report = await services.memories.fixEncoding({ dryRun: planOnly })
+  const report = await services.memories.fixEncoding({
+    dryRun: planOnly,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+  })
 
   if (report.encoded.length === 0) {
     console.log(
@@ -1270,11 +1380,14 @@ export function printAliasMergeResults(
  */
 export async function runAgentNormalization(
   services: LoreServices,
-  options: { apply: boolean; dryRun?: boolean }
+  options: { apply: boolean; dryRun?: boolean; projectId?: string }
 ): Promise<void> {
   const planOnly = !options.apply
   printDiscoveryBreadcrumb("memories with non-canonical Agent strings")
-  const report = await services.memories.normalizeAgents({ dryRun: planOnly })
+  const report = await services.memories.normalizeAgents({
+    dryRun: planOnly,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+  })
 
   if (report.encoded.length === 0) {
     console.log(
@@ -1347,7 +1460,12 @@ export async function runAgentNormalization(
  */
 export async function runBuildEntitiesMigration(
   services: LoreServices,
-  options: { apply: boolean; dryRun?: boolean; lock?: MigrationLock }
+  options: {
+    apply: boolean
+    dryRun?: boolean
+    lock?: MigrationLock
+    projectId?: string
+  }
 ): Promise<EntityMigrationResult | null> {
   const ownsLock = options.lock === undefined
   const lock = options.lock ?? acquireBuildEntitiesMigrationLock(services, options)
@@ -1356,6 +1474,7 @@ export async function runBuildEntitiesMigration(
     const result = await buildEntities(services.facts, services.entities, {
       apply: options.apply,
       dryRun: options.dryRun,
+      projectId: options.projectId,
     })
 
     if (result.plans.length === 0) {
@@ -1555,6 +1674,7 @@ export async function runSynopsisBackfill(
      * to the historical claude-shaped defaults.
      */
     agent?: BackgroundAgentConfig
+    projectId?: string
   }
 ): Promise<BackfillReport> {
   const planOnly = !options.apply || options.dryRun === true
@@ -1565,6 +1685,7 @@ export async function runSynopsisBackfill(
     backend: options.backend,
     batchSize: options.batchSize,
     agent: options.agent,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
   })
 
   if (report.totalCandidates === 0 && report.archivedSkipped === 0) {
@@ -1696,7 +1817,12 @@ export function formatBackfillBucket(
  */
 export async function runBuildConfidenceScores(
   services: LoreServices,
-  options: { apply: boolean; dryRun: boolean; projectName?: string }
+  options: {
+    apply: boolean
+    dryRun: boolean
+    projectName?: string
+    projectId?: string
+  }
 ): Promise<BuildConfidenceScoresResult> {
   const planOnly = !options.apply
   // Pre-resolve `--project <name>` so a typo'd / unknown name throws
@@ -1721,18 +1847,22 @@ export async function runBuildConfidenceScores(
     {
       listHint: "run `lore status projects` to list configured projects",
       omittedScopeLabel: "vault-wide scope",
+      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
     }
   )
-  if (explicitProjectName !== undefined) {
-    const project = await services.projects.findByName(explicitProjectName)
-    if (project === null) {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-          listHint: "run `lore status projects` to list configured projects",
-          omittedScopeLabel: "vault-wide scope",
-        })
-      )
-    }
+  let projectId = options.projectId
+  if (explicitProjectName !== undefined && projectId === undefined) {
+    const project = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+        omittedScopeLabel: "vault-wide scope",
+        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+      }
+    )
+    projectId = project.id
   }
 
   printDiscoveryBreadcrumb(
@@ -1746,6 +1876,7 @@ export async function runBuildConfidenceScores(
     apply: options.apply,
     dryRun: options.dryRun,
     projectName: options.projectName,
+    projectId,
   })
   const { plan, written } = result
 
@@ -1814,7 +1945,12 @@ export async function runBuildConfidenceScores(
  */
 export async function runBuildFactConfidenceScores(
   services: LoreServices,
-  options: { apply: boolean; dryRun: boolean; projectName?: string }
+  options: {
+    apply: boolean
+    dryRun: boolean
+    projectName?: string
+    projectId?: string
+  }
 ): Promise<BuildFactConfidenceScoresResult> {
   const planOnly = !options.apply
   const explicitProjectName = validateExplicitProjectScopeName(
@@ -1823,18 +1959,22 @@ export async function runBuildFactConfidenceScores(
     {
       listHint: "run `lore status projects` to list configured projects",
       omittedScopeLabel: "vault-wide scope",
+      docsHint: PROJECT_SCOPE_MIGRATION_DOC,
     }
   )
-  if (explicitProjectName !== undefined) {
-    const project = await services.projects.findByName(explicitProjectName)
-    if (project === null) {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-          listHint: "run `lore status projects` to list configured projects",
-          omittedScopeLabel: "vault-wide scope",
-        })
-      )
-    }
+  let projectId = options.projectId
+  if (explicitProjectName !== undefined && projectId === undefined) {
+    const project = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+        omittedScopeLabel: "vault-wide scope",
+        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+      }
+    )
+    projectId = project.id
   }
 
   printDiscoveryBreadcrumb(
@@ -1848,6 +1988,7 @@ export async function runBuildFactConfidenceScores(
     apply: options.apply,
     dryRun: options.dryRun,
     projectName: options.projectName,
+    projectId,
   })
   const { plan, written } = result
 

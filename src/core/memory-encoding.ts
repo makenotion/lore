@@ -24,10 +24,8 @@ import type {
   QueryDataSourceParameters,
 } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
-import {
-  extractTitle,
-  isFullPage,
-} from "../notion/extractors.js"
+import { extractTitle, isFullPage } from "../notion/extractors.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 
 /**
@@ -113,7 +111,7 @@ export interface MemoryEncodingReport {
 export async function findEncodedMemories(
   client: Client,
   memoriesDb: DatabaseRef,
-  options: { includeContent?: boolean } = {}
+  options: { includeContent?: boolean; projectId?: string } = {}
 ): Promise<EncodedMemoryRow[]> {
   const includeContent = options.includeContent ?? true
   const rows: EncodedMemoryRow[] = []
@@ -122,12 +120,18 @@ export async function findEncodedMemories(
   do {
     const response = await client.dataSources.query({
       data_source_id: memoriesDb.dataSourceId,
+      filter: options.projectId
+        ? (projectOrUnscopedFilter(
+            options.projectId
+          ) as QueryDataSourceParameters["filter"])
+        : undefined,
       sorts: [{ timestamp: "created_time", direction: "ascending" }],
       page_size: 100,
       start_cursor: cursor,
     } as QueryDataSourceParameters)
-    const pages = (response.results.filter(isFullPage) as PageObjectResponse[])
-      .filter((p) => !p.archived)
+    const pages = (response.results.filter(isFullPage) as PageObjectResponse[]).filter(
+      (p) => !p.archived
+    )
 
     // Fetch body markdown in parallel for the whole page batch. On a vault
     // with hundreds of memories the serial round-trip tax exceeds the
@@ -162,8 +166,7 @@ export async function findEncodedMemories(
             decodedContent = decodeTextEntities(rawContent)
             contentNeedsFix = rawContent !== decodedContent
             contentBytes = Buffer.byteLength(rawContent, "utf8")
-            contentTooLargeToFix =
-              contentNeedsFix && contentBytes > BODY_SIZE_CAP_BYTES
+            contentTooLargeToFix = contentNeedsFix && contentBytes > BODY_SIZE_CAP_BYTES
           } catch {
             // Swallow — this is a recoverable degradation. Body status is
             // unknown for this row; the caller treats it as "Title only".
@@ -201,7 +204,7 @@ export async function findEncodedMemories(
     for (const row of rowsForBatch) {
       if (row) rows.push(row)
     }
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   // Deterministic order for the CLI report — decoded title, then id for ties.
@@ -228,10 +231,11 @@ export async function findEncodedMemories(
 export async function fixMemoryEncoding(
   client: Client,
   memoriesDb: DatabaseRef,
-  options: { dryRun?: boolean } = {}
+  options: { dryRun?: boolean; projectId?: string } = {}
 ): Promise<MemoryEncodingReport> {
   const encoded = await findEncodedMemories(client, memoriesDb, {
     includeContent: true,
+    projectId: options.projectId,
   })
   const oversizedSkipped = encoded.filter((r) => r.contentTooLargeToFix)
   const contentFetchFailures = encoded.filter((r) => r.contentFetchFailed)

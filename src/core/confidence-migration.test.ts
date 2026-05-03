@@ -64,7 +64,7 @@ interface FakeServicesArgs {
   applyBackfillScore?: (
     id: string,
     score: number,
-    lastReferencedAt: string,
+    lastReferencedAt: string
   ) => Promise<void>
   findByName?: (name: string) => Promise<{ id: string; name: string } | null>
   concurrency?: number
@@ -72,7 +72,7 @@ interface FakeServicesArgs {
 
 function makeServices(args: FakeServicesArgs) {
   const listSpy = vi.fn((_opts?: { projectId?: string }) =>
-    asyncIterableOf(args.memories),
+    asyncIterableOf(args.memories)
   )
   const applySpy = vi.fn(args.applyBackfillScore ?? (async () => undefined))
   const findByNameSpy = vi.fn(args.findByName ?? (async () => null))
@@ -296,7 +296,7 @@ describe("runBuildConfidenceScoresMigration — execute", () => {
         id: `m${i}`,
         confidence: "certain",
         confidenceScore: null,
-      }),
+      })
     )
 
     let inflight = 0
@@ -353,6 +353,26 @@ describe("runBuildConfidenceScoresMigration — project scoping", () => {
     expect(applySpy).not.toHaveBeenCalled()
   })
 
+  it("uses a pre-resolved projectId without looking up projectName again", async () => {
+    const { services, listSpy, findByNameSpy } = makeServices({
+      memories: [],
+      findByName: async () => {
+        throw new Error("should not resolve again")
+      },
+    })
+
+    await runBuildConfidenceScoresMigration({
+      services,
+      apply: false,
+      dryRun: false,
+      projectName: "Archive",
+      projectId: "project-archive",
+    })
+
+    expect(findByNameSpy).not.toHaveBeenCalled()
+    expect(listSpy).toHaveBeenCalledWith({ projectId: "project-archive" })
+  })
+
   it("aborts BEFORE any scan or write when projectName is unknown (safety property)", async () => {
     const { services, listSpy, findByNameSpy, applySpy } = makeServices({
       memories: [makeMemory({ confidenceScore: null })],
@@ -365,7 +385,7 @@ describe("runBuildConfidenceScoresMigration — project scoping", () => {
         apply: true,
         dryRun: false,
         projectName: "Typo",
-      }),
+      })
     ).rejects.toThrow(/Project "Typo" could not be resolved/)
 
     expect(findByNameSpy).toHaveBeenCalledWith("Typo")
@@ -407,7 +427,7 @@ describe("runBuildConfidenceScoresMigration — partial-failure resumability", (
         id: `m${i}`,
         confidence: "certain",
         confidenceScore: null,
-      }),
+      })
     )
     let calls = 0
     let preFailureCompleted = 0
@@ -434,7 +454,7 @@ describe("runBuildConfidenceScoresMigration — partial-failure resumability", (
         services,
         apply: true,
         dryRun: false,
-      }),
+      })
     ).rejects.toThrow("notion 429")
 
     // Two full pre-failure batches × 3 = 6 rows definitely completed.
@@ -453,7 +473,7 @@ describe("runBuildConfidenceScoresMigration — partial-failure resumability", (
     // the first attempt now have scores; a re-run scans them as
     // "already scored" and only attempts the unwritten subset.
     const writtenIds = new Set(
-      Array.from({ length: preFailureCompleted }, (_, i) => `m${i}`),
+      Array.from({ length: preFailureCompleted }, (_, i) => `m${i}`)
     )
     let secondRunCalls = 0
     const second = makeServices({
@@ -488,7 +508,7 @@ describe("runBuildConfidenceScoresMigration — per-100-rows progress lines", ()
         id: `m${i}`,
         confidence: "certain",
         confidenceScore: null,
-      }),
+      })
     )
     const { services } = makeServices({ memories, concurrency: 5 })
 
@@ -510,7 +530,7 @@ describe("runBuildConfidenceScoresMigration — per-100-rows progress lines", ()
     }
 
     const progressLines = captured.filter((c) =>
-      c.includes("[lore] build-confidence-scores:"),
+      c.includes("[lore] build-confidence-scores:")
     )
     // 250 rows at concurrency 5 → 50 batches. Progress fires at the
     // 100-row boundary AND at the 200-row boundary. The trailing 50
@@ -527,7 +547,7 @@ describe("runBuildConfidenceScoresMigration — per-100-rows progress lines", ()
         id: `m${i}`,
         confidence: "certain",
         confidenceScore: null,
-      }),
+      })
     )
     const { services } = makeServices({ memories, concurrency: 5 })
 
@@ -549,7 +569,7 @@ describe("runBuildConfidenceScoresMigration — per-100-rows progress lines", ()
     }
 
     expect(
-      captured.filter((c) => c.includes("[lore] build-confidence-scores:")),
+      captured.filter((c) => c.includes("[lore] build-confidence-scores:"))
     ).toHaveLength(0)
   })
 })

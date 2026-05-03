@@ -16,7 +16,7 @@ import type { LoreConfig, Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { digestMarkerAgeDays } from "../../hooks/digest-marker.js"
@@ -49,13 +49,34 @@ const TRACKING_PREDICATE_PREFLIGHT_VALUES: string[] = [
 
 export const statusCommand = new Command("status")
   .description("Show vault status and project list")
-  .action(async () => {
+  .option(
+    "--project <name>",
+    "Scope project-dependent status sections to a project"
+  )
+  .action(async (opts: { project?: string }) => {
     try {
       // `lore status` is the canonical operator-facing surface for drift
       // warnings — always run the check, bypass the debounce marker.
       const services = await initServices(undefined, { driftCheck: true })
       const stats = await services.vault.stats()
-      const project = services.context.project
+      const explicitProjectName = validateExplicitProjectScopeName(
+        opts.project,
+        "--project",
+        {
+          listHint: "run `lore status projects` to list configured projects",
+        }
+      )
+      const project =
+        explicitProjectName !== undefined
+          ? await resolveProjectScopeName(
+              services.projects,
+              explicitProjectName,
+              "--project",
+              {
+                listHint: "run `lore status projects` to list configured projects",
+              }
+            )
+          : services.context.project
 
       // Tracking-predicate preflight (#24, ships in 0.5.x patch). Renders
       // a warning when the vault still carries facts whose predicate is
@@ -224,18 +245,19 @@ const topicsCmd = new Command("topics")
         "project",
         {
           listHint: "run `lore status projects` to list configured projects",
+          omittedScopeLabel: "the current project detected from cwd",
         }
       )
       if (explicitProjectName !== undefined) {
-        const found = await services.projects.findByName(explicitProjectName)
-        if (!found) {
-          console.error(
-            formatUnresolvedProjectScopeError([explicitProjectName], "project", {
-              listHint: "run `lore status projects` to list configured projects",
-            })
-          )
-          process.exit(1)
-        }
+        const found = await resolveProjectScopeName(
+          services.projects,
+          explicitProjectName,
+          "project",
+          {
+            listHint: "run `lore status projects` to list configured projects",
+            omittedScopeLabel: "the current project detected from cwd",
+          }
+        )
         projectId = found.id
       } else if (services.context.project) {
         projectId = services.context.project.id
@@ -298,10 +320,7 @@ export interface VaultTopologyStatusDeps {
   probeVault?: (pageId: string) => Promise<VaultHealthStatus>
 }
 
-export type TopologyStatusServices = Pick<
-  LoreServices,
-  "config" | "configRoot"
->
+export type TopologyStatusServices = Pick<LoreServices, "config" | "configRoot">
 
 export async function loadVaultTopologyStatus(
   services: TopologyStatusServices,
@@ -323,15 +342,12 @@ export async function loadVaultTopologyStatus(
   }
 
   const probe =
-    deps.probeVault ??
-    createConfigVaultHealthProbe(services.config, services.configRoot)
+    deps.probeVault ?? createConfigVaultHealthProbe(services.config, services.configRoot)
 
   const [upstreams, promotionTargets] = await Promise.all([
     Promise.all(topology.upstreams.map((vault) => upstreamStatusRow(vault, probe))),
     Promise.all(
-      topology.promotionTargets.map((vault) =>
-        promotionTargetStatusRow(vault, probe)
-      )
+      topology.promotionTargets.map((vault) => promotionTargetStatusRow(vault, probe))
     ),
   ])
 
@@ -390,9 +406,7 @@ async function checkVaultHealth(
   }
 }
 
-export function formatVaultTopologyStatus(
-  report: VaultTopologyStatusReport
-): string[] {
+export function formatVaultTopologyStatus(report: VaultTopologyStatusReport): string[] {
   if (!report.configured) return []
 
   const lines = ["Vault topology:"]

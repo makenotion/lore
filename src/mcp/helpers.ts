@@ -7,6 +7,7 @@ import type { Memory } from "../types.js"
 import type { MemoryService } from "../core/memory.js"
 import type { FactService } from "../core/fact.js"
 import type { Fact } from "../types.js"
+import { isRetryableError } from "../core/project-scope.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -18,8 +19,14 @@ type ToolResult = {
  */
 export function toolError(err: unknown): ToolResult {
   const message = err instanceof Error ? err.message : String(err)
+  const retryable = isRetryableError(err)
+    ? `\n\n\`\`\`json\n${JSON.stringify({
+        code: err.code,
+        retryable: true,
+      })}\n\`\`\``
+    : ""
   return {
-    content: [{ type: "text" as const, text: `Error: ${message}` }],
+    content: [{ type: "text" as const, text: `Error: ${message}${retryable}` }],
     isError: true,
   }
 }

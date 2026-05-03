@@ -84,7 +84,7 @@ function mkClient(
   opts: {
     retrieve?: PageObjectResponse | Error
     query?: Array<{ results: PageObjectResponse[]; has_more?: boolean }>
-  } = {},
+  } = {}
 ) {
   const queryResponses = opts.query ?? []
   let queryIdx = 0
@@ -238,7 +238,7 @@ describe("FactService.touchOnRead", () => {
           createdAt: "2026-01-01T00:00:00.000Z",
         },
       ],
-      { today },
+      { today }
     )
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const args = updateSpy.mock.calls[0][0]
@@ -266,7 +266,7 @@ describe("FactService.touchOnRead", () => {
           createdAt: "2025-09-01T00:00:00.000Z",
         },
       ],
-      { today },
+      { today }
     )
     const args = updateSpy.mock.calls[0][0]
     const score = (args.properties["Confidence Score"] as { number: number }).number
@@ -304,7 +304,7 @@ describe("FactService.touchOnRead", () => {
           createdAt: "2026-04-01T00:00:00.000Z",
         },
       ],
-      { today, onError },
+      { today, onError }
     )
     expect(updateSpy).toHaveBeenCalledTimes(2)
     expect(onError).toHaveBeenCalledWith("f-bad", expect.any(Error))
@@ -377,7 +377,7 @@ describe("FactService.invalidate", () => {
         // `isMissingPropertyError` recognizes: status 400, code
         // `validation_error`, body mentions the missing property.
         const err = new Error(
-          'Could not find property with name or id: "Confidence Score"',
+          'Could not find property with name or id: "Confidence Score"'
         ) as Error & {
           status?: number
           code?: string
@@ -441,9 +441,9 @@ describe("FactService internal createdAt invariant (DEFERRED-02)", () => {
       "f-partial",
       expect.objectContaining({
         message: expect.stringContaining(
-          "FactService.touchOnRead: Fact.createdAt is unexpectedly undefined",
+          "FactService.touchOnRead: Fact.createdAt is unexpectedly undefined"
         ),
-      }),
+      })
     )
   })
 
@@ -504,7 +504,7 @@ describe("FactService internal createdAt invariant (DEFERRED-02)", () => {
     }
 
     await expect(service.invalidate("f-no-created")).rejects.toThrow(
-      /FactService\.invalidate: Fact\.createdAt is unexpectedly undefined/,
+      /FactService\.invalidate: Fact\.createdAt is unexpectedly undefined/
     )
   })
 })
@@ -512,22 +512,26 @@ describe("FactService internal createdAt invariant (DEFERRED-02)", () => {
 describe("runBuildFactConfidenceScoresMigration", () => {
   function mkServices(facts: Fact[]) {
     const applySpy = vi.fn(async () => {})
+    const findByNameSpy = vi.fn(async () => null)
+    const listSpy = vi.fn(async function* (_opts?: { projectId?: string }) {
+      for (const f of facts) yield f
+    })
     return {
       services: {
         config: { notion: {} },
         projects: {
-          findByName: vi.fn(async () => null),
+          findByName: findByNameSpy,
         },
         facts: {
-          async *listAllForBackfill() {
-            for (const f of facts) yield f
-          },
+          listAllForBackfill: listSpy,
           applyBackfillScore: applySpy,
         },
       } as unknown as Parameters<
         typeof runBuildFactConfidenceScoresMigration
       >[0]["services"],
       applySpy,
+      findByNameSpy,
+      listSpy,
     }
   }
 
@@ -619,7 +623,21 @@ describe("runBuildFactConfidenceScoresMigration", () => {
         apply: true,
         dryRun: false,
         projectName: "nonexistent",
-      }),
+      })
     ).rejects.toThrow(/Project "nonexistent" could not be resolved/)
+  })
+
+  it("uses a pre-resolved projectId without looking up projectName again", async () => {
+    const { services, findByNameSpy, listSpy } = mkServices([])
+    await runBuildFactConfidenceScoresMigration({
+      services,
+      apply: false,
+      dryRun: false,
+      projectName: "Archive",
+      projectId: "project-archive",
+    })
+
+    expect(findByNameSpy).not.toHaveBeenCalled()
+    expect(listSpy).toHaveBeenCalledWith({ projectId: "project-archive" })
   })
 })

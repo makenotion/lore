@@ -157,9 +157,7 @@ describe("findEncodedMemories", () => {
     const client = createMockClient({
       queryResponses: [
         {
-          results: [
-            memoryPage({ id: "m1", title: "Big &amp; Chunky" }),
-          ],
+          results: [memoryPage({ id: "m1", title: "Big &amp; Chunky" })],
         },
       ],
       markdownByPageId: { m1: bigBody },
@@ -187,6 +185,26 @@ describe("findEncodedMemories", () => {
     expect(encoded).toHaveLength(1)
     expect(encoded[0].titleNeedsFix).toBe(true)
     expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("scopes discovery to project rows plus unscoped rows when projectId is supplied", async () => {
+    const client = createMockClient()
+
+    await findEncodedMemories(client, DB, {
+      includeContent: false,
+      projectId: "project-a",
+    })
+
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: {
+          or: [
+            { property: "Project", relation: { contains: "project-a" } },
+            { property: "Project", relation: { is_empty: true } },
+          ],
+        },
+      })
+    )
   })
 
   it("surfaces clean-title / failed-body-fetch rows so operators see scan coverage holes", async () => {

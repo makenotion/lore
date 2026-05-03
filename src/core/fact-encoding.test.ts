@@ -40,9 +40,7 @@ function factPage(overrides: {
       } as unknown,
       DedupKey: {
         type: "rich_text",
-        rich_text: overrides.dedupKey
-          ? [{ plain_text: overrides.dedupKey }]
-          : [],
+        rich_text: overrides.dedupKey ? [{ plain_text: overrides.dedupKey }] : [],
       } as unknown,
       "Valid Until": {
         type: "date",
@@ -52,13 +50,15 @@ function factPage(overrides: {
   } as PageObjectResponse
 }
 
-function createMockClient(opts: {
-  queryResponses?: Array<{
-    results: PageObjectResponse[]
-    has_more?: boolean
-    next_cursor?: string | null
-  }>
-} = {}) {
+function createMockClient(
+  opts: {
+    queryResponses?: Array<{
+      results: PageObjectResponse[]
+      has_more?: boolean
+      next_cursor?: string | null
+    }>
+  } = {}
+) {
   const queryMock = vi.fn()
   for (const r of opts.queryResponses ?? []) {
     queryMock.mockResolvedValueOnce({
@@ -158,20 +158,33 @@ describe("findEncodedFacts", () => {
     )
   })
 
+  it("scopes discovery to project rows plus unscoped rows when projectId is supplied", async () => {
+    const client = createMockClient()
+
+    await findEncodedFacts(client, DB, { projectId: "project-a" })
+
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: {
+          or: [
+            { property: "Project", relation: { contains: "project-a" } },
+            { property: "Project", relation: { is_empty: true } },
+          ],
+        },
+      })
+    )
+  })
+
   it("paginates through multi-page results", async () => {
     const client = createMockClient({
       queryResponses: [
         {
-          results: [
-            factPage({ id: "f1", subject: "A &amp; B", object: "x" }),
-          ],
+          results: [factPage({ id: "f1", subject: "A &amp; B", object: "x" })],
           has_more: true,
           next_cursor: "cursor-1",
         },
         {
-          results: [
-            factPage({ id: "f2", subject: "C &amp;amp; D", object: "y" }),
-          ],
+          results: [factPage({ id: "f2", subject: "C &amp;amp; D", object: "y" })],
         },
       ],
     })
@@ -309,10 +322,7 @@ describe("findPostDecodeFactCollisions", () => {
     })
 
     const collisions = await findPostDecodeFactCollisions(client, DB)
-    expect(collisions.map((c) => c.triple.subject)).toEqual([
-      "Apple & Pear",
-      "Zebra",
-    ])
+    expect(collisions.map((c) => c.triple.subject)).toEqual(["Apple & Pear", "Zebra"])
   })
 })
 
@@ -377,9 +387,7 @@ describe("fixFactEncoding", () => {
       // decoded form would silently miss the just-fixed row until the
       // next dedup-key backfill pass.
       SubjectKey: {
-        rich_text: [
-          { text: { content: computeSubjectKey("Build & Tooling") } },
-        ],
+        rich_text: [{ text: { content: computeSubjectKey("Build & Tooling") } }],
       },
     })
   })
@@ -415,9 +423,7 @@ describe("fixFactEncoding", () => {
     const client = createMockClient({
       queryResponses: [
         {
-          results: [
-            factPage({ id: "f1", subject: "A &amp; B", object: "x" }),
-          ],
+          results: [factPage({ id: "f1", subject: "A &amp; B", object: "x" })],
         },
       ],
     })

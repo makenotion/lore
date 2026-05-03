@@ -29,6 +29,7 @@ import {
   isFullPage,
 } from "../notion/extractors.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 
 /** One fact row whose stored Subject or Object contains HTML entities that
@@ -201,9 +202,10 @@ function analyzeFactSnapshot(snapshot: FactRowSnapshot[]): {
  */
 export async function findEncodedFacts(
   client: Client,
-  factsDb: DatabaseRef
+  factsDb: DatabaseRef,
+  options: { projectId?: string } = {}
 ): Promise<EncodedFactRow[]> {
-  const snapshot = await scanFactRows(client, factsDb)
+  const snapshot = await scanFactRows(client, factsDb, options)
   return analyzeFactSnapshot(snapshot).encoded
 }
 
@@ -217,9 +219,10 @@ export async function findEncodedFacts(
  */
 export async function findPostDecodeFactCollisions(
   client: Client,
-  factsDb: DatabaseRef
+  factsDb: DatabaseRef,
+  options: { projectId?: string } = {}
 ): Promise<FactEncodingCollision[]> {
-  const snapshot = await scanFactRows(client, factsDb)
+  const snapshot = await scanFactRows(client, factsDb, options)
   return analyzeFactSnapshot(snapshot).collisions
 }
 
@@ -242,9 +245,9 @@ export async function findPostDecodeFactCollisions(
 export async function fixFactEncoding(
   client: Client,
   factsDb: DatabaseRef,
-  options: { dryRun?: boolean } = {}
+  options: { dryRun?: boolean; projectId?: string } = {}
 ): Promise<FactEncodingReport> {
-  const snapshot = await scanFactRows(client, factsDb)
+  const snapshot = await scanFactRows(client, factsDb, options)
   const { encoded, collisions } = analyzeFactSnapshot(snapshot)
 
   const blockedIds = new Set<string>()
@@ -284,7 +287,8 @@ export async function fixFactEncoding(
 
 async function scanFactRows(
   client: Client,
-  factsDb: DatabaseRef
+  factsDb: DatabaseRef,
+  options: { projectId?: string } = {}
 ): Promise<FactRowSnapshot[]> {
   const rows: FactRowSnapshot[] = []
   let cursor: string | undefined
@@ -292,6 +296,11 @@ async function scanFactRows(
   do {
     const response = await client.dataSources.query({
       data_source_id: factsDb.dataSourceId,
+      filter: options.projectId
+        ? (projectOrUnscopedFilter(
+            options.projectId
+          ) as QueryDataSourceParameters["filter"])
+        : undefined,
       // Deterministic order for testability. The collision grouping is
       // order-independent, but stable iteration makes the dry-run report
       // reproducible across runs on the same snapshot.
@@ -312,7 +321,7 @@ async function scanFactRows(
         validUntil: extractDate(page.properties["Valid Until"]),
       })
     }
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   return rows

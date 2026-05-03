@@ -15,7 +15,7 @@ import { resolve, relative, basename, extname, join } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import { dynamicCodeFence } from "../../core/markdown.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { initServices, type LoreServices } from "../../services.js"
@@ -416,14 +416,14 @@ export async function resolveMineProject(
     }
   )
   if (explicitProjectName !== undefined) {
-    const found = await services.projects.findByName(explicitProjectName)
-    if (!found) {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-          listHint: "run `lore status projects` to list configured projects",
-        })
-      )
-    }
+    const found = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+      }
+    )
     return { id: found.id }
   }
   if (services.context.project) {

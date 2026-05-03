@@ -6,7 +6,7 @@ import type { DatabaseRef, ProjectStatus } from "../types.js"
 function projectPage(
   id: string,
   name: string,
-  opts: { path?: string; status?: ProjectStatus } = {},
+  opts: { path?: string; status?: ProjectStatus } = {}
 ): PageObjectResponse {
   return {
     object: "page",
@@ -69,7 +69,7 @@ function hasActiveStatusClause(filter: unknown): boolean {
 
 function activeAwareResults(
   activeResults: PageObjectResponse[],
-  archivedResults: PageObjectResponse[],
+  archivedResults: PageObjectResponse[]
 ) {
   return async ({ filter }: { filter?: unknown }) => ({
     results: hasActiveStatusClause(filter) ? activeResults : archivedResults,
@@ -126,7 +126,7 @@ describe("ProjectService.findByPath — active-only lookup", () => {
     })
     const client = createMockClient()
     client.dataSources.query.mockImplementation(
-      activeAwareResults([active], [archived, active]),
+      activeAwareResults([active], [archived, active])
     )
     const service = new ProjectService(client, DB)
 
@@ -142,7 +142,7 @@ describe("ProjectService.findByPath — active-only lookup", () => {
             { property: "Status", select: { equals: "active" } },
           ],
         },
-      }),
+      })
     )
   })
 
@@ -165,7 +165,7 @@ describe("ProjectService.findByName — active-only lookup", () => {
     const archived = projectPage("p-archived", "alpha", { status: "archived" })
     const client = createMockClient()
     client.dataSources.query.mockImplementation(
-      activeAwareResults([active], [archived, active]),
+      activeAwareResults([active], [archived, active])
     )
     const service = new ProjectService(client, DB)
 
@@ -181,7 +181,7 @@ describe("ProjectService.findByName — active-only lookup", () => {
             { property: "Status", select: { equals: "active" } },
           ],
         },
-      }),
+      })
     )
   })
 
@@ -194,6 +194,26 @@ describe("ProjectService.findByName — active-only lookup", () => {
     await expect(service.findByName("alpha")).resolves.toBeNull()
   })
 
+  it("can opt into archived project-name matches for migration scopes", async () => {
+    const archived = projectPage("p-archived", "alpha", { status: "archived" })
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [archived],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    const project = await service.findByName("alpha", { includeArchived: true })
+
+    expect(project?.id).toBe("p-archived")
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: { property: "Name", title: { equals: "alpha" } },
+      })
+    )
+  })
+
   it("rejects ambiguous active project-name matches instead of picking one", async () => {
     const client = createMockClient()
     client.dataSources.query.mockResolvedValue({
@@ -204,11 +224,65 @@ describe("ProjectService.findByName — active-only lookup", () => {
     const service = new ProjectService(client, DB)
 
     await expect(service.findByName("alpha")).rejects.toThrow(
-      /Multiple active projects named "alpha" found \(p1, p2\)/,
+      /Multiple active projects named "alpha" found \(p1, p2\)/
     )
     expect(client.dataSources.query).toHaveBeenCalledWith(
-      expect.objectContaining({ page_size: 2 }),
+      expect.objectContaining({ page_size: 2 })
     )
+  })
+
+  it("rejects ambiguous include-archived project-name matches instead of picking one", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [
+        projectPage("p-active", "alpha"),
+        projectPage("p-archived", "alpha", { status: "archived" }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await expect(service.findByName("alpha", { includeArchived: true })).rejects.toThrow(
+      /Multiple projects named "alpha" found \(p-active, p-archived\)/
+    )
+  })
+})
+
+describe("ProjectService.resolveByName", () => {
+  it("returns a resolved/missing union without collapsing either case", async () => {
+    const client = createMockClient()
+    client.dataSources.query
+      .mockResolvedValueOnce({
+        results: [projectPage("p1", "alpha")],
+        has_more: false,
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const service = new ProjectService(client, DB)
+
+    await expect(service.resolveByName("alpha")).resolves.toMatchObject({
+      kind: "resolved",
+      project: { id: "p1" },
+    })
+    await expect(service.resolveByName("missing")).resolves.toEqual({
+      kind: "missing",
+    })
+  })
+
+  it("returns transient-error for retryable Notion failures", async () => {
+    const client = createMockClient()
+    const err = Object.assign(new Error("rate_limited"), {
+      status: 429,
+      code: "rate_limited",
+    })
+    client.dataSources.query.mockRejectedValue(err)
+    const service = new ProjectService(client, DB)
+
+    await expect(service.resolveByName("alpha")).resolves.toEqual({
+      kind: "transient-error",
+      cause: err,
+    })
   })
 })
 
@@ -339,14 +413,14 @@ describe("ProjectService.findByName — stampede dedup", () => {
                 has_more: false,
                 next_cursor: null,
               }),
-            5,
-          ),
-        ),
+            5
+          )
+        )
     )
     const service = new ProjectService(client, DB)
 
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => service.findByName("alpha")),
+      Array.from({ length: 8 }, () => service.findByName("alpha"))
     )
 
     expect(results.map((r) => r?.id)).toEqual(Array(8).fill("p1"))

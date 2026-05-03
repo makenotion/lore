@@ -9,11 +9,13 @@ import {
   backfillFactSources,
   formatBackfillBucket,
   loadTopicAliasMerges,
+  migrateCommand,
   parseSynopsisBackend,
   parseSynopsisBatchSize,
   printAliasMergeResults,
   printDiscoveryBreadcrumb,
   proposeSourceMemory,
+  resolveMigrationProjectScope,
   runAgentNormalization,
   runBuildConfidenceScores,
   runBuildEntitiesMigration,
@@ -84,6 +86,96 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     ...overrides,
   }
 }
+
+describe("migrateCommand help", () => {
+  it("links project-scoped migration recovery flags to the unscoped-write docs", () => {
+    const help = migrateCommand.helpInformation()
+    expect(help).toContain("--project <name>")
+    expect(help).toContain("--include-archived")
+    expect(help).toContain("--allow-unscoped")
+    expect(help).toContain("docs/memory-workflows.md#migrating-from-unscoped-writes")
+  })
+})
+
+describe("resolveMigrationProjectScope", () => {
+  function makeScopeServices(
+    resolveByName: (
+      name: string,
+      options?: { includeArchived?: boolean }
+    ) => Promise<
+      | { kind: "resolved"; project: { id: string; name: string } }
+      | { kind: "missing" }
+      | { kind: "transient-error"; cause: unknown }
+    >
+  ) {
+    return {
+      projects: {
+        resolveByName: vi.fn(resolveByName),
+        findByName: vi.fn(),
+      },
+    } as unknown as Parameters<typeof resolveMigrationProjectScope>[0]
+  }
+
+  it("returns empty scope when no project-capable migration flag is present", async () => {
+    const services = makeScopeServices(async () => ({
+      kind: "resolved",
+      project: { id: "unused", name: "Unused" },
+    }))
+
+    await expect(
+      resolveMigrationProjectScope(services, { project: "Mail" })
+    ).resolves.toEqual({})
+    expect(services.projects.resolveByName).not.toHaveBeenCalled()
+  })
+
+  it("resolves archived projects only when --include-archived is supplied", async () => {
+    const services = makeScopeServices(async (name) => ({
+      kind: "resolved",
+      project: { id: "project-archive", name },
+    }))
+
+    const scope = await resolveMigrationProjectScope(services, {
+      fixMemoryEncoding: true,
+      project: "Archive",
+      includeArchived: true,
+    })
+
+    expect(scope).toEqual({ projectId: "project-archive", projectName: "Archive" })
+    expect(services.projects.resolveByName).toHaveBeenCalledWith("Archive", {
+      includeArchived: true,
+    })
+  })
+
+  it("adds docs and include-archived recovery hints when project resolution misses", async () => {
+    const services = makeScopeServices(async () => ({ kind: "missing" }))
+
+    await expect(
+      resolveMigrationProjectScope(services, {
+        fixFactEncoding: true,
+        project: "Archive",
+      })
+    ).rejects.toThrow(
+      /Project "Archive" could not be resolved.*--include-archived.*docs\/memory-workflows\.md#migrating-from-unscoped-writes/
+    )
+  })
+
+  it("preserves retryable transient project-resolution failures", async () => {
+    const services = makeScopeServices(async () => ({
+      kind: "transient-error",
+      cause: Object.assign(new Error("rate_limited"), { status: 429 }),
+    }))
+
+    await expect(
+      resolveMigrationProjectScope(services, {
+        buildEntities: true,
+        project: "Mail",
+      })
+    ).rejects.toMatchObject({
+      code: "transient_project_resolution",
+      retryable: true,
+    })
+  })
+})
 
 describe("proposeSourceMemory", () => {
   it("matches a memory whose title contains the fact subject as a whole word", async () => {
@@ -185,7 +277,7 @@ describe("proposeSourceMemory", () => {
     const candidate = await proposeSourceMemory({ memories } as never, fact)
     expect(candidate.memory).toBeNull()
     expect(memories.search).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: undefined }),
+      expect.objectContaining({ projectId: undefined })
     )
   })
 })
@@ -269,6 +361,21 @@ describe("backfillFactSources", () => {
     expect(services.facts.setSource).toHaveBeenCalledTimes(2)
     expect(services.facts.setSource).toHaveBeenCalledWith("fact-A", "mem-A")
     expect(services.facts.setSource).toHaveBeenCalledWith("fact-B", "mem-B")
+  })
+
+  it("passes projectId to orphan discovery when migration scope is explicit", async () => {
+    const services = makeServices()
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await backfillFactSources(services as never, {
+      apply: false,
+      projectId: "project-mail",
+    })
+    log.mockRestore()
+
+    expect(services.facts.queryOrphans).toHaveBeenCalledWith({
+      projectId: "project-mail",
+    })
   })
 
   it("leaves unmatched orphans alone even with apply=true", async () => {
@@ -428,6 +535,28 @@ describe("runFactEncodingFix", () => {
     expect(logs.some((l) => l.includes("Decoded 1 HTML-encoded fact"))).toBe(true)
   })
 
+  it("threads explicit projectId into the fact encoding service", async () => {
+    const services = {
+      facts: {
+        fixEncoding: vi
+          .fn()
+          .mockResolvedValue({ encoded: [], collisions: [], fixes: [] }),
+      },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runFactEncodingFix(services as never, {
+      apply: false,
+      projectId: "project-mail",
+    })
+    log.mockRestore()
+
+    expect(services.facts.fixEncoding).toHaveBeenCalledWith({
+      dryRun: true,
+      projectId: "project-mail",
+    })
+  })
+
   it("surfaces the dedup-key collision gate and points operators at --dedup-keys --merge --yes", async () => {
     const encoded = [
       {
@@ -465,8 +594,8 @@ describe("runFactEncodingFix", () => {
     expect(
       logs.some(
         (l) =>
-          l.includes("Decoded 0 HTML-encoded fact") && l.includes("1 collision group"),
-      ),
+          l.includes("Decoded 0 HTML-encoded fact") && l.includes("1 collision group")
+      )
     ).toBe(true)
     // Directive for the operator is present.
     expect(logs.some((l) => l.includes("--dedup-keys --merge --yes"))).toBe(true)
@@ -535,6 +664,31 @@ describe("runMemoryEncodingFix", () => {
     expect(logs.some((l) => l.includes("No HTML-encoded memory rows"))).toBe(true)
   })
 
+  it("threads explicit projectId into the memory encoding service", async () => {
+    const services = {
+      memories: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded: [],
+          oversizedSkipped: [],
+          contentFetchFailures: [],
+          fixes: [],
+        }),
+      },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runMemoryEncodingFix(services as never, {
+      apply: false,
+      projectId: "project-mail",
+    })
+    log.mockRestore()
+
+    expect(services.memories.fixEncoding).toHaveBeenCalledWith({
+      dryRun: true,
+      projectId: "project-mail",
+    })
+  })
+
   it("prints Title and body tallies separately", async () => {
     const encoded = [
       {
@@ -595,7 +749,7 @@ describe("runMemoryEncodingFix", () => {
     log.mockRestore()
 
     expect(
-      logs.some((l) => l.includes("Title fixes: 1") && l.includes("body fixes: 2")),
+      logs.some((l) => l.includes("Title fixes: 1") && l.includes("body fixes: 2"))
     ).toBe(true)
   })
 
@@ -662,7 +816,7 @@ describe("runMemoryEncodingFix", () => {
         stderrChunks.push(
           typeof chunk === "string"
             ? chunk
-            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
         )
         return true
       })
@@ -695,6 +849,28 @@ describe("runMemoryEncodingFix", () => {
 })
 
 describe("runAgentNormalization", () => {
+  it("threads explicit projectId into the agent normalization service", async () => {
+    const services = {
+      memories: {
+        normalizeAgents: vi
+          .fn()
+          .mockResolvedValue({ encoded: [], fixes: [], errors: [] }),
+      },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runAgentNormalization(services as never, {
+      apply: false,
+      projectId: "project-mail",
+    })
+    log.mockRestore()
+
+    expect(services.memories.normalizeAgents).toHaveBeenCalledWith({
+      dryRun: true,
+      projectId: "project-mail",
+    })
+  })
+
   it("emits the discovery breadcrumb on stderr before the (potentially long-blocking) normalizeAgents call", async () => {
     // Same hang risk as the synopsis and memory-encoding paths:
     // `findNormalizableAgents` paginates the Memories DS without
@@ -708,7 +884,7 @@ describe("runAgentNormalization", () => {
         stderrChunks.push(
           typeof chunk === "string"
             ? chunk
-            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
         )
         return true
       })
@@ -748,7 +924,7 @@ describe("printDiscoveryBreadcrumb", () => {
         stderrChunks.push(
           typeof chunk === "string"
             ? chunk
-            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
         )
         return true
       })
@@ -759,7 +935,7 @@ describe("printDiscoveryBreadcrumb", () => {
     expect(stderrChunks).toHaveLength(1)
     const line = stderrChunks[0]!
     expect(line).toBe(
-      "Discovering memories with empty Synopsis (paginating Notion; set LORE_DEBUG=1 to trace retries)...\n",
+      "Discovering memories with empty Synopsis (paginating Notion; set LORE_DEBUG=1 to trace retries)...\n"
     )
   })
 })
@@ -786,7 +962,7 @@ describe("loadTopicAliasMerges", () => {
       - "Build tooling"
   - canonical: "MCP"
     aliases: ["MCP Tools"]
-`,
+`
     )
 
     const plans = await loadTopicAliasMerges(path)
@@ -799,7 +975,7 @@ describe("loadTopicAliasMerges", () => {
   it("rejects a missing file with a clean error naming the absolute path", async () => {
     const missing = join(workDir, "does-not-exist.yaml")
     await expect(loadTopicAliasMerges(missing)).rejects.toThrow(
-      /Merge file not found:.*does-not-exist\.yaml/,
+      /Merge file not found:.*does-not-exist\.yaml/
     )
   })
 
@@ -814,7 +990,7 @@ describe("loadTopicAliasMerges", () => {
     const path = join(workDir, "bad-schema.yaml")
     await writeFile(path, `merges:\n  - canonical: "A"\n    aliases: []\n`)
     await expect(loadTopicAliasMerges(path)).rejects.toThrow(
-      /Invalid merge file.*merges\.0\.aliases.*at least one alias/,
+      /Invalid merge file.*merges\.0\.aliases.*at least one alias/
     )
   })
 
@@ -869,7 +1045,7 @@ describe("printAliasMergeResults", () => {
           canonicalProjectIds: ["p1", "p2"],
         }),
       ],
-      { writing: true },
+      { writing: true }
     )
     const joined = logs.join("\n")
     expect(joined).toContain("Merged 1 topic alias group")
@@ -886,7 +1062,7 @@ describe("printAliasMergeResults", () => {
           reassignedMemoryIds: ["m1"],
         }),
       ],
-      { writing: false },
+      { writing: false }
     )
     const joined = logs.join("\n")
     expect(joined).toContain("Would merge 1 topic alias group")
@@ -903,7 +1079,7 @@ describe("printAliasMergeResults", () => {
           reassignedMemoryIds: ["m1"],
         }),
       ],
-      { writing: false },
+      { writing: false }
     )
     expect(logs.join("\n")).toContain("canonical would be created")
   })
@@ -917,7 +1093,7 @@ describe("printAliasMergeResults", () => {
           archivedAliases: [{ name: "Old", id: "t2" }],
         }),
       ],
-      { writing: true },
+      { writing: true }
     )
     expect(logs.join("\n")).toContain("canonical created")
   })
@@ -933,7 +1109,7 @@ describe("printAliasMergeResults", () => {
           canonicalProjectIds: ["p1", "p2", "p3", "p4"],
         }),
       ],
-      { writing: false },
+      { writing: false }
     )
     const joined = logs.join("\n")
     expect(joined).not.toMatch(/0 memor/)
@@ -949,17 +1125,17 @@ describe("printAliasMergeResults", () => {
           unmatchedAliases: ["MCP tool layout", "MCP Client Conventions"],
         }),
       ],
-      { writing: false },
+      { writing: false }
     )
     expect(logs.join("\n")).toContain(
-      'no match for: "MCP tool layout", "MCP Client Conventions"',
+      'no match for: "MCP tool layout", "MCP Client Conventions"'
     )
   })
 
   it("prints the 'Nothing to merge' banner when every plan is a noop", () => {
     printAliasMergeResults(
       [makeResult({ noop: true, archivedAliases: [], reassignedMemoryIds: [] })],
-      { writing: false },
+      { writing: false }
     )
     expect(logs.join("\n")).toContain("Nothing to merge")
   })
@@ -978,7 +1154,7 @@ describe("printAliasMergeResults", () => {
           unmatchedAliases: ["StaleAlias"],
         }),
       ],
-      { writing: true },
+      { writing: true }
     )
     const joined = logs.join("\n")
     expect(joined).toContain("1 plan already merged")
@@ -1015,7 +1191,7 @@ describe("runBuildEntitiesMigration", () => {
   })
 
   function addLockFields(
-    services: object,
+    services: object
   ): object & { configRoot: string; config: { vault: { pageId: string } } } {
     return {
       configRoot,
@@ -1057,6 +1233,31 @@ describe("runBuildEntitiesMigration", () => {
     expect(logs.join("\n")).toContain("nothing to canonicalize")
   })
 
+  it("threads explicit projectId into the entity migration fact scan", async () => {
+    const services = addLockFields({
+      entities: {
+        listAll: vi.fn().mockResolvedValue([]),
+        clearNameCache: vi.fn(),
+      },
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue([]),
+      },
+      vault: {
+        getClient: vi.fn(),
+      },
+    }) as never
+
+    await runBuildEntitiesMigration(services, {
+      apply: false,
+      projectId: "project-mail",
+    })
+
+    expect(
+      (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
+        .queryBySubject
+    ).toHaveBeenCalledWith("", expect.objectContaining({ projectId: "project-mail" }))
+  })
+
   it("apply mode fails fast when the build-entities lock is held", async () => {
     const lockPath = seedEntityLock(process.pid)
     const services = addLockFields({
@@ -1072,12 +1273,12 @@ describe("runBuildEntitiesMigration", () => {
     }) as never
 
     await expect(runBuildEntitiesMigration(services, { apply: true })).rejects.toThrow(
-      /Another build-entities migration is already active/,
+      /Another build-entities migration is already active/
     )
     expect(existsSync(lockPath)).toBe(true)
     expect(
       (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
-        .queryBySubject,
+        .queryBySubject
     ).not.toHaveBeenCalled()
   })
 
@@ -1119,7 +1320,7 @@ describe("runBuildEntitiesMigration", () => {
     expect(existsSync(lockPath)).toBe(true)
     expect(
       (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
-        .queryBySubject,
+        .queryBySubject
     ).toHaveBeenCalled()
   })
 })
@@ -1216,10 +1417,10 @@ describe("formatBackfillBucket", () => {
     // misread "checked and found zero" when the migration didn't
     // check at all.
     expect(formatBackfillBucket(0, "placeholder", false)).toBe(
-      "n/a (placeholder backend)",
+      "n/a (placeholder backend)"
     )
     expect(formatBackfillBucket(99, "placeholder", false)).toBe(
-      "n/a (placeholder backend)",
+      "n/a (placeholder backend)"
     )
   })
 })
@@ -1252,7 +1453,7 @@ describe("runSynopsisBackfill", () => {
     expect(logs.some((l) => l.includes("Would backfill 5 synopses"))).toBe(true)
     expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
     expect(logs.some((l) => l.includes("estimated, exact counts require --yes"))).toBe(
-      true,
+      true
     )
     // Plan-only output deliberately suppresses the batch-size clause —
     // the operator hasn't paid anything yet so the concurrency knob
@@ -1357,10 +1558,10 @@ describe("runSynopsisBackfill", () => {
     expect(logs.some((l) => l.includes("Flagged 4 synopses"))).toBe(true)
     expect(logs.some((l) => l.includes("backend: placeholder"))).toBe(true)
     expect(logs.some((l) => l.includes("body-oversize: n/a (placeholder backend)"))).toBe(
-      true,
+      true
     )
     expect(logs.some((l) => l.includes("empty-body:    n/a (placeholder backend)"))).toBe(
-      true,
+      true
     )
   })
 
@@ -1386,7 +1587,7 @@ describe("runSynopsisBackfill", () => {
     log.mockRestore()
 
     expect(
-      logs.some((l) => l.includes("body-oversize: 0") && l.includes("estimated")),
+      logs.some((l) => l.includes("body-oversize: 0") && l.includes("estimated"))
     ).toBe(true)
     expect(logs.some((l) => l.includes("n/a"))).toBe(false)
   })
@@ -1419,6 +1620,29 @@ describe("runSynopsisBackfill", () => {
     expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
   })
 
+  it("threads explicit projectId into the synopsis backfill service", async () => {
+    const report = emptyBackfillReport()
+    const services = {
+      memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+
+    await runSynopsisBackfill(services as never, {
+      apply: false,
+      backend: "claude",
+      projectId: "project-mail",
+    })
+    log.mockRestore()
+
+    expect(services.memories.backfillSynopses).toHaveBeenCalledWith({
+      apply: false,
+      dryRun: undefined,
+      backend: "claude",
+      batchSize: undefined,
+      projectId: "project-mail",
+    })
+  })
+
   it("emits a stderr breadcrumb before discovery so a quiet pagination doesn't look like a hang", async () => {
     // The discovery phase has no per-page logging, and the Notion SDK
     // absorbs 429 retries with multi-second `Retry-After` sleeps inside
@@ -1434,7 +1658,7 @@ describe("runSynopsisBackfill", () => {
         stderrChunks.push(
           typeof chunk === "string"
             ? chunk
-            : Buffer.from(chunk as Uint8Array).toString("utf8"),
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
         )
         return true
       })
@@ -1473,7 +1697,7 @@ describe("runSynopsisBackfill", () => {
 
 describe("summarizeConfidenceScorePlan", () => {
   function makeRow(
-    overrides: Partial<BuildConfidenceScoresPlan["rowsToSeed"][number]> = {},
+    overrides: Partial<BuildConfidenceScoresPlan["rowsToSeed"][number]> = {}
   ): BuildConfidenceScoresPlan["rowsToSeed"][number] {
     return {
       memoryId: "m1",
@@ -1647,6 +1871,27 @@ describe("runBuildConfidenceScores", () => {
     })
   })
 
+  it("uses a pre-resolved projectId without re-looking up projectName", async () => {
+    const services = makeServices({
+      memories: [],
+      findByName: async () => {
+        throw new Error("should not resolve again")
+      },
+    })
+
+    await runBuildConfidenceScores(services as never, {
+      apply: false,
+      dryRun: false,
+      projectName: "Archive",
+      projectId: "project-archive",
+    })
+
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+    expect(services.memories.listAllForBackfill).toHaveBeenCalledWith({
+      projectId: "project-archive",
+    })
+  })
+
   it("aborts on unknown projectName BEFORE the discovery breadcrumb prints", async () => {
     // Capture stderr to verify the breadcrumb does NOT appear on the
     // failure path — operators shouldn't see "Discovering memories..."
@@ -1669,7 +1914,7 @@ describe("runBuildConfidenceScores", () => {
           apply: false,
           dryRun: false,
           projectName: "Typo",
-        }),
+        })
       ).rejects.toThrow(/Project "Typo" could not be resolved/)
     } finally {
       process.stderr.write = originalWrite

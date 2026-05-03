@@ -111,6 +111,35 @@ Operators can disable extraction with `LORE_DISABLE_LEARNING_EXTRACTION=1` or
 - When saving a memory that resolves tracked work, check wake-up context for
   related active tasks and close any resolved ones.
 
+## Migrating From Unscoped Writes
+
+Older vaults may contain memories or facts whose `Project` relation is empty.
+Those rows usually mean "repo-wide" context, but during operator migrations an
+omitted project scope is easy to confuse with "run this for my current project."
+
+Project-capable migrations therefore require an explicit scope decision. Pass
+`--project <name>` to target one project; the discovery query includes rows in
+that project plus unscoped rows so shared repo context can still be repaired.
+Pass `--allow-unscoped` only when you intentionally want the migration to scan
+the whole vault. Pass `--include-archived` with `--project` when repairing data
+for a retired project.
+
+This applies to `--fix-fact-encoding`, `--fix-memory-encoding`,
+`--build-entities`, `--normalize-agents`, `--backfill-fact-sources`,
+`--backfill-synopses`, `--build-confidence-scores`, and
+`--build-fact-confidence-scores`.
+
+Recommended flow:
+
+1. List candidates: `lore status projects -a`
+2. Preview: `lore migrate --fix-memory-encoding --project "Mail" --dry-run`
+3. Apply: `lore migrate --fix-memory-encoding --project "Mail" --yes`
+
+If a project name is missing, archived, or inaccessible, Lore aborts before the
+plan or write phase. Transient Notion lookup failures such as 429s and 5xxs are
+reported as retryable project-resolution errors; retry them rather than
+switching to `--allow-unscoped`.
+
 ## MCP Tool Checklist
 
 - Session start: `lore-context action='wake-up'`

@@ -33,6 +33,7 @@ import type {
 import type { DatabaseRef } from "../types.js"
 import { SYNOPSIS_MAX } from "../types.js"
 import { extractTitle, isFullPage } from "../notion/extractors.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { findBackgroundBinary, renderAgentArgs } from "../hooks/background.js"
 import {
   DEFAULT_BACKGROUND_ARGS,
@@ -140,6 +141,9 @@ export interface BackfillOptions {
    *  `apply` so `--dry-run --yes` writes nothing. Matches every other
    *  migrate flag's posture. */
   dryRun?: boolean
+  /** Optional project scope. When set, discovery includes rows in the
+   *  project plus unscoped repo-wide rows, matching other read surfaces. */
+  projectId?: string
   /** Which synthesis backend to use on the apply path. Defaults to
    *  `claude`. Ignored when `apply` is false. */
   backend?: SynopsisBackend
@@ -423,7 +427,8 @@ export interface SynopsisCandidateBatch {
  */
 export async function findSynopsisCandidates(
   client: Client,
-  memoriesDb: DatabaseRef
+  memoriesDb: DatabaseRef,
+  options: { projectId?: string } = {}
 ): Promise<SynopsisCandidateBatch> {
   const candidates: CandidatePage[] = []
   let archivedSkipped = 0
@@ -437,10 +442,17 @@ export async function findSynopsisCandidates(
       // both pre-0.7.0 rows (column never existed at write time, so it
       // defaults to empty) and rows where an agent omitted the property
       // on save.
-      filter: {
-        property: "Synopsis",
-        rich_text: { is_empty: true },
-      },
+      filter: (options.projectId
+        ? {
+            and: [
+              { property: "Synopsis", rich_text: { is_empty: true } },
+              projectOrUnscopedFilter(options.projectId),
+            ],
+          }
+        : {
+            property: "Synopsis",
+            rich_text: { is_empty: true },
+          }) as QueryDataSourceParameters["filter"],
       // Deterministic order for the dry-run preview — matches the
       // pattern in `findEncodedMemories` / `findNormalizableAgents`.
       sorts: [{ timestamp: "created_time", direction: "ascending" }],
@@ -498,8 +510,11 @@ export async function backfillSynopses(
   const planOnly = !options.apply || options.dryRun === true
   const backend: SynopsisBackend = options.backend ?? "claude"
 
-  const { candidates, archivedSkipped, archivedExamples } =
-    await findSynopsisCandidates(client, memoriesDb)
+  const { candidates, archivedSkipped, archivedExamples } = await findSynopsisCandidates(
+    client,
+    memoriesDb,
+    { projectId: options.projectId }
+  )
 
   const report = emptyReport()
   report.totalCandidates = candidates.length

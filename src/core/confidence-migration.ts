@@ -19,7 +19,8 @@ import type { LoreServices } from "../services.js"
 import type { MemoryConfidence } from "../types.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../notion/rate-limit.js"
 import {
-  formatUnresolvedProjectScopeError,
+  PROJECT_SCOPE_MIGRATION_DOC,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "./project-scope.js"
 import { decayConfidenceScore, seedConfidenceScore } from "./decay.js"
@@ -52,6 +53,10 @@ export interface BuildConfidenceScoresOptions {
    *  to. Unknown / typo'd names throw before any plan or write fires —
    *  the safety property is documented on the throw site below. */
   projectName?: string
+  /** Pre-resolved project ID from the CLI dispatcher. Takes precedence
+   *  over `projectName` so archived-project migrations can resolve once
+   *  with `--include-archived` and avoid an active-only re-lookup. */
+  projectId?: string
 }
 
 export interface BuildConfidenceScoresPlanRow {
@@ -119,21 +124,23 @@ async function buildPlan(
   // NOT silently fall through to vault-wide migration — that would
   // mutate every null-scored row across all projects, and a `--yes`
   // for one project is not consent to mutate the whole vault.
-  let projectId: string | undefined
+  let projectId = opts.projectId
   const explicitProjectName = validateExplicitProjectScopeName(projectName, "--project", {
     listHint: "run `lore status projects` to list configured projects",
     omittedScopeLabel: "vault-wide scope",
+    docsHint: PROJECT_SCOPE_MIGRATION_DOC,
   })
-  if (explicitProjectName !== undefined) {
-    const project = await services.projects.findByName(explicitProjectName)
-    if (project === null) {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-          listHint: "run `lore status projects` to list configured projects",
-          omittedScopeLabel: "vault-wide scope",
-        })
-      )
-    }
+  if (explicitProjectName !== undefined && projectId === undefined) {
+    const project = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+        omittedScopeLabel: "vault-wide scope",
+        docsHint: PROJECT_SCOPE_MIGRATION_DOC,
+      }
+    )
     projectId = project.id
   }
 

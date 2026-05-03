@@ -5,7 +5,8 @@
 import type { LoreServices } from "../services.js"
 import { formatCatchAllScopeSummary, subProjectNames } from "../core/context.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
+  resolveProjectScopeNames,
   validateExplicitProjectScopeName,
   validateExplicitProjectScopeNames,
 } from "../core/project-scope.js"
@@ -61,24 +62,14 @@ export async function resolveProjectIds(
         : []
 
   if (names.length > 0) {
-    const resolved = await Promise.all(
-      names.map(async (name) => ({
-        name,
-        project: await services.projects.findByName(name),
-      }))
+    const resolved = await resolveProjectScopeNames(
+      services.projects,
+      names,
+      "projectName/projectNames",
+      scopeErrorOptions
     )
-    const missing = resolved.filter((entry) => !entry.project).map((entry) => entry.name)
-    if (missing.length > 0) {
-      throw new Error(
-        formatUnresolvedProjectScopeError(
-          missing,
-          "projectName/projectNames",
-          scopeErrorOptions
-        )
-      )
-    }
     return {
-      ids: resolved.flatMap((entry) => (entry.project ? [entry.project.id] : [])),
+      ids: resolved.map((project) => project.id),
       warnings: [],
     }
   }
@@ -119,14 +110,14 @@ export async function resolveReadProjectScope(
     }
   )
   if (explicitProjectName !== undefined) {
-    const project = await services.projects.findByName(explicitProjectName)
-    if (!project) {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "projectName", {
-          listHint: "call `lore-project action='list'` to see configured projects",
-        })
-      )
-    }
+    const project = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "projectName",
+      {
+        listHint: "call `lore-project action='list'` to see configured projects",
+      }
+    )
     return {
       projectId: project.id,
       project,

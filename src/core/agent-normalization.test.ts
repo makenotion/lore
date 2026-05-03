@@ -8,10 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
-import {
-  findNormalizableAgents,
-  normalizeAgents,
-} from "./agent-normalization.js"
+import { findNormalizableAgents, normalizeAgents } from "./agent-normalization.js"
 import type { DatabaseRef } from "../types.js"
 
 function memoryPage(overrides: {
@@ -30,18 +27,13 @@ function memoryPage(overrides: {
     properties: {
       Agent: {
         type: "rich_text",
-        rich_text:
-          overrides.agent.length > 0
-            ? [{ plain_text: overrides.agent }]
-            : [],
+        rich_text: overrides.agent.length > 0 ? [{ plain_text: overrides.agent }] : [],
       } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
 }
 
-function createMockClient(
-  pages: PageObjectResponse[],
-): Client & {
+function createMockClient(pages: PageObjectResponse[]): Client & {
   pages: { update: ReturnType<typeof vi.fn> }
   dataSources: { query: ReturnType<typeof vi.fn> }
 } {
@@ -90,13 +82,13 @@ describe("findNormalizableAgents", () => {
       "Claude Opus 4.7",
     ]
     const client = createMockClient(
-      variants.map((agent, i) => memoryPage({ id: `m${i}`, agent })),
+      variants.map((agent, i) => memoryPage({ id: `m${i}`, agent }))
     )
     const rows = await findNormalizableAgents(client, DB)
     // The literal `"Claude Code"` row is already canonical and stays out.
     // All other variants need a rewrite.
     expect(rows.map((r) => r.rawAgent).sort()).toEqual(
-      variants.filter((v) => v !== "Claude Code").sort(),
+      variants.filter((v) => v !== "Claude Code").sort()
     )
     for (const row of rows) {
       expect(row.canonicalAgent).toBe("Claude Code")
@@ -119,6 +111,28 @@ describe("findNormalizableAgents", () => {
     ])
     const rows = await findNormalizableAgents(client, DB)
     expect(rows.map((r) => r.id)).toEqual(["m2"])
+  })
+
+  it("combines Agent pruning with project-plus-unscoped discovery when projectId is supplied", async () => {
+    const client = createMockClient([])
+
+    await findNormalizableAgents(client, DB, { projectId: "project-a" })
+
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: {
+          and: [
+            { property: "Agent", rich_text: { is_not_empty: true } },
+            {
+              or: [
+                { property: "Project", relation: { contains: "project-a" } },
+                { property: "Project", relation: { is_empty: true } },
+              ],
+            },
+          ],
+        },
+      })
+    )
   })
 
   it("leaves explicit third-party Agent strings unchanged", async () => {
@@ -197,9 +211,7 @@ describe("normalizeAgents", () => {
   })
 
   it("issues no writes on dry-run but still surfaces the plan", async () => {
-    const client = createMockClient([
-      memoryPage({ id: "m1", agent: "claude-code" }),
-    ])
+    const client = createMockClient([memoryPage({ id: "m1", agent: "claude-code" })])
 
     const report = await normalizeAgents(client, DB, { dryRun: true })
 
@@ -230,9 +242,7 @@ describe("normalizeAgents", () => {
 
     expect(report.encoded).toHaveLength(3)
     expect(report.fixes.map((f) => f.id).sort()).toEqual(["m-also-good", "m-good"])
-    expect(report.errors).toEqual([
-      { id: "m-bad", message: "simulated rate limit" },
-    ])
+    expect(report.errors).toEqual([{ id: "m-bad", message: "simulated rate limit" }])
     // Every row still attempted — a regression that bailed out at the
     // first error would only show one update call.
     expect(client.pages.update).toHaveBeenCalledTimes(3)

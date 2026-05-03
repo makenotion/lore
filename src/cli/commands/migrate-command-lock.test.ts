@@ -87,7 +87,9 @@ describe("migrateCommand build-entities locking", () => {
     const lockPath = seedEntityLock(process.pid)
 
     await expect(
-      migrateCommand.parseAsync(["--build-entities", "--yes"], { from: "user" })
+      migrateCommand.parseAsync(["--build-entities", "--yes", "--allow-unscoped"], {
+        from: "user",
+      })
     ).rejects.toThrow("exit-called")
 
     expect(existsSync(lockPath)).toBe(true)

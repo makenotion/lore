@@ -93,6 +93,11 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 - Property building uses helpers from `notion/schema.ts`, such as
   `buildMemoryProps()`.
 - Complex filters should be cast to `QueryDataSourceParameters["filter"]`.
+- Project-capable data migrations resolve `--project` once in the CLI
+  dispatcher, pass the resolved project ID down to core helpers, and use
+  `projectOrUnscopedFilter(projectId)` for Notion queries. Unknown project
+  names must never fall back to vault-wide scans; require
+  `--allow-unscoped` for intentional vault-wide migration work.
 - MCP tool inputs are validated with Zod schemas via `inputSchema` in
   `registerTool()`.
 - CLI inputs are validated through commander's argument and option parsing.

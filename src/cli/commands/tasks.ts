@@ -8,7 +8,7 @@ import {
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { parsePositiveDecimalInteger, parseUnitIntervalDecimal } from "../parse.js"
@@ -83,16 +83,15 @@ export async function runReconcile(
     }
   )
   if (explicitProjectName !== undefined) {
-    const found = await services.projects.findByName(explicitProjectName)
-    if (found) {
-      projectId = found.id
-    } else {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-          listHint: "run `lore status projects` to list configured projects",
-        })
-      )
-    }
+    const found = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+      }
+    )
+    projectId = found.id
   }
   if (!projectId && services.context.project) {
     projectId = services.context.project.id

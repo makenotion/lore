@@ -21,6 +21,7 @@ import {
   extractRichText,
   extractSelect,
 } from "../notion/extractors.js"
+import { isTransientNotionError } from "../notion/errors.js"
 import { LruCache } from "./cache.js"
 
 /** Project name → Project cache. TTL is short enough that a rename in
@@ -30,12 +31,17 @@ const NAME_CACHE_TTL_MS = 60_000
 const NAME_CACHE_MAX = 200
 
 function activeProjectLookupFilter(
-  lookup: Record<string, unknown>,
+  lookup: Record<string, unknown>
 ): QueryDataSourceParameters["filter"] {
   return {
     and: [lookup, { property: "Status", select: { equals: "active" } }],
   } as QueryDataSourceParameters["filter"]
 }
+
+export type ProjectNameResolution =
+  | { kind: "resolved"; project: Project }
+  | { kind: "missing" }
+  | { kind: "transient-error"; cause: unknown }
 
 export class ProjectService {
   /**
@@ -47,12 +53,12 @@ export class ProjectService {
    */
   private readonly nameCache = new LruCache<string, Project>(
     NAME_CACHE_MAX,
-    NAME_CACHE_TTL_MS,
+    NAME_CACHE_TTL_MS
   )
 
   constructor(
     private client: Client,
-    private db: DatabaseRef,
+    private db: DatabaseRef
   ) {}
 
   async create(input: CreateProjectInput): Promise<Project> {
@@ -122,27 +128,29 @@ export class ProjectService {
    * Negative lookups are not cached — a `create` followed by a
    * `findByName` in the same session must see the new page.
    */
-  async findByName(name: string): Promise<Project | null> {
+  async findByName(
+    name: string,
+    options: { includeArchived?: boolean } = {}
+  ): Promise<Project | null> {
+    if (options.includeArchived) {
+      return this.loadByName(name, { includeArchived: true })
+    }
     return this.nameCache.getOrLoad(name, async () => {
-      const response = await this.client.dataSources.query({
-        data_source_id: this.db.dataSourceId,
-        filter: activeProjectLookupFilter({
-          property: "Name",
-          title: { equals: name },
-        }),
-        page_size: 2,
-      })
-      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
-      if (pages.length > 1) {
-        const ids = pages.map((page) => page.id).join(", ")
-        throw new Error(
-          `Multiple active projects named "${name}" found (${ids}). ` +
-            `Rename or archive duplicates before using explicit project scope.`,
-        )
-      }
-      const page = pages[0]
-      return page ? this.pageToProject(page) : null
+      return this.loadByName(name, { includeArchived: false })
     })
+  }
+
+  async resolveByName(
+    name: string,
+    options: { includeArchived?: boolean } = {}
+  ): Promise<ProjectNameResolution> {
+    try {
+      const project = await this.findByName(name, options)
+      return project ? { kind: "resolved", project } : { kind: "missing" }
+    } catch (err) {
+      if (isTransientNotionError(err)) return { kind: "transient-error", cause: err }
+      throw err
+    }
   }
 
   async archive(id: string): Promise<void> {
@@ -162,6 +170,34 @@ export class ProjectService {
    *  cross-service `clearServiceCaches()` helper. */
   clearNameCache(): void {
     this.nameCache.clear()
+  }
+
+  private async loadByName(
+    name: string,
+    options: { includeArchived: boolean }
+  ): Promise<Project | null> {
+    const lookup = {
+      property: "Name",
+      title: { equals: name },
+    }
+    const response = await this.client.dataSources.query({
+      data_source_id: this.db.dataSourceId,
+      filter: options.includeArchived
+        ? (lookup as QueryDataSourceParameters["filter"])
+        : activeProjectLookupFilter(lookup),
+      page_size: 2,
+    })
+    const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+    if (pages.length > 1) {
+      const ids = pages.map((page) => page.id).join(", ")
+      const qualifier = options.includeArchived ? "projects" : "active projects"
+      throw new Error(
+        `Multiple ${qualifier} named "${name}" found (${ids}). ` +
+          `Rename or archive duplicates before using explicit project scope.`
+      )
+    }
+    const page = pages[0]
+    return page ? this.pageToProject(page) : null
   }
 
   private pageToProject(page: PageObjectResponse): Project {

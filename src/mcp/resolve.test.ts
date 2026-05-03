@@ -27,11 +27,22 @@ interface StubOpts {
   contextProject?: Project | null
   isCatchAllFallback?: boolean
   findByName?: Record<string, Project | null>
+  transientNames?: string[]
   config?: LoreConfig
 }
 
 function makeServices(opts: StubOpts = {}): LoreServices {
   const findByName = vi.fn(async (name: string) => opts.findByName?.[name] ?? null)
+  const resolveByName = vi.fn(async (name: string) => {
+    if (opts.transientNames?.includes(name)) {
+      return {
+        kind: "transient-error" as const,
+        cause: Object.assign(new Error("rate_limited"), { status: 429 }),
+      }
+    }
+    const project = await findByName(name)
+    return project ? { kind: "resolved" as const, project } : { kind: "missing" as const }
+  })
 
   const context: ResolvedContext = {
     vault: { pageId: "v", databases: {} as never },
@@ -41,7 +52,7 @@ function makeServices(opts: StubOpts = {}): LoreServices {
   }
 
   return {
-    projects: { findByName } as unknown as LoreServices["projects"],
+    projects: { findByName, resolveByName } as unknown as LoreServices["projects"],
     context,
     config: opts.config ?? MONOREPO_CONFIG,
   } as unknown as LoreServices
@@ -79,6 +90,18 @@ describe("resolveProjectIds", () => {
 
     await expect(resolveProjectIds(services, "Missing")).rejects.toThrow(
       'Project "Missing" could not be resolved (not found, archived, or inaccessible).'
+    )
+  })
+
+  it("throws a retryable transient error without calling the missing-project path", async () => {
+    const services = makeServices({ transientNames: ["Missing"] })
+
+    await expect(resolveProjectIds(services, "Missing")).rejects.toMatchObject({
+      code: "transient_project_resolution",
+      retryable: true,
+    })
+    await expect(resolveProjectIds(services, "Missing")).rejects.toThrow(
+      /transient error/
     )
   })
 
@@ -239,6 +262,18 @@ describe("resolveReadProjectScope", () => {
     await expect(resolveReadProjectScope(services, "Missing")).rejects.toThrow(
       'Project "Missing" could not be resolved (not found, archived, or inaccessible).'
     )
+  })
+
+  it("throws a retryable transient error for read projectName resolution", async () => {
+    const services = makeServices({
+      contextProject: makeProject("Mail"),
+      transientNames: ["Missing"],
+    })
+
+    await expect(resolveReadProjectScope(services, "Missing")).rejects.toMatchObject({
+      code: "transient_project_resolution",
+      retryable: true,
+    })
   })
 
   it("throws when an explicit read projectName is blank without falling back", async () => {

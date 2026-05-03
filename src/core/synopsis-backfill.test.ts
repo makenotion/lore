@@ -77,12 +77,11 @@ function makeClient(
 ): Client & MockClient {
   return {
     pages: {
-      update: vi.fn(
-        overrides.updateImpl ?? (async () => ({}))
-      ) as unknown as ReturnType<typeof vi.fn>,
+      update: vi.fn(overrides.updateImpl ?? (async () => ({}))) as unknown as ReturnType<
+        typeof vi.fn
+      >,
       retrieveMarkdown: vi.fn(
-        overrides.retrieveImpl ??
-          (async () => ({ markdown: "default body" }))
+        overrides.retrieveImpl ?? (async () => ({ markdown: "default body" }))
       ) as unknown as ReturnType<typeof vi.fn>,
     },
     dataSources: {
@@ -236,9 +235,7 @@ describe("backfillSynopses — plan-only contract", () => {
   })
 
   it("--dry-run wins over --yes (apply=true, dryRun=true is plan-only)", async () => {
-    const client = makeClient([
-      memoryPage({ id: "m1", title: "First memory" }),
-    ])
+    const client = makeClient([memoryPage({ id: "m1", title: "First memory" })])
     const synthesizer = vi.fn(
       async () => "should not be called"
     ) as unknown as SynthesizerFn
@@ -304,9 +301,7 @@ describe("backfillSynopses — plan-only contract", () => {
 
     const report = await backfillSynopses(client, DB, { apply: false })
     expect(report.totalCandidates).toBe(5)
-    const candidateExamples = report.examples.filter(
-      (e) => e.bucket === "candidate"
-    )
+    const candidateExamples = report.examples.filter((e) => e.bucket === "candidate")
     expect(candidateExamples).toHaveLength(3)
     expect(candidateExamples.map((e) => e.id)).toEqual(["m1", "m2", "m3"])
   })
@@ -341,8 +336,7 @@ describe("backfillSynopses — claude apply path", () => {
 
     // Pin the exact pages.update shape so a future schema rename
     // catches it here instead of in production.
-    const firstCall = (client.pages.update as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const firstCall = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(firstCall).toEqual({
       page_id: "m1",
       properties: {
@@ -388,7 +382,7 @@ describe("backfillSynopses — claude apply path", () => {
           command: "codex",
           args: ["exec", "--full-auto"],
         },
-      }),
+      })
     ).rejects.toThrow(/background command "codex" not found/)
 
     // Two backfillSynopses calls above (default + custom agent), each
@@ -473,14 +467,14 @@ describe("backfillSynopses — claude apply path", () => {
     expect(report.synthesized).toBe(4)
     expect(client.pages.update).toHaveBeenCalledTimes(4)
     // Verify the failed row's id never reached pages.update.
-    const updatedIds = (
-      client.pages.update as ReturnType<typeof vi.fn>
-    ).mock.calls.map((c) => (c[0] as { page_id: string }).page_id)
+    const updatedIds = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => (c[0] as { page_id: string }).page_id
+    )
     expect(updatedIds).not.toContain("m3")
     // Stderr line uses phase=fetch.
     expect(
-      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
-        String(c[0]).includes("phase=fetch") && String(c[0]).includes("id=m3")
+      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some(
+        (c) => String(c[0]).includes("phase=fetch") && String(c[0]).includes("id=m3")
       )
     ).toBe(true)
     stderrSpy.mockRestore()
@@ -507,8 +501,8 @@ describe("backfillSynopses — claude apply path", () => {
     expect(report.synthesized).toBe(0)
     expect(client.pages.update).not.toHaveBeenCalled()
     expect(
-      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
-        String(c[0]).includes("phase=synthesize") && String(c[0]).includes("id=m1")
+      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some(
+        (c) => String(c[0]).includes("phase=synthesize") && String(c[0]).includes("id=m1")
       )
     ).toBe(true)
     stderrSpy.mockRestore()
@@ -536,8 +530,8 @@ describe("backfillSynopses — claude apply path", () => {
     expect(report.synthesized).toBe(0)
     expect(client.pages.update).not.toHaveBeenCalled()
     expect(
-      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
-        String(c[0]).includes("phase=sanitize") && String(c[0]).includes("id=m1")
+      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some(
+        (c) => String(c[0]).includes("phase=sanitize") && String(c[0]).includes("id=m1")
       )
     ).toBe(true)
     stderrSpy.mockRestore()
@@ -575,8 +569,8 @@ describe("backfillSynopses — claude apply path", () => {
     expect(report.synthesized).toBe(1)
     expect(client.pages.update).toHaveBeenCalledTimes(2)
     expect(
-      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
-        String(c[0]).includes("phase=write") && String(c[0]).includes("id=m1")
+      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some(
+        (c) => String(c[0]).includes("phase=write") && String(c[0]).includes("id=m1")
       )
     ).toBe(true)
     stderrSpy.mockRestore()
@@ -598,13 +592,11 @@ describe("backfillSynopses — claude apply path", () => {
 
     expect(report.truncated).toBe(1)
     expect(report.synthesized).toBe(1)
-    const updateCall = (
-      client.pages.update as ReturnType<typeof vi.fn>
-    ).mock.calls[0][0] as {
+    const updateCall = (client.pages.update as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as {
       properties: { Synopsis: { rich_text: { text: { content: string } }[] } }
     }
-    const writtenContent =
-      updateCall.properties.Synopsis.rich_text[0].text.content
+    const writtenContent = updateCall.properties.Synopsis.rich_text[0].text.content
     expect(writtenContent.length).toBeLessThanOrEqual(SYNOPSIS_MAX)
   })
 
@@ -627,9 +619,9 @@ describe("backfillSynopses — claude apply path", () => {
     })
 
     expect(bodyFetcher).toHaveBeenCalledTimes(1)
-    const fetchedIds = (
-      bodyFetcher as ReturnType<typeof vi.fn>
-    ).mock.calls.map((c) => c[0])
+    const fetchedIds = (bodyFetcher as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0]
+    )
     expect(fetchedIds).toEqual(["m2"])
   })
 })
@@ -650,9 +642,8 @@ describe("backfillSynopses — placeholder backend", () => {
     expect(report.placeholderWritten).toBe(2)
     expect(report.synthesized).toBe(0)
     expect(client.pages.update).toHaveBeenCalledTimes(2)
-    const firstCall = (
-      client.pages.update as ReturnType<typeof vi.fn>
-    ).mock.calls[0][0] as {
+    const firstCall = (client.pages.update as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as {
       properties: { Synopsis: { rich_text: { text: { content: string } }[] } }
     }
     expect(firstCall.properties.Synopsis.rich_text[0].text.content).toBe(
@@ -667,9 +658,7 @@ describe("backfillSynopses — placeholder backend", () => {
       memoryPage({ id: "m1", title: "First" }),
       memoryPage({ id: "m2", title: "Second" }),
     ])
-    const bodyFetcher: BodyFetcherFn = vi.fn(
-      async () => "should not be called"
-    )
+    const bodyFetcher: BodyFetcherFn = vi.fn(async () => "should not be called")
 
     await backfillSynopses(client, DB, {
       apply: true,
@@ -750,8 +739,8 @@ describe("backfillSynopses — placeholder backend", () => {
     expect(report.placeholderWritten).toBe(4)
     expect(report.writeFailed).toBe(1)
     expect(
-      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some((c) =>
-        String(c[0]).includes("phase=write") && String(c[0]).includes("id=m3")
+      (stderrSpy as ReturnType<typeof vi.fn>).mock.calls.some(
+        (c) => String(c[0]).includes("phase=write") && String(c[0]).includes("id=m3")
       )
     ).toBe(true)
     stderrSpy.mockRestore()
@@ -768,9 +757,8 @@ describe("backfillSynopses — placeholder backend", () => {
       backend: "placeholder",
     })
 
-    const queryCall = (
-      client.dataSources.query as ReturnType<typeof vi.fn>
-    ).mock.calls[0][0]
+    const queryCall = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryCall.filter).toEqual({
       property: "Synopsis",
       rich_text: { is_empty: true },
@@ -782,9 +770,8 @@ describe("backfillSynopses — discovery query shape", () => {
   it("sends `Synopsis is_empty` as the server-side filter", async () => {
     const client = makeClient([])
     await backfillSynopses(client, DB, { apply: false })
-    const queryCall = (
-      client.dataSources.query as ReturnType<typeof vi.fn>
-    ).mock.calls[0][0]
+    const queryCall = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryCall.filter).toEqual({
       property: "Synopsis",
       rich_text: { is_empty: true },
@@ -905,9 +892,7 @@ describe("backfillSynopses — partial-failure log line shape", () => {
     // ordering are what `grep`-based aggregators rely on.
     for (const line of lines) {
       if (line.startsWith("[lore] synopsis-backfill:")) {
-        expect(line).toMatch(
-          /^\[lore\] synopsis-backfill: id=\S+ phase=\w+ error=.+\n$/
-        )
+        expect(line).toMatch(/^\[lore\] synopsis-backfill: id=\S+ phase=\w+ error=.+\n$/)
       }
     }
     stderrSpy.mockRestore()
@@ -955,13 +940,7 @@ describe("findSynopsisCandidates", () => {
 
     const result = await findSynopsisCandidates(client, DB)
 
-    expect(result.candidates.map((c) => c.id)).toEqual([
-      "m1",
-      "m2",
-      "m3",
-      "m4",
-      "m5",
-    ])
+    expect(result.candidates.map((c) => c.id)).toEqual(["m1", "m2", "m3", "m4", "m5"])
     expect(result.archivedSkipped).toBe(0)
     expect(queryMock).toHaveBeenCalledTimes(3)
 
@@ -1027,11 +1006,34 @@ describe("findSynopsisCandidates", () => {
       property: "Synopsis",
       rich_text: { is_empty: true },
     })
-    expect(call.sorts).toEqual([
-      { timestamp: "created_time", direction: "ascending" },
-    ])
+    expect(call.sorts).toEqual([{ timestamp: "created_time", direction: "ascending" }])
     expect(call.page_size).toBe(100)
     expect(call.data_source_id).toBe("memories-ds")
+  })
+
+  it("combines Synopsis pruning with project-plus-unscoped discovery when projectId is supplied", async () => {
+    const queryMock = vi.fn().mockResolvedValue({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = {
+      dataSources: { query: queryMock },
+    } as unknown as Client
+
+    await findSynopsisCandidates(client, DB, { projectId: "project-a" })
+
+    expect(queryMock.mock.calls[0][0].filter).toEqual({
+      and: [
+        { property: "Synopsis", rich_text: { is_empty: true } },
+        {
+          or: [
+            { property: "Project", relation: { contains: "project-a" } },
+            { property: "Project", relation: { is_empty: true } },
+          ],
+        },
+      ],
+    })
   })
 })
 

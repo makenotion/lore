@@ -1,7 +1,7 @@
 import { Command } from "commander"
 import { initServices } from "../../services.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { notionPageUrl, terminalLink } from "../output.js"
@@ -57,15 +57,15 @@ export const searchCommand = new Command("search")
           }
         )
         if (explicitProjectName !== undefined) {
-          const found = await services.projects.findByName(explicitProjectName)
-          if (found) projectId = found.id
-          else {
-            throw new Error(
-              formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-                listHint: "run `lore status projects` to list configured projects",
-              })
-            )
-          }
+          const found = await resolveProjectScopeName(
+            services.projects,
+            explicitProjectName,
+            "--project",
+            {
+              listHint: "run `lore status projects` to list configured projects",
+            }
+          )
+          projectId = found.id
         } else if (services.context.project) {
           projectId = services.context.project.id
         }

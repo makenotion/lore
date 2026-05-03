@@ -29,7 +29,7 @@ import {
 } from "../../core/conflict.js"
 import { dynamicCodeFence } from "../../core/markdown.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
@@ -175,14 +175,14 @@ export async function resolveScanProjects(
     listHint: "run `lore status projects` to list configured projects",
   })
   if (explicitProjectName !== undefined) {
-    const found = await services.projects.findByName(explicitProjectName)
-    if (!found) {
-      throw new Error(
-        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-          listHint: "run `lore status projects` to list configured projects",
-        })
-      )
-    }
+    const found = await resolveProjectScopeName(
+      services.projects,
+      explicitProjectName,
+      "--project",
+      {
+        listHint: "run `lore status projects` to list configured projects",
+      }
+    )
     return [{ id: found.id, label: found.name }]
   }
   // Scope all-projects scans to active projects. `lore status projects`

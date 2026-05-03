@@ -1460,7 +1460,9 @@ export class FactService {
    * migration function in `fact-encoding.ts` so the CLI doesn't need to
    * reach past the service boundary for the client + DatabaseRef.
    */
-  async fixEncoding(options: { dryRun?: boolean } = {}): Promise<FactEncodingReport> {
+  async fixEncoding(
+    options: { dryRun?: boolean; projectId?: string } = {}
+  ): Promise<FactEncodingReport> {
     return fixFactEncoding(this.client, this.db, options)
   }
 

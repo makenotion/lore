@@ -43,6 +43,7 @@ export { createClient } from "./notion/client.js"
 export { createVaultDatabases, verifyVaultDatabases } from "./notion/setup.js"
 export { VaultManager } from "./core/vault.js"
 export { ProjectService } from "./core/project.js"
+export type { ProjectNameResolution } from "./core/project.js"
 export {
   isFullPage,
   extractTitle,

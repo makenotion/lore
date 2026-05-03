@@ -4,7 +4,7 @@ import { existsSync } from "node:fs"
 import { initServices } from "../../services.js"
 import { gatherDigestData, isoDate } from "../../core/digest.js"
 import {
-  formatUnresolvedProjectScopeError,
+  resolveProjectScopeName,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { buildDigestPrompt } from "../../hooks/prompts.js"
@@ -82,14 +82,14 @@ export const digestCommand = new Command("digest")
           }
         )
         if (explicitProjectName !== undefined) {
-          const found = await services.projects.findByName(explicitProjectName)
-          if (!found) {
-            throw new Error(
-              formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
-                listHint: "run `lore status projects` to list configured projects",
-              })
-            )
-          }
+          const found = await resolveProjectScopeName(
+            services.projects,
+            explicitProjectName,
+            "--project",
+            {
+              listHint: "run `lore status projects` to list configured projects",
+            }
+          )
           projectId = found.id
           projectLabel = found.name
           // Find the matching `.lore.yaml` entry so we can spawn from the

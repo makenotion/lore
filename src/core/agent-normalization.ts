@@ -27,6 +27,7 @@ import type {
 } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
 import { extractRichText, isFullPage } from "../notion/extractors.js"
+import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { canonicalizeAgentName } from "../hooks/agent-identity.js"
 
 /**
@@ -76,7 +77,8 @@ export interface AgentNormalizationReport {
  */
 export async function findNormalizableAgents(
   client: Client,
-  memoriesDb: DatabaseRef
+  memoriesDb: DatabaseRef,
+  options: { projectId?: string } = {}
 ): Promise<NormalizableAgentRow[]> {
   const rows: NormalizableAgentRow[] = []
 
@@ -95,10 +97,17 @@ export async function findNormalizableAgents(
       // client-side `if (!rawAgent) continue` below is a defensive safety
       // net for any edge case the filter doesn't catch — it's redundant
       // when the filter works, harmless when it doesn't.
-      filter: {
-        property: "Agent",
-        rich_text: { is_not_empty: true },
-      },
+      filter: (options.projectId
+        ? {
+            and: [
+              { property: "Agent", rich_text: { is_not_empty: true } },
+              projectOrUnscopedFilter(options.projectId),
+            ],
+          }
+        : {
+            property: "Agent",
+            rich_text: { is_not_empty: true },
+          }) as QueryDataSourceParameters["filter"],
     } as QueryDataSourceParameters)
 
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
@@ -110,7 +119,7 @@ export async function findNormalizableAgents(
       rows.push({ id: page.id, rawAgent, canonicalAgent })
     }
 
-    cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
   rows.sort((a, b) => {
@@ -140,9 +149,11 @@ export async function findNormalizableAgents(
 export async function normalizeAgents(
   client: Client,
   memoriesDb: DatabaseRef,
-  options: { dryRun?: boolean } = {}
+  options: { dryRun?: boolean; projectId?: string } = {}
 ): Promise<AgentNormalizationReport> {
-  const encoded = await findNormalizableAgents(client, memoriesDb)
+  const encoded = await findNormalizableAgents(client, memoriesDb, {
+    projectId: options.projectId,
+  })
 
   if (options.dryRun) {
     return { encoded, fixes: [], errors: [] }
