@@ -7,7 +7,7 @@
 
 import type { Client } from "@notionhq/client"
 import type { BlockObjectResponse } from "@notionhq/client"
-import type { Vault, VaultDatabases } from "../types.js"
+import type { DatabaseRef, Vault, VaultDatabases } from "../types.js"
 import {
   PROJECTS_DB_TITLE,
   PROJECTS_DB_ICON,
@@ -32,8 +32,91 @@ import {
 // are structurally compatible but need a cast at the boundary.
 type AnyProperties = Record<string, Record<string, unknown>>
 type VaultDatabaseTitles = Record<keyof VaultDatabases, string>
+type VaultDatabaseKey = keyof VaultDatabases
+type VaultDatabasesWithOptionalEntities = Omit<VaultDatabases, "entities"> &
+  Partial<Pick<VaultDatabases, "entities">>
+
+export interface VaultWithOptionalEntities {
+  pageId: string
+  databases: VaultDatabasesWithOptionalEntities
+}
 
 const MAX_VAULT_CHILD_BLOCK_PAGES = 100
+
+const EXPECTED_VAULT_TITLES: VaultDatabaseTitles = {
+  projects: PROJECTS_DB_TITLE,
+  topics: TOPICS_DB_TITLE,
+  memories: MEMORIES_DB_TITLE,
+  entities: ENTITIES_DB_TITLE,
+  facts: FACTS_DB_TITLE,
+}
+
+const REQUIRED_VAULT_DATABASE_KEYS: VaultDatabaseKey[] = [
+  "projects",
+  "topics",
+  "memories",
+  "entities",
+  "facts",
+]
+
+const REQUIRED_FOR_ENTITY_REPAIR: VaultDatabaseKey[] = [
+  "projects",
+  "topics",
+  "memories",
+  "facts",
+]
+
+const PROPERTY_TYPES = [
+  "title",
+  "rich_text",
+  "select",
+  "multi_select",
+  "relation",
+  "date",
+  "number",
+] as const
+
+type PropertyType = (typeof PROPERTY_TYPES)[number]
+type SchemaFingerprint = Record<string, PropertyType>
+
+const VAULT_DATABASE_FINGERPRINTS: Record<VaultDatabaseKey, SchemaFingerprint> = {
+  projects: {
+    Name: "title",
+    Type: "select",
+    Path: "rich_text",
+    Status: "select",
+  },
+  topics: {
+    Name: "title",
+    Project: "relation",
+    Description: "rich_text",
+  },
+  memories: {
+    Title: "title",
+    Project: "relation",
+    Topic: "relation",
+    Source: "select",
+    Kind: "select",
+    Tags: "multi_select",
+    Session: "rich_text",
+  },
+  entities: {
+    Name: "title",
+    Aliases: "rich_text",
+    Kind: "select",
+    Description: "rich_text",
+    Project: "relation",
+    Source: "relation",
+  },
+  facts: {
+    Subject: "title",
+    Predicate: "select",
+    Object: "rich_text",
+    Project: "relation",
+    Source: "relation",
+    Confidence: "select",
+  },
+}
 
 export class MissingVaultDatabasesError extends Error {
   readonly pageId: string
@@ -55,7 +138,7 @@ function formatMissingVaultDatabasesMessage(
   missing: string[],
   present: string[]
 ): string {
-  const prefix = `Vault at ${pageId} is missing databases: ${missing.join(", ")}.`
+  const prefix = `Vault at ${formatVaultPageIdForMessage(pageId)} is missing databases: ${missing.join(", ")}.`
   if (present.length === 0) {
     return `${prefix} Run 'lore init' to create them.`
   }
@@ -66,13 +149,59 @@ function formatMissingVaultDatabasesMessage(
   )
 }
 
+function formatVaultPageIdForMessage(pageId: string): string {
+  if (process.env["LORE_DEBUG"] === "1") return pageId
+  if (pageId.length <= 12) return pageId
+  return `${pageId.slice(0, 4)}...${pageId.slice(-4)}`
+}
+
 function hasAllExpectedDatabases(
   found: Partial<Record<keyof VaultDatabases, string>>,
   expected: VaultDatabaseTitles
 ): boolean {
-  return (Object.keys(expected) as Array<keyof VaultDatabases>).every(
-    (key) => found[key]
+  return (Object.keys(expected) as Array<keyof VaultDatabases>).every((key) => found[key])
+}
+
+function getDataSourceId(db: Record<string, unknown>): string {
+  const ds = db["data_sources"] as Array<{ id: string }> | undefined
+  return ds?.[0]?.id ?? (db["id"] as string)
+}
+
+function getDatabaseRef(db: Record<string, unknown>, databaseId: string): DatabaseRef {
+  return { databaseId, dataSourceId: getDataSourceId(db) }
+}
+
+function detectPropertyType(prop: unknown): PropertyType | null {
+  if (!prop || typeof prop !== "object") return null
+  const record = prop as { type?: unknown }
+  if (
+    typeof record.type === "string" &&
+    (PROPERTY_TYPES as readonly string[]).includes(record.type)
+  ) {
+    return record.type as PropertyType
+  }
+  for (const type of PROPERTY_TYPES) {
+    if (type in prop) return type
+  }
+  return null
+}
+
+function matchesSchemaFingerprint(
+  properties: Record<string, unknown>,
+  fingerprint: SchemaFingerprint
+): boolean {
+  return Object.entries(fingerprint).every(
+    ([name, expectedType]) => detectPropertyType(properties[name]) === expectedType
   )
+}
+
+function identifyVaultDatabaseBySchema(
+  properties: Record<string, unknown>
+): VaultDatabaseKey | null {
+  const matches = (Object.keys(VAULT_DATABASE_FINGERPRINTS) as VaultDatabaseKey[]).filter(
+    (key) => matchesSchemaFingerprint(properties, VAULT_DATABASE_FINGERPRINTS[key])
+  )
+  return matches.length === 1 ? matches[0] : null
 }
 
 function createDbArgs(
@@ -102,13 +231,6 @@ export async function createVaultDatabases(
   client: Client,
   pageId: string
 ): Promise<Vault> {
-  // Extract the data source ID from a database creation response.
-  // Relations reference data sources, not database block IDs.
-  const dsId = (db: Record<string, unknown>): string => {
-    const ds = db["data_sources"] as Array<{ id: string }> | undefined
-    return ds?.[0]?.id ?? (db["id"] as string)
-  }
-
   // 1. Projects (no deps)
   const projectsDb = await client.databases.create(
     createDbArgs(pageId, PROJECTS_DB_TITLE, PROJECTS_DB_ICON, projectsProperties)
@@ -116,7 +238,12 @@ export async function createVaultDatabases(
 
   // 2. Topics (depends on Projects)
   const topicsDb = await client.databases.create(
-    createDbArgs(pageId, TOPICS_DB_TITLE, TOPICS_DB_ICON, topicsProperties(dsId(projectsDb as unknown as Record<string, unknown>)))
+    createDbArgs(
+      pageId,
+      TOPICS_DB_TITLE,
+      TOPICS_DB_ICON,
+      topicsProperties(getDataSourceId(projectsDb as unknown as Record<string, unknown>))
+    )
   )
 
   // 3. Memories (depends on Projects + Topics)
@@ -127,12 +254,15 @@ export async function createVaultDatabases(
       pageId,
       MEMORIES_DB_TITLE,
       MEMORIES_DB_ICON,
-      memoriesProperties(dsId(projectsDb as unknown as Record<string, unknown>), dsId(topicsDb as unknown as Record<string, unknown>))
+      memoriesProperties(
+        getDataSourceId(projectsDb as unknown as Record<string, unknown>),
+        getDataSourceId(topicsDb as unknown as Record<string, unknown>)
+      )
     )
   )
 
   // 3b. Patch Memories DB with self-relation properties.
-  const memoriesDsId = dsId(memoriesDb as unknown as Record<string, unknown>)
+  const memoriesDsId = getDataSourceId(memoriesDb as unknown as Record<string, unknown>)
   await client.dataSources.update({
     data_source_id: memoriesDsId,
     properties: memoriesSelfRelationProperties(memoriesDsId) as Parameters<
@@ -147,8 +277,8 @@ export async function createVaultDatabases(
       ENTITIES_DB_TITLE,
       ENTITIES_DB_ICON,
       entitiesProperties(
-        dsId(projectsDb as unknown as Record<string, unknown>),
-        dsId(memoriesDb as unknown as Record<string, unknown>)
+        getDataSourceId(projectsDb as unknown as Record<string, unknown>),
+        getDataSourceId(memoriesDb as unknown as Record<string, unknown>)
       )
     )
   )
@@ -163,9 +293,9 @@ export async function createVaultDatabases(
       FACTS_DB_TITLE,
       FACTS_DB_ICON,
       factsProperties(
-        dsId(projectsDb as unknown as Record<string, unknown>),
-        dsId(memoriesDb as unknown as Record<string, unknown>),
-        dsId(entitiesDb as unknown as Record<string, unknown>)
+        getDataSourceId(projectsDb as unknown as Record<string, unknown>),
+        getDataSourceId(memoriesDb as unknown as Record<string, unknown>),
+        getDataSourceId(entitiesDb as unknown as Record<string, unknown>)
       )
     )
   )
@@ -173,10 +303,9 @@ export async function createVaultDatabases(
   // Resolve both IDs for each database:
   // - databaseId (block ID) for pages.create() parent
   // - dataSourceId for dataSources.query()
-  const toRef = (db: Record<string, unknown>): { databaseId: string; dataSourceId: string } => {
+  const toRef = (db: Record<string, unknown>): DatabaseRef => {
     const id = db["id"] as string
-    const ds = db["data_sources"] as Array<{ id: string }> | undefined
-    return { databaseId: id, dataSourceId: ds?.[0]?.id ?? id }
+    return getDatabaseRef(db, id)
   }
 
   return {
@@ -189,6 +318,50 @@ export async function createVaultDatabases(
       facts: toRef(factsDb as unknown as Record<string, unknown>),
     },
   }
+}
+
+export type EnsureEntitiesDatabaseResult =
+  | { status: "present"; ref: DatabaseRef }
+  | { status: "created"; ref: DatabaseRef }
+  | { status: "would-create" }
+
+/**
+ * Idempotently add the Entities database to a legacy four-database vault.
+ *
+ * This intentionally operates on a vault snapshot where `entities` may be
+ * absent so repair commands can run outside the strict `initServices()` gate.
+ */
+export async function ensureEntitiesDatabase(
+  client: Client,
+  vault: VaultWithOptionalEntities,
+  options: { dryRun?: boolean } = {}
+): Promise<EnsureEntitiesDatabaseResult> {
+  if (vault.databases.entities) {
+    return { status: "present", ref: vault.databases.entities }
+  }
+  if (options.dryRun) {
+    return { status: "would-create" }
+  }
+
+  const entitiesDb = await client.databases.create({
+    parent: { type: "page_id" as const, page_id: vault.pageId },
+    title: [{ text: { content: ENTITIES_DB_TITLE } }],
+    icon: { emoji: ENTITIES_DB_ICON as "🪪" },
+    initial_data_source: {
+      properties: entitiesProperties(
+        vault.databases.projects.dataSourceId,
+        vault.databases.memories.dataSourceId
+      ) as Parameters<Client["databases"]["create"]>[0]["initial_data_source"] extends {
+        properties?: infer P
+      }
+        ? P
+        : never,
+    },
+  })
+
+  const dbRecord = entitiesDb as unknown as Record<string, unknown>
+  const id = dbRecord["id"] as string
+  return { status: "created", ref: getDatabaseRef(dbRecord, id) }
 }
 
 /**
@@ -291,7 +464,9 @@ function extractOptions(config: unknown): LiveSelectOption[] {
   if (!Array.isArray(opts)) return []
   return opts.filter(
     (o): o is LiveSelectOption =>
-      typeof o === "object" && o !== null && typeof (o as { name?: unknown }).name === "string"
+      typeof o === "object" &&
+      o !== null &&
+      typeof (o as { name?: unknown }).name === "string"
   )
 }
 
@@ -302,9 +477,7 @@ function extractOptions(config: unknown): LiveSelectOption[] {
  * (`{ relation: {...} }`, no outer `type`) — we need to compare live and
  * expected configs directly and the schema helpers emit the shorter form.
  */
-function detectRelationType(
-  prop: unknown
-): "single_property" | "dual_property" | null {
+function detectRelationType(prop: unknown): "single_property" | "dual_property" | null {
   if (!prop || typeof prop !== "object") return null
   const p = prop as { type?: string; relation?: Record<string, unknown> }
   if (p.type !== undefined && p.type !== "relation") return null
@@ -399,10 +572,7 @@ export async function migrateVaultSchema(
       db.topics.dataSourceId,
       db.memories.dataSourceId
     ),
-    entities: entitiesProperties(
-      db.projects.dataSourceId,
-      db.memories.dataSourceId
-    ),
+    entities: entitiesProperties(db.projects.dataSourceId, db.memories.dataSourceId),
     facts: factsProperties(
       db.projects.dataSourceId,
       db.memories.dataSourceId,
@@ -416,12 +586,13 @@ export async function migrateVaultSchema(
   // and the diff logic is purely local computation, so the only wall-clock
   // cost worth shaving here is the retrieve fan-out. The shared rate-limited
   // client gates concurrency, so this never bursts past the configured cap.
-  const targets = (Object.keys(expectedByDb) as Array<keyof VaultDatabases>)
-    .map((key) => ({
+  const targets = (Object.keys(expectedByDb) as Array<keyof VaultDatabases>).map(
+    (key) => ({
       key,
       expected: expectedByDb[key],
       dsId: db[key].dataSourceId,
-    }))
+    })
+  )
 
   // Colocate each target with its retrieved live properties so Phase B
   // never has to index two parallel arrays (a known footgun if anything
@@ -431,7 +602,7 @@ export async function migrateVaultSchema(
       const live = await client.dataSources.retrieve({ data_source_id: t.dsId })
       const liveProps = (live as { properties: Record<string, unknown> }).properties
       return { ...t, liveProps }
-    }),
+    })
   )
 
   // Phase B — per-database diff and (for non-dry-run) update. Stays
@@ -511,15 +682,37 @@ export async function verifyVaultDatabases(
   client: Client,
   pageId: string
 ): Promise<Vault> {
-  const expectedTitles: VaultDatabaseTitles = {
-    projects: PROJECTS_DB_TITLE,
-    topics: TOPICS_DB_TITLE,
-    memories: MEMORIES_DB_TITLE,
-    entities: ENTITIES_DB_TITLE,
-    facts: FACTS_DB_TITLE,
+  const vault = await resolveVaultDatabases(client, pageId, {
+    requiredKeys: REQUIRED_VAULT_DATABASE_KEYS,
+  })
+  return {
+    pageId,
+    databases: vault.databases as VaultDatabases,
   }
+}
 
+/**
+ * Load the database refs needed to repair a legacy vault that has not yet
+ * grown the Entities database. Projects / Topics / Memories / Facts remain
+ * mandatory; Entities is returned when already present.
+ */
+export async function verifyVaultDatabasesForEntityRepair(
+  client: Client,
+  pageId: string
+): Promise<VaultWithOptionalEntities> {
+  return resolveVaultDatabases(client, pageId, {
+    requiredKeys: REQUIRED_FOR_ENTITY_REPAIR,
+  })
+}
+
+async function resolveVaultDatabases(
+  client: Client,
+  pageId: string,
+  options: { requiredKeys: VaultDatabaseKey[] }
+): Promise<VaultWithOptionalEntities> {
   const dbBlockIds: Partial<Record<keyof VaultDatabases, string>> = {}
+  const databaseRecords = new Map<string, Record<string, unknown>>()
+  const childDatabases: Array<{ id: string; title: string }> = []
 
   let cursor: string | undefined
   const seenCursors = new Set<string>()
@@ -543,14 +736,18 @@ export async function verifyVaultDatabases(
       if (fullBlock.type !== "child_database") continue
 
       const title = fullBlock.child_database.title
-      for (const [key, expectedTitle] of Object.entries(expectedTitles)) {
+      childDatabases.push({ id: fullBlock.id, title })
+      for (const [key, expectedTitle] of Object.entries(EXPECTED_VAULT_TITLES)) {
         if (title === expectedTitle) {
           dbBlockIds[key as keyof VaultDatabases] = fullBlock.id
         }
       }
     }
 
-    if (hasAllExpectedDatabases(dbBlockIds, expectedTitles) || !response.has_more) {
+    if (
+      hasAllExpectedDatabases(dbBlockIds, EXPECTED_VAULT_TITLES) ||
+      !response.has_more
+    ) {
       break
     }
 
@@ -566,12 +763,28 @@ export async function verifyVaultDatabases(
     cursor = nextCursor
   }
 
-  const missing = Object.entries(expectedTitles)
+  if (!hasAllExpectedDatabases(dbBlockIds, EXPECTED_VAULT_TITLES)) {
+    const assignedIds = new Set(Object.values(dbBlockIds))
+    const candidates = childDatabases.filter((db) => !assignedIds.has(db.id))
+    await Promise.all(
+      candidates.map(async (db) => {
+        const record = await retrieveDatabaseRecord(client, db.id, databaseRecords)
+        const properties = (record["properties"] ?? {}) as Record<string, unknown>
+        const key = identifyVaultDatabaseBySchema(properties)
+        if (!key || dbBlockIds[key]) return
+        dbBlockIds[key] = db.id
+      })
+    )
+  }
+
+  const required = new Set(options.requiredKeys)
+  const missing = Object.entries(EXPECTED_VAULT_TITLES)
+    .filter(([key]) => required.has(key as VaultDatabaseKey))
     .filter(([key]) => !dbBlockIds[key as keyof VaultDatabases])
     .map(([, title]) => title)
 
   if (missing.length > 0) {
-    const present = Object.entries(expectedTitles)
+    const present = Object.entries(EXPECTED_VAULT_TITLES)
       .filter(([key]) => dbBlockIds[key as keyof VaultDatabases])
       .map(([, title]) => title)
     throw new MissingVaultDatabasesError(pageId, missing, present)
@@ -583,28 +796,34 @@ export async function verifyVaultDatabases(
   // Retrieves are independent — fan them out concurrently. The shared
   // rate-limited client gates concurrency, so this never bursts past the
   // configured cap.
-  const entries = Object.entries(dbBlockIds) as Array<
-    [keyof VaultDatabases, string]
-  >
+  const entries = Object.entries(dbBlockIds) as Array<[keyof VaultDatabases, string]>
   const retrieved = await Promise.all(
     entries.map(async ([key, dbId]) => {
-      const db = await client.databases.retrieve({ database_id: dbId })
-      const dataSources = (db as Record<string, unknown>)["data_sources"] as
-        | Array<{ id: string }>
-        | undefined
-      return [
-        key,
-        { databaseId: dbId, dataSourceId: dataSources?.[0]?.id ?? dbId },
-      ] as const
-    }),
+      const db = await retrieveDatabaseRecord(client, dbId, databaseRecords)
+      return [key, getDatabaseRef(db, dbId)] as const
+    })
   )
-  const resolved: Partial<VaultDatabases> = {}
+  const resolved: Partial<VaultDatabasesWithOptionalEntities> = {}
   for (const [key, ref] of retrieved) {
     resolved[key] = ref
   }
 
   return {
     pageId,
-    databases: resolved as VaultDatabases,
+    databases: resolved as VaultDatabasesWithOptionalEntities,
   }
+}
+
+async function retrieveDatabaseRecord(
+  client: Client,
+  databaseId: string,
+  cache: Map<string, Record<string, unknown>>
+): Promise<Record<string, unknown>> {
+  const cached = cache.get(databaseId)
+  if (cached) return cached
+  const db = (await client.databases.retrieve({
+    database_id: databaseId,
+  })) as unknown as Record<string, unknown>
+  cache.set(databaseId, db)
+  return db
 }

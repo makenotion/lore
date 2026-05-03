@@ -4,9 +4,11 @@ import type { Vault } from "../types.js"
 import {
   computeRelationConfigDiff,
   computeSelectOptionDiff,
+  ensureEntitiesDatabase,
   migrateVaultSchema,
   MissingVaultDatabasesError,
   verifyVaultDatabases,
+  verifyVaultDatabasesForEntityRepair,
 } from "./setup.js"
 import {
   ENTITIES_DB_TITLE,
@@ -102,7 +104,9 @@ describe("computeSelectOptionDiff", () => {
 
     const diff = computeSelectOptionDiff("Kind", live, expected)
     expect(diff).not.toBeNull()
-    const merged = diff!.mergedProperty.select as { options: Array<{ id?: string; name: string }> }
+    const merged = diff!.mergedProperty.select as {
+      options: Array<{ id?: string; name: string }>
+    }
     expect(merged.options).toEqual([
       { id: "abc-123", name: "note", color: "default" },
       { id: "def-456", name: "decision", color: "blue" },
@@ -208,9 +212,7 @@ describe("computeSelectOptionDiff", () => {
 describe("computeRelationConfigDiff", () => {
   it("returns null for non-relation properties", () => {
     expect(computeRelationConfigDiff("Name", { title: {} }, { title: {} })).toBeNull()
-    expect(
-      computeRelationConfigDiff("Kind", { select: {} }, { select: {} })
-    ).toBeNull()
+    expect(computeRelationConfigDiff("Kind", { select: {} }, { select: {} })).toBeNull()
     expect(
       computeRelationConfigDiff("Author", { rich_text: {} }, { rich_text: {} })
     ).toBeNull()
@@ -305,8 +307,7 @@ describe("computeRelationConfigDiff", () => {
 
     const diff = computeRelationConfigDiff("Project", live, expected)
     expect(diff).not.toBeNull()
-    const rel = (diff!.updatePayload as { relation: { data_source_id: string } })
-      .relation
+    const rel = (diff!.updatePayload as { relation: { data_source_id: string } }).relation
     expect(rel.data_source_id).toBe("live-ds-id")
   })
 
@@ -386,6 +387,29 @@ describe("computeRelationConfigDiff", () => {
   })
 })
 
+describe("MissingVaultDatabasesError", () => {
+  it("redacts long vault page ids unless debug output is enabled", () => {
+    const previous = process.env["LORE_DEBUG"]
+    delete process.env["LORE_DEBUG"]
+    try {
+      const pageId = "343b35e6e67f8171aaaaef814eeb199f"
+      const redacted = new MissingVaultDatabasesError(pageId, ["Entities"], ["Projects"])
+      expect(redacted.message).toContain("343b...199f")
+      expect(redacted.message).not.toContain(pageId)
+
+      process.env["LORE_DEBUG"] = "1"
+      const debug = new MissingVaultDatabasesError(pageId, ["Entities"], ["Projects"])
+      expect(debug.message).toContain(pageId)
+    } finally {
+      if (previous === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = previous
+      }
+    }
+  })
+})
+
 /**
  * Stand-in for the SDK methods that `verifyVaultDatabases` and
  * `migrateVaultSchema` exercise. Records the maximum number of in-flight
@@ -402,11 +426,13 @@ type StartupChildBlockPage = {
 function makeStartupStub({
   childDatabases,
   childBlockPages,
+  databaseProperties,
   liveProperties,
   retrieveDelayMs = 10,
 }: {
   childDatabases: Array<{ id: string; title: string }>
   childBlockPages?: StartupChildBlockPage[]
+  databaseProperties?: Record<string, Record<string, unknown>>
   liveProperties: Record<string, Record<string, unknown>>
   retrieveDelayMs?: number
 }): {
@@ -419,6 +445,7 @@ function makeStartupStub({
   maxInFlight: () => number
   databasesRetrieveCalls: () => string[]
   dataSourcesRetrieveCalls: () => string[]
+  databaseCreateCalls: () => unknown[]
 } {
   let inFlight = 0
   let maxInFlight = 0
@@ -429,6 +456,7 @@ function makeStartupStub({
   }> = []
   const databasesRetrieveCalls: string[] = []
   const dataSourcesRetrieveCalls: string[] = []
+  const databaseCreateCalls: unknown[] = []
 
   const track = async <T>(value: T): Promise<T> => {
     inFlight++
@@ -475,7 +503,15 @@ function makeStartupStub({
         return track({
           id: args.database_id,
           data_sources: [{ id: `ds-${args.database_id}` }],
+          properties: databaseProperties?.[args.database_id] ?? {},
         })
+      },
+      create: async (args: unknown) => {
+        databaseCreateCalls.push(args)
+        return {
+          id: "block-created-entities",
+          data_sources: [{ id: "ds-created-entities" }],
+        }
       },
     },
     dataSources: {
@@ -493,6 +529,7 @@ function makeStartupStub({
     maxInFlight: () => maxInFlight,
     databasesRetrieveCalls: () => databasesRetrieveCalls,
     dataSourcesRetrieveCalls: () => dataSourcesRetrieveCalls,
+    databaseCreateCalls: () => databaseCreateCalls,
   }
 }
 
@@ -513,6 +550,22 @@ describe("verifyVaultDatabases child block pagination", () => {
       id: `note-${i}`,
     }))
   }
+
+  function props(types: Record<string, string>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(types).map(([name, type]) => [name, { type, [type]: {} }])
+    )
+  }
+
+  const memoriesFingerprint = props({
+    Title: "title",
+    Project: "relation",
+    Topic: "relation",
+    Source: "select",
+    Kind: "select",
+    Tags: "multi_select",
+    Session: "rich_text",
+  })
 
   it("finds vault databases after the first page of child blocks", async () => {
     const childDatabases = [
@@ -550,6 +603,58 @@ describe("verifyVaultDatabases child block pagination", () => {
       databaseId: "block-entities",
       dataSourceId: "ds-block-entities",
     })
+  })
+
+  it("detects a renamed Lore database by schema fingerprint", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: "Memory" },
+      { id: "block-entities", title: ENTITIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, databasesRetrieveCalls } = makeStartupStub({
+      childDatabases,
+      databaseProperties: {
+        "block-memories": memoriesFingerprint,
+      },
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    const vault = await verifyVaultDatabases(client, "page-1")
+
+    expect(vault.databases.memories).toEqual({
+      databaseId: "block-memories",
+      dataSourceId: "ds-block-memories",
+    })
+    expect(databasesRetrieveCalls().filter((id) => id === "block-memories")).toHaveLength(
+      1
+    )
+  })
+
+  it("treats renamed Lore databases as present when refusing partial init", async () => {
+    const { client } = makeStartupStub({
+      childDatabases: [{ id: "block-memories", title: "Memory" }],
+      databaseProperties: {
+        "block-memories": memoriesFingerprint,
+      },
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    let thrown: unknown
+    try {
+      await verifyVaultDatabases(client, "page-1")
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeInstanceOf(MissingVaultDatabasesError)
+    expect(thrown).toMatchObject({
+      present: ["Memories"],
+    })
+    expect(String(thrown)).toContain("do not run 'lore init'")
   })
 
   it("fails when a paginated vault has no Entities DB", async () => {
@@ -594,6 +699,28 @@ describe("verifyVaultDatabases child block pagination", () => {
     ])
   })
 
+  it("allows the entity-repair loader to return a four-database vault", async () => {
+    const childDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client } = makeStartupStub({
+      childDatabases,
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    const vault = await verifyVaultDatabasesForEntityRepair(client, "page-1")
+
+    expect(vault.databases.projects).toEqual({
+      databaseId: "block-projects",
+      dataSourceId: "ds-block-projects",
+    })
+    expect(vault.databases.entities).toBeUndefined()
+  })
+
   it("stops paging once all expected vault databases are found", async () => {
     const childDatabases = [
       { id: "block-projects", title: PROJECTS_DB_TITLE },
@@ -622,9 +749,7 @@ describe("verifyVaultDatabases child block pagination", () => {
 
     await verifyVaultDatabases(client, "page-1")
 
-    expect(blocksChildrenListCalls()).toEqual([
-      { block_id: "page-1", page_size: 100 },
-    ])
+    expect(blocksChildrenListCalls()).toEqual([{ block_id: "page-1", page_size: 100 }])
   })
 
   it("keeps paging when only Entities is still missing", async () => {
@@ -757,6 +882,81 @@ describe("verifyVaultDatabases parallel retrieves", () => {
     )
 
     expect(databasesRetrieveCalls()).toEqual([])
+  })
+})
+
+describe("ensureEntitiesDatabase", () => {
+  const legacyVault = {
+    pageId: "page-1",
+    databases: {
+      projects: { databaseId: "p-db", dataSourceId: "p-ds" },
+      topics: { databaseId: "t-db", dataSourceId: "t-ds" },
+      memories: { databaseId: "m-db", dataSourceId: "m-ds" },
+      facts: { databaseId: "f-db", dataSourceId: "f-ds" },
+    },
+  }
+
+  it("creates the Entities database with Projects and Memories relations", async () => {
+    const { client, databaseCreateCalls } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    const result = await ensureEntitiesDatabase(client, legacyVault)
+
+    expect(result).toEqual({
+      status: "created",
+      ref: {
+        databaseId: "block-created-entities",
+        dataSourceId: "ds-created-entities",
+      },
+    })
+    expect(databaseCreateCalls()).toHaveLength(1)
+    const call = databaseCreateCalls()[0] as {
+      initial_data_source: {
+        properties: {
+          Project: { relation: { data_source_id: string } }
+          Source: { relation: { data_source_id: string } }
+        }
+      }
+    }
+    expect(call.initial_data_source.properties.Project.relation.data_source_id).toBe(
+      "p-ds"
+    )
+    expect(call.initial_data_source.properties.Source.relation.data_source_id).toBe(
+      "m-ds"
+    )
+  })
+
+  it("dry-runs a missing Entities database without creating it", async () => {
+    const { client, databaseCreateCalls } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    await expect(
+      ensureEntitiesDatabase(client, legacyVault, { dryRun: true })
+    ).resolves.toEqual({ status: "would-create" })
+    expect(databaseCreateCalls()).toEqual([])
+  })
+
+  it("returns the existing ref without writing when Entities already exists", async () => {
+    const { client, databaseCreateCalls } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+    const existing = { databaseId: "e-db", dataSourceId: "e-ds" }
+
+    await expect(
+      ensureEntitiesDatabase(client, {
+        ...legacyVault,
+        databases: { ...legacyVault.databases, entities: existing },
+      })
+    ).resolves.toEqual({ status: "present", ref: existing })
+    expect(databaseCreateCalls()).toEqual([])
   })
 })
 
@@ -1121,9 +1321,9 @@ describe("migrateVaultSchema parallel retrieves", () => {
       },
     } as unknown as Client
 
-    await expect(
-      migrateVaultSchema(stub, vaultFixture()),
-    ).rejects.toThrow(/Schema migration failed on memories DB/)
+    await expect(migrateVaultSchema(stub, vaultFixture())).rejects.toThrow(
+      /Schema migration failed on memories DB/
+    )
     // We still hit retrieve on every DB before the update phase failed.
     expect(dataSourcesRetrieveCount).toBe(5)
     // Phase B must remain sequential and short-circuit on the first

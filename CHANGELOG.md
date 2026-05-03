@@ -19,6 +19,14 @@ log is the canonical source for those.
   `reason=no-user-query` wording so operator filters cover every case where
   ranked search did not run.
 
+### Added
+
+- **Self-service Entities bootstrap for legacy vaults.** A new vault repair
+  command creates the Entities database on four-database vaults and runs
+  additive schema migration so Facts gains the `SubjectEntity` /
+  `ObjectEntity` relation columns. Run it as `lore vault ensure-entities`
+  before `lore migrate --build-entities --yes`.
+
 ### Fixed
 
 - **Author identity cache handles concurrent auth rotation.** Lazy
@@ -34,6 +42,15 @@ log is the canonical source for those.
   slash-command first prompts and transient wake-up load failures, honors
   `hooks.wakeUp: false` before touching marker state, and uses atomic
   create-if-absent so concurrent prompt hooks do not both run wake-up. (#310)
+- **Partial-vault detection now sees renamed Lore databases.** Vault
+  verification falls back to schema fingerprints when expected child
+  database titles are missing, preventing `lore init` from duplicating a
+  page where an existing Lore database was renamed.
+- **MCP startup diagnostics cover missing-Entities vaults.** MCP startup
+  still registers diagnostic tools when strict service init fails on a
+  partial vault and points operators at `lore vault ensure-entities`.
+- **Missing-database errors redact long vault page IDs by default.** Set
+  `LORE_DEBUG=1` to include the full page ID in local diagnostic output.
 
 ## [0.12.0] - 2026-05-03
 

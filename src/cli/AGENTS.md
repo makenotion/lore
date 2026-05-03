@@ -24,6 +24,7 @@ debugging, manual search).
 | `commands/tasks.ts`     | `lore tasks` -- task lifecycle subcommands (currently: `reconcile`)                                                                                                         |
 | `commands/conflicts.ts` | `lore conflicts` -- conflict-detection workflow (currently: `scan`)                                                                                                         |
 | `commands/entities.ts`  | `lore entities` -- entity registry subcommands (currently: `merge`)                                                                                                         |
+| `commands/vault.ts`     | `lore vault` -- vault maintenance subcommands (currently: `ensure-entities`)                                                                                                |
 | `commands/mcp.ts`       | `lore mcp` -- start the MCP stdio server for host assistant integrations                                                                                                    |
 | `commands/hooks.ts`     | `lore hooks` -- dispatch host-assistant hook events (`wakeup`, `autosave`, `session-end`)                                                                                   |
 

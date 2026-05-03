@@ -137,9 +137,10 @@ telemetry showing no internal team still relies on them; see
 Because `.lore.yaml` can be checked into a repo, Lore warns whenever it sees
 `auth.token` in that file, even when a higher-priority auth source wins.
 
-Existing vaults from before PF3-01 keep working without the Entities
-database; run `lore migrate --build-entities --yes` to add it and
-canonicalize the fact graph in one pass.
+Existing vaults from before PF3-01 need one bootstrap step before the
+entity backfill: run `lore vault ensure-entities`, then run
+`lore migrate --build-entities --yes` in a quiet window to canonicalize
+the fact graph.
 
 ### 4. Configure Your AI Assistant
 
@@ -234,9 +235,10 @@ fifth (Entities, PF3-01):
 | **Facts**    | Subject        | Predicate, Object, Valid From, Valid Until, Confidence | Project, Source (Memory), SubjectEntity, ObjectEntity |
 
 **Entities** is created automatically by `lore init` on new vaults. Existing
-vaults from before PF3-01 can opt in via `lore migrate --build-entities --yes`,
-which also adds the `SubjectEntity` / `ObjectEntity` relation columns to Facts
-and re-points historical rows in one pass.
+vaults from before PF3-01 can opt in via `lore vault ensure-entities`, which
+creates the Entities database and adds the `SubjectEntity` / `ObjectEntity`
+relation columns to Facts. Then run `lore migrate --build-entities --yes` to
+re-point historical rows.
 
 **Predicate values accepted by `lore-fact action='create'`**: `is_a`, `has_a`,
 `uses`, `depends_on`, `related_to`, `created_by`, `owned_by`, `replaces`,

@@ -221,6 +221,42 @@ describe("startServer", () => {
     }
   })
 
+  it("serves setup diagnostics for missing Entities instead of crashing", async () => {
+    mocks.initServices.mockRejectedValue(
+      new Error(
+        "Vault at 343b...199f is missing databases: Entities. Found existing Lore databases: Projects, Topics, Memories, Facts."
+      )
+    )
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const stdoutLog = vi.spyOn(console, "log").mockImplementation(() => undefined)
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+
+    try {
+      await startServer()
+
+      const server = mocks.servers[0]
+      expect([...server!.tools.keys()].sort()).toEqual(DIAGNOSTIC_TOOL_NAMES)
+      expect(server?.connect).toHaveBeenCalledWith(mocks.transports[0])
+      const result = await server!.tools.get("lore-context")!.handler({
+        action: "status",
+      })
+      const text = result.content[0]?.text ?? ""
+      expect(result.isError).toBe(true)
+      expect(text).toContain("missing databases: Entities")
+      expect(text).toContain("lore vault ensure-entities")
+      expect(text).toContain("lore migrate --build-entities --yes")
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringContaining("starting diagnostic MCP server")
+      )
+      expect(stdoutLog).not.toHaveBeenCalled()
+      expect(stdoutWrite).not.toHaveBeenCalled()
+    } finally {
+      stdoutWrite.mockRestore()
+      stdoutLog.mockRestore()
+      stderr.mockRestore()
+    }
+  })
+
   it("does not convert tool registration failures into setup diagnostics", async () => {
     mocks.initServices.mockResolvedValue({} as never)
     mocks.registerMemoryTools.mockImplementation(() => {

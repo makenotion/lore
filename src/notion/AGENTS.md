@@ -187,7 +187,10 @@ The `createDbArgs()` helper handles the type casting needed for
 this pattern.
 
 `verifyVaultDatabases()` reads the vault page's child blocks and matches
-database titles to the expected names. This is used by `VaultManager.load()`.
+database titles to the expected names. If a title is missing, it retrieves
+unmatched child databases and identifies Lore databases by schema fingerprint
+so a renamed database still counts as present and `lore init` cannot duplicate
+a partial vault. This is used by `VaultManager.load()`.
 
 **Required databases.** Projects / Topics / Memories / Entities / Facts
 are mandatory — `verifyVaultDatabases` throws when any of them are absent.
@@ -195,6 +198,11 @@ are mandatory — `verifyVaultDatabases` throws when any of them are absent.
 `SubjectEntity` / `ObjectEntity` relation columns. Row-level migration
 fallback is separate: existing Facts may still have empty entity relations
 until `lore migrate --build-entities` repoints them.
+
+`verifyVaultDatabasesForEntityRepair()` is the narrow exception for the
+`lore vault ensure-entities` bootstrap command: it requires Projects / Topics /
+Memories / Facts but allows Entities to be absent so the repair command can run
+outside strict service initialization.
 
 ## Rate Limiting
 

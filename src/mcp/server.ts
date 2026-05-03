@@ -52,7 +52,7 @@ const DIAGNOSTIC_INPUT_SCHEMA = z
       .unknown()
       .optional()
       .describe(
-        "Diagnostic mode accepts any action value or omitted action; every call returns setup-recovery text.",
+        "Diagnostic mode accepts any action value or omitted action; every call returns setup-recovery text."
       ),
   })
   .passthrough()
@@ -95,7 +95,7 @@ export async function startServer(): Promise<void> {
         tools: {},
         resources: {},
       },
-    },
+    }
   )
 
   let services: LoreServices | null = null
@@ -117,7 +117,7 @@ export async function startServer(): Promise<void> {
     // of collapsing the failure into a generic connection error.
     const initErrorMessage = formatInitErrorMessage(err)
     console.error(
-      `[lore] Failed to initialize; starting diagnostic MCP server: ${initErrorMessage}`,
+      `[lore] Failed to initialize; starting diagnostic MCP server: ${initErrorMessage}`
     )
     registerStartupDiagnosticTools(server, formatStartupDiagnostic(err, initErrorMessage))
   }
@@ -154,7 +154,7 @@ function registerStartupDiagnosticTools(server: McpServer, diagnosticText: strin
 function registerStartupDiagnosticTool(
   server: McpServer,
   name: (typeof DIAGNOSTIC_TOOL_NAMES)[number],
-  diagnosticText: string,
+  diagnosticText: string
 ): void {
   server.registerTool(
     name,
@@ -168,15 +168,22 @@ function registerStartupDiagnosticTool(
     async (): Promise<ToolResult> => ({
       content: [{ type: "text", text: diagnosticText }],
       isError: true,
-    }),
+    })
   )
 }
 
 function formatStartupDiagnostic(
   error: unknown,
-  message = formatInitErrorMessage(error),
+  message = formatInitErrorMessage(error)
 ): string {
   const configRoot = process.env["LORE_CONFIG_ROOT"]?.trim()
+  const recoverySteps = [
+    "- If the error says no `.lore.yaml` was found, run `lore init` from the project directory or re-run `lore install` from the configured vault project.",
+    "- If the error mentions Notion auth, run `lore auth --login` or set `NOTION_API_TOKEN` with a Notion integration token.",
+    "- If the error mentions missing `Entities`, run `lore vault ensure-entities`, then `lore migrate --build-entities --yes` in a quiet window.",
+    "- If `LORE_CONFIG_ROOT` points at the wrong directory, re-run `lore install` from the project directory or unset `LORE_CONFIG_ROOT` so Lore can search upward from the MCP process cwd.",
+    "- After fixing setup, restart or reconnect the MCP client so Lore can register the full tool surface.",
+  ]
 
   return [
     "# Lore MCP Startup Diagnostic",
@@ -194,10 +201,7 @@ function formatStartupDiagnostic(
     "",
     "## Recovery Steps",
     "",
-    "- If the error says no `.lore.yaml` was found, run `lore init` from the project directory or re-run `lore install` from the configured vault project.",
-    "- If the error mentions Notion auth, run `lore auth --login` or set `NOTION_API_TOKEN` with a Notion integration token.",
-    "- If `LORE_CONFIG_ROOT` points at the wrong directory, re-run `lore install` from the project directory or unset `LORE_CONFIG_ROOT` so Lore can search upward from the MCP process cwd.",
-    "- After fixing setup, restart or reconnect the MCP client so Lore can register the full tool surface.",
+    ...recoverySteps,
   ].join("\n")
 }
 

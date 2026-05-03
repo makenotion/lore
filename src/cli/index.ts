@@ -10,6 +10,7 @@ import { digestCommand } from "./commands/digest.js"
 import { tasksCommand } from "./commands/tasks.js"
 import { conflictsCommand } from "./commands/conflicts.js"
 import { entitiesCommand } from "./commands/entities.js"
+import { vaultCommand } from "./commands/vault.js"
 import { mcpCommand } from "./commands/mcp.js"
 import { hooksCommand } from "./commands/hooks.js"
 
@@ -28,6 +29,7 @@ program.addCommand(digestCommand)
 program.addCommand(tasksCommand)
 program.addCommand(conflictsCommand)
 program.addCommand(entitiesCommand)
+program.addCommand(vaultCommand)
 program.addCommand(mcpCommand)
 program.addCommand(hooksCommand)
 

@@ -40,30 +40,23 @@ split future reads across duplicate database titles. Newer Lore builds
 refuse this case, but operators upgrading manually should treat it as a
 hard stop.
 
-Manual repair for a four-database vault:
+Self-service repair for a four-database vault:
 
-1. Open the vault page in Notion.
-2. Create one child database named `Entities`.
-3. Add these properties to `Entities`:
-   - `Name` as the title property.
-   - `Aliases` rich text.
-   - `Kind` select with options: `class`, `function`, `file`,
-     `workflow`, `pr`, `task-id`, `person`, `system`.
-   - `Description` rich text.
-   - `Project` relation to the vault's `Projects` database.
-   - `Source` relation to the vault's `Memories` database.
-4. Upgrade Lore and run `lore migrate`. This adds the Facts
-   `SubjectEntity` / `ObjectEntity` relation columns and any other
-   additive drift.
-5. Run `lore migrate --build-entities --yes` in a quiet window to create
+1. Upgrade Lore.
+2. Run `lore vault ensure-entities`. This creates the `Entities` child
+   database with the supported schema and runs the additive schema
+   migration so Facts gains `SubjectEntity` / `ObjectEntity`.
+3. Run `lore migrate --build-entities --yes` in a quiet window to create
    canonical Entity rows and re-point existing Fact rows. The
    row-level `SubjectKey` fallback remains available until every row is
    backfilled.
 
-If a vault is missing any required child database other than Entities,
-stop and inspect the page manually before running any write command.
-The supported repair path is to restore the missing database from backup
-or recreate it with the documented schema, then run `lore migrate`.
+`lore vault ensure-entities --dry-run` previews the bootstrap step
+without writing. If a vault is missing any required child database other
+than Entities, stop and inspect the page manually before running any
+write command. The supported repair path is to restore the missing
+database from backup or recreate it with the documented schema, then run
+`lore migrate`.
 
 **Vault-page sharing**: ntn-issued tokens inherit the engineer's
 personal Notion permissions. If the engineer can open the vault
