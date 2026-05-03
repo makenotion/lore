@@ -5,6 +5,7 @@ import {
   DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+  buildEmptyWakeUpCoverage,
   computeWakeUpCoverage,
   dateBucket,
   formatWakeUpCoverage,
@@ -443,9 +444,28 @@ describe("wake-up coverage counters", () => {
     expect(coverage.queryLength).toBe(0)
   })
 
+  it("builds empty fixture coverage with focused overrides", () => {
+    const coverage = buildEmptyWakeUpCoverage({
+      digest: { available: true },
+      sectionCounts: { tasks: 2 },
+    })
+
+    expect(coverage.mode).toBe("default")
+    expect(coverage.queryLength).toBe(0)
+    expect(coverage.digest).toEqual({
+      available: true,
+      fresh: false,
+      ageDays: null,
+    })
+    expect(coverage.sectionCounts.tasks).toBe(2)
+    expect(
+      Object.entries(coverage.sectionCounts).filter(([, count]) => count !== 0),
+    ).toEqual([["tasks", 2]])
+  })
+
   it("formats one privacy-conscious debug line with caps and counts", () => {
     const line = formatWakeUpCoverage(
-      {
+      buildEmptyWakeUpCoverage({
         mode: "ranked",
         queryLength: 42,
         digest: { available: true, fresh: true, ageDays: 2 },
@@ -459,9 +479,8 @@ describe("wake-up coverage counters", () => {
           decisions: 6,
           proposedDecisions: 2,
           overdueDecisions: 4,
-          staleConfidence: 0,
         },
-      },
+      }),
       {
         memoryLimit: 3,
         relatedMemoryLimit: 2,

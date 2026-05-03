@@ -255,6 +255,12 @@ export interface WakeUpCoverageMetrics {
   sectionCounts: WakeUpSectionCounts
 }
 
+export interface WakeUpCoverageOverrides
+  extends Omit<Partial<WakeUpCoverageMetrics>, "digest" | "sectionCounts"> {
+  digest?: Partial<WakeUpDigestCoverage>
+  sectionCounts?: Partial<WakeUpSectionCounts>
+}
+
 export interface WakeUpCoverageInput {
   userQuery?: string
   now?: number
@@ -419,6 +425,34 @@ export interface WakeUpData {
    * section counts before logging.
    */
   coverage: WakeUpCoverageMetrics | null
+}
+
+export function buildEmptyWakeUpCoverage(
+  overrides: WakeUpCoverageOverrides = {},
+): WakeUpCoverageMetrics {
+  return {
+    mode: overrides.mode ?? "default",
+    queryLength: overrides.queryLength ?? 0,
+    digest: {
+      available: false,
+      fresh: false,
+      ageDays: null,
+      ...overrides.digest,
+    },
+    sectionCounts: {
+      digest: 0,
+      currentTaskMemories: 0,
+      recentMemories: 0,
+      relatedMemories: 0,
+      tasks: 0,
+      knowledgeFacts: 0,
+      decisions: 0,
+      proposedDecisions: 0,
+      overdueDecisions: 0,
+      staleConfidence: 0,
+      ...overrides.sectionCounts,
+    },
+  }
 }
 
 export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverageMetrics {

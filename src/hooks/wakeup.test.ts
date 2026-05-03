@@ -51,7 +51,10 @@ vi.mock("../core/wakeup.js", async () => {
 
 import { wakeup, wakeupStatePath } from "./helpers.js"
 import type { Project, TaskSummary } from "../types.js"
-import type { WakeUpCoverageMetrics } from "../core/wakeup.js"
+import {
+  buildEmptyWakeUpCoverage,
+  type WakeUpCoverageMetrics,
+} from "../core/wakeup.js"
 
 function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
   const base: TaskSummary = {
@@ -89,26 +92,6 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
     updatedAt: "2026-04-20T00:00:00Z",
   }
   return { ...base, ...overrides }
-}
-
-function buildEmptyWakeUpCoverage(tasks = 0): WakeUpCoverageMetrics {
-  return {
-    mode: "default",
-    queryLength: 0,
-    digest: { available: false, fresh: false, ageDays: null },
-    sectionCounts: {
-      digest: 0,
-      currentTaskMemories: 0,
-      recentMemories: 0,
-      relatedMemories: 0,
-      tasks,
-      knowledgeFacts: 0,
-      decisions: 0,
-      proposedDecisions: 0,
-      overdueDecisions: 0,
-      staleConfidence: 0,
-    },
-  }
 }
 
 // Tests use the full `Project` type from production rather than a
@@ -162,7 +145,9 @@ function setupMocks(opts: {
     relatedMemories: [],
     taskMemories: [],
     staleConfidence: [],
-    coverage: opts.coverage ?? buildEmptyWakeUpCoverage(opts.tasks?.length ?? 0),
+    coverage: opts.coverage ?? buildEmptyWakeUpCoverage({
+      sectionCounts: { tasks: opts.tasks?.length ?? 0 },
+    }),
   })
 }
 
@@ -336,7 +321,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       isCatchAllFallback: false,
       configProjects: [{ name: "Mail", path: "apps/mail" }],
       tasks: [makeTask({ id: "task-1" }), makeTask({ id: "task-2" })],
-      coverage: {
+      coverage: buildEmptyWakeUpCoverage({
         mode: "ranked",
         queryLength: 24,
         digest: { available: true, fresh: true, ageDays: 1 },
@@ -347,12 +332,8 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
           relatedMemories: 1,
           tasks: 40,
           knowledgeFacts: 5,
-          decisions: 0,
-          proposedDecisions: 0,
-          overdueDecisions: 0,
-          staleConfidence: 0,
         },
-      },
+      }),
     })
 
     try {
