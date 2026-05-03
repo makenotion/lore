@@ -354,6 +354,10 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       // misleadingly echoes the caller's input even though the memory
       // is now linked to a topic with a different name.
       topicLabel = topic.name
+    } else if (args.topicName) {
+      resolved.warnings.push(
+        `Topic "${args.topicName}" skipped (requires at least one project)`,
+      )
     }
 
     // Topic-key upsert dispatch (0.9.0/#06). When `topicKey` is set,

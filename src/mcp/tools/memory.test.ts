@@ -293,6 +293,46 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     expect(text).toContain("Topic: Evals & Testing")
   })
 
+  it("warns when topicName is skipped because no project scope resolved", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-unscoped", { title: "unscoped topic skip" })
+    const getOrCreate = vi.fn()
+    const create = vi.fn().mockResolvedValue(created)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate },
+      memories: { create },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "unscoped topic skip",
+      content: "body",
+      topicName: "Eval & Testing",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectIds: undefined,
+        topicId: undefined,
+      }),
+    )
+    expect(getOrCreate).not.toHaveBeenCalled()
+    expect(text).toContain("Topic: none")
+    expect(text).toContain(
+      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)',
+    )
+  })
+
   it("surfaces the SimilarTopicError message back through toolError", async () => {
     // When the probe rejects, getOrCreate throws; the tool layer's
     // try/catch routes the message into the `Error: ...` content.

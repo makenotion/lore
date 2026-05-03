@@ -176,6 +176,10 @@ async function handleCreate(
       })
       topicId = topic.id
       topicLabel = topic.name
+    } else if (args.topicName) {
+      resolved.warnings.push(
+        `Topic "${args.topicName}" skipped (requires at least one project)`,
+      )
     }
 
     // Probe runs in parallel with the create — sequencing them would double

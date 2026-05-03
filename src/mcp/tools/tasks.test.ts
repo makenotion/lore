@@ -132,6 +132,39 @@ describe("lore-task-create", () => {
     expect(text).toContain("Created task")
     expect(text).toContain("State: open")
   })
+
+  it("warns when topicName is skipped because no project scope resolved", async () => {
+    const created: Task = {
+      ...makeTask("t-unscoped", { title: "unscoped topic skip" }),
+      content: "",
+    } as Task
+    const getOrCreate = vi.fn()
+    const svc = services({ topics: { getOrCreate } })
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "unscoped topic skip",
+      topicName: "Eval & Testing",
+    } as never)
+
+    expect(svc.tasks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectIds: undefined,
+        topicId: undefined,
+      }),
+    )
+    expect(getOrCreate).not.toHaveBeenCalled()
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Topic: none")
+    expect(text).toContain(
+      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)',
+    )
+  })
 })
 
 describe("lore-task-create duplicate-task probe (#10)", () => {
