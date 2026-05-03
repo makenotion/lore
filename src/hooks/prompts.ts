@@ -204,10 +204,11 @@ export const PER_SPAWN_LEARNING_LIMIT = 5
  * agent remembered to write down. The block below is the redesigned shape:
  * structural in the background, no agent-compliance risk.
  *
- * Dedup has two layers: the save path structurally blocks repeated
- * likely-note saves inside the same hook session, and the prompt still asks
- * the sub-agent to probe `lore-query action='search'` for cross-session /
- * older-vault near-matches before saving a candidate. `action='ask'` is the
+ * Dedup has two layers: the save path structurally reuses repeated
+ * likely-note saves in the same project when they restate an existing
+ * autosave learning, and the prompt still asks the sub-agent to probe
+ * `lore-query action='search'` for older-vault near-matches before saving
+ * a candidate. `action='ask'` is the
  * wrong probe — it walks the fact / task graph by entity, not the Memories
  * DS — so it would miss any foreground `lore-memory action='save'` row
  * whose title doesn't already have a matching fact edge.
@@ -228,7 +229,7 @@ For each atomic learning, call \`lore-memory action='save'\` with:
 A learning must be:
   1. **Atomic.** One fact, one memory. Compound observations split into multiple saves.
   2. **Durable.** Useful beyond this specific bug or feature. "Fixed the off-by-one" is NOT durable; "binary-search variant XXXX needs <= comparison, not <" IS durable.
-  3. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly saved the memory via \`lore-memory action='save'\` or created the decision via \`lore-decision action='create'\` in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. If overlapping transcript windows make you save the same likely-note learning twice in one session, \`lore-memory action='save'\` will return the existing learning instead of creating another row. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
+  3. **Non-redundant against persisted state.** Skip a candidate ONLY if (a) the foreground agent already explicitly saved the memory via \`lore-memory action='save'\` or created the decision via \`lore-decision action='create'\` in this session, OR (b) a near-match already exists in the vault — call \`lore-query action='search'\` (scoped to the same project, with the candidate's title or distinctive terms as the query) to check. Do NOT use \`lore-query action='ask'\` for this — that action walks the fact / task graph by entity and will miss memory rows without matching fact edges. If you save the same likely-note learning twice in the same project, \`lore-memory action='save'\` will return the existing learning instead of creating another row. **Do NOT skip a candidate just because the synopsis mentions it.** The synopsis is a session-shaped summary and is supposed to gesture at the learnings; the per-learning rows are what future retrieval surfaces atomically.
 
 **Per-spawn cap: at most ${PER_SPAWN_LEARNING_LIMIT} atomic learnings per autosave run.** A noisy session that surfaces 30 candidate facts must rank by durability and skip the long tail. Picking the top ${PER_SPAWN_LEARNING_LIMIT} high-signal learnings is better than flooding the vault with 30 marginal rows; the next session's autosave will pick up anything truly important that this run dropped (the transcript context overlaps).
 

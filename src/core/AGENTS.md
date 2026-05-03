@@ -1652,12 +1652,19 @@ Scoping rules:
   `proposed`, trigram threshold `0.6`. Superseded / deprecated / rejected
   decisions are deliberately excluded — they are not valid supersession
   targets.
-- **Autosave atomic-learning path**: session + optional project +
+- **Autosave atomic-learning path**: project scope when available (session
+  scope fallback when projectless) +
   `Source = conversation` + `Kind = note` + `Confidence = likely`,
   body-fetch enabled. Unlike the general probe, this is blocking: a
   match returns the existing row and the MCP save path creates nothing.
   It uses strict trigram checks for near-literal duplicate bodies plus a
   lightly-stemmed token Jaccard check for reordered same-fact phrasing.
+  Project scope intentionally requires exact project-set equality and sets
+  `includeUnscoped: false` so the assertive cross-session gate never
+  collapses an A+B save into an A-only row and never becomes a vault-wide
+  or repo-wide-unscoped scan; the shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
+  kill switch or the narrower `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1`
+  switch disables reuse.
   It deliberately does NOT use title-only similarity because two
   durable learnings can share a short title while carrying different
   facts. The client-side source/kind/confidence recheck duplicates the

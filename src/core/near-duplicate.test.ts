@@ -346,7 +346,7 @@ describe("findAutosaveLearningDuplicate", () => {
     }
   })
 
-  it("requires a session id so the blocking gate stays session-scoped", async () => {
+  it("requires a session id in session scope", async () => {
     const lister = makeLister([
       makeMemory({
         id: "mem-1",
@@ -359,6 +359,26 @@ describe("findAutosaveLearningDuplicate", () => {
       title: "Relation filters reject empty arrays",
       content: "Notion relation filters reject empty arrays.",
       projectId: "proj-a",
+    })
+
+    expect(result).toBeNull()
+    expect(lister.listSpy).not.toHaveBeenCalled()
+  })
+
+  it("requires a project id in project scope so cross-session reuse never goes vault-wide", async () => {
+    const lister = makeLister([
+      makeMemory({
+        id: "mem-1",
+        title: "Relation filters reject empty arrays",
+        content: "Notion relation filters reject empty arrays.",
+      }),
+    ])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion relation filters reject empty arrays.",
+      session: "session-2",
+      scope: "project",
     })
 
     expect(result).toBeNull()
@@ -383,6 +403,31 @@ describe("findAutosaveLearningDuplicate", () => {
       confidence: "likely",
       limit: 50,
       includeContent: true,
+      includeUnscoped: undefined,
+    })
+  })
+
+  it("queries likely conversation notes across the project when project scope is requested", async () => {
+    const lister = makeLister([])
+
+    await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion relation filters reject empty arrays.",
+      projectId: "proj-a",
+      projectIds: ["proj-a"],
+      session: "session-2",
+      scope: "project",
+    })
+
+    expect(lister.listSpy).toHaveBeenCalledWith({
+      projectId: "proj-a",
+      session: undefined,
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      limit: 50,
+      includeContent: true,
+      includeUnscoped: false,
     })
   })
 
@@ -410,6 +455,87 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(result?.contentSimilarity).toBeCloseTo(1)
     expect(result?.tokenSimilarity).toBeCloseTo(1)
     expect(result?.projectIds).toEqual(["proj-a"])
+    expect(result?.session).toBe("session-1")
+  })
+
+  it("returns a prior-session project match for the same durable fact", async () => {
+    const existing = makeMemory({
+      id: "mem-existing",
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      session: "session-1",
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+    })
+    const lister = makeLister([existing])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectId: "proj-a",
+      projectIds: ["proj-a"],
+      session: "session-2",
+      scope: "project",
+    })
+
+    expect(result?.id).toBe("mem-existing")
+    expect(result?.session).toBe("session-1")
+  })
+
+  it("does not return a single-project row for a multi-project save", async () => {
+    const existing = makeMemory({
+      id: "mem-existing",
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      session: "session-1",
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+    })
+    const lister = makeLister([existing])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectId: "proj-a",
+      projectIds: ["proj-a", "proj-b"],
+      session: "session-2",
+      scope: "project",
+    })
+
+    expect(result).toBeNull()
+  })
+
+  it("returns a multi-project match when the project set is exact", async () => {
+    const existing = makeMemory({
+      id: "mem-existing",
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-b", "proj-a"],
+      session: "session-1",
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+    })
+    const lister = makeLister([existing])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a", "proj-b"],
+      session: "session-2",
+      scope: "project",
+    })
+
+    expect(result?.id).toBe("mem-existing")
+    expect(lister.listSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-a",
+        includeUnscoped: false,
+      }),
+    )
   })
 
   it("catches reordered paraphrases of the same atomic learning", async () => {

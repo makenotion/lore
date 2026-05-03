@@ -280,12 +280,12 @@ describe("buildBackgroundSavePrompt", () => {
     expect(prompt).toContain(`top ${PER_SPAWN_LEARNING_LIMIT} high-signal learnings`)
   })
 
-  it("instructs the sub-agent to dedup older matches while noting the structural same-session gate", () => {
-    // The save path now blocks same-session duplicate learnings, but
-    // the prompt still teaches the *correct* read probe for older /
-    // cross-session persisted state — `action='search'` (memory-shaped
-    // similarity), not `action='ask'` (entity-keyed fact/task graph
-    // walk that would miss memory rows without matching fact edges).
+  it("instructs the sub-agent to dedup persisted matches with the memory search probe", () => {
+    // The save path now reuses same-project duplicate learnings, and
+    // the prompt still teaches the *correct* read probe for persisted
+    // state — `action='search'` (memory-shaped similarity), not
+    // `action='ask'` (entity-keyed fact/task graph walk that would
+    // miss memory rows without matching fact edges).
     const prompt = buildBackgroundSavePrompt([], null, "transcript")
     expect(prompt).toContain("lore-query action='search'")
     expect(prompt).toContain("Non-redundant against persisted state")

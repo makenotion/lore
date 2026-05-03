@@ -60,6 +60,7 @@ export interface MemoryLister {
     session?: string
     limit?: number
     includeContent?: boolean
+    includeUnscoped?: boolean
   }): Promise<{ items: Memory[]; nextCursor?: string }>
 }
 
@@ -188,6 +189,8 @@ export async function findNearDuplicates(
 export interface AutosaveLearningDuplicateMatch extends NearDuplicateMatch {
   /** Project relation on the existing row, for session auto-link bookkeeping. */
   projectIds: string[]
+  /** Hook session id stored on the existing row. */
+  session: string
   /** Trigram Jaccard over the full markdown body. Range `[0, 1]`. */
   contentSimilarity: number
   /** Trigram Jaccard over title + body. Range `[0, 1]`. */
@@ -201,10 +204,21 @@ export interface FindAutosaveLearningDuplicateOpts {
   title: string
   /** Markdown body of the atomic learning being written. */
   content: string
-  /** Project scope to prefer when one is available. */
+  /** Project scope to prefer when one is available. Used as the query anchor. */
   projectId?: string
-  /** Hook session id. Required because the gate is session-scoped. */
+  /**
+   * Full project relation set for assertive reuse. Project-scoped duplicate
+   * hits must match this set exactly before they can suppress creation.
+   */
+  projectIds?: string[]
+  /** Hook session id. Required for session-scoped searches and response context. */
   session?: string
+  /**
+   * Duplicate search scope. Defaults to the historical same-session gate.
+   * Project scope promotes cross-session autosave learnings to assertive reuse,
+   * but requires projectId so the probe never becomes vault-wide.
+   */
+  scope?: "session" | "project"
   /** Similarity threshold for blocking a duplicate create. */
   threshold?: number
   /** Max rows to scan in the candidate pool (default 50). */
@@ -301,15 +315,27 @@ function learningTokenSimilarity(
   return intersection / union
 }
 
+function normalizedProjectSet(ids: readonly string[] | undefined): string[] {
+  return [...new Set(ids ?? [])].sort()
+}
+
+function projectSetsEqual(a: readonly string[], b: readonly string[]): boolean {
+  const A = normalizedProjectSet(a)
+  const B = normalizedProjectSet(b)
+  if (A.length !== B.length) return false
+  return A.every((id, index) => id === B[index])
+}
+
 /**
  * Blocking duplicate finder for Stop-spawn atomic learnings.
  *
  * The regular `findNearDuplicates` probe is advisory and project-scoped.
  * Autosave learning extraction needs a stronger contract because the same
- * transcript window can be processed more than once. This helper stays
- * session-scoped, reads only likely conversation-sourced notes, and fetches bodies
- * so a duplicate body/combined-text pair returns the existing row instead of letting
- * the write path create another memory.
+ * transcript window can be processed more than once, and the same durable fact
+ * can reappear in later sessions. This helper reads only likely
+ * conversation-sourced notes and fetches bodies so a duplicate body/combined-
+ * text pair returns the existing row instead of letting the write path create
+ * another memory.
  */
 export async function findAutosaveLearningDuplicate(
   memories: MemoryLister,
@@ -321,20 +347,34 @@ export async function findAutosaveLearningDuplicate(
   ) {
     return null
   }
+  const scope = opts.scope ?? "session"
   const session = opts.session?.trim()
-  if (!session) return null
+  const requestedProjectIds =
+    scope === "project"
+      ? normalizedProjectSet(
+          opts.projectIds && opts.projectIds.length > 0
+            ? opts.projectIds
+            : opts.projectId
+              ? [opts.projectId]
+              : [],
+        )
+      : []
+  const queryProjectId = scope === "project" ? requestedProjectIds[0] : opts.projectId
+  if (scope === "session" && !session) return null
+  if (scope === "project" && !queryProjectId) return null
   if (opts.title.trim() === "") return null
 
   let items: Memory[]
   try {
     const result = await memories.list({
-      projectId: opts.projectId,
-      session,
+      projectId: queryProjectId,
+      session: scope === "session" ? session : undefined,
       source: "conversation",
       kind: "note",
       confidence: "likely",
       limit: opts.limit ?? 50,
       includeContent: true,
+      includeUnscoped: scope === "project" ? false : undefined,
     })
     items = result.items
   } catch (err) {
@@ -349,6 +389,9 @@ export async function findAutosaveLearningDuplicate(
     // narrow to this triple. Keeping the client-side guard means a future
     // list-filter regression cannot turn synopsis rows into blocking matches.
     if (mem.source !== "conversation" || mem.kind !== "note" || mem.confidence !== "likely") {
+      continue
+    }
+    if (scope === "project" && !projectSetsEqual(mem.projectIds, requestedProjectIds)) {
       continue
     }
     const titleSimilarity = trigramJaccard(opts.title, mem.title)
@@ -380,6 +423,7 @@ export async function findAutosaveLearningDuplicate(
       decidedAt: mem.decidedAt,
       status: mem.status,
       projectIds: mem.projectIds,
+      session: mem.session,
       contentSimilarity,
       combinedSimilarity,
       tokenSimilarity,

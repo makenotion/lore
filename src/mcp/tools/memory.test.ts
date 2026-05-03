@@ -726,13 +726,165 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       } as never)
 
       const text = (result as { content: Array<{ text: string }> }).content[0].text
-      expect(text).toContain("Skipped duplicate autosave learning")
+      expect(text).toContain("Reused existing autosave learning")
+      expect(text).toContain("same-session duplicate")
       expect(text).toContain("mem-existing")
       expect(create).not.toHaveBeenCalled()
       expect(getOrCreate).not.toHaveBeenCalled()
       expect(record).toHaveBeenCalledWith(
         { agent: "Codex", session: "session-1" },
         { memoryId: "mem-existing", projectIds: ["proj-a"] }
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("reuses a prior-session project learning instead of creating a cross-session duplicate", async () => {
+    const mockServer = createMockServer()
+    const existing = makeMemory("mem-existing", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-1",
+    })
+    const create = vi.fn()
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const record = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+      identity: { author: null },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("Reused existing autosave learning")
+      expect(text).toContain("cross-session duplicate")
+      expect(text).toContain("mem-existing")
+      expect(text).toContain("LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1")
+      expect(create).not.toHaveBeenCalled()
+      expect(record).toHaveBeenCalledWith(
+        { agent: "Codex", session: "session-2" },
+        { memoryId: "mem-existing", projectIds: ["proj-a"] },
+      )
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "proj-a",
+          session: undefined,
+          source: "conversation",
+          kind: "note",
+          confidence: "likely",
+          includeContent: true,
+          includeUnscoped: false,
+        }),
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("does not let a single-project prior learning block a multi-project save", async () => {
+    const mockServer = createMockServer()
+    const existing = makeMemory("mem-existing", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-1",
+    })
+    const created = makeMemory("mem-created", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a", "proj-b"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-2",
+    })
+    const create = vi.fn().mockResolvedValue(created)
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const findByName = vi.fn(async (name: string) =>
+      name === "A"
+        ? { id: "proj-a", name: "A" }
+        : name === "B"
+          ? { id: "proj-b", name: "B" }
+          : null,
+    )
+    const record = vi.fn()
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+      facts: { createWithDedup: vi.fn() },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+        agent: "Codex",
+        projectNames: ["A", "B"],
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
+      expect(text).not.toContain("Reused existing autosave learning")
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectIds: ["proj-a", "proj-b"],
+        }),
+      )
+      expect(record).toHaveBeenCalledWith(
+        { agent: "Codex", session: "session-2" },
+        { memoryId: "mem-created", projectIds: ["proj-a", "proj-b"] },
+      )
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "proj-a",
+          session: undefined,
+          source: "conversation",
+          kind: "note",
+          confidence: "likely",
+          includeContent: true,
+          includeUnscoped: false,
+        }),
       )
     } finally {
       vi.unstubAllEnvs()

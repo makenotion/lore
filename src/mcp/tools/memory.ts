@@ -124,15 +124,19 @@ function isAutosaveLearningSave(args: SaveArgs, resolvedKind: MemoryKind): boole
 }
 
 function formatAutosaveLearningDuplicate(
-  match: AutosaveLearningDuplicateMatch
+  match: AutosaveLearningDuplicateMatch,
+  currentSession?: string,
 ): string[] {
+  const duplicateScope =
+    currentSession && match.session === currentSession ? "same-session" : "cross-session"
   return [
-    `Skipped duplicate autosave learning: "${match.title}" (${match.id})`,
+    `Reused existing autosave learning (${duplicateScope} duplicate): "${match.title}" (${match.id})`,
     `Similarity: title ${match.titleSimilarity.toFixed(2)}, ` +
       `content ${match.contentSimilarity.toFixed(2)}, ` +
       `combined ${match.combinedSimilarity.toFixed(2)}, ` +
       `token ${match.tokenSimilarity.toFixed(2)}`,
     "No new memory was created. The existing memory stays available for this session.",
+    "Recovery: set LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1 before autosave to force a separate row.",
   ]
 }
 
@@ -314,7 +318,9 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         title: args.title,
         content: args.content,
         projectId: probeProjectId,
+        projectIds: resolved.ids,
         session: args.session,
+        scope: probeProjectId ? "project" : "session",
         limit: AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT,
         onError: (err) =>
           debugLogPartialFailures("lore-memory", [
@@ -333,7 +339,13 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         // footer: the duplicate row's existing facts remain authoritative.
         return {
           content: [
-            { type: "text", text: formatAutosaveLearningDuplicate(duplicate).join("\n") },
+            {
+              type: "text",
+              text: formatAutosaveLearningDuplicate(
+                duplicate,
+                args.session?.trim(),
+              ).join("\n"),
+            },
           ],
         }
       }

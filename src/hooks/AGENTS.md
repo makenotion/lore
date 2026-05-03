@@ -333,14 +333,17 @@ surfaces 30 candidate facts must rank by durability and skip the long
 tail — the next session's autosave will catch anything truly important
 that the prior run dropped (transcripts overlap).
 
-Foreground/background dedup has a structural same-session gate plus a
-prompt-level cross-session probe. The save path treats background
+Foreground/background dedup has a structural project-scoped autosave
+learning gate plus a prompt-level search probe. The save path treats background
 `source: "conversation"`, `kind: "note"`, `confidence: "likely"` saves
 with a session id as atomic-learning-shaped and checks existing
-likely conversation notes in that session before creating a row. If an
-overlapping transcript window produces the same likely-note learning
-twice (including simple title/body reordering), `lore-memory
-action='save'` returns the existing row instead of creating another one.
+likely conversation notes with the exact resolved project set before
+creating a row.
+If a later autosave restates the same likely-note learning (including
+simple title/body reordering), `lore-memory action='save'` returns the
+existing row instead of creating another one. When project scope is not
+available, the gate falls back to the original same-session check rather
+than scanning the vault.
 This gate does not apply to synopsis-style saves (`confidence` omitted
 or non-`likely`) so the session-level memory stays independent from the
 per-learning rows. The prompt therefore requires `confidence: "likely"`
@@ -382,7 +385,7 @@ block to ship).
   truthy-looking values (`"true"`, `"yes"`) fall through to the
   permissive branch.
 - `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` — env var, runtime
-  rollback for the structural same-session gate only. Learning
+  rollback for the structural autosave-learning reuse gate only. Learning
   extraction still runs; the save path simply stops blocking duplicate
   learning rows. The shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
   also disables this gate because it is a near-duplicate probe by
