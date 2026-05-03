@@ -345,6 +345,48 @@ describe("MemoryService.create — rich_text metadata cap", () => {
     expect(props.Consequences.rich_text[0].text.content).toBe(atCap)
   })
 
+  it("accepts surrogate-pair emoji up to the UTF-16 rich_text cap", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+    const emojiAtCap = "\u{1F642}".repeat(RICH_TEXT_PROPERTY_MAX_LEN / 2)
+
+    expect(emojiAtCap).toHaveLength(RICH_TEXT_PROPERTY_MAX_LEN)
+    expect([...emojiAtCap]).toHaveLength(RICH_TEXT_PROPERTY_MAX_LEN / 2)
+
+    await service.create({
+      title: "Keep metadata capped",
+      content: "",
+      alternatives: emojiAtCap,
+      consequences: emojiAtCap,
+    })
+
+    const props = createSpy.mock.calls[0]![0].properties as {
+      Alternatives: { rich_text: Array<{ text: { content: string } }> }
+      Consequences: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Alternatives.rich_text[0].text.content).toBe(emojiAtCap)
+    expect(props.Consequences.rich_text[0].text.content).toBe(emojiAtCap)
+  })
+
+  it("accepts empty alternatives and consequences", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await service.create({
+      title: "Keep metadata capped",
+      content: "",
+      alternatives: "",
+      consequences: "",
+    })
+
+    const props = createSpy.mock.calls[0]![0].properties as {
+      Alternatives: { rich_text: Array<{ text: { content: string } }> }
+      Consequences: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Alternatives.rich_text[0].text.content).toBe("")
+    expect(props.Consequences.rich_text[0].text.content).toBe("")
+  })
+
   it.each([
     ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
     ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
@@ -744,6 +786,44 @@ describe("MemoryService.update — rich_text metadata cap", () => {
     }
     expect(props.Alternatives.rich_text[0].text.content).toBe(atCap)
     expect(props.Consequences.rich_text[0].text.content).toBe(atCap)
+  })
+
+  it("accepts surrogate-pair emoji up to the UTF-16 rich_text cap", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+    const emojiAtCap = "\u{1F642}".repeat(RICH_TEXT_PROPERTY_MAX_LEN / 2)
+
+    expect(emojiAtCap).toHaveLength(RICH_TEXT_PROPERTY_MAX_LEN)
+    expect([...emojiAtCap]).toHaveLength(RICH_TEXT_PROPERTY_MAX_LEN / 2)
+
+    await service.update("mem-1", {
+      alternatives: emojiAtCap,
+      consequences: emojiAtCap,
+    })
+
+    const props = updateSpy.mock.calls[0]![0].properties as {
+      Alternatives: { rich_text: Array<{ text: { content: string } }> }
+      Consequences: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Alternatives.rich_text[0].text.content).toBe(emojiAtCap)
+    expect(props.Consequences.rich_text[0].text.content).toBe(emojiAtCap)
+  })
+
+  it("accepts empty alternatives and consequences", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+
+    await service.update("mem-1", {
+      alternatives: "",
+      consequences: "",
+    })
+
+    const props = updateSpy.mock.calls[0]![0].properties as {
+      Alternatives: { rich_text: Array<{ text: { content: string } }> }
+      Consequences: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Alternatives.rich_text[0].text.content).toBe("")
+    expect(props.Consequences.rich_text[0].text.content).toBe("")
   })
 
   it.each([

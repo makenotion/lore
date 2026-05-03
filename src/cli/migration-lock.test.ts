@@ -59,6 +59,13 @@ function writeRaceWorker(): string {
     `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
+process.stdout.write("ready\\n")
+await new Promise((resolve) => {
+  process.stdin.once("data", resolve)
+  process.stdin.resume()
+})
+process.stdin.pause()
+
 const result = tryAcquireMigrationLock(scope)
 process.stdout.write(JSON.stringify({
   acquired: result.acquired,
@@ -67,63 +74,177 @@ process.stdout.write(JSON.stringify({
 }) + "\\n")
 
 if (result.acquired) {
-  await new Promise((resolve) =>
-    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "750"))
-  )
+  await new Promise((resolve) => {
+    const timeout = setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "750"))
+    process.stdin.once("data", () => {
+      clearTimeout(timeout)
+      resolve(undefined)
+    })
+    process.stdin.resume()
+  })
+  process.stdin.pause()
 }
 `
   )
   return workerPath
 }
 
+interface WorkerRaceResult {
+  acquired: boolean
+  ownerPid: number | null
+  pid: number
+}
+
+function parseWorkerRaceResult(stdout: string): WorkerRaceResult {
+  const lines = stdout
+    .trim()
+    .split(/\n+/)
+    .filter((line) => line.length > 0 && line !== "ready")
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]!) as Partial<WorkerRaceResult>
+      if (typeof parsed.acquired === "boolean") return parsed as WorkerRaceResult
+    } catch {
+      // Ignore unrelated worker stdout; the structured result is validated below.
+    }
+  }
+
+  throw new Error(`worker did not emit a result: ${stdout}`)
+}
+
+function maybeParseWorkerRaceResult(stdout: string): WorkerRaceResult | null {
+  try {
+    return parseWorkerRaceResult(stdout)
+  } catch {
+    return null
+  }
+}
+
 async function runWorkerRace(lockScope: MigrationLockScope): Promise<
-  Array<{
-    acquired: boolean
-    ownerPid: number | null
-    pid: number
-  }>
+  WorkerRaceResult[]
 > {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
-  const children = Array.from({ length: 2 }, () => {
-    return spawn(process.execPath, [viteNode, workerPath], {
+  const workers = Array.from({ length: 2 }, () => {
+    const child = spawn(process.execPath, [viteNode, workerPath], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
-        // vite-node startup can stagger the two workers enough that a
-        // short-lived winner exits before its peer reaches acquisition,
-        // making the peer's stale-PID reclaim legitimate rather than
-        // a failed exclusion check.
+        // Fallback so a crashed parent does not leave a winning worker alive
+        // indefinitely while it waits for the parent-side release signal.
         LOCK_HOLD_MS: "10000",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     })
+
+    let stdout = ""
+    let stderr = ""
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8")
+    })
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8")
+    })
+
+    return { child, stdout: () => stdout, stderr: () => stderr }
   })
 
-  return Promise.all(
-    children.map(async (child) => {
-      let stdout = ""
-      let stderr = ""
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8")
-      })
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8")
-      })
+  function waitForWorkerReady(worker: (typeof workers)[number]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (!worker.child.stdout) {
+        reject(new Error("worker stdout pipe was not created"))
+        return
+      }
 
-      const [code] = (await once(child, "exit")) as [number | null]
-      if (code !== 0) {
-        throw new Error(`worker exited ${code}: ${stderr}`)
+      const cleanup = () => {
+        worker.child.stdout?.off("data", onData)
+        worker.child.off("exit", onExit)
+        worker.child.off("error", onError)
       }
-      return JSON.parse(stdout.trim()) as {
-        acquired: boolean
-        ownerPid: number | null
-        pid: number
+      const onData = () => {
+        if (!worker.stdout().includes("ready\n")) return
+        cleanup()
+        resolve()
       }
+      const onExit = (code: number | null) => {
+        cleanup()
+        reject(new Error(`worker exited before ready (${code}): ${worker.stderr()}`))
+      }
+      const onError = (err: Error) => {
+        cleanup()
+        reject(err)
+      }
+
+      worker.child.stdout.on("data", onData)
+      worker.child.once("exit", onExit)
+      worker.child.once("error", onError)
+      onData()
     })
-  )
+  }
+
+  function waitForWorkerResult(
+    worker: (typeof workers)[number]
+  ): Promise<WorkerRaceResult> {
+    return new Promise<WorkerRaceResult>((resolve, reject) => {
+      if (!worker.child.stdout) {
+        reject(new Error("worker stdout pipe was not created"))
+        return
+      }
+
+      const cleanup = () => {
+        worker.child.stdout?.off("data", onData)
+        worker.child.off("exit", onExit)
+        worker.child.off("error", onError)
+      }
+      const onData = () => {
+        const result = maybeParseWorkerRaceResult(worker.stdout())
+        if (!result) return
+        cleanup()
+        resolve(result)
+      }
+      const onExit = (code: number | null) => {
+        cleanup()
+        reject(new Error(`worker exited before result (${code}): ${worker.stderr()}`))
+      }
+      const onError = (err: Error) => {
+        cleanup()
+        reject(err)
+      }
+
+      worker.child.stdout.on("data", onData)
+      worker.child.once("exit", onExit)
+      worker.child.once("error", onError)
+      onData()
+    })
+  }
+
+  await Promise.all(workers.map(waitForWorkerReady))
+
+  const exits = workers.map(async (worker) => {
+    const [code] = (await once(worker.child, "exit")) as [number | null]
+    if (code !== 0) {
+      throw new Error(`worker exited ${code}: ${worker.stderr()}`)
+    }
+  })
+
+  for (const worker of workers) {
+    worker.child.stdin?.write("start\n")
+  }
+
+  let results: WorkerRaceResult[]
+  try {
+    results = await Promise.all(workers.map((worker) => waitForWorkerResult(worker)))
+  } finally {
+    for (const worker of workers) {
+      worker.child.stdin?.end("release\n")
+    }
+  }
+
+  await Promise.all(exits)
+  return results
 }
 
 describe("tryAcquireMigrationLock", () => {

@@ -175,6 +175,50 @@ describe("DecisionService.create", () => {
     })
   })
 
+  it("accepts surrogate-pair emoji up to the UTF-16 rich_text cap", async () => {
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+    const emojiAtCap = "\u{1F642}".repeat(RICH_TEXT_PROPERTY_MAX_LEN / 2)
+
+    expect(emojiAtCap).toHaveLength(RICH_TEXT_PROPERTY_MAX_LEN)
+    expect([...emojiAtCap]).toHaveLength(RICH_TEXT_PROPERTY_MAX_LEN / 2)
+
+    await service.create({
+      decision: "Keep metadata capped",
+      rationale: "",
+      alternatives: emojiAtCap,
+      consequences: emojiAtCap,
+    })
+
+    const createArgs = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createArgs.properties.Alternatives).toEqual({
+      rich_text: [{ text: { content: emojiAtCap } }],
+    })
+    expect(createArgs.properties.Consequences).toEqual({
+      rich_text: [{ text: { content: emojiAtCap } }],
+    })
+  })
+
+  it("accepts empty alternatives and consequences", async () => {
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.create({
+      decision: "Keep metadata capped",
+      rationale: "",
+      alternatives: "",
+      consequences: "",
+    })
+
+    const createArgs = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createArgs.properties.Alternatives).toEqual({
+      rich_text: [{ text: { content: "" } }],
+    })
+    expect(createArgs.properties.Consequences).toEqual({
+      rich_text: [{ text: { content: "" } }],
+    })
+  })
+
   it.each([
     ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
     ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
