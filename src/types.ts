@@ -570,6 +570,12 @@ export interface CreateMemoryInput {
    */
   autosaveLearningDedupScope?: "session" | "project" | "off"
   /**
+   * Salt for session-scoped autosave-learning locks. MCP callers pass the
+   * vault page id (or config root fallback) so projectless and catch-all
+   * saves in different vaults cannot reuse each other's local lock.
+   */
+  autosaveLearningScopeId?: string
+  /**
    * Internal hook for side effects that should happen only after the
    * autosave-learning duplicate gate commits to a fresh row. The returned
    * properties are merged into the create input immediately before Notion

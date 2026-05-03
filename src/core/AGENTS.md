@@ -1711,12 +1711,19 @@ Scoping rules:
 
   The service path holds a filesystem lock across
   `probe → prepareFreshCreate → create → post-create stabilization`,
-  keyed by session scope or exact project set (`autosave-learning-lock.ts`).
+  keyed by exact project set for project scope, or by vault/config-root
+  scope plus session for session scope (`autosave-learning-lock.ts`).
   After a fresh create it polls until the new row is visible to the same
   autosave-learning query (bounded by
   `LORE_AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS`, default 500ms)
   before releasing, so the next local contender does not miss the row
   during Notion's query-index lag.
+  The lock uses per-contender lease files. Stale contenders are ignored
+  instead of deleting a shared lock path during takeover, so two waiters
+  cannot both observe the same stale file and later delete a fresh holder.
+  This is local filesystem coordination, not a Notion-side uniqueness
+  guarantee; remote writers or unavailable local state can still bypass
+  the local serialization layer.
   A probe failure throws `AutosaveLearningDuplicateProbeError` and fails
   closed; a transient 429 must not fall through to blind create and leave
   a duplicate row.

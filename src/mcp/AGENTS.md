@@ -415,10 +415,13 @@ Exception: Stop-spawn atomic learnings have a structural duplicate gate
 before create. In a `LORE_BACKGROUND_AGENT=true` process, a
 `lore-memory action='save'` call shaped like the learning prompt
 (`source: "conversation"` default, `kind: "note"`,
-`confidence: "likely"`, non-empty `session`) checks existing
-likely conversation notes in that session. A duplicate returns the
-existing row and creates nothing. This intentionally does not apply to
-synopsis-style saves where `confidence` is omitted or non-`likely`.
+`confidence: "likely"`, non-empty `session`) checks existing likely
+conversation notes in the exact resolved project set when an explicit
+or non-catch-all project scope is available. Projectless saves and
+auto-resolved catch-all project saves stay scoped to the current
+vault/config root plus session. A duplicate returns the existing row
+and creates nothing. This intentionally does not apply to synopsis-style
+saves where `confidence` is omitted or non-`likely`.
 When `topicName` is present, topic creation is deferred through
 `MemoryService.createWithResult()` and runs only after the locked
 service-layer duplicate recheck commits to a fresh memory row; duplicate

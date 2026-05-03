@@ -591,6 +591,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           agent: args.agent,
           session: args.session,
           autosaveLearningDedupScope,
+          autosaveLearningScopeId: services.context.vault?.pageId ?? services.configRoot,
           prepareFreshCreate,
         }).then((result) => ({
           memory: result.memory,

@@ -1144,7 +1144,7 @@ export class MemoryService {
       ? `autosave-learning:${duplicateConfig.scope}:` +
         (duplicateConfig.scope === "project"
           ? duplicateConfig.projectIds.join(",")
-          : duplicateConfig.session)
+          : `${duplicateConfig.scopeId ?? "global"}\0${duplicateConfig.session}`)
       : null
 
     return await withAutosaveLearningLock(lockKey, async () => {
@@ -1193,8 +1193,8 @@ export class MemoryService {
   private autosaveLearningDuplicateConfig(
     input: CreateMemoryInput
   ):
-    | { scope: "session"; session: string; projectIds: string[] }
-    | { scope: "project"; session: string; projectIds: string[] }
+    | { scope: "session"; session: string; projectIds: string[]; scopeId: string | null }
+    | { scope: "project"; session: string; projectIds: string[]; scopeId: string | null }
     | null {
     if (
       input.autosaveLearningDedupScope === "off" ||
@@ -1215,14 +1215,15 @@ export class MemoryService {
       input.autosaveLearningDedupScope ?? (projectIds.length > 0 ? "project" : "session")
     const scope =
       requestedScope === "project" && projectIds.length > 0 ? "project" : "session"
+    const scopeId = input.autosaveLearningScopeId?.trim() || null
 
-    return { scope, session, projectIds }
+    return { scope, session, projectIds, scopeId }
   }
 
   private async waitForAutosaveLearningIndexStability(
     duplicateConfig:
-      | { scope: "session"; session: string; projectIds: string[] }
-      | { scope: "project"; session: string; projectIds: string[] },
+      | { scope: "session"; session: string; projectIds: string[]; scopeId: string | null }
+      | { scope: "project"; session: string; projectIds: string[]; scopeId: string | null },
     memory: Memory,
     input: CreateMemoryInput
   ): Promise<void> {

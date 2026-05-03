@@ -1179,6 +1179,71 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
   })
 
+  it("passes vault scope into projectless autosave-learning service locks", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-created", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: [],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-2",
+    })
+    const createWithResult = vi.fn(async () => ({
+      memory: created,
+      autosaveLearningDuplicate: null,
+      freshCreatePreparation: null,
+    }))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: {
+        createWithResult,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup: vi.fn() },
+      context: {
+        vault: { pageId: "vault-a" },
+        project: null,
+        cwd: "/tmp/vault-a",
+        isCatchAllFallback: false,
+      },
+      config: { projects: [] },
+      configRoot: "/tmp/vault-a",
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
+      expect(createWithResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          autosaveLearningDedupScope: "session",
+          autosaveLearningScopeId: "vault-a",
+        })
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it("opts foreground likely session saves out of the autosave-learning service gate", async () => {
     const mockServer = createMockServer()
     const created = makeMemory("mem-created", {
