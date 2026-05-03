@@ -37,6 +37,12 @@ log is the canonical source for those.
 - **`resetIdentityCache()` keeps its no-arg compatibility.** External callers
   can continue calling the exported reset helper without passing a resolver;
   the no-arg form clears all resolver-owned identity caches in the process.
+- **Autosave learning reuse now applies at the core write boundary.** Likely
+  conversation-note autosaves reuse same-session, cross-session, and legacy
+  unscoped duplicate learnings through `MemoryService`, fail closed when the
+  blocking duplicate probe cannot read Notion, and surface explicit
+  `cross-session` / `unknown-session` reuse labels in MCP output. (#324)
+
 - **Codex wake-up debounce now records attempts atomically.** The
   `UserPromptSubmit` marker is created before Notion initialization, applies to
   slash-command first prompts and transient wake-up load failures, honors

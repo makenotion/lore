@@ -454,7 +454,7 @@ export interface Memory {
    * MCP and service boundaries; empty string when not set.
    */
   synopsis: string
-  session: string
+  session: string | null
   content: string
   createdAt: string
   updatedAt: string
@@ -561,6 +561,20 @@ export interface CreateMemoryInput {
    */
   synopsis?: string
   session?: string
+  /**
+   * Internal autosave-learning duplicate mode. Omitted lets the service use
+   * project scope when projectIds are present and session scope otherwise;
+   * `off` bypasses the blocking reuse gate for callers that intentionally
+   * materialize separate rows.
+   */
+  autosaveLearningDedupScope?: "session" | "project" | "off"
+  /**
+   * Internal hook for side effects that should happen only after the
+   * autosave-learning duplicate gate commits to a fresh row. The returned
+   * properties are merged into the create input immediately before Notion
+   * page creation; duplicate reuse skips this callback entirely.
+   */
+  prepareFreshCreate?: () => Promise<FreshCreatePreparation>
   /** Task-specific. Defaults to `"open"` when `kind === "task"`. */
   taskState?: TaskState
   /** Free-form blocker label. Only meaningful on `kind === "task"`. */
@@ -581,6 +595,12 @@ export interface CreateMemoryInput {
    * `upsertByTopicKey` when seeding a fresh row in the upsert path.
    */
   revisionCount?: number
+}
+
+export interface FreshCreatePreparation {
+  input: Partial<Pick<CreateMemoryInput, "topicId">>
+  topicLabel?: string
+  warnings?: string[]
 }
 
 export interface UpdateMemoryInput {

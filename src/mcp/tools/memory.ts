@@ -12,6 +12,8 @@ import {
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
 import type {
+  CreateMemoryInput,
+  FreshCreatePreparation,
   Fact,
   Memory,
   MemoryKind,
@@ -49,6 +51,7 @@ import {
   recordContradiction,
   recordSupersedence,
   RekeyAuditError,
+  type MemoryCreateResult,
   type PromotionAdvisory,
   type RecordComparedResult,
 } from "../../core/memory.js"
@@ -131,10 +134,11 @@ function formatAutosaveLearningDuplicate(
   args: SaveArgs,
   currentSession?: string
 ): string[] {
-  const matchSession = match.session.trim()
+  const matchSession = match.session?.trim()
   const normalizedCurrentSession = currentSession?.trim()
-  const duplicateScope =
-    normalizedCurrentSession && matchSession === normalizedCurrentSession
+  const duplicateScope = !matchSession
+    ? "unknown-session"
+    : normalizedCurrentSession && matchSession === normalizedCurrentSession
       ? "same-session"
       : "cross-session"
   const lines = [
@@ -191,6 +195,29 @@ function debugLogAutosaveLearningScopeDowngrade(opts: {
       `projectId=${debugLogField(opts.projectId)} session=${debugLogField(opts.session)} ` +
       `source=lore-memory\n`
   )
+}
+
+async function createMemoryWithResult(
+  services: LoreServices,
+  input: CreateMemoryInput
+): Promise<MemoryCreateResult> {
+  const memories = services.memories as typeof services.memories & {
+    createWithResult?: (input: CreateMemoryInput) => Promise<MemoryCreateResult>
+  }
+  if (typeof memories.createWithResult === "function") {
+    return await memories.createWithResult(input)
+  }
+  const freshCreatePreparation = input.prepareFreshCreate
+    ? await input.prepareFreshCreate()
+    : null
+  const freshInput = freshCreatePreparation
+    ? { ...input, ...freshCreatePreparation.input }
+    : input
+  return {
+    memory: await services.memories.create(freshInput),
+    autosaveLearningDuplicate: null,
+    freshCreatePreparation,
+  }
 }
 
 const KINDS = ["note", "decision", "incident", "runbook", "postmortem", "policy"] as const
@@ -368,12 +395,26 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         })
       : Promise.resolve([] as NearDuplicateMatch[])
 
-    if (isAutosaveLearningSave(args, resolvedKind)) {
-      const hasExplicitProjectScope =
-        Boolean(args.projectName) || Boolean(args.projectNames?.length)
-      const canUseProjectAutosaveDedup =
-        Boolean(probeProjectId) &&
-        (hasExplicitProjectScope || !services.context.isCatchAllFallback)
+    const autosaveLearningSave = isAutosaveLearningSave(args, resolvedKind)
+    const hasExplicitProjectScope =
+      Boolean(args.projectName) || Boolean(args.projectNames?.length)
+    const canUseProjectAutosaveDedup =
+      Boolean(probeProjectId) &&
+      (hasExplicitProjectScope || !services.context.isCatchAllFallback)
+    const autosaveLearningDedupScope: "session" | "project" | "off" =
+      autosaveLearningSave && canUseProjectAutosaveDedup
+        ? "project"
+        : autosaveLearningSave
+          ? "session"
+          : "off"
+    const autosaveLearningProbeScope: "session" | "project" | undefined =
+      autosaveLearningSave && canUseProjectAutosaveDedup
+        ? "project"
+        : autosaveLearningSave
+          ? "session"
+          : undefined
+
+    if (autosaveLearningSave) {
       if (
         probeProjectId &&
         services.context.isCatchAllFallback &&
@@ -384,13 +425,17 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           session: args.session,
         })
       }
+      // Two-probe contract: this MCP preflight runs before topic resolution
+      // to keep already-visible duplicates side-effect-free, while
+      // MemoryService.createWithResult repeats the blocking probe inside the
+      // autosave lock to catch races that appear after this read.
       const duplicate = await findAutosaveLearningDuplicate(services.memories, {
         title: args.title,
         content: args.content,
         projectId: probeProjectId,
         projectIds: resolved.ids,
         session: args.session,
-        scope: canUseProjectAutosaveDedup ? "project" : "session",
+        scope: autosaveLearningProbeScope,
         limit: AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT,
         onError: (err) =>
           debugLogPartialFailures("lore-memory", [
@@ -442,7 +487,28 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
 
     let topicId: string | undefined
     let topicLabel = "none"
-    if (args.topicName && resolved.ids.length > 0) {
+    const shouldDeferAutosaveTopic =
+      autosaveLearningSave &&
+      !args.topicKey &&
+      Boolean(args.topicName) &&
+      resolved.ids.length > 0
+    const prepareFreshCreate: (() => Promise<FreshCreatePreparation>) | undefined =
+      shouldDeferAutosaveTopic
+        ? async () => {
+            const topic = await services.topics.getOrCreate(
+              args.topicName!,
+              resolved.ids,
+              {
+                forceNew: args.forceNewTopic,
+              }
+            )
+            return {
+              input: { topicId: topic.id },
+              topicLabel: topic.name,
+            }
+          }
+        : undefined
+    if (args.topicName && resolved.ids.length > 0 && !shouldDeferAutosaveTopic) {
       const topic = await services.topics.getOrCreate(args.topicName, resolved.ids, {
         forceNew: args.forceNewTopic,
       })
@@ -479,55 +545,65 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       revisionCount: number
       upserted: boolean
       promotionAdvisory: PromotionAdvisory | null
+      autosaveLearningDuplicate: AutosaveLearningDuplicateMatch | null
+      freshCreatePreparation: FreshCreatePreparation | null
     }> = args.topicKey
-      ? services.memories.upsertByTopicKey({
-          topicKey: args.topicKey,
-          projectIds: resolved.ids,
-          title: args.title,
-          content: args.content,
-          kind: resolvedKind,
-          source: (args.source ?? "conversation") as MemorySource,
-          status: args.status as MemoryStatus | undefined,
-          confidence: args.confidence as MemoryConfidence | undefined,
-          topicId,
-          tags: args.tags,
-          keywords: args.keywords,
-          synopsis: args.synopsis,
-          author: resolvedAuthor,
-          agent: args.agent,
-          session: args.session,
-          reviewBy: args.reviewBy,
-          decidedAt: args.decidedAt,
-        })
-      : services.memories
-          .create({
+      ? services.memories
+          .upsertByTopicKey({
+            topicKey: args.topicKey,
+            projectIds: resolved.ids,
             title: args.title,
             content: args.content,
-            projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-            topicId,
-            source: args.source ?? "conversation",
-            kind: args.kind as MemoryKind | undefined,
+            kind: resolvedKind,
+            source: (args.source ?? "conversation") as MemorySource,
             status: args.status as MemoryStatus | undefined,
             confidence: args.confidence as MemoryConfidence | undefined,
-            reviewBy: args.reviewBy,
-            decidedAt: args.decidedAt,
+            topicId,
             tags: args.tags,
             keywords: args.keywords,
             synopsis: args.synopsis,
             author: resolvedAuthor,
             agent: args.agent,
             session: args.session,
+            reviewBy: args.reviewBy,
+            decidedAt: args.decidedAt,
           })
-          .then((memory) => ({
-            memory,
-            revisionCount: 1,
-            upserted: false,
-            // Non-topicKey saves and fresh-create upserts never carry
-            // an advisory — the upsert path returns null on
-            // fresh-create, so the non-topicKey branch matches that
-            // posture for shape uniformity.
-            promotionAdvisory: null,
+          .then((result) => ({
+            ...result,
+            autosaveLearningDuplicate: null,
+            freshCreatePreparation: null,
           }))
+      : createMemoryWithResult(services, {
+          title: args.title,
+          content: args.content,
+          projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+          topicId,
+          source: args.source ?? "conversation",
+          kind: args.kind as MemoryKind | undefined,
+          status: args.status as MemoryStatus | undefined,
+          confidence: args.confidence as MemoryConfidence | undefined,
+          reviewBy: args.reviewBy,
+          decidedAt: args.decidedAt,
+          tags: args.tags,
+          keywords: args.keywords,
+          synopsis: args.synopsis,
+          author: resolvedAuthor,
+          agent: args.agent,
+          session: args.session,
+          autosaveLearningDedupScope,
+          prepareFreshCreate,
+        }).then((result) => ({
+          memory: result.memory,
+          revisionCount: 1,
+          upserted: false,
+          // Non-topicKey saves and fresh-create upserts never carry
+          // an advisory — the upsert path returns null on
+          // fresh-create, so the non-topicKey branch matches that
+          // posture for shape uniformity.
+          promotionAdvisory: null,
+          autosaveLearningDuplicate: result.autosaveLearningDuplicate,
+          freshCreatePreparation: result.freshCreatePreparation,
+        }))
 
     const [writeResult, nearDuplicates, relatedTasks] = await Promise.all([
       writePromise,
@@ -536,6 +612,31 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     ])
 
     const memory = writeResult.memory
+    if (writeResult.freshCreatePreparation?.topicLabel) {
+      topicLabel = writeResult.freshCreatePreparation.topicLabel
+    }
+    if (writeResult.freshCreatePreparation?.warnings?.length) {
+      resolved.warnings.push(...writeResult.freshCreatePreparation.warnings)
+    }
+    if (writeResult.autosaveLearningDuplicate) {
+      services.sessionMemories.record(
+        { agent: args.agent, session: args.session },
+        { memoryId: memory.id, projectIds: memory.projectIds }
+      )
+      return {
+        content: [
+          {
+            type: "text",
+            text: formatAutosaveLearningDuplicate(
+              writeResult.autosaveLearningDuplicate,
+              args,
+              args.session?.trim()
+            ).join("\n"),
+          },
+        ],
+      }
+    }
+
     const matches = nearDuplicates.filter((m) => m.id !== memory.id)
 
     services.sessionMemories.record(

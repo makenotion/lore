@@ -188,10 +188,12 @@ export async function findNearDuplicates(
 }
 
 export interface AutosaveLearningDuplicateMatch extends NearDuplicateMatch {
+  /** Full existing row that should be reused instead of creating a duplicate. */
+  memory: Memory
   /** Project relation on the existing row, for session auto-link bookkeeping. */
   projectIds: string[]
   /** Hook session id stored on the existing row. */
-  session: string
+  session: string | null
   /** Trigram Jaccard over the full markdown body. Range `[0, 1]`. */
   contentSimilarity: number
   /** Trigram Jaccard over title + body. Range `[0, 1]`. */
@@ -226,6 +228,16 @@ export interface FindAutosaveLearningDuplicateOpts {
   limit?: number
   /** Optional observer for list-query failures. */
   onError?: (err: unknown) => void
+}
+
+export class AutosaveLearningDuplicateProbeError extends Error {
+  constructor(
+    message: string,
+    public readonly cause: unknown
+  ) {
+    super(message)
+    this.name = "AutosaveLearningDuplicateProbeError"
+  }
 }
 
 const AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD = 0.92
@@ -374,12 +386,15 @@ export async function findAutosaveLearningDuplicate(
       confidence: "likely",
       limit: opts.limit ?? 50,
       includeContent: true,
-      includeUnscoped: scope === "project" ? false : undefined,
+      includeUnscoped: scope === "project" ? true : undefined,
     })
     items = result.items
   } catch (err) {
     opts.onError?.(err)
-    return null
+    throw new AutosaveLearningDuplicateProbeError(
+      "Autosave learning duplicate probe failed; refusing to create a possible duplicate.",
+      err
+    )
   }
 
   const textThreshold = opts.threshold ?? AUTOSAVE_LEARNING_TEXT_DUPLICATE_THRESHOLD
@@ -395,7 +410,14 @@ export async function findAutosaveLearningDuplicate(
     ) {
       continue
     }
-    if (scope === "project" && !projectSetsEqual(mem.projectIds, requestedProjectIds)) {
+    // Project-scoped autosave dedup intentionally accepts legacy unscoped
+    // learning rows. Once a row has explicit project relations, though, it
+    // must match the full requested project set before it can block a write.
+    if (
+      scope === "project" &&
+      mem.projectIds.length > 0 &&
+      !projectSetsEqual(mem.projectIds, requestedProjectIds)
+    ) {
       continue
     }
     const titleSimilarity = trigramJaccard(opts.title, mem.title)
@@ -426,6 +448,7 @@ export async function findAutosaveLearningDuplicate(
       tagOverlap: 0,
       decidedAt: mem.decidedAt,
       status: mem.status,
+      memory: mem,
       projectIds: mem.projectIds,
       session: mem.session,
       contentSimilarity,

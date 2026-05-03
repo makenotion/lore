@@ -23,6 +23,7 @@ import {
   type RrfEntry,
 } from "./memory.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
+import { AutosaveLearningDuplicateProbeError } from "./near-duplicate.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
 import {
   SYNOPSIS_MAX,
@@ -85,6 +86,7 @@ describe("pageToMemory — backward compatibility with pre-migration pages", () 
     expect(memory.alternatives).toBe("")
     expect(memory.consequences).toBe("")
     expect(memory.synopsis).toBe("")
+    expect(memory.session).toBeNull()
     expect(memory.confidenceScore).toBeNull()
     expect(memory.lastReferencedAt).toBeNull()
     expect(memory.content).toBe("body content")
@@ -413,6 +415,157 @@ describe("MemoryService.create — rich_text metadata cap", () => {
       expect(createSpy).not.toHaveBeenCalled()
     }
   )
+})
+
+describe("MemoryService.create — autosave-learning duplicate gate", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildAutosaveLearningPage(id: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: {
+          type: "title",
+          title: [{ plain_text: "Relation filters reject empty arrays" }],
+        },
+        Project: { type: "relation", relation: [{ id: "proj-a" }] },
+        Source: { type: "select", select: { name: "conversation" } },
+        Kind: { type: "select", select: { name: "note" } },
+        Confidence: { type: "select", select: { name: "likely" } },
+        Session: { type: "rich_text", rich_text: [{ plain_text: "session-1" }] },
+      },
+      { id }
+    )
+  }
+
+  it("reuses an existing likely conversation note before creating a duplicate", async () => {
+    const querySpy = vi.fn(async () => ({
+      results: [buildAutosaveLearningPage("mem-existing")],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const createSpy = vi.fn()
+    const client = {
+      dataSources: { query: querySpy },
+      pages: {
+        create: createSpy,
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(async () => ({
+          markdown:
+            "Notion dataSources.query rejects relation filters with empty arrays.",
+        })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.createWithResult({
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-2",
+    })
+
+    expect(result.memory.id).toBe("mem-existing")
+    expect(result.autosaveLearningDuplicate?.id).toBe("mem-existing")
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(querySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data_source_id: "memories-ds",
+        filter: expect.any(Object),
+      })
+    )
+  })
+
+  it("fails closed when the duplicate probe errors", async () => {
+    const queryError = new Error("Notion 429")
+    const querySpy = vi.fn(async () => {
+      throw queryError
+    })
+    const createSpy = vi.fn()
+    const client = {
+      dataSources: { query: querySpy },
+      pages: {
+        create: createSpy,
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.createWithResult({
+        title: "Relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        projectIds: ["proj-a"],
+        source: "conversation",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+      })
+    ).rejects.toBeInstanceOf(AutosaveLearningDuplicateProbeError)
+
+    expect(createSpy).not.toHaveBeenCalled()
+  })
+
+  it("keeps the autosave lock until a fresh create is query-visible", async () => {
+    vi.stubEnv("LORE_AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS", "200")
+    const events: string[] = []
+    const querySpy = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        events.push("preflight")
+        return { results: [], has_more: false, next_cursor: null }
+      })
+      .mockImplementationOnce(async () => {
+        events.push("stabilize-miss")
+        return { results: [], has_more: false, next_cursor: null }
+      })
+      .mockImplementationOnce(async () => {
+        events.push("stabilize-hit")
+        return {
+          results: [buildAutosaveLearningPage("mem-created")],
+          has_more: false,
+          next_cursor: null,
+        }
+      })
+    const createSpy = vi.fn(async () => {
+      events.push("create")
+      return buildAutosaveLearningPage("mem-created")
+    })
+    const client = {
+      dataSources: { query: querySpy },
+      pages: {
+        create: createSpy,
+        updateMarkdown: vi.fn(),
+        retrieveMarkdown: vi.fn(async () => ({
+          markdown:
+            "Notion dataSources.query rejects relation filters with empty arrays.",
+        })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    try {
+      const result = await service.createWithResult({
+        title: "Relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        projectIds: ["proj-a"],
+        source: "conversation",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+      })
+
+      expect(result.memory.id).toBe("mem-created")
+      expect(result.autosaveLearningDuplicate).toBeNull()
+      expect(querySpy).toHaveBeenCalledTimes(3)
+      expect(events).toEqual(["preflight", "create", "stabilize-miss", "stabilize-hit"])
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 describe("MemoryService.create — partial-failure on body write (issue #190)", () => {
@@ -6165,9 +6318,7 @@ describe("MemoryService.search — intent parameter (#17)", () => {
     )
   }
 
-  function makeContainsClause(
-    args: Record<string, unknown>
-  ): {
+  function makeContainsClause(args: Record<string, unknown>): {
     property: string
     rich_text?: { contains: string }
     title?: { contains: string }
@@ -8454,7 +8605,9 @@ describe("MemoryService.getPropertiesById", () => {
   })
 
   it("rejects archived Memories rows", async () => {
-    const retrieve = vi.fn(async () => buildMemoryPage("mem-archived", { archived: true }))
+    const retrieve = vi.fn(async () =>
+      buildMemoryPage("mem-archived", { archived: true })
+    )
     const client = { pages: { retrieve } } as unknown as Client
     const service = new MemoryService(client, db)
 

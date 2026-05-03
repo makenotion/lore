@@ -915,16 +915,16 @@ serialize round-trips end-to-end; the bounded chunked dispatch makes
 the operator's `notion.rateLimit.concurrency` knob actually move the
 wall-clock needle.
 
-### Concurrent-mine race (uncovered)
+### Concurrent-mine race lock
 
-Two parallel `lore mine` runs against the same project for the same
-file can both observe an empty `findExistingFileMemory` and both
-create — Notion has no per-key uniqueness primitive on the Memories
-DB. Single-operator serial use is the common case. The
-`lore migrate --dedup-keys --merge` pass is fact-side dedup, not
-memory-side, so it does NOT collapse mine duplicates. If real-vault
-data shows the race matters, a follow-up adds a per-vault lock via
-`src/hooks/lock.ts`.
+Two parallel `lore mine` runs against the same vault, project, and file
+serialize through a per-file lock before the
+`findExistingFileMemory → create-or-update` critical section. Fresh
+creates hold the lock through a short post-create stabilization delay so
+Notion's eventually-consistent search index can see the row before the
+next miner probes. This is separate from autosave-learning dedup:
+`lore mine` writes `source: "file"` rows, not conversation-sourced
+atomic learnings, and uses the file upsert key described above.
 
 ### Output format (additively-compatible with pre-PR)
 

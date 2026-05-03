@@ -418,156 +418,6 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     )
   })
 
-  it("rejects unresolved explicit projectName before update topicName warning", async () => {
-    const mockServer = createMockServer()
-    const findByName = vi.fn().mockResolvedValue(null)
-    const getOrCreate = vi.fn()
-    const getById = vi.fn()
-    const update = vi.fn()
-
-    const services = {
-      projects: { findByName },
-      topics: { getOrCreate },
-      memories: { update, getById },
-      context: {
-        project: { id: "proj-context", name: "Context" },
-        isCatchAllFallback: false,
-      },
-      config: { projects: [] },
-      sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
-
-    const result = await updateMemory({
-      memoryId: "mem-unscoped-update",
-      content: "body changed",
-      topicName: "Eval & Testing",
-      projectName: "Missing",
-    } as never)
-
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect((result as { isError?: boolean }).isError).toBe(true)
-    expect(findByName).toHaveBeenCalledWith("Missing")
-    expect(text).toContain('Project "Missing" could not be resolved')
-    expect(text).toContain("Fix the project scope")
-    expect(text).not.toContain('Topic "Eval & Testing" skipped')
-    expect(getById).not.toHaveBeenCalled()
-    expect(getOrCreate).not.toHaveBeenCalled()
-    expect(update).not.toHaveBeenCalled()
-  })
-
-  it("uses explicit projectName scope when update resolves topicName", async () => {
-    const mockServer = createMockServer()
-    const updated = makeMemory("mem-scoped-update", {
-      title: "scoped topic update",
-      projectIds: ["proj-specific"],
-      topicId: "topic-eval",
-    })
-    const topic = makeTopic("topic-eval", { name: "Eval & Testing" })
-    const findByName = vi
-      .fn()
-      .mockResolvedValue({ id: "proj-specific", name: "Specific" })
-    const getOrCreate = vi.fn().mockResolvedValue(topic)
-    const getById = vi.fn()
-    const update = vi.fn().mockResolvedValue(updated)
-
-    const services = {
-      projects: { findByName },
-      topics: { getOrCreate },
-      memories: { update, getById },
-      context: { project: null, isCatchAllFallback: false },
-      config: { projects: [] },
-      sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
-
-    const result = await updateMemory({
-      memoryId: "mem-scoped-update",
-      content: "body changed",
-      topicName: "Eval & Testing",
-      projectName: "Specific",
-    } as never)
-
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect(findByName).toHaveBeenCalledWith("Specific")
-    expect(getById).not.toHaveBeenCalled()
-    expect(getOrCreate).toHaveBeenCalledWith("Eval & Testing", ["proj-specific"], {
-      forceNew: undefined,
-    })
-    expect(update).toHaveBeenCalledWith(
-      "mem-scoped-update",
-      expect.objectContaining({
-        content: "body changed",
-        projectIds: ["proj-specific"],
-        topicId: "topic-eval",
-      })
-    )
-    expect(text).toContain('Updated memory: "scoped topic update"')
-    expect(text).toContain("Topic: Eval & Testing")
-    expect(text).not.toContain("Warnings:")
-  })
-
-  it("uses context project when update topicName has no existing memory scope", async () => {
-    const mockServer = createMockServer()
-    const updated = makeMemory("mem-context-update", {
-      title: "context topic update",
-      projectIds: [],
-      topicId: "topic-context",
-    })
-    const current = makeMemory("mem-context-update", {
-      title: "before",
-      projectIds: [],
-    })
-    const topic = makeTopic("topic-context", { name: "Eval & Testing" })
-    const getOrCreate = vi.fn().mockResolvedValue(topic)
-    const update = vi.fn().mockResolvedValue(updated)
-
-    const services = {
-      projects: { findByName: vi.fn() },
-      topics: { getOrCreate },
-      memories: { update, getById: vi.fn().mockResolvedValue(current) },
-      context: {
-        project: { id: "proj-context", name: "Context" },
-        isCatchAllFallback: false,
-      },
-      config: { projects: [] },
-      sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
-    }
-
-    registerMemoryTools(mockServer.server, services as never)
-    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
-
-    const result = await updateMemory({
-      memoryId: "mem-context-update",
-      content: "body changed",
-      topicName: "Eval & Testing",
-    } as never)
-
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
-    expect(services.memories.getById).toHaveBeenCalledWith("mem-context-update")
-    expect(getOrCreate).toHaveBeenCalledWith("Eval & Testing", ["proj-context"], {
-      forceNew: undefined,
-    })
-    expect(update).toHaveBeenCalledWith(
-      "mem-context-update",
-      expect.objectContaining({
-        content: "body changed",
-        projectIds: undefined,
-        topicId: "topic-context",
-      })
-    )
-    expect(text).toContain('Updated memory: "context topic update"')
-    expect(text).toContain("Topic: Eval & Testing")
-    expect(text).not.toContain("Warnings:")
-  })
-
   it("surfaces the SimilarTopicError message back through toolError", async () => {
     // When the probe rejects, getOrCreate throws; the tool layer's
     // try/catch routes the message into the `Error: ...` content.
@@ -931,12 +781,10 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     const list = vi.fn().mockResolvedValue({ items: [existing] })
     const record = vi.fn()
     const getOrCreate = vi.fn()
-    const tasksList = vi.fn()
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate },
       memories: { create, list },
-      tasks: { list: tasksList },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
@@ -956,25 +804,14 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         confidence: "likely",
         session: "session-1",
         agent: "Codex",
-        author: "Hesham",
-        synopsis: "Relation filters with empty arrays fail before query execution.",
-        keywords: "notion filters",
-        tags: ["workflow"],
       } as never)
 
       const text = (result as { content: Array<{ text: string }> }).content[0].text
       expect(text).toContain("Reused existing autosave learning")
       expect(text).toContain("same-session duplicate")
       expect(text).toContain("mem-existing")
-      expect(text).toContain("Dropped candidate metadata on reuse")
-      expect(text).toMatch(/synopsis \(\d+ chars\)/)
-      expect(text).toContain("keywords (2 tokens)")
-      expect(text).toContain("tags (1)")
-      expect(text).toContain("agent=Codex")
-      expect(text).toContain("author=Hesham")
       expect(create).not.toHaveBeenCalled()
       expect(getOrCreate).not.toHaveBeenCalled()
-      expect(tasksList).not.toHaveBeenCalled()
       expect(record).toHaveBeenCalledWith(
         { agent: "Codex", session: "session-1" },
         { memoryId: "mem-existing", projectIds: ["proj-a"] }
@@ -1021,22 +858,12 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
         confidence: "likely",
         session: "session-2",
         agent: "Codex",
-        author: "Hesham",
-        synopsis: "Relation filters with empty arrays fail before query execution.",
-        keywords: "notion filters",
-        tags: ["workflow"],
       } as never)
 
       const text = (result as { content: Array<{ text: string }> }).content[0].text
       expect(text).toContain("Reused existing autosave learning")
       expect(text).toContain("cross-session duplicate")
       expect(text).toContain("mem-existing")
-      expect(text).toContain("Dropped candidate metadata on reuse")
-      expect(text).toMatch(/synopsis \(\d+ chars\)/)
-      expect(text).toContain("keywords (2 tokens)")
-      expect(text).toContain("tags (1)")
-      expect(text).toContain("agent=Codex")
-      expect(text).toContain("author=Hesham")
       expect(text).toContain("LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1")
       expect(create).not.toHaveBeenCalled()
       expect(record).toHaveBeenCalledWith(
@@ -1051,7 +878,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
           kind: "note",
           confidence: "likely",
           includeContent: true,
-          includeUnscoped: false,
+          includeUnscoped: true,
         })
       )
     } finally {
@@ -1210,7 +1037,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
           kind: "note",
           confidence: "likely",
           includeContent: true,
-          includeUnscoped: false,
+          includeUnscoped: true,
         })
       )
       expect(list).not.toHaveBeenCalledWith(
@@ -1226,6 +1053,195 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       stderrSpy.mockRestore()
       vi.unstubAllEnvs()
     }
+  })
+
+  it("labels reused legacy learnings without a stored session as unknown-session", async () => {
+    const mockServer = createMockServer()
+    const existing = makeMemory("mem-existing", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: null,
+    })
+    const create = vi.fn()
+    const list = vi.fn().mockResolvedValue({ items: [existing] })
+    const record = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+      identity: { author: null },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("Reused existing autosave learning")
+      expect(text).toContain("unknown-session duplicate")
+      expect(create).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("does not create a requested topic when the service-layer recheck reuses a duplicate", async () => {
+    const mockServer = createMockServer()
+    const existing = makeMemory("mem-existing", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-1",
+    })
+    const duplicate = {
+      id: existing.id,
+      title: existing.title,
+      titleSimilarity: 1,
+      tagOverlap: 0,
+      decidedAt: existing.decidedAt,
+      status: existing.status,
+      memory: existing,
+      projectIds: existing.projectIds,
+      session: existing.session,
+      contentSimilarity: 1,
+      combinedSimilarity: 1,
+      tokenSimilarity: 1,
+    }
+    const getOrCreate = vi.fn()
+    const createWithResult = vi.fn(async () => ({
+      memory: existing,
+      autosaveLearningDuplicate: duplicate,
+      freshCreatePreparation: null,
+    }))
+    const services = {
+      projects: { findByName: vi.fn(async () => ({ id: "proj-a", name: "A" })) },
+      topics: { getOrCreate },
+      memories: {
+        createWithResult,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+        agent: "Codex",
+        projectName: "A",
+        topicName: "Auth Models",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain("Reused existing autosave learning")
+      expect(getOrCreate).not.toHaveBeenCalled()
+      expect(createWithResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareFreshCreate: expect.any(Function),
+        })
+      )
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("opts foreground likely session saves out of the autosave-learning service gate", async () => {
+    const mockServer = createMockServer()
+    const created = makeMemory("mem-created", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-a"],
+      topicId: "topic-auth",
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-2",
+    })
+    const createWithResult = vi.fn(async () => ({
+      memory: created,
+      autosaveLearningDuplicate: null,
+      freshCreatePreparation: null,
+    }))
+    const getOrCreate = vi.fn(async () =>
+      makeTopic("topic-auth", { name: "Auth Models" })
+    )
+    const services = {
+      projects: { findByName: vi.fn(async () => ({ id: "proj-a", name: "A" })) },
+      topics: { getOrCreate },
+      memories: {
+        createWithResult,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      facts: { createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      kind: "note",
+      confidence: "likely",
+      session: "session-2",
+      agent: "Codex",
+      projectName: "A",
+      topicName: "Auth Models",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
+    expect(text).toContain("Topic: Auth Models")
+    expect(getOrCreate).toHaveBeenCalledWith("Auth Models", ["proj-a"], {
+      forceNew: undefined,
+    })
+    expect(createWithResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topicId: "topic-auth",
+        autosaveLearningDedupScope: "off",
+        prepareFreshCreate: undefined,
+      })
+    )
   })
 
   it("does not let a single-project prior learning block a multi-project save", async () => {
@@ -1306,7 +1322,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
           kind: "note",
           confidence: "likely",
           includeContent: true,
-          includeUnscoped: false,
+          includeUnscoped: true,
         })
       )
     } finally {

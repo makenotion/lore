@@ -1672,30 +1672,48 @@ Scoping rules:
   (falls back to same-session scope when no project resolves, or when the
   only project is an auto-resolved monorepo catch-all) +
   `Source = conversation` + `Kind = note` + `Confidence = likely`,
-  body-fetch enabled. Unlike the general probe, this is blocking: a
-  match returns the existing row and the MCP save path creates nothing.
+  body-fetch enabled. Unlike the general probe, this is blocking:
+  `MemoryService.createWithResult()` returns the existing row and creates
+  nothing. `MemoryService.create()` also pays this gate and returns the
+  reused row, but callers that need to tell the operator "reused, not
+  created" must use `createWithResult()` and inspect
+  `autosaveLearningDuplicate`. The MCP save path still runs an early
+  preflight before topic creation so already-visible duplicates do not
+  create orphan Topic rows; the service layer repeats the check under
+  lock immediately before create so non-MCP callers share the same
+  safety net. MCP save passes topic creation as `prepareFreshCreate`,
+  so a duplicate that appears between the preflight and the service
+  recheck still returns without creating a topic.
   It uses strict trigram checks for near-literal duplicate bodies plus a
   lightly-stemmed token Jaccard check for reordered same-fact phrasing.
-  Project scope intentionally requires exact project-set equality and sets
-  `includeUnscoped: false` so the assertive cross-session gate never
-  collapses an A+B save into an A-only row and never becomes a vault-wide
-  or repo-wide-unscoped scan; the shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
-  kill switch or the narrower `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1`
-  switch disables reuse.
+  Project scope requires exact non-empty project-set equality for scoped
+  rows, but it also queries with `includeUnscoped: true` and allows an
+  unscoped legacy row to block a later scoped duplicate. That preserves
+  cross-scope reuse without allowing an A-only row to suppress an A+B
+  save. The shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` kill switch or
+  the narrower `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` switch disables
+  reuse.
   When `LORE_DEBUG=1`, an auto-resolved catch-all downgrade emits
   `[lore] autosave-learning-dedup-scope-downgrade` with the project id and
   session so operators can distinguish an intentional same-session fallback
   from a missing duplicate.
-  This is still a probe-then-create flow, not a Notion-side uniqueness
-  guarantee. Concurrent Stop fires in separate worktrees can both miss
-  each other during Notion query/index lag and create duplicate learning
-  rows; follow-up GitHub issue #311 tracks a lock/coalescing layer, with
-  `entity-relation-lock.ts` as the local pattern to evaluate.
   It deliberately does NOT use title-only similarity because two
   durable learnings can share a short title while carrying different
   facts. The client-side source/kind/confidence recheck duplicates the
   server filter on purpose so a future `MemoryService.list` regression
   cannot make synopsis rows block atomic-learning rows.
+
+  The service path holds a filesystem lock across
+  `probe → prepareFreshCreate → create → post-create stabilization`,
+  keyed by session scope or exact project set (`autosave-learning-lock.ts`).
+  After a fresh create it polls until the new row is visible to the same
+  autosave-learning query (bounded by
+  `LORE_AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS`, default 500ms)
+  before releasing, so the next local contender does not miss the row
+  during Notion's query-index lag.
+  A probe failure throws `AutosaveLearningDuplicateProbeError` and fails
+  closed; a transient 429 must not fall through to blind create and leave
+  a duplicate row.
 
 **`kind` and `excludeKinds` are mutually exclusive by design.** The
 memory path sets `excludeKinds: ["decision"]` (client-side filter),

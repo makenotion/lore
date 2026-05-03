@@ -30,6 +30,7 @@ import type {
   MemoryConfidence,
   TaskState,
   DatabaseRef,
+  FreshCreatePreparation,
 } from "../types.js"
 import {
   CONFIDENCE_DISPLAY_THRESHOLD,
@@ -47,6 +48,11 @@ import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
 import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
+import {
+  findAutosaveLearningDuplicate,
+  type AutosaveLearningDuplicateMatch,
+} from "./near-duplicate.js"
+import { withAutosaveLearningLock } from "./autosave-learning-lock.js"
 import {
   backfillSynopses,
   type BackfillOptions,
@@ -86,6 +92,27 @@ import {
  *  governance. Titles and `Kind=decision` pages share this pool. */
 const TITLE_CACHE_MAX = 500
 const TITLE_CACHE_TTL_MS = 60_000
+const AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS = 500
+const AUTOSAVE_LEARNING_POST_CREATE_POLL_MS = 50
+
+function parseNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  if (!/^[0-9]+$/.test(raw)) return fallback
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : fallback
+}
+
+function autosaveLearningPostCreateStabilizeMs(): number {
+  return parseNonNegativeIntegerEnv(
+    "LORE_AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS",
+    AUTOSAVE_LEARNING_POST_CREATE_STABILIZE_MS
+  )
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 /**
  * Minimum contains-mode hit count that satisfies a hybrid query without
@@ -698,6 +725,12 @@ export class MemoryCreatePartialFailureError extends Error {
   }
 }
 
+export interface MemoryCreateResult {
+  memory: Memory
+  autosaveLearningDuplicate: AutosaveLearningDuplicateMatch | null
+  freshCreatePreparation: FreshCreatePreparation | null
+}
+
 /**
  * Per-side outcome of `MemoryService.recordCompared`. Each flag is
  * `true` when this call actually issued a `pages.update` for that side
@@ -1100,8 +1133,128 @@ export class MemoryService {
   }
 
   async create(input: CreateMemoryInput): Promise<Memory> {
+    return (await this.createWithResult(input)).memory
+  }
+
+  async createWithResult(input: CreateMemoryInput): Promise<MemoryCreateResult> {
     validateRichTextMetadataFields(input, "MemoryService.create")
 
+    const duplicateConfig = this.autosaveLearningDuplicateConfig(input)
+    const lockKey = duplicateConfig
+      ? `autosave-learning:${duplicateConfig.scope}:` +
+        (duplicateConfig.scope === "project"
+          ? duplicateConfig.projectIds.join(",")
+          : duplicateConfig.session)
+      : null
+
+    return await withAutosaveLearningLock(lockKey, async () => {
+      if (duplicateConfig) {
+        const decoded = decodeMemoryTextFields(input)
+        const duplicate = await findAutosaveLearningDuplicate(this, {
+          title: decoded.title,
+          content: decoded.content,
+          projectId: duplicateConfig.projectIds[0],
+          projectIds: duplicateConfig.projectIds,
+          session: duplicateConfig.session,
+          scope: duplicateConfig.scope,
+        })
+        if (duplicate) {
+          return {
+            memory: duplicate.memory,
+            autosaveLearningDuplicate: duplicate,
+            freshCreatePreparation: null,
+          }
+        }
+      }
+
+      const freshCreatePreparation = input.prepareFreshCreate
+        ? await input.prepareFreshCreate()
+        : null
+      const freshInput = freshCreatePreparation
+        ? { ...input, ...freshCreatePreparation.input }
+        : input
+      const memory = await this.createFresh(freshInput)
+      if (duplicateConfig) {
+        await this.waitForAutosaveLearningIndexStability(
+          duplicateConfig,
+          memory,
+          freshInput
+        )
+      }
+
+      return {
+        memory,
+        autosaveLearningDuplicate: null,
+        freshCreatePreparation,
+      }
+    })
+  }
+
+  private autosaveLearningDuplicateConfig(
+    input: CreateMemoryInput
+  ):
+    | { scope: "session"; session: string; projectIds: string[] }
+    | { scope: "project"; session: string; projectIds: string[] }
+    | null {
+    if (
+      input.autosaveLearningDedupScope === "off" ||
+      process.env["LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP"] === "1" ||
+      process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1"
+    ) {
+      return null
+    }
+    if ((input.source ?? "manual") !== "conversation") return null
+    if ((input.kind ?? "note") !== "note") return null
+    if (input.confidence !== "likely") return null
+
+    const session = input.session?.trim()
+    if (!session) return null
+
+    const projectIds = [...new Set(input.projectIds ?? [])].sort()
+    const requestedScope =
+      input.autosaveLearningDedupScope ?? (projectIds.length > 0 ? "project" : "session")
+    const scope =
+      requestedScope === "project" && projectIds.length > 0 ? "project" : "session"
+
+    return { scope, session, projectIds }
+  }
+
+  private async waitForAutosaveLearningIndexStability(
+    duplicateConfig:
+      | { scope: "session"; session: string; projectIds: string[] }
+      | { scope: "project"; session: string; projectIds: string[] },
+    memory: Memory,
+    input: CreateMemoryInput
+  ): Promise<void> {
+    const timeoutMs = autosaveLearningPostCreateStabilizeMs()
+    if (timeoutMs <= 0) return
+
+    const decoded = decodeMemoryTextFields(input)
+    const deadline = Date.now() + timeoutMs
+    while (true) {
+      try {
+        const visible = await findAutosaveLearningDuplicate(this, {
+          title: decoded.title,
+          content: decoded.content,
+          projectId: duplicateConfig.projectIds[0],
+          projectIds: duplicateConfig.projectIds,
+          session: duplicateConfig.session,
+          scope: duplicateConfig.scope,
+        })
+        if (visible?.id === memory.id) return
+      } catch {
+        // The memory already landed. A transient read-side failure should not
+        // convert the successful create into a partial failure; future writers
+        // still fail closed on their own duplicate probe while Notion recovers.
+      }
+
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) return
+      await sleep(Math.min(AUTOSAVE_LEARNING_POST_CREATE_POLL_MS, remainingMs))
+    }
+  }
+
+  private async createFresh(input: CreateMemoryInput): Promise<Memory> {
     // Decode at the write boundary so doubly-encoded values from the
     // autosave/markdown path land in Notion as plain text. Idempotent: a
     // clean value passes through unchanged. Covers every plain-text
@@ -4092,6 +4245,7 @@ export class MemoryService {
 export function pageToMemory(page: PageObjectResponse, content?: string): Memory {
   const props = page.properties
   const topicIds = extractRelationIds(props["Topic"])
+  const session = extractRichText(props["Session"]).trim()
 
   // Read `Task State` only when the column exists *and* a select is set.
   // `extractSelect` falls back when the column is missing — fine for
@@ -4128,7 +4282,7 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     tags: extractMultiSelect(props["Tags"]),
     keywords: extractRichText(props["Keywords"]),
     synopsis: extractRichText(props["Synopsis"]),
-    session: extractRichText(props["Session"]),
+    session: session.length > 0 ? session : null,
     content: content ?? "",
     createdAt: page.created_time,
     updatedAt: page.last_edited_time,

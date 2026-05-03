@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  AutosaveLearningDuplicateProbeError,
   extractEntityCandidates,
   findAutosaveLearningDuplicate,
   findDuplicateActiveTasks,
@@ -32,7 +33,7 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
     tags: [],
     keywords: "",
     synopsis: "",
-    session: "",
+    session: null,
     content: "",
     taskState: null,
     blockedBy: "",
@@ -47,7 +48,9 @@ function makeMemory(overrides: Partial<Memory> & { id: string; title: string }):
   }
 }
 
-function makeLister(items: Memory[]): MemoryLister & { listSpy: ReturnType<typeof vi.fn> } {
+function makeLister(
+  items: Memory[]
+): MemoryLister & { listSpy: ReturnType<typeof vi.fn> } {
   const listSpy = vi.fn().mockResolvedValue({ items })
   return { list: listSpy, listSpy }
 }
@@ -64,7 +67,7 @@ describe("findNearDuplicates", () => {
           tags: [],
           projectId: "proj-a",
           threshold: 0.7,
-        },
+        }
       )
       expect(result).toEqual([])
       expect(listSpy).not.toHaveBeenCalled()
@@ -84,7 +87,7 @@ describe("findNearDuplicates", () => {
           tags: [],
           projectId: "proj-a",
           threshold: 0.7,
-        },
+        }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -125,7 +128,7 @@ describe("findNearDuplicates", () => {
       threshold: 0.7,
     })
     expect(lister.listSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ tags: ["architecture", "core"] }),
+      expect.objectContaining({ tags: ["architecture", "core"] })
     )
   })
 
@@ -141,7 +144,7 @@ describe("findNearDuplicates", () => {
       threshold: 0.7,
     })
     expect(lister.listSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ tags: undefined }),
+      expect.objectContaining({ tags: undefined })
     )
   })
 
@@ -154,7 +157,7 @@ describe("findNearDuplicates", () => {
       threshold: 0.7,
     })
     expect(lister.listSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ includeContent: false }),
+      expect.objectContaining({ includeContent: false })
     )
   })
 
@@ -264,7 +267,7 @@ describe("findNearDuplicates", () => {
         tags: [],
         projectId: "proj-a",
         threshold: 0.7,
-      },
+      }
     )
     expect(result).toEqual([])
   })
@@ -282,7 +285,7 @@ describe("findNearDuplicates", () => {
         projectId: "proj-a",
         threshold: 0.7,
         onError,
-      },
+      }
     )
 
     expect(result).toEqual([])
@@ -300,7 +303,7 @@ describe("findNearDuplicates", () => {
       threshold: 0.6,
     })
     expect(lister.listSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ topicId: "topic-z", kind: "decision" }),
+      expect.objectContaining({ topicId: "topic-z", kind: "decision" })
     )
   })
 })
@@ -317,7 +320,7 @@ describe("findAutosaveLearningDuplicate", () => {
           content: "Notion relation filters reject empty arrays.",
           projectId: "proj-a",
           session: "session-1",
-        },
+        }
       )
       expect(result).toBeNull()
       expect(listSpy).not.toHaveBeenCalled()
@@ -337,7 +340,7 @@ describe("findAutosaveLearningDuplicate", () => {
           content: "Notion relation filters reject empty arrays.",
           projectId: "proj-a",
           session: "session-1",
-        },
+        }
       )
       expect(result).toBeNull()
       expect(listSpy).not.toHaveBeenCalled()
@@ -427,7 +430,7 @@ describe("findAutosaveLearningDuplicate", () => {
       confidence: "likely",
       limit: 50,
       includeContent: true,
-      includeUnscoped: false,
+      includeUnscoped: true,
     })
   })
 
@@ -533,9 +536,36 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(lister.listSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: "proj-a",
-        includeUnscoped: false,
-      }),
+        includeUnscoped: true,
+      })
     )
+  })
+
+  it("can reuse an unscoped legacy learning from a later scoped project save", async () => {
+    const existing = makeMemory({
+      id: "mem-unscoped",
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: [],
+      session: null,
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+    })
+    const lister = makeLister([existing])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectId: "proj-a",
+      projectIds: ["proj-a"],
+      session: "session-2",
+      scope: "project",
+    })
+
+    expect(result?.id).toBe("mem-unscoped")
+    expect(result?.projectIds).toEqual([])
+    expect(result?.session).toBeNull()
   })
 
   it("catches reordered paraphrases of the same atomic learning", async () => {
@@ -655,29 +685,30 @@ describe("findAutosaveLearningDuplicate", () => {
     expect(result).toBeNull()
   })
 
-  it("swallows list errors and reports them through onError", async () => {
+  it("fails closed on list errors and reports them through onError", async () => {
     const err = new Error("notion 503")
     const listSpy = vi.fn().mockRejectedValue(err)
     const onError = vi.fn()
 
-    const result = await findAutosaveLearningDuplicate(
-      { list: listSpy },
-      {
-        title: "Relation filters reject empty arrays",
-        content: "Notion dataSources.query rejects relation filters with empty arrays.",
-        projectId: "proj-a",
-        session: "session-1",
-        onError,
-      },
-    )
+    await expect(
+      findAutosaveLearningDuplicate(
+        { list: listSpy },
+        {
+          title: "Relation filters reject empty arrays",
+          content: "Notion dataSources.query rejects relation filters with empty arrays.",
+          projectId: "proj-a",
+          session: "session-1",
+          onError,
+        }
+      )
+    ).rejects.toBeInstanceOf(AutosaveLearningDuplicateProbeError)
 
-    expect(result).toBeNull()
     expect(onError).toHaveBeenCalledWith(err)
   })
 })
 
 function makeTaskSummary(
-  overrides: Partial<TaskSummary> & { id: string; title: string },
+  overrides: Partial<TaskSummary> & { id: string; title: string }
 ): TaskSummary {
   return {
     projectIds: ["proj-a"],
@@ -720,7 +751,7 @@ function makeTaskSummary(
 }
 
 function makeTaskLister(
-  items: TaskSummary[],
+  items: TaskSummary[]
 ): TaskLister & { listSpy: ReturnType<typeof vi.fn> } {
   const listSpy = vi.fn().mockResolvedValue({ items })
   return { list: listSpy, listSpy }
@@ -733,7 +764,7 @@ describe("findDuplicateActiveTasks", () => {
     try {
       const result = await findDuplicateActiveTasks(
         { list: listSpy },
-        { entity: "PR-25750", projectId: "proj-a" },
+        { entity: "PR-25750", projectId: "proj-a" }
       )
       expect(result).toEqual([])
       expect(listSpy).not.toHaveBeenCalled()
@@ -748,7 +779,7 @@ describe("findDuplicateActiveTasks", () => {
     try {
       await findDuplicateActiveTasks(
         { list: listSpy },
-        { entity: "PR-25750", projectId: "proj-a" },
+        { entity: "PR-25750", projectId: "proj-a" }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -814,7 +845,7 @@ describe("findDuplicateActiveTasks", () => {
     const listSpy = vi.fn().mockRejectedValue(new Error("notion 503"))
     const result = await findDuplicateActiveTasks(
       { list: listSpy },
-      { entity: "PR-25750", projectId: "proj-a" },
+      { entity: "PR-25750", projectId: "proj-a" }
     )
     expect(result).toEqual([])
   })
@@ -826,7 +857,7 @@ describe("findDuplicateActiveTasks", () => {
 
     const result = await findDuplicateActiveTasks(
       { list: listSpy },
-      { entity: "PR-25750", projectId: "proj-a", onError },
+      { entity: "PR-25750", projectId: "proj-a", onError }
     )
 
     expect(result).toEqual([])
@@ -848,7 +879,7 @@ describe("findDuplicateActiveTasks", () => {
     })
     expect(result.map((t) => t.id)).toEqual(["task-1"])
     expect(lister.listSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: undefined }),
+      expect.objectContaining({ projectId: undefined })
     )
   })
 })
@@ -875,7 +906,7 @@ describe("extractEntityCandidates", () => {
     const result = extractEntityCandidates(
       "Merged PR #25750: outlook label.applied classifier",
       "",
-      "",
+      ""
     )
     expect(result).toContain("PR #25750")
     expect(result).toContain("#25750")
@@ -894,11 +925,7 @@ describe("extractEntityCandidates", () => {
   })
 
   it("extracts Jira-style ABC-123 ids (>= 2 uppercase letters)", () => {
-    const result = extractEntityCandidates(
-      "Fix SENTRY-1234 incident in IOS-25",
-      "",
-      "",
-    )
+    const result = extractEntityCandidates("Fix SENTRY-1234 incident in IOS-25", "", "")
     expect(result).toContain("SENTRY-1234")
     expect(result).toContain("IOS-25")
   })
@@ -916,7 +943,7 @@ describe("extractEntityCandidates", () => {
     const result = extractEntityCandidates(
       "See https://example.com/foo and http://bar.test/baz for context",
       "",
-      "",
+      ""
     )
     expect(result).toContain("https://example.com/foo")
     expect(result).toContain("http://bar.test/baz")
@@ -929,11 +956,7 @@ describe("extractEntityCandidates", () => {
     // App" as one candidate; downstream lowercase words terminate the
     // phrase. A 1-word fallback ("AuthService" alone) lands when no
     // adjacent capital follows.
-    const phrase = extractEntityCandidates(
-      "Outlook Mobile App shipped today",
-      "",
-      "",
-    )
+    const phrase = extractEntityCandidates("Outlook Mobile App shipped today", "", "")
     expect(phrase).toContain("Outlook Mobile App")
 
     const single = extractEntityCandidates("AuthService refactor", "", "")
@@ -944,7 +967,7 @@ describe("extractEntityCandidates", () => {
     const result = extractEntityCandidates(
       "Shipped feature",
       "PR #25750 OAUTH-12",
-      "Closes #88 for AuthService.",
+      "Closes #88 for AuthService."
     )
     expect(result).toContain("PR #25750")
     expect(result).toContain("OAUTH-12")
@@ -958,7 +981,7 @@ describe("extractEntityCandidates", () => {
     const result = extractEntityCandidates(
       "PR #1 PR #2 PR #3 SENTRY-1 SENTRY-2 SENTRY-3 SENTRY-4 SENTRY-5 SENTRY-6",
       "",
-      "",
+      ""
     )
     expect(result.length).toBeLessThanOrEqual(5)
   })
@@ -970,7 +993,7 @@ describe("extractEntityCandidates", () => {
     const result = extractEntityCandidates(
       "Merged PR #25750 for AuthService refactor",
       "",
-      "",
+      ""
     )
     const prIdx = result.indexOf("PR #25750")
     expect(prIdx).toBe(0)
@@ -978,11 +1001,7 @@ describe("extractEntityCandidates", () => {
 
   it("dedupes identical literal matches across the combined input", () => {
     // Same `PR #25750` in title and keywords — only one candidate emitted.
-    const result = extractEntityCandidates(
-      "Merged PR #25750",
-      "PR #25750",
-      "",
-    )
+    const result = extractEntityCandidates("Merged PR #25750", "PR #25750", "")
     const prCount = result.filter((c) => c === "PR #25750").length
     expect(prCount).toBe(1)
   })
@@ -1008,7 +1027,7 @@ describe("extractEntityCandidates", () => {
     const comma = extractEntityCandidates(
       "See https://x.com/foo, also at github.com",
       "",
-      "",
+      ""
     )
     expect(comma).toContain("https://x.com/foo")
     expect(comma).not.toContain("https://x.com/foo,")
@@ -1032,11 +1051,7 @@ describe("extractEntityCandidates", () => {
     // entity in the vault — overwhelming noise. The verb is the
     // noise; if there's a real entity in the title, another pattern
     // (PR / Jira / surviving capitalized phrase) catches it.
-    const merged = extractEntityCandidates(
-      "Merged the OAuth migration",
-      "",
-      "",
-    )
+    const merged = extractEntityCandidates("Merged the OAuth migration", "", "")
     expect(merged).not.toContain("Merged")
 
     const found = extractEntityCandidates("Found a regression", "", "")
@@ -1054,11 +1069,7 @@ describe("extractEntityCandidates", () => {
     // "Merged PR" is a real 2-word capitalized match; the leading
     // verb makes it noise even though it's >=2 words. Stop-list
     // applies to phrase leads, not just single-word matches.
-    const result = extractEntityCandidates(
-      "Merged PR review notes",
-      "",
-      "",
-    )
+    const result = extractEntityCandidates("Merged PR review notes", "", "")
     expect(result).not.toContain("Merged PR")
     // Sanity: the underlying PR shape would still surface if a number
     // were attached (it's a different pattern, not gated).
@@ -1172,9 +1183,11 @@ describe("extractEntityCandidates", () => {
     expect(extractEntityCandidates("Just http://", "", "")).toEqual([])
     // Sanity: real URLs still match.
     expect(extractEntityCandidates("See https://x.com/foo today", "", "")).toContain(
-      "https://x.com/foo",
+      "https://x.com/foo"
     )
-    expect(extractEntityCandidates("See https://a.b/c", "", "")).toContain("https://a.b/c")
+    expect(extractEntityCandidates("See https://a.b/c", "", "")).toContain(
+      "https://a.b/c"
+    )
   })
 
   it("counts per-pattern cap by iteration attempts, not by unique additions (intent pin)", () => {
@@ -1205,7 +1218,7 @@ describe("findRelatedActiveTasks", () => {
     try {
       const result = await findRelatedActiveTasks(
         { tasks: { list: listSpy } },
-        { memoryTitle: "Merged PR #25750", projectId: "proj-a" },
+        { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
       )
       expect(result).toEqual([])
       expect(listSpy).not.toHaveBeenCalled()
@@ -1220,7 +1233,7 @@ describe("findRelatedActiveTasks", () => {
     try {
       await findRelatedActiveTasks(
         { tasks: { list: listSpy } },
-        { memoryTitle: "Merged PR #25750", projectId: "proj-a" },
+        { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -1238,7 +1251,7 @@ describe("findRelatedActiveTasks", () => {
     try {
       await findRelatedActiveTasks(
         { tasks: { list: listSpy } },
-        { memoryTitle: "Merged PR #25750", projectId: "proj-a" },
+        { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
       )
       expect(listSpy).toHaveBeenCalledTimes(1)
     } finally {
@@ -1258,7 +1271,7 @@ describe("findRelatedActiveTasks", () => {
         memoryKeywords: "",
         memorySynopsis: "",
         projectId: "proj-a",
-      },
+      }
     )
     expect(result).toEqual([])
     expect(lister.listSpy).not.toHaveBeenCalled()
@@ -1271,7 +1284,7 @@ describe("findRelatedActiveTasks", () => {
       {
         memoryTitle: "Merged PR #25750",
         projectId: "proj-a",
-      },
+      }
     )
     expect(lister.listSpy).toHaveBeenCalledWith({
       projectId: "proj-a",
@@ -1290,7 +1303,7 @@ describe("findRelatedActiveTasks", () => {
         memoryKeywords: "PR #25750",
         memorySynopsis: "Closes SENTRY-1234.",
         projectId: "proj-a",
-      },
+      }
     )
     const call = lister.listSpy.mock.calls[0][0] as { entities: string[] }
     expect(call.entities).toContain("PR #25750")
@@ -1311,7 +1324,7 @@ describe("findRelatedActiveTasks", () => {
         memoryKeywords: undefined,
         memorySynopsis: undefined,
         projectId: "proj-a",
-      },
+      }
     )
     expect(result.map((t) => t.id)).toEqual(["task-1"])
   })
@@ -1326,11 +1339,11 @@ describe("findRelatedActiveTasks", () => {
     ])
     const result = await findRelatedActiveTasks(
       { tasks: lister },
-      { memoryTitle: "Merged PR #25750" },
+      { memoryTitle: "Merged PR #25750" }
     )
     expect(result.map((t) => t.id)).toEqual(["task-1"])
     expect(lister.listSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: undefined }),
+      expect.objectContaining({ projectId: undefined })
     )
   })
 
@@ -1338,7 +1351,7 @@ describe("findRelatedActiveTasks", () => {
     const listSpy = vi.fn().mockRejectedValue(new Error("notion 503"))
     const result = await findRelatedActiveTasks(
       { tasks: { list: listSpy } },
-      { memoryTitle: "Merged PR #25750", projectId: "proj-a" },
+      { memoryTitle: "Merged PR #25750", projectId: "proj-a" }
     )
     expect(result).toEqual([])
   })
@@ -1353,7 +1366,7 @@ describe("findRelatedActiveTasks", () => {
         memoryTitle: "Merged PR #25750",
         projectId: "proj-a",
         onError,
-      },
+      }
     )
     expect(result).toEqual([])
     expect(onError).toHaveBeenCalledWith(err)
@@ -1382,7 +1395,7 @@ describe("findRelatedActiveTasks", () => {
         memoryTitle: "Merged PR #25750",
         projectId: "proj-a",
         onError,
-      },
+      }
     )
     expect(result).toEqual([])
     expect(onError).toHaveBeenCalledTimes(1)

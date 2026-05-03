@@ -339,18 +339,28 @@ surfaces 30 candidate facts must rank by durability and skip the long
 tail — the next session's autosave will catch anything truly important
 that the prior run dropped (transcripts overlap).
 
-Foreground/background dedup has a structural project-scoped autosave
-learning gate plus a prompt-level search probe. The save path treats background
+Foreground/background dedup has a structural autosave-learning gate plus
+a prompt-level search probe. The save path treats background
 `source: "conversation"`, `kind: "note"`, `confidence: "likely"` saves
-with a session id as atomic-learning-shaped and checks existing
-likely conversation notes with the exact resolved project set before
-creating a row.
+with a session id as atomic-learning-shaped and checks existing likely
+conversation notes before creating a row. Explicit project saves and
+non-catch-all resolved projects use exact project-set reuse; projectless
+and catch-all fallback saves use same-session reuse. The service layer
+repeats the blocking check under a filesystem lock immediately before
+create, so a future direct-write hook path must call `MemoryService.create`
+or `createWithResult` rather than bypassing the service. The same lock
+stays held through bounded post-create query-index stabilization, so the
+next local autosave does not probe Notion before the just-created row is
+visible.
 If a later autosave restates the same likely-note learning (including
 simple title/body reordering), `lore-memory action='save'` returns the
 existing row instead of creating another one. When project scope is not
 available, or the only project is the auto-resolved monorepo catch-all,
 the gate falls back to the original same-session check rather than scanning
 across the catch-all.
+Unscoped legacy learning rows can be reused by later scoped saves, but
+scoped project sets still have to match exactly: an A-only row does not
+block an A+B save.
 This gate does not apply to synopsis-style saves (`confidence` omitted
 or non-`likely`) so the session-level memory stays independent from the
 per-learning rows. The prompt therefore requires `confidence: "likely"`
