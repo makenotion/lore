@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parsePositiveDecimalInteger } from "./parse.js"
+import { parsePositiveDecimalInteger, parseUnitIntervalDecimal } from "./parse.js"
 
 describe("parsePositiveDecimalInteger", () => {
   it("accepts positive decimal integers", () => {
@@ -42,5 +42,43 @@ describe("parsePositiveDecimalInteger", () => {
     const result = parsePositiveDecimalInteger("--limit", "9007199254740992")
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.message).toContain("safe integer range")
+  })
+})
+
+describe("parseUnitIntervalDecimal", () => {
+  it.each([
+    ["0", 0],
+    ["0.5", 0.5],
+    ["1", 1],
+    ["1.0", 1],
+    ["1.0000000000000000", 1],
+  ])("accepts decimal unit interval input %j", (raw, expected) => {
+    const result = parseUnitIntervalDecimal("--min-score", raw)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toBe(expected)
+  })
+
+  it.each([
+    "",
+    "0.5abc",
+    "+0.5",
+    "-0.1",
+    "5e-1",
+    ".5",
+    "0.",
+    " 0.5",
+    "0.5 ",
+    "1.0001",
+    "1.0000000000000001",
+    "1.0000000000000000000001",
+    "2",
+    "00.5",
+    "007",
+  ])("rejects malformed or out-of-range unit interval input %j", (raw) => {
+    const result = parseUnitIntervalDecimal("--min-score", raw)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toBe(`--min-score must be a number in [0, 1], got "${raw}"`)
+    }
   })
 })

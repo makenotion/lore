@@ -140,31 +140,26 @@ describe("parseReconcileCliOptions", () => {
     if (result.ok) expect(result.value.projectName).toBeUndefined()
   })
 
-  it("rejects --min-score with a non-numeric string", () => {
+  it.each([
+    "banana",
+    "0.5abc",
+    "+0.5",
+    "-0.1",
+    "5e-1",
+    "1.5",
+    "1.0000000000000001",
+    "1.0000000000000000000001",
+  ])("rejects malformed or out-of-range --min-score value %j", (minScore) => {
     const result = parseReconcileCliOptions({
-      minScore: "banana",
+      minScore,
       limit: "25",
     })
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain("--min-score")
-  })
-
-  it("rejects --min-score below 0", () => {
-    const result = parseReconcileCliOptions({
-      minScore: "-0.1",
-      limit: "25",
-    })
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain("between 0 and 1")
-  })
-
-  it("rejects --min-score above 1", () => {
-    const result = parseReconcileCliOptions({
-      minScore: "1.5",
-      limit: "25",
-    })
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain("between 0 and 1")
+    if (!result.ok) {
+      expect(result.message).toBe(
+        `--min-score must be a number in [0, 1], got "${minScore}"`
+      )
+    }
   })
 
   it.each(["abc", "", "3.7", "3abc", "1e3", "+5", "-1"])(

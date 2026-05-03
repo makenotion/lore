@@ -92,6 +92,11 @@ try {
 - Log errors with `console.error`, not `console.log`.
 - Exit with code 1 on failure.
 - Extract the `.message` from Error instances for clean output.
+- Parse raw CLI flags inside the action's `try` block before calling
+  `initServices()`. Parser helpers should return `CliParseResult<T>` from
+  `src/cli/parse.ts`; on `ok: false`, log the command-specific failure prefix
+  (for example, `Search failed: ...`) and exit with code 1 before any service
+  initialization.
 - Treat explicit project-scope misses as fatal. If a command accepts
   `--project <name>` and the name cannot be resolved, log an actionable
   error and exit with code 1 instead of falling back to auto-detected or

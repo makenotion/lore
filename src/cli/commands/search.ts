@@ -38,14 +38,14 @@ export const searchCommand = new Command("search")
   .option("-n, --limit <n>", "Max results", "10")
   .action(
     async (query: string, opts: { project?: string; tags?: string; limit: string }) => {
-      const parsed = parseSearchCliOptions(opts)
-      if (!parsed.ok) {
-        console.error(`Search failed: ${parsed.message}`)
-        process.exit(1)
-        return
-      }
-
       try {
+        const parsed = parseSearchCliOptions(opts)
+        if (!parsed.ok) {
+          console.error(`Search failed: ${parsed.message}`)
+          process.exit(1)
+          return
+        }
+
         const services = await initServices()
         let projectId: string | undefined
 

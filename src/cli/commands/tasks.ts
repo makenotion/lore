@@ -11,7 +11,7 @@ import {
   formatUnresolvedProjectScopeError,
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
-import { parsePositiveDecimalInteger } from "../parse.js"
+import { parsePositiveDecimalInteger, parseUnitIntervalDecimal } from "../parse.js"
 
 /**
  * Parsed reconcile options after CLI-boundary validation. The action
@@ -27,14 +27,12 @@ export interface ReconcileCliOptions {
 
 /**
  * Validate `--min-score` and `--limit` raw string inputs. Default
- * `parseFloat` / `parseInt` silently produce `NaN` for malformed input
- * (`--min-score banana` → NaN → every score comparison falls through →
- * "0 candidate closures" with no warning). `Number.isFinite` makes the
- * boundary loud: a malformed flag fails the parse, the action body
- * surfaces a clear error, and the operator knows to retry. Same shape
- * for over-cap `--limit` so the CLI doesn't silently coerce 9999 → 100
- * via the orchestrator's clamp without telling the operator they tripped
- * the cap.
+ * `parseFloat` / `parseInt` silently coerce malformed input
+ * (`--min-score 0.5abc` → 0.5, `--limit 3.7` → 3). Shared strict parsers
+ * make the boundary loud: a malformed flag fails the parse, the action body
+ * surfaces a clear error, and the operator knows to retry. Same shape for
+ * over-cap `--limit` so the CLI doesn't silently coerce 9999 → 100 via the
+ * orchestrator's clamp without telling the operator they tripped the cap.
  *
  * Returns a discriminated union: `{ ok: true, value }` on success or
  * `{ ok: false, message }` on failure. The action body short-circuits
@@ -45,19 +43,9 @@ export function parseReconcileCliOptions(raw: {
   minScore: string
   limit: string
 }): { ok: true; value: ReconcileCliOptions } | { ok: false; message: string } {
-  const minScore = parseFloat(raw.minScore)
-  if (!Number.isFinite(minScore)) {
-    return {
-      ok: false,
-      message: `--min-score must be a number, got "${raw.minScore}"`,
-    }
-  }
-  if (minScore < 0 || minScore > 1) {
-    return {
-      ok: false,
-      message: `--min-score must be between 0 and 1, got ${minScore}`,
-    }
-  }
+  const parsedMinScore = parseUnitIntervalDecimal("--min-score", raw.minScore)
+  if (!parsedMinScore.ok) return parsedMinScore
+
   const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
   if (!parsedLimit.ok) return parsedLimit
   if (parsedLimit.value > MAX_RECONCILE_LIMIT) {
@@ -70,7 +58,7 @@ export function parseReconcileCliOptions(raw: {
     ok: true,
     value: {
       projectName: raw.project,
-      minScore,
+      minScore: parsedMinScore.value,
       limit: parsedLimit.value,
     },
   }
