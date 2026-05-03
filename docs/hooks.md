@@ -41,6 +41,16 @@ context. Set `hooks.wakeUp: false` in `.lore.yaml` to skip automatic injection
 for supported assistants. If `.lore.yaml` fails to parse, the hook falls back to
 the default (on) and writes a `[lore]` warning to stderr.
 
+If the per-session marker cannot be written because the hook state directory is
+read-only, full, or inaccessible, wake-up fails open: it logs
+`[lore] wakeup: debounce mark failed` to stderr and still tries to inject
+context for that prompt. Since no marker landed, later prompt events in the same
+session can re-run the full wake-up path until state-dir writes recover or the
+session ends. This is a local hook-state degradation, not a detached background
+job failure, so `lore status` does not report it under **Background hooks**;
+triage the stderr line and the permissions / capacity of `$LORE_HOOK_STATE_DIR`
+or `$TMPDIR/lore-hook-state/`.
+
 Set `LORE_DEBUG=1` to inspect wake-up coverage counters on stderr. The log line
 does not include query text, memory titles, facts, or page bodies; it reports
 only the retrieval mode, ranked caps, digest freshness, and per-section counts.

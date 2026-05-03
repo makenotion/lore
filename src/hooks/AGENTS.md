@@ -84,6 +84,11 @@ exit, so a child that spawns successfully and later crashes will not create a
 background-failure marker. Keep that caveat visible in any user-facing status
 renderer; the honest clean state is "no observed failures," not "healthy."
 
+Wake-up's per-session debounce marker is outside this subsystem: if its
+`getStateDir()` write fails with a non-`EEXIST` error, wake-up logs
+`[lore] wakeup: debounce mark failed` and fails open without creating a
+background-failure marker or `lore status` row.
+
 When adding a new kind, update the `BackgroundFailureKind` union,
 `BACKGROUND_FAILURE_KINDS`, `formatBackgroundFailureKind`, and
 `backgroundFailureHint`, then add tests for write/read/clear, stale pruning,
