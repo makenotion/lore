@@ -32,6 +32,10 @@ import {
   todayUtc,
 } from "../../core/task.js"
 import {
+  formatBackgroundFailureStatusObject,
+  loadBackgroundFailureStatus,
+} from "../../hooks/background-failure-status.js"
+import {
   CONFIDENCE_DISPLAY_THRESHOLD,
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
@@ -290,6 +294,17 @@ async function handleStatus(services: LoreServices): Promise<ToolResult> {
       today: todayUtc(),
     })
     lines.push(...formatTaskSummary(tasks))
+
+    const backgroundFailureStatus = formatBackgroundFailureStatusObject(
+      await loadBackgroundFailureStatus(services.configRoot),
+    )
+    lines.push(
+      "",
+      "Background hooks:",
+      "```json",
+      JSON.stringify(backgroundFailureStatus, null, 2),
+      "```",
+    )
 
     if (services.config.projects?.length) {
       lines.push("", "Configured projects:")

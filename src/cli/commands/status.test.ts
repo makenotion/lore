@@ -1,18 +1,15 @@
 import { describe, expect, it, vi } from "vitest"
 import {
-  formatBackgroundFailureStatus,
   formatConfidenceSummary,
   formatDigestStatus,
   formatDriftStatus,
   formatTrackingPreflight,
   formatVaultTopologyStatus,
   groupLatestDigestByProject,
-  loadBackgroundFailureStatus,
   loadDigestStatus,
   loadDriftStatus,
   loadTrackingPreflight,
   loadVaultTopologyStatus,
-  type BackgroundFailureStatusReport,
   type ConfidenceStatsReport,
   type DigestStatusReport,
   type DriftStatusReport,
@@ -21,6 +18,11 @@ import {
   type VaultHealthStatus,
   type VaultTopologyStatusReport,
 } from "./status.js"
+import {
+  formatBackgroundFailureStatus,
+  loadBackgroundFailureStatus,
+  type BackgroundFailureStatusReport,
+} from "../../hooks/background-failure-status.js"
 import { DRIFT_DEBOUNCE_DAYS } from "../../hooks/drift-marker.js"
 import type { BackgroundFailureMarker } from "../../hooks/background-failure-marker.js"
 import type { LoreServices } from "../../services.js"

@@ -173,6 +173,60 @@ describe("background-failure-marker", () => {
     expect(await listBackgroundFailures(CONFIG_ROOT)).toEqual([])
   })
 
+  it("keeps a marker recorded exactly at the recovery boundary", async () => {
+    const scope = { projectName: "Mail Backend", sessionId: "sess-same-ms" }
+    recordBackgroundFailure(
+      CONFIG_ROOT,
+      {
+        kind: "autosave",
+        ...scope,
+        code: "spawn-error",
+        message: "spawn failed",
+      },
+      new Date("2026-04-24T12:00:00.000Z")
+    )
+
+    await clearBackgroundFailure(CONFIG_ROOT, "autosave", scope, {
+      before: new Date("2026-04-24T12:00:00.000Z"),
+    })
+
+    expect(await listBackgroundFailures(CONFIG_ROOT)).toHaveLength(1)
+  })
+
+  it("prunes stale markers opportunistically on write", () => {
+    const staleScope = { projectName: "Old Project", sessionId: "sess-old" }
+    const stalePath = backgroundFailureMarkerPath(CONFIG_ROOT, "autosave", staleScope)
+    recordBackgroundFailure(
+      CONFIG_ROOT,
+      {
+        kind: "autosave",
+        ...staleScope,
+        code: "spawn-error",
+        message: "old failure",
+      },
+      new Date("2026-04-01T00:00:00.000Z")
+    )
+    expect(existsSync(stalePath)).toBe(true)
+
+    recordBackgroundFailure(
+      CONFIG_ROOT,
+      {
+        kind: "digest-scheduler",
+        projectName: "Current Project",
+        sessionId: "sess-new",
+        code: "init-failed",
+        message: "new failure",
+      },
+      new Date("2026-04-24T00:00:00.000Z")
+    )
+
+    expect(existsSync(stalePath)).toBe(false)
+    const remainingBackgroundFiles = readdirSync(getStateDir()).filter((entry) =>
+      entry.startsWith(`background-failure.${configKey(CONFIG_ROOT)}.`)
+    )
+    expect(remainingBackgroundFiles).toHaveLength(1)
+  })
+
   it("redacts common token shapes from bounded messages", async () => {
     recordBackgroundFailure(CONFIG_ROOT, {
       kind: "digest-scheduler",

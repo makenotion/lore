@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 // Hoisted mock for `node:child_process.spawn` so the
@@ -23,6 +26,11 @@ import {
   type DigestSchedulerDeps,
   type DigestSchedulerState,
 } from "./digest-scheduler.js"
+import {
+  clearBackgroundFailure,
+  listBackgroundFailures,
+  recordBackgroundFailure,
+} from "./background-failure-marker.js"
 import type { LoreServices } from "../services.js"
 import type { LoreConfig, Project } from "../types.js"
 
@@ -108,6 +116,22 @@ function baseDeps(overrides: Partial<DigestSchedulerDeps> = {}): {
 
 function state(autoDigest = true): DigestSchedulerState {
   return { config: CONFIG, configRoot: CONFIG_ROOT, autoDigest }
+}
+
+async function withTempFailureState<T>(fn: () => Promise<T>): Promise<T> {
+  const originalStateDir = process.env["LORE_HOOK_STATE_DIR"]
+  const stateDir = mkdtempSync(join(tmpdir(), "lore-digest-scheduler-"))
+  process.env["LORE_HOOK_STATE_DIR"] = stateDir
+  try {
+    return await fn()
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true })
+    if (originalStateDir) {
+      process.env["LORE_HOOK_STATE_DIR"] = originalStateDir
+    } else {
+      delete process.env["LORE_HOOK_STATE_DIR"]
+    }
+  }
 }
 
 describe("fireDigestIfStale", () => {
@@ -277,6 +301,75 @@ describe("fireDigestIfStale", () => {
       },
       { before: new Date("2026-04-24T12:00:00.000Z") }
     )
+  })
+
+  it("keeps a digest-scheduler failure recorded during a successful digest attempt", async () => {
+    await withTempFailureState(async () => {
+      const { deps } = baseDeps({
+        touchMarker: vi.fn(async () => {
+          recordBackgroundFailure(
+            CONFIG_ROOT,
+            {
+              kind: "digest-scheduler",
+              projectName: "Mail Backend",
+              code: "gather-failed",
+              message: "concurrent gather failed",
+            },
+            new Date("2026-04-24T12:00:00.001Z")
+          )
+        }),
+        clearFailure: clearBackgroundFailure,
+        now: () => new Date("2026-04-24T12:00:00.000Z"),
+      })
+
+      await expect(fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)).resolves.toBe(
+        "fired"
+      )
+
+      const [marker] = await listBackgroundFailures(CONFIG_ROOT, {
+        now: new Date("2026-04-24T12:00:01.000Z"),
+      })
+      expect(marker).toMatchObject({
+        kind: "digest-scheduler",
+        projectName: "Mail Backend",
+        code: "gather-failed",
+      })
+    })
+  })
+
+  it("keeps a digest-synthesizer failure recorded during a successful spawn", async () => {
+    await withTempFailureState(async () => {
+      const { deps } = baseDeps({
+        spawn: vi.fn(() => {
+          recordBackgroundFailure(
+            CONFIG_ROOT,
+            {
+              kind: "digest-synthesizer",
+              projectName: "Mail Backend",
+              code: "spawn-error",
+              message: "concurrent spawn failed",
+            },
+            new Date("2026-04-24T12:00:00.001Z")
+          )
+          return { kind: "spawned" as const }
+        }),
+        clearFailure: clearBackgroundFailure,
+        now: () => new Date("2026-04-24T12:00:00.000Z"),
+      })
+
+      await expect(fireDigestIfStale(SUB_PROJECT_CWD, state(), deps)).resolves.toBe(
+        "fired"
+      )
+
+      const [marker] = await listBackgroundFailures(CONFIG_ROOT, {
+        now: new Date("2026-04-24T12:00:01.000Z"),
+      })
+      expect(marker).toMatchObject({
+        kind: "digest-synthesizer",
+        projectName: "Mail Backend",
+        code: "spawn-error",
+      })
+    })
   })
 
   it("returns 'init-failed' and logs when services init throws", async () => {
@@ -505,5 +598,41 @@ describe("scheduleAutoDigestSpawn", () => {
       },
       { before: expect.any(Date) }
     )
+  })
+
+  it("keeps a helper-spawn failure recorded during a successful detached fork", async () => {
+    await withTempFailureState(async () => {
+      spawnMock.mockReset()
+      spawnMock.mockImplementation(() => {
+        recordBackgroundFailure(
+          CONFIG_ROOT,
+          {
+            kind: "auto-digest-helper-spawn",
+            projectName: "Mail Backend",
+            sessionId: "sess-concurrent-helper",
+            code: "spawn-error",
+            message: "concurrent helper fork failed",
+          },
+          new Date(Date.now() + 1_000)
+        )
+        return fakeChild()
+      })
+
+      scheduleAutoDigestSpawn("/proj", {
+        configRoot: CONFIG_ROOT,
+        projectName: "Mail Backend",
+        sessionId: "sess-digest",
+        clearFailure: clearBackgroundFailure,
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const [marker] = await listBackgroundFailures(CONFIG_ROOT)
+      expect(marker).toMatchObject({
+        kind: "auto-digest-helper-spawn",
+        projectName: "Mail Backend",
+        sessionId: "sess-concurrent-helper",
+        code: "spawn-error",
+      })
+    })
   })
 })

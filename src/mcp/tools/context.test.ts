@@ -1,7 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
+import {
+  backgroundFailureMarkerPath,
+  recordBackgroundFailure,
+} from "../../hooks/background-failure-marker.js"
 import type {
   DecisionSummary,
   Fact,
@@ -247,6 +253,8 @@ interface WakeServicesOverrides {
   isCatchAllFallback?: boolean
   /** Override `services.config.projects`. Defaults to []. */
   configProjects?: Array<{ name: string; path: string }>
+  /** Override `services.configRoot`; omitted by default to avoid filesystem reads. */
+  configRoot?: string
   /** Override `services.projects.findByName`. Used by explicit-projectName tests. */
   findByName?: (name: string) => Promise<unknown>
   /**
@@ -366,6 +374,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       // populated unconditionally.
       vault: { pageId: "vault-1" },
     },
+    configRoot: overrides.configRoot,
     config: { vault: { pageId: "vault-1" }, projects: overrides.configProjects ?? [] },
     vault: {
       pageId: "vault-1",
@@ -389,6 +398,28 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
 function extractText(result: unknown): string {
   const content = (result as { content: Array<{ type: string; text: string }> }).content
   return content[0].text
+}
+
+async function withTempHookState<T>(fn: () => Promise<T>): Promise<T> {
+  const originalStateDir = process.env["LORE_HOOK_STATE_DIR"]
+  const stateDir = `${process.env["TMPDIR"] ?? "/tmp"}/lore-context-status-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  process.env["LORE_HOOK_STATE_DIR"] = stateDir
+  try {
+    return await fn()
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true })
+    if (originalStateDir) {
+      process.env["LORE_HOOK_STATE_DIR"] = originalStateDir
+    } else {
+      delete process.env["LORE_HOOK_STATE_DIR"]
+    }
+  }
+}
+
+function extractBackgroundStatus(text: string): Record<string, unknown> {
+  const json = text.match(/Background hooks:\n```json\n([\s\S]*?)\n```/)?.[1]
+  expect(json).toBeDefined()
+  return JSON.parse(json ?? "{}") as Record<string, unknown>
 }
 
 describe("lore-wake-up — Part A: title-only by default", () => {
@@ -1409,6 +1440,132 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
 
     const text = extractText(result)
     expect(text).toContain("Tasks: 0 active")
+  })
+
+  it("renders recent background hook failures as structured JSON on action='status'", async () => {
+    await withTempHookState(async () => {
+      recordBackgroundFailure(
+        "/repo",
+        {
+          kind: "digest-scheduler",
+          projectName: "Mail Backend",
+          sessionId: "sess-123",
+          code: "init-failed",
+          message: "init failed: unauthorized",
+        },
+        new Date("2026-04-24T12:00:00.000Z"),
+      )
+
+      const mockServer = createMockServer()
+      const services = makeWakeServices({ configRoot: "/repo" })
+      registerContextTools(mockServer.server, services as never)
+      const status = mockServer.getActionHandler("lore-context", "status")
+      const result = await status({} as never)
+
+      const text = extractText(result)
+      expect(extractBackgroundStatus(text)).toMatchObject({
+        observedScope:
+          "spawn/init/gather only; detached child exits are not tracked.",
+        failures: [
+          {
+            kind: "digest-scheduler",
+            occurredAt: "2026-04-24T12:00:00.000Z",
+            scope: { projectName: "Mail Backend", sessionId: "sess-123" },
+            code: "init-failed",
+            message: "init failed: unauthorized",
+          },
+        ],
+        totalRecent: 1,
+        showing: 1,
+      })
+    })
+  })
+
+  it("renders clean background hook status when configRoot is absent", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices()
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    expect(extractBackgroundStatus(extractText(result))).toMatchObject({
+      observedScope: "spawn/init/gather only; detached child exits are not tracked.",
+      failures: [],
+      totalRecent: 0,
+      showing: 0,
+    })
+  })
+
+  it("renders clean background hook status when configRoot has no markers", async () => {
+    await withTempHookState(async () => {
+      const mockServer = createMockServer()
+      const services = makeWakeServices({ configRoot: "/repo" })
+      registerContextTools(mockServer.server, services as never)
+      const status = mockServer.getActionHandler("lore-context", "status")
+      const result = await status({} as never)
+
+      expect(extractBackgroundStatus(extractText(result))).toMatchObject({
+        failures: [],
+        totalRecent: 0,
+        showing: 0,
+      })
+    })
+  })
+
+  it("renders background hook truncation metadata on action='status'", async () => {
+    await withTempHookState(async () => {
+      for (let idx = 0; idx < 12; idx++) {
+        recordBackgroundFailure(
+          "/repo",
+          {
+            kind: "autosave",
+            projectName: `Project ${idx}`,
+            sessionId: `sess-${idx}`,
+            code: "spawn-error",
+            message: `failure ${idx}`,
+          },
+          new Date(Date.now() - idx * 1000),
+        )
+      }
+
+      const mockServer = createMockServer()
+      const services = makeWakeServices({ configRoot: "/repo" })
+      registerContextTools(mockServer.server, services as never)
+      const status = mockServer.getActionHandler("lore-context", "status")
+      const result = await status({} as never)
+      const background = extractBackgroundStatus(extractText(result)) as {
+        failures: unknown[]
+        totalRecent: number
+        showing: number
+      }
+
+      expect(background.failures).toHaveLength(10)
+      expect(background.totalRecent).toBe(12)
+      expect(background.showing).toBe(10)
+    })
+  })
+
+  it("suppresses malformed background hook markers on action='status'", async () => {
+    await withTempHookState(async () => {
+      const malformedPath = backgroundFailureMarkerPath("/repo", "autosave", {
+        projectName: "Malformed",
+      })
+      mkdirSync(dirname(malformedPath), { recursive: true })
+      writeFileSync(malformedPath, "{not json", { flag: "w" })
+
+      const mockServer = createMockServer()
+      const services = makeWakeServices({ configRoot: "/repo" })
+      registerContextTools(mockServer.server, services as never)
+      const status = mockServer.getActionHandler("lore-context", "status")
+      const result = await status({} as never)
+
+      expect(extractBackgroundStatus(extractText(result))).toMatchObject({
+        failures: [],
+        totalRecent: 0,
+        showing: 0,
+      })
+      expect(existsSync(malformedPath)).toBe(false)
+    })
   })
 
   it("scopes the Tasks summary to the active project when one is auto-detected", async () => {

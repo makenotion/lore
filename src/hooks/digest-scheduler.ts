@@ -141,6 +141,10 @@ export async function fireDigestIfStale(
     return "marker-fresh"
   }
 
+  // Bound scheduler marker cleanup to failures observed before this digest
+  // attempt starts. Init/gather failures recorded by a concurrent helper during
+  // this attempt must remain visible to the operator.
+  const schedulerRecoveredAt = now()
   let services: LoreServices
   try {
     // The auto-digest helper runs in a detached child spawned off the Stop
@@ -203,7 +207,6 @@ export async function fireDigestIfStale(
     // The explicit escape is `lore digest --since YYYY-MM-DD`, which
     // widens the window past the per-project 7-day debounce.
     await touch(state.configRoot, project.name)
-    const schedulerRecoveredAt = now()
     await clearFailureMarker(clearFailure, state.configRoot, "digest-scheduler", {
       projectName: project.name,
     }, schedulerRecoveredAt)
@@ -223,7 +226,6 @@ export async function fireDigestIfStale(
   // marker and skips. Roll back if the spawn itself fails so the next Stop
   // hook retries.
   await touch(state.configRoot, project.name)
-  const schedulerRecoveredAt = now()
   await clearFailureMarker(clearFailure, state.configRoot, "digest-scheduler", {
     projectName: project.name,
   }, schedulerRecoveredAt)
@@ -239,6 +241,7 @@ export async function fireDigestIfStale(
   // — share one digest lock by design, and the policy can never drift
   // from the rest of the hook-state filename surface.
   const lockKey = `digest-${safeFilenameSegment(project.name)}`
+  const synthesizerRecoveredAt = now()
   const result = spawn(cwd, prompt, lockKey, {
     logLabel: "digest",
     allowedTools: DIGEST_ALLOWLIST,
@@ -246,7 +249,6 @@ export async function fireDigestIfStale(
   })
 
   if (result.kind === "spawned") {
-    const synthesizerRecoveredAt = now()
     await clearFailureMarker(clearFailure, state.configRoot, "digest-synthesizer", {
       projectName: project.name,
     }, synthesizerRecoveredAt)
@@ -335,6 +337,7 @@ export function scheduleAutoDigestSpawn(
   }
   const recordFailure = opts.recordFailure ?? recordBackgroundFailure
   const clearFailure = opts.clearFailure ?? clearBackgroundFailure
+  const recoveredAt = new Date()
   try {
     const helperPath = fileURLToPath(new URL("./helpers.js", import.meta.url))
     const child = forkChildProcess(process.execPath, [helperPath, "auto-digest"], {
@@ -343,7 +346,6 @@ export function scheduleAutoDigestSpawn(
       stdio: "ignore",
     })
     child.unref()
-    const recoveredAt = new Date()
     void clearFailure(opts.configRoot, "auto-digest-helper-spawn", failureScope, {
       before: recoveredAt,
     }).catch(() => {

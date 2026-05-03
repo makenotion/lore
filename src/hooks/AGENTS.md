@@ -58,14 +58,15 @@ The active marker key is **recoverable scope**, not session scope:
 `kind + config root + project name` (project omitted for vault-level cases).
 The latest `sessionId` stays in the JSON body for diagnosis, but it must not
 make a new file per Stop hook session. A later success for the same kind and
-project clears only markers whose `occurredAt` is older than that success, so
-a concurrent fresh failure survives stale success cleanup. Writers use
-sync tmp-file + POSIX rename on the Stop hot path; same-key concurrent writes
-are intentionally last-writer-wins because the status surface is "latest
-observed failure for this scope." Readers prune malformed, unknown-version,
-unknown-kind, wrong-root, and stale files. Stale means older than 14 days,
-chosen as one missed weekly digest window plus slack for an operator to run
-`lore status`.
+project clears only markers whose `occurredAt` is strictly older than the
+pre-spawn recovery boundary, so a concurrent fresh failure survives stale
+success cleanup. Writers use sync tmp-file + POSIX rename on the Stop hot path;
+same-key concurrent writes are intentionally last-writer-wins because the
+status surface is "latest observed failure for this scope." Writers
+opportunistically prune stale files for the same config root; readers prune
+malformed, unknown-version, unknown-kind, wrong-root, and stale files. Stale
+means older than 14 days, chosen as one missed weekly digest window plus slack
+for an operator to run `lore status`.
 
 Current `BackgroundFailureKind` values:
 

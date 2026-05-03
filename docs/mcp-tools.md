@@ -10,9 +10,41 @@ names and task aliases were removed in the 0.6.0 deprecation purge; see
 
 | Action    | Description                                                                                                                        |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `status`  | Show vault status, database counts, and active project                                                                             |
+| `status`  | Show vault status, database counts, active project, task summary, configured projects, and background hook failure markers          |
 | `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, and memories related to active tasks |
 | `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                            |
+
+`lore-context action='status'` includes a `Background hooks` JSON block. The
+object is shaped for agents to inspect directly:
+
+```json
+{
+  "observedScope": "spawn/init/gather only; detached child exits are not tracked.",
+  "failures": [
+    {
+      "kind": "autosave",
+      "label": "autosave",
+      "occurredAt": "2026-04-24T12:00:00.000Z",
+      "scope": { "projectName": "Mail", "sessionId": "session-123" },
+      "code": "binary-missing",
+      "message": "background command not found",
+      "logPath": "/tmp/lore-hook-state/digest-Mail.log",
+      "next": "Check hooks.backgroundAgent.command or LORE_BACKGROUND_COMMAND, then trigger the hook again."
+    }
+  ],
+  "totalRecent": 1,
+  "showing": 1
+}
+```
+
+An empty clean-state block renders `"failures": []`. The scope caveat is
+intentional: Lore records foreground spawn/init/gather failures, but it does
+not supervise detached background child exits after a successful spawn.
+`failures` is capped to the 10 most recent markers; when more exist,
+`showing` is lower than `totalRecent`. `kind` is one of `autosave`,
+`digest-scheduler`, `digest-synthesizer`, or `auto-digest-helper-spawn`.
+`logPath` is present only when the failure happened after a log file could
+exist.
 
 Pass `userQuery` to `wake-up` when rerunning context after `/clear`, a resume,
 or a topic pivot; the response adds a **For Your Current Task** section ranked

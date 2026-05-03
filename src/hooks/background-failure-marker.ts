@@ -11,7 +11,14 @@
  */
 
 import { createHash } from "node:crypto"
-import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { readdir, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { getStateDir } from "./lock.js"
@@ -185,12 +192,42 @@ export function recordBackgroundFailure(
     // the most recent observed failure for this recoverable scope, and POSIX
     // rename prevents torn reads while allowing that overwrite semantics.
     renameSync(tmpPath, path)
+    pruneStaleBackgroundFailureMarkers(configRoot, now)
   } catch (err) {
     writeMarkerDiagnostic(err)
     try {
       unlinkSync(tmpPath)
     } catch {
       // Best-effort marker cleanup; hook hot paths must stay fail-open.
+    }
+  }
+}
+
+function pruneStaleBackgroundFailureMarkers(configRoot: string, now: Date): void {
+  const rootKey = configKey(configRoot)
+  const prefix = `background-failure.${rootKey}.`
+  let entries: string[]
+  try {
+    entries = readdirSync(getStateDir())
+  } catch {
+    return
+  }
+
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue
+    const path = join(getStateDir(), entry)
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown
+      if (typeof parsed !== "object" || parsed === null) continue
+      const occurredAt = parseOccurredAt(
+        (parsed as Partial<BackgroundFailureMarker>).occurredAt,
+      )
+      if (!occurredAt) continue
+      const ageDays = (now.getTime() - occurredAt.ms) / MILLISECONDS_PER_DAY
+      if (ageDays > BACKGROUND_FAILURE_STALE_DAYS) unlinkSync(path)
+    } catch {
+      // Write-side GC is opportunistic; status-time collection still owns
+      // full malformed-marker pruning and diagnostics must stay fail-open.
     }
   }
 }
@@ -223,7 +260,10 @@ export async function clearBackgroundFailure(
     return
   }
   const occurredAt = parseOccurredAt(marker.occurredAt)
-  if (!occurredAt || occurredAt.ms <= opts.before.getTime()) {
+  // `before` is an exclusive recovery boundary captured before the successful
+  // attempt starts. Same-millisecond or later failures may be concurrent with
+  // that attempt, so they stay visible until a later success clears them.
+  if (!occurredAt || occurredAt.ms < opts.before.getTime()) {
     await rm(path, { force: true })
   }
 }

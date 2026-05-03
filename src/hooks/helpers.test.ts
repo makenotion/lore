@@ -241,6 +241,7 @@ describe("handleStop", () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     stdoutSpy.mockRestore()
     stderrSpy.mockRestore()
     rmSync(tmpDir, { recursive: true, force: true })
@@ -622,6 +623,44 @@ describe("handleStop", () => {
     )
 
     expect(await listBackgroundFailures(context.configRoot)).toEqual([])
+  })
+
+  it("keeps a same-scope failure recorded during a successful spawn", async () => {
+    const context = failureContext(tmpDir)
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-04-24T12:00:00.000Z"))
+    spawnMock.mockImplementation(() => {
+      recordBackgroundFailure(context.configRoot, {
+        kind: "autosave",
+        projectName: "Mail Backend",
+        sessionId: "sess-concurrent-failure",
+        code: "spawn-error",
+        message: "concurrent stop failed",
+      })
+      vi.setSystemTime(new Date("2026-04-24T12:00:00.001Z"))
+      return fakeLiveChild()
+    })
+
+    writeTranscript(transcriptPath, 3)
+    await handleStop(
+      {
+        session_id: "sess-later-success",
+        transcript_path: transcriptPath,
+        cwd: context.cwd,
+      },
+      defaultConfig(),
+      { config: context.config, configRoot: context.configRoot }
+    )
+
+    const [marker] = await listBackgroundFailures(context.configRoot, {
+      now: new Date("2026-04-24T12:00:01.000Z"),
+    })
+    expect(marker).toMatchObject({
+      kind: "autosave",
+      projectName: "Mail Backend",
+      sessionId: "sess-concurrent-failure",
+      code: "spawn-error",
+    })
   })
 
   it("acquires the session lock with the child's PID", async () => {

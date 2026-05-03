@@ -538,6 +538,10 @@ export async function handleStop(
         // memory and the next Stop catches up against the new count. For
         // genuine failures, leaving the counter unchanged lets the next
         // Stop hook retry. (See PR #66.)
+        // Capture the recovery boundary before spawning so cleanup only clears
+        // failures observed before this attempt; concurrent failures at or after
+        // this timestamp must survive for the operator to see.
+        const recoveredAt = new Date()
         const result = spawnBackgroundSave(
           event.cwd ?? process.cwd(),
           prompt,
@@ -545,7 +549,6 @@ export async function handleStop(
           { agent: config.backgroundAgent }
         )
         if (result.kind === "spawned") {
-          const recoveredAt = new Date()
           await writeSaveCount(event.session_id, currentCount)
           await clearStopFailure(failureContext?.configRoot, failureScope, recoveredAt)
         } else {
