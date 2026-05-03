@@ -26,6 +26,7 @@ import {
   runNtnLogin,
 } from "../../auth/ntn.js"
 import {
+  RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
   RUNTIME_FORWARDED_KEYS,
   type RuntimeForwardedKey,
 } from "../../auth/forwarded-env.js"
@@ -123,6 +124,27 @@ export interface BuildMcpEnvOptions {
    * spawn cwd may not match the operator's vault directory.
    */
   omitConfigRoot?: boolean
+  /**
+   * Which `resolveAuth` source the install-time CLI landed on. When
+   * set to `"ntn-auth-json"`, the auth-token placeholders in
+   * `RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` are *not* emitted into the
+   * MCP entry's `env` block — the spawned MCP server's `resolveAuth`
+   * picks the same ntn path on its own at startup, so the
+   * placeholders only fingerprint the operator's install-time shell
+   * and produce host-validator warnings (e.g. Claude Code's
+   * `/doctor`) when the underlying env vars later unset.
+   *
+   * Other sources (`env-notion-api-token`, `env-lore-notion-token`,
+   * `config-auth-token`) keep the legacy conditional-forward
+   * behavior: a placeholder is still emitted for whichever auth-token
+   * env var the operator had set at install time, because their
+   * spawned MCP server's `resolveAuth` cannot fall back to ntn the
+   * way an `ntn-auth-json` install can. `undefined` (no opinion) also
+   * preserves the pre-fix behavior — used by the print-config and
+   * legacy-forwarded-note callers when they don't have an auth source
+   * to consult.
+   */
+  authSource?: AuthSource
 }
 
 /**
@@ -141,6 +163,18 @@ export interface BuildMcpEnvOptions {
  *   committed entry never carries a literal token value — only
  *   `${VAR}` placeholders the host resolves at runtime from
  *   operator env.
+ * - **ntn-source suppression**: when `options.authSource ===
+ *   "ntn-auth-json"`, the auth-token keys
+ *   (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) are NOT forwarded even if
+ *   set in the install-time env. The spawned MCP server's
+ *   `resolveAuth` picks the same `ntn-auth-json` path on its own
+ *   from `~/.config/notion/auth.json` (path 2), so the placeholders
+ *   would fingerprint the operator's install-time shell and produce
+ *   host-validator warnings (e.g. Claude Code `/doctor`'s "Missing
+ *   environment variables") when the underlying vars later unset.
+ *   Environment selectors (`NOTION_ENV`, `NOTION_BASE_URL`, etc.)
+ *   and `LORE_USER_NAME` keep forwarding regardless of source —
+ *   they're operator inputs orthogonal to token resolution.
  * - **Static `LORE_SUPPRESS_DEPRECATIONS=1`** always forwards (it's
  *   a literal "1", not machine-specific).
  * - **Static `LORE_CONFIG_ROOT`** forwards by default but omits
@@ -161,8 +195,13 @@ export function buildMcpEnv(
 ): McpEnvBuild {
   const env: Record<string, string> = {}
   const forwarded: RuntimeForwardedKey[] = []
+  const skipAuthTokens = options.authSource === "ntn-auth-json"
+  const authTokenKeys: ReadonlySet<RuntimeForwardedKey> = new Set(
+    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
+  )
 
   for (const key of RUNTIME_FORWARDED_KEYS) {
+    if (skipAuthTokens && authTokenKeys.has(key)) continue
     const value = envSource[key]
     if (typeof value === "string" && value.length > 0) {
       env[key] = `\${${key}}`
@@ -270,6 +309,7 @@ export function buildClaudeMcpEntry(
   shape: BinDispatchShape = "bare",
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
+  authSource?: AuthSource,
 ): ClaudeMcpEntry {
   const build = buildMcpEnv(configRoot, envSource, {
     // PnP entries are committed to the workspace root and shared
@@ -279,6 +319,7 @@ export function buildClaudeMcpEntry(
     // the spawned MCP server's `findConfigFile(cwd)` walk resolves
     // `.lore.yaml` without help.
     omitConfigRoot: shape === "yarn",
+    authSource,
   })
   const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
@@ -302,8 +343,9 @@ export function buildLegacyClaudeMcpEntry(
   cwd: string,
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
+  authSource?: AuthSource,
 ): ClaudeMcpEntry {
-  const build = buildMcpEnv(configRoot, envSource)
+  const build = buildMcpEnv(configRoot, envSource, { authSource })
   return {
     command: "node",
     args: [mcpJsPath],
@@ -381,6 +423,13 @@ export interface CursorMcpEntry {
 export interface BuildCursorMcpEntryOptions {
   useGlobalScope?: boolean
   launchCwd?: string
+  /**
+   * Pass-through to `buildMcpEnv`'s `authSource` option. Suppresses
+   * auth-token placeholders when the install-time CLI resolved its
+   * token via `ntn-auth-json`. See `BuildMcpEnvOptions.authSource`
+   * for the rationale.
+   */
+  authSource?: AuthSource
 }
 
 export function buildCursorMcpEntry(
@@ -394,7 +443,10 @@ export function buildCursorMcpEntry(
   // global scope the entry is machine-local; an absolute
   // `LORE_CONFIG_ROOT` is the right anchor, not a portability leak.
   const omitConfigRoot = shape === "yarn" && !useGlobalScope
-  const build = buildMcpEnv(configRoot, envSource, { omitConfigRoot })
+  const build = buildMcpEnv(configRoot, envSource, {
+    omitConfigRoot,
+    authSource: options.authSource,
+  })
   const env = mergeMcpEnvForClaudeOrCursor(build)
   if (shape === "yarn") {
     const entry: CursorMcpEntry = {
@@ -420,8 +472,9 @@ export function buildLegacyCursorMcpEntry(
   cwd: string,
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
+  authSource?: AuthSource,
 ): CursorMcpEntry {
-  const build = buildMcpEnv(configRoot, envSource)
+  const build = buildMcpEnv(configRoot, envSource, { authSource })
   return {
     command: "node",
     args: [mcpJsPath],
@@ -565,9 +618,11 @@ export function buildCodexMcpSection(
   shape: BinDispatchShape = "bare",
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
+  authSource?: AuthSource,
 ): string {
   const build = buildMcpEnv(configRoot, envSource, {
     omitConfigRoot: shape === "yarn",
+    authSource,
   })
   const baseCommand = shape === "yarn" ? "yarn run -T lore mcp" : "lore mcp"
   const launchCommand = codexLaunchCommand(build.staticEnv, baseCommand)
@@ -583,9 +638,10 @@ export function buildLegacyCodexMcpSection(
   mcpJsPath: string,
   configRoot: string = process.cwd(),
   envSource: NodeJS.ProcessEnv = process.env,
+  authSource?: AuthSource,
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
-  const build = buildMcpEnv(configRoot, envSource)
+  const build = buildMcpEnv(configRoot, envSource, { authSource })
   // The mcp.js path is interpolated INTO the `bash -lc` arg string,
   // so it must be quoted to inhibit shell re-interpretation — but
   // with the wrinkle that `toPortablePath` may have rewritten the
@@ -1450,6 +1506,21 @@ export interface InstallContext {
    * out-of-band.
    */
   yarnPnp: boolean
+  /**
+   * `resolveAuth` source the install-time prerequisites flow landed
+   * on. Populated by `ensurePrerequisites` / `preflightAndReport` and
+   * threaded into the per-client runners so they can pass it through
+   * to `buildClaudeMcpEntry` / `buildCursorMcpEntry` /
+   * `buildCodexMcpSection`. When set to `"ntn-auth-json"`, the build
+   * helpers suppress the auth-token `${VAR}` placeholders that
+   * otherwise produce host-validator warnings (e.g. Claude Code
+   * `/doctor`'s "Missing environment variables") on every startup
+   * after the operator's install-time shell drifts. `undefined` when
+   * prereqs hasn't run (tests, `--print-config`) or auth resolution
+   * failed — both cases preserve the pre-fix unconditional-forward
+   * behavior so legacy operators never lose access by upgrading.
+   */
+  authSource?: AuthSource
 }
 
 /**
@@ -1802,7 +1873,7 @@ function describeNtnEnvSelectors(
 export async function ensurePrerequisites(
   context: InstallContext,
   opts: EnsurePrerequisitesOptions = {},
-): Promise<{ ready: boolean }> {
+): Promise<{ ready: boolean; authSource?: AuthSource }> {
   console.log("Checking prerequisites...")
 
   // 1. ntn install state. Offer auto-install on miss. The local
@@ -2058,9 +2129,9 @@ async function preflightAndReport(
   auth: ResolvedAuth,
   found: { root: string; path: string } | null,
   config: LoreConfig | undefined,
-): Promise<{ ready: boolean }> {
+): Promise<{ ready: boolean; authSource?: AuthSource }> {
   if (!found || !config) {
-    return { ready: true }
+    return { ready: true, authSource: auth.source }
   }
 
   const { createClient } = await import("../../notion/client.js")
@@ -2070,7 +2141,7 @@ async function preflightAndReport(
 
   if (result.kind === "ok") {
     console.log(`  Vault page:           ✓ ${result.pageTitle ?? config.vault.pageId}`)
-    return { ready: true }
+    return { ready: true, authSource: auth.source }
   }
 
   if (result.kind === "not-found") {
@@ -2134,14 +2205,14 @@ async function preflightAndReport(
     console.warn("    Notion's API throttled the preflight check. Lore will install")
     console.warn("    anyway; if your first tool call also rate-limits, wait a minute")
     console.warn("    and retry.")
-    return { ready: true }
+    return { ready: true, authSource: auth.source }
   }
 
   // unknown-error: genuine 5xx / network blip. Warn but proceed.
   console.warn(`  Vault page:           ? preflight returned an unexpected error (${config.vault.pageId})`)
   console.warn("    Lore will install anyway; if the issue persists, re-run `lore install`")
   console.warn("    or check Notion's status page.")
-  return { ready: true }
+  return { ready: true, authSource: auth.source }
 }
 
 async function preflightCodexInstall(context: InstallContext): Promise<void> {
@@ -2209,11 +2280,13 @@ async function runClaudeInstall(
   const existingMcp = mcpServers["lore"] as Record<string, unknown> | undefined
   const portableMcpJsPath = toPortablePath(context.mcpJsPath)
   const portablePkgRoot = toPortablePath(context.pkgRoot)
-  const binMcpEntry = buildClaudeMcpEntry(binShape, configRoot)
+  const binMcpEntry = buildClaudeMcpEntry(binShape, configRoot, process.env, context.authSource)
   const legacyMcpEntry = buildLegacyClaudeMcpEntry(
     portableMcpJsPath,
     portablePkgRoot,
     configRoot,
+    process.env,
+    context.authSource,
   )
   // Desired entry for the WRITE path (driven by --legacy-paths and
   // --yarn-pnp). Detection below recognizes the canonical-for-this-mode
@@ -2617,8 +2690,18 @@ export async function runCodexInstall(
   const codexHooks = (codexHooksJson.hooks ?? {}) as Record<string, CodexHookEntry[]>
 
   const binShape: BinDispatchShape = context.yarnPnp ? "yarn" : "bare"
-  const binMcpSection = buildCodexMcpSection(binShape, context.configRoot)
-  const legacyMcpSection = buildLegacyCodexMcpSection(context.mcpJsPath, context.configRoot)
+  const binMcpSection = buildCodexMcpSection(
+    binShape,
+    context.configRoot,
+    process.env,
+    context.authSource,
+  )
+  const legacyMcpSection = buildLegacyCodexMcpSection(
+    context.mcpJsPath,
+    context.configRoot,
+    process.env,
+    context.authSource,
+  )
   const desiredMcpSection = context.legacyPaths ? legacyMcpSection : binMcpSection
   const existingMcpSection = extractTomlTableGroup(codexConfig, "mcp_servers.lore")
   const hooksFeatureValue = extractTomlKeyValue(codexConfig, "features", "codex_hooks")
@@ -2835,11 +2918,14 @@ export async function runCursorInstall(
   const binMcpEntry = buildCursorMcpEntry(binShape, context.configRoot, process.env, {
     useGlobalScope,
     launchCwd: context.projectDir,
+    authSource: context.authSource,
   })
   const legacyMcpEntry = buildLegacyCursorMcpEntry(
     portableMcpJsPath,
     portablePkgRoot,
     context.configRoot,
+    process.env,
+    context.authSource,
   )
   const desiredMcpEntry = context.legacyPaths ? legacyMcpEntry : binMcpEntry
   const mcpStatus: HookStatus = !existingMcp
@@ -3023,11 +3109,27 @@ export async function runInstall(
   if (!prereqs.ready) {
     process.exit(1)
   }
+  // Stash the resolved auth source onto the install context so per-client
+  // runners can pass it into `buildMcpEnv` and suppress auth-token
+  // placeholders on the `ntn-auth-json` path (issue #451). Mutation is
+  // intentional: `prepareInstallContext` returns a fresh `InstallContext`,
+  // the field is unset until this point, and only `runInstall` (this
+  // function) populates it.
+  context.authSource = prereqs.authSource
 
   // Detect legacy-forwarded env vars so the install summary can
   // surface a deprecation reminder. Read here (not inside the
   // runners) so the note prints once per install command, not once
-  // per host. Phrasing is command-agnostic until `lore auth --migrate`
+  // per host. Probes the **unfiltered** shape (no `authSource`) so a
+  // mid-migration operator on `ntn-auth-json` whose shell rc still
+  // exports `LORE_NOTION_TOKEN` still sees the cleanup nudge — the
+  // note's job is "your shell carries a stale legacy var; clean it up
+  // to drop the shared 1Password coupling," not "this install just
+  // baked one in." Under ntn-source the install does NOT forward the
+  // token (the runners pass `context.authSource` into the build
+  // helpers), so the note advises shell-rc cleanup independent of
+  // whether the committed `.mcp.json` carries the placeholder.
+  // Phrasing is command-agnostic until `lore auth --migrate`
   // (issue #07) ships — naming a non-existent command would be a
   // confidence-eroding way for new engineers to start.
   const legacyForwarded = buildMcpEnv(context.configRoot).forwarded.filter(
@@ -3160,20 +3262,27 @@ export function buildPrintConfigOutput(
   legacyPaths = false,
   binShape: BinDispatchShape = "bare",
   envSource: NodeJS.ProcessEnv = process.env,
+  authSource?: AuthSource,
 ): string {
   const portableMcpJsPath = toPortablePath(mcpJsPath)
   const portablePkgRoot = toPortablePath(pkgRoot)
 
   if (format === "json") {
     const entry = legacyPaths
-      ? buildLegacyClaudeMcpEntry(portableMcpJsPath, portablePkgRoot, configRoot, envSource)
-      : buildClaudeMcpEntry(binShape, configRoot, envSource)
+      ? buildLegacyClaudeMcpEntry(
+          portableMcpJsPath,
+          portablePkgRoot,
+          configRoot,
+          envSource,
+          authSource,
+        )
+      : buildClaudeMcpEntry(binShape, configRoot, envSource, authSource)
     return JSON.stringify({ mcpServers: { lore: entry } }, null, 2) + "\n"
   }
 
   const section = legacyPaths
-    ? buildLegacyCodexMcpSection(portableMcpJsPath, configRoot, envSource)
-    : buildCodexMcpSection(binShape, configRoot, envSource)
+    ? buildLegacyCodexMcpSection(portableMcpJsPath, configRoot, envSource, authSource)
+    : buildCodexMcpSection(binShape, configRoot, envSource, authSource)
   return section + "\n"
 }
 
@@ -3211,12 +3320,54 @@ async function runPrintConfig(
   const found = await findConfigFile(projectRoot)
   const configRoot = found?.root ?? projectRoot
 
+  // Best-effort auth-source resolution so the printed snippet matches
+  // what `--client claude` / `--client codex` would write to disk
+  // (issue #451): under `ntn-auth-json`, suppress the auth-token
+  // placeholders that produce host-validator warnings. Note that
+  // `resolveAuth` also has the side effect of emitting debounced
+  // deprecation warnings to stderr for the legacy paths
+  // (`config-auth-token`, `env-lore-notion-token`); print-config now
+  // surfaces those warnings where it didn't pre-#451, which keeps the
+  // messaging consistent with the file-write path's behavior. Print-
+  // config is intentionally non-interactive — auth resolution failure
+  // (no `.lore.yaml`, no token resolved) is silently treated as "no
+  // opinion" and the legacy unconditional-forward shape stands. The
+  // catch is narrow: print-config exists for unsupported hosts and a
+  // hard failure here would break the very escape hatch operators
+  // depend on.
+  let printConfigAuthSource: AuthSource | undefined
+  if (found) {
+    try {
+      const config = await loadConfig(found.path)
+      const auth = await resolveAuth(config, found.root)
+      printConfigAuthSource = auth.source
+    } catch {
+      // Auth unresolvable — fall through to undefined (pre-fix shape).
+    }
+  }
+
   process.stdout.write(
-    buildPrintConfigOutput(format, mcpJsPath, pkgRoot, configRoot, legacyPaths, binShape),
+    buildPrintConfigOutput(
+      format,
+      mcpJsPath,
+      pkgRoot,
+      configRoot,
+      legacyPaths,
+      binShape,
+      process.env,
+      printConfigAuthSource,
+    ),
   )
 
   // Mirror the file-write path's legacy-forwarded note so operators of
-  // unsupported hosts see the same migration recommendation.
+  // unsupported hosts see the same shell-rc-cleanup recommendation.
+  // Probes the unfiltered shape (no `authSource`) for the same reason
+  // `runInstall` does: an ntn-source operator with a stray
+  // `LORE_NOTION_TOKEN` still in their shell rc gets the cleanup nudge,
+  // even though the printed snippet itself no longer forwards the
+  // token. The advice — drop the shared 1Password coupling and switch
+  // to per-engineer ntn tokens — is independent of whether *this*
+  // snippet bakes the placeholder in.
   const build = buildMcpEnv(configRoot)
   if (build.forwarded.includes("LORE_NOTION_TOKEN")) {
     process.stderr.write(

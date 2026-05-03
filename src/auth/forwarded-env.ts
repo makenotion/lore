@@ -96,3 +96,39 @@ export const RUNTIME_FORWARDED_KEYS = [
  * hand-maintained string-literal union would otherwise require.
  */
 export type RuntimeForwardedKey = (typeof RUNTIME_FORWARDED_KEYS)[number]
+
+/**
+ * Subset of `RUNTIME_FORWARDED_KEYS` that carry **auth tokens**
+ * (`resolveAuth` paths 1 and 3). These are the placeholders an
+ * ntn-source MCP install does not need to forward — under
+ * `ntn-auth-json` the spawned MCP server's `resolveAuth` resolves
+ * the token directly from `~/.config/notion/auth.json` at startup
+ * (path 2), so a `${NOTION_API_TOKEN}` / `${LORE_NOTION_TOKEN}`
+ * placeholder in the committed `.mcp.json` is dead weight that
+ * fingerprints the operator's install-time shell. Hosts whose
+ * config validators (e.g. Claude Code's `/doctor`) check for
+ * referenced env vars at load time emit per-key warnings on every
+ * startup once those vars unset, even though the MCP server itself
+ * never needed them.
+ *
+ * Workspace / base-URL selectors and `LORE_USER_NAME` stay
+ * conditionally forwarded regardless of auth source — they're
+ * still operator-controlled inputs the MCP child needs visibility
+ * into.
+ *
+ * Two consumers read this:
+ * - `buildMcpEnv` (when `authSource: "ntn-auth-json"`) skips these
+ *   keys when assembling the MCP entry's `env` block.
+ * - `spawnBackgroundSave` continues to forward every key
+ *   conditionally regardless — the hook-spawn path inherits
+ *   `process.env` directly via `safeEnv`, doesn't write a committed
+ *   placeholder, and so cannot produce the host-validator warning
+ *   class this partition exists to silence.
+ */
+export const RUNTIME_FORWARDED_AUTH_TOKEN_KEYS = [
+  "NOTION_API_TOKEN",
+  "LORE_NOTION_TOKEN",
+] as const satisfies readonly RuntimeForwardedKey[]
+
+export type RuntimeForwardedAuthTokenKey =
+  (typeof RUNTIME_FORWARDED_AUTH_TOKEN_KEYS)[number]

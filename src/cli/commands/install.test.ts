@@ -2123,6 +2123,206 @@ describe("install command runtime — --print-config short-circuits other flags"
   })
 })
 
+describe("runPrintConfig auth-source orchestration (issue #451)", () => {
+  // The unit-builder layer is exhaustively covered above. These tests
+  // pin runPrintConfig's NEW auth resolution: the function calls
+  // `findConfigFile` → `loadConfig` → `resolveAuth` and threads the
+  // resulting `auth.source` into `buildPrintConfigOutput` so an
+  // ntn-source operator's printed snippet doesn't carry stale
+  // auth-token placeholders. Three orchestration branches need
+  // coverage:
+  //   1. No `.lore.yaml` discovered → `printConfigAuthSource` stays
+  //      undefined; output matches the pre-#451 unconditional-forward
+  //      shape.
+  //   2. `.lore.yaml` exists but `resolveAuth` throws (no auth
+  //      configured) → caught silently, source stays undefined,
+  //      pre-#451 shape.
+  //   3. `.lore.yaml` carries a legacy `auth.token` (zod-valid
+  //      non-bearer string, the deprecation-warning path) → resolves
+  //      to `config-auth-token`; auth-token placeholders STILL forward
+  //      because suppression is `ntn-auth-json`-specific.
+  //
+  // The ntn-auth-json branch is environment-dependent (depends on
+  // `~/.config/notion/auth.json` presence) and isn't exercised here —
+  // the unit-builder describe blocks above cover the suppression
+  // shape directly. These orchestration tests verify runPrintConfig
+  // *plumbs the source through correctly*; the suppression behavior
+  // it gates on is unit-tested.
+
+  const SCRATCH = mkdtempSync(join(tmpdir(), "lore-install-print-config-"))
+
+  afterAll(() => {
+    rmSync(SCRATCH, { recursive: true, force: true })
+  })
+
+  it("no .lore.yaml → auth resolution skipped, output preserves pre-#451 shape (auth tokens forward when env-set)", async () => {
+    // Drives the `if (found)` guard's false branch: findConfigFile
+    // returns null, runPrintConfig never calls resolveAuth, and
+    // `printConfigAuthSource` stays undefined. With both auth tokens
+    // set in process.env, the pre-#451 unconditional-forward shape
+    // emits both `${VAR}` placeholders.
+    const projectDir = mkdtempSync(join(SCRATCH, "no-config-"))
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+
+    const previousApi = process.env["NOTION_API_TOKEN"]
+    const previousLore = process.env["LORE_NOTION_TOKEN"]
+    process.env["NOTION_API_TOKEN"] = "api-tok"
+    process.env["LORE_NOTION_TOKEN"] = "lore-tok"
+    try {
+      await installCommand.parseAsync(
+        ["--project", projectDir, "--print-config", "json"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      if (previousApi === undefined) delete process.env["NOTION_API_TOKEN"]
+      else process.env["NOTION_API_TOKEN"] = previousApi
+      if (previousLore === undefined) delete process.env["LORE_NOTION_TOKEN"]
+      else process.env["LORE_NOTION_TOKEN"] = previousLore
+    }
+
+    const parsed = JSON.parse(writes.join("")) as {
+      mcpServers: { lore: { env: Record<string, string> } }
+    }
+    expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBe(
+      "${NOTION_API_TOKEN}",
+    )
+    expect(parsed.mcpServers.lore.env["LORE_NOTION_TOKEN"]).toBe(
+      "${LORE_NOTION_TOKEN}",
+    )
+  })
+
+  it(".lore.yaml present but no auth resolves → catch swallows, source stays undefined, auth tokens still forward when env-set", async () => {
+    // Vault page id but no auth.token, no env tokens. resolveAuth
+    // walks paths 1 (NOTION_API_TOKEN env) → 2 (ntn auth.json — may
+    // resolve on developer machines, see note below) → 3
+    // (LORE_NOTION_TOKEN env) → 4 (config auth.token), and either
+    // throws "no auth configured" OR resolves to ntn-auth-json
+    // depending on developer environment. The test only asserts the
+    // catch swallows on throw — it doesn't pin which source resolves
+    // when one does, because that's environment-dependent. Either way
+    // runPrintConfig produces a valid snippet without crashing, which
+    // is the orchestration property under test.
+    const projectDir = mkdtempSync(join(SCRATCH, "no-auth-"))
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      "vault:\n  pageId: '00000000000000000000000000000000'\n",
+    )
+
+    const writes: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+
+    // Force resolveAuth's path 1 / 3 / 4 misses; path 2 (ntn) is
+    // unmocked and behaves per the developer's machine — its outcome
+    // doesn't affect the assertion below because we only check that
+    // the snippet renders without an unhandled exception.
+    const previousApi = process.env["NOTION_API_TOKEN"]
+    const previousLore = process.env["LORE_NOTION_TOKEN"]
+    delete process.env["NOTION_API_TOKEN"]
+    delete process.env["LORE_NOTION_TOKEN"]
+    try {
+      await installCommand.parseAsync(
+        ["--project", projectDir, "--print-config", "json"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      if (previousApi !== undefined) process.env["NOTION_API_TOKEN"] = previousApi
+      if (previousLore !== undefined) process.env["LORE_NOTION_TOKEN"] = previousLore
+    }
+
+    const parsed = JSON.parse(writes.join("")) as {
+      mcpServers: { lore: { env: Record<string, string> } }
+    }
+    // Statics always present. Auth tokens are absent because env
+    // didn't carry them; whether suppressed by ntn-source detection
+    // or absent from the env source, the printed shape is the same.
+    expect(parsed.mcpServers.lore.env["LORE_SUPPRESS_DEPRECATIONS"]).toBe("1")
+    expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBeUndefined()
+  })
+
+  it(".lore.yaml carries legacy auth.token → resolves to config-auth-token; auth tokens still forward when env-set", async () => {
+    // Pins the regression-protection bullet from the issue's
+    // acceptance criteria: legacy operators are not affected by the
+    // ntn-source-only suppression. `auth.token` in `.lore.yaml`
+    // resolves resolveAuth to `config-auth-token` (path 4); the
+    // suppression keys ONLY off `ntn-auth-json`, so an operator on
+    // the legacy config-auth-token path who *also* has tokens set in
+    // env keeps the unconditional-forward shape.
+    const projectDir = mkdtempSync(join(SCRATCH, "config-auth-token-"))
+    // Non-bearer-shaped value to satisfy configAuthTokenSchema's
+    // refinement — bearer-shaped strings (ntn_*, secret_*) fail
+    // validation by design.
+    writeFileSync(
+      join(projectDir, ".lore.yaml"),
+      [
+        "vault:",
+        "  pageId: '00000000000000000000000000000000'",
+        "auth:",
+        "  token: legacy-config-tok",
+        "",
+      ].join("\n"),
+    )
+
+    const writes: string[] = []
+    const stderrWrites: string[] = []
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString())
+        return true
+      }) as never)
+
+    const previousApi = process.env["NOTION_API_TOKEN"]
+    const previousLore = process.env["LORE_NOTION_TOKEN"]
+    process.env["NOTION_API_TOKEN"] = "api-tok"
+    delete process.env["LORE_NOTION_TOKEN"]
+    try {
+      await installCommand.parseAsync(
+        ["--project", projectDir, "--print-config", "json"],
+        { from: "user" },
+      )
+    } finally {
+      stdoutSpy.mockRestore()
+      stderrSpy.mockRestore()
+      if (previousApi === undefined) delete process.env["NOTION_API_TOKEN"]
+      else process.env["NOTION_API_TOKEN"] = previousApi
+      if (previousLore !== undefined) process.env["LORE_NOTION_TOKEN"] = previousLore
+    }
+
+    const parsed = JSON.parse(writes.join("")) as {
+      mcpServers: { lore: { env: Record<string, string> } }
+    }
+    // Acceptance: legacy operators with NOTION_API_TOKEN set in env
+    // keep the placeholder forwarded under config-auth-token source.
+    // resolveAuth's path 1 (NOTION_API_TOKEN) wins precedence over
+    // path 4 (config auth.token), so the resolved source actually
+    // resolves to `env-notion-api-token` here — which still preserves
+    // forwarding. The point is "non-ntn-auth-json source preserves
+    // forwarding"; that's what the assertion below pins.
+    expect(parsed.mcpServers.lore.env["NOTION_API_TOKEN"]).toBe(
+      "${NOTION_API_TOKEN}",
+    )
+  })
+})
+
 describe("shellQuoteSingle (issue 0.10.0/08)", () => {
   // The Codex `bash -lc` launch line must inhibit shell expansion of
   // path metacharacters in `LORE_CONFIG_ROOT`. JSON.stringify (the
@@ -2583,6 +2783,271 @@ describe("buildMcpEnv (issue 0.10.0/08)", () => {
     // can short-circuit the upward walk.
     const build = buildMcpEnv(TEST_CONFIG_ROOT, ENV_NONE)
     expect(build.staticEnv).toEqual(STATIC_ENV_FOR_TEST_CONFIG_ROOT)
+  })
+
+  // Issue #451: under `ntn-auth-json`, the spawned MCP server's
+  // `resolveAuth` resolves the bearer token from
+  // `~/.config/notion/auth.json` on its own. Forwarding
+  // `${NOTION_API_TOKEN}` / `${LORE_NOTION_TOKEN}` placeholders is
+  // therefore vestigial AND produces host-validator warnings (Claude
+  // Code's `/doctor`) when the underlying env vars later unset
+  // (one-shot install env, mid-migration shell rc cleanup, etc.).
+  // The pre-fix behavior — "forward whatever was set at install
+  // time" — must continue to hold for every other auth source so
+  // legacy operators don't lose access by upgrading.
+
+  it("ntn-auth-json suppresses NOTION_API_TOKEN forwarding even when set in install-time env", () => {
+    const env: NodeJS.ProcessEnv = { NOTION_API_TOKEN: "ntn-tok" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, { authSource: "ntn-auth-json" })
+    expect(build.env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(build.forwarded).not.toContain("NOTION_API_TOKEN")
+  })
+
+  it("ntn-auth-json suppresses LORE_NOTION_TOKEN forwarding even when the operator's shell still exports it", () => {
+    // An operator on `ntn-auth-json` whose shell still carries a
+    // stale `LORE_NOTION_TOKEN` (e.g. from a `~/.zshrc` they haven't
+    // pruned yet) shouldn't have it baked into their committed
+    // `.mcp.json` — the MCP server resolves auth.json anyway, so the
+    // placeholder is dead weight and contributes to host-validator
+    // warnings if the var later unsets. The legacy-forwarded
+    // deprecation note in `runInstall` / `runPrintConfig` STILL fires
+    // (it probes the unfiltered shape, not this filtered build) so the
+    // operator gets the shell-rc-cleanup nudge — see the runInstall
+    // test below.
+    const env: NodeJS.ProcessEnv = { LORE_NOTION_TOKEN: "lore-tok" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, { authSource: "ntn-auth-json" })
+    expect(build.env["LORE_NOTION_TOKEN"]).toBeUndefined()
+    expect(build.forwarded).not.toContain("LORE_NOTION_TOKEN")
+  })
+
+  it("ntn-auth-json continues to forward NOTION_WORKSPACE_ID — multi-workspace ntn engineers still need it", () => {
+    // The token-forward suppression is partition-scoped to
+    // `RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`. `NOTION_WORKSPACE_ID` is
+    // an environment selector, not an auth token — without it, a
+    // multi-workspace ntn child would either hit the auto-pick
+    // ambiguity error (loadNtnToken throws) or pick the wrong
+    // workspace silently (single-workspace auto-pick on a stale
+    // auth.json). #188 is the load-bearing test for that
+    // forwarding; #451 must not regress it.
+    const env: NodeJS.ProcessEnv = {
+      NOTION_API_TOKEN: "ntn-tok",
+      NOTION_WORKSPACE_ID: "ws_abc",
+      NOTION_ENV: "dev",
+      LORE_USER_NAME: "hsalman",
+    }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, { authSource: "ntn-auth-json" })
+    expect(build.env).toEqual({
+      NOTION_WORKSPACE_ID: "${NOTION_WORKSPACE_ID}",
+      NOTION_ENV: "${NOTION_ENV}",
+      LORE_USER_NAME: "${LORE_USER_NAME}",
+    })
+    expect(build.forwarded).toEqual([
+      "NOTION_WORKSPACE_ID",
+      "NOTION_ENV",
+      "LORE_USER_NAME",
+    ])
+  })
+
+  it("ntn-auth-json with no env vars set produces an env block with only static entries — the /doctor-clean shape", () => {
+    // The acceptance criterion from #451: a fresh `lore install` on
+    // a vault using ntn-source auth produces a `.mcp.json` whose
+    // `env` block contains no `${VAR}` placeholders that Claude
+    // Code's config validator could complain about.
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, ENV_NONE, { authSource: "ntn-auth-json" })
+    expect(build.env).toEqual({})
+    expect(build.staticEnv).toEqual(STATIC_ENV_FOR_TEST_CONFIG_ROOT)
+    expect(build.forwarded).toEqual([])
+  })
+
+  it("env-lore-notion-token preserves LORE_NOTION_TOKEN forwarding — no regression on the legacy deprecation path", () => {
+    // Acceptance criterion from #451: existing legacy operators on
+    // `LORE_NOTION_TOKEN` still see their token forwarded so their
+    // MCP server can resolve auth via the env path (path 3). The
+    // suppression keys off `ntn-auth-json` only.
+    const env: NodeJS.ProcessEnv = { LORE_NOTION_TOKEN: "lore-tok" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, {
+      authSource: "env-lore-notion-token",
+    })
+    expect(build.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
+    expect(build.forwarded).toContain("LORE_NOTION_TOKEN")
+  })
+
+  it("env-notion-api-token preserves NOTION_API_TOKEN forwarding — operators who exported the canonical name keep it", () => {
+    // Path 1 of `resolveAuth` (canonical, env-set NOTION_API_TOKEN).
+    // The MCP server reads `process.env["NOTION_API_TOKEN"]` first,
+    // before falling back to ntn — forwarding the placeholder keeps
+    // the install-time and runtime resolution paths in lockstep.
+    const env: NodeJS.ProcessEnv = { NOTION_API_TOKEN: "api-tok" }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env, {
+      authSource: "env-notion-api-token",
+    })
+    expect(build.env["NOTION_API_TOKEN"]).toBe("${NOTION_API_TOKEN}")
+    expect(build.forwarded).toContain("NOTION_API_TOKEN")
+  })
+
+  it("undefined authSource preserves the pre-fix unconditional-forward shape — print-config / test fixtures don't regress", () => {
+    // Print-config falls back to `undefined` when auth resolution
+    // fails or no `.lore.yaml` exists; tests pass `undefined` by
+    // omitting the option. Both must produce the same shape as
+    // pre-#451 callers to avoid silent test breakage and to keep
+    // the unsupported-host escape hatch (--print-config) working
+    // even when auth isn't configured yet.
+    const env: NodeJS.ProcessEnv = {
+      NOTION_API_TOKEN: "api-tok",
+      LORE_NOTION_TOKEN: "lore-tok",
+    }
+    const build = buildMcpEnv(TEST_CONFIG_ROOT, env)
+    expect(build.env).toEqual({
+      NOTION_API_TOKEN: "${NOTION_API_TOKEN}",
+      LORE_NOTION_TOKEN: "${LORE_NOTION_TOKEN}",
+    })
+  })
+})
+
+describe("ntn-auth-json suppression threads through every host build helper (issue #451)", () => {
+  // The build helpers (`buildClaudeMcpEntry`, `buildCursorMcpEntry`,
+  // `buildCodexMcpSection`, plus their Legacy counterparts) all call
+  // through to `buildMcpEnv` — these tests pin the trailing
+  // `authSource` parameter so a future refactor that drops the
+  // pass-through breaks the test rather than the production install.
+
+  const ENV_NTN_LIKE: NodeJS.ProcessEnv = {
+    // Mirrors the production-vault `.mcp.json` reproduction in #451:
+    // operator's install-time shell carried both an API token and a
+    // legacy LORE_NOTION_TOKEN, plus the ntn-native env selectors.
+    NOTION_API_TOKEN: "api-tok",
+    LORE_NOTION_TOKEN: "lore-tok",
+    NOTION_ENV: "dev",
+    NOTION_WORKSPACE_ID: "ws_abc",
+  }
+
+  it("buildClaudeMcpEntry (bare bin-dispatch) suppresses both auth-token placeholders under ntn-auth-json", () => {
+    const entry = buildClaudeMcpEntry(
+      "bare",
+      TEST_CONFIG_ROOT,
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
+    // Environment selectors still flow.
+    expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
+    expect(entry.env["NOTION_WORKSPACE_ID"]).toBe("${NOTION_WORKSPACE_ID}")
+  })
+
+  it("buildClaudeMcpEntry (yarn PnP) suppresses both auth-token placeholders under ntn-auth-json", () => {
+    const entry = buildClaudeMcpEntry(
+      "yarn",
+      TEST_CONFIG_ROOT,
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
+    expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
+  })
+
+  it("buildLegacyClaudeMcpEntry suppresses both auth-token placeholders under ntn-auth-json", () => {
+    const entry = buildLegacyClaudeMcpEntry(
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      TEST_CONFIG_ROOT,
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
+    expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
+  })
+
+  it("buildCursorMcpEntry threads authSource through its options bag", () => {
+    const entry = buildCursorMcpEntry("bare", TEST_CONFIG_ROOT, ENV_NTN_LIKE, {
+      authSource: "ntn-auth-json",
+    })
+    expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
+    expect(entry.env["NOTION_ENV"]).toBe("${NOTION_ENV}")
+  })
+
+  it("buildLegacyCursorMcpEntry suppresses both auth-token placeholders under ntn-auth-json", () => {
+    const entry = buildLegacyCursorMcpEntry(
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      TEST_CONFIG_ROOT,
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(entry.env["NOTION_API_TOKEN"]).toBeUndefined()
+    expect(entry.env["LORE_NOTION_TOKEN"]).toBeUndefined()
+  })
+
+  it("buildCodexMcpSection drops both auth-token names from env_vars under ntn-auth-json", () => {
+    // Codex's `env_vars = [...]` is a name-only allowlist. Under
+    // ntn-source the auth-token names should NOT appear at all.
+    const section = buildCodexMcpSection(
+      "bare",
+      TEST_CONFIG_ROOT,
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(section).not.toContain('"NOTION_API_TOKEN"')
+    expect(section).not.toContain('"LORE_NOTION_TOKEN"')
+    expect(section).toContain('"NOTION_ENV"')
+    expect(section).toContain('"NOTION_WORKSPACE_ID"')
+  })
+
+  it("buildLegacyCodexMcpSection drops both auth-token names from env_vars under ntn-auth-json", () => {
+    const section = buildLegacyCodexMcpSection(
+      "${HOME}/.lore/dist/mcp.js",
+      TEST_CONFIG_ROOT,
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(section).not.toContain('"NOTION_API_TOKEN"')
+    expect(section).not.toContain('"LORE_NOTION_TOKEN"')
+    expect(section).toContain('"NOTION_ENV"')
+  })
+
+  it("buildPrintConfigOutput (json) suppresses both auth-token placeholders under ntn-auth-json", () => {
+    const output = buildPrintConfigOutput(
+      "json",
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      TEST_CONFIG_ROOT,
+      false,
+      "bare",
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(output).not.toContain("${NOTION_API_TOKEN}")
+    expect(output).not.toContain("${LORE_NOTION_TOKEN}")
+    expect(output).toContain("${NOTION_ENV}")
+  })
+
+  it("buildPrintConfigOutput (toml) suppresses both auth-token names under ntn-auth-json", () => {
+    const output = buildPrintConfigOutput(
+      "toml",
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      TEST_CONFIG_ROOT,
+      false,
+      "bare",
+      ENV_NTN_LIKE,
+      "ntn-auth-json",
+    )
+    expect(output).not.toContain('"NOTION_API_TOKEN"')
+    expect(output).not.toContain('"LORE_NOTION_TOKEN"')
+    expect(output).toContain('"NOTION_ENV"')
+  })
+
+  it("legacy authSource (env-lore-notion-token) keeps LORE_NOTION_TOKEN forwarding through the Claude builder — no regression", () => {
+    const entry = buildClaudeMcpEntry(
+      "bare",
+      TEST_CONFIG_ROOT,
+      { LORE_NOTION_TOKEN: "lore-tok" },
+      "env-lore-notion-token",
+    )
+    expect(entry.env["LORE_NOTION_TOKEN"]).toBe("${LORE_NOTION_TOKEN}")
   })
 })
 
