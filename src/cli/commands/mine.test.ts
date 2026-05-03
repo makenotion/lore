@@ -343,6 +343,47 @@ describe("selectMineFiles", () => {
     expect(out).toEqual(["a.ts", "d.md"])
   })
 
+  it("includes conventional Dockerfile and Containerfile paths", () => {
+    const files = [
+      "Dockerfile",
+      "Containerfile",
+      "deploy/Dockerfile",
+      "containers/base/Containerfile",
+    ]
+    const out = selectMineFiles(files, "**/*", 10)
+    expect(out).toEqual(files)
+  })
+
+  it("includes suffixed conventional container build file names", () => {
+    const files = [
+      "Dockerfile.dev",
+      "Dockerfile.prod",
+      "Containerfile.dev",
+      "deploy/Containerfile.local",
+      "deploy\\Dockerfile.windows",
+    ]
+    const out = selectMineFiles(files, "**/*", 10)
+    expect(out).toEqual(files)
+  })
+
+  it("keeps extension-based .dockerfile support", () => {
+    const files = ["foo.dockerfile", "deploy/base.DOCKERFILE"]
+    const out = selectMineFiles(files, "**/*", 10)
+    expect(out).toEqual(files)
+  })
+
+  it("does not include unrelated extensionless files", () => {
+    const files = ["LICENSE", "Makefile", "docs/README"]
+    const out = selectMineFiles(files, "**/*", 10)
+    expect(out).toEqual([])
+  })
+
+  it("keeps conventional container build filename matching case-sensitive", () => {
+    const files = ["dockerfile", "containerfile", "deploy/dockerfile.dev"]
+    const out = selectMineFiles(files, "**/*", 10)
+    expect(out).toEqual([])
+  })
+
   it("returns [] when pattern matches nothing", () => {
     const files = ["a.ts", "b.ts"]
     const out = selectMineFiles(files, "docs/**/*.md", 10)

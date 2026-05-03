@@ -804,12 +804,14 @@ Distinct from `MemoryService.list` (which is recall-shaped):
 ## The mine Command
 
 `mine` is the most complex command. It walks a directory tree, filters for
-text files by extension, and creates or updates one memory per file. Key
-details:
+mineable text files by extension or explicit basename, and creates or updates
+one memory per file. Key details:
 
 - Skips directories: `node_modules`, `dist`, `build`, `.git`, `.next`, `__pycache__`
 - Skips files: `.lore.yaml`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`
 - Only indexes files with recognized text extensions (see `TEXT_EXTENSIONS` set)
+  or explicit basename support such as conventional `Dockerfile` /
+  `Containerfile` names
 - Max file size: 100KB per file
 - Default limit: 50 files per run
 - Each memory is created with source `"file"` and keywords `"<extension> mined <relPath>"` — `tags` is left empty because file extensions are free-form tokens, not part of the closed tag vocabulary

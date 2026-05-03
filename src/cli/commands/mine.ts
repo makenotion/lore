@@ -58,10 +58,20 @@ const TEXT_EXTENSIONS = new Set([
   ".tf",
 ])
 
+const CONTAINER_BUILD_FILE_RE = /^(?:Dockerfile|Containerfile)(?:\..+)?$/
+
+function hasMineableTextName(filePath: string): boolean {
+  const normalizedBasename = basename(filePath.split(/[\\/]/).join("/"))
+  return (
+    TEXT_EXTENSIONS.has(extname(filePath).toLowerCase()) ||
+    CONTAINER_BUILD_FILE_RE.test(normalizedBasename)
+  )
+}
+
 /** Default `--pattern` value. Matches every relative path. */
 export const DEFAULT_MINE_PATTERN = "**/*"
 
-/** Default `--limit` value. Applied after extension AND pattern filtering. */
+/** Default `--limit` value. Applied after mineable-name AND pattern filtering. */
 export const DEFAULT_MINE_LIMIT = 50
 
 /**
@@ -377,7 +387,7 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
 }
 
 /**
- * Apply the extension filter, then the glob filter, then the limit
+ * Apply the mineable-name filter, then the glob filter, then the limit
  * slice — in that order. Pure function; exported so the orchestration
  * test can pin the ordering directly.
  *
@@ -392,7 +402,7 @@ export function selectMineFiles(
   limit: number
 ): string[] {
   return files
-    .filter((f) => TEXT_EXTENSIONS.has(extname(f).toLowerCase()))
+    .filter((f) => hasMineableTextName(f))
     .filter((f) => matchesGlob(f, pattern))
     .slice(0, limit)
 }
