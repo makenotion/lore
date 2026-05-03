@@ -17,10 +17,7 @@ import { displayId, renderTrustLine, resolveTitles, truncateSynopsis } from "../
 import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
-import {
-  RICH_TEXT_PROPERTY_MAX_LEN,
-  richTextPropertySchema,
-} from "../../core/rich-text-schema.js"
+import { richTextPropertySchema } from "../../core/rich-text-schema.js"
 import { findNearDuplicates, type NearDuplicateMatch } from "../../core/near-duplicate.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 
@@ -1090,20 +1087,12 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .describe(
             "(action='create') Entity names affected. Each auto-creates a `decided_by` fact."
           ),
-        alternatives: z
-          .string()
-          .max(RICH_TEXT_PROPERTY_MAX_LEN)
+        alternatives: richTextPropertySchema("alternatives")
           .optional()
-          .describe(
-            `(action='create') Alternatives considered (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`
-          ),
-        consequences: z
-          .string()
-          .max(RICH_TEXT_PROPERTY_MAX_LEN)
+          .describe("(action='create') Alternatives considered."),
+        consequences: richTextPropertySchema("consequences")
           .optional()
-          .describe(
-            `(action='create') Consequences accepted (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`
-          ),
+          .describe("(action='create') Consequences accepted."),
         tags: tagsSchema.optional().describe("(action='create') Closed-vocabulary tags."),
         keywords: keywordsSchema
           .optional()

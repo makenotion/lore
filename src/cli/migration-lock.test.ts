@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process"
-import { once } from "node:events"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
@@ -68,7 +67,7 @@ process.stdout.write(JSON.stringify({
 
 if (result.acquired) {
   await new Promise((resolve) =>
-    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "750"))
+    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "30000"))
   )
 }
 `
@@ -76,13 +75,91 @@ if (result.acquired) {
   return workerPath
 }
 
-async function runWorkerRace(lockScope: MigrationLockScope): Promise<
-  Array<{
-    acquired: boolean
-    ownerPid: number | null
-    pid: number
-  }>
-> {
+type RaceWorkerResult = {
+  acquired: boolean
+  ownerPid: number | null
+  pid: number
+}
+
+function parseWorkerResult(stdout: string): RaceWorkerResult {
+  const line = stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0)
+  if (!line) throw new Error("worker exited without a result")
+  return JSON.parse(line) as RaceWorkerResult
+}
+
+function readRaceWorkerResult(
+  child: ReturnType<typeof spawn>
+): Promise<RaceWorkerResult> {
+  return new Promise((resolve, reject) => {
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+
+    const settle = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      fn()
+    }
+
+    const parseIfReady = (): void => {
+      if (settled || !stdout.includes("\n")) return
+      settle(() => {
+        try {
+          resolve(parseWorkerResult(stdout))
+        } catch (err) {
+          reject(err)
+        }
+      })
+    }
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8")
+      parseIfReady()
+    })
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8")
+    })
+    child.once("error", (err) => settle(() => reject(err)))
+    child.once("exit", (code) => {
+      if (settled) return
+      settle(() => {
+        try {
+          resolve(parseWorkerResult(stdout))
+        } catch {
+          reject(new Error(`worker exited ${code}: ${stderr}`))
+        }
+      })
+    })
+  })
+}
+
+async function stopRaceWorkers(children: Array<ReturnType<typeof spawn>>): Promise<void> {
+  await Promise.all(
+    children.map(async (child) => {
+      if (child.exitCode !== null || child.signalCode !== null) return
+      await new Promise<void>((resolve) => {
+        let settled = false
+        const settle = (): void => {
+          if (settled) return
+          settled = true
+          resolve()
+        }
+
+        child.once("exit", settle)
+        if (child.exitCode !== null || child.signalCode !== null) {
+          settle()
+          return
+        }
+        if (!child.kill()) settle()
+      })
+    })
+  )
+}
+
+async function runWorkerRace(lockScope: MigrationLockScope): Promise<RaceWorkerResult[]> {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
   const children = Array.from({ length: 2 }, () => {
@@ -96,34 +173,17 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         // short-lived winner exits before its peer reaches acquisition,
         // making the peer's stale-PID reclaim legitimate rather than
         // a failed exclusion check.
-        LOCK_HOLD_MS: "10000",
+        LOCK_HOLD_MS: "30000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
   })
 
-  return Promise.all(
-    children.map(async (child) => {
-      let stdout = ""
-      let stderr = ""
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8")
-      })
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8")
-      })
-
-      const [code] = (await once(child, "exit")) as [number | null]
-      if (code !== 0) {
-        throw new Error(`worker exited ${code}: ${stderr}`)
-      }
-      return JSON.parse(stdout.trim()) as {
-        acquired: boolean
-        ownerPid: number | null
-        pid: number
-      }
-    })
-  )
+  try {
+    return await Promise.all(children.map(readRaceWorkerResult))
+  } finally {
+    await stopRaceWorkers(children)
+  }
 }
 
 describe("tryAcquireMigrationLock", () => {
