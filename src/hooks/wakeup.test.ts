@@ -367,6 +367,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         String(call[0]).startsWith("[lore] wakeup:"),
       )?.[0])
       expect(logLine).toContain("mode=ranked")
+      expect(logLine).toContain("ranked=true")
       expect(logLine).toContain("memory=3")
       expect(logLine).toContain("sections.currentTask=2")
       expect(logLine).toContain("sections.facts=5")
@@ -376,6 +377,84 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
         includeCoverage: true,
       })
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("includes the default mode in unranked wake-up debug counters", async () => {
+    process.env["LORE_DEBUG"] = "1"
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+
+    try {
+      await wakeup({
+        event: JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: "debug-default",
+        }),
+      })
+
+      const logLine = String(stderr.mock.calls.find((call) =>
+        String(call[0]).startsWith("[lore] wakeup:"),
+      )?.[0])
+      expect(logLine).toContain("mode=default")
+      expect(logLine).toContain("ranked=false")
+      expect(logLine).toContain("reason=no-ranked-search")
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("includes the default mode when debug logging a debounced wake-up", async () => {
+    process.env["LORE_DEBUG"] = "1"
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    const event = JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "debug-debounce",
+      prompt: "Fix retrieval metrics",
+    })
+
+    try {
+      await wakeup({ event })
+      await wakeup({ event })
+
+      const logLine = String(stderr.mock.calls.find((call) =>
+        String(call[0]).includes("reason=already-ranked-for-session"),
+      )?.[0])
+      expect(logLine).toContain("mode=default")
+      expect(logLine).toContain("ranked=false")
+      expect(logLine).toContain("reason=already-ranked-for-session")
+      expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
     } finally {
       stderr.mockRestore()
     }
