@@ -35,6 +35,16 @@ log is the canonical source for those.
   if a future change drops the filter. The Notion-backed runner can
   still report `memoryHarm > 0` against the same suite — that gap is
   the temporal-recall work tracked under #284. (#450)
+- **Eval tasks can target any wake-up section, not just `taskMemories`.**
+  Suites now declare a `surface` field per task selecting one of
+  `wake-up.taskMemories` (default), `wake-up.memories`,
+  `wake-up.relatedMemories`, or `wake-up.staleConfidence`. The
+  `lore-core` suite expanded from 3 tasks to 21 tasks distributed across
+  those four surfaces, exercising debugging, deployment, retention,
+  recents, related-from-active-task, and stale-confidence triage
+  scenarios. **BREAKING (artifact shape):** `runner.surface` (string
+  literal) is replaced by `runner.surfaces: EvalSurface[]` (sorted
+  alphabetically); consumers reading the legacy field must migrate. (#450)
 - **Self-service Entities bootstrap for legacy vaults.** A new vault repair
   command creates the Entities database on four-database vaults and runs
   additive schema migration so Facts gains the `SubjectEntity` /

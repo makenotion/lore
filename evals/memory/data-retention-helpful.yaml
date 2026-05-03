@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A relevant data-retention policy is available before the task.
+memories:
+  - id: policy/data-retention-90-days
+    title: Customer data retention policy is 90 days
+    kind: policy
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+      - security
+    keywords: data retention 90 days customer policy
+    synopsis: Customer data must be deleted 90 days after last interaction.
+    content: |
+      The project's data retention policy: customer interaction data is deleted
+      90 days after the last touch. New features must respect this window.
+  - id: note/dashboard-color-palette
+    title: Dashboard color palette tokens
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: palette swatch token shade
+    synopsis: Standard palette tokens for chart series; reuse across dashboards.

@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Related-memory surface — active monitoring task seeds alerting memory.
+memories:
+  - id: decision/alerting-on-error-budget
+    title: Alerting fires when error budget burns past 50%
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - observability
+    keywords: alerting error budget burn rate threshold
+    synopsis: Pages fire when the rolling error budget burns past 50% in 1h.
+  - id: note/structured-log-fields
+    title: Structured log field nomenclature
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - observability
+    keywords: lowercase snake case
+    synopsis: Lowercase snake_case keys remain canonical across all module logs.
+tasks:
+  - id: task/active-alert-tuning
+    subject: Alert burn-rate threshold tuning
+    entity: alerting error budget

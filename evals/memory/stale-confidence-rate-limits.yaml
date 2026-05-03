@@ -1,0 +1,23 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Stale-confidence surface — flagged rate-limit memory needs triage.
+memories:
+  - id: decision/api-rate-limits
+    title: API rate-limit policy
+    kind: decision
+    status: informational
+    confidence: speculative
+    tags:
+      - infrastructure
+    keywords: api rate limit policy throttle
+    synopsis: API rate-limit policy hasn't been re-validated in a while.
+    isStaleConfidence: true
+  - id: note/coexisting-fresh-row
+    title: Fresh ops note that should not surface as stale
+    kind: note
+    status: informational
+    confidence: certain
+    tags:
+      - hygiene
+    keywords: ops fresh
+    synopsis: Recent ops note; not flagged for stale-confidence.

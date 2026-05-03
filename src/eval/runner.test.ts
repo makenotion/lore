@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
+import { STALE_CONFIDENCE_LIMIT } from "../types.js"
 import { runEvalSuite, type EvalRunArtifact } from "./runner.js"
 
 describe("runEvalSuite", () => {
@@ -19,10 +20,10 @@ describe("runEvalSuite", () => {
 
     expect(writtenPath).toBe(outPath)
     expect(artifact.summary).toMatchObject({
-      tasks: 3,
+      tasks: 21,
       trials: 1,
-      totalResults: 15,
-      passedResults: 15,
+      totalResults: 69,
+      passedResults: 69,
       failedResults: 0,
     })
     expect(artifact.summary.scenarios).toEqual([
@@ -34,7 +35,12 @@ describe("runEvalSuite", () => {
     ])
     expect(artifact.runner).toMatchObject({
       mode: "retrieval",
-      surface: "wake-up.taskMemories",
+      surfaces: [
+        "wake-up.memories",
+        "wake-up.relatedMemories",
+        "wake-up.staleConfidence",
+        "wake-up.taskMemories",
+      ],
       requestedTrials: 1,
       executedTrials: 1,
     })
@@ -287,6 +293,345 @@ tasks:
     const stale = artifact.results.find((r) => r.scenario === "stale-memory")!
     expect(stale.success).toBe(true)
     expect(stale.surfacedMemoryIds).toEqual([])
+  })
+
+  it("extracts surfaced ids from the wake-up.memories recents section", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/recent-architecture
+    title: Architecture decision in flight
+    synopsis: Authoritative recent decision.
+    keywords: architecture decision
+`,
+      },
+      suite: `version: 1
+name: memories-suite
+runner: retrieval
+tasks:
+  - id: surfaces-recent-decision
+    prompt: Catch up on recent architectural choices.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/recent-architecture
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.memories"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/recent-architecture"],
+      retrieval: { surface: "wake-up.memories" },
+    })
+  })
+
+  it("extracts surfaced ids from the wake-up.relatedMemories surface", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/payments-retry-policy
+    title: Payments retry policy decision
+    synopsis: How to retry payment intent failures.
+    keywords: payments retry policy decision
+tasks:
+  - id: task/active-payments-followup
+    subject: Payments retry policy follow-up
+    entity: payments retry
+`,
+      },
+      suite: `version: 1
+name: related-suite
+runner: retrieval
+tasks:
+  - id: surfaces-related-memory-from-active-task
+    prompt: |
+      Pick up where the team left off on payments work.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payments-retry-policy
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.relatedMemories"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/payments-retry-policy"],
+      retrieval: { surface: "wake-up.relatedMemories" },
+    })
+  })
+
+  it("wake-up.relatedMemories enforces shouldNotSurface for distractors", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/payments-retry-policy
+    title: Payments retry policy decision
+    keywords: payments retry policy decision
+  - id: note/payments-distractor
+    title: Payments retry distractor
+    keywords: payments retry distractor
+tasks:
+  - id: task/active-payments-followup
+    subject: Payments retry policy follow-up
+    entity: payments retry
+`,
+      },
+      suite: `version: 1
+name: related-distractor-suite
+runner: retrieval
+tasks:
+  - id: relatedmemories-rejects-distractor
+    prompt: Pick up payments work.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payments-retry-policy
+        shouldNotSurface:
+          - note/payments-distractor
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+    const result = artifact.results.find((r) => r.scenario === "helpful-memory")!
+    // Distractor shares enough tokens with the entity-seeded query to
+    // surface; the suite-side assertion catches it. The test pins that
+    // `shouldNotSurface` actually fires through the relatedMemories
+    // extract path, not just on taskMemories.
+    expect(result.success).toBe(false)
+    expect(result.unexpectedMemoriesSurfaced).toContain("note/payments-distractor")
+  })
+
+  it("wake-up.memories enforces shouldNotSurface for distractors", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/recent-architecture
+    title: Architecture decision in flight
+  - id: note/recents-distractor
+    title: Distractor row
+`,
+      },
+      suite: `version: 1
+name: recents-distractor-suite
+runner: retrieval
+tasks:
+  - id: memories-rejects-distractor
+    prompt: Catch up on recent architectural choices.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/recent-architecture
+        shouldNotSurface:
+          - note/recents-distractor
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+    const result = artifact.results.find((r) => r.scenario === "helpful-memory")!
+    // memories.list emits both rows in fixture order; the
+    // shouldNotSurface assertion fires on the second one. Pins that
+    // the recents extract path threads `shouldNotSurface` through to
+    // `buildRetrievalResult` correctly.
+    expect(result.success).toBe(false)
+    expect(result.unexpectedMemoriesSurfaced).toContain("note/recents-distractor")
+  })
+
+  it("extracts surfaced ids from the wake-up.staleConfidence surface", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/legacy-cache-eviction
+    title: Legacy cache eviction decision
+    synopsis: Marked for triage in stale-confidence.
+    isStaleConfidence: true
+  - id: note/coexisting-fresh-row
+    title: Fresh row that should not surface
+    synopsis: Not flagged for stale-confidence.
+`,
+      },
+      suite: `version: 1
+name: stale-confidence-suite
+runner: retrieval
+tasks:
+  - id: surfaces-flagged-stale-confidence-row
+    prompt: Show rows whose confidence has gone stale.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/legacy-cache-eviction
+        shouldNotSurface:
+          - note/coexisting-fresh-row
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.staleConfidence"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/legacy-cache-eviction"],
+      retrieval: { surface: "wake-up.staleConfidence" },
+    })
+  })
+
+  it("wake-up.staleConfidence honors task.retrieval.limit at extract time", async () => {
+    // Production wake-up hard-codes STALE_CONFIDENCE_LIMIT (15) for the
+    // queryStaleConfidence call. The runner cannot tune that knob via
+    // task.retrieval.limit, so the surface registry's `extract`
+    // applies the limit AFTER fetch. This test pins the post-fetch
+    // slice: a fixture with three flagged rows + retrieval.limit:1
+    // must surface exactly one id.
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/legacy-cache-1
+    title: Legacy cache eviction decision 1
+    isStaleConfidence: true
+  - id: decision/legacy-cache-2
+    title: Legacy cache eviction decision 2
+    isStaleConfidence: true
+  - id: decision/legacy-cache-3
+    title: Legacy cache eviction decision 3
+    isStaleConfidence: true
+`,
+      },
+      suite: `version: 1
+name: stale-confidence-limit-suite
+runner: retrieval
+tasks:
+  - id: stale-confidence-limit-honored
+    prompt: Show rows whose confidence has gone stale.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    retrieval:
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/legacy-cache-1
+`,
+      })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    const result = artifact.results.find(
+      (r) => r.scenario === "helpful-memory"
+    )!
+    expect(result.surfacedMemoryIds).toEqual(["decision/legacy-cache-1"])
+    expect(result.retrieval.limit).toBe(1)
+  })
+
+  it("wake-up.staleConfidence is bounded by STALE_CONFIDENCE_LIMIT below an over-large task limit", async () => {
+    // Production wake-up hard-codes STALE_CONFIDENCE_LIMIT for the
+    // queryStaleConfidence call. The runner cannot tune that knob via
+    // task.retrieval.limit, so a task that asks for more than the
+    // production cap (`limit: 25`) still receives at most
+    // STALE_CONFIDENCE_LIMIT-many ids. If the cap moves, this test
+    // (importing the constant) is the trip wire.
+    const memoryEntries = Array.from({ length: 20 }, (_, i) => i + 1)
+      .map(
+        (i) =>
+          `  - id: decision/stale-${i}\n    title: Stale row ${i}\n    isStaleConfidence: true\n`
+      )
+      .join("")
+    const expectedSurface = Array.from(
+      { length: STALE_CONFIDENCE_LIMIT },
+      (_, i) => `decision/stale-${i + 1}`
+    )
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory\nmemories:\n${memoryEntries}`,
+      },
+      suite: `version: 1
+name: stale-confidence-cap-suite
+runner: retrieval
+tasks:
+  - id: stale-confidence-bounded-by-production-cap
+    prompt: Show rows whose confidence has gone stale.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    retrieval:
+      limit: 25
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/stale-1
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+    const result = artifact.results.find(
+      (r) => r.scenario === "helpful-memory"
+    )!
+    expect(result.surfacedMemoryIds).toHaveLength(STALE_CONFIDENCE_LIMIT)
+    expect(result.surfacedMemoryIds).toEqual(expectedSurface)
   })
 })
 

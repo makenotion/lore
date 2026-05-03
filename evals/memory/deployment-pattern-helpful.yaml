@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A relevant deployment-pattern decision is available before the task.
+memories:
+  - id: decision/canary-deployments
+    title: Canary deployments are the standard rollout strategy
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - infrastructure
+      - reliability
+    keywords: canary deployment rollout strategy traffic percentage
+    synopsis: Roll out new versions to 5% canary traffic before full deployment.
+    content: |
+      The project has standardized on canary deployments. New rollouts go to 5%
+      canary traffic first; full deployment only after canary metrics clear.
+  - id: note/tail-latency-tracking
+    title: Tail latency tracking dashboard ids
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - observability
+    keywords: dashboard panel chart
+    synopsis: Map of dashboard panel ids for tail latency tracking.

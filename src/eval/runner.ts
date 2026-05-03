@@ -1,7 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, parse, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
-import { loadWakeUpData, type WakeUpServices } from "../core/wakeup.js"
+import {
+  loadWakeUpData,
+  type WakeUpData,
+  type WakeUpOptions,
+  type WakeUpServices,
+} from "../core/wakeup.js"
 import type {
   DecisionSummary,
   Fact,
@@ -10,12 +15,14 @@ import type {
   Memory,
   MemorySource,
   TaskSummary,
+  TaskState,
 } from "../types.js"
 import {
   loadEvalSuite,
   type EvalRunner,
   type EvalFixtureMemory,
   type EvalMemoryScenario,
+  type EvalSurface,
   type EvalTask,
   type LoadedEvalSuite,
 } from "./schema.js"
@@ -33,7 +40,24 @@ export interface EvalRunArtifact {
   startedAt: string
   runner: {
     mode: "retrieval"
-    surface: "wake-up.taskMemories"
+    /**
+     * Distinct retrieval surfaces exercised across the run, sorted
+     * alphabetically by surface name (default `Array.prototype.sort()`
+     * over `EvalSurface` strings) so downstream consumers can
+     * binary-search and so the artifact diff is order-stable across
+     * runs.
+     *
+     * Migration recipe from the pre-multi-surface artifact (which had
+     * a single `runner.surface` string):
+     * 1. Legacy reader detection: `Array.isArray(artifact.runner.surfaces)`
+     *    distinguishes the new shape from the legacy `surface` literal.
+     * 2. Single-surface back-compat: when `surfaces.length === 1`,
+     *    `surfaces[0]` is the equivalent of the old `surface` field.
+     * 3. Multi-surface runs: legacy readers must reject or scope to the
+     *    surface they care about — `runner.surfaces.includes(<surface>)`
+     *    is the supported predicate.
+     */
+    surfaces: EvalSurface[]
     requestedTrials: number
     executedTrials: number
   }
@@ -51,7 +75,7 @@ export interface EvalTaskResult {
   missingExpectedMemories: string[]
   unexpectedMemoriesSurfaced: string[]
   retrieval: {
-    surface: "wake-up.taskMemories"
+    surface: EvalSurface
     limit: number
     recall: number | null
     precision: number | null
@@ -84,6 +108,16 @@ interface LoadedScenario {
 const RESULT_TIMESTAMP_PATTERN = /[:.]/g
 const EVAL_PROJECT_ID = "eval-project"
 
+/**
+ * Deterministic clock used when the caller does not supply `options.now`.
+ * The eval runner is contractually deterministic; without a pinned clock
+ * the relatedMemories and staleConfidence surfaces drift with wall-clock
+ * time. Pinned to a stable date that's far enough back that any
+ * fixture-defined `createdAt` (currently 2026-01-N for the N-th memory)
+ * is in the past relative to it.
+ */
+const DEFAULT_RETRIEVAL_NOW = new Date("2026-05-03T12:00:00.000Z")
+
 export async function runEvalSuite(
   suitePath: string,
   options: RunEvalOptions = {}
@@ -107,16 +141,26 @@ export async function runEvalSuite(
   }
   const executedTrials = 1
 
-  const startedAt = (options.now ?? new Date()).toISOString()
+  // Pin a deterministic clock for the whole run when the caller did not
+  // supply one. wake-up.relatedMemories and wake-up.staleConfidence both
+  // call into time-sensitive task-bucketing helpers (taskDaysStale,
+  // STALE_CONFIDENCE_DAYS) — without a fixed `now`, eval results would
+  // drift with wall-clock time on a calendar boundary. The deterministic
+  // default mirrors the suite's "trials: 1, retrieval is deterministic"
+  // contract.
+  const now = options.now ?? DEFAULT_RETRIEVAL_NOW
+  const startedAt = now.toISOString()
   const results: EvalTaskResult[] = []
   const scenarioIds = new Set<string>()
+  const surfacesExercised = new Set<EvalSurface>()
 
   for (const task of loaded.suite.tasks) {
+    surfacesExercised.add(task.surface)
     const scenarios = await loadTaskScenarios(loaded, task)
     for (const scenario of scenarios) {
       scenarioIds.add(scenario.id)
       for (let trial = 1; trial <= executedTrials; trial++) {
-        results.push(await runRetrievalTrial(task, scenario, trial, options.now))
+        results.push(await runRetrievalTrial(task, scenario, trial, now))
       }
     }
   }
@@ -127,7 +171,7 @@ export async function runEvalSuite(
     startedAt,
     runner: {
       mode: "retrieval",
-      surface: "wake-up.taskMemories",
+      surfaces: Array.from(surfacesExercised).sort(),
       requestedTrials,
       executedTrials,
     },
@@ -167,27 +211,110 @@ async function loadTaskScenarios(
   return scenarios
 }
 
+interface SurfaceConfig {
+  /**
+   * Build the WakeUpOptions overlay that drives `loadWakeUpData` toward
+   * surfacing rows in the named section. Every surface zeroes out the
+   * other section limits so the runner exercises only the surface under
+   * test. The user prompt is supplied separately so taskMemories can
+   * thread it into `userQuery`.
+   */
+  configureOptions: (limit: number, prompt: string) => Partial<WakeUpOptions>
+  /**
+   * Extract the section's surfaced memory ids from the loadWakeUpData result.
+   * The runner passes the task's `retrieval.limit` through so surfaces whose
+   * underlying wake-up call ignores the cap (notably `staleConfidence`, which
+   * production hard-codes to STALE_CONFIDENCE_LIMIT) can still honor it.
+   */
+  extract: (data: WakeUpData, limit: number) => string[]
+}
+
+const ZEROED_SECTION_OPTIONS: Partial<WakeUpOptions> = {
+  taskMemoryLimit: 0,
+  memoryLimit: 0,
+  memoryLimitWithDigest: 0,
+  relatedMemoryLimit: 0,
+  knowledgeFactLimit: 0,
+  taskLimit: 0,
+  includeDecisions: false,
+  includeStaleConfidence: false,
+}
+
+/**
+ * How many active tasks to surface so the relatedMemories search has
+ * something to seed from. The relatedMemories search is gated on
+ * `tasks.length > 0`; this just needs to be > 0. Picked at 5 to mirror
+ * a reasonable per-project active-task density in a small fixture.
+ */
+const RELATED_TASK_SEED_LIMIT = 5
+
+const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
+  "wake-up.taskMemories": {
+    configureOptions: (limit, prompt) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      userQuery: prompt,
+      taskMemoryLimit: limit,
+    }),
+    extract: (data, _limit) => data.taskMemories.map((m) => m.id),
+  },
+  "wake-up.memories": {
+    configureOptions: (limit) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      memoryLimit: limit,
+      memoryLimitWithDigest: limit,
+    }),
+    extract: (data, _limit) => data.memories.map((m) => m.id),
+  },
+  "wake-up.relatedMemories": {
+    configureOptions: (limit) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      // Active tasks must be > 0 for the related-memory search to seed.
+      // The fixture's tasks list drives the seed entities.
+      taskLimit: RELATED_TASK_SEED_LIMIT,
+      relatedMemoryLimit: limit,
+    }),
+    extract: (data, _limit) => data.relatedMemories.map((m) => m.id),
+  },
+  "wake-up.staleConfidence": {
+    configureOptions: () => ({
+      ...ZEROED_SECTION_OPTIONS,
+      includeStaleConfidence: true,
+    }),
+    // Production wake-up hard-codes STALE_CONFIDENCE_LIMIT for the
+    // queryStaleConfidence call, so the eval can't tune the section
+    // cap via task.retrieval.limit. Apply the limit at extraction
+    // time instead so the artifact's `retrieval.limit` field stays
+    // honest about how many ids could surface.
+    //
+    // Fixture-mode caveat: production `queryStaleConfidence` orders
+    // results explicitly (by stored confidence score / staleness
+    // signal), but the fixture stub just returns rows in the order
+    // they appear in YAML — see `fixtureWakeUpServices.queryStaleConfidence`.
+    // The post-fetch slice here therefore reflects YAML declaration
+    // order, NOT production ranking. A regression test that asserts a
+    // specific top-1 id is implicitly testing fixture-load order, not
+    // the production ranking algorithm. Mirroring production order in
+    // the fixture stub is tracked under the same fixture-extraction
+    // TODO as the `fixtureMemoryToMemory` literals below.
+    extract: (data, limit) =>
+      data.staleConfidence.slice(0, limit).map((m) => m.id),
+  },
+}
+
 async function runRetrievalTrial(
   task: EvalTask,
   scenario: LoadedScenario,
   trial: number,
-  now: Date | undefined
+  now: Date
 ): Promise<EvalTaskResult> {
   const limit = task.retrieval.limit
+  const config = SURFACE_REGISTRY[task.surface]
   const before = performance.now()
   const data = await loadWakeUpData(fixtureWakeUpServices(scenario.fixture), {
     projectId: EVAL_PROJECT_ID,
-    userQuery: task.prompt,
-    taskMemoryLimit: limit,
-    memoryLimit: 0,
-    memoryLimitWithDigest: 0,
-    relatedMemoryLimit: 0,
-    knowledgeFactLimit: 0,
-    taskLimit: 0,
-    includeDecisions: false,
-    includeStaleConfidence: false,
     includeMemoryContent: true,
-    now: now?.getTime(),
+    now: now.getTime(),
+    ...config.configureOptions(limit, task.prompt),
   })
   return buildRetrievalResult({
     task,
@@ -195,7 +322,7 @@ async function runRetrievalTrial(
     trial,
     limit,
     elapsedMs: roundMetric(performance.now() - before),
-    surfacedMemoryIds: data.taskMemories.map((memory) => memory.id),
+    surfacedMemoryIds: config.extract(data, limit),
   })
 }
 
@@ -242,7 +369,7 @@ function buildRetrievalResult(input: {
     missingExpectedMemories,
     unexpectedMemoriesSurfaced,
     retrieval: {
-      surface: "wake-up.taskMemories",
+      surface: input.task.surface,
       limit: input.limit,
       recall,
       precision,
@@ -274,7 +401,15 @@ function isStatusRetrievable(memory: Memory): boolean {
 }
 
 function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
-  const memories = scenario.memories.map(fixtureMemoryToMemory)
+  const memories = scenario.memories.map((memory, index) =>
+    fixtureMemoryToMemory(memory, index)
+  )
+  const memoriesById = new Map(memories.map((memory) => [memory.id, memory]))
+  const staleConfidenceMemories = scenario.memories
+    .filter((memory) => memory.isStaleConfidence)
+    .map((memory) => memoriesById.get(memory.id))
+    .filter((memory): memory is Memory => memory !== undefined)
+  const tasks = scenario.tasks.map((task) => fixtureTaskToSummary(task))
   return {
     memories: {
       list: async (opts) => {
@@ -285,11 +420,13 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
         // a status-aware retriever does not surface superseded/deprecated
         // rows on the recents (memories.list) path either.
         const statusFiltered = sourceFiltered.filter(isStatusRetrievable)
-        return { items: statusFiltered.slice(0, opts.limit) }
+        const limit = opts.limit ?? Number.MAX_SAFE_INTEGER
+        return { items: statusFiltered.slice(0, limit) }
       },
       search: async (input) =>
         searchFixtureMemories(input.query, memories).slice(0, input.limit),
-      queryStaleConfidence: async () => [],
+      queryStaleConfidence: async (opts) =>
+        staleConfidenceMemories.slice(0, opts.limit),
     },
     facts: {
       listRecent: async () => ({ items: [] as Fact[], hasMore: false }),
@@ -303,15 +440,74 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
     },
     tasks: {
       list: async (_opts?: ListTasksOpts) => ({
-        items: [] as TaskSummary[],
+        items: tasks,
         nextCursor: undefined,
       }),
     },
   }
 }
 
+// TODO(eval-fixtures-module): extract this and `fixtureMemoryToMemory`
+// into `src/eval/fixtures/` with shared TaskSummary / Memory default
+// builders so the 30+-field literals do not accumulate drift as
+// TaskSummary / Memory evolve. Track alongside the future `orderBy`
+// mirror in `fixtureWakeUpServices.queryStaleConfidence` (see surface-
+// registry caveat for `wake-up.staleConfidence`).
+function fixtureTaskToSummary(
+  task: EvalMemoryScenario["tasks"][number]
+): TaskSummary {
+  const createdAt = new Date(Date.UTC(2026, 0, 1)).toISOString()
+  return {
+    id: task.id,
+    title: task.subject,
+    projectIds: [EVAL_PROJECT_ID],
+    topicId: null,
+    source: "manual" satisfies MemorySource,
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
+    confidenceScore: null,
+    reviewBy: null,
+    doneAt: null,
+    decidedAt: null,
+    lastReferencedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    synopsis: "",
+    session: "",
+    taskState: "open" satisfies TaskState,
+    blockedBy: "",
+    entity: task.entity,
+    topicKey: "",
+    revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
+    createdAt,
+    updatedAt: createdAt,
+  }
+}
+
+/**
+ * Base date used for fixture `createdAt` assignment. Each fixture
+ * memory is dated `FIXTURE_BASE_DATE - index` days, so the
+ * first-listed memory is the newest and the YAML order is also the
+ * recency order. Pinned to a stable past date so the
+ * `isFreshDigest(maxAgeDays = 7)` window in `loadWakeUpData` does NOT
+ * treat fixture memories as fresh digests by accident.
+ */
+const FIXTURE_BASE_DATE = new Date(Date.UTC(2026, 2, 1, 12, 0, 0))
+const MS_PER_FIXTURE_DAY = 24 * 60 * 60 * 1000
+
 function fixtureMemoryToMemory(memory: EvalFixtureMemory, index: number): Memory {
-  const createdAt = new Date(Date.UTC(2026, 0, index + 1)).toISOString()
+  const createdAt = new Date(
+    FIXTURE_BASE_DATE.getTime() - index * MS_PER_FIXTURE_DAY
+  ).toISOString()
   return {
     id: memory.id,
     title: memory.title,

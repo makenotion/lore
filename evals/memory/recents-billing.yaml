@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Recent billing decisions for the recents surface.
+memories:
+  - id: decision/billing-monthly-cycle
+    title: Billing cycle moved to monthly anchored to signup date
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+    keywords: billing cycle monthly anchored signup date
+    synopsis: Customers are billed monthly on their signup anniversary day.
+  - id: note/dashboard-color-palette
+    title: Dashboard color palette tokens
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: palette swatch token shade
+    synopsis: Standard palette tokens for chart series.

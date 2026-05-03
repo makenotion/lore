@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A relevant incident runbook is available before the task.
+memories:
+  - id: runbook/redis-failover
+    title: Redis failover runbook for stuck primaries
+    kind: runbook
+    status: accepted
+    confidence: certain
+    tags:
+      - reliability
+      - infrastructure
+    keywords: redis failover primary stuck runbook
+    synopsis: Step-by-step recovery for a stuck Redis primary; promote replica before draining.
+    content: |
+      Operators handling Redis primary failover should follow this runbook before
+      changing replica topology.
+  - id: note/cache-warmup-quirks
+    title: Cache warmup quirks
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: warmup quirks
+    synopsis: Cache warmup can drop tail latency 40% with staggered requests.

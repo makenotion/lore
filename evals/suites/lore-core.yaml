@@ -114,3 +114,314 @@ tasks:
           - decision/error-handling-result-type
         shouldNotSurface:
           - note/structured-log-fields
+
+  - id: follows-incident-runbook
+    prompt: |
+      A Redis primary appears stuck. Recover the cluster by following the project's runbook.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/incident-runbook-helpful.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - runbook/redis-failover
+        shouldNotSurface:
+          - note/cache-warmup-quirks
+
+  - id: uses-current-deployment-pattern
+    prompt: |
+      Roll out the new orders service version using the project's current deployment pattern.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/deployment-pattern-helpful.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/canary-deployments
+        shouldNotSurface:
+          - note/tail-latency-tracking
+
+  - id: respects-data-retention-policy
+    prompt: |
+      Add a customer-data feature that complies with the project's data retention policy.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/data-retention-helpful.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - policy/data-retention-90-days
+        shouldNotSurface:
+          - note/dashboard-color-palette
+
+  # ── wake-up.memories (recents) surface ────────────────────────────────────
+
+  - id: surfaces-recent-architecture-decision
+    prompt: Catch up on recent architectural decisions.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/recents-architecture.yaml
+    retrieval:
+      # limit: 1 picks the most-recent row only — wake-up.memories
+      # uses memories.list (no token-overlap filter), so limit:5 would
+      # surface the distractor too and break shouldNotSurface. The
+      # post-FIXTURE_BASE_DATE-flip ordering puts the helpful row
+      # first by createdAt; a regression that reverses that order
+      # silently breaks this test, exposing the ranking bug.
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/event-sourcing-adopted
+        shouldNotSurface:
+          - note/recents-changelog-entry
+
+  - id: surfaces-recent-billing-decision
+    prompt: Catch up on the most recent billing decisions.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/recents-billing.yaml
+    retrieval:
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/billing-monthly-cycle
+        shouldNotSurface:
+          - note/dashboard-color-palette
+
+  - id: surfaces-recent-monitoring-decision
+    prompt: Catch up on the most recent monitoring decisions.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/recents-monitoring.yaml
+    retrieval:
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/monitoring-prometheus-default
+        shouldNotSurface:
+          - note/yaml-snapshot-hygiene
+
+  - id: surfaces-recent-incident-postmortem
+    prompt: Catch up on the most recent incident postmortems.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/recents-incident.yaml
+    retrieval:
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - postmortem/queue-backlog-2026-04-22
+        shouldNotSurface:
+          - note/structured-log-fields
+
+  - id: surfaces-recent-policy-update
+    prompt: Catch up on the most recent policy updates.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/recents-policy.yaml
+    retrieval:
+      limit: 1
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - policy/code-review-two-approvals
+        shouldNotSurface:
+          - note/coverage-checklist
+
+  # ── wake-up.relatedMemories surface ───────────────────────────────────────
+
+  - id: relates-payments-task-to-retry-decision
+    prompt: Pick up where the team left off on payments work.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/related-payments.yaml
+    retrieval:
+      # limit: 5 lets shouldNotSurface assert "the distractor must
+      # not appear at all" — wake-up.relatedMemories uses
+      # searchFixtureMemories which token-filters distractors with
+      # zero score. A future change that broadens retrieval surfaces
+      # the distractor and trips this assertion.
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payments-retry-policy
+        shouldNotSurface:
+          - note/dashboard-color-palette
+
+  - id: relates-search-tuning-task-to-rrf-decision
+    prompt: Continue the search relevance tuning thread from earlier this week.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/related-search.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/search-rrf-merge
+        shouldNotSurface:
+          - note/yaml-snapshot-hygiene
+
+  - id: relates-canary-task-to-canary-decision
+    prompt: Continue the canary deployment dial-up.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/related-deployment.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/canary-deployment-strategy
+        shouldNotSurface:
+          - note/coverage-checklist
+
+  - id: relates-alert-tuning-task-to-budget-decision
+    prompt: Continue tuning the alert burn-rate thresholds.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/related-monitoring.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/alerting-on-error-budget
+        shouldNotSurface:
+          - note/structured-log-fields
+
+  - id: relates-session-task-to-rotation-decision
+    prompt: Continue investigating session refresh edge cases.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/related-auth.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/session-cookie-rotation
+        shouldNotSurface:
+          - note/dashboard-color-palette
+
+  # ── wake-up.staleConfidence surface ───────────────────────────────────────
+  # The five staleConfidence tasks below all share the same prompt text.
+  # The wake-up.staleConfidence surface ignores `prompt` (queryStaleConfidence
+  # is parameter-driven, not query-driven), so the duplication is
+  # structurally inert. TODO(eval-fixtures-parameterize): collapse these
+  # five tasks to one task × five fixtures once the schema grows a
+  # `fixtures: [...]` field that fans out per-fixture.
+
+  - id: stale-confidence-cache-eviction
+    prompt: Show rows that need triage in the stale-confidence section.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/stale-confidence-cache.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/legacy-cache-eviction
+        shouldNotSurface:
+          - note/coexisting-fresh-row
+
+  - id: stale-confidence-pricing-policy
+    prompt: Show rows that need triage in the stale-confidence section.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/stale-confidence-pricing.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/free-tier-pricing
+        shouldNotSurface:
+          - note/coexisting-fresh-row
+
+  - id: stale-confidence-onboarding-runbook
+    prompt: Show rows that need triage in the stale-confidence section.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/stale-confidence-onboarding.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - runbook/onboarding-day-one
+        shouldNotSurface:
+          - note/coexisting-fresh-row
+
+  - id: stale-confidence-rate-limits
+    prompt: Show rows that need triage in the stale-confidence section.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/stale-confidence-rate-limits.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/api-rate-limits
+        shouldNotSurface:
+          - note/coexisting-fresh-row
+
+  - id: stale-confidence-reporting-format
+    prompt: Show rows that need triage in the stale-confidence section.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/stale-confidence-reporting.yaml
+    retrieval:
+      limit: 5
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/reporting-export-format
+        shouldNotSurface:
+          - note/coexisting-fresh-row

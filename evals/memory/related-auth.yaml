@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Related-memory surface — active auth task seeds session-cookie memory.
+memories:
+  - id: decision/session-cookie-rotation
+    title: Session cookie rotation decision
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - security
+    keywords: session cookie rotation expiry refresh
+    synopsis: Session cookies rotate on each successful refresh; old cookies expire after 5 min.
+  - id: note/dashboard-color-palette
+    title: Dashboard color palette tokens
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: palette swatch token shade
+    synopsis: Standard palette tokens for chart series.
+tasks:
+  - id: task/active-session-refresh
+    subject: Session cookie refresh edge cases
+    entity: session cookie rotation

@@ -7,9 +7,12 @@ services, runs the production `loadWakeUpData` wake-up retrieval composition,
 scores surfaced memory IDs, and writes a JSON artifact. It never reads or writes
 a live Notion vault.
 
-The retrieval runner protects the wake-up `taskMemories` surface. Its fixture
-adapter replaces Notion search, so it does not claim to benchmark Notion vector
-ranking or the wake-up debug metrics emitted by the observability path.
+The retrieval runner protects four wake-up memory-surfacing sections:
+`taskMemories` (the default), `memories` (recents), `relatedMemories`, and
+`staleConfidence`. Each task selects the surface under test via the
+`surface` field. The fixture adapter replaces Notion search, so the
+retrieval runner does not claim to benchmark Notion vector ranking or the
+wake-up debug metrics emitted by the observability path.
 
 ## Run The Starter Suite
 
@@ -42,6 +45,7 @@ runner: retrieval
 tasks:
   - id: respects-governing-auth-decision
     prompt: Add the requested feature while following the auth decision.
+    surface: wake-up.taskMemories  # default; omit for taskMemories
     memoryScenarios:
       no-lore: ../memory/no-lore.yaml
       empty-lore: ../memory/empty.yaml
@@ -52,6 +56,19 @@ tasks:
         shouldSurface:
           - decision/auth-model
 ```
+
+### Wake-up surfaces
+
+Each task targets one wake-up surface via the optional `surface` field. The
+runner zeroes out other section limits when running the task so the eval
+exercises only the surface under test.
+
+| Surface | Driver |
+| --- | --- |
+| `wake-up.taskMemories` (default) | The task's `prompt` becomes `userQuery`; relevance search ranks fixture memories. |
+| `wake-up.memories` | Recents — fixture `memories` array order is the recency order. |
+| `wake-up.relatedMemories` | Active tasks in the fixture's top-level `tasks: [...]` block seed entity-based search. The `entity` field on each task drives the seed query. |
+| `wake-up.staleConfidence` | Fixture memories with `isStaleConfidence: true` populate the surface. |
 
 Every task must include the `no-lore`, `empty-lore`, and `helpful-memory`
 ablations. Additional scenarios such as `noisy-memory` and `stale-memory` are

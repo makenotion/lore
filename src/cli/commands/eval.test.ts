@@ -82,7 +82,7 @@ function evalArtifact(input: {
     startedAt: "2026-05-03T12:00:00.000Z",
     runner: {
       mode: "retrieval",
-      surface: "wake-up.taskMemories",
+      surfaces: ["wake-up.taskMemories"],
       requestedTrials: 1,
       executedTrials: 1,
     },

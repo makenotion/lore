@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Recent architecture decisions for the recents surface.
+memories:
+  - id: decision/event-sourcing-adopted
+    title: Event sourcing adopted for the orders pipeline
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+    keywords: event sourcing orders pipeline ledger
+    synopsis: Orders pipeline now writes to an append-only event log.
+  - id: note/recents-changelog-entry
+    title: Recent changelog entry for orders pipeline
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: changelog release notes
+    synopsis: Reminder to backfill changelog entries for the new pipeline.

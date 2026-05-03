@@ -13,8 +13,16 @@ export const REQUIRED_ABLATION_SCENARIOS = [
   "helpful-memory",
 ] as const
 
+export const EVAL_SURFACES = [
+  "wake-up.taskMemories",
+  "wake-up.memories",
+  "wake-up.relatedMemories",
+  "wake-up.staleConfidence",
+] as const
+
 export type EvalRunner = (typeof EVAL_RUNNERS)[number]
 export type RequiredAblationScenario = (typeof REQUIRED_ABLATION_SCENARIOS)[number]
+export type EvalSurface = (typeof EVAL_SURFACES)[number]
 
 const scenarioIdSchema = z
   .string()
@@ -36,7 +44,17 @@ const evalTaskSchema = z
       .string()
       .min(1)
       .regex(/^[a-z0-9][a-z0-9-]*$/, "must be kebab-case"),
-    prompt: z.string().min(1),
+    prompt: z
+      .string()
+      .min(1)
+      .describe(
+        "Prompt for the task. Consumed as `userQuery` only on the " +
+          "wake-up.taskMemories surface. Decorative on memories, " +
+          "relatedMemories, and staleConfidence surfaces, which route " +
+          "through queries that ignore the prompt. See docs/evals.md " +
+          "(\"Wake-up surfaces\") for the per-surface contract."
+      ),
+    surface: z.enum(EVAL_SURFACES).default("wake-up.taskMemories"),
     memoryScenarios: z.record(scenarioIdSchema, z.string().min(1)),
     expectedRetrieval: z.record(scenarioIdSchema, retrievalExpectationSchema).default({}),
     retrieval: z
@@ -121,6 +139,27 @@ export const evalMemoryScenarioSchema = z
             keywords: z.string().default(""),
             synopsis: z.string().default(""),
             content: z.string().default(""),
+            // Surface annotations: opt-in flags that route a memory to a
+            // particular wake-up section in the fixture runner. A memory may
+            // carry multiple flags (e.g., a digest row also surfaces in
+            // recents). Defaults preserve the existing taskMemories-only
+            // suite shape.
+            isStaleConfidence: z.boolean().default(false),
+          })
+          .strict()
+      )
+      .default([]),
+    // Active task fixtures seed the relatedMemories surface — the wake-up
+    // path extracts entity strings from active tasks and runs a semantic
+    // search against them. Fixture tasks here drive that seeding without
+    // adding a new top-level YAML schema for tasks.
+    tasks: z
+      .array(
+        z
+          .object({
+            id: memoryIdSchema,
+            subject: z.string().min(1),
+            entity: z.string().default(""),
           })
           .strict()
       )
