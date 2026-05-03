@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process"
-import { once } from "node:events"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import {
@@ -59,6 +58,11 @@ function writeRaceWorker(): string {
     `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
+process.stderr.write("ready\\n")
+await new Promise<void>((resolve) => {
+  process.stdin.once("data", () => resolve())
+})
+
 const result = tryAcquireMigrationLock(scope)
 process.stdout.write(JSON.stringify({
   acquired: result.acquired,
@@ -67,9 +71,9 @@ process.stdout.write(JSON.stringify({
 }) + "\\n")
 
 if (result.acquired) {
-  await new Promise((resolve) =>
-    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "750"))
-  )
+  await new Promise<void>((resolve) => {
+    process.stdin.once("data", () => resolve())
+  })
 }
 `
   )
@@ -85,6 +89,7 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
 > {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
+  const stderrs = new Map<number, string>()
   const children = Array.from({ length: 2 }, () => {
     return spawn(process.execPath, [viteNode, workerPath], {
       cwd: process.cwd(),
@@ -92,38 +97,93 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
-        // vite-node startup can stagger the two workers enough that a
-        // short-lived winner exits before its peer reaches acquisition,
-        // making the peer's stale-PID reclaim legitimate rather than
-        // a failed exclusion check.
-        LOCK_HOLD_MS: "10000",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     })
   })
+  const exits = children.map(
+    (child, index) =>
+      new Promise<void>((resolve, reject) => {
+        child.once("exit", (code) => {
+          if (code !== 0) {
+            reject(new Error(`worker exited ${code}: ${stderrs.get(index) ?? ""}`))
+            return
+          }
+          resolve()
+        })
+        child.once("error", reject)
+      }),
+  )
 
-  return Promise.all(
+  await Promise.all(
+    children.map(async (child, index) => {
+      await new Promise<void>((resolve, reject) => {
+        let ready = false
+        child.stderr?.on("data", (chunk: Buffer) => {
+          const text = chunk.toString("utf8")
+          stderrs.set(index, `${stderrs.get(index) ?? ""}${text}`)
+          if (text.includes("ready")) {
+            ready = true
+            resolve()
+          }
+        })
+        child.once("exit", (code) => {
+          if (!ready) {
+            reject(
+              new Error(
+                `worker exited before ready (${code}): ${stderrs.get(index) ?? ""}`,
+              ),
+            )
+          }
+        })
+        child.once("error", reject)
+      })
+    })
+  )
+  for (const child of children) {
+    child.stdin?.write("go\n")
+  }
+
+  const results = await Promise.all(
     children.map(async (child) => {
       let stdout = ""
-      let stderr = ""
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8")
-      })
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8")
-      })
-
-      const [code] = (await once(child, "exit")) as [number | null]
-      if (code !== 0) {
-        throw new Error(`worker exited ${code}: ${stderr}`)
-      }
-      return JSON.parse(stdout.trim()) as {
+      return await new Promise<{
         acquired: boolean
         ownerPid: number | null
         pid: number
-      }
+      }>((resolve, reject) => {
+        let settled = false
+        child.stdout?.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8")
+          const line = stdout.split("\n")[0]?.trim()
+          if (line && !settled) {
+            settled = true
+            resolve(
+              JSON.parse(line) as {
+                acquired: boolean
+                ownerPid: number | null
+                pid: number
+              },
+            )
+          }
+        })
+        child.once("exit", (code) => {
+          if (!settled) {
+            reject(new Error(`worker exited before result (${code})`))
+          }
+        })
+        child.once("error", reject)
+      })
     })
   )
+
+  for (const child of children) {
+    child.stdin?.end("release\n")
+  }
+
+  await Promise.all(exits)
+
+  return results
 }
 
 describe("tryAcquireMigrationLock", () => {

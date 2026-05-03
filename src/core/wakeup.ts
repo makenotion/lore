@@ -452,8 +452,8 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       relatedMemories: input.relatedMemories.length,
       tasks: Math.max(0, taskSectionCount),
       knowledgeFacts: input.knowledgeFacts.length,
-      // Keep this rollup adjacent to its addends so any new decision bucket
-      // updates the aggregate and the per-bucket counters together.
+      // Intentionally redundant for log readability; keep this rollup equal
+      // to all supported decision buckets whenever that set changes.
       decisions: proposedDecisionCount + overdueDecisionCount,
       proposedDecisions: proposedDecisionCount,
       overdueDecisions: overdueDecisionCount,

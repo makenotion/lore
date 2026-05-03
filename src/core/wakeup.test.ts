@@ -366,6 +366,32 @@ describe("wake-up coverage counters", () => {
     })
   })
 
+  it("keeps the decision section rollup tied to the supported decision buckets", () => {
+    const coverage = computeWakeUpCoverage({
+      now: NOW,
+      latestDigest: null,
+      memories: [],
+      relatedMemories: [],
+      taskMemories: [],
+      tasks: [],
+      knowledgeFacts: [],
+      proposedDecisions: [
+        buildDecision({ id: "proposed-1", status: "proposed" }),
+        buildDecision({ id: "proposed-2", status: "proposed" }),
+      ],
+      overdueDecisions: [
+        buildDecision({ id: "overdue-1", status: "accepted" }),
+        buildDecision({ id: "overdue-2", status: "accepted" }),
+        buildDecision({ id: "overdue-3", status: "accepted" }),
+      ],
+      staleConfidence: [],
+    })
+
+    expect(coverage.sectionCounts.decisions).toBe(
+      coverage.sectionCounts.proposedDecisions + coverage.sectionCounts.overdueDecisions,
+    )
+  })
+
   it("reports stale digest availability without marking it fresh", () => {
     const staleDigest = buildMemory({
       id: "stale-digest",
