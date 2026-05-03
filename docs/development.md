@@ -72,7 +72,8 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 - Config lives in `.lore.yaml` with upward directory search from cwd.
 - `.lore.yaml` may be committed only with shared, non-secret values. Never
   commit `auth.token`, personal scratch vault page IDs, or maintainer-specific
-  local values.
+  local values. Bearer-shaped inline tokens (`ntn_` or `secret_`) are rejected
+  at config load.
 - Notion page IDs are locators, not bearer credentials. A deliberate team vault
   page ID in git history is not a token leak by itself; private or accidental
   maintainer-local page IDs still need owner review for page replacement or

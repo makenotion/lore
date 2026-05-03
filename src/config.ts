@@ -29,6 +29,18 @@ const namedVaultRefSchema = z.object({
   pageId: z.string().min(1),
 })
 
+const COMMITTED_BEARER_TOKEN_PATTERN = /^(ntn_|secret_)/
+
+const configAuthTokenSchema = z.string().refine(
+  (token) => !COMMITTED_BEARER_TOKEN_PATTERN.test(token.trimStart()),
+  {
+    message:
+      "auth.token in .lore.yaml must not contain a real Notion bearer token. " +
+      "Remove auth.token and use `lore auth --login`, NOTION_API_TOKEN, or " +
+      "LORE_NOTION_TOKEN instead.",
+  },
+)
+
 const configSchema = z.object({
   vault: z.object({
     pageId: z.string().min(1, "vault.pageId is required"),
@@ -50,7 +62,7 @@ const configSchema = z.object({
     .optional(),
   auth: z
     .object({
-      token: z.string().optional(),
+      token: configAuthTokenSchema.optional(),
       baseUrl: z.string().url().optional(),
       workspaceId: z.string().optional(),
     })
@@ -236,9 +248,12 @@ export interface ResolvedAuth {
  * 3. **`LORE_NOTION_TOKEN` env** — soft-deprecated. Returns
  *    `source: "env-lore-notion-token"` and emits a debounced deprecation
  *    warning on first call per session.
- * 4. **`config.auth.token` in `.lore.yaml`** — soft-deprecated. Emits
- *    a warning as soon as the field is present, even when a higher-priority
- *    source masks it, because `.lore.yaml` is a committable repo config.
+ * 4. **`config.auth.token` in `.lore.yaml`** — soft-deprecated for
+ *    non-bearer legacy values. Zod validation rejects values that look like
+ *    real Notion bearer tokens (`ntn_` or `secret_`) before auth resolution.
+ *    Remaining values emit a warning as soon as the field is present, even
+ *    when a higher-priority source masks it, because `.lore.yaml` is a
+ *    committable repo config.
  *
  * Throws when no source produces a token. The error message recommends
  * `lore auth --login` (the canonical wrapper that auto-installs ntn,
@@ -330,7 +345,7 @@ export async function resolveAuth(
     }
   }
 
-  // 4. auth.token in .lore.yaml (soft-deprecated).
+  // 4. auth.token in .lore.yaml (soft-deprecated, non-bearer legacy values only).
   const fromConfigToken = config?.auth?.token
   if (fromConfigToken) {
     return {

@@ -122,11 +122,14 @@ Auth resolves in this priority order:
 1. `NOTION_API_TOKEN`
 2. ntn-resolved token from `~/.config/notion/auth.json`
 3. `LORE_NOTION_TOKEN` soft-deprecated fallback
-4. `auth.token` in `.lore.yaml` soft-deprecated fallback
+4. `auth.token` in `.lore.yaml` soft-deprecated fallback for non-bearer
+   legacy values only
 
 Committed `.lore.yaml` files must contain only shared, non-secret config. Do
 not commit `auth.token`, personal scratch vault IDs, or maintainer-specific
-local values; Lore warns whenever `auth.token` is present in `.lore.yaml`,
+local values; Lore rejects `auth.token` values that look like real Notion
+bearer tokens (`ntn_` or `secret_`) at config load. Non-bearer legacy
+`auth.token` values still emit the soft-deprecation warning whenever present,
 even if a higher-priority auth source wins.
 
 Notion page IDs are access locators, not bearer secrets. A deliberately shared

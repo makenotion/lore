@@ -19,7 +19,12 @@ import {
   vi,
 } from "vitest"
 import { parse as parseYaml } from "yaml"
-import { parseConfigAllowingInvalidHooks, resolveAuth, resolveToken } from "./config.js"
+import {
+  loadConfig,
+  parseConfigAllowingInvalidHooks,
+  resolveAuth,
+  resolveToken,
+} from "./config.js"
 import { configKey } from "./hooks/marker-key.js"
 import type { LoreConfig } from "./types.js"
 
@@ -139,6 +144,48 @@ promotionTargets:
     expect(config.promotionTargets).toEqual([
       { name: "Team", pageId: "team-vault", requireReview: true },
     ])
+  })
+
+  it("rejects bearer-shaped auth.token values before config can load", () => {
+    expect(() =>
+      parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+auth:
+  token: secret_realtoken
+`),
+    ).toThrow(/auth\.token.*real Notion bearer token/)
+
+    expect(() =>
+      parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+auth:
+  token: " ntn_realtoken"
+`),
+    ).toThrow(/auth\.token.*real Notion bearer token/)
+  })
+
+  it("rejects bearer-shaped auth.token values from disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lore-config-load-"))
+    const path = join(dir, ".lore.yaml")
+    writeFileSync(
+      path,
+      `
+vault:
+  pageId: abc123
+auth:
+  token: ntn_realtoken
+`,
+    )
+
+    try {
+      await expect(loadConfig(path)).rejects.toThrow(
+        /auth\.token.*real Notion bearer token/,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

@@ -9,7 +9,7 @@ resolution point for the MCP server, CLI, and hooks.
 1. `NOTION_API_TOKEN` environment variable
 2. ntn-resolved token from `~/.config/notion/auth.json`
 3. `LORE_NOTION_TOKEN` environment variable, soft-deprecated in 0.10.0
-4. `auth.token` in `.lore.yaml`, soft-deprecated in 0.10.0
+4. Non-bearer `auth.token` in `.lore.yaml`, soft-deprecated in 0.10.0
 
 ## `NOTION_API_TOKEN`
 
@@ -71,9 +71,9 @@ Lore tests against `MIN_NTN_VERSION` in `src/auth/ntn.ts`, currently `0.12.0`.
 
 ## Legacy Sources
 
-`LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` still work in 0.10.x, but
-both are soft-deprecated and emit a debounced warning. `LORE_NOTION_TOKEN`
-warns when it is the selected source. `auth.token` warns whenever the field is
+`LORE_NOTION_TOKEN` and non-bearer `auth.token` values in `.lore.yaml` still
+work in 0.10.x, but both are soft-deprecated. `LORE_NOTION_TOKEN` warns when
+it is the selected source. Non-bearer `auth.token` warns whenever the field is
 present in `.lore.yaml`, including migration-window setups where
 `NOTION_API_TOKEN`, ntn auth, or `LORE_NOTION_TOKEN` supplies the token.
 `lore auth --migrate` walks operators through moving to ntn-issued auth.
@@ -84,9 +84,11 @@ telemetry showing the internal team no longer relies on the legacy paths.
 `.lore.yaml` is committable only when it contains shared, non-secret config:
 team-owned `vault.pageId` values, project mappings, detection rules, and hook
 preferences. Do not commit `auth.token`, personal scratch vault IDs, or
-personally identifying local values. Lore warns whenever `auth.token` is
-present in `.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or
-`LORE_NOTION_TOKEN` wins the priority chain.
+personally identifying local values. Lore rejects inline tokens that look like
+real Notion bearer credentials (`ntn_` or `secret_`) at config load. Remaining
+non-bearer `auth.token` values still warn whenever present in `.lore.yaml`,
+even if `NOTION_API_TOKEN`, ntn auth, or `LORE_NOTION_TOKEN` wins the priority
+chain.
 
 `vault.pageId` values are not bearer secrets. They identify a Notion page, but
 Notion still enforces access through the resolved token's permissions. A

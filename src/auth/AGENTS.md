@@ -8,8 +8,10 @@ This directory implements Lore's authentication resolution. Under
 0.10.0 the auth model is **ntn-first**: every internal Notion engineer
 authenticates via the `ntn` CLI (`ntn login`), and Lore reads the
 resulting bearer token. Legacy paths (`LORE_NOTION_TOKEN`,
-`auth.token` in `.lore.yaml`) remain as soft-deprecated fallbacks per
-the priority chain in the root **Authentication** section.
+non-bearer `auth.token` values in `.lore.yaml`) remain as
+soft-deprecated fallbacks per the priority chain in the root
+**Authentication** section; bearer-shaped inline tokens (`ntn_` or
+`secret_`) are rejected by config validation before auth resolution.
 
 `resolveAuth` itself lives in `src/config.ts` — it is the single
 resolution point for every interface. This directory carries the
