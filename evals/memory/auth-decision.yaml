@@ -1,0 +1,28 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: A relevant architecture decision is available before the task.
+memories:
+  - id: decision/auth-model
+    title: Auth decision requires signed session cookies
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+      - security
+    keywords: auth session cookie jwt bearer token
+    synopsis: Use signed session cookies for browser auth; do not add bearer JWT auth paths for web requests.
+    content: |
+      The project has an accepted auth decision: browser requests must use signed session cookies.
+      New web features should extend the cookie-backed session flow and avoid adding bearer JWT auth.
+  - id: note/general-ui-polish
+    title: General UI polish checklist
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - ui
+    keywords: spacing typography empty states
+    synopsis: Use consistent spacing, readable text, and clear empty states.
+    content: |
+      This note is intentionally about visual quality only.

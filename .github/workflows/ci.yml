@@ -35,3 +35,16 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Eval starter suite
+        run: node dist/cli.js eval run evals/suites/lore-core.yaml --out evals/results/lore-core-ci.json --min-lift 0.5 --max-harm 0.0
+
+      - name: Upload eval artifact
+        if: ${{ always() && hashFiles('evals/results/lore-core-ci.json') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lore-core-eval-result
+          path: evals/results/lore-core-ci.json

@@ -30,3 +30,7 @@ Thumbs.db
 # Ad-hoc / empirical verification scripts — intentionally not part of the
 # build or test surface. Use for one-off Notion API experiments.
 scripts/
+
+# Local eval run artifacts. Commit suite and memory fixtures, not generated
+# run output.
+evals/results/

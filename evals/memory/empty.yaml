@@ -1,0 +1,4 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: empty-lore
+description: Lore is available, but the scenario contains no useful memories.
+memories: []

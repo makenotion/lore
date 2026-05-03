@@ -1,0 +1,28 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: noisy-memory
+description: Lore contains plausible but irrelevant memories for the task.
+memories:
+  - id: note/api-token-storage
+    title: API tokens stay in developer keychains
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - security
+      - tooling
+    keywords: token storage keychain local development
+    synopsis: Developer API tokens should stay in the local keychain and out of repo files.
+    content: |
+      This memory is intentionally security-adjacent but unrelated to browser session auth.
+  - id: runbook/ui-regression-check
+    title: UI regression check runbook
+    kind: runbook
+    status: informational
+    confidence: likely
+    tags:
+      - testing
+      - ui
+    keywords: screenshots visual regression spacing
+    synopsis: Run screenshot checks when changing layout-sensitive surfaces.
+    content: |
+      This runbook is intentionally about visual regression testing, not authentication.

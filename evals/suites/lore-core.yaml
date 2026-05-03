@@ -1,0 +1,36 @@
+version: 1
+name: lore-core
+description: Small synthetic suite that checks whether useful Lore memory surfaces for a task.
+trials: 1
+runner: retrieval
+
+tasks:
+  - id: respects-governing-auth-decision
+    prompt: |
+      Add the requested browser feature while following the project's established auth decision.
+      Avoid introducing the deprecated auth path.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      noisy-memory: ../memory/noisy.yaml
+      helpful-memory: ../memory/auth-decision.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      no-lore:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/auth-model
+      empty-lore:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/auth-model
+      noisy-memory:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/auth-model
+      helpful-memory:
+        shouldSurface:
+          - decision/auth-model
+        shouldNotSurface:
+          - note/general-ui-polish
