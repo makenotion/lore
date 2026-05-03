@@ -2248,7 +2248,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "(action='save') Engineer display name. Defaults to LORE_USER_NAME env or `users.me` on the active token.",
+            "(action='save') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`.",
           ),
         agent: z
           .string()
