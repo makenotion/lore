@@ -11,7 +11,17 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-05-03
+
 ### Changed
+
+- **MCP server version now marks the unscoped memory-update warning
+  extension.** `lore-memory action='update'` can now keep non-topic patches
+  flowing when an unscoped `topicName` would be ambiguous, and reports the
+  dropped topic patch through the existing `Warnings:` footer shape. The four
+  public version literals move to `0.12.1` together so MCP clients, CLI output,
+  package metadata, and Notion API analytics all observe the same patch
+  version. (#340)
 
 - **Wake-up debug logging now uses coverage-counter vocabulary.** The
   `LORE_DEBUG=1` hook wake-up line reports `mode=ranked|default` and
@@ -580,7 +590,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/makenotion/lore/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/makenotion/lore/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0

@@ -88,8 +88,12 @@ export async function startServer(): Promise<void> {
   // entry points. Agents now get deterministic errors for typo'd,
   // archived, inaccessible, or ambiguous project names instead of
   // silently falling back to auto-detected or vault-wide scope.
+  //
+  // 0.12.1 marks the `lore-memory action='update'` unscoped-topic warning
+  // extension: the update now keeps safe patches flowing and reports the
+  // dropped topic patch through the existing `Warnings:` footer shape.
   const server = new McpServer(
-    { name: "lore", version: "0.12.0" },
+    { name: "lore", version: "0.12.1" },
     {
       capabilities: {
         tools: {},

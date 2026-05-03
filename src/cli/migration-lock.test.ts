@@ -56,9 +56,19 @@ function writeRaceWorker(): string {
   const moduleUrl = pathToFileURL(join(process.cwd(), "src/cli/migration-lock.ts")).href
   writeFileSync(
     workerPath,
-    `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
+    `import { existsSync } from "node:fs"
+import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
+const startFile = process.env["LOCK_START_FILE"]
+
+if (startFile !== undefined) {
+  process.stderr.write("ready\\n")
+  while (!existsSync(startFile)) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
+
 const result = tryAcquireMigrationLock(scope)
 process.stdout.write(JSON.stringify({
   acquired: result.acquired,
@@ -85,6 +95,7 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
 > {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
+  const startFile = join(TEST_STATE_DIR, `migration-lock-start-${Date.now()}`)
   const children = Array.from({ length: 2 }, () => {
     return spawn(process.execPath, [viteNode, workerPath], {
       cwd: process.cwd(),
@@ -92,28 +103,64 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
+        LOCK_START_FILE: startFile,
         LOCK_HOLD_MS: "750",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
   })
 
-  return Promise.all(
-    children.map(async (child) => {
-      let stdout = ""
-      let stderr = ""
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8")
-      })
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8")
-      })
+  const outputs = children.map((child) => {
+    let stdout = ""
+    let stderr = ""
+    let ready = false
+    let resolveReady = (): void => undefined
+    let rejectReady = (_err: Error): void => undefined
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      resolveReady = resolve
+      rejectReady = reject
+    })
+    const exitPromise = once(child, "exit") as Promise<[number | null]>
 
-      const [code] = (await once(child, "exit")) as [number | null]
-      if (code !== 0) {
-        throw new Error(`worker exited ${code}: ${stderr}`)
+    void exitPromise.then(([code]) => {
+      if (!ready) {
+        rejectReady(new Error(`worker exited before ready (${code}): ${stderr}`))
       }
-      return JSON.parse(stdout.trim()) as {
+    })
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8")
+    })
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8")
+      if (!ready && stderr.includes("ready\n")) {
+        ready = true
+        resolveReady()
+      }
+    })
+
+    return {
+      get stdout() {
+        return stdout
+      },
+      get stderr() {
+        return stderr
+      },
+      ready: readyPromise,
+      exit: exitPromise,
+    }
+  })
+
+  await Promise.all(outputs.map((output) => output.ready))
+  writeFileSync(startFile, "go")
+
+  return Promise.all(
+    outputs.map(async (output) => {
+      const [code] = await output.exit
+      if (code !== 0) {
+        throw new Error(`worker exited ${code}: ${output.stderr}`)
+      }
+      return JSON.parse(output.stdout.trim()) as {
         acquired: boolean
         ownerPid: number | null
         pid: number
@@ -222,7 +269,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("allows exactly one racing process to reclaim a stale lock", async () => {
     const lockScope = scope()
@@ -234,7 +281,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("keeps independent scopes from blocking each other", () => {
     const first = tryAcquireMigrationLock(scope({ vaultPageId: "vault-a" }))
