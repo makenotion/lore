@@ -780,17 +780,16 @@ async function handleUpdate(
           }
         }
         if (!topicScope || topicScope.length === 0) {
-          throw new Error(
-            `Cannot set topicName="${args.topicName}": no project scope available. ` +
-              `The memory has no Project relation and no project was passed or auto-detected. ` +
-              `Pass projectName or projectNames.`
+          warnings.push(
+            `Topic "${args.topicName}" skipped (requires at least one project)`
           )
+        } else {
+          const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
+            forceNew: args.forceNewTopic,
+          })
+          topicId = topic.id
+          topicLabel = topic.name
         }
-        const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
-          forceNew: args.forceNewTopic,
-        })
-        topicId = topic.id
-        topicLabel = topic.name
       }
 
       try {

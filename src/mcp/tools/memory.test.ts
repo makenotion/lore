@@ -370,6 +370,54 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     )
   })
 
+  it("warns and updates other fields when update topicName has no project scope", async () => {
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-unscoped-update", {
+      title: "unscoped topic update",
+      projectIds: [],
+    })
+    const current = makeMemory("mem-unscoped-update", {
+      title: "before",
+      projectIds: [],
+    })
+    const getOrCreate = vi.fn()
+    const update = vi.fn().mockResolvedValue(updated)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate },
+      memories: { update, getById: vi.fn().mockResolvedValue(current) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const updateMemory = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await updateMemory({
+      memoryId: "mem-unscoped-update",
+      content: "body changed",
+      topicName: "Eval & Testing",
+    } as never)
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(update).toHaveBeenCalledWith(
+      "mem-unscoped-update",
+      expect.objectContaining({
+        content: "body changed",
+        projectIds: undefined,
+        topicId: undefined,
+      })
+    )
+    expect(getOrCreate).not.toHaveBeenCalled()
+    expect(text).toContain('Updated memory: "unscoped topic update"')
+    expect(text).toContain(
+      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
+    )
+  })
+
   it("surfaces the SimilarTopicError message back through toolError", async () => {
     // When the probe rejects, getOrCreate throws; the tool layer's
     // try/catch routes the message into the `Error: ...` content.
