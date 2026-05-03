@@ -363,6 +363,34 @@ describe("MemoryService.create — rich_text metadata cap", () => {
     )
     expect(createSpy).not.toHaveBeenCalled()
   })
+
+  it.each(["alternatives", "consequences"] as const)(
+    "rejects raw over-cap %s even when HTML decoding would shrink it",
+    async (field) => {
+      const { client, createSpy } = makeCreateClient()
+      const service = new MemoryService(client, db)
+      const rawOverCapDecodedUnderCap = "&amp;".repeat(
+        Math.floor(RICH_TEXT_PROPERTY_MAX_LEN / "&amp;".length) + 1
+      )
+      expect(rawOverCapDecodedUnderCap.length).toBeGreaterThan(
+        RICH_TEXT_PROPERTY_MAX_LEN
+      )
+      expect(rawOverCapDecodedUnderCap.replaceAll("&amp;", "&").length).toBeLessThan(
+        RICH_TEXT_PROPERTY_MAX_LEN
+      )
+
+      await expect(
+        service.create({
+          title: "Keep raw metadata capped",
+          content: "",
+          [field]: rawOverCapDecodedUnderCap,
+        })
+      ).rejects.toThrow(
+        new RegExp(`MemoryService\\.create.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
+      )
+      expect(createSpy).not.toHaveBeenCalled()
+    }
+  )
 })
 
 describe("MemoryService.create — partial-failure on body write (issue #190)", () => {
@@ -760,6 +788,35 @@ describe("MemoryService.update — rich_text metadata cap", () => {
     expect(retrieveSpy).not.toHaveBeenCalled()
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
   })
+
+  it.each(["alternatives", "consequences"] as const)(
+    "rejects raw over-cap %s even when HTML decoding would shrink it",
+    async (field) => {
+      const { client, updateSpy, retrieveSpy, retrieveMarkdownSpy } =
+        makeUpdateClient()
+      const service = new MemoryService(client, db)
+      const rawOverCapDecodedUnderCap = "&amp;".repeat(
+        Math.floor(RICH_TEXT_PROPERTY_MAX_LEN / "&amp;".length) + 1
+      )
+      expect(rawOverCapDecodedUnderCap.length).toBeGreaterThan(
+        RICH_TEXT_PROPERTY_MAX_LEN
+      )
+      expect(rawOverCapDecodedUnderCap.replaceAll("&amp;", "&").length).toBeLessThan(
+        RICH_TEXT_PROPERTY_MAX_LEN
+      )
+
+      await expect(
+        service.update("mem-1", {
+          [field]: rawOverCapDecodedUnderCap,
+        })
+      ).rejects.toThrow(
+        new RegExp(`MemoryService\\.update.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
+      )
+      expect(updateSpy).not.toHaveBeenCalled()
+      expect(retrieveSpy).not.toHaveBeenCalled()
+      expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+    }
+  )
 })
 
 describe("MemoryService.update — partial-failure on body write", () => {

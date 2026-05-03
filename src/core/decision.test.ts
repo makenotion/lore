@@ -196,6 +196,36 @@ describe("DecisionService.create", () => {
     expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
   })
 
+  it.each(["alternatives", "consequences"] as const)(
+    "rejects raw over-cap %s even when HTML decoding would shrink it",
+    async (field) => {
+      const client = createMockClient()
+      const service = new DecisionService(client, DB)
+      const rawOverCapDecodedUnderCap = "&amp;".repeat(
+        Math.floor(RICH_TEXT_PROPERTY_MAX_LEN / "&amp;".length) + 1
+      )
+      expect(rawOverCapDecodedUnderCap.length).toBeGreaterThan(
+        RICH_TEXT_PROPERTY_MAX_LEN
+      )
+      expect(rawOverCapDecodedUnderCap.replaceAll("&amp;", "&").length).toBeLessThan(
+        RICH_TEXT_PROPERTY_MAX_LEN
+      )
+
+      await expect(
+        service.create({
+          decision: "Keep raw metadata capped",
+          rationale: "Long rationale still belongs in the body.",
+          [field]: rawOverCapDecodedUnderCap,
+        })
+      ).rejects.toThrow(
+        new RegExp(`DecisionService\\.create.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
+      )
+
+      expect(client.pages.create).not.toHaveBeenCalled()
+      expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    }
+  )
+
   it("archives orphan and throws structured error when rationale write fails", async () => {
     const bodyWriteError = new Error("Notion rationale update failed (502)")
     const client = createMockClient({ createReturn: decisionPage("dec-orphan") })
