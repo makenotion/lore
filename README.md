@@ -139,12 +139,14 @@ refresh ntn auth and preflight access to that configured vault:
 lore auth --login
 ```
 
-`LORE_NOTION_TOKEN` and inline `auth.token` still resolve as soft-deprecated
-migration fallbacks. Removal is plausibly 0.11.0 or 1.0.0, contingent on
-telemetry showing no internal team still relies on them; see
-[`src/auth/AGENTS.md`](src/auth/AGENTS.md) for migration timing.
-Because `.lore.yaml` can be checked into a repo, Lore warns whenever it sees
-`auth.token` in that file, even when a higher-priority auth source wins.
+`LORE_NOTION_TOKEN` and inline `auth.token` remain soft-deprecated migration
+fallbacks. Removal is plausibly 0.11.0 or 1.0.0, contingent on telemetry
+showing no internal team still relies on them; see
+[`src/auth/AGENTS.md`](src/auth/AGENTS.md) for migration timing. Because
+`.lore.yaml` can be checked into a repo, Lore warns whenever it sees
+`auth.token` in that file, even when a higher-priority auth source wins, and
+rejects Notion bearer-shaped values such as `ntn_...` or `secret_...` at config
+load time.
 
 Existing vaults from before PF3-01 need one bootstrap step before the
 entity backfill: run `lore vault ensure-entities`, then run
@@ -405,8 +407,10 @@ hooks:
 Token resolution order: `NOTION_API_TOKEN` environment variable, then
 ntn-resolved `~/.config/notion/auth.json`, then soft-deprecated
 `LORE_NOTION_TOKEN`, then soft-deprecated `auth.token` in `.lore.yaml`. The
-first available source wins. Multi-workspace ntn setups select a workspace with
-`NOTION_WORKSPACE_ID` or `auth.workspaceId`.
+first available source wins. `.lore.yaml` rejects bearer-shaped `auth.token`
+values at config load time; move those tokens to `NOTION_API_TOKEN` or ntn auth.
+Multi-workspace ntn setups select a workspace with `NOTION_WORKSPACE_ID` or
+`auth.workspaceId`.
 
 Notion rate limits are per token, so ntn-issued per-user tokens give each
 engineer an independent bucket; a shared `NOTION_API_TOKEN` collapses everyone

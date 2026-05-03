@@ -19,7 +19,12 @@ import {
   vi,
 } from "vitest"
 import { parse as parseYaml } from "yaml"
-import { parseConfigAllowingInvalidHooks, resolveAuth, resolveToken } from "./config.js"
+import {
+  loadConfig,
+  parseConfigAllowingInvalidHooks,
+  resolveAuth,
+  resolveToken,
+} from "./config.js"
 import { configKey } from "./hooks/marker-key.js"
 import type { LoreConfig } from "./types.js"
 
@@ -139,6 +144,57 @@ promotionTargets:
     expect(config.promotionTargets).toEqual([
       { name: "Team", pageId: "team-vault", requireReview: true },
     ])
+  })
+
+  it("rejects bearer-shaped auth.token values at parse time", () => {
+    for (const token of [
+      "secret_real_notion_integration_token",
+      "ntn_real_notion_user_token",
+      "Bearer secret_real_notion_integration_token",
+    ]) {
+      expect(() =>
+        parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+auth:
+  token: ${token}
+`),
+      ).toThrow(/auth\.token in \.lore\.yaml cannot contain a Notion bearer token/)
+    }
+  })
+
+  it("allows non-bearer legacy auth.token placeholders", () => {
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+auth:
+  token: tok-from-config
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.auth?.token).toBe("tok-from-config")
+  })
+
+  it("rejects bearer-shaped auth.token values loaded from disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lore-config-load-"))
+    const path = join(dir, ".lore.yaml")
+    writeFileSync(
+      path,
+      `
+vault:
+  pageId: abc123
+auth:
+  token: ntn_real_notion_user_token
+`,
+    )
+
+    try {
+      await expect(loadConfig(path)).rejects.toThrow(
+        /auth\.token in \.lore\.yaml cannot contain a Notion bearer token/,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

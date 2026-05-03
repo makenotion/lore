@@ -79,7 +79,8 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
   history rewrite.
 - Token resolution is handled by `resolveAuth` in `src/config.ts`; see
   [`docs/authentication.md`](authentication.md).
-- Config is validated with Zod at load time.
+- Config is validated with Zod at load time, including refusal of
+  bearer-shaped `auth.token` values in `.lore.yaml`.
 - `configRoot`, the directory containing `.lore.yaml`, is the base for relative
   project paths.
 

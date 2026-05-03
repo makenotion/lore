@@ -71,12 +71,15 @@ Lore tests against `MIN_NTN_VERSION` in `src/auth/ntn.ts`, currently `0.12.0`.
 
 ## Legacy Sources
 
-`LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` still work in 0.10.x, but
-both are soft-deprecated and emit a debounced warning. `LORE_NOTION_TOKEN`
+`LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` remain soft-deprecated
+migration fallbacks in 0.10.x and emit a debounced warning. `LORE_NOTION_TOKEN`
 warns when it is the selected source. `auth.token` warns whenever the field is
 present in `.lore.yaml`, including migration-window setups where
 `NOTION_API_TOKEN`, ntn auth, or `LORE_NOTION_TOKEN` supplies the token.
-`lore auth --migrate` walks operators through moving to ntn-issued auth.
+Because `.lore.yaml` is committable, config load also rejects `auth.token`
+values that look like Notion bearer tokens (`ntn_...` or `secret_...`); move
+those tokens to `NOTION_API_TOKEN` or ntn auth. `lore auth --migrate` walks
+operators through moving to ntn-issued auth.
 
 Hard removal is expected no earlier than 0.11.0 or 1.0.0, contingent on
 telemetry showing the internal team no longer relies on the legacy paths.
@@ -86,7 +89,8 @@ team-owned `vault.pageId` values, project mappings, detection rules, and hook
 preferences. Do not commit `auth.token`, personal scratch vault IDs, or
 personally identifying local values. Lore warns whenever `auth.token` is
 present in `.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or
-`LORE_NOTION_TOKEN` wins the priority chain.
+`LORE_NOTION_TOKEN` wins the priority chain, and refuses bearer-shaped
+`auth.token` values before any Notion call is made.
 
 `vault.pageId` values are not bearer secrets. They identify a Notion page, but
 Notion still enforces access through the resolved token's permissions. A

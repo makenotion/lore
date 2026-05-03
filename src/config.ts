@@ -29,6 +29,16 @@ const namedVaultRefSchema = z.object({
   pageId: z.string().min(1),
 })
 
+const bearerShapedAuthTokenPattern = /^(?:Bearer\s+)?(?:ntn_|secret_)/
+
+const configAuthTokenSchema = z.string().refine(
+  (token) => !bearerShapedAuthTokenPattern.test(token.trim()),
+  {
+    message:
+      "auth.token in .lore.yaml cannot contain a Notion bearer token; run `lore auth --login` or set NOTION_API_TOKEN, then remove auth.token.",
+  },
+)
+
 const configSchema = z.object({
   vault: z.object({
     pageId: z.string().min(1, "vault.pageId is required"),
@@ -50,7 +60,7 @@ const configSchema = z.object({
     .optional(),
   auth: z
     .object({
-      token: z.string().optional(),
+      token: configAuthTokenSchema.optional(),
       baseUrl: z.string().url().optional(),
       workspaceId: z.string().optional(),
     })
