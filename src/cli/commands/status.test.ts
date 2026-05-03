@@ -4,19 +4,15 @@ import {
   formatDigestStatus,
   formatDriftStatus,
   formatTrackingPreflight,
-  formatVaultTopologyStatus,
   groupLatestDigestByProject,
   loadDigestStatus,
   loadDriftStatus,
   loadTrackingPreflight,
-  loadVaultTopologyStatus,
   type ConfidenceStatsReport,
   type DigestStatusReport,
   type DriftStatusReport,
   type TrackingPreflightReport,
   type TrackingPreflightServices,
-  type VaultHealthStatus,
-  type VaultTopologyStatusReport,
 } from "./status.js"
 import {
   formatBackgroundFailureStatus,
@@ -256,161 +252,6 @@ describe("loadBackgroundFailureStatus", () => {
 
     expect(collectFailures).toHaveBeenCalledWith("/repo")
     expect(report).toEqual({ failures: [marker], totalRecent: 3 })
-  })
-})
-
-describe("formatVaultTopologyStatus", () => {
-  it("returns no lines for single-vault configs so status stays byte-identical", () => {
-    const report: VaultTopologyStatusReport = {
-      configured: false,
-      primary: {
-        role: "primary",
-        label: "Primary",
-        pageId: "primary-page",
-        mode: "read-write",
-        originKey: "primary:primary-page",
-        health: { kind: "ok" },
-      },
-      upstreams: [],
-      promotionTargets: [],
-    }
-
-    expect(formatVaultTopologyStatus(report)).toEqual([])
-  })
-
-  it("renders primary, upstream, promotion target, mode, page id, and health", () => {
-    const report: VaultTopologyStatusReport = {
-      configured: true,
-      primary: {
-        role: "primary",
-        label: "Primary",
-        pageId: "primary-page",
-        mode: "read-write",
-        originKey: "primary:primary-page",
-        health: { kind: "ok" },
-      },
-      upstreams: [
-        {
-          role: "upstream",
-          label: "Engineering",
-          pageId: "engineering-page",
-          mode: "read-only",
-          priority: 10,
-          originKey: "upstream:engineering-page",
-          health: { kind: "ok" },
-        },
-      ],
-      promotionTargets: [
-        {
-          role: "promotion-target",
-          label: "Team",
-          pageId: "team-page",
-          mode: "promotion (review required)",
-          requireReview: true,
-          originKey: "promotion-target:team-page",
-          health: {
-            kind: "missing-databases",
-            missing: ["Entities"],
-          },
-        },
-      ],
-    }
-
-    const text = formatVaultTopologyStatus(report).join("\n")
-    expect(text).toContain("Vault topology:")
-    expect(text).toContain("primary: Primary")
-    expect(text).toContain("mode read-write")
-    expect(text).toContain("Engineering")
-    expect(text).toContain("mode read-only")
-    expect(text).toContain("priority 10")
-    expect(text).toContain("page engineering-page")
-    expect(text).toContain("health ok")
-    expect(text).toContain("Team")
-    expect(text).toContain("promotion (review required)")
-    expect(text).toContain("missing databases (Entities)")
-  })
-
-  it("surfaces upstream access failures without dropping other topology rows", () => {
-    const report: VaultTopologyStatusReport = {
-      configured: true,
-      primary: {
-        role: "primary",
-        label: "Primary",
-        pageId: "primary-page",
-        mode: "read-write",
-        originKey: "primary:primary-page",
-        health: { kind: "ok" },
-      },
-      upstreams: [
-        {
-          role: "upstream",
-          label: "Policy",
-          pageId: "policy-page",
-          mode: "read-only",
-          priority: 100,
-          originKey: "upstream:policy-page",
-          health: { kind: "unavailable", message: "404 not found" },
-        },
-      ],
-      promotionTargets: [],
-    }
-
-    const text = formatVaultTopologyStatus(report).join("\n")
-    expect(text).toContain("Policy")
-    expect(text).toContain("unavailable (404 not found)")
-    expect(text).toContain("primary: Primary")
-  })
-})
-
-describe("loadVaultTopologyStatus", () => {
-  it("does not probe anything for single-vault configs", async () => {
-    const probeVault = vi.fn(async (): Promise<VaultHealthStatus> => ({ kind: "ok" }))
-    const report = await loadVaultTopologyStatus(
-      {
-        config: { vault: { pageId: "primary-page" } },
-        configRoot: "/repo",
-      } as unknown as LoreServices,
-      { probeVault }
-    )
-
-    expect(report.configured).toBe(false)
-    expect(report.primary.health).toEqual({ kind: "ok" })
-    expect(probeVault).not.toHaveBeenCalled()
-  })
-
-  it("probes upstreams and promotion targets while preserving configured order", async () => {
-    const probeVault = vi.fn(async (pageId: string): Promise<VaultHealthStatus> => {
-      if (pageId === "broken-page") throw new Error("not shared")
-      return { kind: "ok" }
-    })
-
-    const report = await loadVaultTopologyStatus(
-      {
-        config: {
-          vault: { pageId: "primary-page" },
-          upstreamVaults: [
-            { name: "Later", pageId: "later-page", priority: 50 },
-            { name: "First", pageId: "first-page", priority: 10 },
-          ],
-          promotionTargets: [
-            { name: "Team", pageId: "team-page", requireReview: true },
-            { name: "Broken", pageId: "broken-page" },
-          ],
-        },
-        configRoot: "/repo",
-      } as unknown as LoreServices,
-      { probeVault }
-    )
-
-    expect(report.configured).toBe(true)
-    expect(report.upstreams.map((row) => row.label)).toEqual(["First", "Later"])
-    expect(report.upstreams.every((row) => row.health.kind === "ok")).toBe(true)
-    expect(report.promotionTargets[0]?.mode).toBe("promotion (review required)")
-    expect(report.promotionTargets[1]?.health).toEqual({
-      kind: "unavailable",
-      message: "not shared",
-    })
-    expect(probeVault).toHaveBeenCalledTimes(4)
   })
 })
 

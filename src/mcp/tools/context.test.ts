@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { registerContextTools } from "./context.js"
 import { RANKED_WAKEUP_LIMITS, loadWakeUpData } from "../../core/wakeup.js"
@@ -12,6 +14,7 @@ import type {
   DecisionSummary,
   Fact,
   ListTasksOpts,
+  LoreConfig,
   Memory,
   Project,
   TaskSummary,
@@ -255,6 +258,10 @@ interface WakeServicesOverrides {
   configProjects?: Array<{ name: string; path: string }>
   /** Override `services.configRoot`; omitted by default to avoid filesystem reads. */
   configRoot?: string
+  /** Additional top-level config fields for status/topology tests. */
+  configOverrides?: Partial<LoreConfig>
+  /** Shared client stub for status paths that verify configured vault topology. */
+  client?: unknown
   /** Override `services.projects.findByName`. Used by explicit-projectName tests. */
   findByName?: (name: string) => Promise<unknown>
   /**
@@ -375,7 +382,12 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       vault: { pageId: "vault-1" },
     },
     configRoot: overrides.configRoot,
-    config: { vault: { pageId: "vault-1" }, projects: overrides.configProjects ?? [] },
+    config: {
+      vault: { pageId: "vault-1" },
+      projects: overrides.configProjects ?? [],
+      ...overrides.configOverrides,
+    },
+    client: overrides.client ?? {},
     vault: {
       pageId: "vault-1",
       stats: vi.fn(async () => ({
@@ -1494,6 +1506,95 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(services._calls.memoriesList).toHaveBeenCalledWith(
       expect.objectContaining({ includeContent: false }),
     )
+  })
+
+  it("renders configured vault topology on action='status'", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      configOverrides: {
+        upstreamVaults: [
+          { name: "Engineering", pageId: "upstream-page", priority: 10 },
+        ],
+        promotionTargets: [
+          { name: "Team", pageId: "team-page", requireReview: true },
+        ],
+      },
+      client: {
+        blocks: {
+          children: {
+            list: vi.fn(async ({ block_id }: { block_id: string }) => {
+              throw new Error(`not shared: ${block_id}`)
+            }),
+          },
+        },
+        databases: {
+          retrieve: vi.fn(),
+        },
+      },
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Vault topology:")
+    expect(text).toContain("Engineering · mode read-only · priority 10")
+    expect(text).toContain("health unavailable (not shared: upstream-page)")
+    expect(text).toContain("Team · mode promotion (review required)")
+    expect(text).toContain("health unavailable (not shared: team-page)")
+  })
+
+  it("reuses cached topology health on repeated action='status'", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "lore-mcp-topology-status-"))
+    const previousStateDir = process.env["LORE_HOOK_STATE_DIR"]
+    process.env["LORE_HOOK_STATE_DIR"] = stateDir
+    try {
+      const mockServer = createMockServer()
+      const listBlocks = vi.fn(async ({ block_id }: { block_id: string }) => {
+        throw new Error(`not shared: ${block_id}`)
+      })
+      const services = makeWakeServices({
+        configRoot: "/repo",
+        configOverrides: {
+          upstreamVaults: [
+            { name: "Engineering", pageId: "upstream-page", priority: 10 },
+          ],
+          promotionTargets: [
+            { name: "Team", pageId: "team-page", requireReview: true },
+          ],
+        },
+        client: {
+          blocks: {
+            children: {
+              list: listBlocks,
+            },
+          },
+          databases: {
+            retrieve: vi.fn(),
+          },
+        },
+      })
+
+      registerContextTools(mockServer.server, services as never)
+      const status = mockServer.getActionHandler("lore-context", "status")
+      await status({} as never)
+      const second = await status({} as never)
+
+      expect(listBlocks).toHaveBeenCalledTimes(2)
+      const text = extractText(second)
+      expect(text).toContain(
+        "health unavailable (not shared: upstream-page; cached"
+      )
+      expect(text).toContain("health unavailable (not shared: team-page; cached")
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env["LORE_HOOK_STATE_DIR"]
+      } else {
+        process.env["LORE_HOOK_STATE_DIR"] = previousStateDir
+      }
+      await rm(stateDir, { recursive: true, force: true })
+    }
   })
 
   it("suppresses the closure-rate line on action='status' for pre-#07 vaults", async () => {

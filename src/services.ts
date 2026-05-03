@@ -8,6 +8,7 @@
 
 import { access } from "node:fs/promises"
 import { resolve } from "node:path"
+import type { Client } from "@notionhq/client"
 import { findConfigFile, loadConfig, resolveAuth, type ResolvedAuth } from "./config.js"
 import {
   createAuthRefreshingClient,
@@ -65,6 +66,13 @@ export interface InitServicesOptions {
 }
 
 export interface LoreServices {
+  /**
+   * Shared Notion SDK client for this process. This is the same
+   * auth-refreshing, rate-limited Proxy used by every service below; callers
+   * that need vault-adjacent reads should reuse it instead of creating a
+   * second limiter/token-refresh island.
+   */
+  client: Client
   vault: VaultManager
   projects: ProjectService
   topics: TopicService
@@ -163,6 +171,7 @@ export async function initServicesFromConfig(
   identityRef.current = identity
 
   return {
+    client,
     vault,
     projects,
     topics,

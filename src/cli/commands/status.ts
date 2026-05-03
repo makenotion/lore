@@ -1,22 +1,17 @@
 import { Command } from "commander"
-import type { Client } from "@notionhq/client"
-import { resolveAuth } from "../../config.js"
 import { initServices } from "../../services.js"
 import type { LoreServices } from "../../services.js"
 import type { FactService } from "../../core/fact.js"
-import { VaultManager } from "../../core/vault.js"
 import {
-  buildVaultTopology,
-  hasConfiguredTopology,
-  type PromotionTargetTopologyRef,
-  type UpstreamVaultTopologyRef,
-} from "../../core/topology.js"
+  formatVaultTopologyStatus,
+  loadVaultTopologyStatus,
+} from "../../core/topology-status.js"
 import { formatTaskSummary, taskStats, todayUtc } from "../../core/task.js"
 import {
   formatWakeUpCoverageReport,
   loadWakeUpData,
 } from "../../core/wakeup.js"
-import type { LoreConfig, Memory } from "../../types.js"
+import type { Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
 import {
@@ -29,9 +24,6 @@ import {
   formatBackgroundFailureStatus,
   loadBackgroundFailureStatus,
 } from "../../hooks/background-failure-status.js"
-import { createClient } from "../../notion/client.js"
-import { createLimitedClient } from "../../notion/rate-limit.js"
-import { MissingVaultDatabasesError } from "../../notion/setup.js"
 import { notionPageUrl, terminalLink } from "../output.js"
 
 /**
@@ -300,213 +292,6 @@ const topicsCmd = new Command("topics")
 
 statusCommand.addCommand(projectsCmd)
 statusCommand.addCommand(topicsCmd)
-
-// ---------------------------------------------------------------------------
-// Vault topology section
-// ---------------------------------------------------------------------------
-
-export type VaultHealthKind = "ok" | "missing-databases" | "unavailable"
-
-export interface VaultHealthStatus {
-  kind: VaultHealthKind
-  message?: string
-  missing?: string[]
-}
-
-export interface TopologyStatusRow {
-  role: "primary" | "upstream" | "promotion-target"
-  label: string
-  pageId: string
-  mode: string
-  priority?: number
-  requireReview?: boolean
-  originKey: string
-  health: VaultHealthStatus
-}
-
-export interface VaultTopologyStatusReport {
-  configured: boolean
-  primary: TopologyStatusRow
-  upstreams: TopologyStatusRow[]
-  promotionTargets: TopologyStatusRow[]
-}
-
-export interface VaultTopologyStatusDeps {
-  probeVault?: (pageId: string) => Promise<VaultHealthStatus>
-}
-
-export type TopologyStatusServices = Pick<LoreServices, "config" | "configRoot">
-
-export async function loadVaultTopologyStatus(
-  services: TopologyStatusServices,
-  deps: VaultTopologyStatusDeps = {}
-): Promise<VaultTopologyStatusReport> {
-  const topology = buildVaultTopology(services.config)
-  const configured = hasConfiguredTopology(services.config)
-  const primary: TopologyStatusRow = {
-    role: topology.primary.role,
-    label: topology.primary.label,
-    pageId: topology.primary.pageId,
-    mode: "read-write",
-    originKey: topology.primary.originKey,
-    health: { kind: "ok" },
-  }
-
-  if (!configured) {
-    return { configured, primary, upstreams: [], promotionTargets: [] }
-  }
-
-  const probe =
-    deps.probeVault ?? createConfigVaultHealthProbe(services.config, services.configRoot)
-
-  const [upstreams, promotionTargets] = await Promise.all([
-    Promise.all(topology.upstreams.map((vault) => upstreamStatusRow(vault, probe))),
-    Promise.all(
-      topology.promotionTargets.map((vault) => promotionTargetStatusRow(vault, probe))
-    ),
-  ])
-
-  return { configured, primary, upstreams, promotionTargets }
-}
-
-export async function checkVaultHealthFromConfig(
-  config: LoreConfig,
-  configRoot: string,
-  pageId: string
-): Promise<VaultHealthStatus> {
-  return createConfigVaultHealthProbe(config, configRoot)(pageId)
-}
-
-function createConfigVaultHealthProbe(
-  config: LoreConfig,
-  configRoot: string
-): (pageId: string) => Promise<VaultHealthStatus> {
-  let clientPromise: Promise<Client> | undefined
-  const clientForConfig = async (): Promise<Client> => {
-    clientPromise ??= resolveAuth(config, configRoot).then((auth) =>
-      createLimitedClient(
-        createClient(auth.token, auth.baseUrl),
-        config.notion?.rateLimit ?? {}
-      )
-    )
-    return clientPromise
-  }
-
-  return async (pageId: string): Promise<VaultHealthStatus> => {
-    const client = await clientForConfig()
-    return checkVaultHealth(client, pageId)
-  }
-}
-
-async function checkVaultHealth(
-  client: Client,
-  pageId: string
-): Promise<VaultHealthStatus> {
-  try {
-    const vault = new VaultManager(client, pageId)
-    await vault.load({ driftCheck: false })
-    return { kind: "ok" }
-  } catch (err) {
-    if (err instanceof MissingVaultDatabasesError) {
-      return {
-        kind: "missing-databases",
-        missing: err.missing,
-        message: `missing ${err.missing.join(", ")}`,
-      }
-    }
-    return {
-      kind: "unavailable",
-      message: err instanceof Error ? err.message : String(err),
-    }
-  }
-}
-
-export function formatVaultTopologyStatus(report: VaultTopologyStatusReport): string[] {
-  if (!report.configured) return []
-
-  const lines = ["Vault topology:"]
-  lines.push(`  primary: ${formatTopologyRow(report.primary)}`)
-
-  if (report.upstreams.length > 0) {
-    lines.push("  upstreams:")
-    for (const row of report.upstreams) {
-      lines.push(`    - ${formatTopologyRow(row)}`)
-    }
-  }
-
-  if (report.promotionTargets.length > 0) {
-    lines.push("  promotion targets:")
-    for (const row of report.promotionTargets) {
-      lines.push(`    - ${formatTopologyRow(row)}`)
-    }
-  }
-
-  return lines
-}
-
-async function upstreamStatusRow(
-  vault: UpstreamVaultTopologyRef,
-  probe: (pageId: string) => Promise<VaultHealthStatus>
-): Promise<TopologyStatusRow> {
-  return {
-    role: vault.role,
-    label: vault.label,
-    pageId: vault.pageId,
-    mode: vault.mode,
-    priority: vault.priority,
-    originKey: vault.originKey,
-    health: await safeProbeVault(vault.pageId, probe),
-  }
-}
-
-async function promotionTargetStatusRow(
-  vault: PromotionTargetTopologyRef,
-  probe: (pageId: string) => Promise<VaultHealthStatus>
-): Promise<TopologyStatusRow> {
-  return {
-    role: vault.role,
-    label: vault.label,
-    pageId: vault.pageId,
-    mode: vault.requireReview ? "promotion (review required)" : "promotion",
-    requireReview: vault.requireReview,
-    originKey: vault.originKey,
-    health: await safeProbeVault(vault.pageId, probe),
-  }
-}
-
-async function safeProbeVault(
-  pageId: string,
-  probe: (pageId: string) => Promise<VaultHealthStatus>
-): Promise<VaultHealthStatus> {
-  try {
-    return await probe(pageId)
-  } catch (err) {
-    return {
-      kind: "unavailable",
-      message: err instanceof Error ? err.message : String(err),
-    }
-  }
-}
-
-function formatTopologyRow(row: TopologyStatusRow): string {
-  const parts = [
-    row.label,
-    `mode ${row.mode}`,
-    `page ${row.pageId}`,
-    `health ${formatVaultHealth(row.health)}`,
-  ]
-  if (row.priority !== undefined) parts.splice(2, 0, `priority ${row.priority}`)
-  return parts.join(" · ")
-}
-
-function formatVaultHealth(health: VaultHealthStatus): string {
-  if (health.kind === "ok") return "ok"
-  if (health.kind === "missing-databases") {
-    const missing = health.missing?.join(", ") ?? health.message
-    return missing ? `missing databases (${missing})` : "missing databases"
-  }
-  return health.message ? `unavailable (${health.message})` : "unavailable"
-}
 
 // ---------------------------------------------------------------------------
 // Digests section

@@ -373,7 +373,6 @@ vault:
 # upstreamVaults:
 #   - name: "Engineering"
 #     pageId: "engineering-vault-id"
-#     mode: read-only
 #     priority: 10
 # promotionTargets:
 #   - name: "Team"

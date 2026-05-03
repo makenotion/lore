@@ -56,7 +56,6 @@ const configSchema = z.object({
   upstreamVaults: z
     .array(
       namedVaultRefSchema.extend({
-        mode: z.literal("read-only").optional(),
         priority: z.number().int().optional(),
       })
     )

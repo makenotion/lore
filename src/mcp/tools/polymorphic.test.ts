@@ -175,7 +175,7 @@ function makeEntityService() {
 
 function makeServices(opts: StubOpts = {}): unknown {
   return {
-    config: { projects: [] },
+    config: { vault: { pageId: "v1" }, projects: [] },
     context: { project: null, vault: { pageId: "v1" } },
     vault: {
       pageId: "v1",

@@ -83,6 +83,9 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
   bearer-shaped `auth.token` values in `.lore.yaml`.
 - `configRoot`, the directory containing `.lore.yaml`, is the base for relative
   project paths.
+- `upstreamVaults` and `promotionTargets` describe optional multi-vault
+  topology. They are explicit, bounded status/read orchestration inputs; normal
+  memory/fact/decision/task writes still target only `vault.pageId`.
 
 ## Code Patterns
 

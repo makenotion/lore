@@ -18,7 +18,6 @@ describe("buildVaultTopology", () => {
         role: "primary",
         label: "Primary",
         pageId: "primary-page",
-        originKey: "primary:primary-page",
       },
       upstreams: [],
       promotionTargets: [],
@@ -42,14 +41,12 @@ describe("buildVaultTopology", () => {
     ])
     expect(topology.upstreams[0]).toMatchObject({
       role: "upstream",
-      mode: "read-only",
       priority: 10,
-      originKey: "upstream:engineering-page",
     })
     expect(topology.upstreams[2]?.priority).toBe(DEFAULT_UPSTREAM_PRIORITY)
   })
 
-  it("normalizes promotion targets with explicit origin keys", () => {
+  it("normalizes promotion targets", () => {
     const config: LoreConfig = {
       vault: { pageId: "primary-page" },
       promotionTargets: [
@@ -67,15 +64,25 @@ describe("buildVaultTopology", () => {
         label: "Team",
         pageId: "team-page",
         requireReview: true,
-        originKey: "promotion-target:team-page",
       },
       {
         role: "promotion-target",
         label: "Org",
         pageId: "org-page",
         requireReview: false,
-        originKey: "promotion-target:org-page",
       },
     ])
+  })
+
+  it("keeps config order when upstream priorities tie", () => {
+    const topology = buildVaultTopology({
+      vault: { pageId: "primary-page" },
+      upstreamVaults: [
+        { name: "First", pageId: "first-page", priority: 10 },
+        { name: "Second", pageId: "second-page", priority: 10 },
+      ],
+    })
+
+    expect(topology.upstreams.map((vault) => vault.label)).toEqual(["First", "Second"])
   })
 })

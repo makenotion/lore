@@ -124,7 +124,6 @@ vault:
 upstreamVaults:
   - name: Engineering
     pageId: engineering-vault
-    mode: read-only
     priority: 10
 promotionTargets:
   - name: Team
@@ -137,7 +136,6 @@ promotionTargets:
       {
         name: "Engineering",
         pageId: "engineering-vault",
-        mode: "read-only",
         priority: 10,
       },
     ])

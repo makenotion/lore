@@ -40,6 +40,10 @@ import {
   loadBackgroundFailureStatus,
 } from "../../hooks/background-failure-status.js"
 import {
+  formatVaultTopologyStatus,
+  loadVaultTopologyStatus,
+} from "../../core/topology-status.js"
+import {
   CONFIDENCE_DISPLAY_THRESHOLD,
   MS_PER_DAY,
   STALE_CONFIDENCE_DAYS,
@@ -288,6 +292,13 @@ async function handleStatus(services: LoreServices): Promise<ToolResult> {
       `  Memories: ${stats.memories}`,
       `  Facts:    ${stats.facts}`,
     ]
+
+    const topologyLines = formatVaultTopologyStatus(
+      await loadVaultTopologyStatus(services)
+    )
+    if (topologyLines.length > 0) {
+      lines.push("", ...topologyLines)
+    }
 
     // Task summary (issue 0.7.0/13). Same `taskStats` orchestrator the
     // CLI calls — `formatTaskSummary` is the single renderer so the
@@ -951,7 +962,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       title: "Vault context operations",
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
-        "- `action: 'status'` — vault page id, database counts, active project, configured projects, and a task summary line (active / overdue / stale / in-progress / blocked, plus a closure-rate line on vaults with the `Done At` column).\n" +
+        "- `action: 'status'` — vault page id, topology health when configured, database counts, active project, configured projects, background hook failures, and a task summary line (active / overdue / stale / in-progress / blocked, plus a closure-rate line on vaults with the `Done At` column).\n" +
         "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question. Pass `debug: true` to append privacy-conscious coverage counters.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {

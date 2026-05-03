@@ -1211,16 +1211,9 @@ export interface ProjectConfig {
   tags?: string[]
 }
 
-export type UpstreamVaultMode = "read-only"
-
 export interface UpstreamVaultConfig {
   name: string
   pageId: string
-  /**
-   * Upstream vaults are inherited read sources only. Normal save/update tools
-   * continue to write exclusively to the primary vault.
-   */
-  mode?: UpstreamVaultMode
   /**
    * Lower numbers render first. Defaults to 100 when omitted.
    */
