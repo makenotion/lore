@@ -24,7 +24,12 @@ import {
 } from "./memory.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
-import type { DatabaseRef } from "../types.js"
+import {
+  SYNOPSIS_MAX,
+  type CreateMemoryInput,
+  type DatabaseRef,
+  type UpdateMemoryInput,
+} from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
 
 /**
@@ -268,7 +273,7 @@ describe("MemoryService.create — Confidence Score write semantics (#01)", () =
         properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
         parent: { type: "database_id", database_id: db.databaseId },
         url: "",
-      }),
+      })
     )
     const updateMarkdownSpy = vi.fn(async () => ({}))
     const client = {
@@ -305,6 +310,35 @@ describe("MemoryService.create — Confidence Score write semantics (#01)", () =
 
 describe("MemoryService.create — rich_text metadata cap", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  type RichTextFieldCase = readonly [
+    string,
+    (value: string) => Partial<CreateMemoryInput>,
+    string,
+  ]
+  type RejectCase = readonly [string, Partial<CreateMemoryInput>, number]
+
+  const richTextFields: RichTextFieldCase[] = [
+    ["alternatives", (value: string) => ({ alternatives: value }), "Alternatives"],
+    ["consequences", (value: string) => ({ consequences: value }), "Consequences"],
+    ["author", (value: string) => ({ author: value }), "Author"],
+    ["agent", (value: string) => ({ agent: value }), "Agent"],
+    ["keywords", (value: string) => ({ keywords: value }), "Keywords"],
+    ["session", (value: string) => ({ session: value }), "Session"],
+    ["blockedBy", (value: string) => ({ blockedBy: value }), "Blocked By"],
+    ["entity", (value: string) => ({ entity: value }), "Entity"],
+    ["topicKey", (value: string) => ({ topicKey: value }), "Topic Key"],
+  ]
+  const rejectCases: RejectCase[] = [
+    ...richTextFields.map(
+      ([field, buildInput]) =>
+        [
+          field,
+          buildInput("x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1)),
+          RICH_TEXT_PROPERTY_MAX_LEN,
+        ] as const
+    ),
+    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+  ]
 
   function makeCreateClient() {
     const createSpy = vi.fn(
@@ -325,44 +359,60 @@ describe("MemoryService.create — rich_text metadata cap", () => {
     return { client, createSpy }
   }
 
-  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+  it.each(richTextFields)(
+    "accepts %s at the Notion rich_text cap",
+    async (_field, buildInput, propertyName) => {
+      const { client, createSpy } = makeCreateClient()
+      const service = new MemoryService(client, db)
+      const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+      await service.create({
+        title: "Keep metadata capped",
+        content: "",
+        ...buildInput(atCap),
+      })
+
+      const props = createSpy.mock.calls[0]![0].properties as Record<
+        string,
+        { rich_text: Array<{ text: { content: string } }> }
+      >
+      expect(props[propertyName].rich_text[0].text.content).toBe(atCap)
+    }
+  )
+
+  it("accepts synopsis at SYNOPSIS_MAX", async () => {
     const { client, createSpy } = makeCreateClient()
     const service = new MemoryService(client, db)
-    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+    const atCap = "x".repeat(SYNOPSIS_MAX)
 
     await service.create({
       title: "Keep metadata capped",
       content: "",
-      alternatives: atCap,
-      consequences: atCap,
+      synopsis: atCap,
     })
 
     const props = createSpy.mock.calls[0]![0].properties as {
-      Alternatives: { rich_text: Array<{ text: { content: string } }> }
-      Consequences: { rich_text: Array<{ text: { content: string } }> }
+      Synopsis: { rich_text: Array<{ text: { content: string } }> }
     }
-    expect(props.Alternatives.rich_text[0].text.content).toBe(atCap)
-    expect(props.Consequences.rich_text[0].text.content).toBe(atCap)
+    expect(props.Synopsis.rich_text[0].text.content).toBe(atCap)
   })
 
-  it.each([
-    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-  ] as const)("rejects over-cap %s before any Notion write", async (field, input) => {
-    const { client, createSpy } = makeCreateClient()
-    const service = new MemoryService(client, db)
+  it.each(rejectCases)(
+    "rejects over-cap %s before any Notion write",
+    async (field, input, cap) => {
+      const { client, createSpy } = makeCreateClient()
+      const service = new MemoryService(client, db)
 
-    await expect(
-      service.create({
-        title: "Keep metadata capped",
-        content: "",
-        ...input,
-      })
-    ).rejects.toThrow(
-      new RegExp(`MemoryService\\.create.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
-    )
-    expect(createSpy).not.toHaveBeenCalled()
-  })
+      await expect(
+        service.create({
+          title: "Keep metadata capped",
+          content: "",
+          ...input,
+        })
+      ).rejects.toThrow(new RegExp(`MemoryService\\.create.*${field}.*${cap}`))
+      expect(createSpy).not.toHaveBeenCalled()
+    }
+  )
 })
 
 describe("MemoryService.create — partial-failure on body write (issue #190)", () => {
@@ -387,7 +437,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
         properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
         parent: { type: "database_id", database_id: db.databaseId },
         url: "",
-      }),
+      })
     )
     const updateMarkdownSpy = vi.fn(async () => {
       throw opts.bodyWriteError
@@ -491,7 +541,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
         properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
         parent: { type: "database_id", database_id: db.databaseId },
         url: "",
-      }),
+      })
     )
     const updateMarkdownSpy = vi.fn(async () => ({}))
     const updateSpy = vi.fn(async () => ({}))
@@ -526,7 +576,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
         properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
         parent: { type: "database_id", database_id: db.databaseId },
         url: "",
-      }),
+      })
     )
     const updateMarkdownSpy = vi.fn(async () => ({}))
     const updateSpy = vi.fn(async () => ({}))
@@ -564,7 +614,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
         properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
         parent: { type: "database_id", database_id: db.databaseId },
         url: "",
-      }),
+      })
     )
     const updateMarkdownSpy = vi.fn(async () => {
       throw "503 Service Unavailable"
@@ -617,7 +667,7 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     const service = new MemoryService(client, db)
 
     await expect(service.create({ title: "x", content: "prose" })).rejects.toBe(
-      createError,
+      createError
     )
 
     expect(createSpy).toHaveBeenCalledTimes(1)
@@ -630,7 +680,9 @@ describe("MemoryService.update — Confidence Score write semantics (#01)", () =
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
   function makeUpdateClient() {
-    const updateSpy = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}))
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
+    )
     const retrieveSpy = vi.fn(async () => ({
       object: "page",
       id: "mem-1",
@@ -703,9 +755,32 @@ describe("MemoryService.update — Confidence Score write semantics (#01)", () =
 
 describe("MemoryService.update — rich_text metadata cap", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  type RichTextFieldCase = readonly [string, (value: string) => UpdateMemoryInput, string]
+  type RejectCase = readonly [string, UpdateMemoryInput, number]
+
+  const richTextFields: RichTextFieldCase[] = [
+    ["alternatives", (value: string) => ({ alternatives: value }), "Alternatives"],
+    ["consequences", (value: string) => ({ consequences: value }), "Consequences"],
+    ["keywords", (value: string) => ({ keywords: value }), "Keywords"],
+    ["blockedBy", (value: string) => ({ blockedBy: value }), "Blocked By"],
+    ["entity", (value: string) => ({ entity: value }), "Entity"],
+  ]
+  const rejectCases: RejectCase[] = [
+    ...richTextFields.map(
+      ([field, buildInput]) =>
+        [
+          field,
+          buildInput("x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1)),
+          RICH_TEXT_PROPERTY_MAX_LEN,
+        ] as const
+    ),
+    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+  ]
 
   function makeUpdateClient() {
-    const updateSpy = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}))
+    const updateSpy = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
+    )
     const retrieveSpy = vi.fn(async () =>
       buildPage(
         {
@@ -728,38 +803,50 @@ describe("MemoryService.update — rich_text metadata cap", () => {
     return { client, updateSpy, retrieveSpy, retrieveMarkdownSpy }
   }
 
-  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+  it.each(richTextFields)(
+    "accepts %s at the Notion rich_text cap",
+    async (_field, buildInput, propertyName) => {
+      const { client, updateSpy } = makeUpdateClient()
+      const service = new MemoryService(client, db)
+      const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+      await service.update("mem-1", buildInput(atCap))
+
+      const props = updateSpy.mock.calls[0]![0].properties as Record<
+        string,
+        { rich_text: Array<{ text: { content: string } }> }
+      >
+      expect(props[propertyName].rich_text[0].text.content).toBe(atCap)
+    }
+  )
+
+  it("accepts synopsis at SYNOPSIS_MAX", async () => {
     const { client, updateSpy } = makeUpdateClient()
     const service = new MemoryService(client, db)
-    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+    const atCap = "x".repeat(SYNOPSIS_MAX)
 
-    await service.update("mem-1", {
-      alternatives: atCap,
-      consequences: atCap,
-    })
+    await service.update("mem-1", { synopsis: atCap })
 
     const props = updateSpy.mock.calls[0]![0].properties as {
-      Alternatives: { rich_text: Array<{ text: { content: string } }> }
-      Consequences: { rich_text: Array<{ text: { content: string } }> }
+      Synopsis: { rich_text: Array<{ text: { content: string } }> }
     }
-    expect(props.Alternatives.rich_text[0].text.content).toBe(atCap)
-    expect(props.Consequences.rich_text[0].text.content).toBe(atCap)
+    expect(props.Synopsis.rich_text[0].text.content).toBe(atCap)
   })
 
-  it.each([
-    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-  ] as const)("rejects over-cap %s before any Notion write", async (field, input) => {
-    const { client, updateSpy, retrieveSpy, retrieveMarkdownSpy } = makeUpdateClient()
-    const service = new MemoryService(client, db)
+  it.each(rejectCases)(
+    "rejects over-cap %s before any Notion write",
+    async (field, input, cap) => {
+      const { client, updateSpy, retrieveSpy, retrieveMarkdownSpy } = makeUpdateClient()
+      const service = new MemoryService(client, db)
 
-    await expect(service.update("mem-1", input)).rejects.toThrow(
-      new RegExp(`MemoryService\\.update.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
-    )
-    expect(updateSpy).not.toHaveBeenCalled()
-    expect(retrieveSpy).not.toHaveBeenCalled()
-    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
-  })
+      await expect(service.update("mem-1", input)).rejects.toThrow(
+        new RegExp(`MemoryService\\.update.*${field}.*${cap}`)
+      )
+      expect(updateSpy).not.toHaveBeenCalled()
+      expect(retrieveSpy).not.toHaveBeenCalled()
+      expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+    }
+  )
 })
 
 describe("MemoryService.update — partial-failure on body write", () => {
@@ -794,7 +881,7 @@ describe("MemoryService.update — partial-failure on body write", () => {
     expect(updateSpy).toHaveBeenCalledTimes(1)
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     expect(updateSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      updateMarkdownSpy.mock.invocationCallOrder[0],
+      updateMarkdownSpy.mock.invocationCallOrder[0]
     )
     expect(retrieveSpy).not.toHaveBeenCalled()
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
@@ -857,7 +944,7 @@ describe("MemoryService.update — partial-failure on body write", () => {
     const service = new MemoryService(client, db)
 
     await expect(service.update("mem-1", { content: "Updated body" })).rejects.toBe(
-      bodyWriteError,
+      bodyWriteError
     )
     expect(updateSpy).not.toHaveBeenCalled()
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
@@ -903,9 +990,7 @@ describe("MemoryService.update — partial-failure on body write", () => {
     } as unknown as Client
     const service = new MemoryService(client, db)
 
-    await expect(service.update("mem-1", { content: "" })).rejects.toBe(
-      bodyWriteError,
-    )
+    await expect(service.update("mem-1", { content: "" })).rejects.toBe(bodyWriteError)
     expect(updateSpy).not.toHaveBeenCalled()
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     expect(updateMarkdownSpy.mock.calls[0]![0].replace_content.new_str).toBe("")
@@ -943,7 +1028,10 @@ describe("Synopsis property round-trip", () => {
   })
 
   it("emits a Synopsis property when explicitly set to empty (clears the field)", () => {
-    const built = buildMemoryProps({ title: "x", synopsis: "" }) as Record<string, unknown>
+    const built = buildMemoryProps({ title: "x", synopsis: "" }) as Record<
+      string,
+      unknown
+    >
     expect("Synopsis" in built).toBe(true)
   })
 
@@ -1019,7 +1107,10 @@ describe("Keywords property round-trip", () => {
   })
 
   it("emits a Keywords property when explicitly set to empty (clears the field)", () => {
-    const built = buildMemoryProps({ title: "x", keywords: "" }) as Record<string, unknown>
+    const built = buildMemoryProps({ title: "x", keywords: "" }) as Record<
+      string,
+      unknown
+    >
     expect("Keywords" in built).toBe(true)
   })
 })
@@ -1066,7 +1157,7 @@ describe("MemoryService.create / update — lastReferencedAt three-state semanti
       url: "https://notion.so/new-id",
     }))
     const updateSpy = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
     )
     const updateMarkdownSpy = vi.fn(async () => ({}))
     const retrieveSpy = vi.fn(async () => ({
@@ -1246,7 +1337,7 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
       revisionCount?: number
       lastReferencedAt?: string | null
       archived?: boolean
-    },
+    }
   ): PageObjectResponse {
     return buildPage(
       {
@@ -1265,27 +1356,40 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
         ...(opts.lastReferencedAt !== undefined && {
           "Last Referenced At": {
             type: "date",
-            date: opts.lastReferencedAt === null ? null : { start: opts.lastReferencedAt },
+            date:
+              opts.lastReferencedAt === null ? null : { start: opts.lastReferencedAt },
           },
         }),
       },
-      { id, archived: opts.archived ?? false },
+      { id, archived: opts.archived ?? false }
     )
   }
 
   /** Stub `dataSources.query` returning a fixed set of pages, optionally
    *  paginated across multiple Notion pages. */
-  function makeQueryClient(pages: Array<{ results: PageObjectResponse[]; has_more?: boolean; next_cursor?: string | null }>) {
+  function makeQueryClient(
+    pages: Array<{
+      results: PageObjectResponse[]
+      has_more?: boolean
+      next_cursor?: string | null
+    }>
+  ) {
     let callIndex = 0
-    const querySpy = vi.fn(async (_args: { data_source_id: string; filter?: unknown; start_cursor?: string }) => {
-      const result = pages[callIndex]
-      callIndex++
-      return {
-        results: result?.results ?? [],
-        has_more: result?.has_more ?? false,
-        next_cursor: result?.next_cursor ?? null,
+    const querySpy = vi.fn(
+      async (_args: {
+        data_source_id: string
+        filter?: unknown
+        start_cursor?: string
+      }) => {
+        const result = pages[callIndex]
+        callIndex++
+        return {
+          results: result?.results ?? [],
+          has_more: result?.has_more ?? false,
+          next_cursor: result?.next_cursor ?? null,
+        }
       }
-    })
+    )
     const client = {
       dataSources: { query: querySpy },
     } as unknown as Client
@@ -1552,7 +1656,7 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
         topicKey: "decision/foo",
         projectIds: ["P1"],
         revisionCount: 2,
-      }),
+      })
     )
     const secondPage = [
       buildTopicKeyPage("latest", {
@@ -1581,6 +1685,8 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
 
 describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+  type UpsertInput = Parameters<MemoryService["upsertByTopicKey"]>[0]
+  type UpsertRejectCase = readonly [string, Partial<UpsertInput>, number]
 
   /** Build a Memory page that will round-trip through findByTopicKey. */
   function buildExistingMemoryPage(
@@ -1596,7 +1702,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       synopsis?: string
       keywords?: string
       author?: string
-    },
+    }
   ): PageObjectResponse {
     const properties: Record<string, unknown> = {
       Title: {
@@ -1664,15 +1770,23 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
    * / `pages.updateMarkdown` (for the body-append step). Tests inspect
    * the spies to assert call ordering and payloads.
    */
-  function makeUpsertClient(opts: {
-    findResults?: PageObjectResponse[]
-    existingBody?: string
-  } = {}) {
-    const querySpy = vi.fn(async (_args: { data_source_id: string; filter?: unknown; start_cursor?: string }) => ({
-      results: opts.findResults ?? [],
-      has_more: false,
-      next_cursor: null,
-    }))
+  function makeUpsertClient(
+    opts: {
+      findResults?: PageObjectResponse[]
+      existingBody?: string
+    } = {}
+  ) {
+    const querySpy = vi.fn(
+      async (_args: {
+        data_source_id: string
+        filter?: unknown
+        start_cursor?: string
+      }) => ({
+        results: opts.findResults ?? [],
+        has_more: false,
+        next_cursor: null,
+      })
+    )
     const createdId = "new-page-id"
     const createSpy = vi.fn(async (_args: { properties: Record<string, unknown> }) => ({
       object: "page",
@@ -1680,7 +1794,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       properties: {},
     }))
     const updateSpy = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
     )
     const retrieveMarkdownSpy = vi.fn(async (_args: { page_id: string }) => ({
       markdown: opts.existingBody ?? "Initial body content",
@@ -1689,9 +1803,13 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       async (_args: {
         page_id: string
         type: string
-        replace_content_range?: { content: string; content_range: string; allow_deleting_content: boolean }
+        replace_content_range?: {
+          content: string
+          content_range: string
+          allow_deleting_content: boolean
+        }
         insert_content?: { content: string }
-      }) => ({}),
+      }) => ({})
     )
     const client = {
       dataSources: { query: querySpy },
@@ -1733,10 +1851,71 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
           source: input.source,
           confidence: input.confidence,
           author: input.author,
-        }),
+        })
       )
       .digest("hex")
   }
+
+  const upsertRejectCases: UpsertRejectCase[] = [
+    [
+      "topicKey",
+      { topicKey: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) },
+      RICH_TEXT_PROPERTY_MAX_LEN,
+    ],
+    [
+      "keywords",
+      { keywords: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) },
+      RICH_TEXT_PROPERTY_MAX_LEN,
+    ],
+    [
+      "author",
+      { author: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) },
+      RICH_TEXT_PROPERTY_MAX_LEN,
+    ],
+    [
+      "agent",
+      { agent: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) },
+      RICH_TEXT_PROPERTY_MAX_LEN,
+    ],
+    [
+      "session",
+      { session: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) },
+      RICH_TEXT_PROPERTY_MAX_LEN,
+    ],
+    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+  ]
+
+  it.each(upsertRejectCases)(
+    "rejects over-cap %s before any Notion call",
+    async (field, input, cap) => {
+      const {
+        client,
+        querySpy,
+        createSpy,
+        updateSpy,
+        retrieveMarkdownSpy,
+        updateMarkdownSpy,
+      } = makeUpsertClient()
+      const service = new MemoryService(client, db)
+
+      await expect(
+        service.upsertByTopicKey({
+          topicKey: "decision/jwt-auth",
+          projectIds: ["P1"],
+          title: "JWT auth model",
+          content: "We chose JWT.",
+          kind: "decision",
+          ...input,
+        })
+      ).rejects.toThrow(new RegExp(`MemoryService\\.upsertByTopicKey.*${field}.*${cap}`))
+
+      expect(querySpy).not.toHaveBeenCalled()
+      expect(createSpy).not.toHaveBeenCalled()
+      expect(updateSpy).not.toHaveBeenCalled()
+      expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+      expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    }
+  )
 
   it("creates a fresh memory with Revision Count: 1 when no existing match is found", async () => {
     // No existing match — the upsert path falls through to the
@@ -1814,7 +1993,11 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
       type: string
-      replace_content_range: { content: string; content_range: string; allow_deleting_content: boolean }
+      replace_content_range: {
+        content: string
+        content_range: string
+        allow_deleting_content: boolean
+      }
     }
     expect(mdArgs.type).toBe("replace_content_range")
     expect(mdArgs.replace_content_range.content_range).toBe("full_page")
@@ -1823,14 +2006,12 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     // header, then the title-at-this-revision line, then the new body.
     expect(mdArgs.replace_content_range.content).toContain("Initial body about JWT.")
     expect(mdArgs.replace_content_range.content).toContain("---")
+    expect(mdArgs.replace_content_range.content).toContain("## Revision 2 (2026-04-30)")
     expect(mdArgs.replace_content_range.content).toContain(
-      "## Revision 2 (2026-04-30)",
+      "**Title at this revision:** JWT auth model with refresh rotation"
     )
     expect(mdArgs.replace_content_range.content).toContain(
-      "**Title at this revision:** JWT auth model with refresh rotation",
-    )
-    expect(mdArgs.replace_content_range.content).toContain(
-      "Now we rotate refresh tokens.",
+      "Now we rotate refresh tokens."
     )
 
     // Property update bumps Title and Revision Count.
@@ -2099,7 +2280,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     }
 
     await expect(service.upsertByTopicKey(input)).rejects.toThrow(
-      /property update timed out/,
+      /property update timed out/
     )
     const firstWriteArgs = updateMarkdownSpy.mock.calls[0]![0] as {
       replace_content_range: { content: string }
@@ -2190,9 +2371,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
       replace_content_range: { content: string }
     }
-    expect(mdArgs.replace_content_range.content).toContain(
-      "## Revision 3 (2026-05-01)",
-    )
+    expect(mdArgs.replace_content_range.content).toContain("## Revision 3 (2026-05-01)")
     expect(mdArgs.replace_content_range.content.match(/## Revision 2/g)).toHaveLength(1)
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const updateArgs = updateSpy.mock.calls[0]![0] as {
@@ -2260,9 +2439,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
       replace_content_range: { content: string }
     }
-    expect(mdArgs.replace_content_range.content).toContain(
-      "## Revision 3 (2026-05-01)",
-    )
+    expect(mdArgs.replace_content_range.content).toContain("## Revision 3 (2026-05-01)")
     expect(updateSpy).toHaveBeenCalledTimes(1)
     const updateArgs = updateSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
@@ -2341,11 +2518,9 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     const mdArgs = updateMarkdownSpy.mock.calls[0]![0] as {
       replace_content_range: { content: string }
     }
-    expect(mdArgs.replace_content_range.content).toContain(
-      "## Revision 3 (2026-05-01)",
-    )
+    expect(mdArgs.replace_content_range.content).toContain("## Revision 3 (2026-05-01)")
     expect(mdArgs.replace_content_range.content).not.toContain(
-      "## Revision 100 (2026-05-01)",
+      "## Revision 100 (2026-05-01)"
     )
     const updateArgs = updateSpy.mock.calls[0]![0] as {
       properties: Record<string, unknown>
@@ -2548,7 +2723,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
 
   function buildExistingMemoryPageWithAuthor(
     id: string,
-    opts: { topicKey: string; projectIds: string[]; author?: string },
+    opts: { topicKey: string; projectIds: string[]; author?: string }
   ): PageObjectResponse {
     const page = buildExistingMemoryPage(id, {
       topicKey: opts.topicKey,
@@ -2731,12 +2906,8 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       revisionCount: 1,
       kind: "decision",
     })
-    const {
-      client,
-      retrieveMarkdownSpy,
-      updateMarkdownSpy,
-      updateSpy,
-    } = makeUpsertClient({ findResults: [existing] })
+    const { client, retrieveMarkdownSpy, updateMarkdownSpy, updateSpy } =
+      makeUpsertClient({ findResults: [existing] })
     const service = new MemoryService(client, db)
 
     await expect(
@@ -2746,7 +2917,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         title: "JWT auth model",
         content: "...",
         kind: "runbook",
-      }),
+      })
     ).rejects.toThrow(/Kind cannot change on upsert/)
 
     expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
@@ -2768,7 +2939,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         title: "JWT auth model",
         content: "...",
         kind: "decision",
-      }),
+      })
     ).rejects.toThrow(/topicKey requires at least one projectId/)
 
     expect(querySpy).not.toHaveBeenCalled()
@@ -2926,7 +3097,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
         revisionCount: 1,
         kind: "runbook",
         title: "Stale fallback",
-      }),
+      })
     )
     ;(client as unknown as { pages: { retrieve: typeof retrieveSpy } }).pages.retrieve =
       retrieveSpy
@@ -3021,7 +3192,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.promotionAdvisory).not.toBeNull()
     expect(result.promotionAdvisory!.reasons).toContain("5 revisions accumulated")
     expect(
-      result.promotionAdvisory!.reasons.some((r) => r.startsWith("body length")),
+      result.promotionAdvisory!.reasons.some((r) => r.startsWith("body length"))
     ).toBe(false)
     // Suggestion is the frozen ready-to-paste form documented in #15.
     // Test ID is the post-write memory's id; the MCP layer substitutes
@@ -3030,7 +3201,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.promotionAdvisory!.suggestion).toBe(
       "Consider promoting via lore-decision action='create' " +
         "with supersedesIds: [<this-memory-id>], or splitting " +
-        "the topic into narrower topicKeys.",
+        "the topic into narrower topicKeys."
     )
   })
 
@@ -3062,11 +3233,11 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.revisionCount).toBe(3)
     expect(result.promotionAdvisory).not.toBeNull()
     expect(
-      result.promotionAdvisory!.reasons.some((r) => r.startsWith("body length")),
+      result.promotionAdvisory!.reasons.some((r) => r.startsWith("body length"))
     ).toBe(true)
     expect(result.promotionAdvisory!.reasons).not.toContain("3 revisions accumulated")
     expect(
-      result.promotionAdvisory!.reasons.some((r) => r === "5 revisions accumulated"),
+      result.promotionAdvisory!.reasons.some((r) => r === "5 revisions accumulated")
     ).toBe(false)
     // Runbook is a non-decision kind. The upsert path forwards
     // `input.kind` to `computePromotionAdvisory`, which selects the
@@ -3079,7 +3250,7 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.promotionAdvisory!.suggestion).not.toContain("supersedesIds")
     expect(result.promotionAdvisory!.suggestion).not.toContain("<this-memory-id>")
     expect(result.promotionAdvisory!.suggestion).toContain(
-      "splitting the topic into narrower topicKeys",
+      "splitting the topic into narrower topicKeys"
     )
   })
 
@@ -3160,7 +3331,7 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
         revisionCount: 1,
         bodyLength: 100,
         kind: "decision",
-      }),
+      })
     ).toBeNull()
   })
 
@@ -3174,7 +3345,7 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
         revisionCount: 0,
         bodyLength: 0,
         kind: "decision",
-      }),
+      })
     ).toBeNull()
   })
 
@@ -3184,7 +3355,7 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
         revisionCount: PROMOTE_REVISION_THRESHOLD - 1,
         bodyLength: PROMOTE_BODY_LENGTH_THRESHOLD - 1,
         kind: "decision",
-      }),
+      })
     ).toBeNull()
   })
 
@@ -3241,16 +3412,11 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
     expect(advisory!.suggestion).toBe(
       "Consider promoting via lore-decision action='create' " +
         "with supersedesIds: [<this-memory-id>], or splitting " +
-        "the topic into narrower topicKeys.",
+        "the topic into narrower topicKeys."
     )
   })
 
-  it.each([
-    ["runbook"],
-    ["incident"],
-    ["postmortem"],
-    ["policy"],
-  ] as const)(
+  it.each([["runbook"], ["incident"], ["postmortem"], ["policy"]] as const)(
     "returns the non-decision suggestion (no supersedesIds, no placeholder) for kind=%s",
     (kind) => {
       // Non-decision kinds are valid topic-key chains (per the
@@ -3271,7 +3437,7 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
       expect(advisory!.suggestion).toBe(
         "Consider splitting the topic into narrower topicKeys, " +
           "or archiving this chain via lore-memory action='archive' " +
-          "and starting a fresh chain with a more specific topicKey.",
+          "and starting a fresh chain with a more specific topicKey."
       )
       // The placeholder appears in the decision branch only — no
       // substitution surface lives in the non-decision path. Pinning
@@ -3280,7 +3446,7 @@ describe("computePromotionAdvisory (0.9.0/15)", () => {
       // partial replace could leak into the rendered footer.
       expect(advisory!.suggestion).not.toContain("<this-memory-id>")
       expect(advisory!.suggestion).not.toContain("supersedesIds")
-    },
+    }
   )
 })
 
@@ -3301,7 +3467,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       projectIds: string[]
       revisionCount?: number
       archived?: boolean
-    },
+    }
   ): PageObjectResponse {
     const properties: Record<string, unknown> = {
       Title: { type: "title", title: [{ plain_text: opts.title ?? id }] },
@@ -3335,25 +3501,29 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     collisionPages?: PageObjectResponse[]
   }) {
     const retrieveSpy = vi.fn(async (_args: { page_id: string }) => opts.targetMemory)
-    const retrieveMarkdownSpy = vi.fn(
-      async (_args: { page_id: string }) => ({ markdown: opts.targetMarkdown }),
-    )
+    const retrieveMarkdownSpy = vi.fn(async (_args: { page_id: string }) => ({
+      markdown: opts.targetMarkdown,
+    }))
     const querySpy = vi.fn(
-      async (_args: { data_source_id: string; filter?: unknown; start_cursor?: string }) => ({
+      async (_args: {
+        data_source_id: string
+        filter?: unknown
+        start_cursor?: string
+      }) => ({
         results: opts.collisionPages ?? [],
         has_more: false,
         next_cursor: null,
-      }),
+      })
     )
     const updateSpy = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
     )
     const updateMarkdownSpy = vi.fn(
       async (_args: {
         page_id: string
         type: string
         replace_content: { new_str: string; allow_deleting_content: boolean }
-      }) => ({}),
+      }) => ({})
     )
     const client = {
       pages: {
@@ -3364,7 +3534,14 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       },
       dataSources: { query: querySpy },
     } as unknown as Client
-    return { client, retrieveSpy, retrieveMarkdownSpy, querySpy, updateSpy, updateMarkdownSpy }
+    return {
+      client,
+      retrieveSpy,
+      retrieveMarkdownSpy,
+      querySpy,
+      updateSpy,
+      updateMarkdownSpy,
+    }
   }
 
   it("happy path: writes Topic Key and appends an audit block; Revision Count untouched", async () => {
@@ -3410,7 +3587,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     // "audit block format is exact" criterion pins everything from
     // the heading onwards.
     expect(newStr).toMatch(
-      /\n---\n\n## Re-keyed \(\d{4}-\d{2}-\d{2}\)\n\n\*\*From:\*\* `decision\/jwt-auth`\n\*\*To:\*\* `decision\/jwt-auth-model`$/,
+      /\n---\n\n## Re-keyed \(\d{4}-\d{2}-\d{2}\)\n\n\*\*From:\*\* `decision\/jwt-auth`\n\*\*To:\*\* `decision\/jwt-auth-model`$/
     )
   })
 
@@ -3450,7 +3627,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" })
     ).rejects.toThrow(/empty projectIds/)
 
     // Guard fires before any mutation.
@@ -3475,7 +3652,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" })
     ).rejects.toThrow(/already in use by memory mem-collider/)
 
     // Collision check fires BEFORE any mutation — pin the no-write
@@ -3547,19 +3724,16 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     const client = {
       pages: {
         retrieve: vi.fn(async (_args: { page_id: string }) => buildPageResponse()),
-        retrieveMarkdown: vi.fn(
-          async (_args: { page_id: string }) => ({ markdown: body }),
-        ),
+        retrieveMarkdown: vi.fn(async (_args: { page_id: string }) => ({
+          markdown: body,
+        })),
         update: vi.fn(
-          async (args: {
-            page_id: string
-            properties: Record<string, unknown>
-          }) => {
+          async (args: { page_id: string; properties: Record<string, unknown> }) => {
             for (const [k, v] of Object.entries(args.properties)) {
               props[k] = v
             }
             return {}
-          },
+          }
         ),
         updateMarkdown: vi.fn(
           async (args: {
@@ -3571,7 +3745,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
               body = args.replace_content.new_str
             }
             return {}
-          },
+          }
         ),
       },
       dataSources: {
@@ -3580,7 +3754,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
             data_source_id: string
             filter?: unknown
             start_cursor?: string
-          }) => ({ results: [], has_more: false, next_cursor: null }),
+          }) => ({ results: [], has_more: false, next_cursor: null })
         ),
       },
     } as unknown as Client
@@ -3615,20 +3789,18 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       topicKey: "decision/old",
       projectIds: ["P1"],
     })
-    const propertyError = new Error(
-      "Notion property update failed (validation_error)",
-    )
+    const propertyError = new Error("Notion property update failed (validation_error)")
     const updateSpy = vi.fn(
       async (_args: { page_id: string; properties: Record<string, unknown> }) => {
         throw propertyError
-      },
+      }
     )
     const updateMarkdownSpy = vi.fn(
       async (_args: {
         page_id: string
         type: string
         replace_content: { new_str: string; allow_deleting_content: boolean }
-      }) => ({}),
+      }) => ({})
     )
     const client = {
       pages: {
@@ -3644,7 +3816,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+      service.rekeyTopicKey({ memoryId: "mem-1", newTopicKey: "decision/new" })
     ).rejects.toBe(propertyError)
 
     // Property write was attempted exactly once; body write was
@@ -3675,7 +3847,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     })
     const auditError = new Error("Notion body update failed (502)")
     const updateSpy = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}),
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => ({})
     )
     const updateMarkdownSpy = vi.fn(
       async (_args: {
@@ -3684,7 +3856,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
         replace_content: { new_str: string; allow_deleting_content: boolean }
       }) => {
         throw auditError
-      },
+      }
     )
     const client = {
       pages: {
@@ -3773,7 +3945,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.validateRekey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+      service.validateRekey({ memoryId: "mem-1", newTopicKey: "decision/new" })
     ).rejects.toThrow(/empty projectIds/)
     expect(querySpy).not.toHaveBeenCalled()
     expect(updateSpy).not.toHaveBeenCalled()
@@ -3802,7 +3974,7 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.validateRekey({ memoryId: "mem-1", newTopicKey: "decision/new" }),
+      service.validateRekey({ memoryId: "mem-1", newTopicKey: "decision/new" })
     ).rejects.toThrow(/already in use by memory mem-collider/)
     expect(updateSpy).not.toHaveBeenCalled()
     expect(updateMarkdownSpy).not.toHaveBeenCalled()
@@ -3848,7 +4020,7 @@ describe("MemoryService.search", () => {
       parentDataSource?: string
       parentType?: "database_id" | "data_source_id"
       tags?: string[]
-    } = {},
+    } = {}
   ): PageObjectResponse {
     const parentType = opts.parentType ?? "database_id"
     const parent =
@@ -3872,7 +4044,7 @@ describe("MemoryService.search", () => {
           multi_select: (opts.tags ?? []).map((name) => ({ name })),
         },
       },
-      { id, parent } as Partial<PageObjectResponse>,
+      { id, parent } as Partial<PageObjectResponse>
     )
   }
 
@@ -3921,7 +4093,7 @@ describe("MemoryService.search", () => {
     // Markdown fetched only for the capped subset — not wasted on filtered-out
     // or over-limit results.
     expect(
-      (client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>).mock.calls.length,
+      (client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>).mock.calls.length
     ).toBe(2)
   })
 
@@ -4007,7 +4179,7 @@ describe("MemoryService.search", () => {
         id: "archived-row",
         archived: true,
         parent: { type: "data_source_id", data_source_id: db.dataSourceId },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
     const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
     const client = {
@@ -4038,7 +4210,7 @@ describe("MemoryService.search", () => {
         Project: { type: "relation", relation: [] },
         Topic: { type: "relation", relation: [] },
       },
-      { id: "a", parent: { type: "database_id", database_id: db.databaseId } },
+      { id: "a", parent: { type: "database_id", database_id: db.databaseId } }
     )
     const notePage = buildPage(
       {
@@ -4047,7 +4219,7 @@ describe("MemoryService.search", () => {
         Project: { type: "relation", relation: [] },
         Topic: { type: "relation", relation: [] },
       },
-      { id: "b", parent: { type: "database_id", database_id: db.databaseId } },
+      { id: "b", parent: { type: "database_id", database_id: db.databaseId } }
     )
     const searchSpy = vi.fn(async () => ({ results: [decisionPage, notePage] }))
     const client = {
@@ -4079,7 +4251,7 @@ describe("MemoryService.search", () => {
     // Setup: page 1 is all non-memory pages (filtered out client-side);
     // page 2 carries the matching Lore memories. The caller asks for 2.
     const page1 = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
     )
     const page2 = [
       buildSearchPage("mem-1", "Mem one"),
@@ -4121,7 +4293,7 @@ describe("MemoryService.search", () => {
           Project: { type: "relation", relation: [] },
           Topic: { type: "relation", relation: [] },
         },
-        { id, parent: { type: "database_id", database_id: db.databaseId } },
+        { id, parent: { type: "database_id", database_id: db.databaseId } }
       )
     const decision = (id: string): PageObjectResponse =>
       buildPage(
@@ -4131,7 +4303,7 @@ describe("MemoryService.search", () => {
           Project: { type: "relation", relation: [] },
           Topic: { type: "relation", relation: [] },
         },
-        { id, parent: { type: "database_id", database_id: db.databaseId } },
+        { id, parent: { type: "database_id", database_id: db.databaseId } }
       )
 
     const page1 = Array.from({ length: 100 }, (_, i) => note(`note-${i}`))
@@ -4192,7 +4364,7 @@ describe("MemoryService.search", () => {
     // exits after exactly `SEMANTIC_SEARCH_MAX_PAGES` calls and returns
     // an empty result set.
     const allOther = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
     )
     const searchSpy = vi.fn(async () => ({
       results: allOther,
@@ -4248,9 +4420,12 @@ describe("MemoryService.search", () => {
     // memory rendered twice (visible correctness bug). One Set guards
     // both consumers.
     const sharedMem = buildSearchPage("mem-shared", "shared")
-    const page1 = [sharedMem, ...Array.from({ length: 99 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
-    )]
+    const page1 = [
+      sharedMem,
+      ...Array.from({ length: 99 }, (_, i) =>
+        buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
+      ),
+    ]
     const page2 = [sharedMem, buildSearchPage("mem-2", "Mem two")]
     const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
       if (args["start_cursor"] === undefined) {
@@ -4314,7 +4489,7 @@ describe("MemoryService.search", () => {
         id: "mem-archived",
         archived: true,
         parent: { type: "database_id", database_id: db.databaseId },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
     const live1 = buildSearchPage("mem-live-1", "live one")
     const live2 = buildSearchPage("mem-live-2", "live two")
@@ -4354,7 +4529,7 @@ describe("MemoryService.search", () => {
     // authoritative final cap for the semantic-only path; hybrid
     // consumes the wider pool.
     const page1 = Array.from({ length: 50 }, (_, i) =>
-      buildSearchPage(`mem-${i}`, `Mem ${i}`),
+      buildSearchPage(`mem-${i}`, `Mem ${i}`)
     )
     const searchSpy = vi.fn(async () => ({
       results: page1,
@@ -4378,7 +4553,7 @@ describe("MemoryService.search", () => {
     // unknown-cast indirection. Established pattern in this file.
     type FetchSemanticPagesFn = (
       input: { query: string; limit?: number },
-      intent: string | null,
+      intent: string | null
     ) => Promise<PageObjectResponse[]>
     const fetcher = (
       service as unknown as { fetchSemanticPages: FetchSemanticPagesFn }
@@ -4402,7 +4577,7 @@ describe("MemoryService.search", () => {
     // semantic-search-cap-fired:` line under LORE_DEBUG=1 closes the
     // gap. Format mirrors `debugLogHybridBranchFailure`.
     const allOther = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
     )
     const searchSpy = vi.fn(async () => ({
       results: allOther,
@@ -4442,7 +4617,10 @@ describe("MemoryService.search", () => {
   it("semantic mode does NOT log the cap-fired signal under LORE_DEBUG=1 when the loop saturates", async () => {
     // Saturation is the success path; logging here would be noise on
     // every common-case query an operator runs with LORE_DEBUG=1 set.
-    const page1 = [buildSearchPage("mem-1", "Mem one"), buildSearchPage("mem-2", "Mem two")]
+    const page1 = [
+      buildSearchPage("mem-1", "Mem one"),
+      buildSearchPage("mem-2", "Mem two"),
+    ]
     const searchSpy = vi.fn(async () => ({
       results: page1,
       has_more: true,
@@ -4476,7 +4654,7 @@ describe("MemoryService.search", () => {
     // Without `LORE_DEBUG=1`, even a cap-fire stays silent — operators
     // who don't opt in shouldn't see search internals on stderr.
     const allOther = Array.from({ length: 100 }, (_, i) =>
-      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" }),
+      buildSearchPage(`other-${i}`, `other ${i}`, { parentDb: "some-other-db" })
     )
     const searchSpy = vi.fn(async () => ({
       results: allOther,
@@ -4526,7 +4704,7 @@ describe("MemoryService.search — contains mode", () => {
   function buildContainsPage(
     id: string,
     title: string,
-    opts: { archived?: boolean } = {},
+    opts: { archived?: boolean } = {}
   ): PageObjectResponse {
     return buildPage(
       {
@@ -4543,7 +4721,7 @@ describe("MemoryService.search — contains mode", () => {
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -4643,7 +4821,7 @@ describe("MemoryService.search — contains mode", () => {
             { property: "Tags", multi_select: { contains: "backend" } },
           ],
         },
-      ]),
+      ])
     )
   })
 
@@ -4668,7 +4846,7 @@ describe("MemoryService.search — contains mode", () => {
             { property: "Project", relation: { is_empty: true } },
           ],
         },
-      ]),
+      ])
     )
   })
 
@@ -4822,7 +5000,7 @@ describe("MemoryService.search — contains mode", () => {
             { property: "Synopsis", rich_text: { contains: "DecisionService" } },
           ],
         },
-      ]),
+      ])
     )
   })
 
@@ -4844,12 +5022,16 @@ describe("MemoryService.search — contains mode", () => {
         id: "c-archived",
         archived: true,
         parent: { type: "data_source_id", data_source_id: db.dataSourceId },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
     const { client } = makeQueryClient([archived, live])
     const service = new MemoryService(client, db)
 
-    const results = await service.search({ query: "row", mode: "contains", includeContent: false })
+    const results = await service.search({
+      query: "row",
+      mode: "contains",
+      includeContent: false,
+    })
 
     expect(results.map((m) => m.id)).toEqual(["c-live"])
   })
@@ -4861,7 +5043,7 @@ describe("MemoryService.search — hybrid mode", () => {
   function buildHybridPage(
     id: string,
     title: string,
-    opts: { archived?: boolean } = {},
+    opts: { archived?: boolean } = {}
   ): PageObjectResponse {
     return buildPage(
       {
@@ -4878,7 +5060,7 @@ describe("MemoryService.search — hybrid mode", () => {
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -4937,9 +5119,7 @@ describe("MemoryService.search — hybrid mode", () => {
     const searchSpy = vi.fn(async () => ({
       // Semantic returns rows that would be merged on under-shoot — but
       // contains saturated, so this whole result is dropped.
-      results: [
-        buildHybridPage("z-discarded", "would-be-semantic"),
-      ],
+      results: [buildHybridPage("z-discarded", "would-be-semantic")],
     }))
     const client = {
       dataSources: { query: querySpy },
@@ -4973,7 +5153,7 @@ describe("MemoryService.search — hybrid mode", () => {
         setTimeout(() => {
           containsResolvedAt = ++now
           resolve()
-        }, 0),
+        }, 0)
       )
       return {
         results: [buildHybridPage("c-1", "one")],
@@ -5154,7 +5334,7 @@ describe("MemoryService.search — RRF fusion under saturation threshold", () =>
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -5264,7 +5444,7 @@ describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", ()
   function buildScoredPage(
     id: string,
     title: string,
-    confidenceScore: number | null,
+    confidenceScore: number | null
   ): PageObjectResponse {
     return buildPage(
       {
@@ -5281,7 +5461,7 @@ describe("MemoryService.search — confidence-weighted RRF (issue 0.8.0/08)", ()
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -5656,7 +5836,7 @@ describe("MemoryService.searchByHybridPages — structural pipeline split (issue
 
   function buildScoredPage(
     id: string,
-    confidenceScore: number | null,
+    confidenceScore: number | null
   ): PageObjectResponse {
     return buildPage(
       {
@@ -5673,7 +5853,7 @@ describe("MemoryService.searchByHybridPages — structural pipeline split (issue
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -5763,7 +5943,7 @@ describe("MemoryService.search — RRF tie-break determinism", () => {
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -5826,7 +6006,9 @@ describe("MemoryService.search — RRF tie-break determinism", () => {
       // semantic-only row's id alphabetically *before* the contains
       // row's id — if the comparator fell through to page id, the
       // semantic row would win.
-      results: [buildHybridPage("aaaa-semantic-but-alphabetically-before", "semantic hit")],
+      results: [
+        buildHybridPage("aaaa-semantic-but-alphabetically-before", "semantic hit"),
+      ],
     }))
     const client = {
       dataSources: { query: querySpy },
@@ -5907,7 +6089,7 @@ describe("tieBreakingRrfCompare — direct unit tests, one per tie-break level",
     score: number,
     containsRank: number | null,
     semanticRank: number | null,
-    confidenceFactor: number = 1.0,
+    confidenceFactor: number = 1.0
   ): RrfEntry {
     return {
       page: { id } as unknown as PageObjectResponse,
@@ -5979,13 +6161,17 @@ describe("MemoryService.search — intent parameter (#17)", () => {
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
   function makeContainsClause(
-    args: Record<string, unknown>,
-  ): { property: string; rich_text?: { contains: string }; title?: { contains: string } }[] {
+    args: Record<string, unknown>
+  ): {
+    property: string
+    rich_text?: { contains: string }
+    title?: { contains: string }
+  }[] {
     // Walk into the composed filter and pull out the `(Title contains q) OR
     // (Keywords contains q)` clause so we can pin "intent never enters
     // contains" by string-comparing the contains payload.
@@ -6034,8 +6220,7 @@ describe("MemoryService.search — intent parameter (#17)", () => {
     // Both inner clauses contain `"auth"`, never `"WeChat"` or the joined string.
     expect(orClause.length).toBeGreaterThan(0)
     for (const clause of orClause) {
-      const needle =
-        clause.rich_text?.contains ?? clause.title?.contains ?? ""
+      const needle = clause.rich_text?.contains ?? clause.title?.contains ?? ""
       expect(needle).toBe("auth")
       expect(needle).not.toContain("WeChat")
     }
@@ -6130,7 +6315,9 @@ describe("MemoryService.search — intent parameter (#17)", () => {
       mode: "contains",
       includeContent: false,
     })
-    const filterWithIntent = (querySpy.mock.calls[1][0] as Record<string, unknown>)["filter"]
+    const filterWithIntent = (querySpy.mock.calls[1][0] as Record<string, unknown>)[
+      "filter"
+    ]
 
     expect(filterWithIntent).toEqual(filterUnset)
   })
@@ -6364,7 +6551,7 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -6405,10 +6592,7 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
       next_cursor: null,
     }))
     const searchSpy = vi.fn(async () => ({
-      results: [
-        buildPageInDb("s-1", "semantic 1"),
-        buildPageInDb("s-2", "semantic 2"),
-      ],
+      results: [buildPageInDb("s-1", "semantic 1"), buildPageInDb("s-2", "semantic 2")],
     }))
     const client = {
       dataSources: { query: querySpy },
@@ -6431,10 +6615,7 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
 
   it("contains mode: branch is 'contains-only', semanticRank and rrfScore are null", async () => {
     const querySpy = vi.fn(async () => ({
-      results: [
-        buildPageInDb("a", "first"),
-        buildPageInDb("b", "second"),
-      ],
+      results: [buildPageInDb("a", "first"), buildPageInDb("b", "second")],
       has_more: false,
       next_cursor: null,
     }))
@@ -6588,10 +6769,7 @@ describe("MemoryService.searchWithExplain — branch-field rules and explain ali
       next_cursor: null,
     }))
     const searchSpy = vi.fn(async () => ({
-      results: [
-        buildPageInDb("s-1", "semantic 1"),
-        buildPageInDb("s-2", "semantic 2"),
-      ],
+      results: [buildPageInDb("s-1", "semantic 1"), buildPageInDb("s-2", "semantic 2")],
     }))
     const client = {
       dataSources: { query: querySpy },
@@ -6741,7 +6919,7 @@ describe("MemoryService.search — hybrid single-branch resilience (PF3-03)", ()
           type: "data_source_id",
           data_source_id: db.dataSourceId,
         },
-      } as Partial<PageObjectResponse>,
+      } as Partial<PageObjectResponse>
     )
   }
 
@@ -6834,7 +7012,7 @@ describe("MemoryService.search — hybrid single-branch resilience (PF3-03)", ()
       const service = new MemoryService(client, db)
 
       await expect(
-        service.search({ query: "q", mode: "hybrid", includeContent: false }),
+        service.search({ query: "q", mode: "hybrid", includeContent: false })
       ).rejects.toThrow("contains-failed")
     } finally {
       stderrSpy.mockRestore()
@@ -7005,7 +7183,7 @@ describe("MemoryService.search — hybrid single-branch resilience (PF3-03)", ()
       const service = new MemoryService(client, db)
 
       await expect(
-        service.search({ query: "q", mode: "hybrid", includeContent: false }),
+        service.search({ query: "q", mode: "hybrid", includeContent: false })
       ).rejects.toThrow("contains-down")
 
       const bothFailureLines = stderrSpy.mock.calls
@@ -7173,7 +7351,7 @@ describe("MemoryService.list — pagination", () => {
         Source: { type: "select", select: { name: "manual" } },
         Tags: { type: "multi_select", multi_select: [] },
       },
-      { id } as Partial<PageObjectResponse>,
+      { id } as Partial<PageObjectResponse>
     )
   }
 
@@ -7271,7 +7449,7 @@ describe("MemoryService.list — archived filter", () => {
   function buildListPage(
     id: string,
     title: string,
-    overrides: Partial<PageObjectResponse> = {},
+    overrides: Partial<PageObjectResponse> = {}
   ): PageObjectResponse {
     return buildPage(
       {
@@ -7281,7 +7459,7 @@ describe("MemoryService.list — archived filter", () => {
         Source: { type: "select", select: { name: "manual" } },
         Tags: { type: "multi_select", multi_select: [] },
       },
-      { id, ...overrides } as Partial<PageObjectResponse>,
+      { id, ...overrides } as Partial<PageObjectResponse>
     )
   }
 
@@ -7371,7 +7549,7 @@ describe("MemoryService.list — archived filter", () => {
     expect(nextCursor).toBeUndefined()
     expect(querySpy).toHaveBeenCalledTimes(2)
     expect(querySpy.mock.calls[1][0].start_cursor).toBe(
-      "notion-cursor-after-archived-page",
+      "notion-cursor-after-archived-page"
     )
   })
 
@@ -7494,12 +7672,8 @@ describe("MemoryService.list — archived filter", () => {
       expect(capped).toBe(true)
       expect(querySpy).toHaveBeenCalledTimes(5)
       const lines = stderrSpy.mock.calls.map((call) => String(call[0]))
-      expect(lines.some((line) => line.includes("live-page-refill-cap-fired"))).toBe(
-        true,
-      )
-      expect(lines.some((line) => line.includes("source=MemoryService.list"))).toBe(
-        true,
-      )
+      expect(lines.some((line) => line.includes("live-page-refill-cap-fired"))).toBe(true)
+      expect(lines.some((line) => line.includes("source=MemoryService.list"))).toBe(true)
     } finally {
       stderrSpy.mockRestore()
       if (original === undefined) {
@@ -7525,8 +7699,8 @@ describe("MemoryService.create — HTML entity decode at write", () => {
     const createSpy = vi.fn(async (_args: CreateArgs) =>
       buildPage(
         { Title: { type: "title", title: [{ plain_text: "PR #25650's diff" }] } },
-        { id: "mem-1" },
-      ),
+        { id: "mem-1" }
+      )
     )
     const updateMarkdownSpy = vi.fn(async (_args: UpdateMarkdownArgs) => ({}))
     const client = {
@@ -7552,8 +7726,8 @@ describe("MemoryService.create — HTML entity decode at write", () => {
     const createSpy = vi.fn(async (_args: CreateArgs) =>
       buildPage(
         { Title: { type: "title", title: [{ plain_text: "Clean title" }] } },
-        { id: "mem-2" },
-      ),
+        { id: "mem-2" }
+      )
     )
     const updateMarkdownSpy = vi.fn(async (_args: UpdateMarkdownArgs) => ({}))
     const client = {
@@ -7593,7 +7767,10 @@ describe("MemoryService.create — HTML entity decode at write", () => {
       }
     }
     const createSpy = vi.fn(async (_args: FullCreateArgs) =>
-      buildPage({ Title: { type: "title", title: [{ plain_text: "T" }] } }, { id: "mem-3" }),
+      buildPage(
+        { Title: { type: "title", title: [{ plain_text: "T" }] } },
+        { id: "mem-3" }
+      )
     )
     const updateMarkdownSpy = vi.fn(async (_args: UpdateMarkdownArgs) => ({}))
     const client = {
@@ -7644,7 +7821,7 @@ describe("MemoryService.update — HTML entity decode at write", () => {
     }
     const updateSpy = vi.fn(async (_args: FullUpdateArgs) => ({}))
     const updateMarkdownSpy = vi.fn(
-      async (_args: { replace_content: { new_str: string } }) => ({}),
+      async (_args: { replace_content: { new_str: string } }) => ({})
     )
     const retrieveSpy = vi.fn(async () =>
       buildPage(
@@ -7654,8 +7831,8 @@ describe("MemoryService.update — HTML entity decode at write", () => {
           Topic: { type: "relation", relation: [] },
           Source: { type: "select", select: { name: "manual" } },
         },
-        { id: "mem-1" },
-      ),
+        { id: "mem-1" }
+      )
     )
     const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
     const client = {
@@ -7703,8 +7880,8 @@ describe("MemoryService.update — HTML entity decode at write", () => {
           Topic: { type: "relation", relation: [] },
           Source: { type: "select", select: { name: "manual" } },
         },
-        { id: "mem-1" },
-      ),
+        { id: "mem-1" }
+      )
     )
     const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
     const client = {
@@ -7741,13 +7918,13 @@ describe("MemoryService.getTitleById — title cache", () => {
         Topic: { type: "relation", relation: [] },
         Source: { type: "select", select: { name: "manual" } },
       },
-      { id, parent: { type: "database_id", database_id: db.databaseId } },
+      { id, parent: { type: "database_id", database_id: db.databaseId } }
     )
   }
 
   it("skips the Notion call on repeat reads within the TTL window", async () => {
     const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
-      titlePage(page_id, "Cached title"),
+      titlePage(page_id, "Cached title")
     )
     const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
     const service = new MemoryService(client, db)
@@ -7782,7 +7959,7 @@ describe("MemoryService.getTitleById — title cache", () => {
   it("evicts on update so a subsequent read sees the new title", async () => {
     let currentTitle = "Old"
     const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
-      titlePage(page_id, currentTitle),
+      titlePage(page_id, currentTitle)
     )
     const updateSpy = vi.fn(async () => {
       currentTitle = "New"
@@ -7817,8 +7994,8 @@ describe("MemoryService.getTitleById — title cache", () => {
     // The correct behaviour: `archive()` installs a null tombstone in
     // the cache, so the next `getTitleById` short-circuits without a
     // network call at all.
-    const retrieveSpy = vi.fn(
-      async ({ page_id }: { page_id: string }) => titlePage(page_id, "Before"),
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
+      titlePage(page_id, "Before")
     )
     const updateSpy = vi.fn(async () => ({}))
     const client = {
@@ -7845,7 +8022,7 @@ describe("MemoryService.getTitleById — title cache", () => {
     // pages the user has explicitly archived.
     const archivedPage = buildPage(
       { Title: { type: "title", title: [{ plain_text: "Archived title" }] } },
-      { id: "mem-1", archived: true },
+      { id: "mem-1", archived: true }
     )
     const retrieveSpy = vi.fn(async () => archivedPage)
     const client = {
@@ -7885,8 +8062,8 @@ describe("MemoryService.getTitleById — title cache", () => {
     // cache isn't accidentally holding values forever.
     vi.useFakeTimers()
     try {
-      const retrieveSpy = vi.fn(
-        async ({ page_id }: { page_id: string }) => titlePage(page_id, "T"),
+      const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
+        titlePage(page_id, "T")
       )
       const client = {
         pages: { retrieve: retrieveSpy },
@@ -7920,14 +8097,17 @@ describe("MemoryService.getTitleById — title cache", () => {
     // below. Keeping the two scenarios distinct prevents the earlier
     // ambiguity where "missing-id" was named like a 404 but mocked like
     // an archive.
-    const ids = Array.from({ length: 24 }, (_, i) => `mem-${i.toString().padStart(2, "0")}`)
+    const ids = Array.from(
+      { length: 24 },
+      (_, i) => `mem-${i.toString().padStart(2, "0")}`
+    )
     ids.push("archived-id")
 
     const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
       if (page_id === "archived-id") {
         return buildPage(
           { Title: { type: "title", title: [{ plain_text: "doesn't matter" }] } },
-          { id: page_id, archived: true },
+          { id: page_id, archived: true }
         )
       }
       return titlePage(page_id, `Title of ${page_id}`)
@@ -7975,10 +8155,10 @@ describe("MemoryService.getTitleById — title cache", () => {
     // mem-01 is cached after the first run (1 fetch total).
     // truly-gone takes the transient path on both runs (2 fetches total).
     const callsForPresent = retrieveSpy.mock.calls.filter(
-      (c) => c[0].page_id === "mem-01",
+      (c) => c[0].page_id === "mem-01"
     ).length
     const callsForMissing = retrieveSpy.mock.calls.filter(
-      (c) => c[0].page_id === "truly-gone",
+      (c) => c[0].page_id === "truly-gone"
     ).length
     expect(callsForPresent).toBe(1)
     expect(callsForMissing).toBe(2)
@@ -8073,7 +8253,7 @@ describe("MemoryService.getTitleById — title cache", () => {
           retrieveMarkdown: vi.fn(),
         },
       } as unknown as Client,
-      db,
+      db
     )
 
     // Simulate: reader dispatches at startEpoch=2, which is exactly
@@ -8095,16 +8275,18 @@ describe("MemoryService.getTitleById — title cache", () => {
     // the cache at epoch=3 (simulating the writer's write-through), then
     // try to call fetchTitleAndCache with the stale startEpoch=2. The
     // epoch check should skip the commit.
-    const titleCache = (service as unknown as {
-      titleCache: { get(id: string): unknown; set(id: string, v: string | null): void }
-    }).titleCache
+    const titleCache = (
+      service as unknown as {
+        titleCache: { get(id: string): unknown; set(id: string, v: string | null): void }
+      }
+    ).titleCache
     titleCache.set("mem-1", "Newest")
 
     // Manually run a "reader that captured startEpoch=2" path via the
     // private fetchTitleAndCache.
     const page = buildPage(
       { Title: { type: "title", title: [{ plain_text: "Pre-race" }] } },
-      { id: "mem-1" },
+      { id: "mem-1" }
     )
     const client = (service as unknown as { client: Client }).client as Client & {
       pages: { retrieve: ReturnType<typeof vi.fn> }
@@ -8241,7 +8423,7 @@ describe("MemoryService.getManyById", () => {
 
   it("returns a Memory per input id, in input order, when every id resolves", async () => {
     const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
-      buildMemoryPage(page_id, `Memory ${page_id}`),
+      buildMemoryPage(page_id, `Memory ${page_id}`)
     )
     const retrieveMarkdown = vi.fn()
     const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
@@ -8266,7 +8448,7 @@ describe("MemoryService.getManyById", () => {
     // ask hot path. The properties-only posture is load-bearing —
     // `touchOnRead` only reads property fields off the row.
     const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
-      buildMemoryPage(page_id, `Memory ${page_id}`),
+      buildMemoryPage(page_id, `Memory ${page_id}`)
     )
     const retrieveMarkdown = vi.fn()
     const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
@@ -8343,7 +8525,7 @@ describe("MemoryService.getManyById", () => {
     // id and one Memory per distinct id back. Saves an unnecessary
     // Notion round-trip when the upstream collector hasn't deduped.
     const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
-      buildMemoryPage(page_id, `Memory ${page_id}`),
+      buildMemoryPage(page_id, `Memory ${page_id}`)
     )
     const retrieveMarkdown = vi.fn()
     const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
@@ -8362,7 +8544,7 @@ describe("MemoryService.getManyById", () => {
     // doesn't "helpfully" route through `getById` and silently
     // re-introduce the doubled Notion budget the spec rejected.
     const retrieve = vi.fn(async ({ page_id }: { page_id: string }) =>
-      buildMemoryPage(page_id, `Memory ${page_id}`),
+      buildMemoryPage(page_id, `Memory ${page_id}`)
     )
     const retrieveMarkdown = vi.fn()
     const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
@@ -8390,7 +8572,7 @@ describe("MemoryService.touchOnRead", () => {
       confidenceScore?: number | null
       lastReferencedAt?: string | null
       createdAt?: string
-    } = {},
+    } = {}
   ) {
     return {
       id: overrides.id ?? "m1",
@@ -8402,7 +8584,9 @@ describe("MemoryService.touchOnRead", () => {
   }
 
   it("short-circuits when lastReferencedAt is today AND confidenceScore is non-null", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8414,7 +8598,7 @@ describe("MemoryService.touchOnRead", () => {
           lastReferencedAt: TODAY,
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
     expect(update).not.toHaveBeenCalled()
@@ -8425,7 +8609,9 @@ describe("MemoryService.touchOnRead", () => {
     // `Last Referenced At` but the score column is still empty (the
     // companion column write would only diverge under a partial Notion
     // failure, but the helper must not skip on the in-memory snapshot).
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8437,7 +8623,7 @@ describe("MemoryService.touchOnRead", () => {
           lastReferencedAt: TODAY,
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
     expect(update).toHaveBeenCalledTimes(1)
@@ -8447,7 +8633,9 @@ describe("MemoryService.touchOnRead", () => {
     // createdAt is today → zero stale days → decay no-ops, only the
     // bump applies. seed("certain") = 0.9; bump(0.9) = 0.9 + 0.1*0.05
     // = 0.905.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8460,13 +8648,15 @@ describe("MemoryService.touchOnRead", () => {
           createdAt: `${TODAY}T00:00:00.000Z`,
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
     expect(update).toHaveBeenCalledTimes(1)
-    const writtenScore = (update.mock.calls[0]![0] as unknown as {
-      properties: { "Confidence Score": { number: number } }
-    }).properties["Confidence Score"].number
+    const writtenScore = (
+      update.mock.calls[0]![0] as unknown as {
+        properties: { "Confidence Score": { number: number } }
+      }
+    ).properties["Confidence Score"].number
     expect(writtenScore).toBeCloseTo(0.905, 6)
   })
 
@@ -8474,7 +8664,9 @@ describe("MemoryService.touchOnRead", () => {
     // 2026-04-29 minus 200 days = 2025-10-11 → 200 days elapsed →
     // 140 stale days past the 60-day grace.
     // seed("certain") = 0.9 → decay = 0.9 * 0.99^140 → bump.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8487,12 +8679,14 @@ describe("MemoryService.touchOnRead", () => {
           createdAt: "2025-10-11T00:00:00.000Z",
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
-    const writtenScore = (update.mock.calls[0]![0] as unknown as {
-      properties: { "Confidence Score": { number: number } }
-    }).properties["Confidence Score"].number
+    const writtenScore = (
+      update.mock.calls[0]![0] as unknown as {
+        properties: { "Confidence Score": { number: number } }
+      }
+    ).properties["Confidence Score"].number
     const decayed = 0.9 * Math.pow(0.99, 140)
     const expected = decayed + (1 - decayed) * 0.05
     expect(writtenScore).toBeCloseTo(expected, 6)
@@ -8504,7 +8698,9 @@ describe("MemoryService.touchOnRead", () => {
     // 2026-04-29 minus 100 days = 2026-01-19 → 100 days elapsed →
     // 40 stale days past the 60-day grace. Stored 0.9 → decay
     // 0.9 * 0.99^40 ≈ 0.602 → bump → ≈ 0.622. NOT bump(0.9) ≈ 0.905.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8515,12 +8711,14 @@ describe("MemoryService.touchOnRead", () => {
           lastReferencedAt: "2026-01-19",
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
-    const writtenScore = (update.mock.calls[0]![0] as unknown as {
-      properties: { "Confidence Score": { number: number } }
-    }).properties["Confidence Score"].number
+    const writtenScore = (
+      update.mock.calls[0]![0] as unknown as {
+        properties: { "Confidence Score": { number: number } }
+      }
+    ).properties["Confidence Score"].number
     const decayed = 0.9 * Math.pow(0.99, 40)
     const expected = decayed + (1 - decayed) * 0.05
     expect(writtenScore).toBeCloseTo(expected, 6)
@@ -8529,7 +8727,9 @@ describe("MemoryService.touchOnRead", () => {
   })
 
   it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8570,7 +8770,7 @@ describe("MemoryService.touchOnRead", () => {
             message: error instanceof Error ? error.message : String(error),
           })
         },
-      },
+      }
     )
 
     expect(update).toHaveBeenCalledTimes(3)
@@ -8586,7 +8786,7 @@ describe("MemoryService.touchOnRead", () => {
       async (args: { page_id: string; properties: Record<string, unknown> }) => {
         if (args.page_id === "m-bad") throw new Error("notion 503")
         return undefined
-      },
+      }
     )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
@@ -8598,14 +8798,16 @@ describe("MemoryService.touchOnRead", () => {
           makeMemoryShape({ id: "m-bad" }),
           makeMemoryShape({ id: "m-good-2" }),
         ],
-        { today: TODAY },
-      ),
+        { today: TODAY }
+      )
     ).resolves.toBeUndefined()
     expect(update).toHaveBeenCalledTimes(3)
   })
 
   it("is a no-op (and issues no Notion calls) for an empty memory list", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8622,7 +8824,9 @@ describe("MemoryService.touchOnRead", () => {
     // on `decayConfidenceScore`'s null-tolerant pass-through for this
     // case — pin it so a future "narrow lastReferencedAt to non-null
     // here" refactor surfaces this corner case.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8633,12 +8837,14 @@ describe("MemoryService.touchOnRead", () => {
           lastReferencedAt: null, // pathological — production never produces this
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
-    const writtenScore = (update.mock.calls[0]![0] as unknown as {
-      properties: { "Confidence Score": { number: number } }
-    }).properties["Confidence Score"].number
+    const writtenScore = (
+      update.mock.calls[0]![0] as unknown as {
+        properties: { "Confidence Score": { number: number } }
+      }
+    ).properties["Confidence Score"].number
     // No decay applies (lastReferencedAt is null) → bump 0.7 directly:
     // 0.7 + (1 − 0.7) * 0.05 = 0.715.
     expect(writtenScore).toBeCloseTo(0.715, 6)
@@ -8650,7 +8856,9 @@ describe("MemoryService.touchOnRead", () => {
     // computes bump(decay(seed, createdAt, today)). Modulo the single
     // bump step (representing the cite the touchOnRead path embodies),
     // the two paths land on the same intermediate decayed value.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8663,12 +8871,14 @@ describe("MemoryService.touchOnRead", () => {
           createdAt: "2025-10-11T00:00:00.000Z",
         }),
       ],
-      { today: TODAY },
+      { today: TODAY }
     )
 
-    const writtenScore = (update.mock.calls[0]![0] as unknown as {
-      properties: { "Confidence Score": { number: number } }
-    }).properties["Confidence Score"].number
+    const writtenScore = (
+      update.mock.calls[0]![0] as unknown as {
+        properties: { "Confidence Score": { number: number } }
+      }
+    ).properties["Confidence Score"].number
     // seed("likely") = 0.6 → decay over 140 stale days → bump.
     const migrationValue = 0.6 * Math.pow(0.99, 140)
     const touchValue = migrationValue + (1 - migrationValue) * 0.05
@@ -8687,7 +8897,7 @@ describe("MemoryService.decrementConfidence", () => {
       confidenceScore?: number | null
       lastReferencedAt?: string | null
       createdAt?: string
-    } = {},
+    } = {}
   ) {
     return {
       id: overrides.id ?? "m1",
@@ -8699,13 +8909,15 @@ describe("MemoryService.decrementConfidence", () => {
   }
 
   it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
     await service.decrementConfidence(
       makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
-      { today: TODAY },
+      { today: TODAY }
     )
 
     expect(update).toHaveBeenCalledTimes(1)
@@ -8721,13 +8933,15 @@ describe("MemoryService.decrementConfidence", () => {
   })
 
   it("halves a fresh, non-stale, non-null score (no decay applied)", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
     const next = await service.decrementConfidence(
       makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
-      { today: TODAY },
+      { today: TODAY }
     )
 
     expect(next).toBeCloseTo(0.45, 6)
@@ -8736,7 +8950,9 @@ describe("MemoryService.decrementConfidence", () => {
   it("decays-then-decrements on a stale row (200 days neglected)", async () => {
     // 200 days elapsed → 140 stale days past 60-day grace.
     // 0.9 * 0.99^140 ≈ 0.220 → halve → ≈ 0.110.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8745,7 +8961,7 @@ describe("MemoryService.decrementConfidence", () => {
         confidenceScore: 0.9,
         lastReferencedAt: "2025-10-11",
       }),
-      { today: TODAY },
+      { today: TODAY }
     )
 
     const decayed = 0.9 * Math.pow(0.99, 140)
@@ -8759,7 +8975,9 @@ describe("MemoryService.decrementConfidence", () => {
     // Pre-migration row contradicted directly. seed("certain") = 0.9 →
     // decay against createdAt → halve. Same convergence guarantee as
     // touchOnRead's null-score branch.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -8770,7 +8988,7 @@ describe("MemoryService.decrementConfidence", () => {
         lastReferencedAt: null,
         createdAt: "2025-10-11T00:00:00.000Z",
       }),
-      { today: TODAY },
+      { today: TODAY }
     )
 
     const decayed = 0.9 * Math.pow(0.99, 140)
@@ -8779,13 +8997,15 @@ describe("MemoryService.decrementConfidence", () => {
   })
 
   it("returns the new score from the call", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
     const next = await service.decrementConfidence(
       makeMemoryShape({ confidenceScore: 0.5, lastReferencedAt: TODAY }),
-      { today: TODAY },
+      { today: TODAY }
     )
 
     expect(next).toBeCloseTo(0.25, 6)
@@ -8801,8 +9021,8 @@ describe("MemoryService.decrementConfidence", () => {
     await expect(
       service.decrementConfidence(
         makeMemoryShape({ confidenceScore: 0.9, lastReferencedAt: TODAY }),
-        { today: TODAY },
-      ),
+        { today: TODAY }
+      )
     ).rejects.toThrow("notion 429")
   })
 })
@@ -8819,7 +9039,7 @@ describe("MemoryService.listAllForBackfill", () => {
   function makePage(
     id: string,
     overrides: Partial<PageObjectResponse> = {},
-    properties: Record<string, unknown> = {},
+    properties: Record<string, unknown> = {}
   ): PageObjectResponse {
     return {
       object: "page",
@@ -8905,9 +9125,7 @@ describe("MemoryService.listAllForBackfill", () => {
     // Sanity: the filter mentions the project id (exact shape comes from
     // `projectOrUnscopedFilter`, pinned in its own tests).
     expect(JSON.stringify(args.filter)).toContain("project-123")
-    expect(args.sorts).toEqual([
-      { timestamp: "created_time", direction: "ascending" },
-    ])
+    expect(args.sorts).toEqual([{ timestamp: "created_time", direction: "ascending" }])
     expect(args.page_size).toBe(100)
   })
 
@@ -8931,8 +9149,7 @@ describe("MemoryService.applyBackfillScore", () => {
 
   it("writes both Confidence Score and Last Referenced At in a single pages.update", async () => {
     const update = vi.fn(
-      async (_args: { page_id: string; properties: Record<string, unknown> }) =>
-        undefined,
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
     )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
@@ -8957,7 +9174,7 @@ describe("MemoryService.applyBackfillScore", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.applyBackfillScore("memory-1", 0.5, "2025-10-11"),
+      service.applyBackfillScore("memory-1", 0.5, "2025-10-11")
     ).rejects.toThrow("notion 429")
   })
 })
@@ -8972,7 +9189,7 @@ describe("MemoryService.confidenceStats", () => {
   function makePage(
     id: string,
     confidenceScore: number | null,
-    overrides: Partial<PageObjectResponse> = {},
+    overrides: Partial<PageObjectResponse> = {}
   ): PageObjectResponse {
     const props: Record<string, unknown> = {
       Title: { type: "title", title: [{ plain_text: id, text: { content: id } }] },
@@ -9158,7 +9375,7 @@ describe("MemoryService.queryStaleConfidence", () => {
       confidenceScore?: number | null
       lastReferencedAt?: string | null
       archived?: boolean
-    } = {},
+    } = {}
   ): PageObjectResponse {
     const props: Record<string, unknown> = {
       Title: { type: "title", title: [{ plain_text: id }] },
@@ -9218,7 +9435,7 @@ describe("MemoryService.queryStaleConfidence", () => {
             { property: "Project", relation: { is_empty: true } },
           ],
         },
-      ]),
+      ])
     )
   })
 
@@ -9251,7 +9468,7 @@ describe("MemoryService.queryStaleConfidence", () => {
     expect(filter.and).toEqual(
       expect.arrayContaining([
         { property: "Confidence Score", number: { is_not_empty: true } },
-      ]),
+      ])
     )
   })
 
@@ -9267,7 +9484,7 @@ describe("MemoryService.queryStaleConfidence", () => {
     expect(filter.and).toEqual(
       expect.arrayContaining([
         { property: "Confidence Score", number: { is_not_empty: true } },
-      ]),
+      ])
     )
   })
 
@@ -9293,7 +9510,7 @@ describe("MemoryService.queryStaleConfidence", () => {
             { property: "Last Referenced At", date: { on_or_before: "2026-02-28" } },
           ],
         },
-      ]),
+      ])
     )
   })
 
@@ -9418,9 +9635,12 @@ describe("MemoryService.queryStaleConfidence", () => {
     // their 0.7.0/PF3-01 feature on pre-column vaults. The schema-
     // drift detector is the canonical "run lore migrate" nudge.
     const querySpy = vi.fn(async () => {
-      const err = Object.assign(new Error("Could not find sort property with name or id: Confidence Score"), {
-        code: "validation_error",
-      })
+      const err = Object.assign(
+        new Error("Could not find sort property with name or id: Confidence Score"),
+        {
+          code: "validation_error",
+        }
+      )
       throw err
     })
     const client = {
@@ -9453,7 +9673,7 @@ describe("MemoryService.queryStaleConfidence", () => {
     const service = new MemoryService(client, db)
 
     await expect(
-      service.queryStaleConfidence({ limit: 5, today: TODAY }),
+      service.queryStaleConfidence({ limit: 5, today: TODAY })
     ).rejects.toThrow("rate_limited")
   })
 
@@ -9517,7 +9737,7 @@ describe("pageToMemory — Compared With + Compare Notes (0.9.0/02)", () => {
     const memory = pageToMemory(page)
     expect(memory.comparedWith).toEqual(["page-a", "page-b"])
     expect(memory.compareNotes).toBe(
-      '{"verdict":"scoped","target":"page-a"}\n{"verdict":"related","target":"page-b"}',
+      '{"verdict":"scoped","target":"page-a"}\n{"verdict":"related","target":"page-b"}'
     )
   })
 
@@ -9534,13 +9754,15 @@ describe("pageToMemory — Compared With + Compare Notes (0.9.0/02)", () => {
       Title: { type: "title", title: [{ plain_text: "x" }] },
       "Compared With": {
         type: "relation",
-        relation: ((built["Compared With"] as { relation: { id: string }[] }).relation),
+        relation: (built["Compared With"] as { relation: { id: string }[] }).relation,
       },
       "Compare Notes": {
         type: "rich_text",
-        rich_text: ((built["Compare Notes"] as {
-          rich_text: { text: { content: string }; plain_text?: string }[]
-        }).rich_text).map((r) => ({ plain_text: r.text.content })),
+        rich_text: (
+          built["Compare Notes"] as {
+            rich_text: { text: { content: string }; plain_text?: string }[]
+          }
+        ).rich_text.map((r) => ({ plain_text: r.text.content })),
       },
     })
     const memory = pageToMemory(page)
@@ -9584,10 +9806,10 @@ describe("appendCompareNote (0.9.0/02)", () => {
     const existing = "a".repeat(padTo)
 
     expect(() => appendCompareNote(existing, sampleEntry)).toThrow(
-      /Compare Notes overflow/,
+      /Compare Notes overflow/
     )
     expect(() => appendCompareNote(existing, sampleEntry)).toThrow(
-      String(COMPARE_NOTES_MAX_CHARS),
+      String(COMPARE_NOTES_MAX_CHARS)
     )
   })
 
@@ -9618,7 +9840,7 @@ describe("appendCompareNote (0.9.0/02)", () => {
     const entryLen = JSON.stringify(sampleEntry).length
     const existing = "a".repeat(COMPARE_NOTES_MAX_CHARS - entryLen)
     expect(() => appendCompareNote(existing, sampleEntry)).toThrow(
-      /Compare Notes overflow/,
+      /Compare Notes overflow/
     )
   })
 })
@@ -9650,16 +9872,14 @@ describe("encodeCompareNotesRichText (0.9.0/02)", () => {
     // — hits the same threshold here, so an over-cap rich_text payload
     // can never reach Notion.
     const overCap = "a".repeat(COMPARE_NOTES_MAX_CHARS + 1)
+    expect(() => encodeCompareNotesRichText(overCap)).toThrow(/Compare Notes overflow/)
     expect(() => encodeCompareNotesRichText(overCap)).toThrow(
-      /Compare Notes overflow/,
-    )
-    expect(() => encodeCompareNotesRichText(overCap)).toThrow(
-      String(COMPARE_NOTES_MAX_CHARS),
+      String(COMPARE_NOTES_MAX_CHARS)
     )
     // The error names the input length too so the operator can quickly
     // see how far over the cap they are.
     expect(() => encodeCompareNotesRichText(overCap)).toThrow(
-      String(COMPARE_NOTES_MAX_CHARS + 1),
+      String(COMPARE_NOTES_MAX_CHARS + 1)
     )
   })
 
@@ -9697,7 +9917,7 @@ describe("encodeCompareNotesRichText (0.9.0/02)", () => {
           reason: "lorem ipsum dolor sit amet consectetur adipiscing elit",
           judgedAt: "2026-04-30",
           promptVersion: "1",
-        }),
+        })
       )
     }
     const payload = lines.join("\n")
@@ -9746,9 +9966,7 @@ describe("encodeCompareNotesRichText (0.9.0/02)", () => {
     // Second chunk preserves the leading "\n" separator so an
     // `extractRichText` concatenation (which inserts no separators)
     // reconstructs the original NDJSON byte-for-byte.
-    expect((chunks[1] as { text: { content: string } }).text.content).toBe(
-      "\n" + e2,
-    )
+    expect((chunks[1] as { text: { content: string } }).text.content).toBe("\n" + e2)
   })
 
   it("packs multiple entries into one chunk when they collectively fit", () => {
@@ -9871,7 +10089,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "scoped",
         affected: null,
-      }),
+      })
     ).toBe(false)
   })
 
@@ -9889,7 +10107,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "scoped",
         affected: null,
-      }),
+      })
     ).toBe(true)
   })
 
@@ -9907,7 +10125,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "conflicts_with",
         affected: "page-a",
-      }),
+      })
     ).toBe(true)
   })
 
@@ -9933,7 +10151,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "conflicts_with",
         affected: "page-a", // corrected direction
-      }),
+      })
     ).toBe(false)
   })
 
@@ -9954,7 +10172,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "conflicts_with",
         affected: "page-a",
-      }),
+      })
     ).toBe(false)
   })
 
@@ -9975,7 +10193,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "scoped",
         affected: null,
-      }),
+      })
     ).toBe(false)
   })
 
@@ -9990,7 +10208,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "related",
         affected: null,
-      }),
+      })
     ).toBe(true)
   })
 
@@ -10004,14 +10222,14 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "scoped",
         affected: null,
-      }),
+      })
     ).toBe(true)
     expect(
       hasMatchingCompareNote(notes, {
         target: "page-b",
         verdict: "related",
         affected: null,
-      }),
+      })
     ).toBe(true)
   })
 
@@ -10029,7 +10247,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "scoped",
         affected: null,
-      }),
+      })
     ).toBe(true)
   })
 
@@ -10049,7 +10267,7 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "page-a",
         verdict: "scoped",
         affected: null,
-      }),
+      })
     ).toBe(true)
   })
 
@@ -10066,13 +10284,13 @@ describe("hasMatchingCompareNote (0.9.0/05)", () => {
         target: "winner",
         verdict: "conflicts_with",
         affected: "loser",
-      }),
+      })
     ).toBe(false)
     expect(
       hasCompareDispatchLedgerEntry(notes, {
         dispatchKey: ledger.dispatchKey,
         step: "confidence_decrement",
-      }),
+      })
     ).toBe(true)
   })
 })
@@ -10090,7 +10308,7 @@ describe("compare dispatch ledger (issue #239)", () => {
       hasCompareDispatchLedgerEntry(notes, {
         dispatchKey: ledger.dispatchKey,
         step: "confidence_decrement",
-      }),
+      })
     ).toBe(true)
     expect(
       hasCompareDispatchLedgerEntry(notes, {
@@ -10100,7 +10318,7 @@ describe("compare dispatch ledger (issue #239)", () => {
           affectedMemoryId: "old-decision",
         }).dispatchKey,
         step: "confidence_decrement",
-      }),
+      })
     ).toBe(false)
   })
 })
@@ -10113,7 +10331,7 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       id?: string
       comparedWith?: string[]
       compareNotes?: string
-    } = {},
+    } = {}
   ) {
     return {
       id: overrides.id ?? "m1",
@@ -10123,7 +10341,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
   }
 
   it("issues exactly two pages.update calls — one per side — with both Compared With and Compare Notes (symmetric verdict carries affected: null)", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10138,30 +10358,41 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     })
 
     expect(update).toHaveBeenCalledTimes(2)
-    const calls = update.mock.calls.map((c) => c[0] as {
-      page_id: string
-      properties: Record<string, unknown>
-    })
+    const calls = update.mock.calls.map(
+      (c) =>
+        c[0] as {
+          page_id: string
+          properties: Record<string, unknown>
+        }
+    )
     const sideA = calls.find((c) => c.page_id === "page-a")!
     const sideB = calls.find((c) => c.page_id === "page-b")!
 
     // Each side names its counterpart in Compared With.
-    expect((sideA.properties["Compared With"] as { relation: { id: string }[] }).relation).toEqual([
-      { id: "page-b" },
-    ])
-    expect((sideB.properties["Compared With"] as { relation: { id: string }[] }).relation).toEqual([
-      { id: "page-a" },
-    ])
+    expect(
+      (sideA.properties["Compared With"] as { relation: { id: string }[] }).relation
+    ).toEqual([{ id: "page-b" }])
+    expect(
+      (sideB.properties["Compared With"] as { relation: { id: string }[] }).relation
+    ).toEqual([{ id: "page-a" }])
     // Each side carries an NDJSON entry naming the OTHER memory.
     // Symmetric verdicts persist `affected: null` so the idempotency
     // gate distinguishes symmetric from asymmetric judgments stored
     // on the same pair.
-    const notesA = (sideA.properties["Compare Notes"] as {
-      rich_text: Array<{ text: { content: string } }>
-    }).rich_text.map((r) => r.text.content).join("")
-    const notesB = (sideB.properties["Compare Notes"] as {
-      rich_text: Array<{ text: { content: string } }>
-    }).rich_text.map((r) => r.text.content).join("")
+    const notesA = (
+      sideA.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
+    const notesB = (
+      sideB.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
     expect(JSON.parse(notesA)).toMatchObject({
       target: "page-b",
       verdict: "scoped",
@@ -10178,7 +10409,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     // Direction is part of the pair-scoped idempotency key — both
     // sides record the loser's id so a corrected re-judgment with a
     // flipped affected side bypasses the gate and re-dispatches.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10192,21 +10425,30 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       promptVersion: "1",
     })
 
-    const calls = update.mock.calls.map((c) => c[0] as {
-      page_id: string
-      properties: Record<string, unknown>
-    })
+    const calls = update.mock.calls.map(
+      (c) =>
+        c[0] as {
+          page_id: string
+          properties: Record<string, unknown>
+        }
+    )
     for (const call of calls) {
-      const notes = (call.properties["Compare Notes"] as {
-        rich_text: Array<{ text: { content: string } }>
-      }).rich_text.map((r) => r.text.content).join("")
+      const notes = (
+        call.properties["Compare Notes"] as {
+          rich_text: Array<{ text: { content: string } }>
+        }
+      ).rich_text
+        .map((r) => r.text.content)
+        .join("")
       const entry = JSON.parse(notes) as { affected: string }
       expect(entry.affected).toBe("page-b")
     }
   })
 
   it("appends the verdict to existing Compare Notes without rewriting earlier entries", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10232,9 +10474,13 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     const sideA = update.mock.calls
       .map((c) => c[0] as { page_id: string; properties: Record<string, unknown> })
       .find((c) => c.page_id === "page-a")!
-    const notes = (sideA.properties["Compare Notes"] as {
-      rich_text: Array<{ text: { content: string } }>
-    }).rich_text.map((r) => r.text.content).join("")
+    const notes = (
+      sideA.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
     const lines = notes.split("\n")
     expect(lines).toHaveLength(2)
     expect(JSON.parse(lines[0]!)).toMatchObject({ verdict: "not_conflict" })
@@ -10248,7 +10494,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     // should NOT grow with a duplicate id — Notion's relation column
     // is set-semantic but the local compose step de-dupes anyway so
     // an over-long array isn't sent over the wire.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10264,9 +10512,11 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
 
     for (const call of update.mock.calls) {
       const args = call[0] as { properties: Record<string, unknown> }
-      const relation = (args.properties["Compared With"] as {
-        relation: { id: string }[]
-      }).relation
+      const relation = (
+        args.properties["Compared With"] as {
+          relation: { id: string }[]
+        }
+      ).relation
       // Each side's relation has exactly one entry naming the
       // counterpart — not two.
       expect(relation).toHaveLength(1)
@@ -10280,7 +10530,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     // catches the overflow — the error surfaces from the helper, NOT
     // from a partial write at Notion. Verifies that no pages.update
     // ever fires when the compose step throws.
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10306,13 +10558,15 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
         reason: "x",
         judgedAt: "2026-04-30T00:00:00.000Z",
         promptVersion: "1",
-      }),
+      })
     ).rejects.toThrow(/Compare Notes overflow/)
     expect(update).not.toHaveBeenCalled()
   })
 
   it("returns { wroteA: true, wroteB: true } on a fresh judgment where neither side has the entry", async () => {
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10343,7 +10597,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       judgedAt: "2026-04-29T00:00:00.000Z",
       promptVersion: "1",
     })
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10375,7 +10631,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       judgedAt: "2026-04-29T00:00:00.000Z",
       promptVersion: "1",
     })
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10419,7 +10677,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       judgedAt: "2026-04-29T00:00:00.000Z",
       promptVersion: "1",
     })
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10459,7 +10719,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       sourceMemoryId: "page-a",
       affectedMemoryId: "page-b",
     })
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10483,19 +10745,25 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     const sideB = update.mock.calls
       .map((c) => c[0] as { page_id: string; properties: Record<string, unknown> })
       .find((c) => c.page_id === "page-b")!
-    const notesB = (sideB.properties["Compare Notes"] as {
-      rich_text: Array<{ text: { content: string } }>
-    }).rich_text.map((r) => r.text.content).join("")
-    const lines = notesB.split("\n").map((line) => JSON.parse(line) as {
-      entryType?: string
-      verdict?: string
-    })
+    const notesB = (
+      sideB.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
+    const lines = notesB.split("\n").map(
+      (line) =>
+        JSON.parse(line) as {
+          entryType?: string
+          verdict?: string
+        }
+    )
     expect(
       lines.filter(
         (line) =>
-          line.entryType !== "compare_dispatch" &&
-          line.verdict === "conflicts_with",
-      ),
+          line.entryType !== "compare_dispatch" && line.verdict === "conflicts_with"
+      )
     ).toHaveLength(1)
     expect(lines.some((line) => line.entryType === "compare_dispatch")).toBe(true)
   })
@@ -10514,7 +10782,9 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
       judgedAt: "2026-04-29T00:00:00.000Z",
       promptVersion: "1",
     })
-    const update = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined)
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
     const client = { pages: { update } } as unknown as Client
     const service = new MemoryService(client, db)
 
@@ -10545,7 +10815,7 @@ describe("recordContradiction (0.9.0/05)", () => {
       confidenceScore?: number | null
       lastReferencedAt?: string | null
       createdAt?: string
-    } = {},
+    } = {}
   ) {
     return {
       id: overrides.id ?? "m1",
@@ -10558,11 +10828,13 @@ describe("recordContradiction (0.9.0/05)", () => {
     }
   }
 
-  function makeMockServices(opts: {
-    decrementConfidence?: ReturnType<typeof vi.fn>
-    createWithDedup?: ReturnType<typeof vi.fn>
-    supersede?: ReturnType<typeof vi.fn>
-  } = {}) {
+  function makeMockServices(
+    opts: {
+      decrementConfidence?: ReturnType<typeof vi.fn>
+      createWithDedup?: ReturnType<typeof vi.fn>
+      supersede?: ReturnType<typeof vi.fn>
+    } = {}
+  ) {
     return {
       memories: {
         decrementConfidence:
@@ -10634,7 +10906,7 @@ describe("recordContradiction (0.9.0/05)", () => {
         contradictedMemory: memShape({ id: "loser", title: "L" }),
         sourceMemory: memShape({ id: "winner", title: "W" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow("notion 500")
     // Decrement never fires — retry is safe because no destructive
     // write landed.
@@ -10673,28 +10945,28 @@ describe("recordContradiction (0.9.0/05)", () => {
         contradictedMemory: memShape({ id: "loser", title: "L" }),
         sourceMemory: memShape({ id: "winner", title: "W" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/step=fact/)
     await expect(
       recordContradiction(services, {
         contradictedMemory: memShape({ id: "loser", title: "L" }),
         sourceMemory: memShape({ id: "winner", title: "W" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/affectedMemoryId=loser/)
     await expect(
       recordContradiction(services, {
         contradictedMemory: memShape({ id: "loser", title: "L" }),
         sourceMemory: memShape({ id: "winner", title: "W" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/factId=fact-99/)
     await expect(
       recordContradiction(services, {
         contradictedMemory: memShape({ id: "loser", title: "L" }),
         sourceMemory: memShape({ id: "winner", title: "W" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/inconsistentState: true/)
   })
 
@@ -10764,26 +11036,23 @@ describe("recordContradiction (0.9.0/05)", () => {
       ["just below certain cutoff (0.84)", 0.84, "likely"],
       ["exactly at certain cutoff (0.85)", 0.85, "certain"],
       ["above certain cutoff (1.0)", 1.0, "certain"],
-    ])(
-      "judgeConfidence %s maps to %s",
-      async (_label, judgeConfidence, expected) => {
-        const createWithDedup = vi.fn(async (_input: unknown) => ({
-          fact: { id: `fact-${expected}` },
-          deduped: false,
-        }))
-        const services = makeMockServices({ createWithDedup })
+    ])("judgeConfidence %s maps to %s", async (_label, judgeConfidence, expected) => {
+      const createWithDedup = vi.fn(async (_input: unknown) => ({
+        fact: { id: `fact-${expected}` },
+        deduped: false,
+      }))
+      const services = makeMockServices({ createWithDedup })
 
-        await recordContradiction(services, {
-          contradictedMemory: memShape({ id: "loser", title: "L" }),
-          sourceMemory: memShape({ id: "winner", title: "W" }),
-          judgeConfidence: judgeConfidence as number | undefined,
-        })
+      await recordContradiction(services, {
+        contradictedMemory: memShape({ id: "loser", title: "L" }),
+        sourceMemory: memShape({ id: "winner", title: "W" }),
+        judgeConfidence: judgeConfidence as number | undefined,
+      })
 
-        expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
-          confidence: expected,
-        })
-      },
-    )
+      expect(createWithDedup.mock.calls[0]![0]).toMatchObject({
+        confidence: expected,
+      })
+    })
   })
 })
 
@@ -10797,7 +11066,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
       confidenceScore?: number | null
       lastReferencedAt?: string | null
       createdAt?: string
-    } = {},
+    } = {}
   ) {
     return {
       id: overrides.id ?? "m1",
@@ -10810,11 +11079,13 @@ describe("recordSupersedence (0.9.0/05)", () => {
     }
   }
 
-  function makeMockServices(opts: {
-    decrementConfidence?: ReturnType<typeof vi.fn>
-    createWithDedup?: ReturnType<typeof vi.fn>
-    supersede?: ReturnType<typeof vi.fn>
-  } = {}) {
+  function makeMockServices(
+    opts: {
+      decrementConfidence?: ReturnType<typeof vi.fn>
+      createWithDedup?: ReturnType<typeof vi.fn>
+      supersede?: ReturnType<typeof vi.fn>
+    } = {}
+  ) {
     return {
       memories: {
         decrementConfidence:
@@ -10896,7 +11167,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
         supersedingMemory: memShape({ id: "new", title: "N" }),
         supersededMemory: memShape({ id: "old", title: "O" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toMatchObject({
       name: "CompareDispatchPartialFailureError",
       step: "supersede",
@@ -10910,21 +11181,21 @@ describe("recordSupersedence (0.9.0/05)", () => {
         supersedingMemory: memShape({ id: "new", title: "N" }),
         supersededMemory: memShape({ id: "old", title: "O" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/step=supersede/)
     await expect(
       recordSupersedence(services, {
         supersedingMemory: memShape({ id: "new", title: "N" }),
         supersededMemory: memShape({ id: "old", title: "O" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/affectedMemoryId=old/)
     await expect(
       recordSupersedence(services, {
         supersedingMemory: memShape({ id: "new", title: "N" }),
         supersededMemory: memShape({ id: "old", title: "O" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow(/supersedingMemoryId=new/)
     expect(decrementConfidence).not.toHaveBeenCalled()
   })
@@ -10945,7 +11216,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
         supersedingMemory: memShape({ id: "new", title: "N" }),
         supersededMemory: memShape({ id: "old", title: "O" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toMatchObject({
       name: "CompareDispatchPartialFailureError",
       step: "fact",
@@ -11002,7 +11273,7 @@ describe("recordSupersedence (0.9.0/05)", () => {
         supersedingMemory: memShape({ id: "new", title: "N" }),
         supersededMemory: memShape({ id: "old", title: "O" }),
         judgeConfidence: 0.9,
-      }),
+      })
     ).rejects.toThrow("notion 500")
     expect(createWithDedup).not.toHaveBeenCalled()
     expect(decrementConfidence).not.toHaveBeenCalled()
@@ -11019,7 +11290,7 @@ describe("MemoryService.listForScan (0.9.0/09)", () => {
       title?: string
       projectIds: string[]
       archived?: boolean
-    },
+    }
   ): PageObjectResponse {
     return buildPage(
       {
@@ -11029,30 +11300,34 @@ describe("MemoryService.listForScan (0.9.0/09)", () => {
           relation: opts.projectIds.map((pid) => ({ id: pid })),
         },
       },
-      { id, archived: opts.archived ?? false },
+      { id, archived: opts.archived ?? false }
     )
   }
 
-  function makeQueryClient(pagesByCall: Array<{
-    results: PageObjectResponse[]
-    has_more?: boolean
-    next_cursor?: string | null
-  }>) {
+  function makeQueryClient(
+    pagesByCall: Array<{
+      results: PageObjectResponse[]
+      has_more?: boolean
+      next_cursor?: string | null
+    }>
+  ) {
     let callIndex = 0
-    const querySpy = vi.fn(async (_args: {
-      data_source_id: string
-      filter?: unknown
-      start_cursor?: string
-      page_size?: number
-    }) => {
-      const result = pagesByCall[callIndex]
-      callIndex++
-      return {
-        results: result?.results ?? [],
-        has_more: result?.has_more ?? false,
-        next_cursor: result?.next_cursor ?? null,
+    const querySpy = vi.fn(
+      async (_args: {
+        data_source_id: string
+        filter?: unknown
+        start_cursor?: string
+        page_size?: number
+      }) => {
+        const result = pagesByCall[callIndex]
+        callIndex++
+        return {
+          results: result?.results ?? [],
+          has_more: result?.has_more ?? false,
+          next_cursor: result?.next_cursor ?? null,
+        }
       }
-    })
+    )
     return { querySpy }
   }
 
@@ -11098,7 +11373,7 @@ describe("MemoryService.listForScan (0.9.0/09)", () => {
     // First Notion page (100 rows) returns has_more=true with a cursor.
     // Without pagination, the second page's row would be silently dropped.
     const firstPage = Array.from({ length: 100 }, (_, i) =>
-      buildScanPage(`m-${i}`, { projectIds: ["P1"] }),
+      buildScanPage(`m-${i}`, { projectIds: ["P1"] })
     )
     const secondPage = [buildScanPage("m-late", { projectIds: ["P1"] })]
     const { querySpy } = makeQueryClient([
@@ -11182,7 +11457,7 @@ describe("MemoryService.listForScan (0.9.0/09)", () => {
 
   it("fires onProgress once per Notion page received with project label and running total", async () => {
     const firstPage = Array.from({ length: 100 }, (_, i) =>
-      buildScanPage(`m-${i}`, { projectIds: ["P1"] }),
+      buildScanPage(`m-${i}`, { projectIds: ["P1"] })
     )
     const secondPage = [buildScanPage("m-late", { projectIds: ["P1"] })]
     const { querySpy } = makeQueryClient([

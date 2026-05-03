@@ -12,8 +12,14 @@ import {
   todayUtc,
   type TaskStats,
 } from "./task.js"
-import { STALE_TASK_DAYS } from "../types.js"
-import type { DatabaseRef, TaskState } from "../types.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
+import { STALE_TASK_DAYS, SYNOPSIS_MAX } from "../types.js"
+import type {
+  CreateTaskInput,
+  DatabaseRef,
+  TaskState,
+  UpdateTaskInput,
+} from "../types.js"
 
 type MockablePage = Partial<PageObjectResponse> & { id: string }
 
@@ -45,7 +51,10 @@ function taskPage(
     id,
     archived: overrides?.archived ?? false,
     properties: {
-      Title: { type: "title", title: [{ plain_text: overrides?.title ?? `Task ${id}` }] } as unknown,
+      Title: {
+        type: "title",
+        title: [{ plain_text: overrides?.title ?? `Task ${id}` }],
+      } as unknown,
       Kind: { type: "select", select: { name: "task" } } as unknown,
       "Task State": {
         type: "select",
@@ -95,15 +104,18 @@ function createMockClient(opts: MockClientOpts = {}) {
           : vi.fn().mockResolvedValue(opts.createReturn ?? defaultCreate),
       retrieve: vi.fn().mockImplementation(({ page_id }: { page_id: string }) => {
         const page = opts.retrievedPages?.[page_id]
-        if (!page) return Promise.reject(new Error(`Mock: no page registered for ${page_id}`))
+        if (!page)
+          return Promise.reject(new Error(`Mock: no page registered for ${page_id}`))
         return Promise.resolve(page)
       }),
-      update: opts.updateError !== undefined
-        ? vi.fn().mockRejectedValue(opts.updateError)
-        : vi.fn().mockResolvedValue({}),
-      updateMarkdown: opts.updateMarkdownError !== undefined
-        ? vi.fn().mockRejectedValue(opts.updateMarkdownError)
-        : vi.fn().mockResolvedValue({}),
+      update:
+        opts.updateError !== undefined
+          ? vi.fn().mockRejectedValue(opts.updateError)
+          : vi.fn().mockResolvedValue({}),
+      updateMarkdown:
+        opts.updateMarkdownError !== undefined
+          ? vi.fn().mockRejectedValue(opts.updateMarkdownError)
+          : vi.fn().mockResolvedValue({}),
       retrieveMarkdown: vi.fn().mockResolvedValue({ markdown: opts.markdown ?? "" }),
     },
     dataSources: {
@@ -122,6 +134,31 @@ const DB: DatabaseRef = {
 }
 
 describe("TaskService.create", () => {
+  type RichTextFieldCase = readonly [string, (value: string) => Partial<CreateTaskInput>]
+  type RejectCase = readonly [string, Partial<CreateTaskInput>, number]
+
+  const richTextFields: RichTextFieldCase[] = [
+    ["alternatives", (value: string) => ({ alternatives: value })],
+    ["consequences", (value: string) => ({ consequences: value })],
+    ["author", (value: string) => ({ author: value })],
+    ["agent", (value: string) => ({ agent: value })],
+    ["keywords", (value: string) => ({ keywords: value })],
+    ["session", (value: string) => ({ session: value })],
+    ["blockedBy", (value: string) => ({ blockedBy: value })],
+    ["entity", (value: string) => ({ entity: value })],
+  ]
+  const rejectCases: RejectCase[] = [
+    ...richTextFields.map(
+      ([field, buildInput]) =>
+        [
+          field,
+          buildInput("x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1)),
+          RICH_TEXT_PROPERTY_MAX_LEN,
+        ] as const
+    ),
+    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+  ]
+
   it("sets Kind=task, defaults Task State to open, defaults entity to subject", async () => {
     const created = taskPage("new-task-id", {
       title: "Rotate keys",
@@ -157,7 +194,8 @@ describe("TaskService.create", () => {
 
     await service.create({
       subject: "Rotate keys",
-      description: "We rotate the JWT signing key every 90 days; PR #25700 tracks the next rotation.",
+      description:
+        "We rotate the JWT signing key every 90 days; PR #25700 tracks the next rotation.",
     })
 
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith({
@@ -240,6 +278,24 @@ describe("TaskService.create", () => {
     })
   })
 
+  it.each(rejectCases)(
+    "rejects over-cap %s before creating a Notion page",
+    async (field, input, cap) => {
+      const client = createMockClient()
+      const service = new TaskService(client, DB)
+
+      await expect(
+        service.create({
+          subject: "Keep metadata capped",
+          ...input,
+        })
+      ).rejects.toThrow(new RegExp(`TaskService\\.create.*${field}.*${cap}`))
+
+      expect(client.pages.create).not.toHaveBeenCalled()
+      expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    }
+  )
+
   it("archives the created task and throws a structured error when description write fails", async () => {
     const created = taskPage("new-task-id")
     const bodyWriteError = new Error("markdown unavailable")
@@ -316,7 +372,7 @@ describe("TaskService.create", () => {
       service.create({
         subject: "Rotate keys",
         description: "Rotate the JWT signing key.",
-      }),
+      })
     ).rejects.toBe(createError)
     expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
     expect(client.pages.update).not.toHaveBeenCalled()
@@ -471,10 +527,7 @@ describe("TaskService.list", () => {
         next_cursor: "cursor-1",
       })
       .mockResolvedValueOnce({
-        results: [
-          taskPage("live-2"),
-          taskPage("archived-after", { archived: true }),
-        ],
+        results: [taskPage("live-2"), taskPage("archived-after", { archived: true })],
         has_more: true,
         next_cursor: "cursor-2",
       })
@@ -582,8 +635,10 @@ describe("TaskService.close", () => {
     const updateService = new TaskService(updateClient, DB)
     await updateService.update("via-update", { state: "done" })
 
-    const closeArgs = (closeClient.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    const updateArgs = (updateClient.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const closeArgs = (closeClient.pages.update as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
+    const updateArgs = (updateClient.pages.update as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(closeArgs.properties["Done At"]).toEqual(updateArgs.properties["Done At"])
   })
 
@@ -605,6 +660,26 @@ describe("TaskService.close", () => {
 })
 
 describe("TaskService.update", () => {
+  type RichTextFieldCase = readonly [string, (value: string) => UpdateTaskInput]
+  type RejectCase = readonly [string, UpdateTaskInput, number]
+
+  const richTextFields: RichTextFieldCase[] = [
+    ["blockedBy", (value: string) => ({ blockedBy: value })],
+    ["entity", (value: string) => ({ entity: value })],
+    ["keywords", (value: string) => ({ keywords: value })],
+  ]
+  const rejectCases: RejectCase[] = [
+    ...richTextFields.map(
+      ([field, buildInput]) =>
+        [
+          field,
+          buildInput("x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1)),
+          RICH_TEXT_PROPERTY_MAX_LEN,
+        ] as const
+    ),
+    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+  ]
+
   it("throws a structured partial-failure error when properties land but description write fails", async () => {
     const bodyWriteError = new Error("notion 503")
     const client = createMockClient({ updateMarkdownError: bodyWriteError })
@@ -623,10 +698,10 @@ describe("TaskService.update", () => {
     expect(client.pages.update).toHaveBeenCalledTimes(1)
     expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
     expect(
-      (client.pages.update as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+      (client.pages.update as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
     ).toBeLessThan(
       (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock
-        .invocationCallOrder[0],
+        .invocationCallOrder[0]
     )
     expect(client.pages.retrieve).not.toHaveBeenCalled()
     expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
@@ -647,7 +722,7 @@ describe("TaskService.update", () => {
     const service = new TaskService(client, DB)
 
     await expect(
-      service.update("task-id", { description: "Updated description" }),
+      service.update("task-id", { description: "Updated description" })
     ).rejects.toBe(bodyWriteError)
     expect(client.pages.update).not.toHaveBeenCalled()
     expect(client.pages.updateMarkdown).toHaveBeenCalledTimes(1)
@@ -797,9 +872,24 @@ describe("TaskService.update", () => {
     expect(args.properties.Synopsis).toBeUndefined()
   })
 
+  it.each(rejectCases)(
+    "rejects over-cap %s before any Notion write",
+    async (field, input, cap) => {
+      const client = createMockClient()
+      const service = new TaskService(client, DB)
+
+      await expect(service.update("task-id", input)).rejects.toThrow(
+        new RegExp(`TaskService\\.update.*${field}.*${cap}`)
+      )
+
+      expect(client.pages.update).not.toHaveBeenCalled()
+      expect(client.pages.retrieve).not.toHaveBeenCalled()
+      expect(client.pages.retrieveMarkdown).not.toHaveBeenCalled()
+    }
+  )
 })
 
-describe('isCleared — empty-string-means-absence rule', () => {
+describe("isCleared — empty-string-means-absence rule", () => {
   it("treats null as cleared (caller asked to clear)", () => {
     expect(isCleared(null)).toBe(true)
   })
@@ -904,10 +994,7 @@ describe("taskDaysStale", () => {
     // populated for live pages; missing only on synthetic / partially-
     // initialized objects, where the staleness check should no-op
     // rather than crash on `new Date("")`.
-    const result = taskDaysStale(
-      { updatedAt: "", taskState: "open" },
-      "2026-04-20"
-    )
+    const result = taskDaysStale({ updatedAt: "", taskState: "open" }, "2026-04-20")
     expect(result).toBeNull()
   })
 
@@ -947,9 +1034,7 @@ describe("taskDaysStale", () => {
   })
 
   it("returns null when updatedAt is missing", () => {
-    expect(
-      taskDaysStale({ updatedAt: "", taskState: "open" }, "2026-04-28")
-    ).toBeNull()
+    expect(taskDaysStale({ updatedAt: "", taskState: "open" }, "2026-04-28")).toBeNull()
   })
 
   it("computes calendar-day diffs regardless of `updatedAt` time-of-day", () => {
@@ -966,8 +1051,8 @@ describe("taskDaysStale", () => {
     expect(
       taskDaysStale(
         { updatedAt: "2026-04-20T12:00:00Z", taskState: "open" },
-        "2026-04-20",
-      ),
+        "2026-04-20"
+      )
     ).toBe(0)
     // 30 days, 1 hour ago must register as the full 30 days, not 29.
     // A pre-fix implementation returns `Math.floor(29.96) = 29` here
@@ -975,8 +1060,8 @@ describe("taskDaysStale", () => {
     expect(
       taskDaysStale(
         { updatedAt: "2026-03-29T01:00:00Z", taskState: "open" },
-        "2026-04-28",
-      ),
+        "2026-04-28"
+      )
     ).toBe(30)
     // Time-of-day later than the today anchor still resolves to the
     // calendar-day diff — a raw-timestamp diff would produce `-1`
@@ -984,8 +1069,8 @@ describe("taskDaysStale", () => {
     expect(
       taskDaysStale(
         { updatedAt: "2026-04-20T23:59:59Z", taskState: "open" },
-        "2026-04-20",
-      ),
+        "2026-04-20"
+      )
     ).toBe(0)
   })
 })
@@ -993,10 +1078,10 @@ describe("taskDaysStale", () => {
 describe("TaskService.queryOverdue", () => {
   it("paginates beyond the first 100 rows when no limit is supplied", async () => {
     const page1 = Array.from({ length: 100 }, (_, i) =>
-      taskPage(`t1-${i}`, { reviewBy: "2026-01-01" }),
+      taskPage(`t1-${i}`, { reviewBy: "2026-01-01" })
     )
     const page2 = Array.from({ length: 50 }, (_, i) =>
-      taskPage(`t2-${i}`, { reviewBy: "2026-02-01" }),
+      taskPage(`t2-${i}`, { reviewBy: "2026-02-01" })
     )
     const client = createMockClient()
     const querySpy = client.dataSources.query as ReturnType<typeof vi.fn>
@@ -1021,7 +1106,7 @@ describe("TaskService.queryOverdue", () => {
 
   it("stops paginating once the limit is reached", async () => {
     const page1 = Array.from({ length: 100 }, (_, i) =>
-      taskPage(`t-${i}`, { reviewBy: "2026-01-01" }),
+      taskPage(`t-${i}`, { reviewBy: "2026-01-01" })
     )
     const client = createMockClient()
     const querySpy = client.dataSources.query as ReturnType<typeof vi.fn>
@@ -1190,7 +1275,7 @@ describe("TaskService.countActive", () => {
     expect(stats.total).toBe(2)
     expect(dataSourceQuery).toHaveBeenCalledTimes(2)
     expect(
-      (dataSourceQuery.mock.calls[1]![0] as { start_cursor?: string }).start_cursor,
+      (dataSourceQuery.mock.calls[1]![0] as { start_cursor?: string }).start_cursor
     ).toBe("cursor-1")
   })
 
@@ -1200,8 +1285,7 @@ describe("TaskService.countActive", () => {
 
     await service.countActive({ projectId: "proj-mail", today: "2026-04-28" })
 
-    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
     const filter = JSON.stringify(args.filter)
     expect(filter).toContain("proj-mail")
     // Active states drive the filter — done/cancelled rows are excluded
@@ -1225,9 +1309,9 @@ describe("TaskService.countActive", () => {
     const client = createMockClient()
     const service = new TaskService(client, DB)
 
-    await expect(
-      service.countActive({ today: "not-a-date" }),
-    ).rejects.toThrow(/invalid today value "not-a-date"/i)
+    await expect(service.countActive({ today: "not-a-date" })).rejects.toThrow(
+      /invalid today value "not-a-date"/i
+    )
     // The Notion query must NOT have fired — validation runs before
     // the paginated walk.
     expect(client.dataSources.query).not.toHaveBeenCalled()
@@ -1248,14 +1332,13 @@ describe("TaskService.countClosedSince", () => {
     const total = await service.countClosedSince("2026-03-30")
     expect(total).toBe(3)
 
-    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
     // `Done At on_or_after` is inclusive on the lower bound and
     // matches rows whose `Done At` is on or before today; combined,
     // `today - 29 days` produces the 30-day inclusive window the
     // `Closed last 30 days` label promises.
     expect(JSON.stringify(args.filter)).toContain(
-      '"Done At","date":{"on_or_after":"2026-03-30"}',
+      '"Done At","date":{"on_or_after":"2026-03-30"}'
     )
   })
 
@@ -1286,8 +1369,7 @@ describe("TaskService.countClosedSince", () => {
 
     await service.countClosedSince("2026-03-30")
 
-    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
     const filter = JSON.stringify(args.filter)
     // Both terminal states must appear under an `or` group — the
     // filter pins "currently-closed" not "ever-closed."
@@ -1322,7 +1404,7 @@ describe("TaskService.countClosedSince", () => {
     const dataSourceQuery = vi.fn().mockRejectedValue(
       Object.assign(new Error("Could not find property with name or id: Done At"), {
         code: "validation_error",
-      }),
+      })
     )
     const client = {
       pages: {},
@@ -1339,9 +1421,13 @@ describe("TaskService.countClosedSince", () => {
     // must propagate so the caller surfaces the failure rather than
     // showing "no closures" to the operator while the vault is
     // actually broken.
-    const dataSourceQuery = vi.fn().mockRejectedValue(
-      Object.assign(new Error("Internal server error"), { code: "internal_server_error" }),
-    )
+    const dataSourceQuery = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("Internal server error"), {
+          code: "internal_server_error",
+        })
+      )
     const client = {
       pages: {},
       dataSources: { query: dataSourceQuery },
@@ -1349,7 +1435,7 @@ describe("TaskService.countClosedSince", () => {
     const service = new TaskService(client, DB)
 
     await expect(service.countClosedSince("2026-03-30")).rejects.toThrow(
-      /Internal server error/,
+      /Internal server error/
     )
   })
 
@@ -1358,8 +1444,7 @@ describe("TaskService.countClosedSince", () => {
     const service = new TaskService(client, DB)
 
     await service.countClosedSince("2026-03-30", { projectId: "proj-mail" })
-    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const args = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(JSON.stringify(args.filter)).toContain("proj-mail")
   })
 })
@@ -1372,7 +1457,7 @@ describe("TaskService.queryOverdue", () => {
           taskPage("archived-overdue", {
             state: "open",
             reviewBy: "2026-01-01",
-          }),
+          })
         ),
         taskPage("live-overdue", {
           state: "open",
@@ -1494,7 +1579,7 @@ describe("taskStats orchestrator", () => {
     // silently inflate the rate against the `N / 30` divisor.
     expect(service.countClosedSince).toHaveBeenCalledWith(
       "2026-03-30",
-      expect.any(Object),
+      expect.any(Object)
     )
   })
 
@@ -1502,9 +1587,7 @@ describe("taskStats orchestrator", () => {
     // Pin the off-by-one explicitly. A regression to `today - 30` would
     // span 31 inclusive days; this assertion catches that immediately.
     const todayMs = new Date("2026-04-28").getTime()
-    const expected = new Date(todayMs - 29 * 86_400_000)
-      .toISOString()
-      .split("T")[0]
+    const expected = new Date(todayMs - 29 * 86_400_000).toISOString().split("T")[0]
     expect(expected).toBe("2026-03-30")
   })
 
@@ -1560,9 +1643,9 @@ describe("taskStats orchestrator", () => {
       countActive: vi.fn(),
       countClosedSince: vi.fn(),
     }
-    await expect(
-      taskStats(service as never, { today: "not-a-date" }),
-    ).rejects.toThrow(/invalid today value "not-a-date"/i)
+    await expect(taskStats(service as never, { today: "not-a-date" })).rejects.toThrow(
+      /invalid today value "not-a-date"/i
+    )
     // Neither underlying counter should have fired — the validation
     // runs before the `Promise.all` fan-out.
     expect(service.countActive).not.toHaveBeenCalled()
@@ -1620,7 +1703,7 @@ describe("formatTaskSummary", () => {
         stale: 89,
         inProgress: 12,
         blocked: 4,
-      }),
+      })
     )
     expect(lines).toEqual([
       `Tasks: 271 active (overdue: 25, stale ≥${STALE_TASK_DAYS}d: 89, in-progress: 12, blocked: 4)`,
@@ -1635,9 +1718,7 @@ describe("formatTaskSummary", () => {
   })
 
   it("appends a closure-rate line when closedLast30Days is non-null (post-#07)", () => {
-    const lines = formatTaskSummary(
-      baseStats({ active: 271, closedLast30Days: 14 }),
-    )
+    const lines = formatTaskSummary(baseStats({ active: 271, closedLast30Days: 14 }))
     expect(lines).toEqual([
       "Tasks: 271 active",
       "       Closed last 30 days: 14 (rate: 0.47/day)",
@@ -1663,9 +1744,7 @@ describe("formatTaskSummary", () => {
   })
 
   it("renders a 0/30 closure rate as '0.00/day' (operator-visible signal of stagnation)", () => {
-    const lines = formatTaskSummary(
-      baseStats({ active: 5, closedLast30Days: 0 }),
-    )
+    const lines = formatTaskSummary(baseStats({ active: 5, closedLast30Days: 0 }))
     expect(lines).toEqual([
       "Tasks: 5 active",
       "       Closed last 30 days: 0 (rate: 0.00/day)",
@@ -1673,19 +1752,17 @@ describe("formatTaskSummary", () => {
   })
 
   it("suppresses the closure-rate line entirely when closedLast30Days is null (pre-#07)", () => {
-    const lines = formatTaskSummary(
-      baseStats({ active: 5, closedLast30Days: null }),
-    )
+    const lines = formatTaskSummary(baseStats({ active: 5, closedLast30Days: null }))
     expect(lines).toEqual(["Tasks: 5 active"])
   })
 
   it("rounds the rate to 2 decimals", () => {
     // 30 closures / 30 days → 1.00; 100 closures / 30 days → 3.33.
     expect(
-      formatTaskSummary(baseStats({ active: 1, closedLast30Days: 30 }))[1],
+      formatTaskSummary(baseStats({ active: 1, closedLast30Days: 30 }))[1]
     ).toContain("rate: 1.00/day")
     expect(
-      formatTaskSummary(baseStats({ active: 1, closedLast30Days: 100 }))[1],
+      formatTaskSummary(baseStats({ active: 1, closedLast30Days: 100 }))[1]
     ).toContain("rate: 3.33/day")
   })
 })

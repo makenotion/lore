@@ -71,9 +71,9 @@ export const TAG_VOCABULARY = [
 export type Tag = (typeof TAG_VOCABULARY)[number]
 
 /**
- * Soft cap on the Synopsis property at the MCP boundary. The Notion
- * rich_text per-block ceiling is 2000; 500 is the value tools enforce
- * via Zod and the value tests pin. Bump only with a coordinated
+ * Soft cap on the Synopsis property at the MCP and service boundaries.
+ * The Notion rich_text per-block ceiling is 2000; 500 is the value tools
+ * and services enforce via Zod and the value tests pin. Bump only with a coordinated
  * design-doc update — agents that have learned to write 500-char
  * synopses would silently see truncation without one.
  *
@@ -451,7 +451,7 @@ export interface Memory {
    * Short 1–2 sentence synopsis of the memory. Surfaces on title-tier
    * rendering (recall, search, wake-up) so listings give the agent a
    * one-line gist without a body fetch. Soft-capped at 500 chars at the
-   * MCP boundary; empty string when not set.
+   * MCP and service boundaries; empty string when not set.
    */
   synopsis: string
   session: string
@@ -556,9 +556,8 @@ export interface CreateMemoryInput {
   tags?: string[]
   keywords?: string
   /**
-   * 1–2 sentence synopsis. Soft-capped at 500 chars by Zod at the MCP
-   * boundary; the service layer accepts any string for legacy data and
-   * internal migrations.
+   * 1–2 sentence synopsis. Capped at 500 chars by the MCP boundary and
+   * service layer so CLI/hooks/internal callers fail before Notion writes.
    */
   synopsis?: string
   session?: string
@@ -571,8 +570,9 @@ export interface CreateMemoryInput {
   /**
    * Stable identifier for upsert grouping (0.9.0/#01). Format is
    * kebab-case path like `decision/jwt-auth`. Validation lives at the
-   * MCP boundary; the service layer accepts any string so internal
-   * migrations can re-write existing keys without re-validating.
+   * MCP boundary; the service layer only enforces the rich_text length
+   * cap so internal migrations can re-write existing keys without
+   * re-validating the format.
    */
   topicKey?: string
   /**
@@ -808,9 +808,9 @@ export interface CreateDecisionInput {
   keywords?: string
   /**
    * One-line synopsis of the governing rule — distinct from `decision` (the
-   * title) and `rationale` (the body). Soft-capped at 500 chars by Zod at the
-   * MCP boundary; the service layer accepts any string for legacy data and
-   * internal migrations.
+   * title) and `rationale` (the body). Capped at 500 chars by the MCP
+   * boundary and service layer so CLI/hooks/internal callers fail before
+   * Notion writes.
    */
   synopsis?: string
   /**
@@ -895,8 +895,8 @@ export interface CreateTaskInput {
   /**
    * One-line synopsis of what the task is about and what "done" looks like —
    * distinct from `subject` (short title) and `description` (the body).
-   * Soft-capped at 500 chars by Zod at the MCP boundary; the service layer
-   * accepts any string for legacy data and internal migrations.
+   * Capped at 500 chars by the MCP boundary and service layer so
+   * CLI/hooks/internal callers fail before Notion writes.
    */
   synopsis?: string
   /**

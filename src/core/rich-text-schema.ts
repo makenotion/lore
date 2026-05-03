@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { SYNOPSIS_MAX } from "../types.js"
 
 /** Notion rich_text property values are written as one segment by these paths. */
 export const RICH_TEXT_PROPERTY_MAX_LEN = 2000
@@ -17,10 +18,36 @@ export function richTextPropertySchema(fieldName: string): z.ZodString {
   )
 }
 
+function synopsisPropertySchema(): z.ZodString {
+  return z
+    .string()
+    .max(SYNOPSIS_MAX, `synopsis must be ${SYNOPSIS_MAX} characters or fewer.`)
+}
+
+type RichTextMetadataField =
+  | "alternatives"
+  | "consequences"
+  | "author"
+  | "agent"
+  | "keywords"
+  | "synopsis"
+  | "session"
+  | "blockedBy"
+  | "entity"
+  | "topicKey"
+
 const richTextMetadataFieldsSchema = z
   .object({
     alternatives: richTextPropertySchema("alternatives").optional(),
     consequences: richTextPropertySchema("consequences").optional(),
+    author: richTextPropertySchema("author").optional(),
+    agent: richTextPropertySchema("agent").optional(),
+    keywords: richTextPropertySchema("keywords").optional(),
+    synopsis: synopsisPropertySchema().optional(),
+    session: richTextPropertySchema("session").optional(),
+    blockedBy: richTextPropertySchema("blockedBy").optional(),
+    entity: richTextPropertySchema("entity").optional(),
+    topicKey: richTextPropertySchema("topicKey").optional(),
   })
   .passthrough()
 
@@ -30,7 +57,7 @@ const richTextMetadataFieldsSchema = z
  * then shrink under it during decoding.
  */
 export function validateRichTextMetadataFields(
-  input: { alternatives?: string; consequences?: string },
+  input: Partial<Record<RichTextMetadataField, string | undefined>>,
   caller: string
 ): void {
   const result = richTextMetadataFieldsSchema.safeParse(input)

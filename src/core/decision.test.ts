@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { DecisionCreatePartialFailureError, DecisionService } from "./decision.js"
 import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
-import type { DatabaseRef, MemoryKind } from "../types.js"
+import {
+  SYNOPSIS_MAX,
+  type CreateDecisionInput,
+  type DatabaseRef,
+  type MemoryKind,
+} from "../types.js"
 
 /**
  * Notion client mock pattern — partial `Client` stub where every method used
@@ -94,7 +99,8 @@ function createMockClient(opts: MockClientOpts = {}): MockClient {
       create: vi.fn().mockResolvedValue(opts.createReturn ?? defaultCreate),
       retrieve: vi.fn().mockImplementation(({ page_id }: { page_id: string }) => {
         const page = opts.retrievedPages?.[page_id]
-        if (!page) return Promise.reject(new Error(`Mock: no page registered for ${page_id}`))
+        if (!page)
+          return Promise.reject(new Error(`Mock: no page registered for ${page_id}`))
         return Promise.resolve(page)
       }),
       update: vi.fn().mockResolvedValue({}),
@@ -117,6 +123,33 @@ const DB: DatabaseRef = {
 }
 
 describe("DecisionService.create", () => {
+  type RichTextFieldCase = readonly [
+    string,
+    (value: string) => Partial<CreateDecisionInput>,
+    string,
+  ]
+  type RejectCase = readonly [string, Partial<CreateDecisionInput>, number]
+
+  const richTextFields: RichTextFieldCase[] = [
+    ["alternatives", (value: string) => ({ alternatives: value }), "Alternatives"],
+    ["consequences", (value: string) => ({ consequences: value }), "Consequences"],
+    ["author", (value: string) => ({ author: value }), "Author"],
+    ["agent", (value: string) => ({ agent: value }), "Agent"],
+    ["keywords", (value: string) => ({ keywords: value }), "Keywords"],
+    ["session", (value: string) => ({ session: value }), "Session"],
+  ]
+  const rejectCases: RejectCase[] = [
+    ...richTextFields.map(
+      ([field, buildInput]) =>
+        [
+          field,
+          buildInput("x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1)),
+          RICH_TEXT_PROPERTY_MAX_LEN,
+        ] as const
+    ),
+    ["synopsis", { synopsis: "x".repeat(SYNOPSIS_MAX + 1) }, SYNOPSIS_MAX],
+  ]
+
   it("sets Kind=decision, Status=accepted, Decided At=today by default", async () => {
     const client = createMockClient()
     const service = new DecisionService(client, DB)
@@ -147,54 +180,70 @@ describe("DecisionService.create", () => {
       rationale: "YAML frontmatter gets destroyed by full_page updates.",
     })
 
-    const markdownArgs = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const markdownArgs = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(markdownArgs.type).toBe("insert_content")
     expect(markdownArgs.insert_content.content).toBe(
       "YAML frontmatter gets destroyed by full_page updates."
     )
   })
 
-  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+  it.each(richTextFields)(
+    "accepts %s at the Notion rich_text cap",
+    async (_field, buildInput, propertyName) => {
+      const client = createMockClient()
+      const service = new DecisionService(client, DB)
+      const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+      await service.create({
+        decision: "Keep metadata capped",
+        rationale: "",
+        ...buildInput(atCap),
+      })
+
+      const createArgs = (client.pages.create as ReturnType<typeof vi.fn>).mock
+        .calls[0][0]
+      expect(createArgs.properties[propertyName]).toEqual({
+        rich_text: [{ text: { content: atCap } }],
+      })
+    }
+  )
+
+  it("accepts synopsis at SYNOPSIS_MAX", async () => {
     const client = createMockClient()
     const service = new DecisionService(client, DB)
-    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+    const atCap = "x".repeat(SYNOPSIS_MAX)
 
     await service.create({
       decision: "Keep metadata capped",
       rationale: "",
-      alternatives: atCap,
-      consequences: atCap,
+      synopsis: atCap,
     })
 
     const createArgs = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    expect(createArgs.properties.Alternatives).toEqual({
-      rich_text: [{ text: { content: atCap } }],
-    })
-    expect(createArgs.properties.Consequences).toEqual({
+    expect(createArgs.properties.Synopsis).toEqual({
       rich_text: [{ text: { content: atCap } }],
     })
   })
 
-  it.each([
-    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-  ] as const)("rejects over-cap %s before creating a Notion page", async (field, input) => {
-    const client = createMockClient()
-    const service = new DecisionService(client, DB)
+  it.each(rejectCases)(
+    "rejects over-cap %s before creating a Notion page",
+    async (field, input, cap) => {
+      const client = createMockClient()
+      const service = new DecisionService(client, DB)
 
-    await expect(
-      service.create({
-        decision: "Keep metadata capped",
-        rationale: "Long rationale still belongs in the body.",
-        ...input,
-      })
-    ).rejects.toThrow(
-      new RegExp(`DecisionService\\.create.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
-    )
+      await expect(
+        service.create({
+          decision: "Keep metadata capped",
+          rationale: "Long rationale still belongs in the body.",
+          ...input,
+        })
+      ).rejects.toThrow(new RegExp(`DecisionService\\.create.*${field}.*${cap}`))
 
-    expect(client.pages.create).not.toHaveBeenCalled()
-    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
-  })
+      expect(client.pages.create).not.toHaveBeenCalled()
+      expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
+    }
+  )
 
   it("archives orphan and throws structured error when rationale write fails", async () => {
     const bodyWriteError = new Error("Notion rationale update failed (502)")
@@ -329,7 +378,8 @@ describe("DecisionService.create", () => {
       affectsIds: ["mem-a", "mem-b"],
     })
 
-    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .properties
     expect(props.Status).toEqual({ select: { name: "proposed" } })
     expect(props.Confidence).toEqual({ select: { name: "speculative" } })
     expect(props["Review By"].date.start).toBe("2026-12-31")
@@ -353,7 +403,8 @@ describe("DecisionService.create", () => {
       session: "session &amp;amp; 214",
     })
 
-    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .properties
     expect(props.Title.title[0].text.content).toBe("Cache & reuse project resolutions")
     expect(props.Alternatives).toEqual({
       rich_text: [{ text: { content: "Re-query & duplicate" } }],
@@ -377,7 +428,8 @@ describe("DecisionService.create", () => {
       rich_text: [{ text: { content: "session & 214" } }],
     })
 
-    const markdownArgs = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const markdownArgs = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(markdownArgs.insert_content.content).toBe(
       "Prefer decoded bodies & stable markdown."
     )
@@ -395,7 +447,8 @@ describe("DecisionService.create", () => {
       synopsis: "Foo &amp;amp; Bar",
     })
 
-    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .properties
     expect(props.Synopsis).toEqual({
       rich_text: [{ text: { content: "Foo & Bar" } }],
     })
@@ -413,7 +466,8 @@ describe("DecisionService.create", () => {
       rationale: "rationale",
     })
 
-    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties
+    const props = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .properties
     expect(props.Synopsis).toBeUndefined()
   })
 })
@@ -461,7 +515,8 @@ describe("DecisionService.list — index tier, no body fetch", () => {
 
     await service.list()
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     // Filter with no other opts is just the single Kind filter, not wrapped in and
     expect(queryArgs.filter).toEqual({
       property: "Kind",
@@ -475,7 +530,8 @@ describe("DecisionService.list — index tier, no body fetch", () => {
 
     await service.list({ status: "accepted", projectId: "proj-1" })
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryArgs.filter.and).toContainEqual({
       property: "Kind",
       select: { equals: "decision" },
@@ -585,16 +641,10 @@ describe("DecisionService.list — index tier, no body fetch", () => {
       startCursor: first.nextCursor,
     })
 
-    expect(first.items.map((item) => item.id)).toEqual([
-      "dec-live-1",
-      "dec-live-2",
-    ])
+    expect(first.items.map((item) => item.id)).toEqual(["dec-live-1", "dec-live-2"])
     expect(first.nextCursor).toBeDefined()
     expect(first.nextCursor).not.toBe("notion-cursor-after-current-page")
-    expect(second.items.map((item) => item.id)).toEqual([
-      "dec-live-3",
-      "dec-live-4",
-    ])
+    expect(second.items.map((item) => item.id)).toEqual(["dec-live-3", "dec-live-4"])
     expect(second.nextCursor).toBe("notion-cursor-after-current-page")
     expect(query).toHaveBeenCalledTimes(2)
     expect(query.mock.calls[1]![0].start_cursor).toBeUndefined()
@@ -633,7 +683,8 @@ describe("DecisionService.list — index tier, no body fetch", () => {
 
     await service.list({ startCursor: "resume-from-here" })
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryArgs.start_cursor).toBe("resume-from-here")
   })
 })
@@ -769,7 +820,8 @@ describe("DecisionService.queryOverdue", () => {
 
     await service.queryOverdue()
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     const andFilters = queryArgs.filter.and as Array<Record<string, unknown>>
 
     expect(andFilters).toContainEqual({
@@ -782,8 +834,8 @@ describe("DecisionService.queryOverdue", () => {
       date: { on_or_before: today },
     })
     // Active-status clause is an `or` across proposed + accepted
-    const statusClause = andFilters.find(
-      (f) => Array.isArray((f as { or?: unknown[] }).or)
+    const statusClause = andFilters.find((f) =>
+      Array.isArray((f as { or?: unknown[] }).or)
     ) as { or: Array<Record<string, unknown>> } | undefined
     expect(statusClause).toBeTruthy()
     expect(statusClause!.or).toContainEqual({
@@ -802,7 +854,8 @@ describe("DecisionService.queryOverdue", () => {
 
     await service.queryOverdue()
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryArgs.sorts).toEqual([{ property: "Review By", direction: "ascending" }])
   })
 
@@ -888,10 +941,10 @@ describe("DecisionService.queryOverdue", () => {
     // rows — but the gap is real: an operator running `lore-audit`
     // and counting visible rows would believe that's the complete set.
     const page1 = Array.from({ length: 100 }, (_, i) =>
-      decisionPage(`d1-${i}`, { reviewBy: "2026-01-01" }),
+      decisionPage(`d1-${i}`, { reviewBy: "2026-01-01" })
     )
     const page2 = Array.from({ length: 50 }, (_, i) =>
-      decisionPage(`d2-${i}`, { reviewBy: "2026-02-01" }),
+      decisionPage(`d2-${i}`, { reviewBy: "2026-02-01" })
     )
     const responses = [
       { results: page1, has_more: true, next_cursor: "c1" },
@@ -969,7 +1022,7 @@ describe("DecisionService.queryOverdue", () => {
     // Limit-reached-mid-page: caller asked for 10, Notion's first
     // response carried 100 rows. A second query MUST NOT fire.
     const page1 = Array.from({ length: 100 }, (_, i) =>
-      decisionPage(`d-${i}`, { reviewBy: "2026-01-01" }),
+      decisionPage(`d-${i}`, { reviewBy: "2026-01-01" })
     )
     const querySpy = vi.fn().mockResolvedValue({
       results: page1,
@@ -1002,7 +1055,8 @@ describe("DecisionService.queryOverdue", () => {
 
     await service.queryOverdue({ limit: 5 })
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryArgs.page_size).toBe(100)
   })
 
@@ -1014,7 +1068,8 @@ describe("DecisionService.queryOverdue", () => {
 
     await service.queryOverdue()
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryArgs.page_size).toBe(100)
   })
 
@@ -1026,7 +1081,8 @@ describe("DecisionService.queryOverdue", () => {
 
     await service.queryOverdue({ limit: 500 })
 
-    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const queryArgs = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
+      .calls[0][0]
     expect(queryArgs.page_size).toBe(100)
   })
 })
@@ -1181,13 +1237,9 @@ describe("DecisionService.getById — stampede dedup", () => {
     // Delay both reads so concurrent callers stack on the pending slot.
     const retrieveMock = client.pages.retrieve as ReturnType<typeof vi.fn>
     retrieveMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) =>
-          setTimeout(() => resolve(decisionPage("dec-1")), 5)
-        )
+      () => new Promise((resolve) => setTimeout(() => resolve(decisionPage("dec-1")), 5))
     )
-    const retrieveMarkdownMock = client.pages
-      .retrieveMarkdown as ReturnType<typeof vi.fn>
+    const retrieveMarkdownMock = client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>
     retrieveMarkdownMock.mockImplementationOnce(
       () => new Promise((resolve) => setTimeout(() => resolve({ markdown: "body" }), 5))
     )
@@ -1235,15 +1287,10 @@ describe("DecisionService.getById — stampede dedup", () => {
       // view including `external-prior`.
       .mockResolvedValueOnce(fresh)
 
-    const retrieveMarkdownMock = client.pages.retrieveMarkdown as ReturnType<
-      typeof vi.fn
-    >
+    const retrieveMarkdownMock = client.pages.retrieveMarkdown as ReturnType<typeof vi.fn>
     retrieveMarkdownMock
       .mockImplementationOnce(
-        () =>
-          new Promise((resolve) =>
-            setTimeout(() => resolve({ markdown: "body" }), 5)
-          )
+        () => new Promise((resolve) => setTimeout(() => resolve({ markdown: "body" }), 5))
       )
       .mockResolvedValueOnce({ markdown: "body" })
 
@@ -1257,8 +1304,7 @@ describe("DecisionService.getById — stampede dedup", () => {
     await service.supersede("new-dec", "old-dec")
     await aRead
 
-    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     // Post-fix: merge base is the fresh view — `external-prior`
     // survives rather than being clobbered.
     expect(updateArgs.page_id).toBe("new-dec")

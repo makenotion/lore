@@ -50,6 +50,7 @@ import {
   warnLivePageCapFired,
 } from "../notion/live-pages.js"
 import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
+import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 
 /**
  * Single rule for every empty-able optional task field: **empty string
@@ -129,14 +130,11 @@ export class TaskUpdatePartialFailureError extends Error {
   readonly persisted: { readonly properties: true; readonly body: false }
   readonly bodyWriteError: unknown
 
-  constructor(
-    message: string,
-    details: { taskId: string; bodyWriteError: unknown },
-  ) {
+  constructor(message: string, details: { taskId: string; bodyWriteError: unknown }) {
     super(
       message.startsWith("TaskUpdatePartialFailureError: ")
         ? message
-        : `TaskUpdatePartialFailureError: ${message}`,
+        : `TaskUpdatePartialFailureError: ${message}`
     )
     this.name = "TaskUpdatePartialFailureError"
     this.taskId = details.taskId
@@ -169,6 +167,11 @@ export class TaskService {
    * takes (PF1-06). Idempotent on clean values.
    */
   async create(input: CreateTaskInput): Promise<Task> {
+    validateRichTextMetadataFields(
+      { ...input, entity: input.entity ?? input.subject },
+      "TaskService.create"
+    )
+
     const state = input.state ?? "open"
     const subject = decodeTextEntities(input.subject)
     const description = input.description
@@ -422,6 +425,8 @@ export class TaskService {
    * and future similarity surfaces will read; idempotent on clean values.
    */
   async update(id: string, input: UpdateTaskInput): Promise<Task> {
+    validateRichTextMetadataFields(input, "TaskService.update")
+
     const props: Record<string, unknown> = {}
 
     if (input.subject !== undefined) {
@@ -521,7 +526,7 @@ export class TaskService {
             `but the description write failed during phase "body": ${cause}. ` +
             `The property changes are already on Notion; the description body ` +
             `was not written. Inspect the row before retrying the update.`,
-          { taskId: id, bodyWriteError },
+          { taskId: id, bodyWriteError }
         )
       }
     }

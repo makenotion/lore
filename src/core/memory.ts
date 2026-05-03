@@ -1466,6 +1466,8 @@ export class MemoryService {
     upserted: boolean
     promotionAdvisory: PromotionAdvisory | null
   }> {
+    validateRichTextMetadataFields(input, "MemoryService.upsertByTopicKey")
+
     if (input.projectIds.length === 0) {
       throw new Error(
         "topicKey requires at least one projectId. " +
