@@ -1022,7 +1022,7 @@ describe("runNoArgInit", () => {
   it("with vault.init() throwing 'already initialized' (fresh page): exits 1 with orphan page id", async () => {
     // Reviewer concern: in the no-arg flow we just created the page
     // seconds ago. If `verifyVaultDatabases` finds an existing
-    // four-database structure on a freshly-created page that's a
+    // five-database structure on a freshly-created page that's a
     // genuine anomaly (concurrent Lore process / Notion misbehavior /
     // bug). Burying it under a friendly "already exists" notice would
     // silently land a config pointing at a vault we don't understand.
@@ -1398,6 +1398,29 @@ describe("runExplicitPageInit", () => {
     expect(yaml).toContain("pageId: explicit-page")
     // Preflight runs against the operator-supplied page id.
     expect(verifyVaultAccess).toHaveBeenCalledWith(expect.anything(), "explicit-page")
+  })
+
+  it("with partial vault schema: exits without writing config or implying init can repair it", async () => {
+    const cwd = setupTestCwd()
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+    mockVaultInitThrow(
+      new Error(
+        "Vault at explicit-page is missing databases: Entities. " +
+          "Found existing Lore databases: Projects, Topics, Memories, Facts. " +
+          "This is a partial vault schema; do not run 'lore init' on this page."
+      )
+    )
+    const exitTrap = trapProcessExit()
+
+    await expect(
+      runExplicitPageInit("explicit-page", { token: "tok-explicit" })
+    ).rejects.toBeInstanceOf(ProcessExitSentinel)
+
+    expect(exitTrap.lastCode()).toBe(1)
+    await expect(readFile(join(cwd, ".lore.yaml"), "utf-8")).rejects.toThrow()
+    const stderr = consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")
+    expect(stderr).toContain("partial vault schema")
+    expect(stderr).toContain("do not run 'lore init'")
   })
 
   it("with invalid preflight (not-found): aborts before vault.init() with documented copy", async () => {

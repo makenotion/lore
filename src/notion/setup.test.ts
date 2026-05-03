@@ -5,6 +5,7 @@ import {
   computeRelationConfigDiff,
   computeSelectOptionDiff,
   migrateVaultSchema,
+  MissingVaultDatabasesError,
   verifyVaultDatabases,
 } from "./setup.js"
 import {
@@ -551,7 +552,7 @@ describe("verifyVaultDatabases child block pagination", () => {
     })
   })
 
-  it("still succeeds when a paginated legacy vault has no Entities DB", async () => {
+  it("fails when a paginated vault has no Entities DB", async () => {
     const childDatabases = [
       { id: "block-projects", title: PROJECTS_DB_TITLE },
       { id: "block-topics", title: TOPICS_DB_TITLE },
@@ -572,17 +573,25 @@ describe("verifyVaultDatabases child block pagination", () => {
       retrieveDelayMs: 0,
     })
 
-    const vault = await verifyVaultDatabases(client, "page-1")
+    let thrown: unknown
+    try {
+      await verifyVaultDatabases(client, "page-1")
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeInstanceOf(MissingVaultDatabasesError)
+    expect(thrown).toMatchObject({
+      missing: ["Entities"],
+      present: ["Projects", "Topics", "Memories", "Facts"],
+    })
+    expect(String(thrown)).toContain("missing databases: Entities")
+    expect(String(thrown)).toContain("do not run 'lore init'")
 
     expect(blocksChildrenListCalls()).toEqual([
       { block_id: "page-1", page_size: 100 },
       { block_id: "page-1", page_size: 100, start_cursor: "cursor-2" },
     ])
-    expect(vault.databases.facts).toEqual({
-      databaseId: "block-facts",
-      dataSourceId: "ds-block-facts",
-    })
-    expect(vault.databases.entities).toBeUndefined()
   })
 
   it("stops paging once all expected vault databases are found", async () => {
@@ -616,6 +625,45 @@ describe("verifyVaultDatabases child block pagination", () => {
     expect(blocksChildrenListCalls()).toEqual([
       { block_id: "page-1", page_size: 100 },
     ])
+  })
+
+  it("keeps paging when only Entities is still missing", async () => {
+    const firstPageDatabases = [
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ]
+    const { client, blocksChildrenListCalls } = makeStartupStub({
+      childDatabases: [],
+      childBlockPages: [
+        {
+          results: childDatabaseBlocks(firstPageDatabases),
+          has_more: true,
+          next_cursor: "cursor-2",
+        },
+        {
+          results: childDatabaseBlocks([
+            { id: "block-entities", title: ENTITIES_DB_TITLE },
+          ]),
+          has_more: false,
+          next_cursor: null,
+        },
+      ],
+      liveProperties: {},
+      retrieveDelayMs: 0,
+    })
+
+    const vault = await verifyVaultDatabases(client, "page-1")
+
+    expect(blocksChildrenListCalls()).toEqual([
+      { block_id: "page-1", page_size: 100 },
+      { block_id: "page-1", page_size: 100, start_cursor: "cursor-2" },
+    ])
+    expect(vault.databases.entities).toEqual({
+      databaseId: "block-entities",
+      dataSourceId: "ds-block-entities",
+    })
   })
 
   it("fails fast when Notion repeats a pagination cursor", async () => {
@@ -692,37 +740,38 @@ describe("verifyVaultDatabases parallel retrieves", () => {
     })
   })
 
-  it("skips the optional Entities DB when absent without holding back the rest", async () => {
+  it("fails before retrieving database metadata when Entities is absent", async () => {
     const childDatabases = [
       { id: "block-projects", title: PROJECTS_DB_TITLE },
       { id: "block-topics", title: TOPICS_DB_TITLE },
       { id: "block-memories", title: MEMORIES_DB_TITLE },
       { id: "block-facts", title: FACTS_DB_TITLE },
     ]
-    const { client, maxInFlight } = makeStartupStub({
+    const { client, databasesRetrieveCalls } = makeStartupStub({
       childDatabases,
       liveProperties: {},
     })
 
-    const vault = await verifyVaultDatabases(client, "page-1")
+    await expect(verifyVaultDatabases(client, "page-1")).rejects.toThrow(
+      "missing databases: Entities"
+    )
 
-    expect(maxInFlight()).toBeGreaterThan(1)
-    expect(vault.databases.entities).toBeUndefined()
+    expect(databasesRetrieveCalls()).toEqual([])
   })
 })
 
 describe("migrateVaultSchema parallel retrieves", () => {
-  function vaultFixture({ withEntities }: { withEntities: boolean }): Vault {
-    const databases: Vault["databases"] = {
-      projects: { databaseId: "p-db", dataSourceId: "p-ds" },
-      topics: { databaseId: "t-db", dataSourceId: "t-ds" },
-      memories: { databaseId: "m-db", dataSourceId: "m-ds" },
-      facts: { databaseId: "f-db", dataSourceId: "f-ds" },
+  function vaultFixture(): Vault {
+    return {
+      pageId: "page-1",
+      databases: {
+        projects: { databaseId: "p-db", dataSourceId: "p-ds" },
+        topics: { databaseId: "t-db", dataSourceId: "t-ds" },
+        memories: { databaseId: "m-db", dataSourceId: "m-ds" },
+        entities: { databaseId: "e-db", dataSourceId: "e-ds" },
+        facts: { databaseId: "f-db", dataSourceId: "f-ds" },
+      },
     }
-    if (withEntities) {
-      databases.entities = { databaseId: "e-db", dataSourceId: "e-ds" }
-    }
-    return { pageId: "page-1", databases }
   }
 
   it("issues dataSources.retrieve concurrently across every target DB", async () => {
@@ -734,22 +783,20 @@ describe("migrateVaultSchema parallel retrieves", () => {
       liveProperties,
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const diffs = await migrateVaultSchema(client, vaultFixture())
 
-    // 5 expected DBs (projects, topics, memories, facts, entities).
+    // 5 expected DBs (projects, topics, memories, entities, facts).
     expect(dataSourcesRetrieveCalls()).toHaveLength(5)
     expect(maxInFlight()).toBeGreaterThan(1)
-    // Diff order must match Object.keys(expectedByDb) enumeration order. The
-    // production code populates the literal with projects/topics/memories/
-    // facts and then assigns `expectedByDb.entities` last, so spec-defined
-    // string-key insertion order puts entities at the end. This is the
-    // contract being asserted, not an accident of V8.
+    // Diff order must match Object.keys(expectedByDb) enumeration order.
+    // The production code follows the vault dependency order, with Facts
+    // after Entities because its relation columns point at the Entities DS.
     expect(diffs.map((d) => d.database)).toEqual([
       "projects",
       "topics",
       "memories",
-      "facts",
       "entities",
+      "facts",
     ])
   })
 
@@ -765,7 +812,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       liveProperties: {},
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const diffs = await migrateVaultSchema(client, vaultFixture())
     const memoriesDiff = diffs.find((d) => d.database === "memories")
     expect(memoriesDiff?.missing).toContain("Confidence Score")
   })
@@ -781,27 +828,47 @@ describe("migrateVaultSchema parallel retrieves", () => {
       liveProperties: {},
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const diffs = await migrateVaultSchema(client, vaultFixture())
     const memoriesDiff = diffs.find((d) => d.database === "memories")
     expect(memoriesDiff?.missing).toContain("Synopsis")
   })
 
-  it("omits the Entities entry when the vault has no entities database", async () => {
+  it("surfaces Facts entity-relation columns as missing drift", async () => {
     const { client, maxInFlight, dataSourcesRetrieveCalls } = makeStartupStub({
       childDatabases: [],
       liveProperties: {},
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: false }))
+    const diffs = await migrateVaultSchema(client, vaultFixture())
 
-    expect(dataSourcesRetrieveCalls()).toHaveLength(4)
+    expect(dataSourcesRetrieveCalls()).toHaveLength(5)
     expect(maxInFlight()).toBeGreaterThan(1)
-    expect(diffs.map((d) => d.database)).toEqual([
-      "projects",
-      "topics",
-      "memories",
-      "facts",
-    ])
+    const factsDiff = diffs.find((d) => d.database === "facts")
+    expect(factsDiff?.missing).toEqual(
+      expect.arrayContaining(["SubjectEntity", "ObjectEntity"])
+    )
+  })
+
+  it("throws a clean missing-Entities error when called with a legacy vault snapshot", async () => {
+    const { client, dataSourcesRetrieveCalls } = makeStartupStub({
+      childDatabases: [],
+      liveProperties: {},
+    })
+    const legacyVault = {
+      pageId: "page-1",
+      databases: {
+        projects: { databaseId: "p-db", dataSourceId: "p-ds" },
+        topics: { databaseId: "t-db", dataSourceId: "t-ds" },
+        memories: { databaseId: "m-db", dataSourceId: "m-ds" },
+        facts: { databaseId: "f-db", dataSourceId: "f-ds" },
+      },
+    } as unknown as Vault
+
+    await expect(migrateVaultSchema(client, legacyVault)).rejects.toMatchObject({
+      missing: ["Entities"],
+      present: ["Projects", "Topics", "Memories", "Facts"],
+    })
+    expect(dataSourcesRetrieveCalls()).toEqual([])
   })
 
   it("surfaces Last Referenced At as a missing property on a pre-0.8.0 Memories DB", async () => {
@@ -829,7 +896,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       },
     } as unknown as Client
 
-    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: false }), {
+    const diffs = await migrateVaultSchema(stub, vaultFixture(), {
       dryRun: true,
     })
     const memoriesDiff = diffs.find((d) => d.database === "memories")
@@ -849,7 +916,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       liveProperties: {},
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const diffs = await migrateVaultSchema(client, vaultFixture())
     const memoriesDiff = diffs.find((d) => d.database === "memories")
     expect(memoriesDiff?.missing).toContain("Topic Key")
   })
@@ -860,7 +927,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       liveProperties: {},
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }))
+    const diffs = await migrateVaultSchema(client, vaultFixture())
     const memoriesDiff = diffs.find((d) => d.database === "memories")
     expect(memoriesDiff?.missing).toContain("Revision Count")
   })
@@ -890,7 +957,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       },
     } as unknown as Client
 
-    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: false }), {
+    const diffs = await migrateVaultSchema(stub, vaultFixture(), {
       dryRun: true,
     })
     const memoriesDiff = diffs.find((d) => d.database === "memories")
@@ -907,7 +974,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       liveProperties: {},
     })
 
-    const diffs = await migrateVaultSchema(client, vaultFixture({ withEntities: true }), {
+    const diffs = await migrateVaultSchema(client, vaultFixture(), {
       dryRun: true,
     })
     const memoriesDiff = diffs.find((d) => d.database === "memories")
@@ -944,7 +1011,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       },
     } as unknown as Client
 
-    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: false }), {
+    const diffs = await migrateVaultSchema(stub, vaultFixture(), {
       dryRun: true,
     })
     const memoriesDiff = diffs.find((d) => d.database === "memories")
@@ -1003,7 +1070,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
       },
     } as unknown as Client
 
-    const diffs = await migrateVaultSchema(stub, vaultFixture({ withEntities: true }), {
+    const diffs = await migrateVaultSchema(stub, vaultFixture(), {
       dryRun: true,
     })
     const memoriesDiff = diffs.find((d) => d.database === "memories")
@@ -1055,7 +1122,7 @@ describe("migrateVaultSchema parallel retrieves", () => {
     } as unknown as Client
 
     await expect(
-      migrateVaultSchema(stub, vaultFixture({ withEntities: true })),
+      migrateVaultSchema(stub, vaultFixture()),
     ).rejects.toThrow(/Schema migration failed on memories DB/)
     // We still hit retrieve on every DB before the update phase failed.
     expect(dataSourcesRetrieveCount).toBe(5)

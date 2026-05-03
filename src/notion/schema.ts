@@ -1,5 +1,5 @@
 /**
- * Notion database property schemas for Lore's four databases.
+ * Notion database property schemas for Lore's five databases.
  *
  * These definitions are used by setup.ts to create databases and by
  * core operations to read/write property values.
@@ -375,19 +375,15 @@ export const FACTS_DB_TITLE = "Facts"
 export const FACTS_DB_ICON = "🔗"
 
 /**
- * Build the Facts DB property config.
- *
- * `entitiesDsId` is optional: an un-migrated vault has no Entities DB
- * yet, so `migrateVaultSchema`'s diff path passes `undefined` to
- * exclude the relation columns from the expected shape until the
- * Entities DB has been created in a separate pass. Once Entities lands,
- * a follow-up `lore migrate` adds the `SubjectEntity` / `ObjectEntity`
- * columns to existing Facts rows.
+ * Build the Facts DB property config. The Entities DB is part of the
+ * supported vault shape, so the canonical relation columns are always in
+ * the expected schema even while individual Fact rows are still
+ * unbackfilled.
  */
 export function factsProperties(
   projectsDbId: string,
   memoriesDbId: string,
-  entitiesDsId?: string
+  entitiesDsId: string
 ): PropertyConfig {
   return {
     Subject: { title: {} },
@@ -475,32 +471,23 @@ export function factsProperties(
     // we need `contains` substring matching, which Notion doesn't run
     // against hashed values.
     SubjectKey: { rich_text: {} },
-    // PF3-01 — canonical entity relation columns. Filled by the
-    // build-entities migration and by `lore-fact action='create'` after
-    // the resolver picks an Entity row. Pre-migration rows have empty
-    // relations; queries that filter by entity ID fall back to the
-    // SubjectKey path on those rows.
-    //
-    // Only emitted when `entitiesDsId` is supplied so a `migrateVaultSchema`
-    // run on a vault that hasn't created the Entities DB yet doesn't
-    // surface a phantom drift (relation columns pointing at an undefined
-    // data source).
-    ...(entitiesDsId
-      ? {
-          SubjectEntity: {
-            relation: {
-              single_property: {},
-              data_source_id: entitiesDsId,
-            },
-          },
-          ObjectEntity: {
-            relation: {
-              single_property: {},
-              data_source_id: entitiesDsId,
-            },
-          },
-        }
-      : {}),
+    // Canonical entity relation columns. Filled by the build-entities
+    // migration and by `lore-fact action='create'` after the resolver
+    // picks an Entity row. Unbackfilled rows have empty relations; queries
+    // that filter by entity ID fall back to the SubjectKey path on those
+    // rows.
+    SubjectEntity: {
+      relation: {
+        single_property: {},
+        data_source_id: entitiesDsId,
+      },
+    },
+    ObjectEntity: {
+      relation: {
+        single_property: {},
+        data_source_id: entitiesDsId,
+      },
+    },
   }
 }
 

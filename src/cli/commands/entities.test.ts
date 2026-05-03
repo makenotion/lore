@@ -174,22 +174,6 @@ describe("parseEntityMergeCliOptions", () => {
 })
 
 describe("runEntityMerge", () => {
-  it("throws a directive error when the vault has no Entities DB", async () => {
-    await expect(
-      runEntityMerge(
-        {
-          entities: null,
-          facts: {},
-        } as never,
-        {
-          winnerId: "ent-winner",
-          loserId: "ent-loser",
-          apply: false,
-        }
-      )
-    ).rejects.toThrow(/migrate --build-entities --yes/)
-  })
-
   it("passes the parsed ids and apply flag to the merge orchestrator", async () => {
     const services = {
       entities: {

@@ -589,15 +589,31 @@ describe("factsProperties — mentions Predicate option (0.8.0/07)", () => {
     // same closed select column as the agent-curated relationship
     // predicates. Pin its presence so a future contributor reordering
     // or trimming the option list can't silently drop the value the
-    // schema-drift migration adds to upgraded vaults. The two-arg
-    // and three-arg overloads share the same select-option list
-    // (the entities-aware path only adds relation columns), so one
-    // pin covers both drift-detection shapes.
-    const props = factsProperties("p-ds", "m-ds") as Record<
+    // schema-drift migration adds to upgraded vaults.
+    const props = factsProperties("p-ds", "m-ds", "e-ds") as Record<
       string,
       { select: { options: Array<{ name: string; color?: string }> } }
     >
     const optionNames = props["Predicate"].select.options.map((o) => o.name)
     expect(optionNames).toContain("mentions")
+  })
+})
+
+describe("factsProperties — required Entity relations", () => {
+  it("always declares SubjectEntity and ObjectEntity against the Entities data source", () => {
+    const props = factsProperties("p-ds", "m-ds", "e-ds")
+
+    expect(props["SubjectEntity"]).toEqual({
+      relation: {
+        single_property: {},
+        data_source_id: "e-ds",
+      },
+    })
+    expect(props["ObjectEntity"]).toEqual({
+      relation: {
+        single_property: {},
+        data_source_id: "e-ds",
+      },
+    })
   })
 })

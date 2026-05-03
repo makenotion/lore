@@ -18,7 +18,7 @@ No domain logic lives here -- that belongs in `src/core/`.
 | `schema.ts`              | Database property definitions + page property builder functions           |
 | `extractors.ts`          | Type-safe property value extractors for `PageObjectResponse`              |
 | `relation-properties.ts` | Paginates relation property values when page responses are truncated      |
-| `setup.ts`               | Creates and verifies the four-database vault structure                    |
+| `setup.ts`               | Creates and verifies the five-database vault structure                    |
 
 ## Notion SDK v5.x Specifics
 
@@ -189,13 +189,12 @@ this pattern.
 `verifyVaultDatabases()` reads the vault page's child blocks and matches
 database titles to the expected names. This is used by `VaultManager.load()`.
 
-**Required vs optional databases.** Projects / Topics / Memories / Facts
+**Required databases.** Projects / Topics / Memories / Entities / Facts
 are mandatory — `verifyVaultDatabases` throws when any of them are absent.
-The Entities database is optional: pre-PF3-01 vaults still load with
-`vault.databases.entities` left undefined. `migrateVaultSchema` keys the
-expected-shape map off whichever databases actually exist, so a legacy
-vault doesn't surface phantom drift on the entity relation columns until
-the operator runs `lore migrate --build-entities` to wire them in.
+`migrateVaultSchema` always includes the Entities database and the Facts
+`SubjectEntity` / `ObjectEntity` relation columns. Row-level migration
+fallback is separate: existing Facts may still have empty entity relations
+until `lore migrate --build-entities` repoints them.
 
 ## Rate Limiting
 

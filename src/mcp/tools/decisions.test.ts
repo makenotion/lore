@@ -61,6 +61,17 @@ function makeFact(id: string): Fact {
   }
 }
 
+function makeEntityService() {
+  return {
+    resolveOrCreateEntity: vi.fn().mockResolvedValue({
+      entity: null,
+      ambiguous: false,
+      candidates: [],
+      created: false,
+    }),
+  }
+}
+
 function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
@@ -757,6 +768,7 @@ describe("lore-decision-context — partial decision resolution", () => {
         }),
       },
       topics: {},
+      entities: makeEntityService(),
       context: { project: null },
     }
   }
@@ -842,7 +854,6 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       ambiguous?: boolean
       candidates?: Array<{ id: string; name: string }>
     }
-    skipEntities?: boolean
     decision?: Decision
     facts?: Fact[]
   }) {
@@ -872,20 +883,18 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       },
       topics: {},
       context: { project: { id: "proj-a", name: "Ambient" } },
-      entities: opts.skipEntities
-        ? null
-        : {
-            resolveOrCreateEntity: vi.fn().mockImplementation(async () => ({
-              entity: opts.entityResolution?.entity ?? null,
-              ambiguous: opts.entityResolution?.ambiguous ?? false,
-              candidates:
-                opts.entityResolution?.candidates ??
-                (opts.entityResolution?.entity
-                  ? [opts.entityResolution.entity]
-                  : []),
-              created: false,
-            })),
-          },
+      entities: {
+        resolveOrCreateEntity: vi.fn().mockImplementation(async () => ({
+          entity: opts.entityResolution?.entity ?? null,
+          ambiguous: opts.entityResolution?.ambiguous ?? false,
+          candidates:
+            opts.entityResolution?.candidates ??
+            (opts.entityResolution?.entity
+              ? [opts.entityResolution.entity]
+              : []),
+          created: false,
+        })),
+      },
     }
   }
 
@@ -909,7 +918,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
 
     await handler({ entity: "AuthSvc" } as never)
 
-    expect(services.entities!.resolveOrCreateEntity).toHaveBeenCalledWith(
+    expect(services.entities.resolveOrCreateEntity).toHaveBeenCalledWith(
       "AuthSvc",
       expect.objectContaining({ autoCreate: false }),
     )
@@ -963,12 +972,12 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
     expect(opts.entityId).toBeUndefined()
   })
 
-  it("legacy vault path (services.entities === null) skips resolver and queries by raw entity", async () => {
-    // Pre-PF3-01 vault: queryByEntity's entityId-null branch falls through
-    // to queryBySubject ∪ queryByObject. The tool must still pass
-    // predicates: ['decided_by'] so the union is server-side narrowed.
+  it("unresolved entity lookup queries by raw entity", async () => {
+    // queryByEntity's entityId-null branch falls through to queryBySubject
+    // ∪ queryByObject. The tool must still pass predicates:
+    // ['decided_by'] so the union is server-side narrowed.
     const mockServer = createMockServer()
-    const services = makeServicesWithEntities({ skipEntities: true })
+    const services = makeServicesWithEntities({})
     registerDecisionTools(mockServer.server, services as never)
     const handler = mockServer.getActionHandler("lore-decision", "context")
 
@@ -1022,7 +1031,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
     // queryByEntity's substring fallback still produces useful results.
     const mockServer = createMockServer()
     const services = makeServicesWithEntities({})
-    services.entities!.resolveOrCreateEntity = vi
+    services.entities.resolveOrCreateEntity = vi
       .fn()
       .mockRejectedValue(new Error("notion 429"))
     registerDecisionTools(mockServer.server, services as never)
@@ -1896,7 +1905,14 @@ describe("lore-decision action='context' trust indicator (0.9.0/DEFERRED-07)", (
       },
       topics: {},
       context: { project: null },
-      entities: null,
+      entities: {
+        resolveOrCreateEntity: vi.fn().mockResolvedValue({
+          entity: null,
+          ambiguous: false,
+          candidates: [],
+          created: false,
+        }),
+      },
     }
   }
 

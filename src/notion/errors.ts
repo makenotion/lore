@@ -15,10 +15,10 @@
  *
  * Used by:
  *
- * - `FactService.queryByEntityTextOnUnmigrated` — pre-PF3-01 vaults
- *   lack the `SubjectEntity` / `ObjectEntity` columns; the recall
- *   path falls through to the relation-only result set so the union
- *   doesn't silently halve.
+ * - `FactService.queryByEntityTextOnUnmigrated` — during a narrow schema
+ *   drift window, the required `SubjectEntity` / `ObjectEntity` columns
+ *   may not have been added yet; the recall path falls through to the
+ *   relation-only result set so the union doesn't silently halve.
  * - `TaskService.countClosedSince` — pre-#07 vaults lack the
  *   `Done At` column; the closure-rate line is suppressed entirely
  *   instead of throwing.

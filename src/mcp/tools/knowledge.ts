@@ -295,70 +295,64 @@ export async function handleLearn(
 
     // PF3-01 — resolve subject and object to canonical Entity rows.
     // Auto-creates on miss (default), surfaces ambiguity candidates
-    // back to the agent on multi-match. Skip silently when the vault
-    // hasn't been migrated yet — `services.entities` is null on
-    // legacy vaults and the relation columns are absent, so the
-    // create still lands as a pre-PF3-01 row.
+    // back to the agent on multi-match.
     let subjectEntityId: string | undefined
     let objectEntityId: string | undefined
     const ambiguous: Array<{ side: "subject" | "object"; input: string; candidates: string[] }> = []
-    if (services.entities) {
-      // Per-side `.catch(() => null)` instead of `Promise.all`: a
-      // transient Notion 5xx on either resolver must NOT sink the
-      // whole `lore-fact action='create'` call. Autosave callers have
-      // no human in the loop; the fact is more valuable than the
-      // relation. Treat a rejected resolution as "couldn't resolve,
-      // omit the relation, surface a warning" — the substring-fallback
-      // path in `queryByEntity` still finds the row later.
-      //
-      // Caught by review on PR #88. Mirrors the resilience posture
-      // `lore-query action='ask'`'s tasks lookup (further down in this
-      // file) already uses for the same reason.
-      const entityServices = services.entities
-      const [subjectResolution, objectResolution] = await Promise.all([
-        entityServices
-          .resolveOrCreateEntity(args.subject, {
-            autoCreate: true,
-            projectIds: factProjectIds,
-          })
-          .catch((err) => {
-            const message = err instanceof Error ? err.message : String(err)
-            toolWarnings.push(
-              `Subject entity resolution failed: ${message}. Fact written without SubjectEntity relation.`,
-            )
-            return null
-          }),
-        entityServices
-          .resolveOrCreateEntity(args.object, {
-            autoCreate: true,
-            projectIds: factProjectIds,
-          })
-          .catch((err) => {
-            const message = err instanceof Error ? err.message : String(err)
-            toolWarnings.push(
-              `Object entity resolution failed: ${message}. Fact written without ObjectEntity relation.`,
-            )
-            return null
-          }),
-      ])
-      if (subjectResolution?.ambiguous) {
-        ambiguous.push({
-          side: "subject",
-          input: args.subject,
-          candidates: subjectResolution.candidates.map((c) => `${c.name} (${c.id})`),
+    // Per-side `.catch(() => null)` instead of `Promise.all`: a
+    // transient Notion 5xx on either resolver must NOT sink the
+    // whole `lore-fact action='create'` call. Autosave callers have
+    // no human in the loop; the fact is more valuable than the
+    // relation. Treat a rejected resolution as "couldn't resolve,
+    // omit the relation, surface a warning" — the substring-fallback
+    // path in `queryByEntity` still finds the row later.
+    //
+    // Caught by review on PR #88. Mirrors the resilience posture
+    // `lore-query action='ask'`'s tasks lookup (further down in this
+    // file) already uses for the same reason.
+    const [subjectResolution, objectResolution] = await Promise.all([
+      services.entities
+        .resolveOrCreateEntity(args.subject, {
+          autoCreate: true,
+          projectIds: factProjectIds,
         })
-      } else if (subjectResolution?.entity) {
-        subjectEntityId = subjectResolution.entity.id
-      }
-      if (objectResolution?.ambiguous) {
-        ambiguous.push({
-          side: "object",
-          input: args.object,
-          candidates: objectResolution.candidates.map((c) => `${c.name} (${c.id})`),
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          toolWarnings.push(
+            `Subject entity resolution failed: ${message}. Fact written without SubjectEntity relation.`,
+          )
+          return null
+        }),
+      services.entities
+        .resolveOrCreateEntity(args.object, {
+          autoCreate: true,
+          projectIds: factProjectIds,
         })
-      } else if (objectResolution?.entity) {
-        objectEntityId = objectResolution.entity.id
-      }
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          toolWarnings.push(
+            `Object entity resolution failed: ${message}. Fact written without ObjectEntity relation.`,
+          )
+          return null
+        }),
+    ])
+    if (subjectResolution?.ambiguous) {
+      ambiguous.push({
+        side: "subject",
+        input: args.subject,
+        candidates: subjectResolution.candidates.map((c) => `${c.name} (${c.id})`),
+      })
+    } else if (subjectResolution?.entity) {
+      subjectEntityId = subjectResolution.entity.id
+    }
+    if (objectResolution?.ambiguous) {
+      ambiguous.push({
+        side: "object",
+        input: args.object,
+        candidates: objectResolution.candidates.map((c) => `${c.name} (${c.id})`),
+      })
+    } else if (objectResolution?.entity) {
+      objectEntityId = objectResolution.entity.id
     }
 
     // On ambiguity, surface candidates as a warning and write the fact
@@ -572,29 +566,27 @@ export async function handleAsk(
     // `User (db schema)`).
     let entityId: string | null = null
     let resolvedEntity: { name: string; aliases: string[] } | null = null
-    if (services.entities) {
-      const resolution = await services.entities
-        .resolveOrCreateEntity(args.entity, { autoCreate: false })
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err)
-          warnings.push(`Entity lookup failed: ${message}`)
-          return null
-        })
-      if (resolution) {
-        if (resolution.ambiguous) {
-          const candidateLabels = resolution.candidates
-            .map((c) => `"${c.name}" (${c.id})`)
-            .join(", ")
-          warnings.push(
-            `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
-              `Disambiguate by passing one of: ${candidateLabels}.`,
-          )
-        } else if (resolution.entity) {
-          entityId = resolution.entity.id
-          resolvedEntity = {
-            name: resolution.entity.name,
-            aliases: resolution.entity.aliases,
-          }
+    const resolution = await services.entities
+      .resolveOrCreateEntity(args.entity, { autoCreate: false })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        warnings.push(`Entity lookup failed: ${message}`)
+        return null
+      })
+    if (resolution) {
+      if (resolution.ambiguous) {
+        const candidateLabels = resolution.candidates
+          .map((c) => `"${c.name}" (${c.id})`)
+          .join(", ")
+        warnings.push(
+          `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
+            `Disambiguate by passing one of: ${candidateLabels}.`,
+        )
+      } else if (resolution.entity) {
+        entityId = resolution.entity.id
+        resolvedEntity = {
+          name: resolution.entity.name,
+          aliases: resolution.entity.aliases,
         }
       }
     }
@@ -602,8 +594,8 @@ export async function handleAsk(
     // Fact recall already rides the canonical relation when the entity
     // resolves; tasks are still a free-form text column, so mirror the
     // fact side's alias awareness by expanding the resolved entity into
-    // a deduped variant set. Legacy / ambiguous / unresolved paths
-    // collapse to the raw input and behave like the pre-PF4 substring
+    // a deduped variant set. Ambiguous / unresolved paths collapse to
+    // the raw input and behave like the substring
     // contract. The cap warning surfaces only when an alias drift
     // would have clipped recall; under the cap the lookup is silent.
     const taskVariants = expandEntityQueryVariants(args.entity, resolvedEntity)

@@ -2154,7 +2154,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "Required for action='save' and action='suggest-topic-key'; new title for action='update'. Short, descriptive.",
+            "Required for action='save' and action='suggest-topic-key'; new title for update. Short.",
           ),
         content: z
           .string()

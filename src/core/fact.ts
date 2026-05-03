@@ -1159,9 +1159,9 @@ export class FactService {
    * don't double-count rows that the relation path already returned.
    * Caught by review on PR #88.
    *
-   * **Pre-PF3-01 fallback.** When `entityId` is null/undefined (the
-   * caller's resolver couldn't pick a canonical row), falls back to
-   * the pre-PF3-01 shape: Subject side is case-folded via
+   * **Unresolved-entity fallback.** When `entityId` is null/undefined
+   * (the caller's resolver couldn't pick a canonical row), falls back
+   * to text matching: Subject side is case-folded via
    * `queryBySubject` (P3-03 Part A), Object side stays case-sensitive
    * `contains`. Asymmetric on the Object side — callers should
    * normalize input or accept the asymmetry.
@@ -1243,13 +1243,13 @@ export class FactService {
     if (!entity) return []
 
     const baseFilters: Array<Record<string, unknown>> = [
-      // The relation columns may not exist on the live schema yet (a
-      // legacy vault that hasn't run schema migration). Notion's
+      // The relation columns may not exist on a stale live schema yet
+      // (a vault that hasn't run schema migration). Notion's
       // `relation.is_empty` filter on a missing column is a 400, so
       // we wrap the whole query in a try/catch and treat the failure
-      // as "vault has no Entities DB; substring fallback already ran
-      // through the legacy path elsewhere — return empty here so we
-      // don't double-count."
+      // as "schema drift has not been repaired; substring fallback
+      // already ran through the unresolved-entity path elsewhere —
+      // return empty here so we don't double-count."
       { property: "SubjectEntity", relation: { is_empty: true } },
       { property: "ObjectEntity", relation: { is_empty: true } },
       { property: "Valid Until", date: { is_empty: true } },

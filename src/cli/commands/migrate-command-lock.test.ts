@@ -44,7 +44,6 @@ function makeServices() {
         encodedTopics: [],
         encodingFixResults: [],
       }),
-      ensureEntitiesDatabase: vi.fn(),
       getClient: vi.fn(),
     },
     facts: {

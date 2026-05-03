@@ -11,6 +11,18 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking vault-shape contract: Entities is now required.** Vault
+  verification now requires the five-database schema
+  Projects/Topics/Memories/Entities/Facts, `LoreServices.entities` is
+  non-null, and schema drift always checks the Entities database plus
+  the Facts `SubjectEntity` / `ObjectEntity` relation columns. Legacy
+  four-database vaults fail fast with manual repair guidance instead of
+  falling back to no-Entities compatibility. Row-level `SubjectKey`
+  fallback remains for Fact rows whose entity relations have not been
+  backfilled yet. (#272)
+
 ## [0.11.0] - 2026-05-03
 
 The 0.11.0 train packages the post-ntn dogfood hardening work: per-user

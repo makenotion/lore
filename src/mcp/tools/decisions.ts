@@ -375,28 +375,26 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
       // must NOT sink the whole decision-create. On rejection we
       // create the fact without the relation and surface a warning.
       let subjectEntityId: string | undefined
-      if (services.entities) {
-        try {
-          const resolution = await services.entities.resolveOrCreateEntity(entity, {
-            autoCreate: true,
-            projectIds: created.projectIds,
-          })
-          if (resolution.ambiguous) {
-            const labels = resolution.candidates
-              .map((c) => `${c.name} (${c.id})`)
-              .join(", ")
-            affectsWarnings.push(
-              `Ambiguous \`affects\` entry "${entity}" — matched ${resolution.candidates.length} entities (${labels}). Decided_by fact written without SubjectEntity.`,
-            )
-          } else if (resolution.entity) {
-            subjectEntityId = resolution.entity.id
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
+      try {
+        const resolution = await services.entities.resolveOrCreateEntity(entity, {
+          autoCreate: true,
+          projectIds: created.projectIds,
+        })
+        if (resolution.ambiguous) {
+          const labels = resolution.candidates
+            .map((c) => `${c.name} (${c.id})`)
+            .join(", ")
           affectsWarnings.push(
-            `Entity resolution failed for \`affects\` entry "${entity}": ${message}. Decided_by fact written without SubjectEntity.`,
+            `Ambiguous \`affects\` entry "${entity}" — matched ${resolution.candidates.length} entities (${labels}). Decided_by fact written without SubjectEntity.`,
           )
+        } else if (resolution.entity) {
+          subjectEntityId = resolution.entity.id
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        affectsWarnings.push(
+          `Entity resolution failed for \`affects\` entry "${entity}": ${message}. Decided_by fact written without SubjectEntity.`,
+        )
       }
 
       try {
@@ -753,26 +751,24 @@ async function handleContext(
     // `queryByEntity` still runs underneath so the agent sees something
     // useful even when the input maps to two distinct canonical entities.
     let entityId: string | null = null
-    if (services.entities) {
-      const resolution = await services.entities
-        .resolveOrCreateEntity(args.entity, { autoCreate: false })
-        .catch((err) => {
-          const message = err instanceof Error ? err.message : String(err)
-          warnings.push(`Entity lookup failed: ${message}`)
-          return null
-        })
-      if (resolution) {
-        if (resolution.ambiguous) {
-          const candidateLabels = resolution.candidates
-            .map((c) => `"${c.name}" (${c.id})`)
-            .join(", ")
-          warnings.push(
-            `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
-              `Disambiguate by passing one of: ${candidateLabels}.`,
-          )
-        } else if (resolution.entity) {
-          entityId = resolution.entity.id
-        }
+    const resolution = await services.entities
+      .resolveOrCreateEntity(args.entity, { autoCreate: false })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        warnings.push(`Entity lookup failed: ${message}`)
+        return null
+      })
+    if (resolution) {
+      if (resolution.ambiguous) {
+        const candidateLabels = resolution.candidates
+          .map((c) => `"${c.name}" (${c.id})`)
+          .join(", ")
+        warnings.push(
+          `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
+            `Disambiguate by passing one of: ${candidateLabels}.`,
+        )
+      } else if (resolution.entity) {
+        entityId = resolution.entity.id
       }
     }
 

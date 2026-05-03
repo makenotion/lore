@@ -413,8 +413,8 @@ export async function syncDecisionReachability(
       confidence: newDecision.confidence,
       // Carry the canonical entity relation forward so the retargeted
       // row stays exact-recall under `queryByEntityId`. `null`
-      // (un-migrated source fact) flows through as `undefined` and the
-      // fact lands as a pre-PF3-01 row that the next `--build-entities`
+      // (unbackfilled source fact) flows through as `undefined` and the
+      // fact lands as a text-only row that the next `--build-entities`
       // pass can re-point.
       subjectEntityId: fact.subjectEntityId ?? undefined,
     })

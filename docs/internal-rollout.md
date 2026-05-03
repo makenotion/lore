@@ -25,6 +25,46 @@ Each engineer needs:
 That's it. Two prerequisites the engineer might need to address;
 both are auto-remediated by Lore when missing.
 
+### Entities Database Cutover
+
+Lore versions after the #272 schema contract change require every vault
+page to contain five child databases: Projects, Topics, Memories,
+Entities, and Facts. Older PF3-01-era vaults may already have
+Projects/Topics/Memories/Facts but no Entities database. Those pages
+are partial vault schemas under the new contract.
+
+Do **not** run `lore init <page-id>` against a partial vault page.
+Initialization is only for empty pages; creating a second set of
+Projects/Topics/Memories/Entities/Facts under the same Notion page can
+split future reads across duplicate database titles. Newer Lore builds
+refuse this case, but operators upgrading manually should treat it as a
+hard stop.
+
+Manual repair for a four-database vault:
+
+1. Open the vault page in Notion.
+2. Create one child database named `Entities`.
+3. Add these properties to `Entities`:
+   - `Name` as the title property.
+   - `Aliases` rich text.
+   - `Kind` select with options: `class`, `function`, `file`,
+     `workflow`, `pr`, `task-id`, `person`, `system`.
+   - `Description` rich text.
+   - `Project` relation to the vault's `Projects` database.
+   - `Source` relation to the vault's `Memories` database.
+4. Upgrade Lore and run `lore migrate`. This adds the Facts
+   `SubjectEntity` / `ObjectEntity` relation columns and any other
+   additive drift.
+5. Run `lore migrate --build-entities --yes` in a quiet window to create
+   canonical Entity rows and re-point existing Fact rows. The
+   row-level `SubjectKey` fallback remains available until every row is
+   backfilled.
+
+If a vault is missing any required child database other than Entities,
+stop and inspect the page manually before running any write command.
+The supported repair path is to restore the missing database from backup
+or recreate it with the documented schema, then run `lore migrate`.
+
 **Vault-page sharing**: ntn-issued tokens inherit the engineer's
 personal Notion permissions. If the engineer can open the vault
 page in Notion's UI (because they're a member of the workspace

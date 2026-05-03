@@ -25,6 +25,7 @@ const VAULT: Vault = {
     projects: { databaseId: "proj-db", dataSourceId: "proj-ds" },
     topics: { databaseId: "topics-db", dataSourceId: "topics-ds" },
     memories: { databaseId: "mem-db", dataSourceId: "mem-ds" },
+    entities: { databaseId: "entities-db", dataSourceId: "entities-ds" },
     facts: { databaseId: "facts-db", dataSourceId: "facts-ds" },
   },
 }

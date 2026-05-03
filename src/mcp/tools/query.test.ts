@@ -33,9 +33,21 @@ function createMockServer() {
   }
 }
 
+function makeEntityService() {
+  return {
+    resolveOrCreateEntity: vi.fn(async () => ({
+      entity: null,
+      ambiguous: false,
+      candidates: [],
+      created: false,
+    })),
+  }
+}
+
 function makeAskServices(overrides: Record<string, unknown> = {}) {
   return {
     projects: { findByName: vi.fn().mockResolvedValue(null) },
+    entities: makeEntityService(),
     facts: {
       queryByEntity: vi.fn().mockResolvedValue([]),
       queryByObject: vi.fn().mockResolvedValue([]),

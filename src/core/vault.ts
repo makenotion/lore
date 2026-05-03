@@ -1,15 +1,15 @@
 /**
  * Vault management — the root container for all Lore data.
  *
- * A vault is backed by a single Notion page containing four linked databases.
+ * A vault is backed by a single Notion page containing five linked databases.
  */
 
 import type { Client } from "@notionhq/client"
 import type { Vault, VaultDatabases } from "../types.js"
 import {
   createVaultDatabases,
-  ensureEntitiesDatabase,
   migrateVaultSchema,
+  MissingVaultDatabasesError,
   verifyVaultDatabases,
   type MigrationDiff,
 } from "../notion/setup.js"
@@ -80,8 +80,12 @@ export class VaultManager {
       if (e instanceof Error && e.message.includes("already initialized")) {
         throw e
       }
-      // If verify threw about missing databases, that's expected — proceed to create them
-      if (!(e instanceof Error && e.message.includes("missing databases"))) {
+      if (e instanceof MissingVaultDatabasesError) {
+        // A page with zero known Lore DBs is a fresh init target. A page with
+        // some-but-not-all Lore DBs is a partial schema and must not receive
+        // a second full set of child databases.
+        if (e.present.length > 0) throw e
+      } else {
         throw e // Re-throw unexpected errors (network, auth, etc.)
       }
     }
@@ -198,15 +202,9 @@ export class VaultManager {
   }
 
   /**
-   * Expose the rate-limited Notion client for migration helpers that need
-   * to spin up additional services after the vault adds a new database
-   * mid-run (e.g. `lore migrate --build-entities` creating the Entities
-   * database and then constructing an `EntityService` against the
-   * freshly-minted DS id).
-   *
+   * Expose the rate-limited Notion client for low-level migration helpers.
    * Most callers should consume services from `LoreServices` rather than
-   * reaching for the raw client. Use this only when a service has to be
-   * instantiated against state that didn't exist at `initServices` time.
+   * reaching for the raw client.
    */
   getClient(): Client {
     return this.client
@@ -397,49 +395,6 @@ export class VaultManager {
       { dryRun: options.dryRun === true }
     )
     return { groups, mergeResults }
-  }
-
-  /**
-   * Idempotently add the Entities database to a legacy vault that was
-   * set up before PF3-01 landed. Used by `lore migrate --build-entities`
-   * so a single command upgrades the schema and runs the canonical-
-   * resolution pass without forcing the operator to drop into Notion.
-   *
-   * Returns the created/existing `DatabaseRef` and updates the
-   * in-memory vault snapshot so subsequent service initializations
-   * see the new database.
-   *
-   * **Schema follow-up.** When the database is freshly created, this
-   * also re-runs `migrateVaultSchema` so the Facts DB grows the
-   * `SubjectEntity` / `ObjectEntity` relation columns pointing at the
-   * new Entities DS. Without that follow-up, `setEntityRelations`
-   * during the build-entities apply pass would write to non-existent
-   * columns and Notion would 400 on every fact — silently absorbed by
-   * the per-fact try/catch in `buildEntities`, surfacing as a "did
-   * nothing" run. Caught by code-review on PR #88; pinned by tests.
-   */
-  async ensureEntitiesDatabase(): Promise<{
-    created: boolean
-    ref: NonNullable<VaultDatabases["entities"]>
-  }> {
-    const vault = this.get()
-    const result = await ensureEntitiesDatabase(this.client, vault)
-    if (result.created) {
-      this.vault = {
-        ...vault,
-        databases: {
-          ...vault.databases,
-          entities: result.ref,
-        },
-      }
-      // Re-run schema migration so Facts grows the SubjectEntity /
-      // ObjectEntity relation columns now that the Entities DS exists.
-      // `migrateVaultSchema` is idempotent — it sees the columns as
-      // missing on a legacy Facts DB and emits a single
-      // `dataSources.update` to add them.
-      await migrateVaultSchema(this.client, this.vault, { dryRun: false })
-    }
-    return { created: result.created, ref: result.ref }
   }
 
   async stats(): Promise<{

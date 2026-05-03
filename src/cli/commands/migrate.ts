@@ -21,7 +21,6 @@ import {
   buildEntities,
   type EntityMigrationResult,
 } from "../../core/entity-migration.js"
-import { EntityService } from "../../core/entity.js"
 import type {
   BackfillReport,
   SynopsisBackend,
@@ -1355,10 +1354,9 @@ export async function runAgentNormalization(
  * the operator-facing language is consistent across the encoding /
  * task / entity migration family.
  *
- * Refuses to run when the vault doesn't have an Entities DB — points
- * the operator at `lore migrate` (no flags) so the next `lore init`-
- * less path runs `verifyVaultDatabases` and surfaces the missing DB
- * via stderr drift detection.
+ * Requires the standard five-database vault shape. `initServices` performs
+ * that verification before this function runs, so this pass only
+ * canonicalizes existing Fact rows.
  */
 export async function runBuildEntitiesMigration(
   services: LoreServices,
@@ -1367,48 +1365,8 @@ export async function runBuildEntitiesMigration(
   const ownsLock = options.lock === undefined
   const lock = options.lock ?? acquireBuildEntitiesMigrationLock(services, options)
   try {
-    // Resolve the EntityService against the live vault. On legacy vaults
-    // the Entities DB doesn't exist yet — `--yes` triggers a one-time
-    // creation, while plan-only mode refuses to write and surfaces a
-    // directive error so an operator running `--dry-run` doesn't see a
-    // misleading "0 groups" plan against a missing database.
-    let entitiesService = services.entities
-    if (!entitiesService) {
-      if (options.apply) {
-        const result = await services.vault.ensureEntitiesDatabase()
-        if (result.created) {
-          // ensureEntitiesDatabase is no-op-on-existing, so the `created`
-          // flag here is the upgrade-path arrow we want surfaced once.
-          // The same call extends the Facts DB schema with the relation
-          // columns so the apply pass below has columns to write to.
-          console.log(
-            "\nCreated the Entities database on the vault page and added " +
-              "SubjectEntity/ObjectEntity columns to the Facts database (PF3-01)."
-          )
-        }
-        // Use the rate-limited client the vault is already managing rather
-        // than allocating a new one — keeps the shared concurrency gate
-        // governing this migration's writes.
-        entitiesService = new EntityService(services.vault.getClient(), result.ref)
-        // Note: `services.entities` stays null on the original handle so
-        // any unrelated tool calls in the same process still see the
-        // pre-migration null. The migration drives the new service
-        // through to completion and the next `initServices` (next run /
-        // process) picks up the freshly-wired service from
-        // `verifyVaultDatabases` cleanly.
-      } else {
-        console.log(
-          "\nThe Entities database does not exist on this vault yet. " +
-            "Re-run with `--yes` to create it and migrate in one pass. " +
-            "Plan-only mode refuses to scaffold the database (the migration " +
-            "would have nothing to plan against until it lands)."
-        )
-        return null
-      }
-    }
-
     const planOnly = !options.apply
-    const result = await buildEntities(services.facts, entitiesService, {
+    const result = await buildEntities(services.facts, services.entities, {
       apply: options.apply,
       dryRun: options.dryRun,
     })

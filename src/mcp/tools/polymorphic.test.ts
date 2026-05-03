@@ -161,6 +161,17 @@ interface StubOpts {
   tasksList?: ReturnType<typeof vi.fn>
 }
 
+function makeEntityService() {
+  return {
+    resolveOrCreateEntity: vi.fn(async () => ({
+      entity: null,
+      ambiguous: false,
+      candidates: [],
+      created: false,
+    })),
+  }
+}
+
 function makeServices(opts: StubOpts = {}): unknown {
   return {
     config: { projects: [] },
@@ -173,6 +184,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       list: opts.projectsList ?? vi.fn(async () => []),
       findByName: opts.projectsFindByName ?? vi.fn(async () => null),
     },
+    entities: makeEntityService(),
     topics: { findByName: vi.fn(), getOrCreate: vi.fn(), listByProject: vi.fn(async () => []) },
     memories: {
       list: opts.memoriesList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),

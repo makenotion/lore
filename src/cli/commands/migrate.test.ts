@@ -1060,30 +1060,6 @@ describe("runBuildEntitiesMigration", () => {
     return path
   }
 
-  it("plan-only mode without an Entities DB refuses with directive", async () => {
-    const services = addLockFields({
-      entities: null,
-      vault: {
-        ensureEntitiesDatabase: vi.fn(),
-        getClient: vi.fn(),
-      },
-      facts: {
-        queryBySubject: vi.fn().mockResolvedValue([]),
-      },
-    }) as never
-
-    const result = await runBuildEntitiesMigration(services, { apply: false })
-    expect(result).toBeNull()
-    const joined = logs.join("\n")
-    expect(joined).toContain("Entities database does not exist")
-    expect(joined).toContain("--yes")
-    // Refused without writing — no DB-create or service call ran.
-    expect(
-      (services as { vault: { ensureEntitiesDatabase: { mock: { calls: unknown[] } } } })
-        .vault.ensureEntitiesDatabase.mock.calls,
-    ).toHaveLength(0)
-  })
-
   it("emits 'No fact subjects/objects' when the graph is empty", async () => {
     const services = addLockFields({
       entities: {
@@ -1094,7 +1070,6 @@ describe("runBuildEntitiesMigration", () => {
         queryBySubject: vi.fn().mockResolvedValue([]),
       },
       vault: {
-        ensureEntitiesDatabase: vi.fn(),
         getClient: vi.fn(),
       },
     }) as never
@@ -1113,7 +1088,6 @@ describe("runBuildEntitiesMigration", () => {
         queryBySubject: vi.fn().mockResolvedValue([]),
       },
       vault: {
-        ensureEntitiesDatabase: vi.fn(),
         getClient: vi.fn(),
       },
     }) as never
@@ -1137,7 +1111,6 @@ describe("runBuildEntitiesMigration", () => {
         queryBySubject: vi.fn().mockResolvedValue([]),
       },
       vault: {
-        ensureEntitiesDatabase: vi.fn(),
         getClient: vi.fn(),
       },
     }) as never
@@ -1158,7 +1131,6 @@ describe("runBuildEntitiesMigration", () => {
         queryBySubject: vi.fn().mockResolvedValue([]),
       },
       vault: {
-        ensureEntitiesDatabase: vi.fn(),
         getClient: vi.fn(),
       },
     }) as never

@@ -1,13 +1,13 @@
 /**
  * Create and verify the Notion database structure for a Lore vault.
  *
- * A vault is a Notion page containing four child databases:
- * Projects, Topics, Memories, Facts — linked by relations.
+ * A vault is a Notion page containing five child databases:
+ * Projects, Topics, Memories, Entities, Facts — linked by relations.
  */
 
 import type { Client } from "@notionhq/client"
 import type { BlockObjectResponse } from "@notionhq/client"
-import type { DatabaseRef, Vault, VaultDatabases } from "../types.js"
+import type { Vault, VaultDatabases } from "../types.js"
 import {
   PROJECTS_DB_TITLE,
   PROJECTS_DB_ICON,
@@ -34,6 +34,37 @@ type AnyProperties = Record<string, Record<string, unknown>>
 type VaultDatabaseTitles = Record<keyof VaultDatabases, string>
 
 const MAX_VAULT_CHILD_BLOCK_PAGES = 100
+
+export class MissingVaultDatabasesError extends Error {
+  readonly pageId: string
+  readonly missing: string[]
+  readonly present: string[]
+
+  constructor(pageId: string, missing: string[], present: string[]) {
+    super(formatMissingVaultDatabasesMessage(pageId, missing, present))
+    this.name = "MissingVaultDatabasesError"
+    this.pageId = pageId
+    this.missing = missing
+    this.present = present
+    Object.setPrototypeOf(this, new.target.prototype)
+  }
+}
+
+function formatMissingVaultDatabasesMessage(
+  pageId: string,
+  missing: string[],
+  present: string[]
+): string {
+  const prefix = `Vault at ${pageId} is missing databases: ${missing.join(", ")}.`
+  if (present.length === 0) {
+    return `${prefix} Run 'lore init' to create them.`
+  }
+  return (
+    `${prefix} Found existing Lore databases: ${present.join(", ")}. ` +
+    "This is a partial vault schema; do not run 'lore init' on this page because it would create duplicate databases. " +
+    "Follow docs/internal-rollout.md#entities-database-cutover to add or repair the missing databases, then rerun."
+  )
+}
 
 function hasAllExpectedDatabases(
   found: Partial<Record<keyof VaultDatabases, string>>,
@@ -65,7 +96,7 @@ function createDbArgs(
 }
 
 /**
- * Create all four Lore databases inside a Notion page.
+ * Create all five Lore databases inside a Notion page.
  */
 export async function createVaultDatabases(
   client: Client,
@@ -157,60 +188,6 @@ export async function createVaultDatabases(
       entities: toRef(entitiesDb as unknown as Record<string, unknown>),
       facts: toRef(factsDb as unknown as Record<string, unknown>),
     },
-  }
-}
-
-/**
- * Create the Entities database (PF3-01) on an existing vault page that
- * was set up before the database existed. Idempotent: returns the
- * existing database when one is already present, only writing on a
- * true cold start.
- *
- * Used by `lore migrate --build-entities` to upgrade legacy vaults in
- * place. New vaults skip this entirely because `createVaultDatabases`
- * already creates Entities as part of the standard init flow.
- *
- * Returns the `DatabaseRef` so the caller can stitch the new database
- * into a refreshed `Vault` snapshot before invoking the rest of the
- * migration.
- */
-export async function ensureEntitiesDatabase(
-  client: Client,
-  vault: Vault
-): Promise<{ ref: DatabaseRef; created: boolean }> {
-  if (vault.databases.entities) {
-    return { ref: vault.databases.entities, created: false }
-  }
-
-  const dsId = (db: Record<string, unknown>): string => {
-    const ds = db["data_sources"] as Array<{ id: string }> | undefined
-    return ds?.[0]?.id ?? (db["id"] as string)
-  }
-
-  const entitiesDb = await client.databases.create({
-    parent: { type: "page_id" as const, page_id: vault.pageId },
-    title: [{ text: { content: ENTITIES_DB_TITLE } }],
-    icon: { emoji: ENTITIES_DB_ICON as "🪪" },
-    initial_data_source: {
-      properties: entitiesProperties(
-        vault.databases.projects.dataSourceId,
-        vault.databases.memories.dataSourceId
-      ) as Parameters<
-        Client["databases"]["create"]
-      >[0]["initial_data_source"] extends { properties?: infer P }
-        ? P
-        : never,
-    },
-  })
-
-  const dbRecord = entitiesDb as unknown as Record<string, unknown>
-  const id = dbRecord["id"] as string
-  return {
-    ref: {
-      databaseId: id,
-      dataSourceId: dsId(dbRecord),
-    },
-    created: true,
   }
 }
 
@@ -403,14 +380,18 @@ export async function migrateVaultSchema(
   options: { dryRun?: boolean } = {}
 ): Promise<MigrationDiff[]> {
   const db = vault.databases
-  // Entities DB is optional in `VaultDatabases`. When present, the Facts
-  // schema sees the entity DS id and grows the `SubjectEntity` /
-  // `ObjectEntity` relation columns. When absent, the Facts schema stays
-  // at its pre-PF3-01 shape — `migrateVaultSchema` won't surface the new
-  // columns as drift on a vault that hasn't run the build-entities
-  // migration yet.
-  const entitiesDsId = db.entities?.dataSourceId
-  const expectedByDb: Partial<Record<keyof VaultDatabases, AnyProperties>> = {
+  const partialDb = db as Partial<VaultDatabases>
+  const entitiesDb = partialDb.entities
+  if (!entitiesDb) {
+    const present = [
+      partialDb.projects ? PROJECTS_DB_TITLE : null,
+      partialDb.topics ? TOPICS_DB_TITLE : null,
+      partialDb.memories ? MEMORIES_DB_TITLE : null,
+      partialDb.facts ? FACTS_DB_TITLE : null,
+    ].filter((title): title is string => title !== null)
+    throw new MissingVaultDatabasesError(vault.pageId, [ENTITIES_DB_TITLE], present)
+  }
+  const expectedByDb: Record<keyof VaultDatabases, AnyProperties> = {
     projects: projectsProperties,
     topics: topicsProperties(db.projects.dataSourceId),
     memories: memoriesProperties(
@@ -418,17 +399,15 @@ export async function migrateVaultSchema(
       db.topics.dataSourceId,
       db.memories.dataSourceId
     ),
+    entities: entitiesProperties(
+      db.projects.dataSourceId,
+      db.memories.dataSourceId
+    ),
     facts: factsProperties(
       db.projects.dataSourceId,
       db.memories.dataSourceId,
-      entitiesDsId
+      entitiesDb.dataSourceId
     ),
-  }
-  if (db.entities) {
-    expectedByDb.entities = entitiesProperties(
-      db.projects.dataSourceId,
-      db.memories.dataSourceId
-    )
   }
 
   const diffs: MigrationDiff[] = []
@@ -438,12 +417,11 @@ export async function migrateVaultSchema(
   // cost worth shaving here is the retrieve fan-out. The shared rate-limited
   // client gates concurrency, so this never bursts past the configured cap.
   const targets = (Object.keys(expectedByDb) as Array<keyof VaultDatabases>)
-    .flatMap((key) => {
-      const expected = expectedByDb[key]
-      const ref = db[key]
-      if (!expected || !ref) return []
-      return [{ key, expected, dsId: ref.dataSourceId }] as const
-    })
+    .map((key) => ({
+      key,
+      expected: expectedByDb[key],
+      dsId: db[key].dataSourceId,
+    }))
 
   // Colocate each target with its retrieved live properties so Phase B
   // never has to index two parallel arrays (a known footgun if anything
@@ -533,27 +511,12 @@ export async function verifyVaultDatabases(
   client: Client,
   pageId: string
 ): Promise<Vault> {
-  // Required-vs-optional split. Entities (PF3-01) is optional so vaults
-  // created before the migration ran still load — `lore migrate
-  // --build-entities` is the path that lifts a legacy vault into a
-  // post-PF3-01 schema. The four core databases (Projects / Topics /
-  // Memories / Facts) remain mandatory; their absence is a setup error
-  // worth blocking on.
-  const requiredTitles: Record<
-    Exclude<keyof VaultDatabases, "entities">,
-    string
-  > = {
+  const expectedTitles: VaultDatabaseTitles = {
     projects: PROJECTS_DB_TITLE,
     topics: TOPICS_DB_TITLE,
     memories: MEMORIES_DB_TITLE,
-    facts: FACTS_DB_TITLE,
-  }
-  const optionalTitles: Record<"entities", string> = {
     entities: ENTITIES_DB_TITLE,
-  }
-  const expectedTitles: VaultDatabaseTitles = {
-    ...requiredTitles,
-    ...optionalTitles,
+    facts: FACTS_DB_TITLE,
   }
 
   const dbBlockIds: Partial<Record<keyof VaultDatabases, string>> = {}
@@ -603,15 +566,15 @@ export async function verifyVaultDatabases(
     cursor = nextCursor
   }
 
-  const missing = Object.entries(requiredTitles)
+  const missing = Object.entries(expectedTitles)
     .filter(([key]) => !dbBlockIds[key as keyof VaultDatabases])
     .map(([, title]) => title)
 
   if (missing.length > 0) {
-    throw new Error(
-      `Vault at ${pageId} is missing databases: ${missing.join(", ")}. ` +
-        `Run 'lore init' to create them.`
-    )
+    const present = Object.entries(expectedTitles)
+      .filter(([key]) => dbBlockIds[key as keyof VaultDatabases])
+      .map(([, title]) => title)
+    throw new MissingVaultDatabasesError(pageId, missing, present)
   }
 
   // Resolve both IDs from each database block:

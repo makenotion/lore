@@ -102,6 +102,17 @@ function makeTask(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary
   }
 }
 
+function makeEntityService() {
+  return {
+    resolveOrCreateEntity: vi.fn().mockResolvedValue({
+      entity: null,
+      ambiguous: false,
+      candidates: [],
+      created: false,
+    }),
+  }
+}
+
 function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
@@ -181,6 +192,7 @@ describe("lore-ask", () => {
       },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      entities: makeEntityService(),
       context: {
         project: null,
       },
@@ -228,6 +240,7 @@ describe("lore-ask — partial decision resolution", () => {
       },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      entities: makeEntityService(),
       context: { project: null },
     }
   }
@@ -325,6 +338,7 @@ describe("lore-ask — partial decision resolution", () => {
       },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      entities: makeEntityService(),
       context: { project: null },
     }
     registerKnowledgeTools(mockServer.server, services as never)
@@ -440,6 +454,7 @@ describe("lore-ask — parallel decision and title resolution", () => {
       decisions: { getById },
       memories: { getTitleById },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
       context: { project: null },
     }
 
@@ -490,6 +505,7 @@ describe("lore-ask grouped display (P2-06)", () => {
       // by default so existing tests that only assert on facts keep
       // passing; tests that exercise the Tasks bucket override this.
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
       context: { project: null },
       ...overrides,
     }
@@ -641,6 +657,7 @@ describe("lore-ask — confidence-weighted RRF (DEFERRED-02)", () => {
         touchOnRead: vi.fn().mockResolvedValue(undefined),
       },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
       context: { project: null },
     }
   }
@@ -804,6 +821,7 @@ describe("lore-ask — decided_by trust line (DEFERRED-02)", () => {
         touchOnRead: vi.fn().mockResolvedValue(undefined),
       },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
       context: { project: null },
     }
   }
@@ -917,6 +935,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
         touchOnRead: vi.fn().mockResolvedValue(undefined),
       },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
       context: { project: null },
     }
   }
@@ -1080,6 +1099,7 @@ describe("lore-ask projectName resolution", () => {
       decisions: { getById: vi.fn() },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
+      entities: makeEntityService(),
       context: {
         project: {
           id: "proj-ambient",
@@ -1128,10 +1148,11 @@ describe("lore-fact action='create' — tracking-predicate Zod rejection", () =>
           queryByEntity: vi.fn(),
           queryByObject: vi.fn(),
         },
-        decisions: { getById: vi.fn() },
-        context: { project: null },
-        sessionMemories: { record: vi.fn(), get: vi.fn() },
-        identity: { author: null },
+      decisions: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+      entities: makeEntityService(),
       },
       createWithDedup,
     }
@@ -1194,6 +1215,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
         get: vi.fn().mockReturnValue(undefined),
       },
       identity: { author: null },
+      entities: makeEntityService(),
       ...overrides,
     }
   }
@@ -1689,7 +1711,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
   function makeServices(entitiesBehavior: {
     subjectAmbiguous?: boolean
     objectAmbiguous?: boolean
-    skipService?: boolean
+    resolverThrows?: boolean
   } = {}) {
     const ambiguousResolution = (input: string) => ({
       entity: null,
@@ -1750,19 +1772,20 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
         get: vi.fn().mockReturnValue(undefined),
       },
       identity: { author: null },
-      entities: entitiesBehavior.skipService
-        ? null
-        : {
-            resolveOrCreateEntity: vi.fn().mockImplementation(async (input: string) => {
-              if (input.toLowerCase().includes("user") && entitiesBehavior.subjectAmbiguous) {
-                return ambiguousResolution(input)
-              }
-              if (input.toLowerCase().includes("session") && entitiesBehavior.objectAmbiguous) {
-                return ambiguousResolution(input)
-              }
-              return uniqueResolution(input)
-            }),
-          },
+      entities: {
+        resolveOrCreateEntity: vi.fn().mockImplementation(async (input: string) => {
+          if (entitiesBehavior.resolverThrows) {
+            throw new Error("notion 429")
+          }
+          if (input.toLowerCase().includes("user") && entitiesBehavior.subjectAmbiguous) {
+            return ambiguousResolution(input)
+          }
+          if (input.toLowerCase().includes("session") && entitiesBehavior.objectAmbiguous) {
+            return ambiguousResolution(input)
+          }
+          return uniqueResolution(input)
+        }),
+      },
     }
   }
 
@@ -1798,9 +1821,9 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
     )
   })
 
-  it("legacy vault path (services.entities === null) skips resolver entirely", async () => {
+  it("writes the fact without entity relations when entity resolution fails", async () => {
     const mockServer = createMockServer()
-    const services = makeServices({ skipService: true })
+    const services = makeServices({ resolverThrows: true })
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
     const loreLearn = mockServer.getActionHandler("lore-fact", "create")
@@ -1814,7 +1837,9 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
     expect(payload.isError).toBeFalsy()
-    // No entity ids on the create call — pre-PF3-01 fact.
+    expect(payload.content[0].text).toContain("entity resolution failed")
+    // No entity ids on the create call — the row-level fallback still
+    // recalls the fact by SubjectKey / Subject text.
     expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({
         subjectEntityId: undefined,
@@ -1837,6 +1862,14 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       context: { project: null },
+      entities: {
+        resolveOrCreateEntity: vi.fn().mockResolvedValue({
+          entity: null,
+          ambiguous: false,
+          candidates: [],
+          created: false,
+        }),
+      },
       ...overrides,
     }
   }
@@ -1880,11 +1913,11 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
 
     await loreAsk({ entity: "AuthService" } as never)
 
-    // Legacy vault path (no `services.entities`) collapses the variant
-    // set to the raw input — alias-aware recall is the EntityService
-    // path, exercised separately below. The contract here is that
-    // `lore-ask` always feeds `TaskService.list` through the new
-    // `entities` array surface, never the removed `entity` field.
+    // Unresolved entities collapse the variant set to the raw input —
+    // alias-aware recall is the unique EntityService path, exercised
+    // separately below. The contract here is that `lore-ask` always feeds
+    // `TaskService.list` through the new `entities` array surface, never
+    // the removed `entity` field.
     expect(services.tasks.list).toHaveBeenCalledWith(
       expect.objectContaining({ entities: ["AuthService"] }),
     )
@@ -2077,10 +2110,9 @@ describe("lore-ask — task recall honors canonical entity aliases", () => {
     expect(callArgs.entities).toEqual(["User"])
   })
 
-  it("legacy vault (services.entities === null) feeds the raw input through unchanged", async () => {
+  it("unresolved entity lookup feeds the raw input through unchanged", async () => {
     const mockServer = createMockServer()
     const services = makeAskServicesWithEntity({})
-    services.entities = null as never
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
     const loreAsk = mockServer.getActionHandler("lore-query", "ask")
@@ -2143,6 +2175,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
       decisions: { getById: vi.fn() },
       memories: { getTitleById: vi.fn().mockResolvedValue(null) },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      entities: makeEntityService(),
       context: {
         project: opts.project === undefined
           ? {

@@ -292,13 +292,7 @@ export async function runExplicitPageInit(
     console.log(`  Projects DB: ${result.databases.projects}`)
     console.log(`  Topics DB:   ${result.databases.topics}`)
     console.log(`  Memories DB: ${result.databases.memories}`)
-    if (result.databases.entities) {
-      // Entities DB landed in PF3-01; log unconditionally on fresh inits
-      // (every new vault gets it). Pre-PF3-01 vaults loaded via `load()`
-      // still surface here as undefined and the line elides — but
-      // `vault.init()` always populates the field on the create path.
-      console.log(`  Entities DB: ${result.databases.entities}`)
-    }
+    console.log(`  Entities DB: ${result.databases.entities}`)
     console.log(`  Facts DB:    ${result.databases.facts}`)
 
     const configPath = resolve(process.cwd(), ".lore.yaml")
@@ -671,7 +665,7 @@ export async function runNoArgInit(opts: {
   console.log(`  ✓ Page accessible: ${preflight.pageTitle ?? vaultPageId}`)
   console.log("")
 
-  // Create the four databases under the vault page.
+  // Create the five databases under the vault page.
   console.log("Creating Lore databases...")
   const vault = new VaultManager(client, vaultPageId)
   try {
@@ -679,18 +673,12 @@ export async function runNoArgInit(opts: {
     console.log(`  ✓ Projects DB: ${result.databases.projects}`)
     console.log(`  ✓ Topics DB:   ${result.databases.topics}`)
     console.log(`  ✓ Memories DB: ${result.databases.memories}`)
-    if (result.databases.entities) {
-      // PF3-01 added the Entities DB; `vault.init()` always creates it
-      // on fresh inits. The optional-chain on the type matches
-      // `VaultDatabases.entities`'s post-PF3-01 shape; the line elides
-      // only on legacy `load()` paths the no-arg flow doesn't hit.
-      console.log(`  ✓ Entities DB: ${result.databases.entities}`)
-    }
+    console.log(`  ✓ Entities DB: ${result.databases.entities}`)
     console.log(`  ✓ Facts DB:    ${result.databases.facts}`)
   } catch (err) {
     // "Already initialized" is FATAL in the no-arg flow: we just
     // created the page seconds ago via `pages.create`. If
-    // `verifyVaultDatabases` finds an existing four-database structure
+    // `verifyVaultDatabases` finds an existing five-database structure
     // on a freshly-created page, it's a genuine anomaly (concurrent
     // Lore process, Notion misbehavior, real bug) — burying it under a
     // friendly "already exists" message would silently land a config

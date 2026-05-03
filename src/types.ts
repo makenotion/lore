@@ -128,18 +128,12 @@ export interface VaultDatabases {
   topics: DatabaseRef
   memories: DatabaseRef
   /**
-   * Canonical-entity registry (PF3-01). Sits between Memories and Facts in
-   * the dependency graph because Facts now relate to Entity rows via
-   * `SubjectEntity` / `ObjectEntity` while Entities themselves only
-   * reference Projects + Memories.
-   *
-   * Optional in the type so a vault that pre-dates PF3-01 still loads
-   * without a hard error — `verifyVaultDatabases` populates the field
-   * only when the database exists. Code paths that read `entities` must
-   * guard against `undefined` and fall back to the SubjectKey/Subject
-   * substring path.
+   * Canonical-entity registry. Sits between Memories and Facts in the
+   * dependency graph because Facts relate to Entity rows via
+   * `SubjectEntity` / `ObjectEntity` while Entities themselves reference
+   * Projects + Memories.
    */
-  entities?: DatabaseRef
+  entities: DatabaseRef
   facts: DatabaseRef
 }
 
@@ -1154,16 +1148,16 @@ export interface Fact {
    */
   createdAt?: string
   /**
-   * Entity ID the fact's Subject relates to. Populated post-PF3-01 by
-   * the build-entities migration and by `lore-fact action='create'`
-   * after the resolver runs. `null` on un-migrated rows; queries that
+   * Entity ID the fact's Subject relates to. Populated by the
+   * build-entities migration and by `lore-fact action='create'`
+   * after the resolver runs. `null` on unbackfilled rows; queries that
    * filter by entity must accept that and fall back to the SubjectKey /
    * Subject substring path.
    *
-   * Optional on the type — external consumers deserializing pre-PF3-01
+   * Optional on the type — external consumers deserializing older
    * `Fact` JSON would otherwise see "missing field" validation errors.
    * Internal `pageToFact` always populates the field (`null` when the
-   * column is absent), so domain-internal callers can rely on it being
+   * relation is empty), so domain-internal callers can rely on it being
    * present without an explicit guard.
    */
   subjectEntityId?: string | null
@@ -1185,8 +1179,8 @@ export interface CreateFactInput {
    * resolver pass and writes the relation directly. When omitted, the
    * caller is expected to resolve via `EntityService.resolveOrCreateEntity`
    * before reaching the service — leaving these `undefined` produces a
-   * fact whose Subject/Object text are the only handles, just like
-   * pre-PF3-01 rows. Queries fall back to the SubjectKey path for those.
+   * fact whose Subject/Object text are the only handles. Queries fall
+   * back to the SubjectKey path for those rows.
    */
   subjectEntityId?: string
   objectEntityId?: string

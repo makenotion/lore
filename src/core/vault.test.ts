@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { VaultManager } from "./vault.js"
 import type { Vault } from "../types.js"
+import {
+  FACTS_DB_TITLE,
+  MEMORIES_DB_TITLE,
+  PROJECTS_DB_TITLE,
+  TOPICS_DB_TITLE,
+} from "../notion/schema.js"
 
 /**
  * Focused tests on `VaultManager.migrate`'s atomicity gate — specifically
@@ -25,6 +31,7 @@ const VAULT: Vault = {
     projects: { databaseId: "proj-db", dataSourceId: "proj-ds" },
     topics: { databaseId: "topics-db", dataSourceId: "topics-ds" },
     memories: { databaseId: "mem-db", dataSourceId: "mem-ds" },
+    entities: { databaseId: "entities-db", dataSourceId: "entities-ds" },
     facts: { databaseId: "facts-db", dataSourceId: "facts-ds" },
   },
 }
@@ -92,6 +99,50 @@ function makeVaultManager(client: Client): VaultManager {
   ;(manager as unknown as { vault: Vault }).vault = VAULT
   return manager
 }
+
+function initClientWithChildDatabases(
+  childDatabases: Array<{ id: string; title: string }>
+): { client: Client; createMock: ReturnType<typeof vi.fn> } {
+  const createMock = vi.fn()
+  const client = {
+    blocks: {
+      children: {
+        list: vi.fn(async () => ({
+          results: childDatabases.map((db) => ({
+            type: "child_database",
+            id: db.id,
+            child_database: { title: db.title },
+          })),
+          has_more: false,
+          next_cursor: null,
+        })),
+      },
+    },
+    databases: {
+      create: createMock,
+      retrieve: vi.fn(),
+    },
+    dataSources: {
+      update: vi.fn(),
+    },
+  } as unknown as Client
+  return { client, createMock }
+}
+
+describe("VaultManager.init — partial schema guard", () => {
+  it("refuses to create duplicate databases when a legacy vault is missing only Entities", async () => {
+    const { client, createMock } = initClientWithChildDatabases([
+      { id: "block-projects", title: PROJECTS_DB_TITLE },
+      { id: "block-topics", title: TOPICS_DB_TITLE },
+      { id: "block-memories", title: MEMORIES_DB_TITLE },
+      { id: "block-facts", title: FACTS_DB_TITLE },
+    ])
+    const manager = new VaultManager(client, "page-1")
+
+    await expect(manager.init()).rejects.toThrow("do not run 'lore init'")
+    expect(createMock).not.toHaveBeenCalled()
+  })
+})
 
 describe("VaultManager.migrate — atomicity gate", () => {
   it("throws without writing when decoding would surface a cross-encoding dup and --merge-duplicate-topics is omitted", async () => {

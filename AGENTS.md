@@ -30,8 +30,7 @@
 ## Repo At A Glance
 
 Lore is a Notion-backed memory system. It stores knowledge as Notion pages in
-four core databases: Projects, Topics, Memories, and Facts. Legacy/newer vaults
-may also have an optional Entities database for canonical handle resolution.
+five core databases: Projects, Topics, Memories, Entities, and Facts.
 
 The same domain services power three interfaces:
 
@@ -49,9 +48,9 @@ Creation order matters because relations form foreign keys:
 Projects -> Topics -> Memories -> Entities -> Facts
 ```
 
-The Entities database is optional on legacy vaults. Code that reads entity ids
-from facts must handle both post-migration rows with entity relations and
-pre-migration rows that need the SubjectKey substring fallback.
+Facts can still be mid-migration at the row level: code that reads entity ids
+from facts must handle both rows with populated entity relations and rows that
+need the SubjectKey substring fallback.
 
 ## Quick Commands
 
@@ -72,7 +71,7 @@ permission from the human lead first.
 - Do not remove existing MCP tools. Deprecate first, remove in a future major.
 - Do not rename database properties. Property names are baked into schema,
   extractors, and services.
-- Keep the four-database core schema stable. Adding properties is fine;
+- Keep the five-database core schema stable. Adding properties is fine;
   removing or renaming them is breaking.
 - Do not change `initServices()` without updating MCP, CLI, and hooks.
 - Respect the import boundary: CLI and hooks import from `services.ts`, not

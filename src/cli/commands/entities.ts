@@ -80,12 +80,6 @@ export async function runEntityMerge(
   services: LoreServices,
   options: EntityMergeCliOptions
 ): Promise<EntityMergeResult> {
-  if (!services.entities) {
-    throw new Error(
-      "Entities database is not available. Run `lore migrate --build-entities --yes` first."
-    )
-  }
-
   return mergeEntities(services.entities, services.facts, {
     winnerId: options.winnerId,
     loserId: options.loserId,

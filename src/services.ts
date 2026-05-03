@@ -70,13 +70,11 @@ export interface LoreServices {
   decisions: DecisionService
   tasks: TaskService
   /**
-   * Canonical-entity registry (PF3-01). `null` on vaults that pre-date
-   * the migration — the Entities DB doesn't exist yet, so the service
-   * can't be wired up. Code paths that read `services.entities` must
-   * guard against null and fall back to substring queries on the
-   * Subject/Object text.
+   * Canonical-entity registry. Required because vault verification now
+   * requires the Entities database alongside Projects, Topics, Memories,
+   * and Facts.
    */
-  entities: EntityService | null
+  entities: EntityService
   context: ResolvedContext
   config: LoreConfig
   configRoot: string
@@ -145,11 +143,7 @@ export async function initServicesFromConfig(
   // Tasks (P3-02) are likewise Memories-DB backed via the `Kind = task`
   // discriminator. Tasks are the canonical surface for tracked work.
   const tasks = new TaskService(client, db.memories)
-  // PF3-01 — Entities DB is optional on legacy vaults. Wire up the
-  // service only when the database exists; downstream code paths
-  // already null-check `services.entities` and fall back to the
-  // SubjectKey/Subject substring path.
-  const entities = db.entities ? new EntityService(client, db.entities) : null
+  const entities = new EntityService(client, db.entities)
 
   const resolution = await resolveProject(cwd, configRoot, config, projects)
 
@@ -344,5 +338,5 @@ export function clearServiceCaches(services: LoreServices): void {
   services.topics.clearNameCache()
   services.memories.clearTitleCache()
   services.decisions.clearCache()
-  services.entities?.clearNameCache()
+  services.entities.clearNameCache()
 }

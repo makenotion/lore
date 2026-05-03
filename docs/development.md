@@ -34,19 +34,15 @@ Build output has four entry points:
 
 ## Data Model
 
-A Vault is a Notion page containing four core child databases plus an optional
-fifth Entities database:
+A Vault is a Notion page containing five core child databases:
 
 ```text
 Projects -> Topics -> Memories -> Entities -> Facts
 ```
 
-The Entities database is opt-in on legacy vaults. `verifyVaultDatabases`
-populates `vault.databases.entities` only when it exists, and
-`services.entities` is `null` until `lore migrate --build-entities` runs. Code
-paths reading entity ids from facts must handle both shapes: relation-populated
-post-migration rows and empty pre-migration rows that need the SubjectKey
-substring fallback.
+The Entities database is required. Code paths reading entity ids from facts
+must still handle mid-migration rows: relation-populated rows and empty
+unbackfilled rows that need the SubjectKey substring fallback.
 
 ## Commands
 
@@ -103,7 +99,7 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
    services.
 3. Do not change `initServices()` without updating all three consumers: MCP
    server, CLI, and hooks.
-4. Keep the four-database schema stable. Adding properties is fine; removing or
+4. Keep the five-database schema stable. Adding properties is fine; removing or
    renaming properties is breaking.
 5. Respect the import boundary: CLI and hooks import from `services.ts`, not
    directly from `mcp/server.ts`.
