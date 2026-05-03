@@ -423,9 +423,10 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // Active-task cross-reference probe (issue 0.7.0/11). Starts only
     // after the blocking autosave-learning dedup gate clears: duplicate
     // early returns avoid this advisory read entirely because no new memory
-    // exists to cross-reference. The tradeoff is a small latency delay on
-    // non-duplicate autosave saves before this read starts; it still overlaps
-    // with the write below once the write path is known to create a row.
+    // exists to cross-reference. This intentionally trades a small non-duplicate
+    // autosave latency delay for skipping a wasted task query on duplicate
+    // returns; it still overlaps with the write below once the write path is
+    // known to create a row.
     const taskCrossrefPromise = findRelatedActiveTasks(services, {
       memoryTitle: args.title,
       memoryKeywords: args.keywords,
