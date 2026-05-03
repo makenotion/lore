@@ -158,10 +158,12 @@ describe("createAuthRefreshingClient", () => {
       source: "ntn-auth-json",
     }))
     const refreshEvents: unknown[] = []
+    const authChanges: unknown[] = []
 
     const client = createAuthRefreshingClient({ token: "old-token" }, refreshAuth, {
       createClient,
       onRefresh: (event) => refreshEvents.push(event),
+      onAuthChange: (auth) => authChanges.push(auth),
     })
 
     await expect(client.pages.retrieve({ page_id: "page" })).resolves.toEqual({
@@ -172,6 +174,7 @@ describe("createAuthRefreshingClient", () => {
     expect(oldRetrieve).toHaveBeenCalledTimes(1)
     expect(newRetrieve).toHaveBeenCalledTimes(1)
     expect(refreshEvents).toEqual([{ kind: "refreshed", source: "ntn-auth-json" }])
+    expect(authChanges).toEqual([{ token: "new-token" }])
   })
 
   it("does not call refreshAuth a second time when refresh reports unchanged auth", async () => {

@@ -277,16 +277,17 @@ short-circuit `resolveAuth`'s priority chain in the spawned child.
 
 `LORE_USER_NAME` (DEFERRED-ATTRIBUTION) is forwarded so the spawned
 MCP child resolves engineer identity via the synchronous env path
-rather than paying a `users.me` round-trip on every autosave fire.
+rather than paying a lazy `users.me` round-trip on its first
+unattributed autosave write.
 **The dominant case is unset, not set**: ntn-first engineers don't
 typically export `LORE_USER_NAME` because they expect ntn-resolved
 identity to "just work." For those operators, the spawned MCP child
-falls through to `users.me` at startup, costing one extra Notion
-round-trip per autosave fire. Realistic latency: <100ms; under load
-each autosave is one entry in the rate-limit gate's queue. Operators
-on slow networks (or who otherwise want the resolution off the hot
-path) export `LORE_USER_NAME` in shell rc and the spawned child's
-synchronous env path resolves identity for free.
+falls through to `users.me` only if the save omits an explicit
+author. Realistic latency: <100ms; under load the identity probe is
+one entry in the rate-limit gate's queue. Operators on slow networks
+(or who otherwise want the resolution off the write path) export
+`LORE_USER_NAME` in shell rc and the spawned child's synchronous env
+path resolves identity for free.
 
 **Mid-process ntn re-resolution is bounded in the MCP server.** The
 autosave child still resolves its own credentials at startup, then

@@ -45,12 +45,11 @@ export function buildProjectSelectionGuidance(
  * per-engineer attribution.
  *
  * The author signal is double-routed: the spawned `claude -p`'s MCP server
- * already resolves identity at startup via `resolveAuthorIdentity` so saves
- * pick up the engineer name automatically. Surfacing `Author: ...` in the
- * prompt is the textual carrier for cases where the MCP-side resolution
- * fails (transient `users.me` blip) AND the load-bearing path for explicit
- * `LORE_USER_NAME` overrides — the prompt instructs the agent to pass
- * `author:` verbatim, parallel to how `agent:` flows from `LORE_AGENT_NAME`.
+ * lazily resolves identity when a write omits `author`, while surfacing
+ * `Author: ...` in the prompt gives the agent an explicit value to pass
+ * through. That explicit value avoids any MCP-side `users.me` call and
+ * preserves attribution when the env override exists but the Notion probe
+ * would later fail.
  *
  * `sessionId` routes through `safeFilenameSegment` before embedding for
  * the same reason the lock / log / count filename builders do — and one
@@ -79,7 +78,7 @@ export function buildProjectSelectionGuidance(
 function buildIdentityBlock(
   sessionId?: string,
   agentName?: string,
-  authorName?: string,
+  authorName?: string
 ): string {
   if (!sessionId && !agentName && !authorName) return ""
 
@@ -262,15 +261,13 @@ export function buildBackgroundSavePrompt(
   sessionContent: string,
   sessionId?: string,
   agentName?: string,
-  options?: { extractLearnings?: boolean; authorName?: string },
+  options?: { extractLearnings?: boolean; authorName?: string }
 ): string {
   const identitySection = buildIdentityBlock(sessionId, agentName, options?.authorName)
   const projectSection = buildProjectSelectionGuidance(subProjects, catchAllName)
   const filter = buildExtractionFilter()
   const learningGuidance =
-    options?.extractLearnings !== false
-      ? `\n\n${buildLearningExtractionGuidance()}`
-      : ""
+    options?.extractLearnings !== false ? `\n\n${buildLearningExtractionGuidance()}` : ""
   const tools = buildToolGuidance()
 
   return `[Lore autosave] You are reviewing a Claude Code or Codex session in progress.
@@ -331,7 +328,7 @@ export function buildDigestPrompt(
   rawData: string,
   projectName: string,
   today: string,
-  lastDigestDate: string | null,
+  lastDigestDate: string | null
 ): string {
   const filter = buildDigestFilter()
   const lastDigestLine = lastDigestDate

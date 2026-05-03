@@ -116,9 +116,15 @@ function makeEntityService() {
 function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
-    registerTool: vi.fn((name: string, _config: unknown, handler: (...args: never[]) => Promise<unknown>) => {
-      handlers.set(name, handler)
-    }),
+    registerTool: vi.fn(
+      (
+        name: string,
+        _config: unknown,
+        handler: (...args: never[]) => Promise<unknown>
+      ) => {
+        handlers.set(name, handler)
+      }
+    ),
   } as unknown as McpServer
 
   return {
@@ -136,8 +142,7 @@ function createMockServer() {
     getActionHandler(toolName: string, action: string) {
       const handler = handlers.get(toolName)
       if (!handler) throw new Error(`missing handler ${toolName}`)
-      return (args: Record<string, unknown>) =>
-        handler({ ...args, action } as never)
+      return (args: Record<string, unknown>) => handler({ ...args, action } as never)
     },
   }
 }
@@ -298,7 +303,7 @@ describe("lore-ask — partial decision resolution", () => {
       // break downstream filters; pin the full line here instead of a
       // substring set so a reordering trips this test.
       expect(logged).toBe(
-        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-query\n",
+        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-query\n"
       )
     } finally {
       vi.unstubAllEnvs()
@@ -319,10 +324,12 @@ describe("lore-ask — partial decision resolution", () => {
     const services = {
       projects: { findByName: vi.fn() },
       facts: {
-        queryByEntity: vi.fn().mockResolvedValue([
-          makeFact("fact-ok", { sourceMemoryId: "new-id", object: "new-id" }),
-          makeFact("fact-bad", { sourceMemoryId: "bad-root", object: "bad-root" }),
-        ]),
+        queryByEntity: vi
+          .fn()
+          .mockResolvedValue([
+            makeFact("fact-ok", { sourceMemoryId: "new-id", object: "new-id" }),
+            makeFact("fact-bad", { sourceMemoryId: "bad-root", object: "bad-root" }),
+          ]),
         queryByObject: vi.fn().mockImplementation(async (object: string) => {
           // Message contains a newline AND a tab AND a carriage-return —
           // all three must collapse to a single space.
@@ -357,7 +364,7 @@ describe("lore-ask — partial decision resolution", () => {
       // parts: the event and an empty string after the terminator.
       expect(logged.split("\n")).toHaveLength(2)
       expect(logged).toBe(
-        "[lore] partial-failure: root=bad-root error=line one line two tabbed cr tool=lore-query\n",
+        "[lore] partial-failure: root=bad-root error=line one line two tabbed cr tool=lore-query\n"
       )
     } finally {
       vi.unstubAllEnvs()
@@ -514,7 +521,7 @@ describe("lore-ask grouped display (P2-06)", () => {
   async function invokeAsk(
     facts: Fact[],
     args: Record<string, unknown> = {},
-    overrides: Record<string, unknown> = {},
+    overrides: Record<string, unknown> = {}
   ): Promise<string> {
     const mockServer = createMockServer()
     registerKnowledgeTools(mockServer.server, services(facts, overrides) as never)
@@ -554,7 +561,7 @@ describe("lore-ask grouped display (P2-06)", () => {
         object: `Obj${i}`,
         // Unique validFrom per row so the sort is deterministic.
         validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
-      }),
+      })
     )
     const text = await invokeAsk(facts)
 
@@ -573,7 +580,7 @@ describe("lore-ask grouped display (P2-06)", () => {
         predicate: "uses",
         object: `Obj${i}`,
         validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
-      }),
+      })
     )
     const text = await invokeAsk(facts, { limit: 20 })
 
@@ -623,7 +630,7 @@ describe("lore-ask grouped display (P2-06)", () => {
       makeFact(`s-${i}`, {
         predicate: "uses",
         object: `Obj${i}`,
-      }),
+      })
     )
     const text = await invokeAsk(facts, { limit: 3 })
     // `limit=3` is below the count so we DO trim — but the caller is
@@ -856,7 +863,7 @@ describe("lore-ask — decided_by trust line (DEFERRED-02)", () => {
     const text = await invokeAsk([fact], decision)
     const lines = text.split("\n")
     const titleIdx = lines.findIndex(
-      (l) => l.includes("decided by") && l.includes("AuthService"),
+      (l) => l.includes("decided by") && l.includes("AuthService")
     )
     expect(titleIdx).toBeGreaterThanOrEqual(0)
     expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
@@ -917,9 +924,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
 
   function services(
     facts: Fact[],
-    factsTouchOnRead: ReturnType<typeof vi.fn> = vi
-      .fn()
-      .mockResolvedValue(undefined),
+    factsTouchOnRead: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined)
   ) {
     return {
       projects: { findByName: vi.fn() },
@@ -943,7 +948,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
   async function invokeAsk(
     facts: Fact[],
     args: Record<string, unknown> = {},
-    factsTouchOnRead?: ReturnType<typeof vi.fn>,
+    factsTouchOnRead?: ReturnType<typeof vi.fn>
   ): Promise<{ text: string; touchedIds: string[]; touchCount: number }> {
     const mockServer = createMockServer()
     const touchSpy = factsTouchOnRead ?? vi.fn().mockResolvedValue(undefined)
@@ -954,9 +959,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
     const result = await handler({ entity: "AuthService", ...args } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     const passed =
-      touchSpy.mock.calls.length > 0
-        ? (touchSpy.mock.calls[0]![0] as Fact[])
-        : []
+      touchSpy.mock.calls.length > 0 ? (touchSpy.mock.calls[0]![0] as Fact[]) : []
     return {
       text,
       touchedIds: passed.map((f) => f.id),
@@ -997,7 +1000,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
         object: `Obj${i}`,
         // Unique validFrom desc so the top 5 are deterministic.
         validFrom: `2026-04-${String(10 + i).padStart(2, "0")}`,
-      }),
+      })
     )
     const { text, touchedIds, touchCount } = await invokeAsk(facts)
     expect(touchCount).toBe(1)
@@ -1069,9 +1072,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
     // Advisory contract — a touch failure must NEVER fail the
     // surrounding `ask` response. Mirror of the memory-side advisory
     // test in `context.test.ts`.
-    const facts: Fact[] = [
-      makeFact("struct-1", { predicate: "uses", object: "JWT" }),
-    ]
+    const facts: Fact[] = [makeFact("struct-1", { predicate: "uses", object: "JWT" })]
     const factsTouchOnRead = vi.fn().mockRejectedValue(new Error("notion 503"))
     const mockServer = createMockServer()
     const svc = services(facts, factsTouchOnRead)
@@ -1125,7 +1126,7 @@ describe("lore-ask projectName resolution", () => {
     // Fallback applied: query scoped to the ambient project.
     expect(queryByEntity).toHaveBeenCalledWith(
       "AuthService",
-      expect.objectContaining({ projectId: "proj-ambient" }),
+      expect.objectContaining({ projectId: "proj-ambient" })
     )
   })
 })
@@ -1148,11 +1149,11 @@ describe("lore-fact action='create' — tracking-predicate Zod rejection", () =>
           queryByEntity: vi.fn(),
           queryByObject: vi.fn(),
         },
-      decisions: { getById: vi.fn() },
-      context: { project: null },
-      sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
-      entities: makeEntityService(),
+        decisions: { getById: vi.fn() },
+        context: { project: null },
+        sessionMemories: { record: vi.fn(), get: vi.fn() },
+        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+        entities: makeEntityService(),
       },
       createWithDedup,
     }
@@ -1214,8 +1215,8 @@ describe("lore-learn sourceMemoryId discipline", () => {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
       },
-      identity: { author: null },
       entities: makeEntityService(),
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
       ...overrides,
     }
   }
@@ -1313,9 +1314,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     const services = makeServices({
       sessionMemories: {
         record: vi.fn(),
-        get: vi
-          .fn()
-          .mockReturnValue({ memoryId: "mem-from-session", projectIds: [] }),
+        get: vi.fn().mockReturnValue({ memoryId: "mem-from-session", projectIds: [] }),
       },
     })
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1349,9 +1348,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       projects: { findByName: projectsFindByName },
       sessionMemories: {
         record: vi.fn(),
-        get: vi
-          .fn()
-          .mockReturnValue({ memoryId: "mem-ios", projectIds: ["proj-ios"] }),
+        get: vi.fn().mockReturnValue({ memoryId: "mem-ios", projectIds: ["proj-ios"] }),
       },
     })
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1386,9 +1383,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     const services = makeServices({
       sessionMemories: {
         record: vi.fn(),
-        get: vi
-          .fn()
-          .mockReturnValue({ memoryId: "mem-ios", projectIds: ["proj-ios"] }),
+        get: vi.fn().mockReturnValue({ memoryId: "mem-ios", projectIds: ["proj-ios"] }),
       },
     })
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1419,9 +1414,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       },
       sessionMemories: {
         record: vi.fn(),
-        get: vi
-          .fn()
-          .mockReturnValue({ memoryId: "mem-global", projectIds: [] }),
+        get: vi.fn().mockReturnValue({ memoryId: "mem-global", projectIds: [] }),
       },
     })
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1451,7 +1444,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
       },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     })
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
@@ -1471,7 +1464,6 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(services.facts.createWithDedup).toHaveBeenCalled()
   })
 })
-
 
 describe("lore-audit projectName resolution", () => {
   it("returns an explicit error when projectName does not resolve", async () => {
@@ -1514,11 +1506,13 @@ describe("lore-query action='audit' overdue tasks", () => {
   }) {
     return {
       projects: {
-        findByName: vi.fn().mockResolvedValue(
-          opts?.projectId
-            ? { id: opts.projectId, name: "Named Project", path: "named" }
-            : null,
-        ),
+        findByName: vi
+          .fn()
+          .mockResolvedValue(
+            opts?.projectId
+              ? { id: opts.projectId, name: "Named Project", path: "named" }
+              : null
+          ),
       },
       facts: { queryOverdue: vi.fn().mockResolvedValue(opts?.facts ?? []) },
       decisions: {
@@ -1548,7 +1542,7 @@ describe("lore-query action='audit' overdue tasks", () => {
 
     expect(text).toContain("## Overdue Tasks (1)")
     expect(text).toContain(
-      "- **Refresh Notion auth runbook** [blocked, blocked by owner review] | entity Auth docs",
+      "- **Refresh Notion auth runbook** [blocked, blocked by owner review] | entity Auth docs"
     )
     expect(text).toContain("Review by: 2026-01-01")
     expect(text).toContain("ID: task-overdue")
@@ -1592,10 +1586,10 @@ describe("lore-query action='audit' overdue tasks", () => {
     expect(text).toContain("## Overdue Decisions (1)")
     expect(text).toContain("## Overdue Tasks (1)")
     expect(text.indexOf("## Overdue Facts")).toBeLessThan(
-      text.indexOf("## Overdue Decisions"),
+      text.indexOf("## Overdue Decisions")
     )
     expect(text.indexOf("## Overdue Decisions")).toBeLessThan(
-      text.indexOf("## Overdue Tasks"),
+      text.indexOf("## Overdue Tasks")
     )
     expect(services.facts.queryOverdue).toHaveBeenCalledWith({ projectId: "proj-named" })
     expect(services.decisions.queryOverdue).toHaveBeenCalledWith({
@@ -1652,7 +1646,7 @@ describe("lore-query action='audit' overdue tasks", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain(
-      "No overdue facts or decisions found. Overdue tasks could not be checked.",
+      "No overdue facts or decisions found. Overdue tasks could not be checked."
     )
     expect(text).toContain("Warnings: Tasks lookup failed: transient 5xx")
   })
@@ -1679,7 +1673,7 @@ describe("lore-query action='audit' overdue tasks", () => {
     expect(text).toContain("Close reviewed work")
     expect(text).not.toContain("Future task from stale query result")
     expect(text).toContain(
-      "Warnings: Task task-malformed: failed to compute overdue days, skipping",
+      "Warnings: Task task-malformed: failed to compute overdue days, skipping"
     )
   })
 
@@ -1698,21 +1692,23 @@ describe("lore-query action='audit' overdue tasks", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain(
-      "No overdue facts or decisions found. Overdue tasks could not be rendered.",
+      "No overdue facts or decisions found. Overdue tasks could not be rendered."
     )
     expect(text).toContain(
-      "Warnings: Task task-malformed: failed to compute overdue days, skipping",
+      "Warnings: Task task-malformed: failed to compute overdue days, skipping"
     )
     expect(text).not.toContain("## Overdue Tasks")
   })
 })
 
 describe("lore-learn — PF3-01 entity ambiguity surface", () => {
-  function makeServices(entitiesBehavior: {
-    subjectAmbiguous?: boolean
-    objectAmbiguous?: boolean
-    resolverThrows?: boolean
-  } = {}) {
+  function makeServices(
+    entitiesBehavior: {
+      subjectAmbiguous?: boolean
+      objectAmbiguous?: boolean
+      resolverThrows?: boolean
+    } = {}
+  ) {
     const ambiguousResolution = (input: string) => ({
       entity: null,
       ambiguous: true,
@@ -1771,7 +1767,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
       },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
       entities: {
         resolveOrCreateEntity: vi.fn().mockImplementation(async (input: string) => {
           if (entitiesBehavior.resolverThrows) {
@@ -1780,7 +1776,10 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
           if (input.toLowerCase().includes("user") && entitiesBehavior.subjectAmbiguous) {
             return ambiguousResolution(input)
           }
-          if (input.toLowerCase().includes("session") && entitiesBehavior.objectAmbiguous) {
+          if (
+            input.toLowerCase().includes("session") &&
+            entitiesBehavior.objectAmbiguous
+          ) {
             return ambiguousResolution(input)
           }
           return uniqueResolution(input)
@@ -1817,7 +1816,7 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
       expect.objectContaining({
         subjectEntityId: undefined,
         objectEntityId: "ent-unique-session",
-      }),
+      })
     )
   })
 
@@ -1844,11 +1843,10 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
       expect.objectContaining({
         subjectEntityId: undefined,
         objectEntityId: undefined,
-      }),
+      })
     )
   })
 })
-
 
 describe("lore-ask — P3-02 Tasks bucket", () => {
   function makeAskServices(overrides: Record<string, unknown> = {}) {
@@ -1919,7 +1917,7 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
     // `TaskService.list` through the new `entities` array surface, never
     // the removed `entity` field.
     expect(services.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ entities: ["AuthService"] }),
+      expect.objectContaining({ entities: ["AuthService"] })
     )
     const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(callArgs).not.toHaveProperty("entity")
@@ -1938,8 +1936,7 @@ describe("lore-ask — P3-02 Tasks bucket", () => {
 
     await loreAsk({ entity: "AuthService" } as never)
 
-    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock
-      .calls[0][0]
+    const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(callArgs).not.toHaveProperty("states")
   })
 
@@ -1996,7 +1993,7 @@ describe("lore-ask — task recall honors canonical entity aliases", () => {
       ambiguous?: boolean
       candidates?: Array<{ id: string; name: string }>
     },
-    overrides: Record<string, unknown> = {},
+    overrides: Record<string, unknown> = {}
   ) {
     const candidates = (resolution.candidates ?? []).map((c) => ({
       id: c.id,
@@ -2055,7 +2052,7 @@ describe("lore-ask — task recall honors canonical entity aliases", () => {
 
     const callArgs = (services.tasks.list as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(callArgs.entities).toEqual(
-      expect.arrayContaining(["AuthSvc", "AuthService", "auth-service"]),
+      expect.arrayContaining(["AuthSvc", "AuthService", "auth-service"])
     )
     // Raw user input is preserved as the first variant — un-migrated
     // tasks that store the original alias spelling still match.
@@ -2155,17 +2152,19 @@ describe("lore-ask — task recall honors canonical entity aliases", () => {
 
 // Issue 0.6.0/18: project framing block on lore-query action='ask'.
 describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
-  function makeServices(opts: {
-    project?: {
-      id: string
-      name: string
-      path: string
-      description: string
-    } | null
-    isCatchAllFallback?: boolean
-    configProjects?: Array<{ name: string; path: string }>
-    findByName?: (name: string) => Promise<unknown>
-  } = {}) {
+  function makeServices(
+    opts: {
+      project?: {
+        id: string
+        name: string
+        path: string
+        description: string
+      } | null
+      isCatchAllFallback?: boolean
+      configProjects?: Array<{ name: string; path: string }>
+      findByName?: (name: string) => Promise<unknown>
+    } = {}
+  ) {
     return {
       projects: { findByName: vi.fn(opts.findByName ?? (async () => null)) },
       facts: {
@@ -2177,14 +2176,15 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       entities: makeEntityService(),
       context: {
-        project: opts.project === undefined
-          ? {
-              id: "proj-mail",
-              name: "Mail",
-              path: "apps/mail",
-              description: "Notion-backed mail client.",
-            }
-          : opts.project,
+        project:
+          opts.project === undefined
+            ? {
+                id: "proj-mail",
+                name: "Mail",
+                path: "apps/mail",
+                description: "Notion-backed mail client.",
+              }
+            : opts.project,
         isCatchAllFallback: opts.isCatchAllFallback ?? false,
       },
       config: { vault: { pageId: "v1" }, projects: opts.configProjects ?? [] },
@@ -2205,24 +2205,22 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
         { name: "Web", path: "apps/web" },
       ],
     })
-    services.facts.queryByEntity = vi
-      .fn()
-      .mockResolvedValue([
-        {
-          id: "fact-1",
-          subject: "AuthService",
-          predicate: "uses",
-          object: "OIDC",
-          projectIds: [],
-          validFrom: "2026-04-20",
-          validUntil: null,
-          reviewBy: null,
-          sourceMemoryId: null,
-          confidence: "certain",
-          subjectEntityId: null,
-          objectEntityId: null,
-        },
-      ])
+    services.facts.queryByEntity = vi.fn().mockResolvedValue([
+      {
+        id: "fact-1",
+        subject: "AuthService",
+        predicate: "uses",
+        object: "OIDC",
+        projectIds: [],
+        validFrom: "2026-04-20",
+        validUntil: null,
+        reviewBy: null,
+        sourceMemoryId: null,
+        confidence: "certain",
+        subjectEntityId: null,
+        objectEntityId: null,
+      },
+    ])
     registerKnowledgeTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
     const ask = mockServer.getActionHandler("lore-query", "ask")
@@ -2316,7 +2314,7 @@ describe("lore-ask — project framing block (issue 0.6.0/18)", () => {
     // `formatCatchAllScopeSummary` in `src/core/context.ts`); only the
     // call-to-action tail diverges (read tools take `projectName` only).
     expect(text).toContain(
-      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Mail, Web. Pass projectName to scope to a specific sub-project.',
+      '> Scoped to catch-all "Monorepo" (monorepo-wide). Sub-projects available: Mail, Web. Pass projectName to scope to a specific sub-project.'
     )
   })
 
@@ -2423,13 +2421,15 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
     }
   }
 
-  function makeServices(opts: {
-    fact?: Fact | null
-    sourceMemory?: Memory
-    invalidateImpl?: () => Promise<void>
-    decrementImpl?: (memory: Memory) => Promise<number>
-    getPropertiesByIdImpl?: (id: string) => Promise<Memory>
-  } = {}) {
+  function makeServices(
+    opts: {
+      fact?: Fact | null
+      sourceMemory?: Memory
+      invalidateImpl?: () => Promise<void>
+      decrementImpl?: (memory: Memory) => Promise<number>
+      getPropertiesByIdImpl?: (id: string) => Promise<Memory>
+    } = {}
+  ) {
     const factsGetById = vi.fn().mockResolvedValue(opts.fact ?? null)
     const factsInvalidate =
       opts.invalidateImpl !== undefined
@@ -2438,9 +2438,7 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
     const memoriesGetPropertiesById =
       opts.getPropertiesByIdImpl !== undefined
         ? vi.fn(opts.getPropertiesByIdImpl)
-        : vi
-            .fn()
-            .mockResolvedValue(opts.sourceMemory ?? makeMemory("source-mem"))
+        : vi.fn().mockResolvedValue(opts.sourceMemory ?? makeMemory("source-mem"))
     const memoriesDecrement =
       opts.decrementImpl !== undefined
         ? vi.fn(opts.decrementImpl)
@@ -2463,7 +2461,7 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
         decisions: { getById: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
-        identity: { author: null },
+        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
       },
       factsGetById,
       factsInvalidate,
@@ -2613,16 +2611,12 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
     registerKnowledgeTools(mockServer.server, ctx.services as never)
     const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
 
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       await invalidate({ factId: "fact-log" } as never)
       const lines = stderr.mock.calls.map(([line]) => String(line))
-      const failure = lines.find((l) =>
-        l.includes("contradiction-failure:"),
-      )
+      const failure = lines.find((l) => l.includes("contradiction-failure:"))
       expect(failure).toBeDefined()
       expect(failure).toContain("source=invalidate")
       expect(failure).toContain("memoryId=mem-log")
@@ -2678,9 +2672,7 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
     if (overrides.lastReferencedAt !== undefined) {
       props["Last Referenced At"] = {
         type: "date",
-        date: overrides.lastReferencedAt
-          ? { start: overrides.lastReferencedAt }
-          : null,
+        date: overrides.lastReferencedAt ? { start: overrides.lastReferencedAt } : null,
       }
     }
     return {
@@ -2695,10 +2687,7 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
     } as PageObjectResponse
   }
 
-  function makeIntegrationServices(opts: {
-    fact: Fact
-    sourcePage: PageObjectResponse
-  }) {
+  function makeIntegrationServices(opts: { fact: Fact; sourcePage: PageObjectResponse }) {
     // Real MemoryService wired against a stubbed Client. The
     // `pages.update` spy captures the actual `Confidence Score` value
     // the handler-through-service writes — that's the math contract
@@ -2732,7 +2721,7 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
         decisions: { getById: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
-        identity: { author: null },
+        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
       },
       update,
       retrieve,
@@ -2741,7 +2730,7 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
 
   function capturedUpdateProps(
     update: ReturnType<typeof vi.fn>,
-    pageId: string,
+    pageId: string
   ): Record<string, unknown> {
     for (const call of update.mock.calls) {
       const args = call[0] as
@@ -2754,7 +2743,7 @@ describe("lore-fact action='invalidate' — end-to-end math through real MemoryS
 
   function capturedConfidenceScore(
     update: ReturnType<typeof vi.fn>,
-    pageId: string,
+    pageId: string
   ): number {
     const props = capturedUpdateProps(update, pageId)
     return (props["Confidence Score"] as { number: number }).number
@@ -2878,9 +2867,7 @@ describe("lore-query action='audit' Overdue Decisions trust indicator (0.9.0/DEF
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) =>
-      l.includes("**Low-confidence decision**"),
-    )
+    const titleIdx = lines.findIndex((l) => l.includes("**Low-confidence decision**"))
     expect(titleIdx).toBeGreaterThanOrEqual(0)
     expect(lines[titleIdx + 1]).toBe("  _low confidence_")
     // Review by row follows the trust line, matching the

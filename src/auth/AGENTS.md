@@ -17,20 +17,20 @@ resolution-mode-specific helpers `resolveAuth` calls into.
 
 ## Files
 
-| File          | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oauth.ts`    | Two roles: legacy OAuth helpers from 0.9.x (`runOAuthFlow`, `loadCredentials`, `getAuthorizationUrl`, `exchangeCode`, `getBaseUrl`) for the BYO-integration rollback path; AND the new `verifyVaultAccess` post-resolution preflight (#03). OAuth-flow primitives are no longer the canonical auth path under ntn-first; they remain reachable for legacy operators in 0.10.0 and removal is plausibly 1.0.0 contingent on telemetry. The filename reflects historical content; renaming is a separate cleanup.                                                                                                                  |
-| `ntn.ts`      | ntn integration module (#02). `loadNtnToken` reads `~/.config/notion/auth.json` for token resolution; `runNtnLogin` shells out to `ntn login` interactively; `installNtn` auto-installs via `curl -fsSL https://ntn.dev \| bash`; `getNtnVersion` / `checkNtnVersion` report the installed version. Exports `MIN_NTN_VERSION` and `NTN_INSTALL_COMMAND`.                                                                                                                                                                                                                                                                         |
-| `identity.ts` | Engineer-identity resolver for the per-user attribution path (DEFERRED-ATTRIBUTION). `resolveAuthorIdentity(client)` is memoized per-process: `LORE_USER_NAME` env override (synchronous, wins) → `users.me().bot.owner.user.name` fallback → `null`. Failures collapse to `{ author: null }` and never throw — the Author column is advisory; an unattributed memory beats a save that fails because identity resolution hit a transient blip. Public surface is `resolveAuthorIdentity` + `resetIdentityCache` (tests); the JSON-shape walker is private (tests reach every failure-mode branch via mocked `client.users.me`). |
+| File          | Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oauth.ts`    | Two roles: legacy OAuth helpers from 0.9.x (`runOAuthFlow`, `loadCredentials`, `getAuthorizationUrl`, `exchangeCode`, `getBaseUrl`) for the BYO-integration rollback path; AND the new `verifyVaultAccess` post-resolution preflight (#03). OAuth-flow primitives are no longer the canonical auth path under ntn-first; they remain reachable for legacy operators in 0.10.0 and removal is plausibly 1.0.0 contingent on telemetry. The filename reflects historical content; renaming is a separate cleanup.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `ntn.ts`      | ntn integration module (#02). `loadNtnToken` reads `~/.config/notion/auth.json` for token resolution; `runNtnLogin` shells out to `ntn login` interactively; `installNtn` auto-installs via `curl -fsSL https://ntn.dev \| bash`; `getNtnVersion` / `checkNtnVersion` report the installed version. Exports `MIN_NTN_VERSION` and `NTN_INSTALL_COMMAND`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `identity.ts` | Engineer-identity resolver for the per-user attribution path (DEFERRED-ATTRIBUTION). Service init wires a lazy `createAuthorIdentityResolver(client, getAuthSnapshot)`; write paths call it only when the caller omitted an explicit `author`. Resolution order is `LORE_USER_NAME` env override (synchronous, wins even across token rotation in a single process) → auth-scoped cached `users.me().bot.owner.user.name` fallback → `null`. Cache keys hash the active token and include the API base URL; never store or log raw tokens. The resolver keeps only the latest auth snapshot cached, does not re-key in-flight results when auth changes mid-call, and does not cache thrown `users.me` failures (next unattributed write retries). Recognized no-owner responses are cached as null. `LORE_DEBUG=1` emits stderr diagnostics for env/users.me resolution and fresh failures. Public surface is `createAuthorIdentityResolver`, `resolveAuthorIdentity` (uncached helper/tests), `resolveAuthorForWrite`, and `resetIdentityCache(resolver)`; the JSON-shape walker is private (tests reach every failure-mode branch via mocked `client.users.me`). |
 
 ## Identity resolution vs. `renderWhoamiIdentity` — deliberate divergence
 
 `src/cli/commands/auth.ts:renderWhoamiIdentity` walks the same
 `users.me` shape with three fallbacks: `bot.owner.user.name` →
 `bot.owner.user.id` → `<bot in <workspace_name>>`.
-`src/auth/identity.ts:resolveAuthorIdentity` (via its private
-JSON walker) walks ONLY the first (`bot.owner.user.name`) and
-returns `null` when missing.
+`src/auth/identity.ts`'s author resolver (via its private JSON
+walker) walks ONLY the first (`bot.owner.user.name`) and returns
+`null` when missing.
 
 The divergence is intentional and load-bearing:
 
@@ -39,7 +39,7 @@ The divergence is intentional and load-bearing:
   even the bot's workspace label is more useful than `<unknown>` in
   that surface. Falling back through the three layers is correct
   there because the consumer is a human reading the output.
-- **`resolveAuthorIdentity`** drives the `Author` Memory column. The
+- **The author resolver** drives the `Author` Memory column. The
   column is per-engineer attribution; falling back to the bot owner
   user id would stamp every row with an opaque UUID, and falling back
   to `bot.workspace_name` would re-fragment
@@ -51,6 +51,18 @@ The divergence is intentional and load-bearing:
 
 A future engineer reconciling the two paths should NOT make them
 match — the difference is the contract.
+
+## Attribution Write Boundary
+
+Lazy author resolution is intentionally threaded through MCP write
+paths that create or replace authored Memory rows:
+`lore-memory action='save'` (including topic-key upsert),
+`lore-decision action='create'`, and `lore-task action='create'`.
+MCP update/archive/close/review/supersede paths do **not** resolve a
+new default Author; they preserve existing row authorship or write to
+surfaces without an Author column. If a future product decision wants
+"last editor" attribution, add a separate property/contract rather
+than quietly changing the current Author semantics.
 
 ## The auth.json read is a temporary coupling
 

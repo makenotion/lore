@@ -23,10 +23,7 @@ import type {
 } from "../../types.js"
 import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
-import {
-  RICH_TEXT_PROPERTY_MAX_LEN,
-  richTextPropertySchema,
-} from "./rich-text-schema.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN, richTextPropertySchema } from "./rich-text-schema.js"
 import {
   extractEntityCandidates,
   findAutosaveLearningDuplicate,
@@ -54,6 +51,7 @@ import {
 } from "../../core/memory.js"
 import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
 import type { TaskSummary } from "../../types.js"
+import { resolveAuthorForWrite } from "../../auth/identity.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -98,7 +96,7 @@ function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
   const lines: string[] = []
   const shown = matches.slice(0, NEAR_DUPLICATE_SURFACE_LIMIT)
   lines.push(
-    `Warning: ${matches.length} existing ${matches.length === 1 ? "memory looks" : "memories look"} similar:`,
+    `Warning: ${matches.length} existing ${matches.length === 1 ? "memory looks" : "memories look"} similar:`
   )
   for (const m of shown) {
     const sim = m.titleSimilarity.toFixed(2)
@@ -109,7 +107,7 @@ function formatNearDuplicateMatches(matches: NearDuplicateMatch[]): string[] {
     lines.push(`  - …and ${matches.length - shown.length} more`)
   }
   lines.push(
-    "Consider `lore-memory` with `action: 'update'` on the existing row, or `lore-decision` with `action: 'create'` and `supersedesIds` if this is a formal replacement.",
+    "Consider `lore-memory` with `action: 'update'` on the existing row, or `lore-decision` with `action: 'create'` and `supersedesIds` if this is a formal replacement."
   )
   return lines
 }
@@ -125,7 +123,9 @@ function isAutosaveLearningSave(args: SaveArgs, resolvedKind: MemoryKind): boole
   )
 }
 
-function formatAutosaveLearningDuplicate(match: AutosaveLearningDuplicateMatch): string[] {
+function formatAutosaveLearningDuplicate(
+  match: AutosaveLearningDuplicateMatch
+): string[] {
   return [
     `Skipped duplicate autosave learning: "${match.title}" (${match.id})`,
     `Similarity: title ${match.titleSimilarity.toFixed(2)}, ` +
@@ -136,14 +136,7 @@ function formatAutosaveLearningDuplicate(match: AutosaveLearningDuplicateMatch):
   ]
 }
 
-const KINDS = [
-  "note",
-  "decision",
-  "incident",
-  "runbook",
-  "postmortem",
-  "policy",
-] as const
+const KINDS = ["note", "decision", "incident", "runbook", "postmortem", "policy"] as const
 
 /**
  * Full `MemoryKind` set accepted by `lore-memory action='suggest-topic-key'`.
@@ -186,9 +179,7 @@ const SUGGEST_KIND_VALUES = [
  * fails the assignment in this call, breaking the build. The runtime
  * cost is one no-op function call that DCE strips at bundle time.
  */
-function _assertSuggestKindCovers(
-  _kind: (typeof SUGGEST_KIND_VALUES)[number],
-): void {
+function _assertSuggestKindCovers(_kind: (typeof SUGGEST_KIND_VALUES)[number]): void {
   // intentionally empty
 }
 _assertSuggestKindCovers(null as unknown as MemoryKind)
@@ -278,11 +269,15 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
           `recurring decision/runbook/policy-style topics; ${reason} and ` +
           "do not form a recurring topic. " +
           "Either omit topicKey, or set kind to one of: decision, " +
-          "runbook, incident, postmortem, policy.",
+          "runbook, incident, postmortem, policy."
       )
     }
 
-    const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+    const resolved = await resolveProjectIds(
+      services,
+      args.projectName,
+      args.projectNames
+    )
     const probeProjectId = resolved.ids[0]
 
     const probePromise = probeProjectId
@@ -311,9 +306,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       memorySynopsis: args.synopsis,
       projectId: probeProjectId,
       onError: (err) =>
-        debugLogPartialFailures("lore-memory", [
-          { rootId: "task-crossref", error: err },
-        ]),
+        debugLogPartialFailures("lore-memory", [{ rootId: "task-crossref", error: err }]),
     })
 
     if (isAutosaveLearningSave(args, resolvedKind)) {
@@ -334,7 +327,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         // fact creates auto-link to the row future retrieval should cite.
         services.sessionMemories.record(
           { agent: args.agent, session: args.session },
-          { memoryId: duplicate.id, projectIds: duplicate.projectIds },
+          { memoryId: duplicate.id, projectIds: duplicate.projectIds }
         )
         // No new memory means no derived auto-mentions or task-crossref
         // footer: the duplicate row's existing facts remain authoritative.
@@ -345,6 +338,8 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         }
       }
     }
+
+    const authorPromise = resolveAuthorForWrite(args.author, services.identity)
 
     let topicId: string | undefined
     let topicLabel = "none"
@@ -360,7 +355,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       topicLabel = topic.name
     } else if (args.topicName) {
       resolved.warnings.push(
-        `Topic "${args.topicName}" skipped (requires at least one project)`,
+        `Topic "${args.topicName}" skipped (requires at least one project)`
       )
     }
 
@@ -373,18 +368,12 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     // not summed. The kind=note guard above already short-circuited
     // the unsafe-defaulting case; from here either path is contract-
     // valid.
-    // Per-user attribution (DEFERRED-ATTRIBUTION). Caller can override
-    // explicitly via `args.author`; otherwise default to the engineer
-    // identity resolved at server startup. `services.identity` is
-    // required on the type so a future refactor that forgets to
-    // populate it fails at typecheck rather than silently dropping
-    // attribution; `identity.author` is null when neither
-    // `LORE_USER_NAME` nor `users.me` produced a usable name, and the
-    // `?? undefined` collapse routes both no-override AND null-identity
-    // through the buildMemoryProps truthy gate so the column stays
-    // empty rather than stamping a placeholder.
-    const resolvedAuthor =
-      args.author ?? services.identity.author ?? undefined
+    // Per-user attribution (DEFERRED-ATTRIBUTION). Caller override wins
+    // without touching identity resolution. Only omitted authors ask the
+    // lazy resolver, whose null result collapses to undefined so
+    // buildMemoryProps leaves the column empty instead of stamping a
+    // placeholder.
+    const resolvedAuthor = await authorPromise
 
     const writePromise: Promise<{
       memory: Memory
@@ -452,7 +441,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
 
     services.sessionMemories.record(
       { agent: args.agent, session: args.session },
-      { memoryId: memory.id, projectIds: memory.projectIds },
+      { memoryId: memory.id, projectIds: memory.projectIds }
     )
 
     // Auto-emit `mentions` facts (issue 0.8.0/#07). Two non-obvious
@@ -488,7 +477,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       const mentionedEntities = extractEntityCandidates(
         memory.title,
         memory.keywords,
-        memory.synopsis,
+        memory.synopsis
       ).map(decodeTextEntities)
       if (mentionedEntities.length > 0) {
         autoMentionsAttempted = mentionedEntities.length
@@ -526,9 +515,9 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
                 (err: unknown) => {
                   debugLogAutoFactFailure("save", memory.id, entity, err)
                   return false
-                },
-              ),
-          ),
+                }
+              )
+          )
         )
         autoMentionsCount = results.filter(Boolean).length
       }
@@ -536,7 +525,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
 
     const projectLabel = args.projectNames?.length
       ? args.projectNames.join(", ")
-      : args.projectName ?? services.context.project?.name ?? "none (repo-wide)"
+      : (args.projectName ?? services.context.project?.name ?? "none (repo-wide)")
 
     // Header line distinguishes upsert-append from fresh-create so the
     // agent knows which path fired without parsing for revision count.
@@ -547,11 +536,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         ? `Saved memory: "${memory.title}" (${memory.id}) — Appended as revision ${writeResult.revisionCount} (topic key '${args.topicKey}')`
         : `Saved memory: "${memory.title}" (${memory.id}) — Created (revision 1, topic key '${args.topicKey}')`
       : `Saved memory: "${memory.title}" (${memory.id})`
-    const lines = [
-      headerLine,
-      `Project: ${projectLabel}`,
-      `Topic: ${topicLabel}`,
-    ]
+    const lines = [headerLine, `Project: ${projectLabel}`, `Topic: ${topicLabel}`]
     if (resolved.warnings.length > 0) {
       lines.push(`Warnings: ${resolved.warnings.join("; ")}`)
     }
@@ -573,7 +558,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       lines.push(
         autoMentionsCount === autoMentionsAttempted
           ? `Auto-mentions: ${autoMentionsCount}`
-          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} attempted`,
+          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} attempted`
       )
     }
     // Promotion advisory (0.9.0/#15). Renders only when the upsert
@@ -621,7 +606,10 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
  * suggestion-string evolution that mentions the id more than once
  * substitutes every occurrence rather than only the first.
  */
-function formatPromotionAdvisory(advisory: PromotionAdvisory, memoryId: string): string[] {
+function formatPromotionAdvisory(
+  advisory: PromotionAdvisory,
+  memoryId: string
+): string[] {
   const lines: string[] = ["Promotion advisory:"]
   for (const reason of advisory.reasons) {
     lines.push(`  - ${reason}`)
@@ -649,7 +637,7 @@ function formatRelatedTaskCrossref(tasks: TaskSummary[]): string[] {
     const stateLabel = task.taskState ?? "open"
     lines.push(
       `  - "${task.title}" [${stateLabel}] — ` +
-        `lore-task({ action: 'close', taskId: '${task.id}' })`,
+        `lore-task({ action: 'close', taskId: '${task.id}' })`
     )
   }
   return lines
@@ -678,7 +666,10 @@ interface UpdateArgs {
   topicKey?: string
 }
 
-async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<ToolResult> {
+async function handleUpdate(
+  services: LoreServices,
+  args: UpdateArgs
+): Promise<ToolResult> {
   try {
     // Reject illegal combinations BEFORE any I/O. Re-keying preserves
     // identity (kind is part of identity); a combined `topicKey + kind`
@@ -691,7 +682,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
           "single update. Re-keying preserves identity; the kind belongs " +
           "to the upsert chain. Issue two separate updates if you need " +
           "both, or rethink whether the chain should change kind at all " +
-          "(it usually shouldn't).",
+          "(it usually shouldn't)."
       )
     }
 
@@ -726,9 +717,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
     // post-update set, both fall through to the `try/catch` around
     // the actual `rekeyTopicKey` call below — which surfaces a
     // `PartialUpdateError` when content has already landed.
-    let preflight:
-      | { oldTopicKey: string; willRekey: boolean }
-      | undefined
+    let preflight: { oldTopicKey: string; willRekey: boolean } | undefined
     if (args.topicKey !== undefined) {
       const result = await services.memories.validateRekey({
         memoryId: args.memoryId,
@@ -754,7 +743,11 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
     // combined `topicKey + content` call land both writes durably.
     if (hasContentDelta) {
       if (args.projectNames?.length || args.projectName) {
-        const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+        const resolved = await resolveProjectIds(
+          services,
+          args.projectName,
+          args.projectNames
+        )
         projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
         warnings.push(...resolved.warnings)
       }
@@ -772,7 +765,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
           throw new Error(
             `Cannot set topicName="${args.topicName}": no project scope available. ` +
               `The memory has no Project relation and no project was passed or auto-detected. ` +
-              `Pass projectName or projectNames.`,
+              `Pass projectName or projectNames.`
           )
         }
         const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
@@ -815,7 +808,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
             {
               memoryId: err.memoryId,
               bodyWriteError: err.bodyWriteError,
-            },
+            }
           )
         }
         throw err
@@ -892,7 +885,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
               {
                 memoryId: args.memoryId,
                 rekeyError: err,
-              },
+              }
             )
           }
           throw err
@@ -960,7 +953,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
       const mentionedEntities = extractEntityCandidates(
         updated.title,
         updated.keywords,
-        updated.synopsis,
+        updated.synopsis
       ).map(decodeTextEntities)
       if (mentionedEntities.length > 0) {
         let existing: Fact[]
@@ -1006,9 +999,9 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
                   (err: unknown) => {
                     debugLogAutoFactFailure("update", updated.id, entity, err)
                     return false
-                  },
-                ),
-            ),
+                  }
+                )
+            )
           )
           autoMentionsCount = results.filter(Boolean).length
         }
@@ -1017,9 +1010,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
 
     const lines = [`Updated memory: "${updated.title}" (${updated.id})`]
     if (rekeyed && oldTopicKey !== undefined && args.topicKey !== undefined) {
-      lines.push(
-        `Re-keyed: '${oldTopicKey || "(unset)"}' → '${args.topicKey}'`,
-      )
+      lines.push(`Re-keyed: '${oldTopicKey || "(unset)"}' → '${args.topicKey}'`)
       lines.push(`Audit block appended to body.`)
     } else if (topicKeyUnchanged && args.topicKey !== undefined) {
       // Acknowledge the no-op so the operator can see the call was
@@ -1046,7 +1037,7 @@ async function handleUpdate(services: LoreServices, args: UpdateArgs): Promise<T
       lines.push(
         autoMentionsCount === autoMentionsAttempted
           ? `Auto-mentions: ${autoMentionsCount} new`
-          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} new attempted`,
+          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} new attempted`
       )
     }
 
@@ -1091,7 +1082,7 @@ function handleSuggestTopicKey(args: SuggestTopicKeyArgs): ToolResult {
 
 async function handleArchive(
   services: LoreServices,
-  args: { memoryId: string },
+  args: { memoryId: string }
 ): Promise<ToolResult> {
   try {
     await services.memories.archive(args.memoryId)
@@ -1154,22 +1145,19 @@ function validateAffectedMemoryId(input: CompareArgs): void {
     if (!input.affectedMemoryId) {
       throw new Error(
         `verdict='${input.verdict}' requires affectedMemoryId ` +
-          "naming the loser memory (memoryIdA or memoryIdB).",
+          "naming the loser memory (memoryIdA or memoryIdB)."
       )
     }
     if (
       input.affectedMemoryId !== input.memoryIdA &&
       input.affectedMemoryId !== input.memoryIdB
     ) {
-      throw new Error(
-        "affectedMemoryId must equal memoryIdA or memoryIdB.",
-      )
+      throw new Error("affectedMemoryId must equal memoryIdA or memoryIdB.")
     }
   } else {
     if (input.affectedMemoryId) {
       throw new Error(
-        `verdict='${input.verdict}' is symmetric; ` +
-          "affectedMemoryId must be omitted.",
+        `verdict='${input.verdict}' is symmetric; ` + "affectedMemoryId must be omitted."
       )
     }
   }
@@ -1251,7 +1239,7 @@ function requireAffectedMemoryId(args: {
     throw new Error(
       "Internal: requireAffectedMemoryId called without " +
         `affectedMemoryId set (verdict='${args.verdict}'). ` +
-        "validateAffectedMemoryId should have caught this upstream.",
+        "validateAffectedMemoryId should have caught this upstream."
     )
   }
   return args.affectedMemoryId
@@ -1333,7 +1321,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     lines.push(
       `Verdict: conflicts_with — "${loser.title}" (${loser.id}) ${
         decremented === false ? "confidence already halved" : "confidence halved"
-      }.`,
+      }.`
     )
   } else if (verdict === "supersedes") {
     const loserId = affectedMemoryId
@@ -1341,10 +1329,12 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
     lines.push(
       `Verdict: supersedes — "${loser.title}" (${loser.id}) marked superseded; ${
         decremented === false ? "confidence already halved" : "confidence halved"
-      }.`,
+      }.`
     )
   } else {
-    lines.push(`Verdict: ${verdict} — Compared With and Compare Notes updated on both sides.`)
+    lines.push(
+      `Verdict: ${verdict} — Compared With and Compare Notes updated on both sides.`
+    )
   }
   lines.push(`  A: "${memoryA.title}" (${memoryA.id})`)
   lines.push(`  B: "${memoryB.title}" (${memoryB.id})`)
@@ -1354,7 +1344,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
   if (recoveredSide) {
     const recoveredId = recoveredSide === "A" ? memoryA.id : memoryB.id
     lines.push(
-      `Audit recovery: only side ${recoveredSide} (${recoveredId}) wrote this call — the other side already carried a matching entry from a prior partial-success. The pair's audit state is now consistent on both sides.`,
+      `Audit recovery: only side ${recoveredSide} (${recoveredId}) wrote this call — the other side already carried a matching entry from a prior partial-success. The pair's audit state is now consistent on both sides.`
     )
   }
   return {
@@ -1364,7 +1354,7 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
 
 async function handleCompare(
   services: LoreServices,
-  args: CompareArgs,
+  args: CompareArgs
 ): Promise<ToolResult> {
   try {
     // 1. Self-pair guard. Pure input check, no I/O.
@@ -1392,7 +1382,7 @@ async function handleCompare(
     if (!shareProject(memoryA, memoryB)) {
       throw new Error(
         "Cannot compare memories with disjoint project sets. " +
-          "Project intersection required.",
+          "Project intersection required."
       )
     }
 
@@ -1514,16 +1504,10 @@ async function handleCompare(
         (aAlreadyHasEntry || bAlreadyHasEntry) && !loserHasLedger
       if (!loserHasLedger) {
         if (loser!.id === memoryA.id) {
-          preflightNotesA = appendCompareDispatchLedgerEntry(
-            preflightNotesA,
-            ledgerEntry,
-          )
+          preflightNotesA = appendCompareDispatchLedgerEntry(preflightNotesA, ledgerEntry)
           forceRecordA = aAlreadyHasEntry
         } else {
-          preflightNotesB = appendCompareDispatchLedgerEntry(
-            preflightNotesB,
-            ledgerEntry,
-          )
+          preflightNotesB = appendCompareDispatchLedgerEntry(preflightNotesB, ledgerEntry)
           forceRecordB = bAlreadyHasEntry
         }
       }
@@ -1551,7 +1535,7 @@ async function handleCompare(
         "verdict='supersedes' requires the affected (superseded) " +
           "memory to have kind='decision'. For non-decision pairs, " +
           "use 'compatible' + lore-memory action='update' to merge, " +
-          "or promote via lore-decision action='create' supersedesIds.",
+          "or promote via lore-decision action='create' supersedesIds."
       )
     }
 
@@ -1645,7 +1629,7 @@ async function handleCompare(
               memoryIdB: args.memoryIdB,
             },
           }),
-          { cause: err },
+          { cause: err }
         )
       }
       // Symmetric verdict — no destructive dispatch happened. The
@@ -1679,7 +1663,7 @@ async function handleCompare(
 
 export async function handleExpand(
   services: LoreServices,
-  args: { ids: string[] },
+  args: { ids: string[] }
 ): Promise<ToolResult> {
   try {
     const unique: string[] = []
@@ -1692,12 +1676,12 @@ export async function handleExpand(
     }
 
     const { fulfilled, failures } = await settleAll(
-      unique.map((id) => [id, services.memories.getById(id)] as const),
+      unique.map((id) => [id, services.memories.getById(id)] as const)
     )
     if (failures.length > 0) {
       debugLogPartialFailures(
         "lore-memory",
-        failures.map(({ key, error }) => ({ rootId: key, error })),
+        failures.map(({ key, error }) => ({ rootId: key, error }))
       )
     }
 
@@ -1710,7 +1694,8 @@ export async function handleExpand(
       const memory = bodies.get(id)
       if (memory) return formatExpandedMemory(memory)
       const error = errors.get(id)
-      const message = error instanceof Error ? error.message : String(error ?? "unknown error")
+      const message =
+        error instanceof Error ? error.message : String(error ?? "unknown error")
       return `### (unresolved: ${id})\n*${message}*`
     })
 
@@ -1753,7 +1738,7 @@ interface RecallArgs {
 
 export async function handleRecall(
   services: LoreServices,
-  args: RecallArgs,
+  args: RecallArgs
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
@@ -1783,7 +1768,11 @@ export async function handleRecall(
 
     const withContent = args.includeContent === true
 
-    const { items: memories, nextCursor, capped } = await services.memories.list({
+    const {
+      items: memories,
+      nextCursor,
+      capped,
+    } = await services.memories.list({
       projectId,
       topicId,
       source: args.source,
@@ -1817,7 +1806,7 @@ export async function handleRecall(
           meta: defaultMemoryMetaBuilder,
           body: withContent ? m.content : undefined,
           includeSynopsis,
-        }),
+        })
       )
       .join("\n\n---\n\n")
 
@@ -1863,7 +1852,7 @@ interface SearchArgs {
 
 export async function handleSearch(
   services: LoreServices,
-  args: SearchArgs,
+  args: SearchArgs
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
@@ -1876,7 +1865,7 @@ export async function handleSearch(
         projectId = found.id
       } else {
         warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
+          `Project "${args.projectName}" not found — falling back to auto-detected project.`
         )
       }
     }
@@ -1947,7 +1936,7 @@ export async function handleSearch(
 
     if (searchCapped) {
       warnings.push(
-        "Search scan reached the live-row refill cap; more matching memories may exist.",
+        "Search scan reached the live-row refill cap; more matching memories may exist."
       )
     }
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
@@ -1972,7 +1961,7 @@ export async function handleSearch(
           meta: defaultMemoryMetaBuilder,
           body: withContent ? m.content : undefined,
           includeSynopsis,
-        }),
+        })
       )
       .join("\n\n---\n\n")
 
@@ -2062,7 +2051,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
       .string()
       .regex(
         TOPIC_KEY_REGEX,
-        "Must be kebab-case path like 'decision/jwt-auth' (lowercase, slash-separated, no leading/trailing slash)",
+        "Must be kebab-case path like 'decision/jwt-auth' (lowercase, slash-separated, no leading/trailing slash)"
       )
       .optional(),
   }),
@@ -2138,46 +2127,43 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {
         action: z
-          .enum([
-            "save",
-            "update",
-            "archive",
-            "expand",
-            "suggest-topic-key",
-            "compare",
-          ])
+          .enum(["save", "update", "archive", "expand", "suggest-topic-key", "compare"])
           .describe(
-            "Operation: save | update | archive | expand | suggest-topic-key | compare. See description for details.",
+            "Operation: save | update | archive | expand | suggest-topic-key | compare. See description for details."
           ),
         // save
         title: z
           .string()
           .optional()
           .describe(
-            "Required for action='save' and action='suggest-topic-key'; new title for update. Short.",
+            "Required for action='save' and action='suggest-topic-key'; new title for update. Short."
           ),
         content: z
           .string()
           .optional()
-          .describe("Required for action='save'; new body (markdown) for action='update'."),
+          .describe(
+            "Required for action='save'; new body (markdown) for action='update'."
+          ),
         // save | update | archive | expand
         memoryId: z
           .string()
           .optional()
           .describe(
-            "Required for action='update' and action='archive'. The Notion page ID of the memory.",
+            "Required for action='update' and action='archive'. The Notion page ID of the memory."
           ),
         ids: z
           .array(z.string().uuid())
           .optional()
           .describe(
-            `(action='expand') Memory IDs (1-${EXPAND_MAX_IDS}). UUIDs as returned by recall/search/wake-up.`,
+            `(action='expand') Memory IDs (1-${EXPAND_MAX_IDS}). UUIDs as returned by recall/search/wake-up.`
           ),
         // shared (save | update)
         projectName: z
           .string()
           .optional()
-          .describe("(save | update) Project name. Defaults to auto-detected project from cwd."),
+          .describe(
+            "(save | update) Project name. Defaults to auto-detected project from cwd."
+          ),
         projectNames: z
           .array(z.string())
           .optional()
@@ -2186,18 +2172,20 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .optional()
           .describe(
-            "(save | update) Topic name within the project. Auto-created if missing on save. Case/plural/punctuation variants silently collapse onto the canonical row to prevent fan-out.",
+            "(save | update) Topic name within the project. Auto-created if missing on save. Case/plural/punctuation variants silently collapse onto the canonical row to prevent fan-out."
           ),
         forceNewTopic: z
           .boolean()
           .optional()
           .describe(
-            "(save | update) Bypass the normalized-equivalent + trigram-similar check on `topicName` and create a fresh row. Use only when you've reviewed the candidates surfaced by the structured error and confirmed your name is intentionally distinct.",
+            "(save | update) Bypass the normalized-equivalent + trigram-similar check on `topicName` and create a fresh row. Use only when you've reviewed the candidates surfaced by the structured error and confirmed your name is intentionally distinct."
           ),
         source: z
           .enum(SOURCES)
           .optional()
-          .describe("(action='save') How this memory was captured. Default: conversation."),
+          .describe(
+            "(action='save') How this memory was captured. Default: conversation."
+          ),
         kind: z
           .enum(SUGGEST_KIND_VALUES)
           .optional()
@@ -2205,7 +2193,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
             "(save | update | suggest-topic-key) Memory kind (default: note on save). " +
               "Use lore-decision for decisions; lore-task for tasks. " +
               "Required for action='suggest-topic-key', which accepts the full kind set; " +
-              "save and update reject 'task' (tasks are owned by lore-task).",
+              "save and update reject 'task' (tasks are owned by lore-task)."
           ),
         status: z
           .enum(STATUSES)
@@ -2221,7 +2209,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .nullable()
           .optional()
           .describe(
-            "(save | update) Review-by date YYYY-MM-DD. On update, pass null to clear; omit to leave unchanged.",
+            "(save | update) Review-by date YYYY-MM-DD. Update: null clears; omit leaves unchanged."
           ),
         decidedAt: z
           .string()
@@ -2229,11 +2217,9 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .nullable()
           .optional()
           .describe(
-            "(save | update) Canonical decision date YYYY-MM-DD. On update, pass null to clear; omit to leave unchanged.",
+            "(save | update) Canonical decision date YYYY-MM-DD. Update: null clears; omit leaves unchanged."
           ),
-        tags: tagsSchema
-          .optional()
-          .describe("(save | update) Closed-vocabulary tags."),
+        tags: tagsSchema.optional().describe("(save | update) Closed-vocabulary tags."),
         keywords: keywordsSchema
           .optional()
           .describe("(save | update) Free-form keywords."),
@@ -2242,13 +2228,13 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .max(SYNOPSIS_MAX)
           .optional()
           .describe(
-            `(save | update) 1-2 sentence synopsis surfaced under the title on recall/search/wake-up listings (≤${SYNOPSIS_MAX} chars). On update, omit to keep, pass empty string to clear.`,
+            `(save | update) 1-2 sentence synopsis surfaced under the title on recall/search/wake-up listings (≤${SYNOPSIS_MAX} chars). On update, omit to keep, pass empty string to clear.`
           ),
         author: z
           .string()
           .optional()
           .describe(
-            "(action='save') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`.",
+            "(action='save') Engineer display name. Defaults to LORE_USER_NAME env or `users.me` on the active token."
           ),
         agent: z
           .string()
@@ -2262,7 +2248,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .string()
           .regex(
             TOPIC_KEY_REGEX,
-            "Must be kebab-case path like 'decision/jwt-auth' (lowercase, slash-separated, no leading/trailing slash)",
+            "Must be kebab-case path like 'decision/jwt-auth' (lowercase, slash-separated, no leading/trailing slash)"
           )
           .optional()
           .describe(
@@ -2271,60 +2257,61 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
               "requires `kind` ∈ {decision, runbook, " +
               "incident, postmortem, policy}. On update: re-keys, appending a " +
               "`## Re-keyed` audit block; cannot be combined with `kind`. " +
-              "See docs/memory-workflows.md#topic-keys.",
+              "See docs/memory-workflows.md#topic-keys."
           ),
         // update only
         supersedesIds: z
           .array(z.string())
           .optional()
-          .describe("(action='update') Replace the Supersedes relation with these decision IDs."),
+          .describe(
+            "(action='update') Replace the Supersedes relation with these decision IDs."
+          ),
         affectsIds: z
           .array(z.string())
           .optional()
-          .describe("(action='update') Replace the Affects relation with these memory IDs."),
+          .describe(
+            "(action='update') Replace the Affects relation with these memory IDs."
+          ),
         alternatives: z
           .string()
           .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
           .describe(
-            `(action='update') Alternatives text, up to ${RICH_TEXT_PROPERTY_MAX_LEN} chars (replaces existing).`,
+            `(action='update') Alternatives text, up to ${RICH_TEXT_PROPERTY_MAX_LEN} chars (replaces existing).`
           ),
         consequences: z
           .string()
           .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
           .describe(
-            `(action='update') Consequences text, up to ${RICH_TEXT_PROPERTY_MAX_LEN} chars (replaces existing).`,
+            `(action='update') Consequences text, up to ${RICH_TEXT_PROPERTY_MAX_LEN} chars (replaces existing).`
           ),
         // compare
         memoryIdA: z
           .string()
           .optional()
           .describe(
-            "(action='compare') First memory ID. A/B are unordered labels; direction comes from `affectedMemoryId`.",
+            "(action='compare') First memory ID. A/B are unordered labels; direction comes from `affectedMemoryId`."
           ),
-        memoryIdB: z
-          .string()
-          .optional()
-          .describe("(action='compare') Second memory ID."),
+        memoryIdB: z.string().optional().describe("(action='compare') Second memory ID."),
         verdict: z
           .enum(COMPARE_VERDICTS)
           .optional()
           .describe(
-            "(action='compare') Verdict on the pair. See docs/memory-workflows.md#conflict-verdicts.",
+            "(action='compare') Verdict on the pair. See docs/memory-workflows.md#conflict-verdicts."
           ),
         affectedMemoryId: z
           .string()
           .optional()
           .describe(
-            "(action='compare') Required for asymmetric verdicts (`conflicts_with`, `supersedes`); names the loser. Must equal memoryIdA or memoryIdB.",
+            "(action='compare') Required for asymmetric verdicts (`conflicts_with`, `supersedes`); names the loser. Must equal memoryIdA or memoryIdB."
           ),
         reason: z
           .string()
           .max(200)
           .optional()
           .describe(
-            "(action='compare') Short explanation, ≤200 chars. Recorded in Compare Notes audit trail.",
+            "(action='compare') Short explanation, ≤200 chars. Recorded in Compare Notes audit trail."
           ),
         judgeConfidence: z
           .number()
@@ -2332,22 +2319,20 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .max(1)
           .optional()
           .describe(
-            "(action='compare') Optional 0..1 self-reported confidence. Below 0.7 the agent SHOULD ask the user first.",
+            "(action='compare') Optional 0..1 self-reported confidence. Below 0.7 the agent SHOULD ask the user first."
           ),
         promptVersion: z
           .string()
           .optional()
           .describe(
-            "(action='compare') Optional prompt version (default: current `CONFLICT_JUDGE_PROMPT_VERSION`).",
+            "(action='compare') Optional prompt version (default: current `CONFLICT_JUDGE_PROMPT_VERSION`)."
           ),
       },
     },
     async (args) => {
       const parsed = memoryDispatchSchema.safeParse(args)
       if (!parsed.success) {
-        return toolError(
-          new Error(formatDispatchError("lore-memory", parsed.error)),
-        )
+        return toolError(new Error(formatDispatchError("lore-memory", parsed.error)))
       }
       switch (parsed.data.action) {
         case "save":
@@ -2363,7 +2348,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         case "compare":
           return handleCompare(services, parsed.data)
       }
-    },
+    }
   )
 }
 

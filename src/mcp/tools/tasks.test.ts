@@ -98,7 +98,7 @@ function services(overrides: Record<string, unknown> = {}) {
       getById: vi.fn().mockResolvedValue(makeTask("t1", { doneAt: null })),
     },
     sessionMemories: { record: vi.fn() },
-    identity: { author: null },
+    identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     context: { project: null },
     ...overrides,
   }
@@ -155,14 +155,14 @@ describe("lore-task-create", () => {
       expect.objectContaining({
         projectIds: undefined,
         topicId: undefined,
-      }),
+      })
     )
     expect(getOrCreate).not.toHaveBeenCalled()
 
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("Topic: none")
     expect(text).toContain(
-      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)',
+      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
     )
   })
 })
@@ -210,17 +210,13 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     expect(text).toContain('Other active tasks tracking "PR-25750" (2)')
     expect(text).toContain('"Track PR-25750 review" [in-progress]')
     expect(text).toContain('"PR-25750 follow-up" [open]')
-    expect(text).toContain(
-      "lore-task({ action: 'close', taskId: 't-existing-1' })",
-    )
+    expect(text).toContain("lore-task({ action: 'close', taskId: 't-existing-1' })")
     // Just-created row stays out of the duplicate-list — caller-side
     // filter is the SOLE exclusion mechanism. Scope the negative
     // assertion to the bulleted duplicate lines (`  - "..." [...] — ...`)
     // since the post-#09 closure CTA legitimately references `task.id`
     // on its own line and would otherwise trip a naive substring check.
-    const duplicateListLines = text
-      .split("\n")
-      .filter((l) => l.startsWith("  - "))
+    const duplicateListLines = text.split("\n").filter((l) => l.startsWith("  - "))
     expect(duplicateListLines).toHaveLength(2)
     for (const line of duplicateListLines) {
       expect(line).not.toContain("t-new")
@@ -271,9 +267,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
 
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     vi.stubEnv("LORE_DEBUG", "1")
     try {
       const handler = mockServer.getHandler("lore-task")
@@ -345,7 +339,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     // Structural pin #1: the duplicates header must come AFTER every
     // pre-existing structural line (Created, State, Project, Topic).
     const headerIdx = lines.findIndex((l) =>
-      l.startsWith('Other active tasks tracking "PR-25750"'),
+      l.startsWith('Other active tasks tracking "PR-25750"')
     )
     expect(headerIdx).toBeGreaterThan(-1)
     expect(lines.slice(0, headerIdx).join("\n")).toContain("Created task")
@@ -432,7 +426,7 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     // (`TaskService.create`); the probe must use the same default so
     // a future create on the same subject collides with this row.
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ entities: ["AuthService"] }),
+      expect.objectContaining({ entities: ["AuthService"] })
     )
   })
 })
@@ -588,15 +582,17 @@ describe("lore-task-update", () => {
   it("surfaces structured task update partial-failure messages as MCP errors", async () => {
     const bodyWriteError = new Error("notion 503")
     const svc = services()
-    svc.tasks.update = vi.fn().mockRejectedValue(
-      new TaskUpdatePartialFailureError(
-        `Task update partial failure: properties for task task-id persisted, ` +
-          `but the description write failed during phase "body": notion 503. ` +
-          `The property changes are already on Notion; the description body ` +
-          `was not written. Inspect the row before retrying the update.`,
-        { taskId: "task-id", bodyWriteError },
-      ),
-    )
+    svc.tasks.update = vi
+      .fn()
+      .mockRejectedValue(
+        new TaskUpdatePartialFailureError(
+          `Task update partial failure: properties for task task-id persisted, ` +
+            `but the description write failed during phase "body": notion 503. ` +
+            `The property changes are already on Notion; the description body ` +
+            `was not written. Inspect the row before retrying the update.`,
+          { taskId: "task-id", bodyWriteError }
+        )
+      )
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
 
@@ -747,9 +743,7 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     // the column is empty. Suppress the courtesy line rather than
     // surface "Done at: null" / "Done at: undefined".
     const svc = services()
-    svc.tasks.getById = vi
-      .fn()
-      .mockResolvedValue(makeTask("t-id", { doneAt: null }))
+    svc.tasks.getById = vi.fn().mockResolvedValue(makeTask("t-id", { doneAt: null }))
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
 
@@ -781,8 +775,9 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
 
-    const config = (mockServer.server.registerTool as ReturnType<typeof vi.fn>)
-      .mock.calls.find(([name]) => name === "lore-task")?.[1] as
+    const config = (
+      mockServer.server.registerTool as ReturnType<typeof vi.fn>
+    ).mock.calls.find(([name]) => name === "lore-task")?.[1] as
       | { description?: string }
       | undefined
 
@@ -818,7 +813,7 @@ describe("optional-string Zod boundary", () => {
    * — matches the shape the prior `safeParse` assertions checked.
    */
   async function run(
-    args: Record<string, unknown>,
+    args: Record<string, unknown>
   ): Promise<{ ok: boolean; message: string }> {
     const svc = services()
     svc.tasks.create = vi.fn().mockResolvedValue({
@@ -958,15 +953,11 @@ describe("lore-tasks", () => {
 
     expect(svc.tasks.list).toHaveBeenCalledTimes(1)
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ startCursor: "resume-here", limit: 40 }),
+      expect.objectContaining({ startCursor: "resume-here", limit: 40 })
     )
     expect(text).toContain("t-capped")
-    expect(text).toContain(
-      "≥1 tasks (lower-bound total; listing capped at 40):",
-    )
-    expect(text).toMatch(
-      /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
-    )
+    expect(text).toContain("≥1 tasks (lower-bound total; listing capped at 40):")
+    expect(text).toMatch(/```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/)
   })
 
   it("paginates multiple saturated windows before reporting bucket totals", async () => {
@@ -978,14 +969,14 @@ describe("lore-tasks", () => {
         title: `Overdue ${i + 1}`,
         reviewBy: "2026-01-01",
         entity: "PR-1",
-      }),
+      })
     )
     const secondOverduePage = Array.from({ length: 100 }, (_, i) =>
       makeTask(`t-overdue-${i + 101}`, {
         title: `Overdue ${i + 101}`,
         reviewBy: "2026-01-01",
         entity: "PR-1",
-      }),
+      })
     )
     svc.tasks.list = vi
       .fn()
@@ -1010,7 +1001,7 @@ describe("lore-tasks", () => {
 
     expect(svc.tasks.list).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ limit: 100, projectId: "proj-1" }),
+      expect.objectContaining({ limit: 100, projectId: "proj-1" })
     )
     expect(svc.tasks.list).toHaveBeenNthCalledWith(
       2,
@@ -1018,7 +1009,7 @@ describe("lore-tasks", () => {
         limit: 100,
         projectId: "proj-1",
         startCursor: "cursor-2",
-      }),
+      })
     )
     expect(svc.tasks.list).toHaveBeenNthCalledWith(
       3,
@@ -1026,7 +1017,7 @@ describe("lore-tasks", () => {
         limit: 100,
         projectId: "proj-1",
         startCursor: "cursor-3",
-      }),
+      })
     )
     expect(text).toContain("201 tasks (exact total):")
     expect(text).toContain("### Overdue (30 shown of 200, hiding 170)")
@@ -1071,7 +1062,7 @@ describe("lore-tasks", () => {
     expect(svc.tasks.list).toHaveBeenCalledTimes(2)
     expect(svc.tasks.list).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ startCursor: "cursor-2", limit: 100 }),
+      expect.objectContaining({ startCursor: "cursor-2", limit: 100 })
     )
     expect(text).toContain("2 tasks (exact total):")
     expect(text).toContain("### Active (2)")
@@ -1091,7 +1082,7 @@ describe("lore-tasks", () => {
           title: `Overdue small ${i + 1}`,
           reviewBy: "2026-01-01",
           entity: "PR-1",
-        }),
+        })
       ),
       nextCursor: "cursor-hidden-active",
     })
@@ -1105,14 +1096,12 @@ describe("lore-tasks", () => {
 
     expect(svc.tasks.list).toHaveBeenCalledTimes(1)
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 20, projectId: "proj-1" }),
+      expect.objectContaining({ limit: 20, projectId: "proj-1" })
     )
-    expect(text).toContain(
-      "≥20 tasks (lower-bound total; listing capped at 20):",
-    )
+    expect(text).toContain("≥20 tasks (lower-bound total; listing capped at 20):")
     expect(text).toContain("### Overdue (5 shown of ≥20, hiding ≥15)")
     expect(text).toContain(
-      "More matching tasks exist after the first 20 fetched rows; totals are lower bounds.",
+      "More matching tasks exist after the first 20 fetched rows; totals are lower bounds."
     )
     expect(text).toContain("Use `limit >= 26` for a deeper bounded walk")
     expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
@@ -1131,7 +1120,7 @@ describe("lore-tasks", () => {
             title: `Done ${call}-${i + 1}`,
             taskState: "done",
             reviewBy: "2026-01-01",
-          }),
+          })
         ),
         nextCursor: `cursor-${call + 1}`,
       }
@@ -1152,21 +1141,19 @@ describe("lore-tasks", () => {
     expect(svc.tasks.list).toHaveBeenCalledTimes(10)
     expect(svc.tasks.list).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ states: ["done"], limit: 100 }),
+      expect.objectContaining({ states: ["done"], limit: 100 })
     )
     expect(svc.tasks.list).toHaveBeenNthCalledWith(
       10,
-      expect.objectContaining({ startCursor: "cursor-10", limit: 100 }),
+      expect.objectContaining({ startCursor: "cursor-10", limit: 100 })
     )
-    expect(text).toContain(
-      "≥1000 tasks (lower-bound total; listing capped at 1000):",
-    )
+    expect(text).toContain("≥1000 tasks (lower-bound total; listing capped at 1000):")
     expect(text).toContain("### Done (30 shown of ≥1000, hiding ≥970)")
     expect(text).toContain(
-      "More matching tasks exist after the first 1000 fetched rows; totals are lower bounds.",
+      "More matching tasks exist after the first 1000 fetched rows; totals are lower bounds."
     )
     expect(text).toContain(
-      "The deepest bounded walk already ran; narrow with `projectName`, `entity`, `state`, or `dueBefore` for exact totals.",
+      "The deepest bounded walk already ran; narrow with `projectName`, `entity`, `state`, or `dueBefore` for exact totals."
     )
     expect(text).not.toContain("Use `limit >= 26`")
     expect(text).toMatch(/```json\n\{"truncated":true\}\n```/)
@@ -1184,7 +1171,7 @@ describe("lore-tasks", () => {
             title: `Boundary ${call}-${i + 1}`,
             taskState: "done",
             reviewBy: "2026-01-01",
-          }),
+          })
         ),
         nextCursor: call < 10 ? `cursor-${call + 1}` : undefined,
       }
@@ -1288,7 +1275,7 @@ describe("lore-tasks", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ states: ["cancelled"] }),
+      expect.objectContaining({ states: ["cancelled"] })
     )
     expect(text).toContain("1 task (exact total):")
     expect(text).toContain("### Cancelled (1)")
@@ -1332,13 +1319,13 @@ describe("lore-tasks", () => {
 
     expect(svc.tasks.list).toHaveBeenCalledTimes(1)
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 20, entities: ["PR"] }),
+      expect.objectContaining({ limit: 20, entities: ["PR"] })
     )
     expect(text).toContain(
-      'No tasks found matching "PR" in the first 20 fetched rows; more matching tasks may exist.',
+      'No tasks found matching "PR" in the first 20 fetched rows; more matching tasks may exist.'
     )
     expect(text).toMatch(
-      /```json\n\{"nextCursor":"cursor-archived-only","truncated":true\}\n```/,
+      /```json\n\{"nextCursor":"cursor-archived-only","truncated":true\}\n```/
     )
   })
 
@@ -1403,7 +1390,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
       expect.objectContaining({
         subject: "Rotate keys",
         synopsis: "Rotate keys for new env.",
-      }),
+      })
     )
   })
 
@@ -1425,7 +1412,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
     } as never)
     expect(svc.tasks.update).toHaveBeenCalledWith(
       "t-1",
-      expect.objectContaining({ synopsis: "Updated synopsis" }),
+      expect.objectContaining({ synopsis: "Updated synopsis" })
     )
 
     // Clear — empty string forwards through.
@@ -1437,7 +1424,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
     } as never)
     expect(svc.tasks.update).toHaveBeenCalledWith(
       "t-1",
-      expect.objectContaining({ synopsis: "" }),
+      expect.objectContaining({ synopsis: "" })
     )
 
     // Leave-alone — omitted arg arrives as undefined.
@@ -1447,8 +1434,7 @@ describe("lore-task synopsis surface (issue 0.7.0/02)", () => {
       taskId: "t-1",
       subject: "rename",
     } as never)
-    const [, args] = (svc.tasks.update as ReturnType<typeof vi.fn>).mock
-      .calls[0]
+    const [, args] = (svc.tasks.update as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(args.synopsis).toBeUndefined()
   })
 
@@ -1554,7 +1540,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
       "1 task (exact total):\n\n" +
         "### Active (1)\n\n" +
         "- **Plain task** [open] (due 2099-01-01)\n" +
-        "  ID: t-plain",
+        "  ID: t-plain"
     )
   })
 
@@ -1587,7 +1573,7 @@ describe("lore-task action='list' synopsis rendering (DEFERRED-01)", () => {
       "1 task (exact total):\n\n" +
         "### Active (1)\n\n" +
         "- **Whitespace task** [open] (due 2099-01-01)\n" +
-        "  ID: t-ws",
+        "  ID: t-ws"
     )
   })
 
@@ -1796,7 +1782,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
       "1 task (exact total):\n\n" +
         "### Active (1)\n\n" +
         "- **Pre-migration row** [open] (due 2099-01-01)\n" +
-        "  ID: t-null",
+        "  ID: t-null"
     )
   })
 
@@ -2056,7 +2042,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     // The first call to tasks.list inside reconcileActiveTasks should
     // receive the auto-detected project id.
     expect(svc.tasks.list).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "ctx-proj" }),
+      expect.objectContaining({ projectId: "ctx-proj" })
     )
   })
 })
@@ -2066,44 +2052,46 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
 //
 // Tasks write to the Memories DB (Kind = task) — same Author column as
 // memories and decisions. Pin the precedence: explicit args.author wins,
-// services.identity.author is the default, null collapses to undefined.
+// services.identity.resolveAuthor is the default, null collapses to undefined.
 // ---------------------------------------------------------------------------
 
 describe("lore-task action='create' — Author attribution (DEFERRED-ATTRIBUTION)", () => {
   function setUpHarness(identityAuthor: string | null) {
     const created = makeTask("t-attrib")
-    const svc = services({ identity: { author: identityAuthor } })
+    const resolveAuthor = vi.fn(async () => identityAuthor)
+    const svc = services({ identity: { resolveAuthor, clearCache: vi.fn() } })
     svc.tasks.create = vi.fn().mockResolvedValue(created)
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
-    return { handler: mockServer.getHandler("lore-task"), svc }
+    return { handler: mockServer.getHandler("lore-task"), svc, resolveAuthor }
   }
 
-  it("stamps services.identity.author on tasks.create when args.author is omitted", async () => {
+  it("stamps services.identity.resolveAuthor on tasks.create when args.author is omitted", async () => {
     const { handler, svc } = setUpHarness("Hesham Salman")
     await handler({ action: "create", subject: "Rotate keys" } as never)
     expect(svc.tasks.create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Hesham Salman" }),
+      expect.objectContaining({ author: "Hesham Salman" })
     )
   })
 
-  it("explicit args.author wins over services.identity.author", async () => {
-    const { handler, svc } = setUpHarness("ServerSideName")
+  it("explicit args.author wins without calling services.identity.resolveAuthor", async () => {
+    const { handler, svc, resolveAuthor } = setUpHarness("ServerSideName")
     await handler({
       action: "create",
       subject: "Rotate keys",
       author: "Override",
     } as never)
     expect(svc.tasks.create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Override" }),
+      expect.objectContaining({ author: "Override" })
     )
+    expect(resolveAuthor).not.toHaveBeenCalled()
   })
 
-  it("collapses to author: undefined when no override and identity.author is null", async () => {
+  it("collapses to author: undefined when no override and resolver returns null", async () => {
     const { handler, svc } = setUpHarness(null)
     await handler({ action: "create", subject: "Rotate keys" } as never)
     expect(svc.tasks.create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: undefined }),
+      expect.objectContaining({ author: undefined })
     )
   })
 })

@@ -11,6 +11,9 @@
  *    who wants a different display name than their Notion identity —
  *    or who is running against a workspace bot whose `users.me`
  *    response carries no usable name — has a stable explicit override.
+ *    Because this override is process-wide, operators should only set
+ *    it in single-engineer processes; it intentionally wins even when
+ *    the underlying Notion token rotates.
  * 2. **`client.users.me().bot.owner.user.name`** — the engineer's
  *    Notion identity for ntn-issued tokens. Same shape as the OAuth
  *    response and as the bot identity surfaced by `lore auth
@@ -25,18 +28,24 @@
  *    would defeat the per-engineer signal the `Author` column exists
  *    to provide.
  *
- * Per-process memoization: `users.me` is a single Notion round-trip
- * we'd otherwise pay on every save. The cache key is "this process,
- * this env state" — `LORE_USER_NAME` is read at first call and cached
- * for the lifetime of the process. Tests reset via
- * `resetIdentityCache()`.
+ * Resolver-scoped memoization: `users.me` is a Notion round-trip we'd
+ * otherwise pay on every unattributed write. The cache key includes a
+ * hash of the active Notion token plus the API base URL so long-lived
+ * processes do not reuse attribution across auth changes. Only the
+ * latest auth snapshot is cached, and in-flight results are not moved
+ * to a new key when auth changes underneath them. The raw token is
+ * never stored in the cache key.
  *
  * Failures (network, 4xx, unexpected response shape) all collapse to
  * `{ author: null }` and never throw. The Author column is advisory:
  * an unattributed memory is strictly better than a save that fails
- * because identity resolution hit a transient blip.
+ * because identity resolution hit a transient blip. Thrown `users.me`
+ * failures are not cached so the next unattributed write can retry;
+ * recognized responses with no owner name are cached for the current
+ * auth snapshot.
  */
 
+import { createHash } from "node:crypto"
 import type { Client } from "@notionhq/client"
 
 export interface ResolvedIdentity {
@@ -50,42 +59,170 @@ export interface ResolvedIdentity {
   author: string | null
 }
 
-let cached: ResolvedIdentity | undefined
+export interface AuthorIdentityAuthSnapshot {
+  token: string
+  baseUrl?: string
+}
+
+export interface AuthorIdentityResolver {
+  /**
+   * Resolve the engineer-author name for a write that omitted an explicit
+   * `author`. Returns `null` when no trusted signal is available.
+   */
+  resolveAuthor(): Promise<string | null>
+  /** Clear resolver-owned caches. Used by tests and service cache resets. */
+  clearCache(): void
+}
+
+interface AuthorIdentityLookup {
+  identity: ResolvedIdentity
+  cacheable: boolean
+  errorMessage?: string
+}
 
 /**
- * Resolve the engineer-identity to stamp on every Lore-written memory's
+ * Build a lazy author resolver scoped to the active Notion auth context.
+ *
+ * `getAuthSnapshot` is called on every cache lookup so auth-refreshing
+ * clients can move to a new token/base URL without reusing an author
+ * resolved under the previous context.
+ */
+export function createAuthorIdentityResolver(
+  client: Client,
+  getAuthSnapshot: () => AuthorIdentityAuthSnapshot
+): AuthorIdentityResolver {
+  const cache = new Map<string, Promise<ResolvedIdentity>>()
+  let loggedEnvOverride = false
+
+  return {
+    async resolveAuthor() {
+      const override = envAuthorOverride()
+      if (override) {
+        if (!loggedEnvOverride) {
+          logIdentityDebug("resolved author (source=env)")
+          loggedEnvOverride = true
+        }
+        return override
+      }
+
+      const key = authCacheKey(getAuthSnapshot())
+      const cached = cache.get(key)
+      if (cached) return (await cached).author
+
+      const pending = resolveAuthorFromUsersMe(client).then((lookup) => {
+        if (!lookup.cacheable) {
+          cache.delete(key)
+          logIdentityFailure(lookup.errorMessage)
+          return lookup.identity
+        }
+
+        if (authCacheKey(getAuthSnapshot()) !== key) {
+          cache.delete(key)
+          logIdentityDebug(
+            `resolved author (source=users.me, author=${authorPresence(
+              lookup.identity.author
+            )}, cache=skipped-auth-changed)`
+          )
+          return lookup.identity
+        }
+
+        logIdentityDebug(
+          `resolved author (source=users.me, author=${authorPresence(
+            lookup.identity.author
+          )})`
+        )
+        return lookup.identity
+      })
+
+      // Keep the resolver bounded to the current auth snapshot. Older
+      // in-flight lookups can still finish for their original caller, but
+      // they cannot accumulate as stale cache entries.
+      cache.clear()
+      cache.set(key, pending)
+      return (await pending).author
+    },
+    clearCache() {
+      cache.clear()
+    },
+  }
+}
+
+/**
+ * Resolve the engineer-identity to stamp on a Lore-written memory's
  * `Author` column.
  *
- * Returns the same value on every call within one process (memoized).
- * Best-effort against `users.me` failures; never throws.
+ * Best-effort against `users.me` failures; never throws. Production
+ * callers that need caching should use `createAuthorIdentityResolver`.
  */
-export async function resolveAuthorIdentity(
-  client: Client,
-): Promise<ResolvedIdentity> {
-  if (cached !== undefined) return cached
+export async function resolveAuthorIdentity(client: Client): Promise<ResolvedIdentity> {
+  const override = envAuthorOverride()
+  if (override) return { author: override }
 
+  return (await resolveAuthorFromUsersMe(client)).identity
+}
+
+export async function resolveAuthorForWrite(
+  explicitAuthor: string | undefined,
+  identity: AuthorIdentityResolver
+): Promise<string | undefined> {
+  if (explicitAuthor !== undefined) return explicitAuthor
+  return (await identity.resolveAuthor()) ?? undefined
+}
+
+async function resolveAuthorFromUsersMe(client: Client): Promise<AuthorIdentityLookup> {
+  try {
+    const me = await client.users.me({})
+    const author = extractOwnerUserName(me)
+    return {
+      identity: { author },
+      cacheable: true,
+    }
+  } catch (err) {
+    // Any failure — network, 4xx, response-shape change — degrades to
+    // null. The resolver does not cache thrown failures, so the next
+    // unattributed write under the same auth can retry. Operators who
+    // want deterministic attribution under unstable network conditions
+    // set LORE_USER_NAME explicitly.
+    return {
+      identity: { author: null },
+      cacheable: false,
+      errorMessage: errorMessage(err),
+    }
+  }
+}
+
+function envAuthorOverride(): string | null {
   // Env override wins. Synchronous, no API call. Trim defensively so
   // a `LORE_USER_NAME=" "` shell-rc misconfiguration doesn't stamp
   // whitespace as the author name.
   const override = process.env["LORE_USER_NAME"]
-  if (override && override.trim()) {
-    cached = { author: override.trim() }
-    return cached
-  }
+  if (override && override.trim()) return override.trim()
+  return null
+}
 
-  try {
-    const me = await client.users.me({})
-    cached = { author: extractOwnerUserName(me) }
-    return cached
-  } catch {
-    // Any failure — network, 4xx, response-shape change — degrades to
-    // null. The Author column stays empty for this session; the next
-    // process restart will retry. Operators who want deterministic
-    // attribution under unstable network conditions set
-    // LORE_USER_NAME explicitly.
-    cached = { author: null }
-    return cached
-  }
+function authCacheKey(snapshot: AuthorIdentityAuthSnapshot): string {
+  const tokenHash = createHash("sha256").update(snapshot.token).digest("hex")
+  return `${snapshot.baseUrl ?? ""}\u0000${tokenHash}`
+}
+
+function authorPresence(author: string | null): "present" | "missing" {
+  return author ? "present" : "missing"
+}
+
+function logIdentityFailure(message: string | undefined): void {
+  const suffix = message ? `: ${message}` : ""
+  logIdentityDebug(`users.me failed${suffix}`)
+}
+
+function logIdentityDebug(message: string): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(`[lore] identity: ${message}\n`)
+}
+
+function errorMessage(err: unknown): string | undefined {
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === "string" && err.length > 0) return err
+  return undefined
 }
 
 /**
@@ -100,8 +237,8 @@ export async function resolveAuthorIdentity(
  *
  * Internal helper — not exported. Tests reach the failure-mode branches
  * by mocking `client.users.me` and calling `resolveAuthorIdentity`
- * through its public surface, keeping the module's external API to
- * `resolveAuthorIdentity` + `resetIdentityCache`.
+ * through its public surface, keeping the JSON walker private while the
+ * module exposes resolver construction and the uncached probe helper.
  */
 function extractOwnerUserName(me: unknown): string | null {
   if (typeof me !== "object" || me === null) return null
@@ -117,10 +254,10 @@ function extractOwnerUserName(me: unknown): string | null {
 }
 
 /**
- * Drop the per-process identity cache. Tests call this between
- * fixtures so a stub returning a different `users.me` shape doesn't
- * see the previous run's cached value.
+ * Drop a resolver-owned identity cache. Tests and cross-service cache
+ * reset callers must pass the resolver they mean to clear; there is no
+ * module-level singleton fallback.
  */
-export function resetIdentityCache(): void {
-  cached = undefined
+export function resetIdentityCache(resolver: AuthorIdentityResolver): void {
+  resolver.clearCache()
 }

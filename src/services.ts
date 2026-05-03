@@ -26,7 +26,10 @@ import { DecisionService } from "./core/decision.js"
 import { TaskService } from "./core/task.js"
 import { EntityService } from "./core/entity.js"
 import { resolveProject } from "./core/context.js"
-import { resolveAuthorIdentity, type ResolvedIdentity } from "./auth/identity.js"
+import {
+  createAuthorIdentityResolver,
+  type AuthorIdentityResolver,
+} from "./auth/identity.js"
 import {
   DRIFT_DEBOUNCE_DAYS,
   driftMarkerAgeDays,
@@ -86,22 +89,17 @@ export interface LoreServices {
    */
   sessionMemories: SessionMemoryTracker
   /**
-   * Engineer identity to stamp on every Memory `Author` column
-   * (DEFERRED-ATTRIBUTION). Resolved once at startup via
-   * `resolveAuthorIdentity` — `LORE_USER_NAME` env override first, then
-   * `users.me().bot.owner.user.name` as the fallback for ntn-issued
-   * tokens. `author === null` when neither source produced a usable
-   * value; tools that read it default to omitting the Author write
-   * rather than stamping an empty string.
+   * Lazy engineer identity resolver for Memory `Author` attribution
+   * (DEFERRED-ATTRIBUTION). Write paths call it only when the caller
+   * omitted an explicit author. `LORE_USER_NAME` resolves synchronously;
+   * otherwise it falls back to `users.me().bot.owner.user.name` and
+   * caches that best-effort result by the active Notion token/base URL.
    *
    * Required (not optional) so a future refactor that forgets to
    * populate it in a new init seam fails the typecheck rather than
-   * silently no-opping attribution. Test fixtures using
-   * `as unknown as LoreServices` casts must supply
-   * `{ author: null }` (or an explicit value) at construction; the
-   * cast pattern itself doesn't preclude the requirement.
+   * silently no-opping attribution.
    */
-  identity: ResolvedIdentity
+  identity: AuthorIdentityResolver
 }
 
 export const AUTH_REFRESH_UNAVAILABLE_CACHE_MS = 1_000
@@ -114,6 +112,8 @@ export async function initServicesFromConfig(
 ): Promise<LoreServices> {
   const auth = await resolveAuth(config, configRoot)
   const authRefresh = createNtnAuthRefresh(auth, configRoot, config)
+  const authSnapshotRef = { current: toClientAuth(auth) }
+  const identityRef: { current?: AuthorIdentityResolver } = {}
   const rateLimitOptions = config.notion?.rateLimit ?? {}
   // Every downstream service shares the same rate-limited Proxy so fan-out
   // stays under Notion's per-token rps ceiling without per-call-site work.
@@ -121,9 +121,13 @@ export async function initServicesFromConfig(
   // bucket), and 429 shared backoff; defaults match Notion's ~3 rps
   // public guidance.
   const client = authRefresh
-    ? createAuthRefreshingClient(toClientAuth(auth), authRefresh, {
+    ? createAuthRefreshingClient(authSnapshotRef.current, authRefresh, {
         createClient: (token, baseUrl) =>
           createLimitedClient(createClient(token, baseUrl), rateLimitOptions),
+        onAuthChange: (nextAuth) => {
+          authSnapshotRef.current = nextAuth
+          identityRef.current?.clearCache()
+        },
       })
     : createLimitedClient(createClient(auth.token, auth.baseUrl), rateLimitOptions)
 
@@ -147,11 +151,12 @@ export async function initServicesFromConfig(
 
   const resolution = await resolveProject(cwd, configRoot, config, projects)
 
-  // Resolve engineer identity once at startup so every save in this
-  // process stamps the same author. Best-effort — `resolveAuthorIdentity`
-  // never throws; a `users.me` failure degrades to `{ author: null }`
-  // and the Author column stays empty for this session.
-  const identity = await resolveAuthorIdentity(client)
+  // Keep service initialization read-only with respect to author identity:
+  // writes lazily resolve a default author only when the caller omitted
+  // one. The resolver keys its users.me cache by the active auth snapshot
+  // so in-process ntn refreshes do not leak attribution across tokens.
+  const identity = createAuthorIdentityResolver(client, () => authSnapshotRef.current)
+  identityRef.current = identity
 
   return {
     vault,
@@ -339,4 +344,5 @@ export function clearServiceCaches(services: LoreServices): void {
   services.memories.clearTitleCache()
   services.decisions.clearCache()
   services.entities.clearNameCache()
+  services.identity.clearCache()
 }

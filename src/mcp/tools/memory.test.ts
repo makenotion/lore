@@ -70,11 +70,11 @@ function createMockServer() {
       (
         name: string,
         config: { inputSchema?: Record<string, z.ZodTypeAny> },
-        handler: (...args: never[]) => Promise<unknown>,
+        handler: (...args: never[]) => Promise<unknown>
       ) => {
         configs.set(name, config)
         handlers.set(name, handler)
-      },
+      }
     ),
   } as unknown as McpServer
 
@@ -94,8 +94,7 @@ function createMockServer() {
     getActionHandler(toolName: string, action: string) {
       const handler = handlers.get(toolName)
       if (!handler) throw new Error(`missing handler ${toolName}`)
-      return (args: Record<string, unknown>) =>
-        handler({ ...args, action } as never)
+      return (args: Record<string, unknown>) => handler({ ...args, action } as never)
     },
     getInputSchema(name: string): z.ZodObject<z.ZodRawShape> {
       const config = configs.get(name)
@@ -124,7 +123,7 @@ describe("lore-remember session recording", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -159,7 +158,7 @@ describe("lore-remember session recording", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -196,7 +195,7 @@ describe("lore-memory action='archive'", () => {
     expect(archive).toHaveBeenCalledWith("dec-cached")
     expect(clearDecisionCache).toHaveBeenCalledTimes(1)
     expect(archive.mock.invocationCallOrder[0]).toBeLessThan(
-      clearDecisionCache.mock.invocationCallOrder[0],
+      clearDecisionCache.mock.invocationCallOrder[0]
     )
   })
 
@@ -235,11 +234,14 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     const services = {
       projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
       topics: { getOrCreate },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -253,11 +255,9 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       forceNewTopic: true,
     } as never)
 
-    expect(getOrCreate).toHaveBeenCalledWith(
-      "Eval & Testing",
-      ["proj-a"],
-      { forceNew: true },
-    )
+    expect(getOrCreate).toHaveBeenCalledWith("Eval & Testing", ["proj-a"], {
+      forceNew: true,
+    })
   })
 
   it("renders the canonical's stored name when normalized-equivalent collapse landed", async () => {
@@ -273,11 +273,14 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     const services = {
       projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
       topics: { getOrCreate },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -307,7 +310,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -325,12 +328,12 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       expect.objectContaining({
         projectIds: undefined,
         topicId: undefined,
-      }),
+      })
     )
     expect(getOrCreate).not.toHaveBeenCalled()
     expect(text).toContain("Topic: none")
     expect(text).toContain(
-      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)',
+      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
     )
   })
 
@@ -342,8 +345,8 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       .fn()
       .mockRejectedValue(
         new Error(
-          'Topic "GraphQLL Federation" looks similar to 1 existing topic in this project:\n  - "GraphQL Federation" (similarity 0.86, id: t-1)\nUse one of the existing topic names verbatim, or pass `forceNew: true` to create a new topic anyway.',
-        ),
+          'Topic "GraphQLL Federation" looks similar to 1 existing topic in this project:\n  - "GraphQL Federation" (similarity 0.86, id: t-1)\nUse one of the existing topic names verbatim, or pass `forceNew: true` to create a new topic anyway.'
+        )
       )
 
     const services = {
@@ -353,7 +356,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -404,7 +407,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -436,7 +439,7 @@ describe("lore-remember near-duplicate probe", () => {
         projectId: "proj-a",
         tags: ["architecture"],
         includeContent: false,
-      }),
+      })
     )
     // `kind` may be present as `undefined` but must not be set to a value —
     // a value would translate to a `Kind=equals` filter at the Notion layer.
@@ -470,7 +473,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -525,7 +528,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -565,7 +568,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -602,7 +605,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -638,7 +641,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -666,7 +669,7 @@ describe("lore-remember near-duplicate probe", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -704,7 +707,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
@@ -729,7 +732,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       expect(getOrCreate).not.toHaveBeenCalled()
       expect(record).toHaveBeenCalledWith(
         { agent: "Codex", session: "session-1" },
-        { memoryId: "mem-existing", projectIds: ["proj-a"] },
+        { memoryId: "mem-existing", projectIds: ["proj-a"] }
       )
     } finally {
       vi.unstubAllEnvs()
@@ -761,7 +764,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
@@ -812,7 +815,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
@@ -842,7 +845,10 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
 describe("lore-recall topicName resolution", () => {
   it("resolves topicName globally (not scoped to the ambient project) so multi-project topics work", async () => {
     const mockServer = createMockServer()
-    const topic = makeTopic("topic-1", { name: "OAuth", projectIds: ["proj-a", "proj-b"] })
+    const topic = makeTopic("topic-1", {
+      name: "OAuth",
+      projectIds: ["proj-a", "proj-b"],
+    })
     const memory = makeMemory("mem-1", { title: "OAuth flow notes", topicId: "topic-1" })
 
     const findByName = vi.fn().mockResolvedValue(topic)
@@ -867,7 +873,7 @@ describe("lore-recall topicName resolution", () => {
     expect(findByName).toHaveBeenCalledWith("OAuth")
     // topicId was passed through to the list call.
     expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ topicId: "topic-1" }),
+      expect.objectContaining({ topicId: "topic-1" })
     )
   })
 
@@ -917,7 +923,7 @@ describe("lore-recall topicName resolution", () => {
 
     expect(findByName).not.toHaveBeenCalled()
     expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ topicId: undefined }),
+      expect.objectContaining({ topicId: undefined })
     )
   })
 })
@@ -1047,7 +1053,7 @@ describe("lore-recall cursor pagination", () => {
     await recall({ startCursor: "resume-here" } as never)
 
     expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ startCursor: "resume-here" }),
+      expect.objectContaining({ startCursor: "resume-here" })
     )
   })
 
@@ -1102,9 +1108,7 @@ describe("lore-recall cursor pagination", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain("No matching memories on this page.")
-    expect(text).toMatch(
-      /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
-    )
+    expect(text).toMatch(/```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/)
   })
 })
 
@@ -1135,7 +1139,7 @@ describe("lore-search projectName resolution", () => {
     expect(text).toContain("Warnings:")
     // Fallback applied: search scoped to the ambient project.
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "proj-ambient" }),
+      expect.objectContaining({ projectId: "proj-ambient" })
     )
   })
 })
@@ -1164,7 +1168,7 @@ describe("lore-recall content-off default", () => {
     await recall({ limit: 10 } as never)
 
     expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ includeContent: false, limit: 10 }),
+      expect.objectContaining({ includeContent: false, limit: 10 })
     )
   })
 
@@ -1218,7 +1222,7 @@ describe("lore-recall content-off default", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ includeContent: true }),
+      expect.objectContaining({ includeContent: true })
     )
     expect(text).toContain("Hello body.")
     expect(text).not.toContain("Bodies omitted")
@@ -1325,8 +1329,10 @@ describe("lore-recall tag rendering", () => {
     const recallResult = await recall({} as never)
     const searchResult = await search({ query: "anything" } as never)
 
-    const recallText = (recallResult as { content: Array<{ text: string }> }).content[0].text
-    const searchText = (searchResult as { content: Array<{ text: string }> }).content[0].text
+    const recallText = (recallResult as { content: Array<{ text: string }> }).content[0]
+      .text
+    const searchText = (searchResult as { content: Array<{ text: string }> }).content[0]
+      .text
 
     // Extract the italicized meta line from each. Both renderers wrap meta in *…*.
     const metaPattern = /\*([^*]+)\*/
@@ -1486,7 +1492,7 @@ describe("lore-search content-off default", () => {
     await search({ query: "anything" } as never)
 
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ includeContent: false }),
+      expect.objectContaining({ includeContent: false })
     )
   })
 
@@ -1517,9 +1523,11 @@ describe("lore-search content-off default", () => {
 
   it("forwards includeContent: true and renders bodies when opted in", async () => {
     const mockServer = createMockServer()
-    const memoriesSearch = vi.fn().mockResolvedValue([
-      makeMemory("mem-1", { title: "Eager hit", content: "Full body text." }),
-    ])
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([
+        makeMemory("mem-1", { title: "Eager hit", content: "Full body text." }),
+      ])
 
     const services = {
       projects: { findByName: vi.fn() },
@@ -1536,7 +1544,7 @@ describe("lore-search content-off default", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ includeContent: true }),
+      expect.objectContaining({ includeContent: true })
     )
     expect(text).toContain("Full body text.")
     expect(text).not.toContain("Bodies omitted")
@@ -1567,7 +1575,7 @@ describe("lore-search mode parameter", () => {
     await search({ query: "q" } as never)
 
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: "hybrid" }),
+      expect.objectContaining({ mode: "hybrid" })
     )
   })
 
@@ -1603,7 +1611,7 @@ describe("lore-search mode parameter", () => {
         kind: "decision",
         status: "accepted",
         tags: ["architecture"],
-      }),
+      })
     )
   })
 
@@ -1627,17 +1635,17 @@ describe("lore-search mode parameter", () => {
 
     await search({ query: "q", limit: 5, mode: "semantic" } as never)
     expect(memoriesSearch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mode: "semantic", limit: 10 }),
+      expect.objectContaining({ mode: "semantic", limit: 10 })
     )
 
     await search({ query: "q", limit: 5, mode: "contains" } as never)
     expect(memoriesSearch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mode: "contains", limit: 5 }),
+      expect.objectContaining({ mode: "contains", limit: 5 })
     )
 
     await search({ query: "q", limit: 5, mode: "hybrid" } as never)
     expect(memoriesSearch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mode: "hybrid", limit: 5 }),
+      expect.objectContaining({ mode: "hybrid", limit: 5 })
     )
   })
 
@@ -1660,7 +1668,7 @@ describe("lore-search mode parameter", () => {
 
     expect(findTopic).toHaveBeenCalledWith("GraphQL")
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ topicId: "topic-1" }),
+      expect.objectContaining({ topicId: "topic-1" })
     )
   })
 
@@ -1715,7 +1723,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1748,7 +1756,7 @@ describe("lore-expand", () => {
       memories: { getById: vi.fn().mockResolvedValue(makeMemory("m")) },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1763,8 +1771,7 @@ describe("lore-expand", () => {
       return `${hex}${hex}-${hex}-4${tail3}-8${tail3}-${hex}${hex}${hex}`
     })
 
-    const isErr = (r: unknown): boolean =>
-      (r as { isError?: boolean }).isError === true
+    const isErr = (r: unknown): boolean => (r as { isError?: boolean }).isError === true
 
     const oversized = await expand({ ids: tooMany })
     expect(isErr(oversized)).toBe(true)
@@ -1795,7 +1802,7 @@ describe("lore-expand", () => {
       started.push(id)
       return new Promise<Memory>((resolve) => {
         inflight.set(id, () =>
-          resolve(makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` })),
+          resolve(makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` }))
         )
       })
     })
@@ -1806,7 +1813,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1848,7 +1855,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1873,7 +1880,7 @@ describe("lore-expand", () => {
   it("de-duplicates repeated IDs before dispatching getById", async () => {
     const mockServer = createMockServer()
     const getById = vi.fn(async (id: string) =>
-      makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` }),
+      makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` })
     )
 
     const services = {
@@ -1882,7 +1889,7 @@ describe("lore-expand", () => {
       memories: { getById },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -1911,7 +1918,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     overrides: { id: string; title: string } & Partial<{
       taskState: "open" | "in-progress" | "blocked" | "done" | "cancelled"
       entity: string
-    }>,
+    }>
   ) {
     return {
       id: overrides.id,
@@ -1966,7 +1973,10 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       tasks: { list: tasksList },
       facts: {
         createWithDedup: vi
@@ -1976,7 +1986,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2003,7 +2013,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
         states: ["open", "in-progress", "blocked"],
         entities: expect.arrayContaining(["PR #25750"]),
         limit: 5,
-      }),
+      })
     )
   })
 
@@ -2023,7 +2033,10 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       tasks: { list: tasksList },
       facts: {
         createWithDedup: vi
@@ -2033,7 +2046,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2062,7 +2075,10 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       tasks: { list: tasksList },
       facts: {
         createWithDedup: vi
@@ -2072,7 +2088,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2099,7 +2115,10 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       tasks: { list: tasksList },
       facts: {
         createWithDedup: vi
@@ -2109,7 +2128,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2137,7 +2156,10 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
-      memories: { create: vi.fn().mockResolvedValue(created), list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create: vi.fn().mockResolvedValue(created),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       tasks: { list: tasksList },
       facts: {
         createWithDedup: vi
@@ -2147,7 +2169,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2210,7 +2232,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2232,7 +2254,7 @@ describe("lore-memory active-task cross-reference (issue 0.7.0/11)", () => {
       makeMemory("mem-new", {
         title: "Merged PR #25750",
         projectIds: ["proj-a"],
-      }),
+      })
     )
     const result = await pending
     // Post-fix sanity: with the `facts` mock present the post-create
@@ -2275,7 +2297,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2298,7 +2320,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
         sourceMemoryId: "mem-emit-1",
         projectIds: ["proj-a"],
         confidence: "speculative",
-      }),
+      })
     )
     // Footer surfaces the count. All creates landed so the "/N
     // attempted" suffix is absent — that suffix only appears on
@@ -2331,7 +2353,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2368,7 +2390,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2412,7 +2434,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2462,7 +2484,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2514,7 +2536,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2528,7 +2550,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     } as never)
 
     const objects = createWithDedup.mock.calls.map(
-      (c) => (c[0] as { object: string }).object,
+      (c) => (c[0] as { object: string }).object
     )
     expect(objects).toContain("PR #25750")
     expect(objects).toContain("SENTRY-1234")
@@ -2562,7 +2584,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2618,7 +2640,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2640,7 +2662,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
     expect((result1 as { isError?: boolean }).isError).not.toBe(true)
     expect((result2 as { isError?: boolean }).isError).not.toBe(true)
     const calls = createWithDedup.mock.calls.map(
-      (c) => c[0] as { subject: string; predicate: string; object: string },
+      (c) => c[0] as { subject: string; predicate: string; object: string }
     )
     // At least two calls (one per save) — the title extracts at
     // least one entity, both saves run the auto-emit branch.
@@ -2706,7 +2728,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2721,7 +2743,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       // Auto-emit still fired despite the near-dup kill switch.
       expect(createWithDedup).toHaveBeenCalled()
       expect(createWithDedup).toHaveBeenCalledWith(
-        expect.objectContaining({ predicate: "mentions" }),
+        expect.objectContaining({ predicate: "mentions" })
       )
     } finally {
       vi.unstubAllEnvs()
@@ -2754,7 +2776,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2768,7 +2790,7 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
       } as never)
       expect(createWithDedup).toHaveBeenCalled()
       expect(createWithDedup).toHaveBeenCalledWith(
-        expect.objectContaining({ predicate: "mentions" }),
+        expect.objectContaining({ predicate: "mentions" })
       )
     } finally {
       vi.unstubAllEnvs()
@@ -2806,7 +2828,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2820,7 +2842,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
 
     expect(queryBySourceMemory).toHaveBeenCalledWith(
       "mem-update-1",
-      expect.objectContaining({ predicates: ["mentions"] }),
+      expect.objectContaining({ predicates: ["mentions"] })
     )
     // The pre-query intentionally does NOT pass `projectId` —
     // same-source-memory already implies same-scope, so scoping by
@@ -2840,7 +2862,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
         sourceMemoryId: "mem-update-1",
         projectIds: ["proj-a"],
         confidence: "speculative",
-      }),
+      })
     )
     // Footer surfaces the count with the `new` suffix that
     // distinguishes update-time emission from save-time emission.
@@ -2883,7 +2905,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2936,7 +2958,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2963,9 +2985,9 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       projectIds: ["proj-a"],
     })
     const update = vi.fn().mockResolvedValue(updated)
-    const queryBySourceMemory = vi.fn().mockResolvedValue([
-      { id: "fact-existing", object: "PR #25750" },
-    ])
+    const queryBySourceMemory = vi
+      .fn()
+      .mockResolvedValue([{ id: "fact-existing", object: "PR #25750" }])
     const createWithDedup = vi.fn().mockResolvedValue({
       fact: { id: "fact-x" },
       deduped: false,
@@ -2980,7 +3002,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -2992,7 +3014,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     } as never)
 
     const objects = createWithDedup.mock.calls.map(
-      (c) => (c[0] as { object: string }).object,
+      (c) => (c[0] as { object: string }).object
     )
     // PR #25750 was already covered → not in the calls.
     expect(objects).not.toContain("PR #25750")
@@ -3027,7 +3049,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3040,7 +3062,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     } as never)
 
     const objects = createWithDedup.mock.calls.map(
-      (c) => (c[0] as { object: string }).object,
+      (c) => (c[0] as { object: string }).object
     )
     expect(objects).toContain("PR #25750")
     expect(objects).toContain("SENTRY-1234")
@@ -3068,7 +3090,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3124,7 +3146,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3148,15 +3170,17 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
   it("surfaces structured memory update partial-failure messages as MCP errors", async () => {
     const mockServer = createMockServer()
     const bodyWriteError = new Error("notion 503")
-    const update = vi.fn().mockRejectedValue(
-      new MemoryUpdatePartialFailureError(
-        `Memory update partial failure: properties for memory mem-partial ` +
-          `persisted, but the body write failed during phase "body": notion 503. ` +
-          `The property changes are already on Notion; the body content was ` +
-          `not written. Inspect the row before retrying the update.`,
-        { memoryId: "mem-partial", bodyWriteError },
-      ),
-    )
+    const update = vi
+      .fn()
+      .mockRejectedValue(
+        new MemoryUpdatePartialFailureError(
+          `Memory update partial failure: properties for memory mem-partial ` +
+            `persisted, but the body write failed during phase "body": notion 503. ` +
+            `The property changes are already on Notion; the body content was ` +
+            `not written. Inspect the row before retrying the update.`,
+          { memoryId: "mem-partial", bodyWriteError }
+        )
+      )
 
     const services = {
       projects: { findByName: vi.fn() },
@@ -3166,7 +3190,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3216,7 +3240,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3257,7 +3281,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3300,7 +3324,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3347,7 +3371,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3405,7 +3429,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3419,7 +3443,7 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     // The candidate `Café &amp; Bar` decodes to `Café & Bar`, which
     // matches the stored fact → no fresh emission.
     const calls = createWithDedup.mock.calls.map(
-      (c) => (c[0] as { object: string }).object,
+      (c) => (c[0] as { object: string }).object
     )
     expect(calls).not.toContain("Café &amp; Bar")
     expect(calls).not.toContain("Café & Bar")
@@ -3438,7 +3462,7 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3456,7 +3480,7 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
 
     expect(update).toHaveBeenCalledWith(
       "mem-1",
-      expect.objectContaining({ reviewBy: null }),
+      expect.objectContaining({ reviewBy: null })
     )
   })
 
@@ -3467,7 +3491,7 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
 
     expect(update).toHaveBeenCalledWith(
       "mem-1",
-      expect.objectContaining({ decidedAt: null }),
+      expect.objectContaining({ decidedAt: null })
     )
   })
 
@@ -3482,7 +3506,7 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
 
     expect(update).toHaveBeenCalledWith(
       "mem-1",
-      expect.objectContaining({ reviewBy: null, decidedAt: null }),
+      expect.objectContaining({ reviewBy: null, decidedAt: null })
     )
   })
 
@@ -3533,7 +3557,7 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3566,7 +3590,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3582,7 +3606,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       expect.objectContaining({
         title: "Saved",
         synopsis: "One-line gist for the listings tier.",
-      }),
+      })
     )
   })
 
@@ -3597,7 +3621,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3610,7 +3634,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
 
     expect(update).toHaveBeenCalledWith(
       "mem-1",
-      expect.objectContaining({ synopsis: "New synopsis" }),
+      expect.objectContaining({ synopsis: "New synopsis" })
     )
   })
 
@@ -3627,7 +3651,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3637,7 +3661,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
 
     expect(update).toHaveBeenCalledWith(
       "mem-1",
-      expect.objectContaining({ synopsis: "" }),
+      expect.objectContaining({ synopsis: "" })
     )
   })
 
@@ -3651,7 +3675,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3675,7 +3699,7 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3714,7 +3738,7 @@ describe("lore-memory action='update' Alternatives/Consequences rich_text cap (#
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
     registerMemoryTools(mockServer.server, services as never)
     return {
@@ -3739,30 +3763,27 @@ describe("lore-memory action='update' Alternatives/Consequences rich_text cap (#
       expect.objectContaining({
         alternatives: atCap,
         consequences: atCap,
-      }),
+      })
     )
   })
 
   it.each([
     ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
     ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-  ] as const)(
-    "rejects over-cap %s before memories.update",
-    async (field, input) => {
-      const { handler, update } = setUpUpdateHarness()
+  ] as const)("rejects over-cap %s before memories.update", async (field, input) => {
+    const { handler, update } = setUpUpdateHarness()
 
-      const result = await handler({
-        memoryId: "mem-1",
-        ...input,
-      } as never)
+    const result = await handler({
+      memoryId: "mem-1",
+      ...input,
+    } as never)
 
-      const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
-      expect(wrapped.isError).toBe(true)
-      expect(wrapped.content[0].text).toContain(field)
-      expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
-      expect(update).not.toHaveBeenCalled()
-    },
-  )
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain(field)
+    expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
+    expect(update).not.toHaveBeenCalled()
+  })
 })
 
 describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
@@ -3784,7 +3805,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
   it("includeContent=false, no synopsis → byte-identical pre-#03 row", async () => {
     const mockServer = createMockServer()
     const services = buildRecallServices(
-      makeMemory("mem-1", { title: "OAuth handshake notes", tags: ["auth"] }),
+      makeMemory("mem-1", { title: "OAuth handshake notes", tags: ["auth"] })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3804,7 +3825,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
         title: "OAuth handshake notes",
         tags: ["auth"],
         synopsis: "Outlook callbacks fail because the redirect URI is not allow-listed.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3817,7 +3838,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
     expect(text).toContain(
       "### OAuth handshake notes\n" +
         "Outlook callbacks fail because the redirect URI is not allow-listed.\n" +
-        "*manual | auth | 2026-04-20*",
+        "*manual | auth | 2026-04-20*"
     )
   })
 
@@ -3828,7 +3849,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
         title: "OAuth handshake notes",
         tags: ["auth"],
         content: "Body paragraph.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3839,7 +3860,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain(
-      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.",
+      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph."
     )
   })
 
@@ -3851,7 +3872,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
         tags: ["auth"],
         synopsis: "Outlook callbacks fail.",
         content: "Body paragraph.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3865,7 +3886,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
       "### OAuth handshake notes\n" +
         "Outlook callbacks fail.\n" +
         "*manual | auth | 2026-04-20*\n\n" +
-        "Body paragraph.",
+        "Body paragraph."
     )
   })
 
@@ -3876,7 +3897,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
         title: "OAuth handshake notes",
         tags: ["auth"],
         synopsis: "This synopsis should not render.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3898,7 +3919,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
         tags: ["auth"],
         synopsis: "This synopsis should not render.",
         content: "Body paragraph.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -3913,7 +3934,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
 
     expect(text).not.toContain("This synopsis should not render.")
     expect(text).toContain(
-      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph.",
+      "### OAuth handshake notes\n*manual | auth | 2026-04-20*\n\nBody paragraph."
     )
   })
 
@@ -3949,7 +3970,7 @@ describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
         "First row has a synopsis.\n" +
         "*manual | auth | 2026-04-20*\n\n---\n\n" +
         "### Without synopsis\n" +
-        "*manual | auth | 2026-04-20*",
+        "*manual | auth | 2026-04-20*"
     )
   })
 
@@ -3999,7 +4020,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
         title: "Search hit",
         tags: ["auth"],
         synopsis: "One-line gist.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4009,9 +4030,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
     const result = await search({ query: "auth" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain(
-      "### Search hit\nOne-line gist.\n*manual | auth | 2026-04-20*",
-    )
+    expect(text).toContain("### Search hit\nOne-line gist.\n*manual | auth | 2026-04-20*")
   })
 
   it("renders synopsis above meta and body below on the body-on path", async () => {
@@ -4022,7 +4041,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
         tags: ["auth"],
         synopsis: "One-line gist.",
         content: "Body paragraph.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4036,7 +4055,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
       "### Search hit\n" +
         "One-line gist.\n" +
         "*manual | auth | 2026-04-20*\n\n" +
-        "Body paragraph.",
+        "Body paragraph."
     )
   })
 
@@ -4121,7 +4140,7 @@ describe("lore-search synopsis rendering (issue 0.7.0/03)", () => {
         title: "Search hit",
         tags: ["auth"],
         synopsis: "Should not appear.",
-      }),
+      })
     )
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4257,12 +4276,14 @@ describe("lore-query action='search' — touch-on-read wiring (issue 0.8.0/05)",
     // headroom; the wiring touches the SLICED results so a touch
     // batch reflects what the agent actually sees.
     const mockServer = createMockServer()
-    const memoriesSearch = vi.fn().mockResolvedValue([
-      makeMemory("mem-1"),
-      makeMemory("mem-2"),
-      makeMemory("mem-3"),
-      makeMemory("mem-4"),
-    ])
+    const memoriesSearch = vi
+      .fn()
+      .mockResolvedValue([
+        makeMemory("mem-1"),
+        makeMemory("mem-2"),
+        makeMemory("mem-3"),
+        makeMemory("mem-4"),
+      ])
     const touchOnRead = vi.fn().mockResolvedValue(undefined)
 
     const services = {
@@ -4289,7 +4310,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
   it("touches the expanded memories on a successful expand call", async () => {
     const mockServer = createMockServer()
     const getById = vi.fn(async (id: string) =>
-      makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` }),
+      makeMemory(id, { title: `Title ${id}`, content: `Body ${id}` })
     )
     const touchOnRead = vi.fn().mockResolvedValue(undefined)
 
@@ -4299,7 +4320,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
       memories: { getById, touchOnRead },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4330,7 +4351,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
       memories: { getById, touchOnRead },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4355,7 +4376,7 @@ describe("lore-memory action='expand' — touch-on-read wiring (issue 0.8.0/05)"
       memories: { getById, touchOnRead },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4405,7 +4426,7 @@ describe("lore-recall / lore-search revision marker (issue 0.9.0/10)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain(
-      "*conversation | decision | accepted | auth, security | rev 4 | 2026-04-29*",
+      "*conversation | decision | accepted | auth, security | rev 4 | 2026-04-29*"
     )
   })
 
@@ -4473,7 +4494,7 @@ describe("lore-recall / lore-search revision marker (issue 0.9.0/10)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain(
-      "*manual | runbook | accepted | db, migration | rev 3 | 2026-04-29*",
+      "*manual | runbook | accepted | db, migration | rev 3 | 2026-04-29*"
     )
   })
 })
@@ -4509,7 +4530,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4564,7 +4585,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4603,7 +4624,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4641,13 +4662,18 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
     const remember = mockServer.getActionHandler("lore-memory", "save")
 
-    for (const bad of ["Decision/JWT", " decision/jwt", "/decision/jwt", "decision/jwt/"]) {
+    for (const bad of [
+      "Decision/JWT",
+      " decision/jwt",
+      "/decision/jwt",
+      "decision/jwt/",
+    ]) {
       const result = await remember({
         title: "x",
         content: "y",
@@ -4693,7 +4719,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4712,7 +4738,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     // `\bPR-\d+\b` pattern in `extractEntityCandidates`.
     expect(createWithDedup).toHaveBeenCalled()
     const objects = createWithDedup.mock.calls.map(
-      (c) => (c[0] as { object: string }).object,
+      (c) => (c[0] as { object: string }).object
     )
     expect(objects).toContain("PR-123")
   })
@@ -4722,11 +4748,13 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     // error to the agent, not crash the dispatcher. The wording
     // points the agent at remediation.
     const mockServer = createMockServer()
-    const upsertByTopicKey = vi.fn().mockRejectedValue(
-      new Error(
-        "Kind cannot change on upsert. Existing: 'decision'; input: 'runbook'. Pick a new topicKey for the new kind, or supersede via lore-decision action='create'.",
-      ),
-    )
+    const upsertByTopicKey = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Kind cannot change on upsert. Existing: 'decision'; input: 'runbook'. Pick a new topicKey for the new kind, or supersede via lore-decision action='create'."
+        )
+      )
     const services = {
       projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
       topics: { getOrCreate: vi.fn() },
@@ -4740,7 +4768,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4772,13 +4800,17 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     const services = {
       projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
       topics: { getOrCreate: vi.fn() },
-      memories: { create, upsertByTopicKey, list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       facts: { createWithDedup: vi.fn() },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4808,13 +4840,17 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
     const services = {
       projects: { findByName: vi.fn().mockResolvedValue({ id: "proj-a", name: "a" }) },
       topics: { getOrCreate: vi.fn() },
-      memories: { create, upsertByTopicKey, list: vi.fn().mockResolvedValue({ items: [] }) },
+      memories: {
+        create,
+        upsertByTopicKey,
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
       facts: { createWithDedup: vi.fn() },
       tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4868,7 +4904,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4920,7 +4956,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -4968,7 +5004,7 @@ describe("lore-memory action='save' topic-key upsert (0.9.0/06)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5031,7 +5067,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5087,7 +5123,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5129,7 +5165,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5180,7 +5216,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5249,7 +5285,7 @@ describe("lore-memory action='save' promotion advisory footer (0.9.0/15)", () =>
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5331,7 +5367,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5355,9 +5391,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     // must NOT fire. Pin verifies the framing-fields-only delta
     // after destructuring has zero residual keys.
     expect(update).not.toHaveBeenCalled()
-    expect(text).toContain(
-      "Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'",
-    )
+    expect(text).toContain("Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'")
     expect(text).toContain("Audit block appended to body.")
   })
 
@@ -5384,7 +5418,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
         title: "Use JWT auth",
         topicKey: "decision/jwt-auth",
         projectIds: ["P1"],
-      }),
+      })
     )
 
     const services = {
@@ -5395,7 +5429,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5437,7 +5471,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5515,11 +5549,14 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
       memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
-      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      facts: {
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        createWithDedup: vi.fn(),
+      },
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5539,7 +5576,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     expect(callOrder).toEqual(["validate", "update", "rekey"])
     expect(update).toHaveBeenCalledWith(
       "mem-1",
-      expect.objectContaining({ content: "New body content" }),
+      expect.objectContaining({ content: "New body content" })
     )
     // Pin that the residual `update` call does NOT include
     // `Revision Count` — the rekey path must not bump the counter,
@@ -5551,9 +5588,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     const updateArgs = update.mock.calls[0][1] as Record<string, unknown>
     expect("revisionCount" in updateArgs).toBe(false)
     expect("Revision Count" in updateArgs).toBe(false)
-    expect(text).toContain(
-      "Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'",
-    )
+    expect(text).toContain("Re-keyed: 'decision/jwt-auth' → 'decision/jwt-auth-model'")
   })
 
   it("combined re-key + partial body-write failure says the re-key was skipped", async () => {
@@ -5567,15 +5602,17 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       willRekey: true,
     })
     const bodyWriteError = new Error("notion 503")
-    const update = vi.fn().mockRejectedValue(
-      new MemoryUpdatePartialFailureError(
-        `Memory update partial failure: properties for memory mem-1 ` +
-          `persisted, but the body write failed during phase "body": notion 503. ` +
-          `The property changes are already on Notion; the body content was ` +
-          `not written. Inspect the row before retrying the update.`,
-        { memoryId: "mem-1", bodyWriteError },
-      ),
-    )
+    const update = vi
+      .fn()
+      .mockRejectedValue(
+        new MemoryUpdatePartialFailureError(
+          `Memory update partial failure: properties for memory mem-1 ` +
+            `persisted, but the body write failed during phase "body": notion 503. ` +
+            `The property changes are already on Notion; the body content was ` +
+            `not written. Inspect the row before retrying the update.`,
+          { memoryId: "mem-1", bodyWriteError }
+        )
+      )
     const rekeyTopicKey = vi.fn()
 
     const services = {
@@ -5586,7 +5623,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5615,13 +5652,15 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     // PartialUpdateError. This is the common case the preflight
     // exists to address.
     const mockServer = createMockServer()
-    const validateRekey = vi.fn().mockRejectedValue(
-      new Error(
-        "Re-key target 'decision/new' is already in use by " +
-          "memory mem-collider in this project-set. " +
-          "Lore does not auto-merge — archive one or pick a different key.",
-      ),
-    )
+    const validateRekey = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Re-key target 'decision/new' is already in use by " +
+            "memory mem-collider in this project-set. " +
+            "Lore does not auto-merge — archive one or pick a different key."
+        )
+      )
     const rekeyTopicKey = vi.fn()
     const update = vi.fn()
 
@@ -5633,7 +5672,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5684,22 +5723,27 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     const update = vi.fn().mockResolvedValue(updated)
     // Race: by the time `rekeyTopicKey` runs, a concurrent agent
     // has grabbed the new key.
-    const rekeyTopicKey = vi.fn().mockRejectedValue(
-      new Error(
-        "Re-key target 'decision/new' is already in use by " +
-          "memory mem-racer in this project-set.",
-      ),
-    )
+    const rekeyTopicKey = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Re-key target 'decision/new' is already in use by " +
+            "memory mem-racer in this project-set."
+        )
+      )
 
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
       memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
-      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      facts: {
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        createWithDedup: vi.fn(),
+      },
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5738,11 +5782,14 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
       memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
-      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      facts: {
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        createWithDedup: vi.fn(),
+      },
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5808,7 +5855,7 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
         oldTopicKey: "decision/old",
         newTopicKey: "decision/new",
         cause: new Error("simulated 502"),
-      },
+      }
     )
     const rekeyTopicKey = vi.fn().mockRejectedValue(auditError)
 
@@ -5816,11 +5863,14 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
       memories: { validateRekey, rekeyTopicKey, update, getById: vi.fn() },
-      facts: { queryBySourceMemory: vi.fn().mockResolvedValue([]), createWithDedup: vi.fn() },
+      facts: {
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        createWithDedup: vi.fn(),
+      },
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -5862,7 +5912,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       recordCompared?: ReturnType<typeof vi.fn>
       createWithDedup?: ReturnType<typeof vi.fn>
       supersede?: ReturnType<typeof vi.fn>
-    } = {},
+    } = {}
   ) {
     const getById = vi.fn(async (id: string) => {
       if (id === a.id) return a
@@ -5886,7 +5936,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
     return {
       services,
@@ -5942,8 +5992,10 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const mockServer = createMockServer()
     const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
     const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
-    const { services, decrementConfidence, createWithDedup } =
-      makeServicesForCompare(a, b)
+    const { services, decrementConfidence, createWithDedup } = makeServicesForCompare(
+      a,
+      b
+    )
 
     registerMemoryTools(mockServer.server, services as never)
     const compare = mockServer.getActionHandler("lore-memory", "compare")
@@ -6089,13 +6141,8 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       kind: "decision",
       projectIds: ["proj"],
     })
-    const {
-      services,
-      decrementConfidence,
-      recordCompared,
-      createWithDedup,
-      supersede,
-    } = makeServicesForCompare(a, b)
+    const { services, decrementConfidence, recordCompared, createWithDedup, supersede } =
+      makeServicesForCompare(a, b)
 
     registerMemoryTools(mockServer.server, services as never)
     const compare = mockServer.getActionHandler("lore-memory", "compare")
@@ -6168,7 +6215,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "Cannot compare a memory to itself",
+      "Cannot compare a memory to itself"
     )
     expect(getById).not.toHaveBeenCalled()
   })
@@ -6191,7 +6238,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "disjoint project sets",
+      "disjoint project sets"
     )
     expect(decrementConfidence).not.toHaveBeenCalled()
   })
@@ -6243,7 +6290,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "already recorded",
+      "already recorded"
     )
     // Zero side effects on the duplicate call.
     expect(decrementConfidence).not.toHaveBeenCalled()
@@ -6331,10 +6378,12 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const updates: Array<{ page_id: string; properties: Record<string, unknown> }> = []
     const mockClient = {
       pages: {
-        update: vi.fn(async (args: { page_id: string; properties: Record<string, unknown> }) => {
-          updates.push(args)
-          return undefined
-        }),
+        update: vi.fn(
+          async (args: { page_id: string; properties: Record<string, unknown> }) => {
+            updates.push(args)
+            return undefined
+          }
+        ),
       },
     } as never
     const { MemoryService } = await import("../../core/memory.js")
@@ -6365,7 +6414,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -6629,7 +6678,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "already recorded",
+      "already recorded"
     )
     expect(recordCompared).not.toHaveBeenCalled()
   })
@@ -6678,15 +6727,14 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // Build a mock client that records every `pages.update` call so
     // we can verify per-side behavior: A is skipped (no update), B
     // is written.
-    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> =
-      []
+    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> = []
     const mockClient = {
       pages: {
         update: vi.fn(
           async (args: { page_id: string; properties: Record<string, unknown> }) => {
             updates.push(args)
             return undefined
-          },
+          }
         ),
       },
     } as never
@@ -6719,7 +6767,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -6742,14 +6790,24 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // B's update writes the missing audit entry AND adds A to its
     // (previously empty) Compared With.
     const bUpdate = updates[0]!
-    const bRelation = (bUpdate.properties["Compared With"] as {
-      relation: { id: string }[]
-    }).relation
+    const bRelation = (
+      bUpdate.properties["Compared With"] as {
+        relation: { id: string }[]
+      }
+    ).relation
     expect(bRelation).toEqual([{ id: "page-a" }])
-    const bNotes = (bUpdate.properties["Compare Notes"] as {
-      rich_text: Array<{ text: { content: string } }>
-    }).rich_text.map((r) => r.text.content).join("")
-    const bEntry = JSON.parse(bNotes) as { target: string; verdict: string; affected: null }
+    const bNotes = (
+      bUpdate.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
+    const bEntry = JSON.parse(bNotes) as {
+      target: string
+      verdict: string
+      affected: null
+    }
     expect(bEntry).toMatchObject({
       target: "page-a",
       verdict: "scoped",
@@ -6811,7 +6869,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).not.toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "already recorded",
+      "already recorded"
     )
     // recordCompared never reached — the gate short-circuited.
     expect(recordCompared).not.toHaveBeenCalled()
@@ -6895,7 +6953,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "Compare Notes overflow",
+      "Compare Notes overflow"
     )
     // NEITHER destructive call fires — the preflight is the gate.
     expect(decrementConfidence).not.toHaveBeenCalled()
@@ -7257,7 +7315,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       facts: { createWithDedup },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -7284,7 +7342,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // Both pairs decrement.
     expect(decrementConfidence).toHaveBeenCalledTimes(2)
     const decrementedIds = decrementConfidence.mock.calls.map(
-      (c) => (c[0] as { id: string }).id,
+      (c) => (c[0] as { id: string }).id
     )
     expect(decrementedIds.sort()).toEqual(["M_P2", "M_Q2"])
   })
@@ -7360,7 +7418,8 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     const lines: string[] = []
     let totalLength = 0
     while (
-      totalLength + padLine.length + 1 < COMPARE_NOTES_MAX_CHARS - partialEntryOnA.length - 1
+      totalLength + padLine.length + 1 <
+      COMPARE_NOTES_MAX_CHARS - partialEntryOnA.length - 1
     ) {
       lines.push(padLine)
       totalLength += padLine.length + 1
@@ -7372,7 +7431,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     // would actually overflow — pin the test's premise so the test
     // fails loudly if a future change to padding leaves slack.
     expect(nearCapANotes.length + padLine.length + 1).toBeGreaterThan(
-      COMPARE_NOTES_MAX_CHARS,
+      COMPARE_NOTES_MAX_CHARS
     )
 
     const a = makeMemory("page-a", {
@@ -7395,7 +7454,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
           async (args: { page_id: string; properties: Record<string, unknown> }) => {
             updates.push(args)
             return undefined
-          },
+          }
         ),
       },
     } as never
@@ -7422,7 +7481,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
       decisions: { supersede: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerMemoryTools(mockServer.server, services as never)
@@ -7501,7 +7560,7 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect((result as { content: Array<{ text: string }> }).content[0]!.text).toContain(
-      "Compare Notes overflow",
+      "Compare Notes overflow"
     )
     // No destructive dispatch fired — the preflight stopped it.
     expect(decrementConfidence).not.toHaveBeenCalled()
@@ -7513,9 +7572,9 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
 // ---------------------------------------------------------------------------
 // DEFERRED-ATTRIBUTION (0.10.0): Author column attribution surfaces on save
 //
-// `services.identity.author` is the engineer-identity resolved at MCP server
-// startup. Each save handler defaults `author` from it when the caller omits
-// `args.author`; an explicit `args.author` always wins.
+// `services.identity.resolveAuthor()` lazily resolves the engineer-identity
+// only when the caller omits `args.author`; an explicit `args.author` always
+// wins and must not call the resolver.
 // ---------------------------------------------------------------------------
 
 describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION)", () => {
@@ -7523,6 +7582,7 @@ describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION
     const mockServer = createMockServer()
     const created = makeMemory("mem-attrib", { projectIds: [] })
     const create = vi.fn().mockResolvedValue(created)
+    const resolveAuthor = vi.fn(async () => identityAuthor)
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
@@ -7531,29 +7591,34 @@ describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: identityAuthor },
+      identity: { resolveAuthor, clearCache: vi.fn() },
     }
     registerMemoryTools(mockServer.server, services as never)
     registerQueryTools(mockServer.server, services as never)
-    return { handler: mockServer.getActionHandler("lore-memory", "save"), create }
+    return {
+      handler: mockServer.getActionHandler("lore-memory", "save"),
+      create,
+      resolveAuthor,
+    }
   }
 
-  it("stamps services.identity.author on memories.create when args.author is omitted", async () => {
+  it("stamps services.identity.resolveAuthor on memories.create when args.author is omitted", async () => {
     const { handler, create } = setUpSaveHarness("Hesham Salman")
     await handler({ title: "Saved", content: "body" } as never)
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Hesham Salman" }),
+      expect.objectContaining({ author: "Hesham Salman" })
     )
   })
 
-  it("explicit args.author wins over services.identity.author (caller override)", async () => {
-    const { handler, create } = setUpSaveHarness("ServerSideName")
+  it("explicit args.author wins without calling services.identity.resolveAuthor", async () => {
+    const { handler, create, resolveAuthor } = setUpSaveHarness("ServerSideName")
     await handler({
       title: "Saved",
       content: "body",
       author: "Override",
     } as never)
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: "Override" }))
+    expect(resolveAuthor).not.toHaveBeenCalled()
   })
 
   it("collapses to author: undefined when args.author is omitted AND identity is null", async () => {

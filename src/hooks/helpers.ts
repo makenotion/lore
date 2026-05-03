@@ -107,17 +107,16 @@ export function deriveAgentName(_event: HookEvent): string | undefined {
  * `Author` Memory column rather than `Agent`.
  *
  * The autosave hook spawns a detached `claude -p` sub-agent that
- * connects to its own MCP server, which independently resolves
- * identity at startup via `resolveAuthorIdentity` (LORE_USER_NAME env →
- * `users.me`). We *also* surface the env-override here at prompt-build
- * time so the spawned sub-agent's prompt can carry the canonical
- * `Author: ...` line for textual context — and so an engineer who set
- * `LORE_USER_NAME` in their shell rc gets attribution even if the
- * spawned MCP server's `users.me` round-trip later fails.
+ * connects to its own MCP server, which lazily resolves identity on
+ * writes that omit `author`. We *also* surface the env-override here at
+ * prompt-build time so the spawned sub-agent's prompt can carry the
+ * canonical `Author: ...` line for textual context — and so an engineer
+ * who set `LORE_USER_NAME` in their shell rc gets attribution without
+ * asking the MCP child to call `users.me`.
  *
  * Returns undefined when no override is set; callers omit the Author
  * line in that case rather than stamping a placeholder. The spawned
- * MCP server's `users.me` fallback can still resolve the engineer
+ * MCP server's lazy `users.me` fallback can still resolve the engineer
  * identity — but only if the parent forwards the credentials needed
  * for the call (see `spawnBackgroundSave`'s env-passthrough rules).
  *

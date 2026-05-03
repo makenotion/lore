@@ -589,14 +589,11 @@ export class MemoryUpdatePartialFailureError extends Error {
   readonly persisted: { readonly properties: true; readonly body: false }
   readonly bodyWriteError: unknown
 
-  constructor(
-    message: string,
-    details: { memoryId: string; bodyWriteError: unknown },
-  ) {
+  constructor(message: string, details: { memoryId: string; bodyWriteError: unknown }) {
     super(
       message.startsWith("MemoryUpdatePartialFailureError: ")
         ? message
-        : `MemoryUpdatePartialFailureError: ${message}`,
+        : `MemoryUpdatePartialFailureError: ${message}`
     )
     this.name = "MemoryUpdatePartialFailureError"
     this.memoryId = details.memoryId
@@ -1694,15 +1691,13 @@ export class MemoryService {
     // input carries one: the engineer making this revision becomes the
     // author of the chain. Symmetric reasoning to title / synopsis /
     // keywords / source — the upsert path's "latest write wins" policy
-    // covers human attribution. The MCP tool layer always passes
-    // `services.identity.author` as the default when no explicit
-    // override is given, so an in-process MCP save under ntn-resolved
-    // identity always backfills the column. Falls back to existing on
-    // decodedAuthor is empty/undefined so a service-layer caller
-    // (migration, internal tooling) that omits it preserves the prior
-    // value rather than clobbering with null. Empty string from the
-    // input is treated as "leave alone", matching the `agent` field's
-    // posture.
+    // covers human attribution. The MCP tool layer lazily passes a
+    // default author only when no explicit override is given. Falls
+    // back to existing on decodedAuthor is empty/undefined so a
+    // service-layer caller (migration, internal tooling) that omits it
+    // preserves the prior value rather than clobbering with null. Empty
+    // string from the input is treated as "leave alone", matching the
+    // `agent` field's posture.
     await this.client.pages.update({
       page_id: existing.id,
       properties: buildMemoryProps({
@@ -2264,7 +2259,7 @@ export class MemoryService {
             `persisted, but the body write failed during phase "body": ${cause}. ` +
             `The property changes are already on Notion; the body content was ` +
             `not written. Inspect the row before retrying the update.`,
-          { memoryId: id, bodyWriteError },
+          { memoryId: id, bodyWriteError }
         )
       }
     }

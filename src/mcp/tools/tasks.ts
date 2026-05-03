@@ -34,6 +34,7 @@ import {
 } from "../../core/task-reconcile.js"
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
+import { resolveAuthorForWrite } from "../../auth/identity.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -93,7 +94,7 @@ function urgencyMarker(days: number): string {
 function formatTaskRow(
   t: TaskSummary,
   today: string,
-  options: { includeSynopsis?: boolean } = {},
+  options: { includeSynopsis?: boolean } = {}
 ): string {
   const overdueDays = taskDaysOverdue(t, today)
   const marker = overdueDays !== null ? urgencyMarker(overdueDays) : ""
@@ -149,7 +150,7 @@ interface CreateArgs {
 
 async function handleCreate(
   services: LoreServices,
-  args: CreateArgs,
+  args: CreateArgs
 ): Promise<ToolResult> {
   try {
     // A `blocked` task with no `blockedBy` label is useless to
@@ -161,12 +162,17 @@ async function handleCreate(
     // on the per-field Zod map.
     if (args.state === "blocked" && !args.blockedBy) {
       throw new Error(
-        "state: \"blocked\" requires a `blockedBy` label naming the dependency " +
+        'state: "blocked" requires a `blockedBy` label naming the dependency ' +
           "(PR number, person, external service). A blocked task with no blocker is " +
-          "unactionable. Pass `blockedBy` or use state: \"open\" if no specific blocker exists.",
+          'unactionable. Pass `blockedBy` or use state: "open" if no specific blocker exists.'
       )
     }
-    const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+    const authorPromise = resolveAuthorForWrite(args.author, services.identity)
+    const resolved = await resolveProjectIds(
+      services,
+      args.projectName,
+      args.projectNames
+    )
 
     let topicId: string | undefined
     let topicLabel = "none"
@@ -178,7 +184,7 @@ async function handleCreate(
       topicLabel = topic.name
     } else if (args.topicName) {
       resolved.warnings.push(
-        `Topic "${args.topicName}" skipped (requires at least one project)`,
+        `Topic "${args.topicName}" skipped (requires at least one project)`
       )
     }
 
@@ -188,6 +194,13 @@ async function handleCreate(
     // Probe is advisory: failures return [] silently and never block the create,
     // and the wasted query on a rejecting create is the deliberate parallelism cost.
     const probeEntity = args.entity ?? args.subject
+    const duplicateProbePromise = findDuplicateActiveTasks(services.tasks, {
+      entity: probeEntity,
+      projectId: resolved.ids[0],
+      onError: (err) =>
+        debugLogPartialFailures("lore-task", [{ rootId: "duplicate-probe", error: err }]),
+    })
+    const resolvedAuthor = await authorPromise
     const [task, duplicates] = await Promise.all([
       services.tasks.create({
         subject: args.subject,
@@ -203,23 +216,13 @@ async function handleCreate(
         tags: args.tags,
         keywords: args.keywords,
         synopsis: args.synopsis,
-        // DEFERRED-ATTRIBUTION: explicit caller override wins; otherwise
-        // default to the engineer-identity resolved at server startup.
-        // `services.identity` is required on the type — null `author`
-        // means neither `LORE_USER_NAME` nor `users.me` produced a
-        // usable name; collapse to undefined so the column stays empty.
-        author: args.author ?? services.identity.author ?? undefined,
+        // DEFERRED-ATTRIBUTION: caller override wins without touching
+        // identity resolution; omitted authors use the lazy resolver.
+        author: resolvedAuthor,
         agent: args.agent,
         session: args.session,
       }),
-      findDuplicateActiveTasks(services.tasks, {
-        entity: probeEntity,
-        projectId: resolved.ids[0],
-        onError: (err) =>
-          debugLogPartialFailures("lore-task", [
-            { rootId: "duplicate-probe", error: err },
-          ]),
-      }),
+      duplicateProbePromise,
     ])
 
     // Post-filter the just-created row out of the probe results. This
@@ -239,11 +242,14 @@ async function handleCreate(
     // later fact can auto-link this task as its source.
     services.sessionMemories.record(
       { agent: args.agent, session: args.session },
-      { memoryId: task.id, projectIds: task.projectIds },
+      { memoryId: task.id, projectIds: task.projectIds }
     )
 
     const projectLabel = resolved.ids.length
-      ? (args.projectNames?.join(", ") ?? args.projectName ?? services.context.project?.name ?? "auto-detected")
+      ? (args.projectNames?.join(", ") ??
+        args.projectName ??
+        services.context.project?.name ??
+        "auto-detected")
       : "none (repo-wide)"
 
     const lines = [
@@ -276,20 +282,20 @@ async function handleCreate(
       lines.push("")
       lines.push(
         `Other active tasks tracking "${probeEntity}" ` +
-          `(${filteredDuplicates.length}) — close any that are obsolete:`,
+          `(${filteredDuplicates.length}) — close any that are obsolete:`
       )
       for (const dup of filteredDuplicates) {
         const stateLabel = dup.taskState ?? "open"
         lines.push(
           `  - "${dup.title}" [${stateLabel}] — ` +
-            `lore-task({ action: 'close', taskId: '${dup.id}' })`,
+            `lore-task({ action: 'close', taskId: '${dup.id}' })`
         )
       }
     }
 
     lines.push(
       `\nClose this task when the work is done: ` +
-        `lore-task({ action: 'close', taskId: '${task.id}' })`,
+        `lore-task({ action: 'close', taskId: '${task.id}' })`
     )
 
     return {
@@ -315,7 +321,7 @@ interface UpdateArgs {
 
 async function handleUpdate(
   services: LoreServices,
-  args: UpdateArgs,
+  args: UpdateArgs
 ): Promise<ToolResult> {
   try {
     // Validate dueDate manually so `""` (clear-the-date) is allowed
@@ -341,11 +347,14 @@ async function handleUpdate(
     // be needed to inspect the existing column. Setting an empty
     // string explicitly clears it; that's still a valid combination
     // with non-`blocked` states, just not with `state: "blocked"`.
-    if (args.state === "blocked" && (args.blockedBy === undefined || args.blockedBy === "")) {
+    if (
+      args.state === "blocked" &&
+      (args.blockedBy === undefined || args.blockedBy === "")
+    ) {
       throw new Error(
-        "Transitioning to state: \"blocked\" requires a `blockedBy` label in the same call. " +
+        'Transitioning to state: "blocked" requires a `blockedBy` label in the same call. ' +
           "A blocked task with no blocker is unactionable; restate the blocker explicitly even if " +
-          "the row already had one set.",
+          "the row already had one set."
       )
     }
 
@@ -383,7 +392,7 @@ async function handleUpdate(
     if (updatedState !== "done" && updatedState !== "cancelled") {
       lines.push(
         `\nClose this task when the work is done: ` +
-          `lore-task({ action: 'close', taskId: '${updated.id}' })`,
+          `lore-task({ action: 'close', taskId: '${updated.id}' })`
       )
     }
 
@@ -400,10 +409,7 @@ interface CloseArgs {
   state?: (typeof CLOSE_STATES)[number]
 }
 
-async function handleClose(
-  services: LoreServices,
-  args: CloseArgs,
-): Promise<ToolResult> {
+async function handleClose(services: LoreServices, args: CloseArgs): Promise<ToolResult> {
   try {
     const closingState: "done" | "cancelled" = args.state ?? "done"
     await services.tasks.close(args.taskId, closingState)
@@ -444,10 +450,7 @@ interface ListArgs {
   includeSynopsis?: boolean
 }
 
-async function handleList(
-  services: LoreServices,
-  args: ListArgs,
-): Promise<ToolResult> {
+async function handleList(services: LoreServices, args: ListArgs): Promise<ToolResult> {
   try {
     let projectId: string | undefined
     const warnings: string[] = []
@@ -458,7 +461,7 @@ async function handleList(
         projectId = found.id
       } else {
         warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
+          `Project "${args.projectName}" not found — falling back to auto-detected project.`
         )
       }
     }
@@ -567,7 +570,7 @@ async function handleList(
     const bucketHeading = (
       title: string,
       rows: TaskSummary[],
-      allRows: TaskSummary[],
+      allRows: TaskSummary[]
     ): string => {
       const hidden = allRows.length - rows.length
       const hiddenLabel = saturated ? `≥${hidden}` : `${hidden}`
@@ -580,7 +583,7 @@ async function handleList(
     if (overdueAll.length > 0) {
       sections.push(
         `${bucketHeading("Overdue", overdue, overdueAll)}\n\n` +
-          overdue.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n"),
+          overdue.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n")
       )
     }
     if (activeAll.length > 0) {
@@ -595,7 +598,7 @@ async function handleList(
         : "Active"
       sections.push(
         `${bucketHeading(sectionTitle, active, activeAll)}\n\n` +
-          active.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n"),
+          active.map((t) => formatTaskRow(t, today, { includeSynopsis })).join("\n")
       )
     }
 
@@ -607,13 +610,12 @@ async function handleList(
           "`projectName`, `entity`, `state`, or `dueBefore` for exact totals."
       footers.push(
         `More matching tasks exist after the first ${maxFetchedRows} fetched rows; ` +
-          `totals are lower bounds. ${nextStep}`,
+          `totals are lower bounds. ${nextStep}`
       )
     }
 
     const total = tasks.length
-    const totalLabel =
-      saturated || total !== 1 ? `${countLabel(total)} tasks` : "1 task"
+    const totalLabel = saturated || total !== 1 ? `${countLabel(total)} tasks` : "1 task"
     const totalSemantics = saturated
       ? `lower-bound total; listing capped at ${maxFetchedRows}`
       : "exact total"
@@ -645,7 +647,7 @@ interface ReconcileArgs {
 
 async function handleReconcile(
   services: LoreServices,
-  args: ReconcileArgs,
+  args: ReconcileArgs
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
@@ -657,7 +659,7 @@ async function handleReconcile(
         projectId = found.id
       } else {
         warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
+          `Project "${args.projectName}" not found — falling back to auto-detected project.`
         )
       }
     }
@@ -666,15 +668,12 @@ async function handleReconcile(
     }
 
     const today = new Date().toISOString().split("T")[0]!
-    const { candidates, activeTasksScanned } = await reconcileActiveTasks(
-      services,
-      {
-        projectId,
-        minScore: args.minScore,
-        limit: args.limit,
-        today,
-      },
-    )
+    const { candidates, activeTasksScanned } = await reconcileActiveTasks(services, {
+      projectId,
+      minScore: args.minScore,
+      limit: args.limit,
+      today,
+    })
 
     const body = formatReconcileOutput(candidates, activeTasksScanned, today)
     const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
@@ -769,7 +768,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "(no 2000-char rich_text limit) and the subject is structurally " +
         "indexed.\n\n" +
         "CRITICAL CLOSURE RULE: close tasks (action='close') as soon as " +
-        "work completes. Closed tasks are the source of truth for \"done\"; " +
+        'work completes. Closed tasks are the source of truth for "done"; ' +
         "unclosed tasks keep surfacing in wake-up.\n\n" +
         "Action-dispatched:\n\n" +
         "- `action: 'create'` — open a new task. Use `entity` when the task is about " +
@@ -777,7 +776,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "action='ask' surfaces it in the Tasks bucket.\n" +
         "- `action: 'update'` — change state, blocker, due date, subject, " +
         "description, or scoping. Any field omitted is left untouched. Pass " +
-        "`dueDate: \"\"` to clear the due date.\n" +
+        '`dueDate: ""` to clear the due date.\n' +
         "- `action: 'close'` — mark done (or cancelled — distinguished for metrics).\n" +
         "- `action: 'list'` — list task memories with Overdue and Active " +
         "sections. Labels totals as exact or lower-bound; " +
@@ -794,28 +793,26 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
             "Operation: create (open a task), update (mutate fields), " +
               "close (mark done/cancelled), list (triage view), or reconcile " +
               "(scan active tasks for resolution-shaped memory matches and " +
-              "surface candidate closures).",
+              "surface candidate closures)."
           ),
         // create
         subject: z
           .string()
           .optional()
           .describe(
-            "(action='create') One-line task subject. Becomes the page title. (action='update') New subject.",
+            "(action='create') One-line task subject. Becomes the page title. (action='update') New subject."
           ),
         description: z
           .string()
           .optional()
           .describe(
-            "(action='create' | 'update') Description / context. Becomes the page body (markdown supported).",
+            "(action='create' | 'update') Description / context. Becomes the page body (markdown supported)."
           ),
         // create | update | close
         taskId: z
           .string()
           .optional()
-          .describe(
-            "(action='update' | 'close') The task ID to mutate.",
-          ),
+          .describe("(action='update' | 'close') The task ID to mutate."),
         // create | update | list
         entity: z
           .string()
@@ -823,7 +820,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .describe(
             "(action='create') Normalized entity name the task is about; defaults to subject. " +
               "(action='update') Rename the entity. " +
-              "(action='list') Substring filter matched server-side against the Entity column.",
+              "(action='list') Substring filter matched server-side against the Entity column."
           ),
         // create | update | close | list — multiple shapes; the per-action
         // discriminated union enforces the right enum at runtime.
@@ -834,34 +831,34 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
             "(action='create') Initial state (default `open`). Pair `blocked` with `blockedBy`. " +
               "(action='update') New state. Use action='close' if you only need to mark a task done. " +
               "(action='close') Closing state — `done` (default) or `cancelled`. " +
-              "(action='list') Filter to a single state. Omit on list to see all active states (open, in-progress, blocked).",
+              "(action='list') Filter to a single state. Omit on list to see all active states (open, in-progress, blocked)."
           ),
         blockedBy: z
           .string()
           .optional()
           .describe(
             "(action='create' | 'update') Free-form blocker label (PR number, person, external service). " +
-              "Required when state is `blocked`; pass an empty string on update to clear.",
+              "Required when state is `blocked`; pass an empty string on update to clear."
           ),
         dueDate: z
           .string()
           .optional()
           .describe(
             "(action='create') Due date (YYYY-MM-DD). Maps to the Review By column. " +
-              "(action='update') New due date — pass empty string to clear.",
+              "(action='update') New due date — pass empty string to clear."
           ),
         affectsIds: z
           .array(z.string())
           .optional()
           .describe(
             "(action='create') Memory IDs this task is sourced from / affects. Migrated tasks " +
-              "carry their original fact's `sourceMemoryId` here so provenance survives.",
+              "carry their original fact's `sourceMemoryId` here so provenance survives."
           ),
         projectName: z
           .string()
           .optional()
           .describe(
-            "(action='create' | 'list' | 'reconcile') Project name. Defaults to auto-detected project from cwd.",
+            "(action='create' | 'list' | 'reconcile') Project name. Defaults to auto-detected project from cwd."
           ),
         projectNames: z
           .array(z.string())
@@ -872,18 +869,20 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .optional()
           .describe(
             "(action='create') Topic name within the project. Created automatically if it doesn't exist. " +
-              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical row.",
+              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical row."
           ),
         forceNewTopic: z
           .boolean()
           .optional()
           .describe(
-            "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row.",
+            "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."
           ),
         confidence: z
           .enum(CONFIDENCES)
           .optional()
-          .describe("(action='create') Confidence in the task's framing (default `certain`)."),
+          .describe(
+            "(action='create') Confidence in the task's framing (default `certain`)."
+          ),
         tags: tagsSchema
           .optional()
           .describe("(action='create' | 'update') Closed-vocabulary tags."),
@@ -898,13 +897,13 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
             "(action='create' | 'update') 1–2 sentence synopsis of what the task is about " +
               "and what 'done' looks like — distinct from `subject` (short title) and " +
               `\`description\` (the body). Up to ${SYNOPSIS_MAX} chars. ` +
-              "On update, omit to leave untouched; pass empty string to clear.",
+              "On update, omit to leave untouched; pass empty string to clear."
           ),
         author: z
           .string()
           .optional()
           .describe(
-            "(action='create') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`.",
+            "(action='create') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`."
           ),
         agent: z
           .string()
@@ -919,7 +918,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .string()
           .optional()
           .describe(
-            "(action='list') Only return tasks with a Review By date on or before this YYYY-MM-DD.",
+            "(action='list') Only return tasks with a Review By date on or before this YYYY-MM-DD."
           ),
         startCursor: z
           .string()
@@ -935,7 +934,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
               `Small caps fetch ${TASK_LIST_FETCH_MULTIPLIER}×limit; ` +
               `limit >= ${TASK_LIST_DEEP_WALK_MIN_LIMIT} requests a deep walk. Capped at 200. ` +
               `(action='reconcile') Maximum candidate closures to surface ` +
-              `(default ${DEFAULT_RECONCILE_LIMIT}). Capped at ${MAX_RECONCILE_LIMIT}.`,
+              `(default ${DEFAULT_RECONCILE_LIMIT}). Capped at ${MAX_RECONCILE_LIMIT}.`
           ),
         minScore: z
           .number()
@@ -947,7 +946,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
               `Default ${DEFAULT_RECONCILE_MIN_SCORE}. Candidates without a ` +
               "resolution-shaped cue (`merged`, `shipped`, `resolved`, `fixed`, " +
               "`closed`, etc.) are filtered out BEFORE scoring — entity-only " +
-              "mentions never reach the threshold.",
+              "mentions never reach the threshold."
           ),
         includeSynopsis: z
           .boolean()
@@ -957,16 +956,14 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
               "as an indented line between the title row and the `ID:` line. " +
               "Defaults true. Pass false to restore byte-identical " +
               "pre-DEFERRED-01 output for callers piping the response into " +
-              "another formatter.",
+              "another formatter."
           ),
       },
     },
     async (args) => {
       const parsed = taskDispatchSchema.safeParse(args)
       if (!parsed.success) {
-        return toolError(
-          new Error(formatDispatchError("lore-task", parsed.error)),
-        )
+        return toolError(new Error(formatDispatchError("lore-task", parsed.error)))
       }
       switch (parsed.data.action) {
         case "create":
@@ -980,6 +977,6 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         case "reconcile":
           return handleReconcile(services, parsed.data)
       }
-    },
+    }
   )
 }

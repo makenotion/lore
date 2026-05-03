@@ -390,11 +390,10 @@ describe("handleStop", () => {
 
   it("forwards LORE_USER_NAME into the spawned child's env when set (DEFERRED-ATTRIBUTION)", async () => {
     // The detached `claude -p` runs the spawned MCP server which
-    // resolves identity at startup via `resolveAuthorIdentity`. Without
-    // forwarding `LORE_USER_NAME`, the child's env-override path
-    // doesn't fire and the resolver pays a `users.me` round-trip per
-    // autosave. Pin both the conditional forward (set → forwarded) AND
-    // the absence of unrelated env leakage.
+    // lazily resolves identity on unattributed writes. Forwarding
+    // `LORE_USER_NAME` keeps that path synchronous and avoids a
+    // `users.me` round-trip. Pin both the conditional forward (set →
+    // forwarded) AND the absence of unrelated env leakage.
     process.env["LORE_USER_NAME"] = "Hesham Salman"
     try {
       writeTranscript(transcriptPath, 3)
@@ -422,8 +421,8 @@ describe("handleStop", () => {
   it("does NOT include LORE_USER_NAME in the child env when unset (no empty-string injection)", async () => {
     // The dominant case: ntn-resolved-identity engineer who hasn't set
     // the override. `LORE_USER_NAME` must be absent from the child's
-    // env so the spawned MCP child's `resolveAuthorIdentity` falls
-    // through cleanly to `users.me`. An accidentally-injected empty
+    // env so the spawned MCP child's lazy resolver falls through
+    // cleanly to `users.me`. An accidentally-injected empty
     // string would short-circuit the env-override branch with the
     // "no LORE_USER_NAME, fall to users.me" path bypassed.
     delete process.env["LORE_USER_NAME"]

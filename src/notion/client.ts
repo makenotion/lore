@@ -33,6 +33,7 @@ export type AuthRefreshEvent =
 export interface AuthRefreshingClientDeps {
   createClient?: (token: string, baseUrl?: string) => Client
   onRefresh?: (event: AuthRefreshEvent) => void
+  onAuthChange?: (auth: ClientAuthSnapshot) => void
 }
 
 /**
@@ -137,6 +138,7 @@ export function createAuthRefreshingClient(
 ): Client {
   const makeClient = deps.createClient ?? createClient
   const onRefresh = deps.onRefresh ?? defaultOnRefresh
+  const onAuthChange = deps.onAuthChange
   let currentAuth = initialAuth
   let currentClient = makeClient(initialAuth.token, initialAuth.baseUrl)
   let refreshInFlight: Promise<boolean> | null = null
@@ -196,6 +198,7 @@ export function createAuthRefreshingClient(
 
       currentAuth = outcome.auth
       currentClient = makeClient(outcome.auth.token, outcome.auth.baseUrl)
+      emitAuthChange(onAuthChange, outcome.auth)
       emitRefreshEvent(onRefresh, { kind: "refreshed", source: outcome.source })
       return true
     })().finally(() => {
@@ -285,6 +288,18 @@ function emitRefreshEvent(
     onRefresh(event)
   } catch {
     // Observability hooks must not mask the original Notion error.
+  }
+}
+
+function emitAuthChange(
+  onAuthChange: ((auth: ClientAuthSnapshot) => void) | undefined,
+  auth: ClientAuthSnapshot
+): void {
+  if (!onAuthChange) return
+  try {
+    onAuthChange(auth)
+  } catch {
+    // Cache-update observers must not mask the original Notion request.
   }
 }
 

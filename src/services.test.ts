@@ -13,6 +13,8 @@ vi.hoisted(() => {
     `${process.env["TMPDIR"] ?? "/tmp"}/lore-services-test-${process.pid}-${Date.now()}`
 })
 
+const serviceClientUsersMe = vi.hoisted(() => vi.fn())
+
 // Mock config.js so initServices' loadConfig / findConfigFile calls
 // route through controllable stubs. The resolveDriftCheck tests don't
 // touch these, so the mock is inert for that block.
@@ -26,18 +28,43 @@ vi.mock("./config.js", async () => {
   }
 })
 
+vi.mock("./notion/client.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./notion/client.js")>("./notion/client.js")
+  return {
+    ...actual,
+    createClient: vi.fn(() => ({ users: { me: serviceClientUsersMe } })),
+  }
+})
+
+vi.mock("./core/context.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("./core/context.js")>("./core/context.js")
+  return {
+    ...actual,
+    resolveProject: vi.fn(async () => ({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })),
+  }
+})
+
 import {
   AUTH_REFRESH_UNAVAILABLE_CACHE_MS,
   createNtnAuthRefresh,
+  initServicesFromConfig,
   resolveDriftCheck,
 } from "./services.js"
 import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
+import { resolveProject } from "./core/context.js"
+import { VaultManager } from "./core/vault.js"
 import {
   driftMarkerPath,
   driftMarkerAgeDays,
   touchDriftMarker,
 } from "./hooks/drift-marker.js"
-import type { LoreConfig } from "./types.js"
+import type { LoreConfig, Vault } from "./types.js"
 
 const TEST_ROOTS: string[] = []
 function uniqueRoot(label: string): string {
@@ -201,6 +228,60 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
       /LORE_CONFIG_ROOT=.* but no \.lore\.yaml exists there/
     )
     expect(loadConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe("initServicesFromConfig — lazy author identity", () => {
+  const config = { vault: { pageId: "vault" }, projects: [] } as LoreConfig
+  const databaseRef = (name: string) => ({
+    databaseId: `db-${name}`,
+    dataSourceId: `ds-${name}`,
+  })
+  const vault: Vault = {
+    pageId: "vault",
+    databases: {
+      projects: databaseRef("projects"),
+      topics: databaseRef("topics"),
+      memories: databaseRef("memories"),
+      facts: databaseRef("facts"),
+      entities: databaseRef("entities"),
+    },
+  }
+
+  afterEach(() => {
+    vi.mocked(resolveAuth).mockReset()
+    vi.mocked(resolveProject).mockReset()
+    serviceClientUsersMe.mockReset()
+  })
+
+  it("does not call users.me during read-only service initialization", async () => {
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "init-token",
+      source: "env-notion-api-token",
+    })
+    vi.mocked(resolveProject).mockResolvedValue({
+      project: null,
+      isCatchAllFallback: false,
+      candidates: [],
+    })
+    const loadSpy = vi
+      .spyOn(VaultManager.prototype, "load")
+      .mockImplementation(async function (this: VaultManager) {
+        ;(this as unknown as { vault: Vault }).vault = vault
+        return vault
+      })
+
+    try {
+      const services = await initServicesFromConfig("/tmp/cwd", "/tmp/config", config)
+
+      expect(serviceClientUsersMe).not.toHaveBeenCalled()
+      expect(services.identity.resolveAuthor).toEqual(expect.any(Function))
+
+      await expect(services.identity.resolveAuthor()).resolves.toBeNull()
+      expect(serviceClientUsersMe).toHaveBeenCalledOnce()
+    } finally {
+      loadSpy.mockRestore()
+    }
   })
 })
 

@@ -17,14 +17,9 @@ import { displayId, renderTrustLine, resolveTitles, truncateSynopsis } from "../
 import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
-import {
-  RICH_TEXT_PROPERTY_MAX_LEN,
-  richTextPropertySchema,
-} from "./rich-text-schema.js"
-import {
-  findNearDuplicates,
-  type NearDuplicateMatch,
-} from "../../core/near-duplicate.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN, richTextPropertySchema } from "./rich-text-schema.js"
+import { findNearDuplicates, type NearDuplicateMatch } from "../../core/near-duplicate.js"
+import { resolveAuthorForWrite } from "../../auth/identity.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -88,7 +83,7 @@ class DecisionCreateFactPartialFailureError extends Error {
         createdPart +
         pendingPart +
         supersedesPart +
-        "Create the missing facts for the saved decision; do not recreate the decision.",
+        "Create the missing facts for the saved decision; do not recreate the decision."
     )
     this.name = "DecisionCreateFactPartialFailureError"
     this.decisionId = details.decision.id
@@ -129,7 +124,7 @@ class DecisionCreateSupersedePartialFailureError extends Error {
         : String(details.supersedeError)
     const completedIds = new Set(details.completedSupersedes.map((ref) => ref.id))
     const partiallyMarked = details.markedSupersedes.filter(
-      (ref) => !completedIds.has(ref.id),
+      (ref) => !completedIds.has(ref.id)
     )
     super(
       `Decision create partial failure: decision "${details.decision.title}" ` +
@@ -139,30 +134,30 @@ class DecisionCreateSupersedePartialFailureError extends Error {
         formatSupersedeRefs(
           "Completed supersessions before failure",
           details.completedSupersedes,
-          "No supersessions completed before the failure",
+          "No supersessions completed before the failure"
         ) +
         formatSupersedeRefs(
           "Marked superseded before failure but still missing graph repair",
-          partiallyMarked,
+          partiallyMarked
         ) +
         formatSupersedeRefs(
           "Created `supersedes_decision` facts before failure",
           details.createdSupersedeFacts,
-          "No `supersedes_decision` facts were created before the failure",
+          "No `supersedes_decision` facts were created before the failure"
         ) +
         formatSupersedeRefs(
           "Missing `supersedes_decision` facts",
-          details.missingSupersedeFacts,
+          details.missingSupersedeFacts
         ) +
         formatSupersedeRefs(
           "Missing decision-context reachability updates",
-          details.missingReachabilityUpdates,
+          details.missingReachabilityUpdates
         ) +
         formatSupersedeRefs(
           "Pending supersessions not attempted",
-          details.pendingSupersedes,
+          details.pendingSupersedes
         ) +
-        "Repair the missing supersession work for the saved decision; do not recreate the decision.",
+        "Repair the missing supersession work for the saved decision; do not recreate the decision."
     )
     this.name = "DecisionCreateSupersedePartialFailureError"
     this.decisionId = details.decision.id
@@ -173,7 +168,7 @@ class DecisionCreateSupersedePartialFailureError extends Error {
     this.pendingSupersedes = details.pendingSupersedes.map((ref) => ref.id)
     this.missingSupersedeFacts = details.missingSupersedeFacts.map((ref) => ref.id)
     this.missingReachabilityUpdates = details.missingReachabilityUpdates.map(
-      (ref) => ref.id,
+      (ref) => ref.id
     )
     this.supersedeError = details.supersedeError
   }
@@ -186,7 +181,7 @@ function formatSupersedeRef(ref: SupersedeRef): string {
 function formatSupersedeRefs(
   label: string,
   refs: SupersedeRef[],
-  empty?: string,
+  empty?: string
 ): string {
   if (refs.length === 0) return empty ? `${empty}. ` : ""
   return `${label}: ${refs.map(formatSupersedeRef).join(", ")}. `
@@ -194,21 +189,19 @@ function formatSupersedeRefs(
 
 function formatNearDuplicateDecisions(
   matches: NearDuplicateMatch[],
-  newDecisionId: string,
+  newDecisionId: string
 ): string[] {
   const lines: string[] = []
   const shown = matches.slice(0, DECISION_SURFACE_LIMIT)
   lines.push(
-    `Warning: ${matches.length} existing ${matches.length === 1 ? "decision looks" : "decisions look"} similar. If this supersedes any of them, use \`lore-decision\` with \`action: 'supersede'\`:`,
+    `Warning: ${matches.length} existing ${matches.length === 1 ? "decision looks" : "decisions look"} similar. If this supersedes any of them, use \`lore-decision\` with \`action: 'supersede'\`:`
   )
   for (const m of shown) {
     const sim = m.titleSimilarity.toFixed(2)
     const when = m.decidedAt ? ` from ${m.decidedAt}` : ""
+    lines.push(`  - "${m.title}" (${m.id})${when} — trigram ${sim}, status ${m.status}`)
     lines.push(
-      `  - "${m.title}" (${m.id})${when} — trigram ${sim}, status ${m.status}`,
-    )
-    lines.push(
-      `    lore-decision({ action: "supersede", newDecisionId: "${newDecisionId}", oldDecisionId: "${m.id}" })`,
+      `    lore-decision({ action: "supersede", newDecisionId: "${newDecisionId}", oldDecisionId: "${m.id}" })`
     )
   }
   if (matches.length > shown.length) {
@@ -284,9 +277,17 @@ interface CreateArgs {
   session?: string
 }
 
-async function handleCreate(services: LoreServices, args: CreateArgs): Promise<ToolResult> {
+async function handleCreate(
+  services: LoreServices,
+  args: CreateArgs
+): Promise<ToolResult> {
   try {
-    const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+    const authorPromise = resolveAuthorForWrite(args.author, services.identity)
+    const resolved = await resolveProjectIds(
+      services,
+      args.projectName,
+      args.projectNames
+    )
 
     let topicId: string | undefined
     let topicLabel = "none"
@@ -300,7 +301,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
       topicLabel = topic.name
     } else if (args.topicName) {
       resolved.warnings.push(
-        `Topic "${args.topicName}" skipped (requires at least one project)`,
+        `Topic "${args.topicName}" skipped (requires at least one project)`
       )
     }
 
@@ -322,6 +323,8 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
         })
       : Promise.resolve([] as NearDuplicateMatch[])
 
+    const resolvedAuthor = await authorPromise
+
     const [created, nearDuplicates] = await Promise.all([
       services.decisions.create({
         decision: args.decision,
@@ -337,14 +340,9 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
         tags: args.tags,
         keywords: args.keywords,
         synopsis: args.synopsis,
-        // DEFERRED-ATTRIBUTION: caller override wins; otherwise stamp
-        // the engineer-identity resolved at server startup.
-        // `services.identity` is required on the type — a null
-        // `author` field means neither `LORE_USER_NAME` nor
-        // `users.me` produced a usable name; the `?? undefined`
-        // collapse routes that case through the buildMemoryProps
-        // truthy gate so the column stays empty.
-        author: args.author ?? services.identity.author ?? undefined,
+        // DEFERRED-ATTRIBUTION: caller override wins without touching
+        // identity resolution; omitted authors use the lazy resolver.
+        author: resolvedAuthor,
         agent: args.agent,
         session: args.session,
       }),
@@ -355,7 +353,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
 
     services.sessionMemories.record(
       { agent: args.agent, session: args.session },
-      { memoryId: created.id, projectIds: created.projectIds },
+      { memoryId: created.id, projectIds: created.projectIds }
     )
 
     const supersedesIds = args.supersedesIds ?? []
@@ -385,7 +383,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
             .map((c) => `${c.name} (${c.id})`)
             .join(", ")
           affectsWarnings.push(
-            `Ambiguous \`affects\` entry "${entity}" — matched ${resolution.candidates.length} entities (${labels}). Decided_by fact written without SubjectEntity.`,
+            `Ambiguous \`affects\` entry "${entity}" — matched ${resolution.candidates.length} entities (${labels}). Decided_by fact written without SubjectEntity.`
           )
         } else if (resolution.entity) {
           subjectEntityId = resolution.entity.id
@@ -393,7 +391,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         affectsWarnings.push(
-          `Entity resolution failed for \`affects\` entry "${entity}": ${message}. Decided_by fact written without SubjectEntity.`,
+          `Entity resolution failed for \`affects\` entry "${entity}": ${message}. Decided_by fact written without SubjectEntity.`
         )
       }
 
@@ -511,7 +509,7 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
       supersededDecisions.push(oldDecision)
       if (reachability.invalidated > 0) {
         reachabilityUpdates.push(
-          `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`,
+          `Updated decision context for ${reachability.invalidated} affected ${reachability.invalidated === 1 ? "entity" : "entities"} superseded by "${oldDecision.title}"`
         )
       }
     }
@@ -528,19 +526,15 @@ async function handleCreate(services: LoreServices, args: CreateArgs): Promise<T
           services.memories
             .decrementConfidence(oldDecision)
             .catch((err) =>
-              debugLogContradictionFailure(
-                "decide-supersede",
-                oldDecision.id,
-                err,
-              ),
-            ),
-        ),
+              debugLogContradictionFailure("decide-supersede", oldDecision.id, err)
+            )
+        )
       )
     }
 
     const projectLabel = args.projectNames?.length
       ? args.projectNames.join(", ")
-      : args.projectName ?? services.context.project?.name ?? "none (vault-wide)"
+      : (args.projectName ?? services.context.project?.name ?? "none (vault-wide)")
 
     const lines: string[] = [
       `Saved decision: "${created.title}" (${created.id})`,
@@ -605,7 +599,11 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
       projectId = services.context.project.id
     }
 
-    const { items: decisions, nextCursor, capped } = await services.decisions.list({
+    const {
+      items: decisions,
+      nextCursor,
+      capped,
+    } = await services.decisions.list({
       projectId,
       status: args.status as DecisionStatus | undefined,
       reviewBefore: args.reviewBefore,
@@ -628,7 +626,9 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
     }
 
     const includeSynopsis = args.includeSynopsis !== false
-    const lines = [`Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`]
+    const lines = [
+      `Found ${decisions.length} decision${decisions.length === 1 ? "" : "s"}:\n`,
+    ]
     for (const d of decisions) {
       lines.push(`### ${d.title}`)
       // Trust indicator (0.9.0/DEFERRED-07, carrying 0.8.0/#09 forward).
@@ -665,7 +665,7 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
 
 async function handleGet(
   services: LoreServices,
-  args: { decisionId: string },
+  args: { decisionId: string }
 ): Promise<ToolResult> {
   try {
     const decision = await services.decisions.getById(args.decisionId)
@@ -687,7 +687,7 @@ async function handleGet(
     }
     const relationTitles = await resolveTitles(
       [...decision.supersedesIds, ...decision.affectsIds],
-      (id) => services.memories.getTitleById(id),
+      (id) => services.memories.getTitleById(id)
     )
     if (decision.supersedesIds.length > 0) {
       lines.push("", "## Supersedes")
@@ -720,7 +720,7 @@ interface ContextArgs {
 async function handleContext(
   services: LoreServices,
   args: ContextArgs,
-  toolName: string,
+  toolName: string
 ): Promise<ToolResult> {
   try {
     let projectId: string | undefined
@@ -765,7 +765,7 @@ async function handleContext(
           .join(", ")
         warnings.push(
           `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
-            `Disambiguate by passing one of: ${candidateLabels}.`,
+            `Disambiguate by passing one of: ${candidateLabels}.`
         )
       } else if (resolution.entity) {
         entityId = resolution.entity.id
@@ -792,17 +792,17 @@ async function handleContext(
     const { links, failures: linkFailures } = await resolveCanonicalDecisionLinks(
       services,
       facts,
-      { projectId },
+      { projectId }
     )
     if (linkFailures.length > 0) {
       debugLogPartialFailures(toolName, linkFailures)
       const rootIds = linkFailures.map(({ rootId }) => rootId).join(", ")
       warnings.push(
-        `Could not resolve ${linkFailures.length} decision root${linkFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
+        `Could not resolve ${linkFailures.length} decision root${linkFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`
       )
     }
     const decisions = Array.from(
-      new Map(links.map(({ decision }) => [decision.id, decision])).values(),
+      new Map(links.map(({ decision }) => [decision.id, decision])).values()
     )
 
     if (decisions.length === 0) {
@@ -817,7 +817,7 @@ async function handleContext(
     }
 
     decisions.sort((a, b) =>
-      (b.decidedAt ?? b.updatedAt).localeCompare(a.decidedAt ?? a.updatedAt),
+      (b.decidedAt ?? b.updatedAt).localeCompare(a.decidedAt ?? a.updatedAt)
     )
 
     const cap = args.limit ?? 10
@@ -842,7 +842,7 @@ async function handleContext(
         lines.push(trustLine)
       }
       lines.push(
-        `**[${d.status}]${d.decidedAt ? ` | decided ${d.decidedAt}` : ""} | ID: ${d.id}**`,
+        `**[${d.status}]${d.decidedAt ? ` | decided ${d.decidedAt}` : ""} | ID: ${d.id}**`
       )
       if (d.alternatives) lines.push(`Alternatives: ${d.alternatives}`)
       if (d.consequences) lines.push(`Consequences: ${d.consequences}`)
@@ -852,12 +852,12 @@ async function handleContext(
     const historicalRoots = new Set(
       facts
         .map((fact) => fact.sourceMemoryId ?? fact.object)
-        .filter((value): value is string => value !== null && value.length > 0),
+        .filter((value): value is string => value !== null && value.length > 0)
     )
     const resolvedOnward = historicalRoots.size - decisions.length - linkFailures.length
     if (resolvedOnward > 0) {
       lines.push(
-        `_${resolvedOnward} superseded decision link${resolvedOnward === 1 ? "" : "s"} resolved forward to current replacements._`,
+        `_${resolvedOnward} superseded decision link${resolvedOnward === 1 ? "" : "s"} resolved forward to current replacements._`
       )
     }
 
@@ -871,7 +871,7 @@ async function handleContext(
 
 async function handleSupersede(
   services: LoreServices,
-  args: { newDecisionId: string; oldDecisionId: string },
+  args: { newDecisionId: string; oldDecisionId: string }
 ): Promise<ToolResult> {
   try {
     // Both decision reads are non-advisory by design — the response text
@@ -904,13 +904,11 @@ async function handleSupersede(
     // accepts the decision shape directly.
     await services.memories
       .decrementConfidence(oldDecision)
-      .catch((err) =>
-        debugLogContradictionFailure("supersede", oldDecision.id, err),
-      )
+      .catch((err) => debugLogContradictionFailure("supersede", oldDecision.id, err))
     const reachability = await syncDecisionReachability(
       services,
       args.oldDecisionId,
-      newDecision,
+      newDecision
     )
 
     return {
@@ -931,7 +929,7 @@ async function handleSupersede(
 
 async function handleReview(
   services: LoreServices,
-  args: { decisionId: string; reviewBy?: string },
+  args: { decisionId: string; reviewBy?: string }
 ): Promise<ToolResult> {
   try {
     const newDate = args.reviewBy ?? addDaysISO(new Date(), 90)
@@ -1024,48 +1022,54 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         action: z
           .enum(["create", "list", "get", "context", "supersede", "review"])
           .describe(
-            "Operation: create, list, get (one), context (governing decisions for entity), supersede, review.",
+            "Operation: create, list, get (one), context (governing decisions for entity), supersede, review."
           ),
         // create
         decision: z
           .string()
           .optional()
-          .describe("(action='create') Required. One-line decision statement (becomes the title)."),
+          .describe(
+            "(action='create') Required. One-line decision statement (becomes the title)."
+          ),
         rationale: z
           .string()
           .optional()
-          .describe("(action='create') Required. Prose explaining the reasoning (page body)."),
+          .describe(
+            "(action='create') Required. Prose explaining the reasoning (page body)."
+          ),
         // create | list | context
         projectName: z
           .string()
           .optional()
           .describe(
-            "(create | list | context) Project name. Defaults to auto-detected for create.",
+            "(create | list | context) Project name. Defaults to auto-detected for create."
           ),
         // create
         projectNames: z
           .array(z.string())
           .optional()
-          .describe("(action='create') Multiple project names for cross-project decisions."),
+          .describe(
+            "(action='create') Multiple project names for cross-project decisions."
+          ),
         topicName: z
           .string()
           .optional()
           .describe(
             "(action='create') Topic name within the project (auto-created if missing). " +
-              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical row.",
+              "Variants that differ only by case, plural-`s`, `&` vs `and`, or punctuation collapse onto the existing canonical row."
           ),
         forceNewTopic: z
           .boolean()
           .optional()
           .describe(
-            "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row.",
+            "(action='create') Bypass the normalized-equivalent + trigram-similar topic-name probe and create a fresh row."
           ),
         // create | list
         status: z
           .enum(DECISION_STATUSES)
           .optional()
           .describe(
-            "(action='create') Lifecycle state (default: accepted). (action='list') Filter.",
+            "(action='create') Lifecycle state (default: accepted). (action='list') Filter."
           ),
         // create
         confidence: z
@@ -1079,14 +1083,16 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .optional()
           .describe(
             "(action='create') Review-by date. (action='review') New review date (default +90d). " +
-              "Note: list filter uses `reviewBefore` instead.",
+              "Note: list filter uses `reviewBefore` instead."
           ),
         // list only
         reviewBefore: z
           .string()
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
           .optional()
-          .describe("(action='list') Filter to decisions with `Review By` on or before this."),
+          .describe(
+            "(action='list') Filter to decisions with `Review By` on or before this."
+          ),
         // create
         decidedAt: z
           .string()
@@ -1101,24 +1107,26 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .array(z.string())
           .optional()
           .describe(
-            "(action='create') Entity names affected. Each auto-creates a `decided_by` fact.",
+            "(action='create') Entity names affected. Each auto-creates a `decided_by` fact."
           ),
         alternatives: z
           .string()
           .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
           .describe(
-            `(action='create') Alternatives considered (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`,
+            `(action='create') Alternatives considered (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`
           ),
         consequences: z
           .string()
           .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
           .describe(
-            `(action='create') Consequences accepted (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`,
+            `(action='create') Consequences accepted (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`
           ),
         tags: tagsSchema.optional().describe("(action='create') Closed-vocabulary tags."),
-        keywords: keywordsSchema.optional().describe("(action='create') Free-form labels."),
+        keywords: keywordsSchema
+          .optional()
+          .describe("(action='create') Free-form labels."),
         synopsis: z
           .string()
           .max(SYNOPSIS_MAX)
@@ -1126,13 +1134,13 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .describe(
             "(action='create') 1–2 sentence synopsis of the governing rule — distinct from " +
               "`decision` (the title) and `rationale` (the body). Surfaces under the title on " +
-              `recall/search/wake-up listings. Up to ${SYNOPSIS_MAX} chars.`,
+              `recall/search/wake-up listings. Up to ${SYNOPSIS_MAX} chars.`
           ),
         author: z
           .string()
           .optional()
           .describe(
-            "(action='create') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`.",
+            "(action='create') Engineer display name. Defaults to LORE_USER_NAME env or `users.me`."
           ),
         agent: z
           .string()
@@ -1162,21 +1170,21 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
             "(action='list') Render each decision's synopsis line (when set) " +
               "between the title heading and the status/metadata line. Defaults true. " +
               "Pass false to restore byte-identical pre-DEFERRED-01 output for callers " +
-              "piping the response into another formatter.",
+              "piping the response into another formatter."
           ),
         // get | review
         decisionId: z
           .string()
           .optional()
           .describe(
-            "Required for action='get' and action='review'. The decision's page ID.",
+            "Required for action='get' and action='review'. The decision's page ID."
           ),
         // context | (search-style)
         entity: z
           .string()
           .optional()
           .describe(
-            "(action='context') Required. Entity to look up. Resolves through canonical entity registry (aliases + case-insensitive name) when available; matches `decided_by` facts whose Subject (preferred, via canonical relation) or Object text contains the input.",
+            "(action='context') Required. Entity to look up. Resolves through canonical entity registry (aliases + case-insensitive name) when available; matches `decided_by` facts whose Subject (preferred, via canonical relation) or Object text contains the input."
           ),
         // supersede
         newDecisionId: z
@@ -1192,9 +1200,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
     async (args) => {
       const parsed = decisionDispatchSchema.safeParse(args)
       if (!parsed.success) {
-        return toolError(
-          new Error(formatDispatchError("lore-decision", parsed.error)),
-        )
+        return toolError(new Error(formatDispatchError("lore-decision", parsed.error)))
       }
       switch (parsed.data.action) {
         case "create":
@@ -1210,6 +1216,6 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         case "review":
           return handleReview(services, parsed.data)
       }
-    },
+    }
   )
 }

@@ -228,12 +228,7 @@ export type MemoryKind =
  * Non-task memories carry no Task State; the field is read off the
  * `Task State` Notion column when present and elided otherwise.
  */
-export type TaskState =
-  | "open"
-  | "in-progress"
-  | "blocked"
-  | "done"
-  | "cancelled"
+export type TaskState = "open" | "in-progress" | "blocked" | "done" | "cancelled"
 
 /** Task states that count as "still owing work" — surfaced by
  *  `lore-task action='list'` and the wake-up Tasks section by default. */
@@ -820,9 +815,9 @@ export interface CreateDecisionInput {
   synopsis?: string
   /**
    * Engineer-identity attribution stamped on the Memory `Author`
-   * column (DEFERRED-ATTRIBUTION). The MCP tool layer defaults to
-   * `services.identity.author` when the caller omits this; service-
-   * layer callers (migrations, internal tooling) pass through verbatim.
+   * column (DEFERRED-ATTRIBUTION). The MCP tool layer lazily resolves
+   * a default author only when the caller omits this; service-layer
+   * callers (migrations, internal tooling) pass through verbatim.
    */
   author?: string
   agent?: string
@@ -907,7 +902,7 @@ export interface CreateTaskInput {
   /**
    * Engineer-identity attribution stamped on the Memory `Author`
    * column (DEFERRED-ATTRIBUTION). Same posture as `CreateDecisionInput`
-   * — MCP tool defaults from `services.identity.author`.
+   * — MCP tools lazily resolve a default only when the caller omits it.
    */
   author?: string
   agent?: string

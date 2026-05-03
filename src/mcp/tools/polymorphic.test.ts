@@ -178,16 +178,23 @@ function makeServices(opts: StubOpts = {}): unknown {
     context: { project: null, vault: { pageId: "v1" } },
     vault: {
       pageId: "v1",
-      stats: opts.vaultStats ?? vi.fn(async () => ({ projects: 0, topics: 0, memories: 0, facts: 0 })),
+      stats:
+        opts.vaultStats ??
+        vi.fn(async () => ({ projects: 0, topics: 0, memories: 0, facts: 0 })),
     },
     projects: {
       list: opts.projectsList ?? vi.fn(async () => []),
       findByName: opts.projectsFindByName ?? vi.fn(async () => null),
     },
     entities: makeEntityService(),
-    topics: { findByName: vi.fn(), getOrCreate: vi.fn(), listByProject: vi.fn(async () => []) },
+    topics: {
+      findByName: vi.fn(),
+      getOrCreate: vi.fn(),
+      listByProject: vi.fn(async () => []),
+    },
     memories: {
-      list: opts.memoriesList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),
+      list:
+        opts.memoriesList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),
       getById: opts.memoriesGetById ?? vi.fn(),
       getPropertiesById: vi.fn(),
       archive: opts.memoriesArchive ?? vi.fn(async () => undefined),
@@ -226,7 +233,8 @@ function makeServices(opts: StubOpts = {}): unknown {
     },
     decisions: {
       create: opts.decisionsCreate ?? vi.fn(),
-      list: opts.decisionsList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),
+      list:
+        opts.decisionsList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),
       getById: opts.decisionsGetById ?? vi.fn(),
       supersede: opts.decisionsSupersede ?? vi.fn(async () => undefined),
       reviewCompleted: opts.decisionsReviewCompleted ?? vi.fn(async () => undefined),
@@ -249,7 +257,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       countClosedSince: vi.fn(async () => null),
     },
     sessionMemories: { record: vi.fn(), get: vi.fn(() => null) },
-    identity: { author: null },
+    identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
   }
 }
 
@@ -266,7 +274,14 @@ describe("lore-project polymorphic dispatcher", () => {
 
   it("dispatches action='list' to the list handler", async () => {
     const projectsList = vi.fn(async () => [
-      { id: "p1", name: "Mail", path: "mail", type: "codebase", status: "active", description: "" },
+      {
+        id: "p1",
+        name: "Mail",
+        path: "mail",
+        type: "codebase",
+        status: "active",
+        description: "",
+      },
     ])
     const mock = createMockServer()
     registerProjectTools(mock.server, makeServices({ projectsList }) as never)
@@ -285,10 +300,7 @@ describe("lore-project polymorphic dispatcher", () => {
       description: "Mail backend",
     }))
     const mock = createMockServer()
-    registerProjectTools(
-      mock.server,
-      makeServices({ projectsFindByName }) as never,
-    )
+    registerProjectTools(mock.server, makeServices({ projectsFindByName }) as never)
     const result = await mock.get("lore-project")({
       action: "get",
       name: "Mail",
@@ -511,7 +523,7 @@ describe("lore-memory polymorphic dispatcher", () => {
         memoriesList,
         memoriesSearch,
         factsCreateWithDedup,
-      }) as never,
+      }) as never
     )
     await mock.get("lore-memory")({
       action: "suggest-topic-key",
@@ -562,7 +574,7 @@ describe("lore-query polymorphic dispatcher", () => {
       source: "agent_diary",
     } as never)
     expect(memoriesList).toHaveBeenCalledWith(
-      expect.objectContaining({ source: "agent_diary" }),
+      expect.objectContaining({ source: "agent_diary" })
     )
   })
 
@@ -572,7 +584,7 @@ describe("lore-query polymorphic dispatcher", () => {
     registerQueryTools(mock.server, makeServices({ memoriesSearch }) as never)
     await mock.get("lore-query")({ action: "search", query: "auth" } as never)
     expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ query: "auth" }),
+      expect.objectContaining({ query: "auth" })
     )
   })
 
@@ -600,7 +612,7 @@ describe("lore-query polymorphic dispatcher", () => {
       expect.objectContaining({
         query: "auth",
         intent: "WeChat session cookie",
-      }),
+      })
     )
   })
 
@@ -620,8 +632,7 @@ describe("lore-query polymorphic dispatcher", () => {
       // to fail — the field would simply start surviving into
       // `parsed.data`. Asserting `parsed.data` does not have `intent`
       // is the load-bearing pin for the per-arm field membership.
-      const required: Record<string, unknown> =
-        action === "ask" ? { entity: "Auth" } : {}
+      const required: Record<string, unknown> = action === "ask" ? { entity: "Auth" } : {}
       const parsed = queryDispatchSchema.safeParse({
         action,
         intent: "should be stripped",
@@ -631,7 +642,7 @@ describe("lore-query polymorphic dispatcher", () => {
       if (!parsed.success) return
       expect(parsed.data.action).toBe(action)
       expect(parsed.data).not.toHaveProperty("intent")
-    },
+    }
   )
 
   it("queryDispatchSchema preserves intent on action='search' (positive control for the negative tests above)", () => {
@@ -661,7 +672,7 @@ describe("lore-query polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerQueryTools(
       mock.server,
-      makeServices({ memoriesSearch, memoriesSearchWithExplain }) as never,
+      makeServices({ memoriesSearch, memoriesSearchWithExplain }) as never
     )
     await mock.get("lore-query")({
       action: "search",
@@ -723,10 +734,7 @@ describe("lore-query polymorphic dispatcher", () => {
       ],
     }))
     const mock = createMockServer()
-    registerQueryTools(
-      mock.server,
-      makeServices({ memoriesSearchWithExplain }) as never,
-    )
+    registerQueryTools(mock.server, makeServices({ memoriesSearchWithExplain }) as never)
     const result = await mock.get("lore-query")({
       action: "search",
       query: "auth",
@@ -735,7 +743,7 @@ describe("lore-query polymorphic dispatcher", () => {
     const text = extractText(result)
     expect(text).toContain("## Score trace")
     expect(text).toContain(
-      "mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200 confidenceFactor=1.000",
+      "mem-1 branch=rrf contains=0 semantic=1 rrf=0.032200 confidenceFactor=1.000"
     )
   })
 
@@ -750,7 +758,7 @@ describe("lore-query polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerQueryTools(
       mock.server,
-      makeServices({ memoriesSearch, memoriesSearchWithExplain }) as never,
+      makeServices({ memoriesSearch, memoriesSearchWithExplain }) as never
     )
     const result = await mock.get("lore-query")({
       action: "search",
@@ -802,10 +810,7 @@ describe("lore-fact polymorphic dispatcher", () => {
   it("dispatches action='extend' with reviewBy", async () => {
     const factsExtendReview = vi.fn(async () => undefined)
     const mock = createMockServer()
-    registerKnowledgeTools(
-      mock.server,
-      makeServices({ factsExtendReview }) as never,
-    )
+    registerKnowledgeTools(mock.server, makeServices({ factsExtendReview }) as never)
     await mock.get("lore-fact")({
       action: "extend",
       factId: "f-7",
@@ -838,10 +843,7 @@ describe("lore-fact polymorphic dispatcher", () => {
       enriched: [],
     }))
     const mock = createMockServer()
-    registerKnowledgeTools(
-      mock.server,
-      makeServices({ factsCreateWithDedup }) as never,
-    )
+    registerKnowledgeTools(mock.server, makeServices({ factsCreateWithDedup }) as never)
     await mock.get("lore-fact")({
       action: "create",
       subject: "Auth",
@@ -922,7 +924,7 @@ describe("lore-decision polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerDecisionTools(
       mock.server,
-      makeServices({ decisionsReviewCompleted }) as never,
+      makeServices({ decisionsReviewCompleted }) as never
     )
     const result = await mock.get("lore-decision")({
       action: "review",
@@ -930,7 +932,7 @@ describe("lore-decision polymorphic dispatcher", () => {
     } as never)
     expect(decisionsReviewCompleted).toHaveBeenCalledWith(
       "d-1",
-      expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)
     )
     expect(extractText(result)).toContain("d-1")
   })
@@ -1009,7 +1011,7 @@ describe("lore-task polymorphic dispatcher", () => {
       expect.objectContaining({
         subject: "Rotate keys",
         description: "Roll the signing key.",
-      }),
+      })
     )
     expect(extractText(result)).toContain("Created task")
     expect(extractText(result)).toContain("State: open")
@@ -1034,7 +1036,7 @@ describe("lore-task polymorphic dispatcher", () => {
     } as never)
     expect(tasksUpdate).toHaveBeenCalledWith(
       "t-1",
-      expect.objectContaining({ state: "in-progress" }),
+      expect.objectContaining({ state: "in-progress" })
     )
   })
 
@@ -1177,7 +1179,7 @@ describe("lore-task polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerTaskTools(
       mock.server,
-      makeServices({ tasksList, projectsFindByName }) as never,
+      makeServices({ tasksList, projectsFindByName }) as never
     )
     const result = await mock.get("lore-task")({
       action: "reconcile",
@@ -1283,7 +1285,7 @@ describe("lore-task polymorphic dispatcher", () => {
         memoriesArchive,
         tasksList,
         memoriesSearch,
-      }) as never,
+      }) as never
     )
     await mock.get("lore-task")({ action: "reconcile" } as never)
     expect(tasksCreate).not.toHaveBeenCalled()
@@ -1386,7 +1388,7 @@ describe("MCP tool surface", () => {
       const desc = mock.description(name)
       expect(
         desc.length,
-        `${name} description (${desc.length} chars) exceeds the ${PER_TOOL_DESCRIPTION_LIMIT}-char per-tool budget`,
+        `${name} description (${desc.length} chars) exceeds the ${PER_TOOL_DESCRIPTION_LIMIT}-char per-tool budget`
       ).toBeLessThanOrEqual(PER_TOOL_DESCRIPTION_LIMIT)
     }
   })
@@ -1418,11 +1420,11 @@ describe("MCP tool surface", () => {
     ]
     const total = polymorphic.reduce(
       (sum, name) => sum + mock.description(name).length,
-      0,
+      0
     )
     expect(
       total,
-      `combined polymorphic description size (${total} chars) exceeds the ${TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT}-char budget`,
+      `combined polymorphic description size (${total} chars) exceeds the ${TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT}-char budget`
     ).toBeLessThanOrEqual(TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT)
   })
 
@@ -1463,7 +1465,7 @@ describe("MCP tool surface", () => {
       const size = mock.renderedSize(name)
       expect(
         size,
-        `${name} rendered config size (${size} chars) exceeds the ${PER_TOOL_CONFIG_LIMIT}-char per-tool budget`,
+        `${name} rendered config size (${size} chars) exceeds the ${PER_TOOL_CONFIG_LIMIT}-char per-tool budget`
       ).toBeLessThanOrEqual(PER_TOOL_CONFIG_LIMIT)
     }
   })
@@ -1495,7 +1497,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
       synopsis: "One-liner",
     } as never)
     expect(memoriesCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ synopsis: "One-liner" }),
+      expect.objectContaining({ synopsis: "One-liner" })
     )
   })
 
@@ -1515,7 +1517,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
     } as never)
     expect(memoriesUpdate).toHaveBeenCalledWith(
       "m1",
-      expect.objectContaining({ synopsis: "Refined" }),
+      expect.objectContaining({ synopsis: "Refined" })
     )
   })
 
@@ -1527,10 +1529,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
       confidence: "certain",
     }))
     const mock = createMockServer()
-    registerDecisionTools(
-      mock.server,
-      makeServices({ decisionsCreate }) as never,
-    )
+    registerDecisionTools(mock.server, makeServices({ decisionsCreate }) as never)
     await mock.get("lore-decision")({
       action: "create",
       decision: "Cache resolutions",
@@ -1540,7 +1539,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
     expect(decisionsCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         synopsis: "Resolved projects cached for 60s.",
-      }),
+      })
     )
   })
 
@@ -1558,10 +1557,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
       taskState: "open",
     }))
     const mock = createMockServer()
-    registerTaskTools(
-      mock.server,
-      makeServices({ tasksCreate, tasksUpdate }) as never,
-    )
+    registerTaskTools(mock.server, makeServices({ tasksCreate, tasksUpdate }) as never)
 
     await mock.get("lore-task")({
       action: "create",
@@ -1569,7 +1565,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
       synopsis: "Rotate keys for new env.",
     } as never)
     expect(tasksCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ synopsis: "Rotate keys for new env." }),
+      expect.objectContaining({ synopsis: "Rotate keys for new env." })
     )
 
     await mock.get("lore-task")({
@@ -1579,7 +1575,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
     } as never)
     expect(tasksUpdate).toHaveBeenCalledWith(
       "t1",
-      expect.objectContaining({ synopsis: "Updated synopsis" }),
+      expect.objectContaining({ synopsis: "Updated synopsis" })
     )
   })
 
@@ -1620,7 +1616,10 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
 
     for (const { tool, args } of cases) {
       const result = await mock.get(tool)(args as never)
-      expect(isError(result), `${tool} ${args.action} should reject overcap synopsis`).toBe(true)
+      expect(
+        isError(result),
+        `${tool} ${args.action} should reject overcap synopsis`
+      ).toBe(true)
       expect(extractText(result)).toContain("synopsis")
     }
   })
@@ -1638,7 +1637,7 @@ describe("synopsis surface (issue 0.7.0/02)", () => {
       expect(schema, `${tool} must declare an inputSchema`).toBeDefined()
       expect(
         schema && Object.keys(schema).includes("synopsis"),
-        `${tool} inputSchema must declare a synopsis field`,
+        `${tool} inputSchema must declare a synopsis field`
       ).toBe(true)
     }
   })

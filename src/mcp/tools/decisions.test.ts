@@ -75,9 +75,15 @@ function makeEntityService() {
 function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
-    registerTool: vi.fn((name: string, _config: unknown, handler: (...args: never[]) => Promise<unknown>) => {
-      handlers.set(name, handler)
-    }),
+    registerTool: vi.fn(
+      (
+        name: string,
+        _config: unknown,
+        handler: (...args: never[]) => Promise<unknown>
+      ) => {
+        handlers.set(name, handler)
+      }
+    ),
   } as unknown as McpServer
 
   return {
@@ -95,8 +101,7 @@ function createMockServer() {
     getActionHandler(toolName: string, action: string) {
       const handler = handlers.get(toolName)
       if (!handler) throw new Error(`missing handler ${toolName}`)
-      return (args: Record<string, unknown>) =>
-        handler({ ...args, action } as never)
+      return (args: Record<string, unknown>) => handler({ ...args, action } as never)
     },
   }
 }
@@ -141,7 +146,7 @@ describe("registerDecisionTools", () => {
         record: vi.fn(),
         get: vi.fn(),
       },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -212,7 +217,7 @@ describe("registerDecisionTools", () => {
         record: vi.fn(),
         get: vi.fn(),
       },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -229,19 +234,19 @@ describe("registerDecisionTools", () => {
     expect(wrapped.isError).toBe(true)
     expect(wrapped.content[0].text).toContain("Decision create partial failure")
     expect(wrapped.content[0].text).toContain(
-      'decision "Adopt cache" (dec-partial) was saved',
+      'decision "Adopt cache" (dec-partial) was saved'
     )
     expect(wrapped.content[0].text).toContain(
-      '`decided_by` fact for "CacheLayer" failed: notion 503',
+      '`decided_by` fact for "CacheLayer" failed: notion 503'
     )
     expect(wrapped.content[0].text).toContain(
-      "Created `decided_by` facts before failure: AuthService",
+      "Created `decided_by` facts before failure: AuthService"
     )
     expect(wrapped.content[0].text).toContain(
-      "Missing `decided_by` facts: CacheLayer, Queue",
+      "Missing `decided_by` facts: CacheLayer, Queue"
     )
     expect(wrapped.content[0].text).toContain(
-      "Pending supersessions not attempted: dec-old",
+      "Pending supersessions not attempted: dec-old"
     )
     expect(wrapped.content[0].text).toContain("do not recreate the decision")
     expect(services.decisions.create).toHaveBeenCalledTimes(1)
@@ -250,7 +255,7 @@ describe("registerDecisionTools", () => {
     expect(services.decisions.supersede).not.toHaveBeenCalled()
     expect(services.sessionMemories.record).toHaveBeenCalledWith(
       { agent: undefined, session: undefined },
-      { memoryId: "dec-partial", projectIds: [] },
+      { memoryId: "dec-partial", projectIds: [] }
     )
   })
 
@@ -296,7 +301,7 @@ describe("registerDecisionTools", () => {
         record: vi.fn(),
         get: vi.fn(),
       },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -315,22 +320,22 @@ describe("registerDecisionTools", () => {
     expect(text).toContain("Decision create partial failure")
     expect(text).toContain('decision "Adopt cache" (dec-new) was saved')
     expect(text).toContain(
-      'supersession for "Decision dec-b" (dec-b) failed during `supersedes_decision` fact write: notion 503',
+      'supersession for "Decision dec-b" (dec-b) failed during `supersedes_decision` fact write: notion 503'
     )
     expect(text).toContain(
-      'Completed supersessions before failure: "Decision dec-a" (dec-a)',
+      'Completed supersessions before failure: "Decision dec-a" (dec-a)'
     )
     expect(text).toContain(
-      'Marked superseded before failure but still missing graph repair: "Decision dec-b" (dec-b)',
+      'Marked superseded before failure but still missing graph repair: "Decision dec-b" (dec-b)'
     )
     expect(text).toContain(
-      'Created `supersedes_decision` facts before failure: "Decision dec-a" (dec-a)',
+      'Created `supersedes_decision` facts before failure: "Decision dec-a" (dec-a)'
     )
     expect(text).toContain(
-      'Missing `supersedes_decision` facts: "Decision dec-b" (dec-b), dec-c',
+      'Missing `supersedes_decision` facts: "Decision dec-b" (dec-b), dec-c'
     )
     expect(text).toContain(
-      'Missing decision-context reachability updates: "Decision dec-b" (dec-b), dec-c',
+      'Missing decision-context reachability updates: "Decision dec-b" (dec-b), dec-c'
     )
     expect(text).toContain("Pending supersessions not attempted: dec-c")
     expect(text).toContain("do not recreate the decision")
@@ -385,7 +390,7 @@ describe("registerDecisionTools", () => {
         record: vi.fn(),
         get: vi.fn(),
       },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -402,14 +407,14 @@ describe("registerDecisionTools", () => {
 
     expect(wrapped.isError).toBe(true)
     expect(text).toContain(
-      'supersession for "Decision dec-b" (dec-b) failed during decision-context reachability sync: reachability 503',
+      'supersession for "Decision dec-b" (dec-b) failed during decision-context reachability sync: reachability 503'
     )
     expect(text).toContain(
-      'Created `supersedes_decision` facts before failure: "Decision dec-a" (dec-a), "Decision dec-b" (dec-b)',
+      'Created `supersedes_decision` facts before failure: "Decision dec-a" (dec-a), "Decision dec-b" (dec-b)'
     )
     expect(text).toContain("Missing `supersedes_decision` facts: dec-c")
     expect(text).toContain(
-      'Missing decision-context reachability updates: "Decision dec-b" (dec-b), dec-c',
+      'Missing decision-context reachability updates: "Decision dec-b" (dec-b), dec-c'
     )
     expect(text).toContain("Pending supersessions not attempted: dec-c")
     expect(text).toContain("do not recreate the decision")
@@ -454,7 +459,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -472,7 +477,7 @@ describe("registerDecisionTools", () => {
     // Post-P3-01 the supersede call site is rendered via the polymorphic
     // tool (`lore-decision({ action: 'supersede', ... })`).
     expect(text).toContain("lore-decision")
-    expect(text).toContain("action: \"supersede\"")
+    expect(text).toContain('action: "supersede"')
     expect(text).toContain('newDecisionId: "dec-new"')
     expect(text).toContain('oldDecisionId: "dec-old"')
 
@@ -483,7 +488,7 @@ describe("registerDecisionTools", () => {
         topicId: undefined,
         kind: "decision",
         includeContent: false,
-      }),
+      })
     )
   })
 
@@ -522,7 +527,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -574,7 +579,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -596,7 +601,7 @@ describe("registerDecisionTools", () => {
         projectId: "proj-a",
         topicId: "topic-1",
         kind: "decision",
-      }),
+      })
     )
   })
 
@@ -635,7 +640,7 @@ describe("registerDecisionTools", () => {
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -680,7 +685,7 @@ describe("registerDecisionTools", () => {
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record, get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -818,7 +823,7 @@ describe("lore-decision-context — partial decision resolution", () => {
       // would break cross-tool correlation silently; pinning the full
       // line here catches the drift.
       expect(logged).toBe(
-        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-decision\n",
+        "[lore] partial-failure: root=bad-root error=notion 5xx tool=lore-decision\n"
       )
     } finally {
       vi.unstubAllEnvs()
@@ -870,14 +875,13 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       projects: { findByName: vi.fn() },
       facts: {
         queryByEntity: vi.fn().mockResolvedValue(
-          opts.facts ??
-            [
-              {
-                ...makeFact("fact-1"),
-                sourceMemoryId: decision.id,
-                object: decision.id,
-              },
-            ],
+          opts.facts ?? [
+            {
+              ...makeFact("fact-1"),
+              sourceMemoryId: decision.id,
+              object: decision.id,
+            },
+          ]
         ),
         queryByObject: vi.fn().mockResolvedValue([]),
       },
@@ -889,9 +893,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
           ambiguous: opts.entityResolution?.ambiguous ?? false,
           candidates:
             opts.entityResolution?.candidates ??
-            (opts.entityResolution?.entity
-              ? [opts.entityResolution.entity]
-              : []),
+            (opts.entityResolution?.entity ? [opts.entityResolution.entity] : []),
           created: false,
         })),
       },
@@ -920,7 +922,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
 
     expect(services.entities.resolveOrCreateEntity).toHaveBeenCalledWith(
       "AuthSvc",
-      expect.objectContaining({ autoCreate: false }),
+      expect.objectContaining({ autoCreate: false })
     )
     expect(services.facts.queryByEntity).toHaveBeenCalledWith(
       "AuthSvc",
@@ -928,7 +930,7 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
         projectId: "proj-a",
         entityId: "ent-auth",
         predicates: ["decided_by"],
-      }),
+      })
     )
   })
 
@@ -965,10 +967,10 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       expect.objectContaining({
         projectId: "proj-a",
         predicates: ["decided_by"],
-      }),
+      })
     )
-    const opts = (services.facts.queryByEntity as ReturnType<typeof vi.fn>)
-      .mock.calls[0][1]
+    const opts = (services.facts.queryByEntity as ReturnType<typeof vi.fn>).mock
+      .calls[0][1]
     expect(opts.entityId).toBeUndefined()
   })
 
@@ -988,10 +990,10 @@ describe("lore-decision-context — PF3-01 canonical entity resolution", () => {
       expect.objectContaining({
         projectId: "proj-a",
         predicates: ["decided_by"],
-      }),
+      })
     )
-    const opts = (services.facts.queryByEntity as ReturnType<typeof vi.fn>)
-      .mock.calls[0][1]
+    const opts = (services.facts.queryByEntity as ReturnType<typeof vi.fn>).mock
+      .calls[0][1]
     expect(opts.entityId).toBeUndefined()
   })
 
@@ -1071,7 +1073,7 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1088,7 +1090,7 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
         decision: "Cache project resolutions for 60s",
         rationale: "Long-form rationale here.",
         synopsis: "All resolved projects are cached in-process for 60s.",
-      }),
+      })
     )
   })
 
@@ -1103,7 +1105,7 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
       context: { project: null, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1140,7 +1142,7 @@ describe("lore-decision action='create' Alternatives/Consequences rich_text cap 
       projects: { findByName: vi.fn() },
       context: { project: null, isCatchAllFallback: false },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
     registerDecisionTools(mockServer.server, services as never)
     return {
@@ -1165,31 +1167,28 @@ describe("lore-decision action='create' Alternatives/Consequences rich_text cap 
       expect.objectContaining({
         alternatives: atCap,
         consequences: atCap,
-      }),
+      })
     )
   })
 
   it.each([
     ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
     ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
-  ] as const)(
-    "rejects over-cap %s before decisions.create",
-    async (field, input) => {
-      const { handler, create } = setUpCreateHarness()
+  ] as const)("rejects over-cap %s before decisions.create", async (field, input) => {
+    const { handler, create } = setUpCreateHarness()
 
-      const result = await handler({
-        decision: "Keep metadata capped",
-        rationale: "Long rationale still belongs in the body.",
-        ...input,
-      } as never)
+    const result = await handler({
+      decision: "Keep metadata capped",
+      rationale: "Long rationale still belongs in the body.",
+      ...input,
+    } as never)
 
-      const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
-      expect(wrapped.isError).toBe(true)
-      expect(wrapped.content[0].text).toContain(field)
-      expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
-      expect(create).not.toHaveBeenCalled()
-    },
-  )
+    const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(wrapped.isError).toBe(true)
+    expect(wrapped.content[0].text).toContain(field)
+    expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
+    expect(create).not.toHaveBeenCalled()
+  })
 })
 
 describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
@@ -1219,7 +1218,7 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
     const headingIdx = lines.findIndex((l) => l === "### Cache project resolutions")
     expect(headingIdx).toBeGreaterThanOrEqual(0)
     expect(lines[headingIdx + 1]).toBe(
-      "All resolved projects are cached in-process for 60s.",
+      "All resolved projects are cached in-process for 60s."
     )
     // Metadata bold line follows synopsis.
     expect(lines[headingIdx + 2]).toMatch(/^\*\*\[accepted\]/)
@@ -1251,9 +1250,7 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(text).toContain("### Capped decision page")
-    expect(text).toMatch(
-      /```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/,
-    )
+    expect(text).toMatch(/```json\n\{"nextCursor":"keep-paging","truncated":true\}\n```/)
   })
 
   it("omits the synopsis line on rows with empty synopsis (byte-identical pre-DEFERRED-01 path)", async () => {
@@ -1276,7 +1273,7 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
     expect(text).toBe(
       "Found 1 decision:\n\n" +
         "### Plain decision\n" +
-        "**[accepted] | decided 2026-04-20 | ID: dec-empty**\n",
+        "**[accepted] | decided 2026-04-20 | ID: dec-empty**\n"
     )
   })
 
@@ -1300,7 +1297,7 @@ describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {
     expect(text).toBe(
       "Found 1 decision:\n\n" +
         "### Whitespace synopsis\n" +
-        "**[accepted] | decided 2026-04-20 | ID: dec-ws**\n",
+        "**[accepted] | decided 2026-04-20 | ID: dec-ws**\n"
     )
   })
 
@@ -1393,7 +1390,7 @@ describe("lore-decision action='list' trust indicator (DEFERRED-01 follow-up to 
     expect(headingIdx).toBeGreaterThanOrEqual(0)
     expect(lines[headingIdx + 1]).toBe("_low confidence_")
     expect(lines[headingIdx + 2]).toBe(
-      "All resolved projects are cached in-process for 60s.",
+      "All resolved projects are cached in-process for 60s."
     )
     // Bold meta line follows synopsis after trust, matching the
     // four-row envelope (heading → trust → synopsis → meta).
@@ -1464,7 +1461,7 @@ describe("lore-decision action='list' trust indicator (DEFERRED-01 follow-up to 
     expect(text).toBe(
       "Found 1 decision:\n\n" +
         "### Pre-migration row\n" +
-        "**[accepted] | decided 2026-04-20 | ID: dec-null**\n",
+        "**[accepted] | decided 2026-04-20 | ID: dec-null**\n"
     )
   })
 
@@ -1580,7 +1577,7 @@ describe("lore-decision action='supersede' — confidence decrement on old decis
         projects: { findByName: vi.fn() },
         context: { project: null },
         sessionMemories: { record: vi.fn(), get: vi.fn() },
-        identity: { author: null },
+        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
       },
       memoriesDecrement,
     }
@@ -1649,9 +1646,7 @@ describe("lore-decision action='supersede' — confidence decrement on old decis
     registerDecisionTools(mockServer.server, ctx.services as never)
     const supersede = mockServer.getActionHandler("lore-decision", "supersede")
 
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       await supersede({
@@ -1659,9 +1654,7 @@ describe("lore-decision action='supersede' — confidence decrement on old decis
         oldDecisionId: oldDecision.id,
       } as never)
       const lines = stderr.mock.calls.map(([line]) => String(line))
-      const failure = lines.find((l) =>
-        l.includes("contradiction-failure:"),
-      )
+      const failure = lines.find((l) => l.includes("contradiction-failure:"))
       expect(failure).toBeDefined()
       expect(failure).toContain("source=supersede")
       expect(failure).toContain("memoryId=dec-old-log")
@@ -1734,7 +1727,7 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1799,7 +1792,7 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
@@ -1838,23 +1831,19 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
         invalidate: vi.fn().mockResolvedValue(undefined),
       },
       memories: {
-        decrementConfidence: vi
-          .fn()
-          .mockRejectedValue(new Error("notion 429")),
+        decrementConfidence: vi.fn().mockRejectedValue(new Error("notion 429")),
       },
       topics: { getOrCreate: vi.fn() },
       projects: { findByName: vi.fn() },
       context: { project: null },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: null },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
     }
 
     registerDecisionTools(mockServer.server, services as never)
     const loreDecide = mockServer.getActionHandler("lore-decision", "create")
 
-    const stderr = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true)
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     process.env.LORE_DEBUG = "1"
     try {
       await loreDecide({
@@ -1863,9 +1852,7 @@ describe("lore-decision action='create' with supersedesIds — parallel decremen
         supersedesIds: ["dec-a"],
       } as never)
       const lines = stderr.mock.calls.map(([line]) => String(line))
-      const failure = lines.find((l) =>
-        l.includes("contradiction-failure:"),
-      )
+      const failure = lines.find((l) => l.includes("contradiction-failure:"))
       expect(failure).toBeDefined()
       expect(failure).toContain("source=decide-supersede")
       expect(failure).toContain("memoryId=dec-a")
@@ -1930,7 +1917,7 @@ describe("lore-decision action='context' trust indicator (0.9.0/DEFERRED-07)", (
 
     const lines = text.split("\n")
     const headingIdx = lines.findIndex(
-      (l) => l === "### Low-confidence governing decision",
+      (l) => l === "### Low-confidence governing decision"
     )
     expect(headingIdx).toBeGreaterThanOrEqual(0)
     expect(lines[headingIdx + 1]).toBe("_low confidence_")
@@ -1975,8 +1962,8 @@ describe("lore-decision action='context' trust indicator (0.9.0/DEFERRED-07)", (
 //
 // Decisions write to the Memories DB (Kind = decision); the same Author
 // column carries the engineer-identity. Mirror the memory.test.ts coverage
-// so a future refactor that drops `args.author ?? services.identity.author`
-// from this handler fails the test.
+// so a future refactor that drops lazy identity resolution from this handler
+// fails the test.
 // ---------------------------------------------------------------------------
 
 describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBUTION)", () => {
@@ -1984,6 +1971,7 @@ describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBU
     const mockServer = createMockServer()
     const created = makeDecision("dec-attrib", { projectIds: [] })
     const create = vi.fn().mockResolvedValue(created)
+    const resolveAuthor = vi.fn(async () => identityAuthor)
     const services = {
       decisions: { create, getById: vi.fn(), supersede: vi.fn() },
       facts: {
@@ -1999,34 +1987,36 @@ describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBU
       projects: { findByName: vi.fn() },
       context: { project: null, isCatchAllFallback: false },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
-      identity: { author: identityAuthor },
+      identity: { resolveAuthor, clearCache: vi.fn() },
     }
     registerDecisionTools(mockServer.server, services as never)
     return {
       handler: mockServer.getActionHandler("lore-decision", "create"),
       create,
+      resolveAuthor,
     }
   }
 
-  it("stamps services.identity.author on decisions.create when args.author is omitted", async () => {
+  it("stamps services.identity.resolveAuthor on decisions.create when args.author is omitted", async () => {
     const { handler, create } = setUpCreateHarness("Hesham Salman")
     await handler({ decision: "Use bcrypt", rationale: "Fast enough" } as never)
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ author: "Hesham Salman" }),
+      expect.objectContaining({ author: "Hesham Salman" })
     )
   })
 
-  it("explicit args.author wins over services.identity.author", async () => {
-    const { handler, create } = setUpCreateHarness("ServerSideName")
+  it("explicit args.author wins without calling services.identity.resolveAuthor", async () => {
+    const { handler, create, resolveAuthor } = setUpCreateHarness("ServerSideName")
     await handler({
       decision: "Use bcrypt",
       rationale: "Fast enough",
       author: "Override",
     } as never)
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: "Override" }))
+    expect(resolveAuthor).not.toHaveBeenCalled()
   })
 
-  it("collapses to author: undefined when no override and identity.author is null", async () => {
+  it("collapses to author: undefined when no override and resolver returns null", async () => {
     const { handler, create } = setUpCreateHarness(null)
     await handler({ decision: "Use bcrypt", rationale: "Fast enough" } as never)
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: undefined }))
