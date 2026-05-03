@@ -1146,6 +1146,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
 
   it("honors explicit project scope even when context is a catch-all fallback", async () => {
     const mockServer = createMockServer()
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
     const existing = makeMemory("mem-existing", {
       title: "relation filters reject empty arrays",
       content: "Notion dataSources.query rejects relation filters with empty arrays.",
@@ -1175,6 +1176,7 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
     }
 
     vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    vi.stubEnv("LORE_DEBUG", "1")
     try {
       registerMemoryTools(mockServer.server, services as never)
       registerQueryTools(mockServer.server, services as never)
@@ -1211,7 +1213,17 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
           includeUnscoped: false,
         })
       )
+      expect(list).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "proj-specific",
+          session: "session-2",
+          includeContent: true,
+        })
+      )
+      const stderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("")
+      expect(stderr).not.toContain("autosave-learning-dedup-scope-downgrade")
     } finally {
+      stderrSpy.mockRestore()
       vi.unstubAllEnvs()
     }
   })
