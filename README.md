@@ -75,6 +75,11 @@ deliberate location (a team workspace, a project sub-page) with
 deliberate sharing, and every engineer's `.lore.yaml` points at the
 same id.
 
+`.lore.yaml` is intended to be committable only when it contains shared,
+non-secret configuration. A repo-scoped `vault.pageId` should point at a vault
+deliberately shared with the team. Do not commit personal scratch vault IDs,
+`auth.token`, or any other maintainer-specific value.
+
 **For personal vaults / fresh-onboarding scratch use**, the no-arg
 flow creates a workspace-level page on your behalf using the active auth
 source. If no auth resolves, it auto-installs ntn, runs `ntn login`, and then
@@ -129,6 +134,8 @@ lore auth --login
 migration fallbacks. Removal is plausibly 0.11.0 or 1.0.0, contingent on
 telemetry showing no internal team still relies on them; see
 [`src/auth/AGENTS.md`](src/auth/AGENTS.md) for migration timing.
+Because `.lore.yaml` can be checked into a repo, Lore warns whenever it sees
+`auth.token` in that file, even when a higher-priority auth source wins.
 
 Existing vaults from before PF3-01 keep working without the Entities
 database; run `lore migrate --build-entities --yes` to add it and
@@ -321,16 +328,22 @@ behavior, and compatibility notes.
 Lore is configured via `.lore.yaml`. The file is located by searching upward
 from the current working directory.
 
+Committed `.lore.yaml` files must contain only shared, non-secret config.
+Allowed values include a team-owned `vault.pageId`, project mappings, detection
+rules, and hook preferences. Do not commit `auth.token`, personal scratch
+vault page IDs, or anything personally identifying; use environment variables
+or ntn auth for credentials.
+
 ```yaml
 # Required: Notion page ID containing the vault databases
 vault:
-  pageId: "abc123..."
+  pageId: "<shared-team-vault-page-id>"
 
 # Optional: workspace selector for multi-workspace ntn auth.json setups
 # auth:
 #   workspaceId: "workspace-id"
 #
-# Soft-deprecated migration fallback only:
+# Soft-deprecated migration fallback only. Never commit this field:
 # auth:
 #   token: "<legacy-token>"
 

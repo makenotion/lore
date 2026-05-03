@@ -234,8 +234,9 @@ export interface ResolvedAuth {
  * 3. **`LORE_NOTION_TOKEN` env** — soft-deprecated. Returns
  *    `source: "env-lore-notion-token"` and emits a debounced deprecation
  *    warning on first call per session.
- * 4. **`config.auth.token` in `.lore.yaml`** — soft-deprecated. Same
- *    warning shape as path 3.
+ * 4. **`config.auth.token` in `.lore.yaml`** — soft-deprecated. Emits
+ *    a warning as soon as the field is present, even when a higher-priority
+ *    source masks it, because `.lore.yaml` is a committable repo config.
  *
  * Throws when no source produces a token. The error message recommends
  * `lore auth --login` (the canonical wrapper that auto-installs ntn,
@@ -253,6 +254,10 @@ export async function resolveAuth(
   config: LoreConfig | undefined,
   configRoot: string
 ): Promise<ResolvedAuth> {
+  if (config?.auth?.token) {
+    await emitDeprecationWarningOnce(configRoot, "config-auth-token")
+  }
+
   // `auth.baseUrl` from `.lore.yaml` is **only** honored on the
   // soft-deprecated paths (`env-lore-notion-token`, `config-auth-token`),
   // never on the canonical 0.10.0 paths (`env-notion-api-token`,
@@ -326,7 +331,6 @@ export async function resolveAuth(
   // 4. auth.token in .lore.yaml (soft-deprecated).
   const fromConfigToken = config?.auth?.token
   if (fromConfigToken) {
-    await emitDeprecationWarningOnce(configRoot, "config-auth-token")
     return {
       token: fromConfigToken,
       baseUrl: legacyBaseUrlOverride,

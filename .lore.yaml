@@ -1,5 +1,7 @@
 vault:
-  pageId: "343b35e6e67f81a0afa9c9801b35199f"
+  # Replace with a shared team vault page ID before using Lore in this checkout.
+  # Do not commit personal vault IDs or any auth.token value here.
+  pageId: "<your-vault-page-id>"
 projects: []
 hooks:
   autoSave: true

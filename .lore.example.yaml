@@ -1,10 +1,12 @@
 # Lore configuration
-# Copy to .lore.yaml and fill in your values.
+# Use this as a reference for the committed .lore.yaml shape.
+# Keep committed config free of personal vault IDs and bearer tokens.
 
 vault:
   # Notion page ID where Lore databases live.
-  # Create a page in Notion, share it with your integration, and paste the ID here.
-  pageId: "your-page-id-here"
+  # For a repo-scoped vault, commit only the shared team page ID.
+  # For personal vaults, keep local edits out of git.
+  pageId: "<your-vault-page-id>"
 
 # Authentication (0.10.0+)
 # Lore resolves a Notion bearer token from the first available source in
@@ -16,6 +18,9 @@ vault:
 #      per-session warning; hard removal plausibly 0.11.0+)
 #   4. auth.token below (soft-deprecated 0.10.0; same posture)
 # Most operators leave this block alone and run `lore auth --login`.
+# Do not place auth.token in a committed .lore.yaml. If you need the
+# legacy fallback temporarily, remove it before committing and migrate to
+# ntn or NOTION_API_TOKEN.
 # auth:
 #   # Soft-deprecated. Only set if you cannot use ntn or NOTION_API_TOKEN.
 #   token: "ntn_..."

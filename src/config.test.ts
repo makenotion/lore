@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   utimesSync,
@@ -17,6 +18,7 @@ import {
   it,
   vi,
 } from "vitest"
+import { parse as parseYaml } from "yaml"
 import { parseConfigAllowingInvalidHooks, resolveAuth, resolveToken } from "./config.js"
 import { configKey } from "./hooks/marker-key.js"
 import type { LoreConfig } from "./types.js"
@@ -137,6 +139,19 @@ promotionTargets:
     expect(config.promotionTargets).toEqual([
       { name: "Team", pageId: "team-vault", requireReview: true },
     ])
+  })
+})
+
+describe("committed .lore.yaml", () => {
+  it("stays safe to commit", () => {
+    const raw = readFileSync(".lore.yaml", "utf-8")
+    const parsed = parseYaml(raw) as {
+      auth?: { token?: unknown }
+      vault?: { pageId?: unknown }
+    }
+
+    expect(parsed.auth?.token).toBeUndefined()
+    expect(parsed.vault?.pageId).toBe("<your-vault-page-id>")
   })
 })
 
@@ -478,9 +493,10 @@ describe("resolveAuth", () => {
     const result = await resolveAuth(config, SCRATCH)
     expect(result.source).toBe("env-notion-api-token")
     expect(result.token).toBe("tok-canonical")
-    // No deprecation warning — the canonical path won, lower paths were
-    // never consulted.
-    expect(stderrText()).toBe("")
+    // The canonical source still wins, but a token sitting in the
+    // committable repo config is warned about even when masked.
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+    expect(stderrText()).toContain("remove the auth.token field")
   })
 
   it("priority: ntn wins over LORE_NOTION_TOKEN", async () => {
@@ -506,10 +522,10 @@ describe("resolveAuth", () => {
     const result = await resolveAuth(config, SCRATCH)
     expect(result.source).toBe("env-lore-notion-token")
     expect(result.token).toBe("tok-legacy-env")
-    // Only the env-deprecation message should fire — config-token path
-    // was never consulted, so its specific warning does not surface.
-    expect(stderrText()).toContain("LORE_NOTION_TOKEN is soft-deprecated")
-    expect(stderrText()).not.toContain("auth.token in .lore.yaml")
+    // The env token wins, but the inline token is still unsafe in a
+    // committable `.lore.yaml`, so the config-specific warning fires.
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+    expect(stderrText()).toContain("remove the auth.token field")
   })
 
   it("debounces the deprecation warning — second call within 24h does not re-emit", async () => {

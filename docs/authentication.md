@@ -71,6 +71,13 @@ walks operators through moving to ntn-issued auth.
 Hard removal is expected no earlier than 0.11.0 or 1.0.0, contingent on
 telemetry showing the internal team no longer relies on the legacy paths.
 
+`.lore.yaml` is committable only when it contains shared, non-secret config:
+team-owned `vault.pageId` values, project mappings, detection rules, and hook
+preferences. Do not commit `auth.token`, personal scratch vault IDs, or
+personally identifying local values. Lore warns whenever `auth.token` is
+present in `.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or
+`LORE_NOTION_TOKEN` wins the priority chain.
+
 ## Rate Limits
 
 Notion rate limits are enforced per access token, not per integration. The

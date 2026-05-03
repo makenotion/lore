@@ -70,6 +70,9 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 ## Configuration
 
 - Config lives in `.lore.yaml` with upward directory search from cwd.
+- `.lore.yaml` may be committed only with shared, non-secret values. Never
+  commit `auth.token`, personal scratch vault page IDs, or maintainer-specific
+  local values.
 - Token resolution is handled by `resolveAuth` in `src/config.ts`; see
   [`docs/authentication.md`](authentication.md).
 - Config is validated with Zod at load time.

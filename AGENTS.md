@@ -124,6 +124,11 @@ Auth resolves in this priority order:
 3. `LORE_NOTION_TOKEN` soft-deprecated fallback
 4. `auth.token` in `.lore.yaml` soft-deprecated fallback
 
+Committed `.lore.yaml` files must contain only shared, non-secret config. Do
+not commit `auth.token`, personal scratch vault IDs, or maintainer-specific
+local values; Lore warns whenever `auth.token` is present in `.lore.yaml`,
+even if a higher-priority auth source wins.
+
 ntn-issued tokens inherit the engineer's personal Notion permissions and have
 per-token rate limits. Lore-managed ntn spawns force `NOTION_KEYRING=0`; direct
 `ntn login` outside Lore may need the recovery path in
