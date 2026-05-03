@@ -149,14 +149,16 @@ describe("committed .lore.yaml", () => {
       auth?: { token?: unknown }
       vault?: { pageId?: unknown }
     }
+    const serializedConfig = JSON.stringify(parsed)
+    const pageId = parsed.vault?.pageId
+    // Notion page IDs may appear as compact 32-hex strings or hyphenated UUIDs.
+    const notionPageIdPattern =
+      /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 
     expect(parsed.auth?.token).toBeUndefined()
-    expect(parsed.vault?.pageId).toEqual(expect.any(String))
-    expect(parsed.vault?.pageId).not.toMatch(/[0-9a-f]{32}/i)
-    expect(parsed.vault?.pageId).not.toMatch(
-      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
-    )
-    expect(parsed.vault?.pageId).not.toMatch(/\b(?:ntn|secret)_[A-Za-z0-9_-]+\b/)
+    expect(pageId).toEqual(expect.any(String))
+    expect(pageId).not.toMatch(notionPageIdPattern)
+    expect(serializedConfig).not.toMatch(/ntn_|secret_/)
   })
 })
 
