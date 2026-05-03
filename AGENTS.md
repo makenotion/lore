@@ -68,6 +68,11 @@ need the SubjectKey substring fallback.
 Rule #1: If you need an exception to any rule here, stop and get explicit
 permission from the human lead first.
 
+- Do not bump version numbers. Never edit the `version` field in
+  `package.json`, `package-lock.json`, or any release manifest unless the
+  human lead has explicitly asked for a version bump in this turn. Releases
+  are cut deliberately; an unrequested bump in an unrelated PR can ship a
+  release, break stacked-branch rebases, or desync `package-lock.json`.
 - Do not remove existing MCP tools. Deprecate first, remove in a future major.
 - Do not rename database properties. Property names are baked into schema,
   extractors, and services.
