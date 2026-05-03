@@ -186,6 +186,7 @@ function debugLogAutosaveLearningScopeDowngrade(opts: {
   if (process.env["LORE_DEBUG"] !== "1") return
   process.stderr.write(
     `[lore] autosave-learning-dedup-scope-downgrade: reason=catch-all-fallback ` +
+      `requestedScope=project dedupScope=session ` +
       `projectId=${debugLogField(opts.projectId)} session=${debugLogField(opts.session)} ` +
       `source=lore-memory\n`
   )

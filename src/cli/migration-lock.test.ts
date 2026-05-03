@@ -56,9 +56,29 @@ function writeRaceWorker(): string {
   const moduleUrl = pathToFileURL(join(process.cwd(), "src/cli/migration-lock.ts")).href
   writeFileSync(
     workerPath,
-    `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
+    `import { readdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
+const readyDir = process.env["RACE_READY_DIR"]
+const readyId = process.env["RACE_READY_ID"] ?? String(process.pid)
+const workerCount = Number(process.env["RACE_WORKER_COUNT"] ?? "2")
+
+if (readyDir) {
+  writeFileSync(join(readyDir, readyId + ".ready"), String(process.pid), {
+    flag: "wx",
+  })
+  const deadline = Date.now() + 10_000
+  while (
+    readdirSync(readyDir).filter((name) => name.endsWith(".ready")).length <
+      workerCount &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
 const result = tryAcquireMigrationLock(scope)
 process.stdout.write(JSON.stringify({
   acquired: result.acquired,
@@ -85,14 +105,23 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
 > {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
-  const children = Array.from({ length: 2 }, () => {
+  const workerCount = 2
+  const readyDir = join(
+    TEST_STATE_DIR,
+    `migration-lock-race-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  )
+  mkdirSync(readyDir, { recursive: true })
+  const children = Array.from({ length: workerCount }, (_, index) => {
     return spawn(process.execPath, [viteNode, workerPath], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
-        LOCK_HOLD_MS: "750",
+        LOCK_HOLD_MS: "1500",
+        RACE_READY_DIR: readyDir,
+        RACE_READY_ID: String(index),
+        RACE_WORKER_COUNT: String(workerCount),
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -222,7 +251,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("allows exactly one racing process to reclaim a stale lock", async () => {
     const lockScope = scope()
@@ -234,7 +263,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("keeps independent scopes from blocking each other", () => {
     const first = tryAcquireMigrationLock(scope({ vaultPageId: "vault-a" }))

@@ -1136,8 +1136,80 @@ describe("lore-memory action='save' autosave-learning structural dedup", () => {
       const stderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join("")
       expect(stderr).toContain("autosave-learning-dedup-scope-downgrade")
       expect(stderr).toContain("reason=catch-all-fallback")
+      expect(stderr).toContain("requestedScope=project")
+      expect(stderr).toContain("dedupScope=session")
       expect(stderr).toContain('projectId="proj-catchall"')
       expect(stderr).toContain('session="session-2"')
+    } finally {
+      stderrSpy.mockRestore()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("does not log catch-all dedup scope downgrade telemetry unless LORE_DEBUG=1", async () => {
+    const mockServer = createMockServer()
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const existing = makeMemory("mem-existing", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-catchall"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-1",
+    })
+    const created = makeMemory("mem-created", {
+      title: "relation filters reject empty arrays",
+      content: "Notion dataSources.query rejects relation filters with empty arrays.",
+      projectIds: ["proj-catchall"],
+      source: "conversation",
+      kind: "note",
+      confidence: "likely",
+      session: "session-2",
+    })
+    const create = vi.fn().mockResolvedValue(created)
+    const list = vi.fn(async (opts: { session?: string; includeContent?: boolean }) => {
+      if (opts.includeContent && opts.session === "session-2") {
+        return { items: [] }
+      }
+      return { items: [existing] }
+    })
+    const record = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: {
+        project: { id: "proj-catchall", name: "Mail" },
+        isCatchAllFallback: true,
+      },
+      config: { projects: [] },
+      sessionMemories: { record, get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+      facts: { createWithDedup: vi.fn() },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    vi.stubEnv("LORE_DEBUG", "")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-2",
+        agent: "Codex",
+      } as never)
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(text).toContain('Saved memory: "relation filters reject empty arrays"')
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(stderrSpy).not.toHaveBeenCalled()
     } finally {
       stderrSpy.mockRestore()
       vi.unstubAllEnvs()
