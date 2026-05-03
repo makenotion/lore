@@ -126,7 +126,7 @@ describe("resolveDriftCheck", () => {
 describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
   // The MCP-entry env-forwarding rewrite (#08) writes
   // `LORE_CONFIG_ROOT=<path>` into the spawned MCP child's env so the
-  // child resolves the right `.lore.yaml` even when its launch cwd
+  // child resolves the right Lore config even when its launch cwd
   // differs from the operator's vault directory. `initServices` honors
   // the env var by short-circuiting the upward findConfigFile walk.
   //
@@ -167,6 +167,25 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
     expect(findConfigFile).not.toHaveBeenCalled()
   })
 
+  it("prefers `.lore.local.yaml` from LORE_CONFIG_ROOT when present", async () => {
+    const root = mkdtempSync(join(SCRATCH, "configroot-local-"))
+    await writeFile(join(root, ".lore.yaml"), "vault:\n  pageId: shared\n", "utf-8")
+    await writeFile(
+      join(root, ".lore.local.yaml"),
+      "vault:\n  pageId: personal\n",
+      "utf-8"
+    )
+    process.env["LORE_CONFIG_ROOT"] = root
+    vi.mocked(loadConfig).mockRejectedValue(new Error("sentinel-local-called"))
+
+    const services = await import("./services.js")
+    await expect(services.initServices("/tmp/some/unrelated/cwd")).rejects.toThrow(
+      /sentinel-local-called/
+    )
+    expect(loadConfig).toHaveBeenCalledWith(join(root, ".lore.local.yaml"))
+    expect(findConfigFile).not.toHaveBeenCalled()
+  })
+
   it("falls back to the upward findConfigFile walk when LORE_CONFIG_ROOT is unset", async () => {
     const workDir = mkdtempSync(join(SCRATCH, "no-config-"))
     // Simulate the walk landing on a config file (any path); the
@@ -185,11 +204,11 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
     expect(loadConfig).toHaveBeenCalledWith(join(workDir, ".lore.yaml"))
   })
 
-  it("throws the No-.lore.yaml-found error when neither path resolves", async () => {
+  it("throws the No-Lore-config-found error when neither path resolves", async () => {
     vi.mocked(findConfigFile).mockResolvedValue(null)
     const services = await import("./services.js")
     await expect(services.initServices("/tmp/no-config")).rejects.toThrow(
-      /No \.lore\.yaml found/
+      /No \.lore\.local\.yaml or \.lore\.yaml found/
     )
   })
 
@@ -212,7 +231,7 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
     expect(findConfigFile).toHaveBeenCalledWith("/tmp/fallback-after-trim")
   })
 
-  it("surfaces a friendly error when LORE_CONFIG_ROOT points at a directory that lacks .lore.yaml", async () => {
+  it("surfaces a friendly error when LORE_CONFIG_ROOT points at a directory that lacks Lore config", async () => {
     // The MCP entry's static forwarding can drift from the
     // operator's vault directory when they move or rename the
     // project. Without this check, `loadConfig` would throw a raw
@@ -225,7 +244,7 @@ describe("initServices — LORE_CONFIG_ROOT honor (issue 0.10.0/08)", () => {
 
     const services = await import("./services.js")
     await expect(services.initServices("/tmp/some/other/cwd")).rejects.toThrow(
-      /LORE_CONFIG_ROOT=.* but no \.lore\.yaml exists there/
+      /LORE_CONFIG_ROOT=.* but no \.lore\.local\.yaml or \.lore\.yaml exists there/
     )
     expect(loadConfig).not.toHaveBeenCalled()
   })

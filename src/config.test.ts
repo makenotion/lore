@@ -19,7 +19,12 @@ import {
   vi,
 } from "vitest"
 import { parse as parseYaml } from "yaml"
-import { parseConfigAllowingInvalidHooks, resolveAuth, resolveToken } from "./config.js"
+import {
+  findConfigFile,
+  parseConfigAllowingInvalidHooks,
+  resolveAuth,
+  resolveToken,
+} from "./config.js"
 import { configKey } from "./hooks/marker-key.js"
 import type { LoreConfig } from "./types.js"
 
@@ -168,6 +173,43 @@ const SCRATCH = mkdtempSync(join(tmpdir(), "lore-config-resolveauth-"))
 
 afterAll(() => {
   rmSync(SCRATCH, { recursive: true, force: true })
+})
+
+describe("findConfigFile", () => {
+  it("prefers `.lore.local.yaml` over sibling `.lore.yaml`", async () => {
+    const root = mkdtempSync(join(SCRATCH, "config-search-local-wins-"))
+    const nested = join(root, "packages", "app")
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(root, ".lore.yaml"), "vault:\n  pageId: shared\n")
+    writeFileSync(join(root, ".lore.local.yaml"), "vault:\n  pageId: personal\n")
+
+    await expect(findConfigFile(nested)).resolves.toEqual({
+      path: join(root, ".lore.local.yaml"),
+      root,
+    })
+  })
+
+  it("falls back to `.lore.yaml` when no local config exists", async () => {
+    const root = mkdtempSync(join(SCRATCH, "config-search-shared-"))
+    const nested = join(root, "src")
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(root, ".lore.yaml"), "vault:\n  pageId: shared\n")
+
+    await expect(findConfigFile(nested)).resolves.toEqual({
+      path: join(root, ".lore.yaml"),
+      root,
+    })
+  })
+
+  it("loads `.lore.local.yaml` even without a shared `.lore.yaml`", async () => {
+    const root = mkdtempSync(join(SCRATCH, "config-search-local-only-"))
+    writeFileSync(join(root, ".lore.local.yaml"), "vault:\n  pageId: personal\n")
+
+    await expect(findConfigFile(root)).resolves.toEqual({
+      path: join(root, ".lore.local.yaml"),
+      root,
+    })
+  })
 })
 
 /**

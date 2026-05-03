@@ -69,7 +69,9 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 
 ## Configuration
 
-- Config lives in `.lore.yaml` with upward directory search from cwd.
+- Config lives in `.lore.local.yaml` or `.lore.yaml` with upward directory
+  search from cwd. `.lore.local.yaml` wins when both files exist in the same
+  directory and is intended for full, gitignored personal overrides.
 - `.lore.yaml` may be committed only with shared, non-secret values. Never
   commit `auth.token`, personal scratch vault page IDs, or maintainer-specific
   local values.

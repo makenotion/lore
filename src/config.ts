@@ -7,6 +7,9 @@ import { configKey } from "./hooks/marker-key.js"
 import type { LoreConfig } from "./types.js"
 
 const CONFIG_FILENAME = ".lore.yaml"
+const LOCAL_CONFIG_FILENAME = ".lore.local.yaml"
+
+const CONFIG_SEARCH_FILENAMES = [LOCAL_CONFIG_FILENAME, CONFIG_FILENAME] as const
 
 const hookConfigSchema = z
   .object({
@@ -141,7 +144,29 @@ export function parseConfigAllowingInvalidHooks(raw: string): LoadedConfigResult
 }
 
 /**
- * Search upward from `startDir` for a `.lore.yaml` file.
+ * Check one directory for Lore config without walking to parents.
+ * Local config wins over the committable shared config when both exist.
+ */
+export async function findConfigFileInDirectory(
+  dir: string
+): Promise<{ path: string; root: string } | null> {
+  const root = resolve(dir)
+
+  for (const filename of CONFIG_SEARCH_FILENAMES) {
+    const candidate = resolve(root, filename)
+    try {
+      await access(candidate)
+      return { path: candidate, root }
+    } catch {
+      // File doesn't exist at this level — check the next supported filename.
+    }
+  }
+
+  return null
+}
+
+/**
+ * Search upward from `startDir` for a Lore config file.
  * Returns the path to the file and the directory it was found in.
  */
 export async function findConfigFile(
@@ -151,13 +176,8 @@ export async function findConfigFile(
   const { root } = { root: "/" }
 
   while (true) {
-    const candidate = resolve(dir, CONFIG_FILENAME)
-    try {
-      await access(candidate)
-      return { path: candidate, root: dir }
-    } catch {
-      // File doesn't exist at this level — go up
-    }
+    const found = await findConfigFileInDirectory(dir)
+    if (found) return found
     const parent = dirname(dir)
     if (parent === dir || dir === root) return null
     dir = parent

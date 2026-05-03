@@ -128,6 +128,8 @@ Committed `.lore.yaml` files must contain only shared, non-secret config. Do
 not commit `auth.token`, personal scratch vault IDs, or maintainer-specific
 local values; Lore warns whenever `auth.token` is present in `.lore.yaml`,
 even if a higher-priority auth source wins.
+Use gitignored `.lore.local.yaml` for full personal config overrides; config
+discovery prefers it over `.lore.yaml` in the same directory.
 
 Notion page IDs are access locators, not bearer secrets. A deliberately shared
 team vault ID in git history does not itself require history rewrite or

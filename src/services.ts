@@ -6,9 +6,14 @@
  * from CLI → MCP layer.
  */
 
-import { access } from "node:fs/promises"
 import { resolve } from "node:path"
-import { findConfigFile, loadConfig, resolveAuth, type ResolvedAuth } from "./config.js"
+import {
+  findConfigFile,
+  findConfigFileInDirectory,
+  loadConfig,
+  resolveAuth,
+  type ResolvedAuth,
+} from "./config.js"
 import {
   createAuthRefreshingClient,
   createClient,
@@ -259,14 +264,14 @@ export async function initServices(
   // 0.10.0: honor LORE_CONFIG_ROOT for MCP-spawned children.
   // The install path (`buildMcpEnv` in `cli/commands/install.ts`)
   // forwards this static value into the MCP entry so the spawned
-  // child resolves the right `.lore.yaml` without re-walking up
+  // child resolves the right Lore config without re-walking up
   // from the host's spawn-time cwd (which may not match the
   // operator's vault directory). Falls back to the upward search
   // when the env var is unset, preserving the original CLI /
   // hooks paths.
   //
   // Surface a friendly error when the env var points at a
-  // directory that lacks `.lore.yaml` so the operator sees
+  // directory that lacks Lore config so the operator sees
   // guidance rather than the raw `ENOENT` from `loadConfig`.
   //
   // Whitespace-only values (e.g., `LORE_CONFIG_ROOT="   "` from a
@@ -276,23 +281,23 @@ export async function initServices(
   const explicitRoot = rawRoot?.trim() ? rawRoot.trim() : undefined
   if (explicitRoot) {
     const root = resolve(explicitRoot)
-    const configPath = resolve(root, ".lore.yaml")
-    try {
-      await access(configPath)
-    } catch {
+    const found = await findConfigFileInDirectory(root)
+    if (!found) {
       throw new Error(
-        `LORE_CONFIG_ROOT=${root} but no .lore.yaml exists there. ` +
+        `LORE_CONFIG_ROOT=${root} but no .lore.local.yaml or .lore.yaml exists there. ` +
           "Re-run `lore install` from the project directory or unset " +
           "LORE_CONFIG_ROOT to fall back to the upward search."
       )
     }
-    const config = await loadConfig(configPath)
-    return initServicesFromConfig(workDir, root, config, options)
+    const config = await loadConfig(found.path)
+    return initServicesFromConfig(workDir, found.root, config, options)
   }
 
   const found = await findConfigFile(workDir)
   if (!found) {
-    throw new Error("No .lore.yaml found. Run `lore init` to set up a vault.")
+    throw new Error(
+      "No .lore.local.yaml or .lore.yaml found. Run `lore init` to set up a vault."
+    )
   }
 
   const config = await loadConfig(found.path)

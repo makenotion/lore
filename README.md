@@ -78,7 +78,9 @@ same id.
 `.lore.yaml` is intended to be committable only when it contains shared,
 non-secret configuration. A repo-scoped `vault.pageId` should point at a vault
 deliberately shared with the team. Do not commit personal scratch vault IDs,
-`auth.token`, or any other maintainer-specific value.
+`auth.token`, or any other maintainer-specific value. Use gitignored
+`.lore.local.yaml` for a personal full-config override in a repo that also has
+shared config.
 
 Notion page IDs are access locators, not bearer credentials: knowing a page ID
 does not grant access unless the caller's Notion token can already read that
@@ -336,14 +338,17 @@ behavior, and compatibility notes.
 
 ## Configuration
 
-Lore is configured via `.lore.yaml`. The file is located by searching upward
-from the current working directory.
+Lore is configured via `.lore.local.yaml` or `.lore.yaml`. Config is located by
+searching upward from the current working directory; at each directory,
+`.lore.local.yaml` wins over `.lore.yaml` when both exist.
 
 Committed `.lore.yaml` files must contain only shared, non-secret config.
 Allowed values include a team-owned `vault.pageId`, project mappings, detection
 rules, and hook preferences. Do not commit `auth.token`, personal scratch
 vault page IDs, or anything personally identifying; use environment variables
-or ntn auth for credentials.
+or ntn auth for credentials. For personal vault overrides, create a
+gitignored `.lore.local.yaml` with a full Lore config, including any shared
+project mappings or hook preferences you still need.
 
 Threat-model posture for `vault.pageId`: a Notion page ID is not a credential,
 and exposing one does not bypass Notion permissions. Team-owned vault IDs may be

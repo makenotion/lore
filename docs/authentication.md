@@ -97,6 +97,11 @@ committed-config policy because they can reveal private workspace context; scrub
 them from the working copy and decide with the page owner whether to replace the
 page or rewrite history.
 
+Operators who need a personal vault page ID can create a gitignored
+`.lore.local.yaml`. Lore checks for `.lore.local.yaml` before `.lore.yaml` in
+each directory while searching upward, and treats it as a full config file
+rather than a partial overlay.
+
 ## Rate Limits
 
 Notion rate limits are enforced per access token, not per integration. The
