@@ -253,6 +253,8 @@ const CONFIDENCES = ["certain", "likely", "speculative"] as const
 const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as const
 
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
+// Save requires real dates. Update accepts empty strings so MCP callers can
+// clear existing date properties while sharing the same YYYY-MM-DD contract.
 const ymdDateSchema = z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format")
 const clearableYmdDateSchema = z
   .string()
