@@ -14,6 +14,10 @@ import { tmpdir } from "node:os"
 import { resolve, relative, basename, extname, join } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import { dynamicCodeFence } from "../../core/markdown.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
 import { initServices, type LoreServices } from "../../services.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../../notion/rate-limit.js"
 import type { Memory } from "../../types.js"
@@ -404,12 +408,20 @@ export async function resolveMineProject(
   services: LoreServices,
   explicitName: string | undefined
 ): Promise<{ id: string } | null> {
-  if (explicitName) {
-    const found = await services.projects.findByName(explicitName)
+  const explicitProjectName = validateExplicitProjectScopeName(
+    explicitName,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+    }
+  )
+  if (explicitProjectName !== undefined) {
+    const found = await services.projects.findByName(explicitProjectName)
     if (!found) {
       throw new Error(
-        `Project "${explicitName}" not found. ` +
-          "Run `lore status projects` to list configured projects."
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+        })
       )
     }
     return { id: found.id }
@@ -519,7 +531,10 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function parseMineLockOwner(raw: string): { pid: number | null; createdAtMs: number | null } {
+function parseMineLockOwner(raw: string): {
+  pid: number | null
+  createdAtMs: number | null
+} {
   try {
     const parsed = JSON.parse(raw) as { pid?: unknown; createdAt?: unknown }
     const createdAtMs =
@@ -975,15 +990,7 @@ export async function runMineUpsert(
     const batch = files.slice(i, i + concurrency)
     const results = await Promise.all(
       batch.map((file) =>
-        processOneFile(
-          services,
-          dir,
-          file,
-          projectId,
-          topicId,
-          heldLockPaths,
-          logError
-        )
+        processOneFile(services, dir, file, projectId, topicId, heldLockPaths, logError)
       )
     )
     outcomes.push(...results)

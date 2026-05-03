@@ -19,9 +19,10 @@ import type { LoreServices } from "../services.js"
 import type { FactConfidence, MemoryConfidence } from "../types.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../notion/rate-limit.js"
 import {
-  decayConfidenceScore,
-  seedConfidenceScore,
-} from "./decay.js"
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "./project-scope.js"
+import { decayConfidenceScore, seedConfidenceScore } from "./decay.js"
 import { todayUtc } from "./task.js"
 
 const DAY_MS = 1000 * 60 * 60 * 24
@@ -76,7 +77,7 @@ export interface BuildFactConfidenceScoresResult {
 }
 
 export async function runBuildFactConfidenceScoresMigration(
-  opts: BuildFactConfidenceScoresOptions,
+  opts: BuildFactConfidenceScoresOptions
 ): Promise<BuildFactConfidenceScoresResult> {
   const plan = await buildPlan(opts)
   let written = 0
@@ -87,7 +88,7 @@ export async function runBuildFactConfidenceScoresMigration(
 }
 
 async function buildPlan(
-  opts: BuildFactConfidenceScoresOptions,
+  opts: BuildFactConfidenceScoresOptions
 ): Promise<BuildFactConfidenceScoresPlan> {
   const { services, projectName } = opts
 
@@ -95,13 +96,18 @@ async function buildPlan(
   // silently fall through to vault-wide migration — same posture as the
   // memory-side migration.
   let projectId: string | undefined
-  if (projectName) {
-    const project = await services.projects.findByName(projectName)
+  const explicitProjectName = validateExplicitProjectScopeName(projectName, "--project", {
+    listHint: "run `lore status projects` to list configured projects",
+    omittedScopeLabel: "vault-wide scope",
+  })
+  if (explicitProjectName !== undefined) {
+    const project = await services.projects.findByName(explicitProjectName)
     if (project === null) {
       throw new Error(
-        `lore migrate --build-fact-confidence-scores: project "${projectName}" not found. ` +
-          `Run \`lore status\` to list configured projects, or omit --project to ` +
-          `run vault-wide.`,
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+          omittedScopeLabel: "vault-wide scope",
+        })
       )
     }
     projectId = project.id
@@ -123,9 +129,7 @@ async function buildPlan(
     // `FactConfidence` is structurally identical to `MemoryConfidence`
     // (`certain | likely | speculative`), so the shared `CONFIDENCE_SEED`
     // table backing `seedConfidenceScore` works without translation.
-    const seeded = seedConfidenceScore(
-      fact.confidence as unknown as MemoryConfidence,
-    )
+    const seeded = seedConfidenceScore(fact.confidence as unknown as MemoryConfidence)
     // `Fact.createdAt` is typed optional on the public boundary
     // (DEFERRED-02) so adding the field doesn't break external
     // consumers. Internally, every Fact yielded by
@@ -139,7 +143,7 @@ async function buildPlan(
           `unexpectedly undefined (fact id=${fact.id}). listAllForBackfill ` +
           `routes through pageToFact which always populates the field; a ` +
           `missing value indicates a partial Fact reached the migration ` +
-          `walker.`,
+          `walker.`
       )
     }
     const createdDate = fact.createdAt.slice(0, 10)
@@ -162,11 +166,10 @@ async function buildPlan(
 
 async function executePlan(
   plan: BuildFactConfidenceScoresPlan,
-  opts: BuildFactConfidenceScoresOptions,
+  opts: BuildFactConfidenceScoresOptions
 ): Promise<number> {
   const concurrency =
-    opts.services.config.notion?.rateLimit?.concurrency ??
-    DEFAULT_NOTION_CONCURRENCY
+    opts.services.config.notion?.rateLimit?.concurrency ?? DEFAULT_NOTION_CONCURRENCY
   let processed = 0
   let nextProgressMark = 100
   for (let i = 0; i < plan.rowsToSeed.length; i += concurrency) {
@@ -176,14 +179,14 @@ async function executePlan(
         opts.services.facts.applyBackfillScore(
           row.factId,
           row.decayedScore,
-          row.createdDate,
-        ),
-      ),
+          row.createdDate
+        )
+      )
     )
     processed += batch.length
     if (processed >= nextProgressMark) {
       process.stderr.write(
-        `[lore] build-fact-confidence-scores: ${processed}/${plan.rowsToSeed.length}\n`,
+        `[lore] build-fact-confidence-scores: ${processed}/${plan.rowsToSeed.length}\n`
       )
       nextProgressMark = Math.floor(processed / 100) * 100 + 100
     }

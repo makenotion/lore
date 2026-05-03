@@ -105,6 +105,33 @@ function services(overrides: Record<string, unknown> = {}) {
 }
 
 describe("lore-task-create", () => {
+  it("rejects an unresolved explicit projectName before creating a task", async () => {
+    const svc = services({
+      context: {
+        project: { id: "proj-ambient", name: "Ambient", path: "." },
+        isCatchAllFallback: false,
+      },
+    })
+    svc.projects.findByName = vi.fn().mockResolvedValue(null)
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Rotate keys",
+      projectName: "Missing",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(svc.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+  })
+
   it("threads subject, description, and entity-default through to TaskService", async () => {
     const created: Task = {
       ...makeTask("t1", { entity: "AuthService" }),
@@ -907,6 +934,25 @@ describe("optional-string Zod boundary", () => {
 })
 
 describe("lore-tasks", () => {
+  it("returns an error when list projectName does not resolve", async () => {
+    const svc = services({
+      context: { project: { id: "proj-ambient", name: "Ambient", path: "." } },
+    })
+    svc.projects.findByName = vi.fn().mockResolvedValue(null)
+    svc.tasks.list = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({ action: "list", projectName: "Missing" } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(svc.tasks.list).not.toHaveBeenCalled()
+  })
+
   it("buckets tasks into Overdue and Active sections", async () => {
     const svc = services({
       context: { project: { id: "proj-1", name: "Mail", path: "/mail" } },
@@ -1905,7 +1951,7 @@ describe("lore-task action='list' trust indicator (DEFERRED-01 follow-up to 0.8.
  * Issue 0.7.0/14 — `lore-task action='reconcile'` integration. The
  * algorithm itself is exercised in `src/core/task-reconcile.test.ts`;
  * this block pins the wire-up (handler renders the algorithm's output,
- * resolves project context, surfaces project-not-found warnings, and
+ * resolves project context, rejects unresolved explicit project scope, and
  * the response shape matches the spec).
  */
 describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
@@ -2010,7 +2056,7 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     void today
   })
 
-  it("surfaces a 'project not found' warning when projectName resolves nothing", async () => {
+  it("returns an error when projectName resolves nothing", async () => {
     const svc = services()
     svc.projects.findByName = vi.fn().mockResolvedValue(null)
     svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
@@ -2025,7 +2071,10 @@ describe("lore-task action='reconcile' (issue 0.7.0/14)", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
     expect(svc.projects.findByName).toHaveBeenCalledWith("Nonexistent")
-    expect(text).toContain('Project "Nonexistent" not found')
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Nonexistent" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(svc.tasks.list).not.toHaveBeenCalled()
   })
 
   it("scopes the reconcile pass to the resolved project id", async () => {

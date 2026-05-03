@@ -211,30 +211,38 @@ describe("parseReconcileCliOptions", () => {
 })
 
 describe("runReconcile", () => {
-  it("warns and falls back to auto-detected project when --project resolves nothing", async () => {
-    const messages: string[] = []
+  it("rejects when --project resolves nothing", async () => {
     const findByName = vi.fn().mockResolvedValue(null)
     const services = makeServices({
       findByName,
       contextProject: { id: "ctx-proj", name: "AutoDetected", path: "." },
     })
-    const output = await runReconcile(
-      services,
-      { projectName: "Nonexistent", minScore: 0.5, limit: 25 },
-      (msg) => messages.push(msg),
+
+    await expect(
+      runReconcile(services, { projectName: "Nonexistent", minScore: 0.5, limit: 25 })
+    ).rejects.toThrow(
+      'Project "Nonexistent" could not be resolved (not found, archived, or inaccessible).'
     )
 
     expect(findByName).toHaveBeenCalledWith("Nonexistent")
-    expect(messages).toHaveLength(1)
-    expect(messages[0]).toContain('"Nonexistent" not found')
-    // Falls back to auto-detected project — assertion shape mirrors
-    // the MCP-side test that pins the same contract for the action
-    // handler.
     const tasksList = services.tasks.list as ReturnType<typeof vi.fn>
-    expect(tasksList).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "ctx-proj" }),
-    )
-    expect(output).toContain("0 candidate closures")
+    expect(tasksList).not.toHaveBeenCalled()
+  })
+
+  it("rejects blank --project before context fallback", async () => {
+    const findByName = vi.fn()
+    const services = makeServices({
+      findByName,
+      contextProject: { id: "ctx-proj", name: "AutoDetected", path: "." },
+    })
+
+    await expect(
+      runReconcile(services, { projectName: "", minScore: 0.5, limit: 25 })
+    ).rejects.toThrow('Project "" could not be resolved')
+
+    expect(findByName).not.toHaveBeenCalled()
+    const tasksList = services.tasks.list as ReturnType<typeof vi.fn>
+    expect(tasksList).not.toHaveBeenCalled()
   })
 
   it("scopes to the named project when findByName resolves", async () => {
@@ -245,16 +253,12 @@ describe("runReconcile", () => {
       findByName,
       contextProject: { id: "ctx-other", name: "Other", path: "other" },
     })
-    await runReconcile(
-      services,
-      { projectName: "Mail", minScore: 0.5, limit: 25 },
-      () => {},
-    )
+    await runReconcile(services, { projectName: "Mail", minScore: 0.5, limit: 25 })
 
     const tasksList = services.tasks.list as ReturnType<typeof vi.fn>
     // Named project wins over the auto-detected context.
     expect(tasksList).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "p-mail" }),
+      expect.objectContaining({ projectId: "p-mail" })
     )
   })
 
@@ -283,11 +287,11 @@ describe("runReconcile", () => {
       memoriesByQuery: () => [memory],
     })
 
-    const output = await runReconcile(
-      services,
-      { projectName: undefined, minScore: 0.5, limit: 25 },
-      () => {},
-    )
+    const output = await runReconcile(services, {
+      projectName: undefined,
+      minScore: 0.5,
+      limit: 25,
+    })
 
     expect(output).toContain("## 1 candidate closure (out of 1 active task scanned)")
     expect(output).toContain('### 1. Task t-abc — "Track PR-25750 review" [in-progress')
@@ -298,13 +302,11 @@ describe("runReconcile", () => {
 
   it("renders the empty-set form on a vault with no active tasks", async () => {
     const services = makeServices({ contextProject: null })
-    const output = await runReconcile(
-      services,
-      { projectName: undefined, minScore: 0.5, limit: 25 },
-      () => {},
-    )
-    expect(output).toBe(
-      "## 0 candidate closures (out of 0 active tasks scanned)",
-    )
+    const output = await runReconcile(services, {
+      projectName: undefined,
+      minScore: 0.5,
+      limit: 25,
+    })
+    expect(output).toBe("## 0 candidate closures (out of 0 active tasks scanned)")
   })
 })

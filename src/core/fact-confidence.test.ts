@@ -23,11 +23,7 @@ import type { Client, PageObjectResponse } from "@notionhq/client"
 import { FactService } from "./fact.js"
 import { runBuildFactConfidenceScoresMigration } from "./fact-confidence-migration.js"
 import { buildFactProps } from "../notion/schema.js"
-import {
-  type DatabaseRef,
-  type Fact,
-  type FactConfidence,
-} from "../types.js"
+import { type DatabaseRef, type Fact, type FactConfidence } from "../types.js"
 
 const DB: DatabaseRef = {
   databaseId: "facts-db",
@@ -84,10 +80,12 @@ type UpdateArgs = {
   properties: Record<string, unknown>
 }
 
-function mkClient(opts: {
-  retrieve?: PageObjectResponse | Error
-  query?: Array<{ results: PageObjectResponse[]; has_more?: boolean }>
-} = {}) {
+function mkClient(
+  opts: {
+    retrieve?: PageObjectResponse | Error
+    query?: Array<{ results: PageObjectResponse[]; has_more?: boolean }>
+  } = {},
+) {
   const queryResponses = opts.query ?? []
   let queryIdx = 0
   const updateSpy = vi.fn(async (_args: UpdateArgs) => ({}))
@@ -526,7 +524,9 @@ describe("runBuildFactConfidenceScoresMigration", () => {
           },
           applyBackfillScore: applySpy,
         },
-      } as unknown as Parameters<typeof runBuildFactConfidenceScoresMigration>[0]["services"],
+      } as unknown as Parameters<
+        typeof runBuildFactConfidenceScoresMigration
+      >[0]["services"],
       applySpy,
     }
   }
@@ -620,6 +620,6 @@ describe("runBuildFactConfidenceScoresMigration", () => {
         dryRun: false,
         projectName: "nonexistent",
       }),
-    ).rejects.toThrow(/project "nonexistent" not found/)
+    ).rejects.toThrow(/Project "nonexistent" could not be resolved/)
   })
 })

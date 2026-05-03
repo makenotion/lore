@@ -66,9 +66,7 @@ interface FakeServicesArgs {
     score: number,
     lastReferencedAt: string,
   ) => Promise<void>
-  findByName?: (
-    name: string,
-  ) => Promise<{ id: string; name: string } | null>
+  findByName?: (name: string) => Promise<{ id: string; name: string } | null>
   concurrency?: number
 }
 
@@ -172,10 +170,7 @@ describe("runBuildConfidenceScoresMigration — plan", () => {
       dryRun: false,
     })
     expect(plan.rowsToSeed).toHaveLength(1)
-    expect(plan.rowsToSeed[0]!.decayedScore).toBeCloseTo(
-      0.9 * Math.pow(0.99, 30),
-      4,
-    )
+    expect(plan.rowsToSeed[0]!.decayedScore).toBeCloseTo(0.9 * Math.pow(0.99, 30), 4)
     expect(plan.rowsToSeed[0]!.decayedScore).toBeCloseTo(0.665, 2)
   })
 
@@ -343,8 +338,7 @@ describe("runBuildConfidenceScoresMigration — project scoping", () => {
     const memories = [makeMemory({ id: "m1", confidenceScore: null })]
     const { services, listSpy, findByNameSpy, applySpy } = makeServices({
       memories,
-      findByName: async (name) =>
-        name === "Mail" ? { id: "project-mail", name } : null,
+      findByName: async (name) => (name === "Mail" ? { id: "project-mail", name } : null),
     })
 
     await runBuildConfidenceScoresMigration({
@@ -372,12 +366,12 @@ describe("runBuildConfidenceScoresMigration — project scoping", () => {
         dryRun: false,
         projectName: "Typo",
       }),
-    ).rejects.toThrow(/project "Typo" not found/)
+    ).rejects.toThrow(/Project "Typo" could not be resolved/)
 
     expect(findByNameSpy).toHaveBeenCalledWith("Typo")
     // Safety: no listAllForBackfill or applyBackfillScore call when the
     // project name fails to resolve. The error message names the offender
-    // and points at `lore status`.
+    // and points at `lore status projects`.
     expect(listSpy).not.toHaveBeenCalled()
     expect(applySpy).not.toHaveBeenCalled()
   })

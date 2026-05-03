@@ -11,7 +11,14 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-03
+
 ### Changed
+
+- **Explicit project scope now fails closed.** MCP tools and CLI commands that
+  accept `projectName`, `projectNames`, or `--project` now reject typo'd,
+  archived, inaccessible, or ambiguous project names before scoped reads or
+  writes run. Omit the project field intentionally to use auto-detected scope.
 
 - **Breaking vault-shape contract: Entities is now required.** Vault
   verification now requires the five-database schema
@@ -22,6 +29,9 @@ log is the canonical source for those.
   falling back to no-Entities compatibility. Row-level `SubjectKey`
   fallback remains for Fact rows whose entity relations have not been
   backfilled yet. (#272)
+- **Notion `User-Agent` header bumps to `lore/0.12.0`.** Notion logs
+  `User-Agent` on every API call; the bump marks the strict project-scope
+  behavior flip for Notion-side analytics.
 
 ## [0.11.0] - 2026-05-03
 
@@ -531,7 +541,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/makenotion/lore/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/makenotion/lore/compare/v0.6.0...v0.9.0

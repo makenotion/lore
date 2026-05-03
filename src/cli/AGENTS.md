@@ -92,8 +92,14 @@ try {
 - Log errors with `console.error`, not `console.log`.
 - Exit with code 1 on failure.
 - Extract the `.message` from Error instances for clean output.
-- Non-fatal warnings (e.g., project not found during search) use `console.warn`
-  and continue execution.
+- Treat explicit project-scope misses as fatal. If a command accepts
+  `--project <name>` and the name cannot be resolved, log an actionable
+  error and exit with code 1 instead of falling back to auto-detected or
+  vault-wide scope. Use `formatUnresolvedProjectScopeError()` from
+  `src/core/project-scope.ts` so CLI wording stays aligned with MCP.
+- Non-fatal warnings use `console.warn` and continue execution only when the
+  requested operation can still proceed without changing the user's explicit
+  scope.
 
 ## Output Formatting
 

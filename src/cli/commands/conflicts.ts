@@ -28,6 +28,10 @@ import {
   type ConflictCandidate,
 } from "../../core/conflict.js"
 import { dynamicCodeFence } from "../../core/markdown.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
 import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
 import type { Memory } from "../../types.js"
 import { parsePositiveDecimalInteger } from "../parse.js"
@@ -167,11 +171,16 @@ export async function resolveScanProjects(
   services: LoreServices,
   projectName: string | undefined
 ): Promise<ScanProjectRef[]> {
-  if (projectName) {
-    const found = await services.projects.findByName(projectName)
+  const explicitProjectName = validateExplicitProjectScopeName(projectName, "--project", {
+    listHint: "run `lore status projects` to list configured projects",
+  })
+  if (explicitProjectName !== undefined) {
+    const found = await services.projects.findByName(explicitProjectName)
     if (!found) {
       throw new Error(
-        `Project "${projectName}" not found. Run \`lore status\` to list configured projects.`
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+        })
       )
     }
     return [{ id: found.id, label: found.name }]

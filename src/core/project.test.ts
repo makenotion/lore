@@ -125,7 +125,9 @@ describe("ProjectService.findByPath — active-only lookup", () => {
       status: "archived",
     })
     const client = createMockClient()
-    client.dataSources.query.mockImplementation(activeAwareResults([active], [archived, active]))
+    client.dataSources.query.mockImplementation(
+      activeAwareResults([active], [archived, active]),
+    )
     const service = new ProjectService(client, DB)
 
     const project = await service.findByPath("services/mail")
@@ -162,7 +164,9 @@ describe("ProjectService.findByName — active-only lookup", () => {
     const active = projectPage("p-active", "alpha")
     const archived = projectPage("p-archived", "alpha", { status: "archived" })
     const client = createMockClient()
-    client.dataSources.query.mockImplementation(activeAwareResults([active], [archived, active]))
+    client.dataSources.query.mockImplementation(
+      activeAwareResults([active], [archived, active]),
+    )
     const service = new ProjectService(client, DB)
 
     const project = await service.findByName("alpha")
@@ -188,6 +192,23 @@ describe("ProjectService.findByName — active-only lookup", () => {
     const service = new ProjectService(client, DB)
 
     await expect(service.findByName("alpha")).resolves.toBeNull()
+  })
+
+  it("rejects ambiguous active project-name matches instead of picking one", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValue({
+      results: [projectPage("p1", "alpha"), projectPage("p2", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await expect(service.findByName("alpha")).rejects.toThrow(
+      /Multiple active projects named "alpha" found \(p1, p2\)/,
+    )
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({ page_size: 2 }),
+    )
   })
 })
 
@@ -318,14 +339,14 @@ describe("ProjectService.findByName — stampede dedup", () => {
                 has_more: false,
                 next_cursor: null,
               }),
-            5
-          )
-        )
+            5,
+          ),
+        ),
     )
     const service = new ProjectService(client, DB)
 
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => service.findByName("alpha"))
+      Array.from({ length: 8 }, () => service.findByName("alpha")),
     )
 
     expect(results.map((r) => r?.id)).toEqual(Array(8).fill("p1"))

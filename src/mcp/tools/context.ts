@@ -7,6 +7,7 @@ import {
   formatDispatchError,
   toolError,
 } from "../helpers.js"
+import { resolveReadProjectScope } from "../resolve.js"
 import {
   DEFAULT_WAKEUP_KNOWLEDGE_FACT_LIMIT,
   DEFAULT_WAKEUP_MEMORY_LIMIT,
@@ -316,28 +317,16 @@ async function handleWakeUp(
   },
 ): Promise<ToolResult> {
   try {
-    let projectId = services.context.project?.id
     // The framing block (Fix 2 in issue 0.6.0/18) describes whichever
-    // project the rest of the wake-up output is filtered to. When the
-    // caller passes an explicit `projectName`, that branch is NOT a
-    // catch-all fallback — explicit picks win over auto-detection. When
-    // `projectName` is unset, mirror `services.context` directly.
-    let resolvedProject = services.context.project
-    let resolvedCatchAllFallback = services.context.isCatchAllFallback
+    // project the rest of the wake-up output is filtered to. Explicit
+    // `projectName` picks are strict and never catch-all fallbacks; omitted
+    // scope mirrors `services.context` directly.
+    const {
+      projectId,
+      project: resolvedProject,
+      isCatchAllFallback: resolvedCatchAllFallback,
+    } = await resolveReadProjectScope(services, args.projectName)
     const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-        resolvedProject = found
-        resolvedCatchAllFallback = false
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
-        )
-      }
-    }
 
     const includeContent = args.expand === true
     // PF3-04: when `userQuery` is set the MCP surface mirrors the shell
@@ -842,22 +831,8 @@ async function handleDigest(
   },
 ): Promise<ToolResult> {
   try {
-    let projectId = services.context.project?.id
-    let projectLabel = services.context.project?.name ?? "vault-wide"
-
-    const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-        projectLabel = found.name
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
-        )
-      }
-    }
+    const { projectId, project } = await resolveReadProjectScope(services, args.projectName)
+    const projectLabel = project?.name ?? "vault-wide"
 
     const digest = await gatherDigestData(services, {
       projectId,
@@ -868,9 +843,6 @@ async function handleDigest(
     })
 
     const parts: string[] = [digest.raw]
-    if (warnings.length > 0) {
-      parts.push(`## Warnings\n${warnings.join("\n")}`, "")
-    }
     parts.push(
       "---\n" +
         "To save this digest, synthesize the above into a concise summary and call " +

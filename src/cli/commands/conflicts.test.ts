@@ -100,7 +100,7 @@ function makeServices(opts: MakeServicesOpts): LoreServices {
         result.push(opts.memoriesByProjectId?.[id] ?? [])
       }
       return result
-    }
+    },
   )
   return {
     projects: { findByName, list },
@@ -230,7 +230,7 @@ describe("resolveScanProjects", () => {
   it("throws with a 'lore status' hint when --project is unknown", async () => {
     const services = makeServices({ projectsByName: {} })
     await expect(resolveScanProjects(services, "Nope")).rejects.toThrow(
-      /Project "Nope" not found.*lore status/
+      /Project "Nope" could not be resolved.*lore status projects/,
     )
   })
 
@@ -551,7 +551,7 @@ describe("runScan — pipeline shape", () => {
         json: false,
         exhaustive: true,
       },
-      (msg) => messages.push(msg)
+      (msg) => messages.push(msg),
     )
 
     expect(spy).toHaveBeenCalledWith(expect.any(Array), {
@@ -610,7 +610,7 @@ describe("runScan — pipeline shape", () => {
     expect(r1.scanId).not.toBe(r2.scanId)
     // RFC 4122 v4 UUID surface check.
     expect(r1.scanId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     )
   })
 
@@ -641,7 +641,7 @@ describe("runScan — pipeline shape", () => {
           })
         }
         return [[]]
-      }
+      },
     )
     ;(services.memories as unknown as { listForScan: typeof listForScan }).listForScan =
       listForScan
@@ -655,7 +655,7 @@ describe("runScan — pipeline shape", () => {
         json: false,
         exhaustive: false,
       },
-      (msg) => messages.push(msg)
+      (msg) => messages.push(msg),
     )
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain("Mail")
@@ -915,8 +915,8 @@ describe("renderScanJson", () => {
             rawCandidateLimitReachedProjects: ["Mail"],
             alreadyJudgedCandidates: 750,
           }),
-        })
-      )
+        }),
+      ),
     )
     expect(out.stats.rawCandidateLimit).toBe(750)
     expect(out.stats.rawCandidateLimitReached).toBe(true)
@@ -933,7 +933,9 @@ describe("renderScanJson", () => {
 
   it("includes a back-reference to the docs for verdictDefinitions (not the definitions themselves)", () => {
     const out = JSON.parse(renderScanJson(buildReport()))
-    expect(out.compareContract.verdictDefinitions).toContain("docs/memory-workflows.md#conflict-verdicts")
+    expect(out.compareContract.verdictDefinitions).toContain(
+      "docs/memory-workflows.md#conflict-verdicts",
+    )
   })
 
   it("each pair entry carries kind for both memories so the agent can validate supersedes-decision client-side", () => {
@@ -966,8 +968,8 @@ describe("renderScanJson", () => {
               signals: ["title trigram: 0.78"],
             },
           ],
-        })
-      )
+        }),
+      ),
     )
     expect(out.pairs[0].memoryA.kind).toBe("decision")
     expect(out.pairs[0].memoryB.kind).toBe("note")

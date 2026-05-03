@@ -7,6 +7,10 @@ import {
   DEFAULT_RECONCILE_MIN_SCORE,
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
 import { parsePositiveDecimalInteger } from "../parse.js"
 
 /**
@@ -40,9 +44,7 @@ export function parseReconcileCliOptions(raw: {
   project?: string
   minScore: string
   limit: string
-}):
-  | { ok: true; value: ReconcileCliOptions }
-  | { ok: false; message: string } {
+}): { ok: true; value: ReconcileCliOptions } | { ok: false; message: string } {
   const minScore = parseFloat(raw.minScore)
   if (!Number.isFinite(minScore)) {
     return {
@@ -76,27 +78,31 @@ export function parseReconcileCliOptions(raw: {
 
 /**
  * Run the reconcile pass and return the rendered markdown output.
- * Pure-ish helper: takes `services` + parsed options + a `warn` sink so
- * the unit test can capture warnings without spying on `console.warn`.
- *
- * Mirrors `digest.ts:resolveSpawnCwd`'s injection-friendly shape: the
- * action body wires `console.warn` in production; the test passes a
- * `messages.push` sink to assert on the project-not-found path.
+ * Pure-ish helper: takes `services` + parsed options so the unit test can
+ * assert project resolution without standing up a CLI process.
  */
 export async function runReconcile(
   services: LoreServices,
-  opts: ReconcileCliOptions,
-  warn: (msg: string) => void = (msg) => console.warn(msg),
+  opts: ReconcileCliOptions
 ): Promise<string> {
   let projectId: string | undefined
 
-  if (opts.projectName) {
-    const found = await services.projects.findByName(opts.projectName)
+  const explicitProjectName = validateExplicitProjectScopeName(
+    opts.projectName,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+    }
+  )
+  if (explicitProjectName !== undefined) {
+    const found = await services.projects.findByName(explicitProjectName)
     if (found) {
       projectId = found.id
     } else {
-      warn(
-        `Project "${opts.projectName}" not found — falling back to auto-detected project.`,
+      throw new Error(
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+        })
       )
     }
   }
@@ -105,49 +111,47 @@ export async function runReconcile(
   }
 
   const today = new Date().toISOString().split("T")[0]!
-  const { candidates, activeTasksScanned } = await reconcileActiveTasks(
-    services,
-    {
-      projectId,
-      minScore: opts.minScore,
-      limit: opts.limit,
-      today,
-    },
-  )
+  const { candidates, activeTasksScanned } = await reconcileActiveTasks(services, {
+    projectId,
+    minScore: opts.minScore,
+    limit: opts.limit,
+    today,
+  })
 
   return formatReconcileOutput(candidates, activeTasksScanned, today)
 }
 
 const reconcileCommand = new Command("reconcile")
   .description("Scan active tasks for resolution-shaped memory matches")
-  .option("-p, --project <name>", "Project to scope the scan to (defaults to cwd-resolved project)")
+  .option(
+    "-p, --project <name>",
+    "Project to scope the scan to (defaults to cwd-resolved project)"
+  )
   .option(
     "--min-score <n>",
     `Minimum candidate score (0–1) to surface (default ${DEFAULT_RECONCILE_MIN_SCORE})`,
-    String(DEFAULT_RECONCILE_MIN_SCORE),
+    String(DEFAULT_RECONCILE_MIN_SCORE)
   )
   .option(
     "-n, --limit <n>",
     `Maximum candidate closures to surface (default ${DEFAULT_RECONCILE_LIMIT}, capped at ${MAX_RECONCILE_LIMIT})`,
-    String(DEFAULT_RECONCILE_LIMIT),
+    String(DEFAULT_RECONCILE_LIMIT)
   )
-  .action(
-    async (opts: { project?: string; minScore: string; limit: string }) => {
-      try {
-        const parsed = parseReconcileCliOptions(opts)
-        if (!parsed.ok) {
-          console.error(`Reconcile failed: ${parsed.message}`)
-          process.exit(1)
-        }
-        const services = await initServices()
-        const output = await runReconcile(services, parsed.value)
-        console.log(output)
-      } catch (err) {
-        console.error("Reconcile failed:", err instanceof Error ? err.message : err)
+  .action(async (opts: { project?: string; minScore: string; limit: string }) => {
+    try {
+      const parsed = parseReconcileCliOptions(opts)
+      if (!parsed.ok) {
+        console.error(`Reconcile failed: ${parsed.message}`)
         process.exit(1)
       }
-    },
-  )
+      const services = await initServices()
+      const output = await runReconcile(services, parsed.value)
+      console.log(output)
+    } catch (err) {
+      console.error("Reconcile failed:", err instanceof Error ? err.message : err)
+      process.exit(1)
+    }
+  })
 
 export const tasksCommand = new Command("tasks")
   .description("Task lifecycle operations")

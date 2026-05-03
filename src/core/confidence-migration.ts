@@ -19,9 +19,10 @@ import type { LoreServices } from "../services.js"
 import type { MemoryConfidence } from "../types.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../notion/rate-limit.js"
 import {
-  decayConfidenceScore,
-  seedConfidenceScore,
-} from "./decay.js"
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "./project-scope.js"
+import { decayConfidenceScore, seedConfidenceScore } from "./decay.js"
 import { todayUtc } from "./task.js"
 
 const DAY_MS = 1000 * 60 * 60 * 24
@@ -99,7 +100,7 @@ export interface BuildConfidenceScoresResult {
  * re-deriving the count.
  */
 export async function runBuildConfidenceScoresMigration(
-  opts: BuildConfidenceScoresOptions,
+  opts: BuildConfidenceScoresOptions
 ): Promise<BuildConfidenceScoresResult> {
   const plan = await buildPlan(opts)
   let written = 0
@@ -110,7 +111,7 @@ export async function runBuildConfidenceScoresMigration(
 }
 
 async function buildPlan(
-  opts: BuildConfidenceScoresOptions,
+  opts: BuildConfidenceScoresOptions
 ): Promise<BuildConfidenceScoresPlan> {
   const { services, projectName } = opts
 
@@ -119,13 +120,18 @@ async function buildPlan(
   // mutate every null-scored row across all projects, and a `--yes`
   // for one project is not consent to mutate the whole vault.
   let projectId: string | undefined
-  if (projectName) {
-    const project = await services.projects.findByName(projectName)
+  const explicitProjectName = validateExplicitProjectScopeName(projectName, "--project", {
+    listHint: "run `lore status projects` to list configured projects",
+    omittedScopeLabel: "vault-wide scope",
+  })
+  if (explicitProjectName !== undefined) {
+    const project = await services.projects.findByName(explicitProjectName)
     if (project === null) {
       throw new Error(
-        `lore migrate --build-confidence-scores: project "${projectName}" not found. ` +
-          `Run \`lore status\` to list configured projects, or omit --project to ` +
-          `run vault-wide.`,
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+          omittedScopeLabel: "vault-wide scope",
+        })
       )
     }
     projectId = project.id
@@ -166,7 +172,7 @@ async function buildPlan(
 
 async function executePlan(
   plan: BuildConfidenceScoresPlan,
-  opts: BuildConfidenceScoresOptions,
+  opts: BuildConfidenceScoresOptions
 ): Promise<number> {
   // Bounded-concurrent dispatch: chunk into batches whose size matches
   // the configured Notion concurrency, then `Promise.all` each batch
@@ -182,8 +188,7 @@ async function executePlan(
   // serialization, not in-flight count. Chunked-`Promise.all` makes the
   // operator's lever honest.
   const concurrency =
-    opts.services.config.notion?.rateLimit?.concurrency ??
-    DEFAULT_NOTION_CONCURRENCY
+    opts.services.config.notion?.rateLimit?.concurrency ?? DEFAULT_NOTION_CONCURRENCY
   let processed = 0
   let nextProgressMark = 100
   for (let i = 0; i < plan.rowsToSeed.length; i += concurrency) {
@@ -193,14 +198,14 @@ async function executePlan(
         opts.services.memories.applyBackfillScore(
           row.memoryId,
           row.decayedScore,
-          row.createdDate,
-        ),
-      ),
+          row.createdDate
+        )
+      )
     )
     processed += batch.length
     if (processed >= nextProgressMark) {
       process.stderr.write(
-        `[lore] build-confidence-scores: ${processed}/${plan.rowsToSeed.length}\n`,
+        `[lore] build-confidence-scores: ${processed}/${plan.rowsToSeed.length}\n`
       )
       // Next 100-row boundary strictly greater than `processed`.
       // `Math.floor(processed / 100) * 100 + 100` is `processed + 100`

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { resolveProjectIds } from "./resolve.js"
+import { resolveProjectIds, resolveReadProjectScope } from "./resolve.js"
 import type { LoreServices } from "../services.js"
 import type { Project, LoreConfig, ResolvedContext } from "../types.js"
 
@@ -66,31 +66,88 @@ describe("resolveProjectIds", () => {
       findByName: { "Mail Backend": backend, "Mail Web": web },
     })
 
-    const result = await resolveProjectIds(services, undefined, ["Mail Backend", "Mail Web"])
+    const result = await resolveProjectIds(services, undefined, [
+      "Mail Backend",
+      "Mail Web",
+    ])
     expect(result.ids).toEqual([backend.id, web.id])
     expect(result.warnings).toEqual([])
   })
 
-  it("warns for any name that does not resolve", async () => {
+  it("throws when an explicit projectName does not resolve", async () => {
+    const services = makeServices()
+
+    await expect(resolveProjectIds(services, "Missing")).rejects.toThrow(
+      'Project "Missing" could not be resolved (not found, archived, or inaccessible).'
+    )
+  })
+
+  it("throws when an explicit projectName is blank without falling back", async () => {
+    const mail = makeProject("Mail")
+    const services = makeServices({ contextProject: mail })
+
+    await expect(resolveProjectIds(services, "")).rejects.toThrow(
+      'Project "" could not be resolved (not found, archived, or inaccessible).'
+    )
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+  })
+
+  it("throws when every projectNames entry is missing", async () => {
+    const services = makeServices()
+
+    await expect(
+      resolveProjectIds(services, undefined, ["Missing", "Also Missing"])
+    ).rejects.toThrow(
+      'Projects "Missing", "Also Missing" could not be resolved (not found, archived, or inaccessible).'
+    )
+  })
+
+  it("throws when projectNames is explicitly empty without falling back", async () => {
+    const mail = makeProject("Mail")
+    const services = makeServices({ contextProject: mail })
+
+    await expect(resolveProjectIds(services, undefined, [])).rejects.toThrow(
+      'Project "" could not be resolved (not found, archived, or inaccessible).'
+    )
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+  })
+
+  it("throws when any projectNames entry is blank", async () => {
+    const backend = makeProject("Mail Backend")
+    const services = makeServices({
+      contextProject: makeProject("Mail"),
+      findByName: { "Mail Backend": backend },
+    })
+
+    await expect(
+      resolveProjectIds(services, undefined, ["Mail Backend", "  "])
+    ).rejects.toThrow(
+      'Project "" could not be resolved (not found, archived, or inaccessible).'
+    )
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+  })
+
+  it("throws atomically when a mixed projectNames list has any miss", async () => {
     const backend = makeProject("Mail Backend")
     const services = makeServices({
       findByName: { "Mail Backend": backend },
     })
 
-    const result = await resolveProjectIds(services, undefined, ["Mail Backend", "Missing"])
-    expect(result.ids).toEqual([backend.id])
-    expect(result.warnings).toContain(`Project "Missing" not found`)
+    await expect(
+      resolveProjectIds(services, undefined, ["Mail Backend", "Missing"])
+    ).rejects.toThrow(
+      'Project "Missing" could not be resolved (not found, archived, or inaccessible).'
+    )
   })
 
-  it("treats archived explicit project names as not found", async () => {
+  it("treats archived explicit project names as unresolved with useful recovery wording", async () => {
     const services = makeServices({
       findByName: { Archive: null },
     })
 
-    const result = await resolveProjectIds(services, "Archive")
-
-    expect(result.ids).toEqual([])
-    expect(result.warnings).toEqual([`Project "Archive" not found`])
+    await expect(resolveProjectIds(services, "Archive")).rejects.toThrow(
+      /Project "Archive" could not be resolved.*archived.*Fix the project scope/
+    )
   })
 
   it("does not warn when falling back to a sub-project from context", async () => {
@@ -156,5 +213,55 @@ describe("resolveProjectIds", () => {
     const result = await resolveProjectIds(services)
     expect(result.ids).toEqual([])
     expect(result.warnings).toEqual([])
+  })
+})
+
+describe("resolveReadProjectScope", () => {
+  it("returns an explicit project and disables catch-all fallback", async () => {
+    const mail = makeProject("Mail")
+    const services = makeServices({
+      contextProject: makeProject("Mail Backend"),
+      isCatchAllFallback: true,
+      findByName: { Mail: mail },
+    })
+
+    const result = await resolveReadProjectScope(services, "Mail")
+    expect(result).toEqual({
+      projectId: mail.id,
+      project: mail,
+      isCatchAllFallback: false,
+    })
+  })
+
+  it("throws when an explicit read projectName does not resolve", async () => {
+    const services = makeServices({ contextProject: makeProject("Mail") })
+
+    await expect(resolveReadProjectScope(services, "Missing")).rejects.toThrow(
+      'Project "Missing" could not be resolved (not found, archived, or inaccessible).'
+    )
+  })
+
+  it("throws when an explicit read projectName is blank without falling back", async () => {
+    const services = makeServices({ contextProject: makeProject("Mail") })
+
+    await expect(resolveReadProjectScope(services, " ")).rejects.toThrow(
+      'Project "" could not be resolved (not found, archived, or inaccessible).'
+    )
+    expect(services.projects.findByName).not.toHaveBeenCalled()
+  })
+
+  it("falls back to auto-detected context only when projectName is omitted", async () => {
+    const mail = makeProject("Mail")
+    const services = makeServices({
+      contextProject: mail,
+      isCatchAllFallback: true,
+    })
+
+    const result = await resolveReadProjectScope(services)
+    expect(result).toEqual({
+      projectId: mail.id,
+      project: mail,
+      isCatchAllFallback: true,
+    })
   })
 })

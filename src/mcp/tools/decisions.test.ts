@@ -107,6 +107,100 @@ function createMockServer() {
 }
 
 describe("registerDecisionTools", () => {
+  it("rejects an unresolved explicit projectName before creating a decision", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      decisions: {
+        create: vi.fn(),
+      },
+      facts: {
+        create: vi.fn(),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+      },
+      topics: {
+        getOrCreate: vi.fn(),
+      },
+      projects: {
+        findByName: vi.fn().mockResolvedValue(null),
+      },
+      context: {
+        project: { id: "proj-ambient", name: "Ambient" },
+        isCatchAllFallback: false,
+      },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn(),
+      },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const create = mockServer.getActionHandler("lore-decision", "create")
+
+    const result = await create({
+      decision: "New decision",
+      rationale: "Because reasons",
+      projectName: "Missing",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(services.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(services.decisions.create).not.toHaveBeenCalled()
+    expect(services.facts.create).not.toHaveBeenCalled()
+  })
+
+  it("rejects mixed projectNames atomically before creating a decision", async () => {
+    const mockServer = createMockServer()
+    const findByName = vi.fn(async (name: string) =>
+      name === "Mail" ? { id: "proj-mail", name: "Mail" } : null
+    )
+    const services = {
+      decisions: {
+        create: vi.fn(),
+      },
+      facts: {
+        create: vi.fn(),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+      },
+      topics: {
+        getOrCreate: vi.fn(),
+      },
+      projects: {
+        findByName,
+      },
+      context: {
+        project: { id: "proj-ambient", name: "Ambient" },
+        isCatchAllFallback: false,
+      },
+      sessionMemories: {
+        record: vi.fn(),
+        get: vi.fn(),
+      },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    const create = mockServer.getActionHandler("lore-decision", "create")
+
+    const result = await create({
+      decision: "New decision",
+      rationale: "Because reasons",
+      projectNames: ["Mail", "Missing"],
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(findByName).toHaveBeenCalledWith("Mail")
+    expect(findByName).toHaveBeenCalledWith("Missing")
+    expect(services.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(services.decisions.create).not.toHaveBeenCalled()
+    expect(services.facts.create).not.toHaveBeenCalled()
+  })
+
   it("stores internal decision facts using stable decision IDs", async () => {
     const mockServer = createMockServer()
     const newDecision = makeDecision("new-id", { title: "New decision" })
@@ -723,7 +817,8 @@ describe("lore-list-decisions projectName resolution", () => {
     const result = await handler({ projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
     expect(decisionsList).not.toHaveBeenCalled()
   })
 })
@@ -746,7 +841,8 @@ describe("lore-decision-context projectName resolution", () => {
     const result = await handler({ entity: "AuthService", projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
     expect(queryByEntity).not.toHaveBeenCalled()
   })
 })

@@ -4,18 +4,30 @@
 
 import type { LoreServices } from "../services.js"
 import { formatCatchAllScopeSummary, subProjectNames } from "../core/context.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+  validateExplicitProjectScopeNames,
+} from "../core/project-scope.js"
+import type { Project } from "../types.js"
 
 export interface ResolvedProjects {
   ids: string[]
   warnings: string[]
 }
 
+export interface ResolvedReadProjectScope {
+  projectId?: string
+  project: Project | null
+  isCatchAllFallback: boolean
+}
+
 /**
  * Resolve project name(s) to IDs. Supports both singular and plural inputs.
  * When neither is provided, falls back to the auto-detected context project.
  *
- * Returns warnings for any names that couldn't be resolved so callers
- * can surface them to the user.
+ * Explicit names are strict: every name must resolve before callers perform
+ * reads or writes scoped by the result.
  *
  * When the auto-detected project was a monorepo catch-all, a warning is
  * attached so the agent can re-scope the memory if the work actually
@@ -25,23 +37,50 @@ export interface ResolvedProjects {
 export async function resolveProjectIds(
   services: LoreServices,
   projectName?: string,
-  projectNames?: string[],
+  projectNames?: string[]
 ): Promise<ResolvedProjects> {
   // Plural takes precedence over singular
-  const names = projectNames?.length ? projectNames : projectName ? [projectName] : []
+  const scopeErrorOptions = {
+    listHint: "call `lore-project action='list'` to see configured projects",
+  }
+  const names: readonly string[] =
+    projectNames !== undefined
+      ? validateExplicitProjectScopeNames(
+          projectNames,
+          "projectName/projectNames",
+          scopeErrorOptions
+        )!
+      : projectName !== undefined
+        ? [
+            validateExplicitProjectScopeName(
+              projectName,
+              "projectName/projectNames",
+              scopeErrorOptions
+            )!,
+          ]
+        : []
 
   if (names.length > 0) {
-    const ids: string[] = []
-    const warnings: string[] = []
-    for (const name of names) {
-      const found = await services.projects.findByName(name)
-      if (found) {
-        ids.push(found.id)
-      } else {
-        warnings.push(`Project "${name}" not found`)
-      }
+    const resolved = await Promise.all(
+      names.map(async (name) => ({
+        name,
+        project: await services.projects.findByName(name),
+      }))
+    )
+    const missing = resolved.filter((entry) => !entry.project).map((entry) => entry.name)
+    if (missing.length > 0) {
+      throw new Error(
+        formatUnresolvedProjectScopeError(
+          missing,
+          "projectName/projectNames",
+          scopeErrorOptions
+        )
+      )
     }
-    return { ids, warnings }
+    return {
+      ids: resolved.flatMap((entry) => (entry.project ? [entry.project.id] : [])),
+      warnings: [],
+    }
   }
 
   // Fall back to auto-detected project
@@ -53,7 +92,7 @@ export async function resolveProjectIds(
     if (candidates.length > 0) {
       warnings.push(
         `${formatCatchAllScopeSummary(project.name, candidates)} ` +
-          `If this belongs to a specific sub-project, pass projectName or projectNames on future calls.`,
+          `If this belongs to a specific sub-project, pass projectName or projectNames on future calls.`
       )
     }
   }
@@ -61,5 +100,44 @@ export async function resolveProjectIds(
   return {
     ids: project ? [project.id] : [],
     warnings,
+  }
+}
+
+export async function resolveReadProjectScope(
+  services: LoreServices,
+  projectName?: string
+): Promise<ResolvedReadProjectScope> {
+  // Deliberately singular today: read tools only expose `projectName`.
+  // If a read tool gains plural `projectNames`, keep the same all-or-
+  // nothing semantics as `resolveProjectIds` instead of accepting partial
+  // matches.
+  const explicitProjectName = validateExplicitProjectScopeName(
+    projectName,
+    "projectName",
+    {
+      listHint: "call `lore-project action='list'` to see configured projects",
+    }
+  )
+  if (explicitProjectName !== undefined) {
+    const project = await services.projects.findByName(explicitProjectName)
+    if (!project) {
+      throw new Error(
+        formatUnresolvedProjectScopeError([explicitProjectName], "projectName", {
+          listHint: "call `lore-project action='list'` to see configured projects",
+        })
+      )
+    }
+    return {
+      projectId: project.id,
+      project,
+      isCatchAllFallback: false,
+    }
+  }
+
+  const project = services.context.project
+  return {
+    projectId: project?.id,
+    project,
+    isCatchAllFallback: services.context.isCatchAllFallback ?? false,
   }
 }

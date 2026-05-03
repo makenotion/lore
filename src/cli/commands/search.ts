@@ -1,5 +1,9 @@
 import { Command } from "commander"
 import { initServices } from "../../services.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
 import { notionPageUrl, terminalLink } from "../output.js"
 import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
 
@@ -45,10 +49,23 @@ export const searchCommand = new Command("search")
         const services = await initServices()
         let projectId: string | undefined
 
-        if (parsed.value.projectName) {
-          const found = await services.projects.findByName(parsed.value.projectName)
+        const explicitProjectName = validateExplicitProjectScopeName(
+          parsed.value.projectName,
+          "--project",
+          {
+            listHint: "run `lore status projects` to list configured projects",
+          }
+        )
+        if (explicitProjectName !== undefined) {
+          const found = await services.projects.findByName(explicitProjectName)
           if (found) projectId = found.id
-          else console.warn(`Project "${parsed.value.projectName}" not found, searching vault-wide.`)
+          else {
+            throw new Error(
+              formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+                listHint: "run `lore status projects` to list configured projects",
+              })
+            )
+          }
         } else if (services.context.project) {
           projectId = services.context.project.id
         }

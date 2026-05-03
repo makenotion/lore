@@ -146,19 +146,12 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
   return { ...base, ...overrides }
 }
 
-function filterAndSortTasks(
-  tasks: TaskSummary[],
-  opts: ListTasksOpts,
-): TaskSummary[] {
+function filterAndSortTasks(tasks: TaskSummary[], opts: ListTasksOpts): TaskSummary[] {
   const filtered = tasks.filter((task) => {
     if (opts.dueBefore && (!task.reviewBy || task.reviewBy > opts.dueBefore)) {
       return false
     }
-    if (
-      opts.dueAfterOrEmpty &&
-      task.reviewBy &&
-      task.reviewBy <= opts.dueAfterOrEmpty
-    ) {
+    if (opts.dueAfterOrEmpty && task.reviewBy && task.reviewBy <= opts.dueAfterOrEmpty) {
       return false
     }
     return true
@@ -188,7 +181,11 @@ function createMockServer() {
   const handlers = new Map<string, (...args: never[]) => Promise<unknown>>()
   const server = {
     registerTool: vi.fn(
-      (name: string, _config: unknown, handler: (...args: never[]) => Promise<unknown>) => {
+      (
+        name: string,
+        _config: unknown,
+        handler: (...args: never[]) => Promise<unknown>,
+      ) => {
         handlers.set(name, handler)
       },
     ),
@@ -208,8 +205,7 @@ function createMockServer() {
     getActionHandler(toolName: string, action: string) {
       const handler = handlers.get(toolName)
       if (!handler) throw new Error(`missing handler ${toolName}`)
-      return (args: Record<string, unknown>) =>
-        handler({ ...args, action } as never)
+      return (args: Record<string, unknown>) => handler({ ...args, action } as never)
     },
   }
 }
@@ -286,12 +282,10 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     return overrides.relatedMemories ?? []
   })
   const getTitleById = vi.fn(async () => null)
-  const factsListRecent = vi.fn(
-    async (opts: { limit?: number } = {}) => {
-      const all = overrides.facts ?? []
-      return { items: all.slice(0, opts.limit), hasMore: false }
-    },
-  )
+  const factsListRecent = vi.fn(async (opts: { limit?: number } = {}) => {
+    const all = overrides.facts ?? []
+    return { items: all.slice(0, opts.limit), hasMore: false }
+  })
   const queryStaleConfidence = vi.fn(
     async (opts: { projectId?: string; limit: number; today: string }) => {
       const all = overrides.staleConfidence ?? []
@@ -308,9 +302,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
   // (to populate siblings).
   const defaultProject = { id: "proj-1", name: "Mail", path: "/mail", description: "" }
   const contextProject =
-    overrides.contextProject === undefined
-      ? defaultProject
-      : overrides.contextProject
+    overrides.contextProject === undefined ? defaultProject : overrides.contextProject
   const findByName = overrides.findByName
     ? vi.fn(overrides.findByName)
     : vi.fn(async () => null)
@@ -348,8 +340,7 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
       list: vi.fn(async (opts?: ListTasksOpts) => {
         const all = filterAndSortTasks(overrides.tasks ?? [], opts ?? {})
         const limit = opts?.limit
-        const items =
-          typeof limit === "number" && limit >= 0 ? all.slice(0, limit) : all
+        const items = typeof limit === "number" && limit >= 0 ? all.slice(0, limit) : all
         return {
           items,
           nextCursor: items.length < all.length ? "next-cursor" : undefined,
@@ -1279,6 +1270,82 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(text).not.toContain("Notion-backed mail client.")
   })
 
+  it("returns an error when wake-up projectName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+        description: "Notion-backed mail client.",
+      },
+      findByName: async () => null,
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const result = await wake({ projectName: "Missing" } as never)
+    const text = extractText(result)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(services._calls.memoriesList).not.toHaveBeenCalled()
+    expect(services._calls.factsListRecent).not.toHaveBeenCalled()
+  })
+
+  it("returns an error when digest projectName does not resolve", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: {
+        id: "proj-mail",
+        name: "Mail",
+        path: "apps/mail",
+      },
+      findByName: async () => null,
+    })
+    registerContextTools(mockServer.server, services as never)
+    const digest = mockServer.getActionHandler("lore-context", "digest")
+
+    const result = await digest({ projectName: "Missing" } as never)
+    const text = extractText(result)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(services._calls.memoriesList).not.toHaveBeenCalled()
+    expect(services._calls.factsListRecent).not.toHaveBeenCalled()
+  })
+
+  it("lets digest auto-path gather vault-wide when context project is null", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      contextProject: null,
+      memories: [
+        makeMemory("m1", {
+          title: "Recent activity",
+          source: "manual",
+          createdAt: "2026-05-03T00:00:00.000Z",
+        }),
+      ],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const digest = mockServer.getActionHandler("lore-context", "digest")
+
+    const result = await digest({ period: "day" } as never)
+    const text = extractText(result)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("# Digest Data — vault-wide")
+    expect(services._calls.findByName).not.toHaveBeenCalled()
+    expect(services._calls.memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: undefined }),
+    )
+    expect(services.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: undefined }),
+    )
+  })
+
   it("renders the Tasks summary line on action='status' (issue 0.7.0/13)", async () => {
     // Acceptance criterion: the same `formatTaskSummary` shape the CLI
     // emits also surfaces via `lore-context action='status'`. Pin the
@@ -1409,7 +1476,7 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     const text = extractText(result)
     expect(text).toContain("Project: Mail (apps/mail)")
     // No catch-all warning on the explicit-pick path.
-    expect(text).not.toContain('> Scoped to catch-all')
+    expect(text).not.toContain("> Scoped to catch-all")
   })
 })
 
@@ -1426,7 +1493,8 @@ describe("lore-wake-up — Part G: synopsis rendering (issue 0.7.0/03)", () => {
       memories: [
         makeMemory("m1", {
           title: "OAuth handshake notes",
-          synopsis: "Outlook callbacks fail because the redirect URI is not allow-listed.",
+          synopsis:
+            "Outlook callbacks fail because the redirect URI is not allow-listed.",
           tags: ["auth"],
         }),
       ],
@@ -1553,9 +1621,7 @@ describe("lore-wake-up — Part G: synopsis rendering (issue 0.7.0/03)", () => {
     expect(text).toContain("One-line gist.")
     expect(text).toContain("Body paragraph that only renders under expand=true.")
     // Order: synopsis above body.
-    expect(text.indexOf("One-line gist.")).toBeLessThan(
-      text.indexOf("Body paragraph"),
-    )
+    expect(text.indexOf("One-line gist.")).toBeLessThan(text.indexOf("Body paragraph"))
   })
 
   it("makes the same number of memories.list calls regardless of synopsis rendering", async () => {
@@ -1713,9 +1779,7 @@ describe("lore-wake-up — Part H: stale-task bucketing (issue 0.7.0/12)", () =>
     // call. The agent never has to remember the dispatcher signature.
     for (const id of ["overdue-id", "stale-id", "active-id"]) {
       expect(text).toContain(`ID: ${id} — close if resolved:`)
-      expect(text).toContain(
-        `lore-task({ action: 'close', taskId: '${id}' })`,
-      )
+      expect(text).toContain(`lore-task({ action: 'close', taskId: '${id}' })`)
     }
   })
 
@@ -2528,9 +2592,7 @@ describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
     expect(passed).toHaveLength(10)
     // The touched ids are the first 10 (slice keeps input order through
     // `loadWakeUpData` -> `nonDigestMemories` -> `slice`).
-    expect(passed.map((m) => m.id)).toEqual(
-      overFetched.slice(0, 10).map((m) => m.id),
-    )
+    expect(passed.map((m) => m.id)).toEqual(overFetched.slice(0, 10).map((m) => m.id))
   })
 
   it("touches collapsed peers (their UUIDs surface in the (related: <uuid>) trailer)", async () => {
@@ -2677,9 +2739,7 @@ describe("lore-wake-up — touch-on-read wiring (issue 0.8.0/05)", () => {
 describe("lore-wake-up — fact touch-on-read wiring (DEFERRED-02)", () => {
   function withFactTouch(
     overrides: WakeServicesOverrides = {},
-    factsTouchOnRead: ReturnType<typeof vi.fn> = vi
-      .fn()
-      .mockResolvedValue(undefined),
+    factsTouchOnRead: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(undefined),
   ) {
     const services = makeWakeServices(overrides)
     return {
@@ -2952,9 +3012,7 @@ describe("lore-wake-up — Stale Confidence subsection (issue 0.8.0/#10)", () =>
 
     const text = extractText(await wake({}))
     expect(text).toContain("### Stale but unrevised")
-    expect(text).toContain(
-      "*Last referenced: 10d ago | manual | no tags | 2026-04-20*",
-    )
+    expect(text).toContain("*Last referenced: 10d ago | manual | no tags | 2026-04-20*")
     // Defensive: ensure the rev token never appears anywhere in this
     // row's render — catches a future regression that emits `rev 1`
     // unconditionally.
@@ -3070,9 +3128,7 @@ describe("lore-wake-up — Decisions Requiring Attention trust indicator (0.9.0/
 
     const text = extractText(result)
     const lines = text.split("\n")
-    const titleIdx = lines.findIndex((l) =>
-      l.includes("**Overdue review decision**"),
-    )
+    const titleIdx = lines.findIndex((l) => l.includes("**Overdue review decision**"))
     expect(titleIdx).toBeGreaterThanOrEqual(0)
     expect(lines[titleIdx + 1]).toBe("  _very low confidence_")
   })

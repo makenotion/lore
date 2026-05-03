@@ -1087,7 +1087,7 @@ describe("lore-ask — fact touch-on-read wiring (DEFERRED-02)", () => {
 })
 
 describe("lore-ask projectName resolution", () => {
-  it("warns and falls back when projectName does not resolve", async () => {
+  it("returns an error when projectName does not resolve", async () => {
     const mockServer = createMockServer()
     const queryByEntity = vi.fn().mockResolvedValue([])
 
@@ -1120,14 +1120,10 @@ describe("lore-ask projectName resolution", () => {
     const result = await handler({ entity: "AuthService", projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    // Warning emitted, not an error.
-    expect(text).toContain('Project "Typo" not found')
-    expect(text).toContain("Warnings:")
-    // Fallback applied: query scoped to the ambient project.
-    expect(queryByEntity).toHaveBeenCalledWith(
-      "AuthService",
-      expect.objectContaining({ projectId: "proj-ambient" })
-    )
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(queryByEntity).not.toHaveBeenCalled()
   })
 })
 
@@ -1180,6 +1176,78 @@ describe("lore-fact action='create' — tracking-predicate Zod rejection", () =>
       expect(createWithDedup).not.toHaveBeenCalled()
     })
   }
+})
+
+describe("lore-fact action='create' projectName resolution", () => {
+  it("rejects an unresolved explicit projectName before creating a fact", async () => {
+    const mockServer = createMockServer()
+    const createWithDedup = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      facts: {
+        createWithDedup,
+        queryByEntity: vi.fn(),
+        queryByObject: vi.fn(),
+      },
+      decisions: { getById: vi.fn() },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const create = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await create({
+      subject: "AuthService",
+      predicate: "depends_on",
+      object: "Database",
+      projectName: "Missing",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("rejects mixed projectNames atomically before creating a fact", async () => {
+    const mockServer = createMockServer()
+    const createWithDedup = vi.fn()
+    const findByName = vi.fn(async (name: string) =>
+      name === "Mail" ? { id: "proj-mail", name: "Mail" } : null
+    )
+    const services = {
+      projects: { findByName },
+      facts: {
+        createWithDedup,
+        queryByEntity: vi.fn(),
+        queryByObject: vi.fn(),
+      },
+      decisions: { getById: vi.fn() },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerKnowledgeTools(mockServer.server, services as never)
+    const create = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await create({
+      subject: "AuthService",
+      predicate: "depends_on",
+      object: "Database",
+      projectNames: ["Mail", "Missing"],
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(findByName).toHaveBeenCalledWith("Mail")
+    expect(findByName).toHaveBeenCalledWith("Missing")
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
 })
 
 describe("lore-learn sourceMemoryId discipline", () => {
@@ -1490,7 +1558,8 @@ describe("lore-audit projectName resolution", () => {
     const result = await handler({ projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
     expect(queryOverdueFacts).not.toHaveBeenCalled()
     expect(queryOverdueDecisions).not.toHaveBeenCalled()
     expect(queryOverdueTasks).not.toHaveBeenCalled()

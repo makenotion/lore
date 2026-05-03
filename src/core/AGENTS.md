@@ -101,6 +101,16 @@ falls back to the catch-all without an explicit `projectName`. Hook-local
 prompt construction (`src/hooks/helpers.ts`) re-derives sub-projects from the
 config without API calls for the same purpose.
 
+### Explicit project-name misses
+
+`project-scope.ts` exports `formatUnresolvedProjectScopeError()` for
+operator-facing errors when a caller explicitly names a project that cannot be
+resolved. Boundary resolvers for explicit names (MCP, CLI, migrations, hooks)
+must use this helper so typo, archived, and inaccessible project failures stay
+consistent and fatal instead of falling back to auto-detected or vault-wide
+scope. `ProjectService.findByName()` owns the separate duplicate-active-name
+error; do not catch and soften it at the boundary.
+
 ## Memory Content Storage
 
 Memory content is stored as Notion page body using the markdown API, not as a

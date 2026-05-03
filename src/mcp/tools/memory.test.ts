@@ -143,6 +143,39 @@ describe("lore-remember session recording", () => {
     )
   })
 
+  it("rejects an unresolved explicit projectName before creating a memory", async () => {
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create: vi.fn(), upsertByTopicKey: vi.fn() },
+      context: {
+        project: { id: "proj-ambient", name: "Ambient" },
+        isCatchAllFallback: false,
+      },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const save = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await save({
+      title: "Saved",
+      content: "body",
+      projectName: "Missing",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(services.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(services.memories.create).not.toHaveBeenCalled()
+    expect(services.memories.upsertByTopicKey).not.toHaveBeenCalled()
+  })
+
   it("still calls record when session is omitted — tracker handles the empty-session guard", async () => {
     // The tracker drops empty sessions itself; the tool should always call
     // `record` so the contract is uniform and the tracker's guards are the
@@ -951,7 +984,8 @@ describe("lore-recall projectName resolution", () => {
     const result = await recall({ projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
     expect(memoriesList).not.toHaveBeenCalled()
   })
 
@@ -978,7 +1012,8 @@ describe("lore-recall projectName resolution", () => {
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(text).toContain('Project "Typo" not found')
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
     // Short-circuit on project miss — topic lookup must not run, nor the list query.
     expect(topicsFindByName).not.toHaveBeenCalled()
     expect(memoriesList).not.toHaveBeenCalled()
@@ -1113,7 +1148,7 @@ describe("lore-recall cursor pagination", () => {
 })
 
 describe("lore-search projectName resolution", () => {
-  it("warns and falls back to auto-detected project when projectName does not resolve", async () => {
+  it("returns an error when projectName does not resolve", async () => {
     const mockServer = createMockServer()
     const projectsFindByName = vi.fn().mockResolvedValue(null)
     const memoriesSearch = vi
@@ -1134,13 +1169,10 @@ describe("lore-search projectName resolution", () => {
     const result = await search({ query: "anything", projectName: "Typo" } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    // Warning emitted, not an error.
-    expect(text).toContain('Project "Typo" not found')
-    expect(text).toContain("Warnings:")
-    // Fallback applied: search scoped to the ambient project.
-    expect(memoriesSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "proj-ambient" })
-    )
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Typo" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(memoriesSearch).not.toHaveBeenCalled()
   })
 })
 
@@ -5488,6 +5520,88 @@ describe("lore-memory action='update' — topicKey re-keying (issue 0.9.0/14)", 
     expect(validateRekey).not.toHaveBeenCalled()
     expect(rekeyTopicKey).not.toHaveBeenCalled()
     expect(update).not.toHaveBeenCalled()
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it("resolves explicit project scope before re-key preflight reads", async () => {
+    // A topicKey update accepts projectName/projectNames as a content
+    // delta. The explicit scope check must run before validateRekey
+    // because validateRekey reads the target row and collision
+    // candidates; invalid explicit scope should fail before any read or
+    // write scoped by the call.
+    const mockServer = createMockServer()
+    const findByName = vi.fn().mockResolvedValue(null)
+    const validateRekey = vi.fn()
+    const rekeyTopicKey = vi.fn()
+    const update = vi.fn()
+    const getById = vi.fn()
+
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new",
+      projectName: "Missing",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "Missing" could not be resolved')
+    expect(text).toContain("Fix the project scope")
+    expect(findByName).toHaveBeenCalledWith("Missing")
+    expect(validateRekey).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
+    expect(getById).not.toHaveBeenCalled()
+  })
+
+  it("rejects blank explicit project scope before re-key preflight reads", async () => {
+    const mockServer = createMockServer()
+    const findByName = vi.fn().mockResolvedValue(null)
+    const validateRekey = vi.fn()
+    const rekeyTopicKey = vi.fn()
+    const update = vi.fn()
+    const getById = vi.fn()
+
+    const services = {
+      projects: { findByName },
+      topics: { getOrCreate: vi.fn() },
+      memories: { validateRekey, rekeyTopicKey, update, getById },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: { id: "ambient", name: "Ambient" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-1",
+      topicKey: "decision/new",
+      projectName: "",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(text).toContain('Project "" could not be resolved')
+    expect(findByName).not.toHaveBeenCalled()
+    expect(validateRekey).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+    expect(rekeyTopicKey).not.toHaveBeenCalled()
     expect(getById).not.toHaveBeenCalled()
   })
 

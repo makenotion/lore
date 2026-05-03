@@ -52,7 +52,7 @@ const DIAGNOSTIC_INPUT_SCHEMA = z
       .unknown()
       .optional()
       .describe(
-        "Diagnostic mode accepts any action value or omitted action; every call returns setup-recovery text."
+        "Diagnostic mode accepts any action value or omitted action; every call returns setup-recovery text.",
       ),
   })
   .passthrough()
@@ -83,14 +83,19 @@ export async function startServer(): Promise<void> {
   // 0.11.0 packages the post-ntn dogfood hardening train: attribution,
   // retry-safe writes, task/audit/list output fixes, entity merge, and
   // Notion request throttling.
+  //
+  // 0.12.0 makes explicit project scope fail closed across MCP and CLI
+  // entry points. Agents now get deterministic errors for typo'd,
+  // archived, inaccessible, or ambiguous project names instead of
+  // silently falling back to auto-detected or vault-wide scope.
   const server = new McpServer(
-    { name: "lore", version: "0.11.0" },
+    { name: "lore", version: "0.12.0" },
     {
       capabilities: {
         tools: {},
         resources: {},
       },
-    }
+    },
   )
 
   let services: LoreServices | null = null
@@ -112,7 +117,7 @@ export async function startServer(): Promise<void> {
     // of collapsing the failure into a generic connection error.
     const initErrorMessage = formatInitErrorMessage(err)
     console.error(
-      `[lore] Failed to initialize; starting diagnostic MCP server: ${initErrorMessage}`
+      `[lore] Failed to initialize; starting diagnostic MCP server: ${initErrorMessage}`,
     )
     registerStartupDiagnosticTools(server, formatStartupDiagnostic(err, initErrorMessage))
   }
@@ -149,7 +154,7 @@ function registerStartupDiagnosticTools(server: McpServer, diagnosticText: strin
 function registerStartupDiagnosticTool(
   server: McpServer,
   name: (typeof DIAGNOSTIC_TOOL_NAMES)[number],
-  diagnosticText: string
+  diagnosticText: string,
 ): void {
   server.registerTool(
     name,
@@ -163,13 +168,13 @@ function registerStartupDiagnosticTool(
     async (): Promise<ToolResult> => ({
       content: [{ type: "text", text: diagnosticText }],
       isError: true,
-    })
+    }),
   )
 }
 
 function formatStartupDiagnostic(
   error: unknown,
-  message = formatInitErrorMessage(error)
+  message = formatInitErrorMessage(error),
 ): string {
   const configRoot = process.env["LORE_CONFIG_ROOT"]?.trim()
 

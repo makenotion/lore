@@ -20,7 +20,7 @@ import {
   paginationFooter,
   toolError,
 } from "../helpers.js"
-import { resolveProjectIds } from "../resolve.js"
+import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { findDuplicateActiveTasks } from "../../core/near-duplicate.js"
@@ -452,22 +452,7 @@ interface ListArgs {
 
 async function handleList(services: LoreServices, args: ListArgs): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
-    const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`
-        )
-      }
-    }
-    if (!projectId && services.context.project) {
-      projectId = services.context.project.id
-    }
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
 
     const cap = args.limit ?? DEFAULT_TASKS_LIMIT
     const deepWalk = cap >= TASK_LIST_DEEP_WALK_MIN_LIMIT
@@ -532,12 +517,11 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
       const emptyText = saturated
         ? `No tasks found${filterHint} in the first ${maxFetchedRows} fetched rows; more matching tasks may exist.`
         : `No tasks found${filterHint}.`
-      const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
       return {
         content: [
           {
             type: "text",
-            text: `${emptyText}${warn}${paginationFooter(nextCursor, { truncated: saturated })}`,
+            text: `${emptyText}${paginationFooter(nextCursor, { truncated: saturated })}`,
           },
         ],
       }
@@ -621,7 +605,6 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
       : "exact total"
     const filterSuffix = args.entity ? ` touching "${args.entity}"` : ""
     const footer = footers.length > 0 ? `\n\n${footers.join("\n")}` : ""
-    const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
     const pagination = paginationFooter(footerCursor, {
       truncated: footerTruncated,
     })
@@ -630,7 +613,7 @@ async function handleList(services: LoreServices, args: ListArgs): Promise<ToolR
       content: [
         {
           type: "text",
-          text: `${totalLabel} (${totalSemantics})${filterSuffix}:\n\n${sections.join("\n\n")}${footer}${warn}${pagination}`,
+          text: `${totalLabel} (${totalSemantics})${filterSuffix}:\n\n${sections.join("\n\n")}${footer}${pagination}`,
         },
       ],
     }
@@ -650,22 +633,7 @@ async function handleReconcile(
   args: ReconcileArgs
 ): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
-    const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`
-        )
-      }
-    }
-    if (!projectId && services.context.project) {
-      projectId = services.context.project.id
-    }
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
 
     const today = new Date().toISOString().split("T")[0]!
     const { candidates, activeTasksScanned } = await reconcileActiveTasks(services, {
@@ -676,10 +644,9 @@ async function handleReconcile(
     })
 
     const body = formatReconcileOutput(candidates, activeTasksScanned, today)
-    const warn = warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
     return {
-      content: [{ type: "text", text: body + warn }],
+      content: [{ type: "text", text: body }],
     }
   } catch (err) {
     return toolError(err)

@@ -9,7 +9,7 @@ import {
   debugLogPartialFailures,
   fireTouchOnRead,
 } from "../helpers.js"
-import { resolveProjectIds } from "../resolve.js"
+import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
 import type {
   Fact,
@@ -703,6 +703,23 @@ async function handleUpdate(
     void _t
     const hasContentDelta = Object.values(contentDelta).some((v) => v !== undefined)
 
+    let projectIds: string[] | undefined
+    const warnings: string[] = []
+
+    // Explicit project scope is strict even on update. Resolve it before
+    // re-key preflight because `validateRekey` reads the target Memory and
+    // collision candidates; an invalid explicit project must win the
+    // error-ordering race before any scoped read or write starts.
+    if (args.projectNames !== undefined || args.projectName !== undefined) {
+      const resolved = await resolveProjectIds(
+        services,
+        args.projectName,
+        args.projectNames
+      )
+      projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
+      warnings.push(...resolved.warnings)
+    }
+
     // Preflight the re-key BEFORE any content-delta mutation. If the
     // re-key would reject (collision against current state, empty
     // `projectIds`), we throw cleanly without leaving an update
@@ -729,10 +746,8 @@ async function handleUpdate(
       }
     }
 
-    let projectIds: string[] | undefined
     let topicId: string | undefined
     let topicLabel: string | undefined
-    const warnings: string[] = []
     let updated: Memory | undefined
 
     // Apply content delta FIRST. Re-key (when present) runs AFTER so
@@ -742,15 +757,6 @@ async function handleUpdate(
     // appended. Reversing the dispatch order here is what makes a
     // combined `topicKey + content` call land both writes durably.
     if (hasContentDelta) {
-      if (args.projectNames?.length || args.projectName) {
-        const resolved = await resolveProjectIds(
-          services,
-          args.projectName,
-          args.projectNames
-        )
-        projectIds = resolved.ids.length > 0 ? resolved.ids : undefined
-        warnings.push(...resolved.warnings)
-      }
       if (args.topicName) {
         let topicScope = projectIds
         if (!topicScope || topicScope.length === 0) {
@@ -1741,20 +1747,8 @@ export async function handleRecall(
   args: RecallArgs
 ): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
     let topicId: string | undefined
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (!found) {
-        return {
-          content: [{ type: "text", text: `Project "${args.projectName}" not found.` }],
-        }
-      }
-      projectId = found.id
-    } else if (services.context.project) {
-      projectId = services.context.project.id
-    }
 
     if (args.topicName) {
       const found = await services.topics.findByName(args.topicName)
@@ -1855,23 +1849,9 @@ export async function handleSearch(
   args: SearchArgs
 ): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
     let topicId: string | undefined
     const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`
-        )
-      }
-    }
-    if (!projectId && services.context.project) {
-      projectId = services.context.project.id
-    }
 
     // Topics span projects (many-to-many Topic.Project), so resolve
     // globally rather than scoping by project — same posture as

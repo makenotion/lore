@@ -5,9 +5,10 @@ import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { initServices, type LoreServices } from "../../services.js"
 import {
-  mergeHookDefaults,
-  type BackgroundAgentConfig,
-} from "../../hooks/config.js"
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
+import { mergeHookDefaults, type BackgroundAgentConfig } from "../../hooks/config.js"
 import type { MemoryTagPlan } from "../../core/tag-migration.js"
 import { classifyTags, planMemoryMigration } from "../../core/tag-migration.js"
 import { BODY_SIZE_CAP_BYTES } from "../../core/memory-encoding.js"
@@ -17,14 +18,8 @@ import type {
 } from "../../core/topic-merge.js"
 import type { Fact, Memory } from "../../types.js"
 import type { NormalizableAgentRow } from "../../core/agent-normalization.js"
-import {
-  buildEntities,
-  type EntityMigrationResult,
-} from "../../core/entity-migration.js"
-import type {
-  BackfillReport,
-  SynopsisBackend,
-} from "../../core/synopsis-backfill.js"
+import { buildEntities, type EntityMigrationResult } from "../../core/entity-migration.js"
+import type { BackfillReport, SynopsisBackend } from "../../core/synopsis-backfill.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
 import {
   runBuildConfidenceScoresMigration,
@@ -185,7 +180,7 @@ export const migrateCommand = new Command("migrate")
           process.exit(1)
         }
         if (
-          opts.project &&
+          opts.project !== undefined &&
           !opts.buildConfidenceScores &&
           !opts.buildFactConfidenceScores
         ) {
@@ -197,9 +192,7 @@ export const migrateCommand = new Command("migrate")
         const synopsisBackend: SynopsisBackend = parseSynopsisBackend(
           opts.synopsisBackend
         )
-        const synopsisBatchSize: number = parseSynopsisBatchSize(
-          opts.synopsisBatchSize
-        )
+        const synopsisBatchSize: number = parseSynopsisBatchSize(opts.synopsisBatchSize)
 
         // Load & validate merge-topics YAML before initializing services so
         // a malformed file fails fast, without a Notion round-trip.
@@ -311,7 +304,9 @@ export const migrateCommand = new Command("migrate")
           for (const diff of diffs) {
             if (diff.addedOptions.length === 0) continue
             for (const added of diff.addedOptions) {
-              console.log(`  ${diff.database}.${added.property}: ${added.options.join(", ")}`)
+              console.log(
+                `  ${diff.database}.${added.property}: ${added.options.join(", ")}`
+              )
             }
           }
         }
@@ -346,7 +341,9 @@ export const migrateCommand = new Command("migrate")
 
         if (opts.upgradeDecisionTags) {
           if (opts.dryRun) {
-            console.log("\n--upgrade-decision-tags with --dry-run is a no-op (schema diff above).")
+            console.log(
+              "\n--upgrade-decision-tags with --dry-run is a no-op (schema diff above)."
+            )
           } else {
             const upgraded = await upgradeLegacyDecisionTags(services)
             console.log(
@@ -396,10 +393,7 @@ export const migrateCommand = new Command("migrate")
             `\n${dedupVerb} key columns on ${result.backfilled} fact${result.backfilled === 1 ? "" : "s"} (${result.skipped} already up to date).`
           )
           if (opts.merge) {
-            const plannedLosers = result.plans.reduce(
-              (n, p) => n + p.loserIds.length,
-              0
-            )
+            const plannedLosers = result.plans.reduce((n, p) => n + p.loserIds.length, 0)
             const headerVerb = opts.dryRun
               ? "Would merge"
               : result.mergePreviewOnly
@@ -421,9 +415,7 @@ export const migrateCommand = new Command("migrate")
               )
             }
             if (result.plans.length > PREVIEW_LIMIT) {
-              console.log(
-                `  … and ${result.plans.length - PREVIEW_LIMIT} more groups.`
-              )
+              console.log(`  … and ${result.plans.length - PREVIEW_LIMIT} more groups.`)
             }
             if (result.mergePreviewOnly && result.mergedGroups > 0) {
               console.log(
@@ -529,10 +521,9 @@ export const migrateCommand = new Command("migrate")
           // Kept as-is per spec; the irreversibility caveat below closes
           // the gap that --yes would otherwise have signalled.
           const writing = opts.apply === true && !opts.dryRun
-          const results = await services.vault.migrateAliasMerges(
-            aliasMergePlans,
-            { dryRun: !writing }
-          )
+          const results = await services.vault.migrateAliasMerges(aliasMergePlans, {
+            dryRun: !writing,
+          })
           printAliasMergeResults(results, { writing })
           if (!writing && results.some((r) => !r.noop)) {
             // Only warn when there's something to commit. On an all-noop
@@ -587,7 +578,9 @@ export const migrateCommand = new Command("migrate")
             // re-run with `--apply`" message a few lines up. Two dry-run
             // signals stacked on the same run train operators to ignore
             // them both.
-            console.log("\nDry run — no changes written. Re-run without --dry-run to apply.")
+            console.log(
+              "\nDry run — no changes written. Re-run without --dry-run to apply."
+            )
           }
         } else if (encodedTopics.length > 0 && !opts.fixTopicEncoding) {
           // Duplicate-name topics throw in `migrate()` when the flag is
@@ -782,7 +775,9 @@ export async function backfillFactSources(
   const orphans = await services.facts.queryOrphans()
 
   if (orphans.length === 0) {
-    console.log("\nNo orphan facts found — every current fact already links to a source memory.")
+    console.log(
+      "\nNo orphan facts found — every current fact already links to a source memory."
+    )
     return
   }
 
@@ -800,15 +795,15 @@ export async function backfillFactSources(
   const unmatched = candidates.filter((c) => c.memory === null)
 
   const verb = opts.apply ? "Linking" : "Proposed"
-  console.log(
-    `\n${verb} ${matched.length} match${matched.length === 1 ? "" : "es"}:`
-  )
+  console.log(`\n${verb} ${matched.length} match${matched.length === 1 ? "" : "es"}:`)
   for (const { fact, memory, reason } of matched) {
     if (!memory) continue
     console.log(
       `  ${fact.subject} → ${fact.predicate.replace(/_/g, " ")} → ${fact.object}`
     )
-    console.log(`    fact ${fact.id} → memory "${memory.title}" (${memory.id}) [${reason}]`)
+    console.log(
+      `    fact ${fact.id} → memory "${memory.title}" (${memory.id}) [${reason}]`
+    )
   }
 
   if (unmatched.length > 0) {
@@ -975,13 +970,13 @@ export async function runFactEncodingFix(
   const report = await services.facts.fixEncoding({ dryRun: planOnly })
 
   if (report.encoded.length === 0) {
-    console.log("\nNo HTML-encoded fact rows found — Subject and Object are already clean.")
+    console.log(
+      "\nNo HTML-encoded fact rows found — Subject and Object are already clean."
+    )
     return
   }
 
-  const blocked = new Set(
-    report.collisions.flatMap((c) => c.factIds)
-  )
+  const blocked = new Set(report.collisions.flatMap((c) => c.factIds))
   const rewritable = report.encoded.filter((r) => !blocked.has(r.id))
 
   const verb = planOnly ? "Would decode" : "Decoded"
@@ -993,12 +988,8 @@ export async function runFactEncodingFix(
 
   const preview = planOnly ? rewritable : report.fixes
   for (const row of preview.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
-    console.log(
-      `  "${row.rawSubject}" ${row.predicate} "${row.rawObject}"`
-    )
-    console.log(
-      `    → "${row.decodedSubject}" ${row.predicate} "${row.decodedObject}"`
-    )
+    console.log(`  "${row.rawSubject}" ${row.predicate} "${row.rawObject}"`)
+    console.log(`    → "${row.decodedSubject}" ${row.predicate} "${row.decodedObject}"`)
   }
   if (preview.length > ENCODING_FIX_PREVIEW_LIMIT) {
     console.log(`  … and ${preview.length - ENCODING_FIX_PREVIEW_LIMIT} more rows.`)
@@ -1011,9 +1002,7 @@ export async function runFactEncodingFix(
         `rewrite refused to avoid silently creating a duplicate):`
     )
     for (const c of report.collisions.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
-      console.log(
-        `  "${c.triple.subject}" ${c.triple.predicate} "${c.triple.object}"`
-      )
+      console.log(`  "${c.triple.subject}" ${c.triple.predicate} "${c.triple.object}"`)
       console.log(`    factIds: ${c.factIds.join(", ")}`)
     }
     if (report.collisions.length > ENCODING_FIX_PREVIEW_LIMIT) {
@@ -1108,9 +1097,7 @@ export async function runMemoryEncodingFix(
     }
   }
   if (previewLength > ENCODING_FIX_PREVIEW_LIMIT) {
-    console.log(
-      `  … and ${previewLength - ENCODING_FIX_PREVIEW_LIMIT} more rows.`
-    )
+    console.log(`  … and ${previewLength - ENCODING_FIX_PREVIEW_LIMIT} more rows.`)
   }
 
   if (report.oversizedSkipped.length > 0) {
@@ -1119,7 +1106,9 @@ export async function runMemoryEncodingFix(
         `(body exceeded ${formatBytes(BODY_SIZE_CAP_BYTES)} — Title fixes still apply when present):`
     )
     for (const row of report.oversizedSkipped.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
-      console.log(`  ${row.id} — "${row.decodedTitle}" (${formatBytes(row.contentBytes)})`)
+      console.log(
+        `  ${row.id} — "${row.decodedTitle}" (${formatBytes(row.contentBytes)})`
+      )
     }
     if (report.oversizedSkipped.length > ENCODING_FIX_PREVIEW_LIMIT) {
       console.log(
@@ -1167,9 +1156,7 @@ const topicAliasMergesFileSchema = z.object({
  * errors for the common mistakes (file missing, invalid YAML, wrong
  * shape). Resolves relative paths against the operator's cwd.
  */
-export async function loadTopicAliasMerges(
-  path: string
-): Promise<TopicAliasMergePlan[]> {
+export async function loadTopicAliasMerges(path: string): Promise<TopicAliasMergePlan[]> {
   const absolute = resolve(process.cwd(), path)
   let raw: string
   try {
@@ -1398,7 +1385,9 @@ export async function runBuildEntitiesMigration(
           : `\n    aliases: ${plan.aliases
               .slice(0, 5)
               .map((a) => `"${a}"`)
-              .join(", ")}${plan.aliases.length > 5 ? `, …${plan.aliases.length - 5} more` : ""}`
+              .join(
+                ", "
+              )}${plan.aliases.length > 5 ? `, …${plan.aliases.length - 5} more` : ""}`
       console.log(
         `  "${plan.canonical}"${status} — ${plan.factCount} fact${plan.factCount === 1 ? "" : "s"}${aliasPreview}`
       )
@@ -1412,9 +1401,7 @@ export async function runBuildEntitiesMigration(
         `\nFailed on ${result.errors.length} item${result.errors.length === 1 ? "" : "s"}:`
       )
       for (const e of result.errors.slice(0, PREVIEW_LIMIT)) {
-        const where = e.factId
-          ? `fact ${e.factId}`
-          : `entity "${e.entityKey ?? "?"}"`
+        const where = e.factId ? `fact ${e.factId}` : `entity "${e.entityKey ?? "?"}"`
         console.log(`  ${where}: ${e.message}`)
       }
       if (result.errors.length > PREVIEW_LIMIT) {
@@ -1436,7 +1423,7 @@ export async function runBuildEntitiesMigration(
 
 function acquireBuildEntitiesMigrationLock(
   services: LoreServices,
-  options: { apply: boolean; dryRun?: boolean },
+  options: { apply: boolean; dryRun?: boolean }
 ): MigrationLock | null {
   if (!options.apply || options.dryRun === true) return null
 
@@ -1488,15 +1475,11 @@ export async function runSimilarTopicsMigration(
 
   // 10 groups inline keeps wide vaults readable; the rest summarized.
   const PREVIEW_LIMIT = 10
-  const sourceForReassign = new Map(
-    mergeResults.map((r) => [r.canonicalId, r] as const)
-  )
+  const sourceForReassign = new Map(mergeResults.map((r) => [r.canonicalId, r] as const))
   for (const group of groups.slice(0, PREVIEW_LIMIT)) {
     const reassignment = sourceForReassign.get(group.canonicalId)
     const memCount = reassignment?.reassignedMemoryIds.length ?? 0
-    const aliasNames = group.siblings
-      .map((s) => `"${s.name}"`)
-      .join(", ")
+    const aliasNames = group.siblings.map((s) => `"${s.name}"`).join(", ")
     console.log(
       `  "${group.canonicalName}" ← ${aliasNames} ` +
         `(${planOnly ? "would re-point" : "re-pointed"} ${memCount} memor${memCount === 1 ? "y" : "ies"})`
@@ -1523,9 +1506,7 @@ export async function runSimilarTopicsMigration(
 export function parseSynopsisBackend(raw: string | undefined): SynopsisBackend {
   const value = (raw ?? "claude").toLowerCase()
   if (value === "claude" || value === "placeholder") return value
-  console.error(
-    `--synopsis-backend must be 'claude' or 'placeholder' (got '${raw}').`
-  )
+  console.error(`--synopsis-backend must be 'claude' or 'placeholder' (got '${raw}').`)
   process.exit(1)
 }
 
@@ -1539,9 +1520,7 @@ export function parseSynopsisBatchSize(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SYNOPSIS_BATCH_SIZE
   const value = Number(raw)
   if (!Number.isInteger(value) || value < 1) {
-    console.error(
-      `--synopsis-batch-size must be a positive integer (got '${raw}').`
-    )
+    console.error(`--synopsis-batch-size must be a positive integer (got '${raw}').`)
     process.exit(1)
   }
   return value
@@ -1602,7 +1581,8 @@ export async function runSynopsisBackfill(
       ? "Flagged"
       : "Synthesized"
 
-  const wrote = options.backend === "placeholder" ? report.placeholderWritten : report.synthesized
+  const wrote =
+    options.backend === "placeholder" ? report.placeholderWritten : report.synthesized
 
   const batchSize = options.batchSize ?? DEFAULT_SYNOPSIS_BATCH_SIZE
   const batchClause = !planOnly ? `; batch-size: ${batchSize}` : ""
@@ -1634,9 +1614,7 @@ export async function runSynopsisBackfill(
     lines.push(
       `  body-oversize: ${bodyOversizeStr} (estimated, exact counts require --yes)`
     )
-    lines.push(
-      `  empty-body:    ${emptyBodyStr} (estimated, exact counts require --yes)`
-    )
+    lines.push(`  empty-body:    ${emptyBodyStr} (estimated, exact counts require --yes)`)
   } else {
     lines.push(`  body-oversize: ${bodyOversizeStr}`)
     lines.push(`  empty-body:    ${emptyBodyStr}`)
@@ -1660,10 +1638,7 @@ export async function runSynopsisBackfill(
 
   if (report.examples.length > 0) {
     console.log("\nExamples:")
-    for (const example of report.examples.slice(
-      0,
-      SYNOPSIS_BACKFILL_PREVIEW_LIMIT
-    )) {
+    for (const example of report.examples.slice(0, SYNOPSIS_BACKFILL_PREVIEW_LIMIT)) {
       console.log(`  [${example.bucket}] ${example.id} — "${example.title}"`)
     }
   }
@@ -1740,13 +1715,22 @@ export async function runBuildConfidenceScores(
   // re-run if reached — but it never is, because this preflight's
   // throw aborts before the migration call. The redundant work is
   // bounded to the success path only.
-  if (options.projectName) {
-    const project = await services.projects.findByName(options.projectName)
+  const explicitProjectName = validateExplicitProjectScopeName(
+    options.projectName,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+      omittedScopeLabel: "vault-wide scope",
+    }
+  )
+  if (explicitProjectName !== undefined) {
+    const project = await services.projects.findByName(explicitProjectName)
     if (project === null) {
       throw new Error(
-        `lore migrate --build-confidence-scores: project "${options.projectName}" not found. ` +
-          `Run \`lore status\` to list configured projects, or omit --project to ` +
-          `run vault-wide.`
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+          omittedScopeLabel: "vault-wide scope",
+        })
       )
     }
   }
@@ -1787,9 +1771,7 @@ export async function runBuildConfidenceScores(
   }
 
   const stats = summarizeConfidenceScorePlan(plan)
-  console.log(
-    `       avg seeded score:  ${stats.avgSeeded.toFixed(2)}`
-  )
+  console.log(`       avg seeded score:  ${stats.avgSeeded.toFixed(2)}`)
   // The "to-seed" qualifier is load-bearing on a vault that's mostly
   // already-scored — averaging only the unseeded subset describes
   // what `--yes` would write, NOT what the vault as a whole looks
@@ -1806,9 +1788,7 @@ export async function runBuildConfidenceScores(
   )
   const top = sortedByDecay.slice(0, PREVIEW_LIMIT)
   if (top.length > 0) {
-    console.log(
-      `\n       Top ${top.length} most-decayed (after seed + decay):`
-    )
+    console.log(`\n       Top ${top.length} most-decayed (after seed + decay):`)
     top.forEach((row, i) => {
       console.log(
         `       ${i + 1}. (${row.decayedScore.toFixed(3)}) ${row.title}  —  ${row.daysSinceCreation}d ago`
@@ -1817,9 +1797,7 @@ export async function runBuildConfidenceScores(
   }
 
   if (planOnly) {
-    console.log(
-      "\n[lore] dry-run: no writes performed. Re-run with --yes to apply."
-    )
+    console.log("\n[lore] dry-run: no writes performed. Re-run with --yes to apply.")
   } else {
     console.log(
       `\n[lore] build-confidence-scores: wrote ${written} row${written === 1 ? "" : "s"}.`
@@ -1839,13 +1817,22 @@ export async function runBuildFactConfidenceScores(
   options: { apply: boolean; dryRun: boolean; projectName?: string }
 ): Promise<BuildFactConfidenceScoresResult> {
   const planOnly = !options.apply
-  if (options.projectName) {
-    const project = await services.projects.findByName(options.projectName)
+  const explicitProjectName = validateExplicitProjectScopeName(
+    options.projectName,
+    "--project",
+    {
+      listHint: "run `lore status projects` to list configured projects",
+      omittedScopeLabel: "vault-wide scope",
+    }
+  )
+  if (explicitProjectName !== undefined) {
+    const project = await services.projects.findByName(explicitProjectName)
     if (project === null) {
       throw new Error(
-        `lore migrate --build-fact-confidence-scores: project "${options.projectName}" not found. ` +
-          `Run \`lore status\` to list configured projects, or omit --project to ` +
-          `run vault-wide.`
+        formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+          listHint: "run `lore status projects` to list configured projects",
+          omittedScopeLabel: "vault-wide scope",
+        })
       )
     }
   }
@@ -1874,13 +1861,9 @@ export async function runBuildFactConfidenceScores(
 
   if (plan.rowsToSeed.length === 0) {
     if (planOnly) {
-      console.log(
-        "\nNo facts need seeding — every row already has a Confidence Score."
-      )
+      console.log("\nNo facts need seeding — every row already has a Confidence Score.")
     } else {
-      console.log(
-        "\nNo facts needed seeding — every row already had a Confidence Score."
-      )
+      console.log("\nNo facts needed seeding — every row already had a Confidence Score.")
     }
     return result
   }
@@ -1908,9 +1891,7 @@ export async function runBuildFactConfidenceScores(
   }
 
   if (planOnly) {
-    console.log(
-      "\n[lore] dry-run: no writes performed. Re-run with --yes to apply."
-    )
+    console.log("\n[lore] dry-run: no writes performed. Re-run with --yes to apply.")
   } else {
     console.log(
       `\n[lore] build-fact-confidence-scores: wrote ${written} row${written === 1 ? "" : "s"}.`
@@ -1923,9 +1904,7 @@ export async function runBuildFactConfidenceScores(
  * Pure summary stats for the build-fact-confidence-scores plan output.
  * Mirror of `summarizeConfidenceScorePlan` (DEFERRED-02).
  */
-export function summarizeFactConfidenceScorePlan(
-  plan: BuildFactConfidenceScoresPlan
-): {
+export function summarizeFactConfidenceScorePlan(plan: BuildFactConfidenceScoresPlan): {
   avgSeeded: number
   avgDecayed: number
   avgNeglectPastGrace: number
@@ -1955,9 +1934,7 @@ export function summarizeFactConfidenceScorePlan(
  * Exported so tests pin the per-line numbers without re-deriving the
  * arithmetic.
  */
-export function summarizeConfidenceScorePlan(
-  plan: BuildConfidenceScoresPlan
-): {
+export function summarizeConfidenceScorePlan(plan: BuildConfidenceScoresPlan): {
   avgSeeded: number
   avgDecayed: number
   avgNeglectPastGrace: number

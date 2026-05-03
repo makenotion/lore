@@ -11,7 +11,7 @@ import {
   fireFactTouchOnRead,
 } from "../helpers.js"
 import { confidenceFactor } from "../../core/decay.js"
-import { resolveProjectIds } from "../resolve.js"
+import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { resolveCanonicalDecisionLinks } from "../decision-graph.js"
 import {
   groupFactsByClass,
@@ -20,7 +20,7 @@ import {
   resolveReferencedTitles,
 } from "../render.js"
 
-import type { Decision, Fact, Project, TaskSummary } from "../../types.js"
+import type { Decision, Fact, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
 import { expandEntityQueryVariants } from "../../core/entity.js"
 import {
@@ -525,36 +525,16 @@ export async function handleAsk(
   toolName: string,
 ): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
     // Mirrors `handleWakeUp`'s explicit-projectName rule (issue 0.6.0/18,
     // Fix 2): the framing block describes the project the rest of the
-    // response is filtered to. Explicit picks are never catch-all fallbacks.
-    let resolvedProject: Project | null = null
-    let resolvedCatchAllFallback = false
+    // response is filtered to. Explicit picks are strict and never catch-all
+    // fallbacks; omitted scope mirrors `services.context`.
+    const {
+      projectId,
+      project: resolvedProject,
+      isCatchAllFallback: resolvedCatchAllFallback,
+    } = await resolveReadProjectScope(services, args.projectName)
     const warnings: string[] = []
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (found) {
-        projectId = found.id
-        resolvedProject = found
-        // Symmetry with `handleWakeUp`: write the flag explicitly even
-        // though it's already false from the declaration. Reading the
-        // two branches side-by-side then describes the rule directly
-        // ("explicit pick → false; auto-detected → mirror context")
-        // rather than asking the reader to verify initialization order.
-        resolvedCatchAllFallback = false
-      } else {
-        warnings.push(
-          `Project "${args.projectName}" not found — falling back to auto-detected project.`,
-        )
-      }
-    }
-    if (!projectId && services.context.project) {
-      projectId = services.context.project.id
-      resolvedProject = services.context.project
-      resolvedCatchAllFallback = services.context.isCatchAllFallback
-    }
 
     // PF3-01 — resolve the entity name to a canonical row first so the
     // fact lookup can ride the relation join. Strict mode (no
@@ -931,19 +911,7 @@ export async function handleAudit(
   args: { projectName?: string },
 ): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
-
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (!found) {
-        return {
-          content: [{ type: "text", text: `Project "${args.projectName}" not found.` }],
-        }
-      }
-      projectId = found.id
-    } else if (services.context.project) {
-      projectId = services.context.project.id
-    }
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
 
     const warnings: string[] = []
     const overdueDecisionQuery =

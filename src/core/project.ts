@@ -30,7 +30,7 @@ const NAME_CACHE_TTL_MS = 60_000
 const NAME_CACHE_MAX = 200
 
 function activeProjectLookupFilter(
-  lookup: Record<string, unknown>
+  lookup: Record<string, unknown>,
 ): QueryDataSourceParameters["filter"] {
   return {
     and: [lookup, { property: "Status", select: { equals: "active" } }],
@@ -47,12 +47,12 @@ export class ProjectService {
    */
   private readonly nameCache = new LruCache<string, Project>(
     NAME_CACHE_MAX,
-    NAME_CACHE_TTL_MS
+    NAME_CACHE_TTL_MS,
   )
 
   constructor(
     private client: Client,
-    private db: DatabaseRef
+    private db: DatabaseRef,
   ) {}
 
   async create(input: CreateProjectInput): Promise<Project> {
@@ -91,7 +91,7 @@ export class ProjectService {
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return results.map((p) => this.pageToProject(p))
@@ -130,10 +130,17 @@ export class ProjectService {
           property: "Name",
           title: { equals: name },
         }),
+        page_size: 2,
       })
-      const page = response.results.filter(isFullPage)[0] as
-        | PageObjectResponse
-        | undefined
+      const pages = response.results.filter(isFullPage) as PageObjectResponse[]
+      if (pages.length > 1) {
+        const ids = pages.map((page) => page.id).join(", ")
+        throw new Error(
+          `Multiple active projects named "${name}" found (${ids}). ` +
+            `Rename or archive duplicates before using explicit project scope.`,
+        )
+      }
+      const page = pages[0]
       return page ? this.pageToProject(page) : null
     })
   }

@@ -3,6 +3,10 @@ import { resolve } from "node:path"
 import { existsSync } from "node:fs"
 import { initServices } from "../../services.js"
 import { gatherDigestData, isoDate } from "../../core/digest.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
 import { buildDigestPrompt } from "../../hooks/prompts.js"
 import {
   DIGEST_ALLOWLIST,
@@ -26,7 +30,7 @@ import { safeFilenameSegment } from "../../hooks/marker-key.js"
 export function resolveSpawnCwd(
   configRoot: string,
   projectPath: string | undefined,
-  warn: (msg: string) => void = (msg) => console.error(msg),
+  warn: (msg: string) => void = (msg) => console.error(msg)
 ): string {
   if (!projectPath) return process.cwd()
   const normalized = projectPath === "." ? "" : projectPath.replace(/^\//, "")
@@ -39,7 +43,7 @@ export function resolveSpawnCwd(
   // diverge from the prompt's explicit projectName.
   warn(
     `Warning: project path "${projectPath}" does not exist relative to ${configRoot}. ` +
-      `Spawning from ${process.cwd()} instead — child context resolution may diverge.`,
+      `Spawning from ${process.cwd()} instead — child context resolution may diverge.`
   )
   return process.cwd()
 }
@@ -50,7 +54,7 @@ export const digestCommand = new Command("digest")
   .addOption(
     new Option("--period <period>", "Time window")
       .choices(["day", "week"])
-      .default("week"),
+      .default("week")
   )
   .option("--since <iso>", "Explicit window start (ISO datetime)")
   .option("--until <iso>", "Explicit window end (ISO datetime)")
@@ -70,11 +74,21 @@ export const digestCommand = new Command("digest")
         let projectLabel: string | null = null
         let projectConfigPath: string | undefined
 
-        if (opts.project) {
-          const found = await services.projects.findByName(opts.project)
+        const explicitProjectName = validateExplicitProjectScopeName(
+          opts.project,
+          "--project",
+          {
+            listHint: "run `lore status projects` to list configured projects",
+          }
+        )
+        if (explicitProjectName !== undefined) {
+          const found = await services.projects.findByName(explicitProjectName)
           if (!found) {
-            console.error(`Project "${opts.project}" not found.`)
-            process.exit(1)
+            throw new Error(
+              formatUnresolvedProjectScopeError([explicitProjectName], "--project", {
+                listHint: "run `lore status projects` to list configured projects",
+              })
+            )
           }
           projectId = found.id
           projectLabel = found.name
@@ -82,20 +96,20 @@ export const digestCommand = new Command("digest")
           // project's configured path rather than whatever cwd the operator
           // happens to be in.
           projectConfigPath = services.config.projects?.find(
-            (p) => p.name === found.name,
+            (p) => p.name === found.name
           )?.path
         } else if (services.context.project) {
           projectId = services.context.project.id
           projectLabel = services.context.project.name
           projectConfigPath = services.config.projects?.find(
-            (p) => p.name === services.context.project!.name,
+            (p) => p.name === services.context.project!.name
           )?.path
         }
 
         if (!projectLabel) {
           console.error(
             "No project resolved. Pass --project <name> or run from a directory " +
-              "inside a configured project path.",
+              "inside a configured project path."
           )
           process.exit(1)
         }
@@ -115,7 +129,7 @@ export const digestCommand = new Command("digest")
 
         if (digest.recentMemoryCount === 0) {
           console.log(
-            `No activity in window for "${projectLabel}" — skipping digest spawn.`,
+            `No activity in window for "${projectLabel}" — skipping digest spawn.`
           )
           return
         }
@@ -124,7 +138,7 @@ export const digestCommand = new Command("digest")
           digest.raw,
           projectLabel,
           isoDate(new Date()),
-          digest.lastDigestDate,
+          digest.lastDigestDate
         )
 
         const spawnCwd = resolveSpawnCwd(services.configRoot, projectConfigPath)
@@ -151,7 +165,7 @@ export const digestCommand = new Command("digest")
           // for genuine failures so scripts can branch on it.
           if (isBenignRace(result)) {
             console.log(
-              `Digest already in flight for "${projectLabel}" — skipping spawn.`,
+              `Digest already in flight for "${projectLabel}" — skipping spawn.`
             )
             return
           }
@@ -165,12 +179,12 @@ export const digestCommand = new Command("digest")
         await touchDigestMarker(services.configRoot, projectLabel)
 
         console.log(
-          `Spawned digest synthesizer for "${projectLabel}" (cwd: ${spawnCwd}).`,
+          `Spawned digest synthesizer for "${projectLabel}" (cwd: ${spawnCwd}).`
         )
         console.log("The memory will appear in ~60s.")
       } catch (err) {
         console.error("Digest failed:", err instanceof Error ? err.message : err)
         process.exit(1)
       }
-    },
+    }
   )

@@ -6,7 +6,7 @@ import {
   type Logger,
 } from "@notionhq/client"
 
-const USER_AGENT = "lore/0.11.0"
+const USER_AGENT = "lore/0.12.0"
 
 export interface ClientAuthSnapshot {
   token: string
@@ -19,7 +19,7 @@ export type ClientAuthRefreshOutcome =
   | { kind: "unavailable"; errorMessage?: string }
 
 export type RefreshClientAuth = (
-  current: ClientAuthSnapshot
+  current: ClientAuthSnapshot,
 ) => Promise<ClientAuthRefreshOutcome>
 
 export type AuthRefreshEvent =
@@ -84,7 +84,7 @@ export const stderrSdkLogger: Logger = (level, message, extraInfo) => {
  * without constructing a `Client`.
  */
 export function resolveSdkDebugOptions(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
 ): { logLevel: LogLevel; logger: Logger } | null {
   if (env["LORE_DEBUG"] !== "1") return null
   return { logLevel: LogLevel.INFO, logger: stderrSdkLogger }
@@ -134,7 +134,7 @@ export function createClient(token: string, baseUrl?: string): Client {
 export function createAuthRefreshingClient(
   initialAuth: ClientAuthSnapshot,
   refreshAuth: RefreshClientAuth,
-  deps: AuthRefreshingClientDeps = {}
+  deps: AuthRefreshingClientDeps = {},
 ): Client {
   const makeClient = deps.createClient ?? createClient
   const onRefresh = deps.onRefresh ?? defaultOnRefresh
@@ -165,7 +165,7 @@ export function createAuthRefreshingClient(
   }
 
   const refreshAfterUnauthorized = async (
-    seenAuth: ClientAuthSnapshot
+    seenAuth: ClientAuthSnapshot,
   ): Promise<boolean> => {
     if (!sameAuth(currentAuth, seenAuth)) return true
     if (refreshInFlight) return refreshInFlight
@@ -268,7 +268,7 @@ function isUnauthorizedError(err: unknown): boolean {
 function defaultOnRefresh(event: AuthRefreshEvent): void {
   if (event.kind === "refreshed") {
     process.stderr.write(
-      `[lore] auth: refreshed ntn token after 401 (source=${event.source})\n`
+      `[lore] auth: refreshed ntn token after 401 (source=${event.source})\n`,
     )
     return
   }
@@ -282,7 +282,7 @@ function defaultOnRefresh(event: AuthRefreshEvent): void {
 
 function emitRefreshEvent(
   onRefresh: (event: AuthRefreshEvent) => void,
-  event: AuthRefreshEvent
+  event: AuthRefreshEvent,
 ): void {
   try {
     onRefresh(event)

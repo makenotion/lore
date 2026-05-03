@@ -15,6 +15,10 @@ import { formatTaskSummary, taskStats, todayUtc } from "../../core/task.js"
 import type { LoreConfig, Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
+import {
+  formatUnresolvedProjectScopeError,
+  validateExplicitProjectScopeName,
+} from "../../core/project-scope.js"
 import { digestMarkerAgeDays } from "../../hooks/digest-marker.js"
 import { DRIFT_DEBOUNCE_DAYS, driftMarkerAgeDays } from "../../hooks/drift-marker.js"
 import { createClient } from "../../notion/client.js"
@@ -217,10 +221,21 @@ const topicsCmd = new Command("topics")
       const services = await initServices(undefined, { driftCheck: false })
 
       let projectId: string | undefined
-      if (projectName) {
-        const found = await services.projects.findByName(projectName)
+      const explicitProjectName = validateExplicitProjectScopeName(
+        projectName,
+        "project",
+        {
+          listHint: "run `lore status projects` to list configured projects",
+        }
+      )
+      if (explicitProjectName !== undefined) {
+        const found = await services.projects.findByName(explicitProjectName)
         if (!found) {
-          console.error(`Project "${projectName}" not found.`)
+          console.error(
+            formatUnresolvedProjectScopeError([explicitProjectName], "project", {
+              listHint: "run `lore status projects` to list configured projects",
+            })
+          )
           process.exit(1)
         }
         projectId = found.id
@@ -302,9 +317,7 @@ export function formatBackgroundFailureStatus(
     lines.push(`      next: ${backgroundFailureHint(failure)}`)
   }
   if (totalRecent > report.failures.length) {
-    lines.push(
-      `  (showing ${report.failures.length} of ${totalRecent} recent failures)`
-    )
+    lines.push(`  (showing ${report.failures.length} of ${totalRecent} recent failures)`)
   }
   return lines
 }

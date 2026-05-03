@@ -89,9 +89,9 @@ describe("proposeSourceMemory", () => {
   it("matches a memory whose title contains the fact subject as a whole word", async () => {
     const fact = makeFact("fact-1", { subject: "AuthService", object: "JWT" })
     const memories = {
-      search: vi.fn().mockResolvedValue([
-        makeMemory("mem-1", { title: "AuthService retry policy" }),
-      ]),
+      search: vi
+        .fn()
+        .mockResolvedValue([makeMemory("mem-1", { title: "AuthService retry policy" })]),
     }
 
     const candidate = await proposeSourceMemory({ memories } as never, fact)
@@ -120,9 +120,11 @@ describe("proposeSourceMemory", () => {
     // containing "api". The guard requires length >= 4 or a space.
     const fact = makeFact("fact-3", { subject: "API", object: "X" })
     const memories = {
-      search: vi.fn().mockResolvedValue([
-        makeMemory("mem-overmatch", { title: "API design checklist" }),
-      ]),
+      search: vi
+        .fn()
+        .mockResolvedValue([
+          makeMemory("mem-overmatch", { title: "API design checklist" }),
+        ]),
     }
 
     const candidate = await proposeSourceMemory({ memories } as never, fact)
@@ -136,9 +138,11 @@ describe("proposeSourceMemory", () => {
     // contains "authentic", not "auth" as a discrete token.
     const fact = makeFact("fact-4", { subject: "auth", object: "x" })
     const memories = {
-      search: vi.fn().mockResolvedValue([
-        makeMemory("mem-inside", { title: "authentic voice design" }),
-      ]),
+      search: vi
+        .fn()
+        .mockResolvedValue([
+          makeMemory("mem-inside", { title: "authentic voice design" }),
+        ]),
     }
 
     const candidate = await proposeSourceMemory({ memories } as never, fact)
@@ -211,7 +215,7 @@ describe("backfillFactSources", () => {
     log.mockRestore()
 
     expect(logs.some((l) => l.includes("No orphan facts"))).toBe(true)
-    expect((services.facts.setSource as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+    expect(services.facts.setSource as ReturnType<typeof vi.fn>).not.toHaveBeenCalled()
   })
 
   it("does not write any Source relation when apply is false", async () => {
@@ -338,9 +342,7 @@ describe("runFactEncodingFix", () => {
     ]
     const services = {
       facts: {
-        fixEncoding: vi
-          .fn()
-          .mockResolvedValue({ encoded, collisions: [], fixes: [] }),
+        fixEncoding: vi.fn().mockResolvedValue({ encoded, collisions: [], fixes: [] }),
       },
     }
 
@@ -353,9 +355,7 @@ describe("runFactEncodingFix", () => {
 
     expect(services.facts.fixEncoding).toHaveBeenCalledWith({ dryRun: true })
     expect(logs.some((l) => l.includes("Would decode 1 HTML-encoded fact"))).toBe(true)
-    expect(
-      logs.some((l) => l.includes("Re-run with `--yes`"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
   })
 
   it("--dry-run prints the same plan output and still carries the --yes directive", async () => {
@@ -378,9 +378,7 @@ describe("runFactEncodingFix", () => {
     ]
     const services = {
       facts: {
-        fixEncoding: vi
-          .fn()
-          .mockResolvedValue({ encoded, collisions: [], fixes: [] }),
+        fixEncoding: vi.fn().mockResolvedValue({ encoded, collisions: [], fixes: [] }),
       },
     }
 
@@ -452,9 +450,7 @@ describe("runFactEncodingFix", () => {
     ]
     const services = {
       facts: {
-        fixEncoding: vi
-          .fn()
-          .mockResolvedValue({ encoded, collisions, fixes: [] }),
+        fixEncoding: vi.fn().mockResolvedValue({ encoded, collisions, fixes: [] }),
       },
     }
 
@@ -467,12 +463,13 @@ describe("runFactEncodingFix", () => {
 
     // Tally line reports 0 applied despite 1 encoded row, matching the gate.
     expect(
-      logs.some((l) => l.includes("Decoded 0 HTML-encoded fact") && l.includes("1 collision group"))
+      logs.some(
+        (l) =>
+          l.includes("Decoded 0 HTML-encoded fact") && l.includes("1 collision group"),
+      ),
     ).toBe(true)
     // Directive for the operator is present.
-    expect(
-      logs.some((l) => l.includes("--dedup-keys --merge --yes"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("--dedup-keys --merge --yes"))).toBe(true)
   })
 })
 
@@ -518,14 +515,12 @@ describe("runMemoryEncodingFix", () => {
   it("reports nothing-to-do on a clean vault", async () => {
     const services = {
       memories: {
-        fixEncoding: vi
-          .fn()
-          .mockResolvedValue({
-            encoded: [],
-            oversizedSkipped: [],
-            contentFetchFailures: [],
-            fixes: [],
-          }),
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded: [],
+          oversizedSkipped: [],
+          contentFetchFailures: [],
+          fixes: [],
+        }),
       },
     }
 
@@ -583,14 +578,12 @@ describe("runMemoryEncodingFix", () => {
     ]
     const services = {
       memories: {
-        fixEncoding: vi
-          .fn()
-          .mockResolvedValue({
-            encoded,
-            oversizedSkipped: [],
-            contentFetchFailures: [],
-            fixes,
-          }),
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          oversizedSkipped: [],
+          contentFetchFailures: [],
+          fixes,
+        }),
       },
     }
 
@@ -602,7 +595,7 @@ describe("runMemoryEncodingFix", () => {
     log.mockRestore()
 
     expect(
-      logs.some((l) => l.includes("Title fixes: 1") && l.includes("body fixes: 2"))
+      logs.some((l) => l.includes("Title fixes: 1") && l.includes("body fixes: 2")),
     ).toBe(true)
   })
 
@@ -631,14 +624,12 @@ describe("runMemoryEncodingFix", () => {
     ]
     const services = {
       memories: {
-        fixEncoding: vi
-          .fn()
-          .mockResolvedValue({
-            encoded,
-            oversizedSkipped: [encoded[0]],
-            contentFetchFailures: [],
-            fixes,
-          }),
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          oversizedSkipped: [encoded[0]],
+          contentFetchFailures: [],
+          fixes,
+        }),
       },
     }
 
@@ -649,9 +640,7 @@ describe("runMemoryEncodingFix", () => {
     await runMemoryEncodingFix(services as never, { apply: true })
     log.mockRestore()
 
-    expect(
-      logs.some((l) => l.includes("Skipped body rewrite on 1 memory"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("Skipped body rewrite on 1 memory"))).toBe(true)
     // 250_000 bytes → "244.1 KB" under `formatBytes` (1024-base KB with
     // one decimal). The oversize preview renders in KB so it's scannable
     // next to the 100 KB cap instead of a six-digit byte count.
@@ -797,7 +786,7 @@ describe("loadTopicAliasMerges", () => {
       - "Build tooling"
   - canonical: "MCP"
     aliases: ["MCP Tools"]
-`
+`,
     )
 
     const plans = await loadTopicAliasMerges(path)
@@ -810,7 +799,7 @@ describe("loadTopicAliasMerges", () => {
   it("rejects a missing file with a clean error naming the absolute path", async () => {
     const missing = join(workDir, "does-not-exist.yaml")
     await expect(loadTopicAliasMerges(missing)).rejects.toThrow(
-      /Merge file not found:.*does-not-exist\.yaml/
+      /Merge file not found:.*does-not-exist\.yaml/,
     )
   })
 
@@ -825,7 +814,7 @@ describe("loadTopicAliasMerges", () => {
     const path = join(workDir, "bad-schema.yaml")
     await writeFile(path, `merges:\n  - canonical: "A"\n    aliases: []\n`)
     await expect(loadTopicAliasMerges(path)).rejects.toThrow(
-      /Invalid merge file.*merges\.0\.aliases.*at least one alias/
+      /Invalid merge file.*merges\.0\.aliases.*at least one alias/,
     )
   })
 
@@ -838,9 +827,7 @@ describe("loadTopicAliasMerges", () => {
   it("rejects an empty merges array (zod .min(1))", async () => {
     const path = join(workDir, "no-plans.yaml")
     await writeFile(path, `merges: []\n`)
-    await expect(loadTopicAliasMerges(path)).rejects.toThrow(
-      /at least one plan/
-    )
+    await expect(loadTopicAliasMerges(path)).rejects.toThrow(/at least one plan/)
   })
 })
 
@@ -882,13 +869,13 @@ describe("printAliasMergeResults", () => {
           canonicalProjectIds: ["p1", "p2"],
         }),
       ],
-      { writing: true }
+      { writing: true },
     )
     const joined = logs.join("\n")
-    expect(joined).toContain('Merged 1 topic alias group')
+    expect(joined).toContain("Merged 1 topic alias group")
     expect(joined).toContain('"MCP" (existing canonical)')
     expect(joined).toContain('archived alias "MCP Tools" (t2)')
-    expect(joined).toContain('re-pointed 2 memories; 2 projects on canonical')
+    expect(joined).toContain("re-pointed 2 memories; 2 projects on canonical")
   })
 
   it("uses hypothetical verbs when writing is false", () => {
@@ -899,11 +886,11 @@ describe("printAliasMergeResults", () => {
           reassignedMemoryIds: ["m1"],
         }),
       ],
-      { writing: false }
+      { writing: false },
     )
     const joined = logs.join("\n")
-    expect(joined).toContain('Would merge 1 topic alias group')
-    expect(joined).toContain('would re-point 1 memory')
+    expect(joined).toContain("Would merge 1 topic alias group")
+    expect(joined).toContain("would re-point 1 memory")
   })
 
   it("labels the canonical as 'would be created' on dry-run creation", () => {
@@ -916,7 +903,7 @@ describe("printAliasMergeResults", () => {
           reassignedMemoryIds: ["m1"],
         }),
       ],
-      { writing: false }
+      { writing: false },
     )
     expect(logs.join("\n")).toContain("canonical would be created")
   })
@@ -930,7 +917,7 @@ describe("printAliasMergeResults", () => {
           archivedAliases: [{ name: "Old", id: "t2" }],
         }),
       ],
-      { writing: true }
+      { writing: true },
     )
     expect(logs.join("\n")).toContain("canonical created")
   })
@@ -946,7 +933,7 @@ describe("printAliasMergeResults", () => {
           canonicalProjectIds: ["p1", "p2", "p3", "p4"],
         }),
       ],
-      { writing: false }
+      { writing: false },
     )
     const joined = logs.join("\n")
     expect(joined).not.toMatch(/0 memor/)
@@ -962,19 +949,17 @@ describe("printAliasMergeResults", () => {
           unmatchedAliases: ["MCP tool layout", "MCP Client Conventions"],
         }),
       ],
-      { writing: false }
+      { writing: false },
     )
     expect(logs.join("\n")).toContain(
-      'no match for: "MCP tool layout", "MCP Client Conventions"'
+      'no match for: "MCP tool layout", "MCP Client Conventions"',
     )
   })
 
   it("prints the 'Nothing to merge' banner when every plan is a noop", () => {
     printAliasMergeResults(
-      [
-        makeResult({ noop: true, archivedAliases: [], reassignedMemoryIds: [] }),
-      ],
-      { writing: false }
+      [makeResult({ noop: true, archivedAliases: [], reassignedMemoryIds: [] })],
+      { writing: false },
     )
     expect(logs.join("\n")).toContain("Nothing to merge")
   })
@@ -993,7 +978,7 @@ describe("printAliasMergeResults", () => {
           unmatchedAliases: ["StaleAlias"],
         }),
       ],
-      { writing: true }
+      { writing: true },
     )
     const joined = logs.join("\n")
     expect(joined).toContain("1 plan already merged")
@@ -1002,16 +987,12 @@ describe("printAliasMergeResults", () => {
   })
 })
 
-
 describe("runBuildEntitiesMigration", () => {
   let logs: string[]
   let logSpy: ReturnType<typeof vi.spyOn>
   const configRoot = "/tmp/lore-migrate-test"
   const vaultPageId = "vault-page-entity-test"
-  const lockStateDir = join(
-    tmpdir(),
-    `lore-migrate-command-lock-test-${process.pid}`,
-  )
+  const lockStateDir = join(tmpdir(), `lore-migrate-command-lock-test-${process.pid}`)
   let originalStateDir: string | undefined
 
   beforeEach(() => {
@@ -1019,11 +1000,9 @@ describe("runBuildEntitiesMigration", () => {
     process.env["LORE_HOOK_STATE_DIR"] = lockStateDir
     rmSync(lockStateDir, { recursive: true, force: true })
     logs = []
-    logSpy = vi
-      .spyOn(console, "log")
-      .mockImplementation((...args: unknown[]) => {
-        logs.push(args.map((a) => String(a)).join(" "))
-      })
+    logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "))
+    })
   })
   afterEach(() => {
     logSpy.mockRestore()
@@ -1092,9 +1071,9 @@ describe("runBuildEntitiesMigration", () => {
       },
     }) as never
 
-    await expect(
-      runBuildEntitiesMigration(services, { apply: true }),
-    ).rejects.toThrow(/Another build-entities migration is already active/)
+    await expect(runBuildEntitiesMigration(services, { apply: true })).rejects.toThrow(
+      /Another build-entities migration is already active/,
+    )
     expect(existsSync(lockPath)).toBe(true)
     expect(
       (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
@@ -1181,9 +1160,7 @@ describe("parseSynopsisBackend", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
     try {
       expect(() => parseSynopsisBackend("openai")).toThrow("exit-called")
-      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("openai"))).toBe(
-        true
-      )
+      expect(errSpy.mock.calls.some((c) => String(c[0]).includes("openai"))).toBe(true)
     } finally {
       exitSpy.mockRestore()
       errSpy.mockRestore()
@@ -1239,10 +1216,10 @@ describe("formatBackfillBucket", () => {
     // misread "checked and found zero" when the migration didn't
     // check at all.
     expect(formatBackfillBucket(0, "placeholder", false)).toBe(
-      "n/a (placeholder backend)"
+      "n/a (placeholder backend)",
     )
     expect(formatBackfillBucket(99, "placeholder", false)).toBe(
-      "n/a (placeholder backend)"
+      "n/a (placeholder backend)",
     )
   })
 })
@@ -1251,9 +1228,7 @@ describe("runSynopsisBackfill", () => {
   it("default (no --yes) is plan-only and surfaces the re-run footer", async () => {
     const report = emptyBackfillReport()
     report.totalCandidates = 5
-    report.examples = [
-      { id: "m1", title: "First", bucket: "candidate" as const },
-    ]
+    report.examples = [{ id: "m1", title: "First", bucket: "candidate" as const }]
     const services = {
       memories: { backfillSynopses: vi.fn().mockResolvedValue(report) },
     }
@@ -1276,9 +1251,9 @@ describe("runSynopsisBackfill", () => {
     })
     expect(logs.some((l) => l.includes("Would backfill 5 synopses"))).toBe(true)
     expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
-    expect(
-      logs.some((l) => l.includes("estimated, exact counts require --yes"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("estimated, exact counts require --yes"))).toBe(
+      true,
+    )
     // Plan-only output deliberately suppresses the batch-size clause —
     // the operator hasn't paid anything yet so the concurrency knob
     // is irrelevant noise.
@@ -1330,9 +1305,7 @@ describe("runSynopsisBackfill", () => {
     })
     log.mockRestore()
 
-    expect(
-      logs.some((l) => l.includes("No memories with empty Synopsis"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("No memories with empty Synopsis"))).toBe(true)
   })
 
   it("apply path with claude backend reports the synthesis verb and counters", async () => {
@@ -1383,12 +1356,12 @@ describe("runSynopsisBackfill", () => {
 
     expect(logs.some((l) => l.includes("Flagged 4 synopses"))).toBe(true)
     expect(logs.some((l) => l.includes("backend: placeholder"))).toBe(true)
-    expect(
-      logs.some((l) => l.includes("body-oversize: n/a (placeholder backend)"))
-    ).toBe(true)
-    expect(
-      logs.some((l) => l.includes("empty-body:    n/a (placeholder backend)"))
-    ).toBe(true)
+    expect(logs.some((l) => l.includes("body-oversize: n/a (placeholder backend)"))).toBe(
+      true,
+    )
+    expect(logs.some((l) => l.includes("empty-body:    n/a (placeholder backend)"))).toBe(
+      true,
+    )
   })
 
   it("plan-only with placeholder backend renders numeric (estimated) buckets", async () => {
@@ -1413,7 +1386,7 @@ describe("runSynopsisBackfill", () => {
     log.mockRestore()
 
     expect(
-      logs.some((l) => l.includes("body-oversize: 0") && l.includes("estimated"))
+      logs.some((l) => l.includes("body-oversize: 0") && l.includes("estimated")),
     ).toBe(true)
     expect(logs.some((l) => l.includes("n/a"))).toBe(false)
   })
@@ -1551,11 +1524,9 @@ describe("runBuildConfidenceScores", () => {
 
   beforeEach(() => {
     logs = []
-    logSpy = vi
-      .spyOn(console, "log")
-      .mockImplementation((...args: unknown[]) => {
-        logs.push(args.map((a) => String(a)).join(" "))
-      })
+    logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "))
+    })
     // Silence the discovery breadcrumb stderr line so test output stays
     // clean. The breadcrumb is asserted in its own describe block above.
     originalStderrWrite = process.stderr.write
@@ -1579,11 +1550,7 @@ describe("runBuildConfidenceScores", () => {
   function makeServices(args: {
     memories: Memory[]
     findByName?: (name: string) => Promise<{ id: string; name: string } | null>
-    applyBackfillScore?: (
-      id: string,
-      score: number,
-      date: string,
-    ) => Promise<void>
+    applyBackfillScore?: (id: string, score: number, date: string) => Promise<void>
   }) {
     const services = {
       config: { notion: { rateLimit: { concurrency: 5 } } },
@@ -1667,8 +1634,7 @@ describe("runBuildConfidenceScores", () => {
   it("threads projectName through and resolves it via findByName", async () => {
     const services = makeServices({
       memories: [],
-      findByName: async (name) =>
-        name === "Mail" ? { id: "project-mail", name } : null,
+      findByName: async (name) => (name === "Mail" ? { id: "project-mail", name } : null),
     })
     await runBuildConfidenceScores(services as never, {
       apply: false,
@@ -1684,7 +1650,7 @@ describe("runBuildConfidenceScores", () => {
   it("aborts on unknown projectName BEFORE the discovery breadcrumb prints", async () => {
     // Capture stderr to verify the breadcrumb does NOT appear on the
     // failure path — operators shouldn't see "Discovering memories..."
-    // followed immediately by a "project not found" error.
+    // followed immediately by an unresolved-project error.
     const captured: string[] = []
     const originalWrite = process.stderr.write
     process.stderr.write = ((chunk: unknown) => {
@@ -1704,16 +1670,14 @@ describe("runBuildConfidenceScores", () => {
           dryRun: false,
           projectName: "Typo",
         }),
-      ).rejects.toThrow(/project "Typo" not found/)
+      ).rejects.toThrow(/Project "Typo" could not be resolved/)
     } finally {
       process.stderr.write = originalWrite
     }
 
     // Critical: the breadcrumb stayed silent, AND no scan or write
     // attempts ran — the safety property holds end-to-end.
-    expect(
-      captured.filter((c) => c.includes("Discovering memories")),
-    ).toHaveLength(0)
+    expect(captured.filter((c) => c.includes("Discovering memories"))).toHaveLength(0)
     expect(services.memories.listAllForBackfill).not.toHaveBeenCalled()
     expect(services.memories.applyBackfillScore).not.toHaveBeenCalled()
   })

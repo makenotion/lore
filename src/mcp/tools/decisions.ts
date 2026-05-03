@@ -8,7 +8,7 @@ import {
   debugLogPartialFailures,
   debugLogContradictionFailure,
 } from "../helpers.js"
-import { resolveProjectIds } from "../resolve.js"
+import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import {
   resolveCanonicalDecisionLinks,
   syncDecisionReachability,
@@ -586,18 +586,7 @@ interface ListArgs {
 
 async function handleList(services: LoreServices, args: ListArgs): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (!found) {
-        return {
-          content: [{ type: "text", text: `Project "${args.projectName}" not found.` }],
-        }
-      }
-      projectId = found.id
-    } else if (services.context.project) {
-      projectId = services.context.project.id
-    }
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
 
     const {
       items: decisions,
@@ -723,22 +712,11 @@ async function handleContext(
   toolName: string
 ): Promise<ToolResult> {
   try {
-    let projectId: string | undefined
     const warnings: string[] = []
     const formatWarnings = () =>
       warnings.length > 0 ? `\n\nWarnings: ${warnings.join("; ")}` : ""
 
-    if (args.projectName) {
-      const found = await services.projects.findByName(args.projectName)
-      if (!found) {
-        return {
-          content: [{ type: "text", text: `Project "${args.projectName}" not found.` }],
-        }
-      }
-      projectId = found.id
-    } else if (services.context.project) {
-      projectId = services.context.project.id
-    }
+    const { projectId } = await resolveReadProjectScope(services, args.projectName)
 
     // PF3-01 — resolve the entity name to a canonical row first so the
     // fact lookup can ride the relation join. This brings

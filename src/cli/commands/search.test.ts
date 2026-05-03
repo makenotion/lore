@@ -49,6 +49,7 @@ describe("parseSearchCliOptions", () => {
 
 describe("searchCommand", () => {
   let errorSpy: ReturnType<typeof vi.fn>
+  let logSpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     vi.mocked(initServices).mockReset()
@@ -56,8 +57,9 @@ describe("searchCommand", () => {
       throw new Error(`__process_exit_${typeof code === "number" ? code : 0}__`)
     }) as never)
     errorSpy = vi.fn()
+    logSpy = vi.fn()
     vi.spyOn(console, "error").mockImplementation(errorSpy)
-    vi.spyOn(console, "log").mockImplementation(() => {})
+    vi.spyOn(console, "log").mockImplementation(logSpy)
     vi.spyOn(console, "warn").mockImplementation(() => {})
   })
 
@@ -93,4 +95,58 @@ describe("searchCommand", () => {
       expect(errorSpy.mock.calls.join("\n")).toContain("--limit")
     }
   )
+
+  it("exits non-zero and skips search when --project cannot resolve", async () => {
+    const search = vi.fn()
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      memories: { search },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    } as never)
+
+    await expect(
+      searchCommand.parseAsync(["auth", "--project", "Missing"], { from: "user" })
+    ).rejects.toThrow("__process_exit_1__")
+
+    expect(search).not.toHaveBeenCalled()
+    expect(errorSpy.mock.calls.join("\n")).toContain("Search failed:")
+    expect(errorSpy.mock.calls.join("\n")).toContain(
+      'Project "Missing" could not be resolved'
+    )
+    expect(errorSpy.mock.calls.join("\n")).toContain("Fix the project scope")
+  })
+
+  it("exits non-zero and skips search when --project is blank", async () => {
+    const findByName = vi.fn()
+    const search = vi.fn()
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName },
+      memories: { search },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    } as never)
+
+    await expect(
+      searchCommand.parseAsync(["auth", "--project", ""], { from: "user" })
+    ).rejects.toThrow("__process_exit_1__")
+
+    expect(findByName).not.toHaveBeenCalled()
+    expect(search).not.toHaveBeenCalled()
+    expect(errorSpy.mock.calls.join("\n")).toContain('Project "" could not be resolved')
+  })
+
+  it("uses the auto-detected project when --project is omitted", async () => {
+    const search = vi.fn().mockResolvedValue([])
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn() },
+      memories: { search },
+      context: { project: { id: "proj-context", name: "Context" } },
+    } as never)
+
+    await searchCommand.parseAsync(["auth"], { from: "user" })
+
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ query: "auth", projectId: "proj-context" })
+    )
+    expect(logSpy).toHaveBeenCalledWith('No memories found for: "auth"')
+  })
 })
