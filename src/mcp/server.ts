@@ -79,8 +79,12 @@ export async function startServer(): Promise<void> {
   // failures. The success path still registers the same seven dispatchers,
   // but degraded startup now presents the same dispatcher names with setup
   // recovery text instead of disconnecting the client.
+  //
+  // 0.11.0 packages the post-ntn dogfood hardening train: attribution,
+  // retry-safe writes, task/audit/list output fixes, entity merge, and
+  // Notion request throttling.
   const server = new McpServer(
-    { name: "lore", version: "0.10.1" },
+    { name: "lore", version: "0.11.0" },
     {
       capabilities: {
         tools: {},

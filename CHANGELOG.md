@@ -11,6 +11,14 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-03
+
+The 0.11.0 train packages the post-ntn dogfood hardening work: per-user
+attribution, safer write/idempotency paths, broader task/query coverage,
+first-class entity merge, and Notion request-rate protection. This release also
+publishes the 0.10.1 MCP startup-diagnostic work that had landed on `main` but
+had not been cut as a GitHub Package release.
+
 ### Added
 
 - **Per-user attribution on every Memory write
@@ -47,6 +55,82 @@ log is the canonical source for those.
   networks who want the synchronous path export `LORE_USER_NAME`
   in shell rc; failures collapse to `{ author: null }` and never
   block startup.
+- **Dynamic Fact confidence mirror.** Facts now carry a mirrored numeric
+  confidence score derived from the source Memory's system-managed
+  `Confidence Score`, with a migration path for existing vaults. Query,
+  context, and decision-graph surfaces can display the trust signal without
+  needing to dereference the source Memory every time. (#186)
+- **First-class entity merge with fact repointing.** `lore entities merge`
+  and the underlying `EntityService` can collapse duplicate canonical handles,
+  repoint affected facts, and preserve project scope through the merge. (#258)
+- **Bounded conflict-scan continuation.** `lore conflicts scan` gains raw-limit
+  control so large vaults can resume lexical candidate discovery beyond the
+  prior fixed candidate cap. (#252)
+- **Configurable background agent command.** Hook-spawned background work can
+  use a configured command, enabling Codex installs and other clients whose
+  autosave worker is not launched via the default `claude` binary. (#211)
+- **MCP startup diagnostics.** Interactive MCP initialization failures now
+  register diagnostic stubs for the seven `lore-*` dispatchers instead of
+  disconnecting immediately; background-agent MCP children still fail fast via
+  `LORE_BACKGROUND_AGENT=true`. (#230)
+- **Overdue tasks in query audit.** `lore-query action='audit'` now includes
+  overdue task coverage so agent wakeups and audits surface more actionable
+  follow-up work. (#231)
+
+### Changed
+
+- **Notion client request throttling and 429 backoff.** Outbound Notion calls
+  now pass through a token bucket and bounded retry path, reducing accidental
+  rate-limit collisions now that internal rollout is exercising more real
+  traffic. (#213)
+- **Search and wake-up coverage widen under caps.** Semantic memory search
+  paginates before applying client-side filters, wake-up task loading balances
+  due-dated and undated task coverage, and `knowledgeFactLimit: 0` is honored as
+  an explicit "load no facts" setting. (#208, #255, #202)
+- **Task list totals are exact when possible.** `lore-task action='list'`
+  labels totals as exact or lower-bound and only prefixes bucket totals with
+  `>=` when the fetched window saturated. (#226)
+- **Trust indicators reach the remaining list surfaces.** Decision and task
+  list renderers now include the same confidence/trust signal already used by
+  the memory-oriented surfaces. (#185)
+- **Client integration configs are tracked in-repo.** `.mcp.json`,
+  `.cursor/mcp.json`, `.codex/config.toml`, and `.codex/hooks.json` are now
+  committed examples of the supported local-client wiring. (#250)
+- **Documentation was split into focused guides.** README content was
+  streamlined, with detailed CLI, MCP, hook, conflict-detection, dependency,
+  host, and rollout material moved into `docs/`. (#225, #234, #261)
+- **Notion `User-Agent` header bumps to `lore/0.11.0`.** Notion logs
+  `User-Agent` on every API call; the bump keeps Notion-side analytics
+  attribution honest for the post-dogfood hardening train.
+
+### Fixed
+
+- **Write paths now report partial failures.** Memory, decision, task, and
+  update flows surface structured partial-failure errors when a multi-step
+  write succeeds in Notion but a follow-up write fails. (#206, #229, #224,
+  #251)
+- **Retry/idempotency hardening.** Topic-key upserts, compare verdict dispatch,
+  autosave atomic-learning deduplication, and concurrent `lore mine` file
+  memory creation now avoid duplicate rows or duplicate revision blocks when
+  callers retry. (#260, #259, #256, #253)
+- **Archived rows are filtered consistently.** Memory list/search, query,
+  overdue, decision, task, knowledge, context, and live-page surfaces now avoid
+  returning archived Notion rows. (#203, #233)
+- **Pagination gaps closed.** Vault database verification and relation-property
+  reads now paginate instead of silently dropping data beyond Notion's first
+  response page. (#248, #254)
+- **Entity and fact edge cases are safer.** Fact dedup no longer shortens review
+  dates, entity relation backfills happen on dedup hits, auto-created entities
+  preserve project scope, and apply-mode entity migrations are lock-protected.
+  (#201, #204, #205, #257)
+- **Hook and auth robustness.** Background hook workers forward canonical auth
+  env, sanitize session-derived state paths, and clean up prompt temp files on
+  preparation failures. ntn auth can re-resolve after mid-session 401s. (#212,
+  #207, #210, #232)
+- **Legacy OAuth and CLI input fixes.** The legacy OAuth callback path validates
+  more aggressively and threads the configured client id into the authorization
+  URL; `lore mine` now honors `--pattern` and validates `--limit`. (#249, #227,
+  #209)
 
 ## [0.10.0] - 2026-05-01
 
@@ -435,7 +519,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/makenotion/lore/compare/v0.6.0...v0.9.0
 [0.6.0]: https://github.com/makenotion/lore/compare/v0.5.1...v0.6.0
