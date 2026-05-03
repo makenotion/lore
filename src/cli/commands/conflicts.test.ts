@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   SCAN_RAW_CANDIDATE_CAP,
-  dynamicCodeFence,
   parseScanCliOptions,
   renderScanJson,
   renderScanMarkdown,
@@ -1174,43 +1173,5 @@ describe("renderScanMarkdown", () => {
     expect(md).toContain("Post-fence text.")
     // Memory B's plain body uses the minimum 3-backtick fence.
     expect(md).toContain("```markdown\nPlain body, no backticks.\n```")
-  })
-})
-
-describe("dynamicCodeFence", () => {
-  it("returns 3 backticks for content with no backticks", () => {
-    expect(dynamicCodeFence("no fences here")).toBe("```")
-  })
-
-  it("returns 3 backticks for content with at most 2 consecutive backticks", () => {
-    // 2 backticks in a row don't open a fenced code block (CommonMark
-    // requires ≥ 3), so a 3-backtick outer fence is sufficient.
-    expect(dynamicCodeFence("inline `code` here")).toBe("```")
-    expect(dynamicCodeFence("``two ticks``")).toBe("```")
-  })
-
-  it("returns 4 backticks when content has a 3-backtick run (the common embedded-fence case)", () => {
-    expect(dynamicCodeFence("```js\ncode\n```")).toBe("````")
-  })
-
-  it("returns 5 backticks when content has a 4-backtick run", () => {
-    expect(dynamicCodeFence("````nested\ncontent\n````")).toBe("`````")
-  })
-
-  it("counts the longest run, not the first run", () => {
-    // The body has a 3-run early and a 5-run later — the renderer must
-    // pick the 6-backtick fence to safely contain the 5-run.
-    const body = "early ``` mid ````` late"
-    expect(dynamicCodeFence(body)).toBe("``````")
-  })
-
-  it("resets the run counter on non-backtick characters", () => {
-    // A 2-then-2 sequence separated by other characters is two
-    // 2-runs, not a single 4-run — minimum 3-backtick fence applies.
-    expect(dynamicCodeFence("aa``bb``cc")).toBe("```")
-  })
-
-  it("handles an empty string with the minimum fence", () => {
-    expect(dynamicCodeFence("")).toBe("```")
   })
 })

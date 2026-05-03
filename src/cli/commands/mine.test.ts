@@ -932,6 +932,51 @@ describe("runMineUpsert (orchestration)", () => {
     })
   })
 
+  it("uses the normal 3-backtick body for files with no embedded fence", async () => {
+    const { services, createCalls } = makeServices({})
+    await withFixture({ "a.ts": "const answer = 42" }, async (dir) => {
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["a.ts"],
+        undefined,
+        undefined,
+        () => {}
+      )
+      const relPath = relative("/repo", `${dir}/a.ts`)
+      expect(summary.indexed).toBe(1)
+      expect(createCalls[0]?.input).toMatchObject({
+        content: `# ${relPath}\n\n\`\`\`ts\nconst answer = 42\n\`\`\``,
+      })
+    })
+  })
+
+  it("uses a longer outer fence when a mined Markdown file contains a code fence", async () => {
+    const { services, createCalls } = makeServices({})
+    const source = [
+      "before",
+      "```ts",
+      "const answer = 42",
+      "```",
+      "after",
+    ].join("\n")
+    await withFixture({ "notes.md": source }, async (dir) => {
+      const summary = await runMineUpsert(
+        services,
+        dir,
+        ["notes.md"],
+        undefined,
+        undefined,
+        () => {}
+      )
+      const relPath = relative("/repo", `${dir}/notes.md`)
+      expect(summary.indexed).toBe(1)
+      expect(createCalls[0]?.input).toMatchObject({
+        content: `# ${relPath}\n\n\`\`\`\`md\n${source}\n\`\`\`\``,
+      })
+    })
+  })
+
   it("updates existing memories on a second run (idempotent upsert)", async () => {
     // Pin the AC-critical idempotency cycle: first mine creates,
     // second mine finds-and-updates the same row instead of

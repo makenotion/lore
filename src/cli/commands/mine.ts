@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os"
 import { resolve, relative, basename, extname, join } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
+import { dynamicCodeFence } from "../../core/markdown.js"
 import { initServices, type LoreServices } from "../../services.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../../notion/rate-limit.js"
 import type { Memory } from "../../types.js"
@@ -888,7 +889,8 @@ async function processOneFile(
     const ext = extname(file).slice(1)
     const keywords = [ext, "mined", relPath].filter(Boolean).join(" ")
     const title = `${basename(file)} — ${relPath}`
-    const body = `# ${relPath}\n\n\`\`\`${ext}\n${content}\n\`\`\``
+    const fence = dynamicCodeFence(content)
+    const body = `# ${relPath}\n\n${fence}${ext}\n${content}\n${fence}`
 
     return await withMineFileLock(
       services,
