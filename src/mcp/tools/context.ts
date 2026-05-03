@@ -18,6 +18,7 @@ import {
   computeTasksFetchLimit,
   dateBucket,
   formatWakeUpCoverage,
+  formatWakeUpCoverageReport,
   loadWakeUpData,
   type WakeUpCoverageCaps,
   type WakeUpSectionCounts,
@@ -292,11 +293,21 @@ async function handleStatus(services: LoreServices): Promise<ToolResult> {
     // CLI calls — `formatTaskSummary` is the single renderer so the
     // emitted Tasks line is byte-identical between MCP and CLI for the
     // same vault state.
-    const tasks = await taskStats(services.tasks, {
-      projectId: project?.id,
-      today: todayUtc(),
-    })
+    const [tasks, wakeUp] = await Promise.all([
+      taskStats(services.tasks, {
+        projectId: project?.id,
+        today: todayUtc(),
+      }),
+      loadWakeUpData(services, {
+        projectId: project?.id,
+        includeMemoryContent: false,
+        includeCoverage: true,
+      }),
+    ])
     lines.push(...formatTaskSummary(tasks))
+    if (wakeUp.coverage) {
+      lines.push(...formatWakeUpCoverageReport(wakeUp.coverage))
+    }
 
     const backgroundFailureStatus = formatBackgroundFailureStatusObject(
       await loadBackgroundFailureStatus(services.configRoot),

@@ -40,6 +40,7 @@ import {
   DEFAULT_WAKEUP_TASK_LIMIT,
   RANKED_WAKEUP_LIMITS,
   dateBucket,
+  emptyWakeUpCoverageMetrics,
   formatWakeUpCoverage,
   loadWakeUpData,
 } from "../core/wakeup.js"
@@ -726,7 +727,9 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
     if (!marked) {
       if (debug) {
         process.stderr.write(
-          "[lore] wakeup: mode=default ranked=false reason=already-ranked-for-session\n",
+          `${formatWakeUpCoverage(
+            emptyWakeUpCoverageMetrics("default", "already-ranked-for-session"),
+          )}\n`,
         )
       }
       return
@@ -795,6 +798,13 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
+    if (debug) {
+      process.stderr.write(
+        `${formatWakeUpCoverage(
+          emptyWakeUpCoverageMetrics("error", "load-failed"),
+        )}\n`,
+      )
+    }
     process.stderr.write(
       `[lore] wakeup: load failed — ${err instanceof Error ? err.message : err}. Skipping context injection.\n`
     )

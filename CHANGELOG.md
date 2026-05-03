@@ -14,10 +14,15 @@ log is the canonical source for those.
 ### Changed
 
 - **Wake-up debug logging now uses coverage-counter vocabulary.** The
-  `LORE_DEBUG=1` hook wake-up line reports `mode=ranked|default` and
-  `reason=no-ranked-search` for the unranked path, replacing the older
+  `LORE_DEBUG=1` hook wake-up line reports `mode=ranked|default|error`,
+  `reason=no-ranked-search` for the unranked path, and explicit
+  `already-ranked-for-session` / `load-failed` variants, replacing the older
   `reason=no-user-query` wording so operator filters cover every case where
   ranked search did not run.
+- **Wake-up coverage counters now surface in status.** `lore status` and
+  `lore-context action='status'` print the same content-free coverage line
+  shape as the hook debug log, so operators and MCP-driven agents can inspect
+  retrieval coverage without waiting for a live hook fire.
 
 ### Added
 

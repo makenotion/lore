@@ -389,8 +389,8 @@ won't be immediately overridden by the next Stop hook.
 ## The status Command
 
 `status` prints vault metadata (page id, current project, database counts,
-active projects), a one-line **Tasks** summary, and a per-project
-**Digests** section.
+active projects), a one-line **Tasks** summary, **Memory confidence**,
+**Wake-up coverage**, and per-project **Digests** sections.
 
 The Tasks line surfaces `Tasks: N active (overdue: M, stale ≥30d: K,
 in-progress: P, blocked: Q)` against the active project (or vault-wide
@@ -422,19 +422,27 @@ project scope (vault-wide when no project is resolved) via the same
 `listAllForBackfill` iterator the `--build-confidence-scores`
 migration uses, aggregates the four numbers in one pass, and returns
 the report. The CLI fans the call out via `Promise.all` alongside
-`taskStats` — both walk the Memories DB under the same project scope,
-so wall-clock at the orchestration level is `max(taskStats,
-confidenceStats)` rather than the sum. (The walk inside
+`taskStats` and `loadWakeUpData({ includeCoverage: true })` — all three
+read the same project scope, so wall-clock at the orchestration level is
+`max(taskStats, confidenceStats, wake-up coverage)` rather than the sum.
+(The walk inside
 `confidenceStats` is internally sequential — pagination dominates
 single-method wall-clock on large vaults; the fan-out is what gives
 us the parallelism, not the iterator.)
 
-**`Promise.all` not `allSettled`** is deliberate. Both calls walk the
-same data source under the same scope through the same rate-limited
-client, so a 5xx that takes down one almost certainly takes down the
-other; `allSettled`'s partial-recovery posture would help only on the
-narrow case of a transient single-call failure that the rate-limit
-middleware doesn't retry through. `taskStats`'s pre-DEFERRED-04
+The **Wake-up coverage** section renders the same content-free
+`formatWakeUpCoverage` line the hook emits under `LORE_DEBUG=1`, prefixed
+with `Wake-up coverage:` for status readability. Status calls
+`loadWakeUpData` with `includeMemoryContent: false` and `includeCoverage:
+true`, so operators can inspect digest freshness and `sections.*` counts
+without leaking titles, fact text, query text, or page bodies.
+
+**`Promise.all` not `allSettled`** is deliberate. These status probes walk
+the same vault under the same scope through the same rate-limited client, so
+a 5xx that takes down one likely takes down the others; `allSettled`'s
+partial-recovery posture would help only on the narrow case of a transient
+single-call failure that the rate-limit middleware doesn't retry through.
+`taskStats`'s pre-DEFERRED-04
 posture was the same `Promise.all` shape, and the
 `searchByHybridPages` design rule already pins "fully-broken
 subsystem must not masquerade as no-results" — `lore status` should

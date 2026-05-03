@@ -210,6 +210,7 @@ function makeServices(opts: StubOpts = {}): unknown {
       materializeContent: vi.fn(async (m) => m),
       getTitleById: vi.fn(),
       decrementConfidence: vi.fn(async () => 0.45),
+      queryStaleConfidence: vi.fn(async () => []),
     },
     facts: {
       create: opts.factsCreate ?? vi.fn(async () => ({})),

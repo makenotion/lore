@@ -223,7 +223,11 @@ export interface WakeUpTaskBucketCoverage {
   activeCapped: boolean
 }
 
-export type WakeUpCoverageMode = "ranked" | "default"
+export type WakeUpCoverageMode = "ranked" | "default" | "error"
+export type WakeUpCoverageReason =
+  | "no-ranked-search"
+  | "already-ranked-for-session"
+  | "load-failed"
 
 export interface WakeUpSectionCounts {
   digest: number
@@ -249,6 +253,8 @@ export interface WakeUpDigestCoverage {
 
 export interface WakeUpCoverageMetrics {
   mode: WakeUpCoverageMode
+  /** Why ranked retrieval did not produce a normal ranked coverage line. */
+  reason?: WakeUpCoverageReason
   /** Length of the sanitized user query. Zero when ranked search did not run. */
   queryLength: number
   digest: WakeUpDigestCoverage
@@ -285,6 +291,34 @@ export interface WakeUpCoverageCaps {
   relatedMemoryLimit?: number
   knowledgeFactLimit?: number
   taskMemoryLimit?: number
+}
+
+function emptyWakeUpSectionCounts(): WakeUpSectionCounts {
+  return {
+    digest: 0,
+    currentTaskMemories: 0,
+    recentMemories: 0,
+    relatedMemories: 0,
+    tasks: 0,
+    knowledgeFacts: 0,
+    decisions: 0,
+    proposedDecisions: 0,
+    overdueDecisions: 0,
+    staleConfidence: 0,
+  }
+}
+
+export function emptyWakeUpCoverageMetrics(
+  mode: Exclude<WakeUpCoverageMode, "ranked">,
+  reason: WakeUpCoverageReason,
+): WakeUpCoverageMetrics {
+  return {
+    mode,
+    reason,
+    queryLength: 0,
+    digest: { available: false, fresh: false, ageDays: null },
+    sectionCounts: emptyWakeUpSectionCounts(),
+  }
 }
 
 export interface WakeUpOptions {
@@ -421,11 +455,11 @@ export interface WakeUpData {
    */
   staleConfidence: Memory[]
   /**
-   * Privacy-conscious wake-up coverage counters. Null unless
-   * `includeCoverage` was requested. Counts track rendered section rows; the
-   * data layer caps flat-rendered task counts, and renderers that collapse or
-   * re-bucket rows must adjust affected counts before logging or rendering
-   * debug output.
+   * Privacy-conscious wake-up coverage counters for observability and
+   * on-demand status surfaces. Null unless `includeCoverage` was requested.
+   * Counts track rendered section rows; the data layer caps flat-rendered task
+   * counts, and renderers that collapse or re-bucket rows must adjust affected
+   * counts before logging or rendering debug output.
    */
   coverage: WakeUpCoverageMetrics | null
 }
@@ -435,6 +469,7 @@ export function buildEmptyWakeUpCoverage(
 ): WakeUpCoverageMetrics {
   return {
     mode: overrides.mode ?? "default",
+    reason: overrides.reason,
     queryLength: overrides.queryLength ?? 0,
     digest: {
       available: false,
@@ -473,6 +508,7 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
 
   return {
     mode: ranked ? "ranked" : "default",
+    reason: ranked ? undefined : "no-ranked-search",
     queryLength: ranked ? userQuery?.length ?? 0 : 0,
     digest: {
       available: input.latestDigest !== null,
@@ -510,7 +546,7 @@ export function formatWakeUpCoverage(
   if (coverage.mode === "ranked") {
     parts.push(`queryLen=${coverage.queryLength}`)
   } else {
-    parts.push("reason=no-ranked-search")
+    parts.push(`reason=${coverage.reason ?? "no-ranked-search"}`)
   }
 
   if (caps.memoryLimit !== undefined) parts.push(`memory=${caps.memoryLimit}`)
@@ -541,6 +577,12 @@ export function formatWakeUpCoverage(
   )
 
   return parts.join(" ")
+}
+
+export function formatWakeUpCoverageReport(
+  coverage: WakeUpCoverageMetrics,
+): string[] {
+  return ["Wake-up coverage:", `  ${formatWakeUpCoverage(coverage)}`]
 }
 
 export async function loadWakeUpData(

@@ -12,6 +12,10 @@ import {
   type UpstreamVaultTopologyRef,
 } from "../../core/topology.js"
 import { formatTaskSummary, taskStats, todayUtc } from "../../core/task.js"
+import {
+  formatWakeUpCoverageReport,
+  loadWakeUpData,
+} from "../../core/wakeup.js"
 import type { LoreConfig, Memory } from "../../types.js"
 import { subProjectNames } from "../../core/context.js"
 import { DIGEST_STALE_DAYS } from "../../core/digest.js"
@@ -125,20 +129,21 @@ export const statusCommand = new Command("status")
         for (const line of backgroundFailureLines) console.log(line)
       }
 
-      // Task summary (issue 0.7.0/13) and Memory confidence summary
-      // (DEFERRED-04) fan out via `Promise.all`. Both walk the Memories
-      // DB under the same project scope, so issuing them in parallel
-      // keeps `lore status`'s wall-clock at `max(taskStats, confidenceStats)`
-      // rather than the sum. Pre-#07 vaults silently omit the
+      // Task summary (issue 0.7.0/13), Memory confidence summary
+      // (DEFERRED-04), and Wake-up coverage fan out via `Promise.all`.
+      // All three read the same project scope, so issuing them in parallel
+      // keeps `lore status`'s wall-clock at
+      // `max(taskStats, confidenceStats, wakeUpCoverage)` rather than the
+      // sum. Pre-#07 vaults silently omit the
       // closure-rate line — `countClosedSince` returns null on the
       // missing-property error path. Pre-#11 vaults render the
       // confidence line with `0 scored` and no avg/below-threshold
       // suffix; the line itself never disappears.
       //
       // `Promise.all` (not `allSettled`) is deliberate. A 5xx that
-      // takes down one of these calls almost certainly takes down
-      // the other — both walk the same data source under the same
-      // scope, paginated through the same rate-limited client, so
+      // takes down one of these calls likely takes down the others —
+      // they walk the same vault under the same scope, paginated through
+      // the same rate-limited client, so
       // any partial-recovery the `allSettled` posture would buy us
       // is mostly the case where exactly one transient failure
       // happens to the smaller of the two queries. The rate-limit
@@ -153,15 +158,25 @@ export const statusCommand = new Command("status")
       // parallel fan-out of the two top-level calls; it does not
       // parallelize the iterator inside `confidenceStats`. The
       // method's docstring documents the cost gap.
-      const [tasks, confidence] = await Promise.all([
+      const [tasks, confidence, wakeUp] = await Promise.all([
         taskStats(services.tasks, {
           projectId: project?.id,
           today: todayUtc(),
         }),
         services.memories.confidenceStats({ projectId: project?.id }),
+        loadWakeUpData(services, {
+          projectId: project?.id,
+          includeMemoryContent: false,
+          includeCoverage: true,
+        }),
       ])
       for (const line of formatTaskSummary(tasks)) console.log(line)
       for (const line of formatConfidenceSummary(confidence)) console.log(line)
+      if (wakeUp.coverage) {
+        for (const line of formatWakeUpCoverageReport(wakeUp.coverage)) {
+          console.log(line)
+        }
+      }
 
       // List projects
       const projects = await services.projects.list("active")

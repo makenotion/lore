@@ -54,15 +54,18 @@ or `$TMPDIR/lore-hook-state/`.
 Set `LORE_DEBUG=1` to inspect wake-up coverage counters on stderr. The log line
 does not include query text, memory titles, facts, or page bodies; it reports
 only the retrieval mode, ranked caps, digest freshness, and per-section counts.
-Use `mode=ranked|default` to verify whether the user-query ranker actually ran,
-`digestFresh` / `digestAgeDays` to judge whether the digest is carrying the
-session, and `sections.*` counts to spot when wake-up is too noisy or too thin.
-Operators with alerts or saved greps for the older `reason=no-user-query` key
-should update them to `reason=no-ranked-search`, which covers every unranked
-wake-up fallback.
-These are per-firing counters, not relevance-quality scores; aggregate multiple
-lines before tuning caps, and use the eval harness for precision / recall /
-memory-lift quality measurements.
+Use `mode=ranked|default|error` to verify whether the user-query ranker
+actually ran, `reason=already-ranked-for-session` to identify Codex debounce
+cache hits, `reason=load-failed` to count failed wake-up loads, `digestFresh` /
+`digestAgeDays` to judge whether the digest is carrying the session, and
+`sections.*` counts to spot when wake-up is too noisy or too thin. Operators
+with alerts or saved greps for the older `reason=no-user-query` key should
+update them to `reason=no-ranked-search`, which covers every unranked wake-up
+fallback. These are per-firing counters, not relevance-quality scores;
+aggregate multiple lines before tuning caps, and use the eval harness for
+precision / recall / memory-lift quality measurements. The same content-free
+line is also visible in `lore status` and `lore-context action='status'` for
+on-demand inspection.
 
 ## Auth Forwarding
 

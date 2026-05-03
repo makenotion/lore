@@ -355,6 +355,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       expect(logLine).toContain("sections.tasks=2")
       expect(logLine).toContain("digestAgeDays=1")
       expect(logLine).not.toContain("Fix retrieval metrics")
+      expect(logLine).not.toContain("Task task-1")
       expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
         includeCoverage: true,
       })
@@ -401,7 +402,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     }
   })
 
-  it("includes the default mode when debug logging a debounced wake-up", async () => {
+  it("emits the cache-hit coverage variant through the shared formatter", async () => {
     process.env["LORE_DEBUG"] = "1"
     const stderr = vi
       .spyOn(process.stderr, "write")
@@ -421,7 +422,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     })
     const event = JSON.stringify({
       hook_event_name: "UserPromptSubmit",
-      session_id: "debug-debounce",
+      session_id: "debug-cache-hit",
       prompt: "Fix retrieval metrics",
     })
 
@@ -429,13 +430,108 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       await wakeup({ event })
       await wakeup({ event })
 
-      const logLine = String(stderr.mock.calls.find((call) =>
-        String(call[0]).includes("reason=already-ranked-for-session"),
-      )?.[0])
-      expect(logLine).toContain("mode=default")
-      expect(logLine).toContain("ranked=false")
-      expect(logLine).toContain("reason=already-ranked-for-session")
+      const logLines = stderr.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith("[lore] wakeup:"))
+      expect(logLines).toContainEqual(
+        expect.stringContaining("reason=already-ranked-for-session"),
+      )
+      expect(logLines).toContainEqual(expect.stringContaining("mode=default"))
+      expect(logLines).toContainEqual(expect.stringContaining("ranked=false"))
+      expect(logLines).toContainEqual(
+        expect.stringContaining("digestAvailable=false"),
+      )
       expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("emits an error coverage variant when wake-up loading fails", async () => {
+    process.env["LORE_DEBUG"] = "1"
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    loadWakeUpDataMock.mockRejectedValueOnce(new Error("notion down"))
+
+    try {
+      await wakeup({
+        event: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "debug-load-failed",
+          prompt: "Fix retrieval metrics",
+        }),
+      })
+
+      const logLines = stderr.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith("[lore] wakeup:"))
+      expect(logLines).toContainEqual(expect.stringContaining("mode=error"))
+      expect(logLines).toContainEqual(expect.stringContaining("reason=load-failed"))
+      expect(logLines).toContainEqual(expect.stringContaining("load failed"))
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("does not crash when coverage is unexpectedly null under debug logging", async () => {
+    process.env["LORE_DEBUG"] = "1"
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    loadWakeUpDataMock.mockResolvedValueOnce({
+      digest: null,
+      memories: [],
+      tasks: [],
+      taskBucketCoverage: {
+        overdueCapped: false,
+        staleCapped: false,
+        activeCapped: false,
+      },
+      knowledgeFacts: [],
+      relatedMemories: [],
+      taskMemories: [],
+      staleConfidence: [],
+      coverage: null,
+    })
+
+    try {
+      await wakeup({
+        event: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "debug-null-coverage",
+          prompt: "Fix retrieval metrics",
+        }),
+      })
+
+      const coverageLines = stderr.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith("[lore] wakeup: mode="))
+      expect(coverageLines).toEqual([])
     } finally {
       stderr.mockRestore()
     }

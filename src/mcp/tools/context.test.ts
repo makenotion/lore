@@ -1469,6 +1469,33 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
     expect(text).toContain("Closed last 30 days: 14 (rate: 0.47/day)")
   })
 
+  it("renders wake-up coverage counters on action='status'", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [makeMemory("recent")],
+      facts: [makeFact({ id: "fact-1" })],
+      proposedDecisions: [makeDecisionSummary({ id: "proposed-1" })],
+      overdueDecisions: [makeDecisionSummary({ id: "overdue-1" })],
+      staleConfidence: [makeMemory("stale-confidence")],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const status = mockServer.getActionHandler("lore-context", "status")
+    const result = await status({} as never)
+
+    const text = extractText(result)
+    expect(text).toContain("Wake-up coverage:")
+    expect(text).toContain("[lore] wakeup: mode=default")
+    expect(text).toContain("reason=no-ranked-search")
+    expect(text).toContain("sections.recent=1")
+    expect(text).toContain("sections.facts=1")
+    expect(text).toContain("sections.decisions=2")
+    expect(text).toContain("sections.staleConfidence=1")
+    expect(services._calls.memoriesList).toHaveBeenCalledWith(
+      expect.objectContaining({ includeContent: false }),
+    )
+  })
+
   it("suppresses the closure-rate line on action='status' for pre-#07 vaults", async () => {
     // `countClosedSince` returns null when the `Done At` column is
     // missing; the renderer drops the line entirely so the operator

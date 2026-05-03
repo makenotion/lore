@@ -517,12 +517,15 @@ blow Notion's query budget or drown relevance.
 
 ### Operator log
 
-`LORE_DEBUG=1` emits one stderr line per successful wake-up load in the same
+`LORE_DEBUG=1` emits one stderr line per wake-up attempt in the same
 `[lore] <subsystem>: key=value` shape as the `[lore] partial-failure:`
 line in `src/mcp/AGENTS.md`. The line is intentionally content-free: no
 query text, memory titles, fact text, or page bodies, only mode, caps,
-digest freshness, and counts. Examples below are wrapped for readability;
-the hook emits each event as one line.
+digest freshness, and counts. Successful loads include section counts; cache
+hits and load failures use the same formatter with zero counts so operators can
+aggregate attempt outcomes without stitching together separate log schemas.
+Examples below are wrapped for readability; the hook emits each event as one
+line.
 
 ```
 [lore] wakeup: mode=ranked ranked=true queryLen=42 memory=3 related=2
@@ -538,6 +541,16 @@ sections.facts=25 sections.decisions=0 sections.proposedDecisions=0
 sections.overdueDecisions=0 sections.staleConfidence=0
 
 [lore] wakeup: mode=default ranked=false reason=already-ranked-for-session
+digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
+sections.currentTask=0 sections.recent=0 sections.related=0 sections.tasks=0
+sections.facts=0 sections.decisions=0 sections.proposedDecisions=0
+sections.overdueDecisions=0 sections.staleConfidence=0
+
+[lore] wakeup: mode=error ranked=false reason=load-failed digestAvailable=false
+digestFresh=false digestAgeDays=none sections.digest=0 sections.currentTask=0
+sections.recent=0 sections.related=0 sections.tasks=0 sections.facts=0
+sections.decisions=0 sections.proposedDecisions=0 sections.overdueDecisions=0
+sections.staleConfidence=0
 ```
 
 The ranked variant reports the per-section caps applied so an operator
@@ -547,6 +560,9 @@ the user-query relevance search did not run; on legacy Codex `SessionStart`
 that is expected, while on `UserPromptSubmit` it usually points at event
 forwarding or project-scope issues. The already-ranked variant confirms
 Codex's per-session `UserPromptSubmit` debounce fired before any Notion calls.
+The error variant records failed loads (`reason=load-failed`) so flaky Notion
+sessions are visible in coverage aggregation instead of disappearing behind the
+decorative wake-up failure path.
 The `sections.*` values are the first supported wake-up coverage counters:
 use them to compare signal density across digest, current-task, recent,
 related, task, fact, decision, and stale-confidence sections while tuning caps
@@ -554,7 +570,8 @@ and ranking. They are per-firing counters rather than relevance-quality
 scores, so aggregate multiple lines before tuning; precision / recall /
 memory-lift quality measurement belongs to the eval harness. Gated behind
 `LORE_DEBUG=1` because unconditional logging would flood stderr on every
-session.
+session. `lore status` and `lore-context action='status'` render the same
+content-free coverage line on demand.
 
 ## Concurrency guard
 

@@ -67,6 +67,14 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
+const startFile = process.env["LOCK_START_FILE"]
+if (startFile) {
+  process.stdout.write("READY\\n")
+  while (!existsSync(startFile)) {
+    await sleep(10)
+  }
+}
+
 const result = tryAcquireMigrationLock(scope)
 process.stdout.write(JSON.stringify({
   acquired: result.acquired,
@@ -91,54 +99,98 @@ if (result.acquired) {
   return workerPath
 }
 
-function waitForWorkerResult(child: ReturnType<typeof spawn>): Promise<WorkerRaceResult> {
-  let stdout = ""
+function watchRaceWorker(child: ReturnType<typeof spawn>): {
+  child: ReturnType<typeof spawn>
+  ready: Promise<void>
+  result: Promise<WorkerRaceResult>
+} {
+  let stdoutBuffer = ""
   let stderr = ""
-  let settled = false
+  let ready = false
+  let resultSettled = false
+  let resolveReady!: () => void
+  let rejectReady!: (err: Error) => void
+  let resolveResult!: (value: WorkerRaceResult) => void
+  let rejectResult!: (err: Error) => void
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve
+    rejectReady = reject
+  })
+  const resultPromise = new Promise<WorkerRaceResult>((resolve, reject) => {
+    resolveResult = resolve
+    rejectResult = reject
+  })
 
-  return new Promise((resolve, reject) => {
-    function finishResolve(value: WorkerRaceResult) {
-      if (settled) return
-      settled = true
+  function finishResult(value: WorkerRaceResult) {
+    if (resultSettled) return
+    resultSettled = true
+    clearTimeout(timer)
+    resolveResult(value)
+  }
+
+  function fail(error: Error) {
+    if (!ready) rejectReady(error)
+    if (!resultSettled) {
+      resultSettled = true
       clearTimeout(timer)
-      resolve(value)
+      rejectResult(error)
     }
+  }
 
-    function finishReject(error: Error) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      reject(error)
+  const timer = setTimeout(() => {
+    fail(new Error(`worker timed out before reporting: ${stderr || "<no stderr>"}`))
+  }, 20_000)
+
+  child.stdout?.on("data", (chunk: Buffer) => {
+    stdoutBuffer += chunk.toString("utf8")
+    let lineEnd = stdoutBuffer.indexOf("\n")
+    while (lineEnd !== -1) {
+      const line = stdoutBuffer.slice(0, lineEnd)
+      stdoutBuffer = stdoutBuffer.slice(lineEnd + 1)
+      if (line === "READY") {
+        if (!ready) {
+          ready = true
+          resolveReady()
+        }
+      } else if (line.trim() !== "") {
+        try {
+          finishResult(JSON.parse(line) as WorkerRaceResult)
+        } catch (err) {
+          fail(
+            new Error(
+              `worker emitted invalid JSON: ${err instanceof Error ? err.message : err}`
+            )
+          )
+        }
+      }
+      lineEnd = stdoutBuffer.indexOf("\n")
     }
-
-    const timer = setTimeout(() => {
-      finishReject(
-        new Error(`worker timed out before reporting: ${stderr || "<no stderr>"}`)
-      )
-    }, 20_000)
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8")
-      const lineEnd = stdout.indexOf("\n")
-      if (lineEnd === -1) return
-
+  })
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8")
+  })
+  child.on("exit", (code) => {
+    if (!ready) {
+      fail(new Error(`worker exited before ready (${code}): ${stderr}`))
+    } else if (!resultSettled) {
+      const line = stdoutBuffer.trim()
+      if (!line) {
+        fail(new Error(`worker exited ${code}: ${stderr}`))
+        return
+      }
       try {
-        finishResolve(JSON.parse(stdout.slice(0, lineEnd)))
+        finishResult(JSON.parse(line) as WorkerRaceResult)
       } catch (err) {
-        finishReject(
+        fail(
           new Error(
             `worker emitted invalid JSON: ${err instanceof Error ? err.message : err}`
           )
         )
       }
-    })
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8")
-    })
-    child.on("exit", (code) => {
-      if (!settled) finishReject(new Error(`worker exited ${code}: ${stderr}`))
-    })
+    }
   })
+
+  return { child, ready: readyPromise, result: resultPromise }
 }
 
 async function runWorkerRace(
@@ -149,28 +201,29 @@ async function runWorkerRace(
     TEST_STATE_DIR,
     `migration-lock-release-${Date.now()}-${Math.random()}`
   )
+  const startFile = join(TEST_STATE_DIR, `migration-lock-start-${Date.now()}`)
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
-  const children = Array.from({ length: 2 }, () => {
-    return spawn(process.execPath, [viteNode, workerPath], {
+  const children = Array.from({ length: 2 }, () =>
+    spawn(process.execPath, [viteNode, workerPath], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
-        // vite-node startup can stagger the two workers enough that a
-        // short-lived winner exits before its peer reaches acquisition,
-        // making the peer's stale-PID reclaim legitimate rather than
-        // a failed exclusion check.
-        LOCK_HOLD_MS: "30000",
+        LOCK_START_FILE: startFile,
         LOCK_RELEASE_PATH: releasePath,
         LOCK_HOLD_TIMEOUT_MS: "25000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
-  })
+  )
+
+  const workers = children.map(watchRaceWorker)
 
   try {
-    return await Promise.all(children.map(waitForWorkerResult))
+    await Promise.all(workers.map((worker) => worker.ready))
+    writeFileSync(startFile, "1")
+    return await Promise.all(workers.map((worker) => worker.result))
   } finally {
     writeFileSync(releasePath, "release")
     for (const child of children) {

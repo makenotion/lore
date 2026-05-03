@@ -8,7 +8,9 @@ import {
   buildEmptyWakeUpCoverage,
   computeWakeUpCoverage,
   dateBucket,
+  emptyWakeUpCoverageMetrics,
   formatWakeUpCoverage,
+  formatWakeUpCoverageReport,
   loadWakeUpData,
   type WakeUpServices,
 } from "./wakeup.js"
@@ -441,6 +443,7 @@ describe("wake-up coverage counters", () => {
     })
 
     expect(coverage.mode).toBe("default")
+    expect(coverage.reason).toBe("no-ranked-search")
     expect(coverage.queryLength).toBe(0)
   })
 
@@ -497,6 +500,49 @@ describe("wake-up coverage counters", () => {
     expect(line).toContain("sections.decisions=6")
     expect(line).toContain("digestAgeDays=2")
     expect(line).not.toContain("Fix retrieval metrics")
+  })
+
+  it("formats cache-hit and load-failed variants through the same vocabulary", () => {
+    const cacheHit = formatWakeUpCoverage(
+      emptyWakeUpCoverageMetrics("default", "already-ranked-for-session"),
+    )
+    const loadFailed = formatWakeUpCoverage(
+      emptyWakeUpCoverageMetrics("error", "load-failed"),
+    )
+
+    expect(cacheHit).toContain("mode=default")
+    expect(cacheHit).toContain("ranked=false")
+    expect(cacheHit).toContain("reason=already-ranked-for-session")
+    expect(cacheHit).toContain("sections.recent=0")
+    expect(loadFailed).toContain("mode=error")
+    expect(loadFailed).toContain("ranked=false")
+    expect(loadFailed).toContain("reason=load-failed")
+    expect(loadFailed).toContain("digestAvailable=false")
+  })
+
+  it("formats an operator-facing status report from the log formatter", () => {
+    const coverage = computeWakeUpCoverage({
+      now: NOW,
+      latestDigest: null,
+      memories: [
+        buildMemory({
+          id: "recent",
+          createdAt: "2026-04-20T00:00:00Z",
+        }),
+      ],
+      relatedMemories: [],
+      taskMemories: [],
+      tasks: [],
+      knowledgeFacts: [],
+      proposedDecisions: [],
+      overdueDecisions: [],
+      staleConfidence: [],
+    })
+
+    expect(formatWakeUpCoverageReport(coverage)).toEqual([
+      "Wake-up coverage:",
+      expect.stringContaining("[lore] wakeup: mode=default"),
+    ])
   })
 })
 
