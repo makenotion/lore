@@ -78,6 +78,15 @@ personally identifying local values. Lore warns whenever `auth.token` is
 present in `.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or
 `LORE_NOTION_TOKEN` wins the priority chain.
 
+`vault.pageId` values are not bearer secrets. They identify a Notion page, but
+Notion still enforces access through the resolved token's permissions. A
+deliberately shared team vault ID in git history does not, by itself, require
+history rewrite, token rotation, or integration-sharing rotation. Personal
+scratch page IDs and accidental maintainer-local page IDs are still outside the
+committed-config policy because they can reveal private workspace context; scrub
+them from the working copy and decide with the page owner whether to replace the
+page or rewrite history.
+
 ## Rate Limits
 
 Notion rate limits are enforced per access token, not per integration. The

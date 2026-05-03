@@ -80,6 +80,15 @@ non-secret configuration. A repo-scoped `vault.pageId` should point at a vault
 deliberately shared with the team. Do not commit personal scratch vault IDs,
 `auth.token`, or any other maintainer-specific value.
 
+Notion page IDs are access locators, not bearer credentials: knowing a page ID
+does not grant access unless the caller's Notion token can already read that
+page. Lore therefore does not treat a deliberately shared team vault ID in git
+history as a token leak requiring history rewrite or integration-sharing
+rotation. Still treat page IDs as repo-scoped configuration, not personal
+scratch metadata; if a private or accidental page ID lands in history, scrub the
+working tree and decide with the page owner whether the page should be replaced
+or history should be rewritten.
+
 **For personal vaults / fresh-onboarding scratch use**, the no-arg
 flow creates a workspace-level page on your behalf using the active auth
 source. If no auth resolves, it auto-installs ntn, runs `ntn login`, and then
@@ -333,6 +342,14 @@ Allowed values include a team-owned `vault.pageId`, project mappings, detection
 rules, and hook preferences. Do not commit `auth.token`, personal scratch
 vault page IDs, or anything personally identifying; use environment variables
 or ntn auth for credentials.
+
+Threat-model posture for `vault.pageId`: a Notion page ID is not a credential,
+and exposing one does not bypass Notion permissions. Team-owned vault IDs may be
+committed when the page is deliberately shared with the repo's operators. A page
+ID that is personal, provisional, or accidentally copied from a maintainer's
+scratch vault should be removed from the working tree; history rewrite or page
+replacement is only needed when the owner considers the page location itself
+sensitive.
 
 ```yaml
 # Required: Notion page ID containing the vault databases

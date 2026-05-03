@@ -129,6 +129,11 @@ not commit `auth.token`, personal scratch vault IDs, or maintainer-specific
 local values; Lore warns whenever `auth.token` is present in `.lore.yaml`,
 even if a higher-priority auth source wins.
 
+Notion page IDs are access locators, not bearer secrets. A deliberately shared
+team vault ID in git history does not itself require history rewrite or
+integration-sharing rotation, but accidental maintainer-local or personal
+scratch page IDs still need explicit owner review.
+
 ntn-issued tokens inherit the engineer's personal Notion permissions and have
 per-token rate limits. Lore-managed ntn spawns force `NOTION_KEYRING=0`; direct
 `ntn login` outside Lore may need the recovery path in

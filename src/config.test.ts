@@ -143,7 +143,7 @@ promotionTargets:
 })
 
 describe("committed .lore.yaml", () => {
-  it("stays safe to commit", () => {
+  it("ships without live vault locators or credentials in this source repo", () => {
     const raw = readFileSync(".lore.yaml", "utf-8")
     const parsed = parseYaml(raw) as {
       auth?: { token?: unknown }
@@ -151,7 +151,12 @@ describe("committed .lore.yaml", () => {
     }
 
     expect(parsed.auth?.token).toBeUndefined()
-    expect(parsed.vault?.pageId).toBe("<your-vault-page-id>")
+    expect(parsed.vault?.pageId).toEqual(expect.any(String))
+    expect(parsed.vault?.pageId).not.toMatch(/[0-9a-f]{32}/i)
+    expect(parsed.vault?.pageId).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
+    )
+    expect(parsed.vault?.pageId).not.toMatch(/\b(?:ntn|secret)_[A-Za-z0-9_-]+\b/)
   })
 })
 

@@ -7,7 +7,8 @@ dist/
 .env.local
 
 # .lore.yaml is intentionally not ignored so repos can share safe vault
-# metadata. Keep bearer tokens and personal vault IDs out of committed config.
+# metadata. Team vault page IDs are locators, not credentials; keep bearer
+# tokens and personal vault IDs out of committed config.
 
 # OS
 .DS_Store
