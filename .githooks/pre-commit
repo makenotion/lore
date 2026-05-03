@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$repo_root"
+
+node tools/check-lore-config.mjs --staged
