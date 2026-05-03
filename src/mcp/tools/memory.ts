@@ -661,8 +661,8 @@ interface UpdateArgs {
   kind?: (typeof KINDS)[number]
   status?: (typeof STATUSES)[number]
   confidence?: (typeof CONFIDENCES)[number]
-  reviewBy?: string
-  decidedAt?: string
+  reviewBy?: string | null
+  decidedAt?: string | null
   supersedesIds?: string[]
   affectsIds?: string[]
   alternatives?: string
@@ -2073,8 +2073,8 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
     confidence: z.enum(CONFIDENCES).optional(),
-    reviewBy: z.string().regex(YMD_REGEX).optional(),
-    decidedAt: z.string().regex(YMD_REGEX).optional(),
+    reviewBy: z.string().regex(YMD_REGEX).nullable().optional(),
+    decidedAt: z.string().regex(YMD_REGEX).nullable().optional(),
     supersedesIds: z.array(z.string()).optional(),
     affectsIds: z.array(z.string()).optional(),
     alternatives: z.string().optional(),
@@ -2210,13 +2210,19 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         reviewBy: z
           .string()
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .nullable()
           .optional()
-          .describe("(save | update) Review-by date YYYY-MM-DD."),
+          .describe(
+            "(save | update) Review-by date YYYY-MM-DD. On update, pass null to clear; omit to leave unchanged.",
+          ),
         decidedAt: z
           .string()
           .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+          .nullable()
           .optional()
-          .describe("(save | update) Canonical decision date YYYY-MM-DD."),
+          .describe(
+            "(save | update) Canonical decision date YYYY-MM-DD. On update, pass null to clear; omit to leave unchanged.",
+          ),
         tags: tagsSchema
           .optional()
           .describe("(save | update) Closed-vocabulary tags."),

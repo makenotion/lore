@@ -3385,6 +3385,131 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
   })
 })
 
+describe("lore-memory action='update' date clearing (issue #271)", () => {
+  function setUpUpdateHarness() {
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue(makeMemory("mem-1"))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn().mockResolvedValue(makeMemory("mem-1")) },
+      facts: { queryBySourceMemory: vi.fn(), createWithDedup: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    return {
+      lore: mockServer.getActionHandler("lore-memory", "update"),
+      inputSchema: mockServer.getInputSchema("lore-memory"),
+      update,
+    }
+  }
+
+  it("threads reviewBy: null through to memories.update as an explicit clear", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", reviewBy: null } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ reviewBy: null }),
+    )
+  })
+
+  it("threads decidedAt: null through to memories.update as an explicit clear", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", decidedAt: null } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ decidedAt: null }),
+    )
+  })
+
+  it("clears reviewBy and decidedAt in the same update call", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({
+      memoryId: "mem-1",
+      reviewBy: null,
+      decidedAt: null,
+    } as never)
+
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({ reviewBy: null, decidedAt: null }),
+    )
+  })
+
+  it("omitted reviewBy and decidedAt stay undefined", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    await lore({ memoryId: "mem-1", title: "Renamed" } as never)
+
+    const [, args] = update.mock.calls[0]
+    expect(args.reviewBy).toBeUndefined()
+    expect(args.decidedAt).toBeUndefined()
+  })
+
+  it("accepts null dates in the MCP-visible flat input schema", () => {
+    const { inputSchema } = setUpUpdateHarness()
+
+    const parsed = inputSchema.safeParse({
+      action: "update",
+      memoryId: "mem-1",
+      reviewBy: null,
+      decidedAt: null,
+    })
+
+    expect(parsed.success).toBe(true)
+  })
+
+  it("still rejects malformed date strings before any update", async () => {
+    const { lore, update } = setUpUpdateHarness()
+
+    for (const args of [
+      { memoryId: "mem-1", reviewBy: "05-03-2026" },
+      { memoryId: "mem-1", decidedAt: "2026/05/03" },
+    ]) {
+      const result = await lore(args as never)
+
+      expect((result as { isError?: boolean }).isError).toBe(true)
+    }
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it("keeps action='save' null-date behavior unchanged", async () => {
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const remember = mockServer.getActionHandler("lore-memory", "save")
+
+    const result = await remember({
+      title: "Saved",
+      content: "body",
+      reviewBy: null,
+      decidedAt: null,
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(create).not.toHaveBeenCalled()
+  })
+})
+
 describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
   it("threads synopsis on action='save' through to memories.create", async () => {
     const mockServer = createMockServer()
