@@ -1,0 +1,573 @@
+{
+  "schemaVersion": 1,
+  "suite": "lore-core",
+  "runner": "retrieval",
+  "capturedAt": "2026-05-03T12:00:00.000Z",
+  "notes": "Phase 3 baseline — 21 tasks, recents limit:1, related limit:5 with shouldNotSurface",
+  "summary": {
+    "tasks": 21,
+    "totalResults": 69,
+    "passedResults": 69,
+    "failedResults": 0,
+    "retrieval": {
+      "averageRecall": 1,
+      "averagePrecision": 1,
+      "memoryLift": 1,
+      "memoryHarm": 0
+    }
+  },
+  "results": [
+    {
+      "taskId": "follows-incident-runbook",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "follows-incident-runbook",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "follows-incident-runbook",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "prefers-current-test-runner",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "prefers-current-test-runner",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "prefers-current-test-runner",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "prefers-current-test-runner",
+      "scenario": "noisy-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "prefers-current-test-runner",
+      "scenario": "stale-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-alert-tuning-task-to-budget-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-alert-tuning-task-to-budget-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "relates-alert-tuning-task-to-budget-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-canary-task-to-canary-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-canary-task-to-canary-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "relates-canary-task-to-canary-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-payments-task-to-retry-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-payments-task-to-retry-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "relates-payments-task-to-retry-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-search-tuning-task-to-rrf-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-search-tuning-task-to-rrf-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "relates-search-tuning-task-to-rrf-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-session-task-to-rotation-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "relates-session-task-to-rotation-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "relates-session-task-to-rotation-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.relatedMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "respects-data-retention-policy",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "respects-data-retention-policy",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "respects-data-retention-policy",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "respects-governing-auth-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "respects-governing-auth-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "respects-governing-auth-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "respects-governing-auth-decision",
+      "scenario": "noisy-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "respects-governing-auth-decision",
+      "scenario": "stale-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "returns-result-from-service-boundary",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "returns-result-from-service-boundary",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "returns-result-from-service-boundary",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "returns-result-from-service-boundary",
+      "scenario": "noisy-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "returns-result-from-service-boundary",
+      "scenario": "stale-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-cache-eviction",
+      "scenario": "empty-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-cache-eviction",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "stale-confidence-cache-eviction",
+      "scenario": "no-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-onboarding-runbook",
+      "scenario": "empty-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-onboarding-runbook",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "stale-confidence-onboarding-runbook",
+      "scenario": "no-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-pricing-policy",
+      "scenario": "empty-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-pricing-policy",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "stale-confidence-pricing-policy",
+      "scenario": "no-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-rate-limits",
+      "scenario": "empty-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-rate-limits",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "stale-confidence-rate-limits",
+      "scenario": "no-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-reporting-format",
+      "scenario": "empty-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "stale-confidence-reporting-format",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "stale-confidence-reporting-format",
+      "scenario": "no-lore",
+      "surface": "wake-up.staleConfidence",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-architecture-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-architecture-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "surfaces-recent-architecture-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-billing-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-billing-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "surfaces-recent-billing-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-incident-postmortem",
+      "scenario": "empty-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-incident-postmortem",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "surfaces-recent-incident-postmortem",
+      "scenario": "no-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-monitoring-decision",
+      "scenario": "empty-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-monitoring-decision",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "surfaces-recent-monitoring-decision",
+      "scenario": "no-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-policy-update",
+      "scenario": "empty-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "surfaces-recent-policy-update",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "surfaces-recent-policy-update",
+      "scenario": "no-lore",
+      "surface": "wake-up.memories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "uses-current-deployment-pattern",
+      "scenario": "empty-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    },
+    {
+      "taskId": "uses-current-deployment-pattern",
+      "scenario": "helpful-memory",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": 1,
+      "precision": 1
+    },
+    {
+      "taskId": "uses-current-deployment-pattern",
+      "scenario": "no-lore",
+      "surface": "wake-up.taskMemories",
+      "success": true,
+      "recall": null,
+      "precision": null
+    }
+  ]
+}

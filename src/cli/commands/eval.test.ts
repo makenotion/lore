@@ -44,6 +44,16 @@ describe("parseEvalRunCliOptions", () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.message).toContain("--min-lift")
   })
+
+  it("threads --baseline through into baselinePath", () => {
+    const result = parseEvalRunCliOptions({
+      baseline: "evals/baselines/lore-core.json",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.baselinePath).toBe("evals/baselines/lore-core.json")
+    }
+  })
 })
 
 describe("collectEvalThresholdFailures", () => {

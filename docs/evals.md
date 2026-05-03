@@ -136,8 +136,80 @@ Repeated trials matter once a runner includes nondeterministic agent execution.
 
 CI should assert the metrics that matter for each starter suite, not only the
 boolean result count. The committed CI gate runs the starter suite with a
-minimum memory-lift threshold and a maximum memory-harm threshold, then uploads
-the JSON artifact for inspection.
+minimum memory-lift threshold, a maximum memory-harm threshold, and a
+committed baseline drift check, then uploads the JSON artifact for inspection.
+
+## Baselines
+
+Baselines live under `evals/baselines/` as comparison-stable JSON snapshots
+captured from a known-good run. The committed `evals/baselines/lore-core.json`
+is the reference that CI diff-checks every PR against.
+
+```bash
+# Capture a fresh baseline (operator command — review the diff before commit)
+node dist/cli.js eval baseline evals/suites/lore-core.yaml \
+  --out evals/baselines/lore-core.json \
+  --notes "Why this baseline was refreshed"
+```
+
+The snapshot drops timing/order-sensitive fields (`startedAt`,
+`metrics.elapsedMs`) and pins per-result `success`, `recall`, and `precision`
+plus the aggregate retrieval summary.
+
+### Drift detection
+
+`lore eval run` accepts `--baseline <path>` to compare a fresh run against a
+committed snapshot:
+
+```bash
+node dist/cli.js eval run evals/suites/lore-core.yaml \
+  --baseline evals/baselines/lore-core.json
+```
+
+Regression triggers (any one flips the run to a non-zero exit):
+
+- A previously-passing result now fails (per-task regression).
+- `failedResults` increases vs. baseline.
+- `memoryHarm` increases past the baseline value (no tolerance — any new harm
+  is a regression).
+
+Aggregate metric drops on `averageRecall` / `averagePrecision` /
+`memoryLift` are surfaced in the drift report for visibility, but do not
+themselves auto-regress: any per-result drop already shows up as a new
+failure, and a metric drop without a per-result regression usually means a
+previously-failing result was tightened.
+
+Per-result identity is keyed on `(taskId, scenario, surface)` — a task that
+exercises multiple surfaces under one scenario keeps each surface's row
+distinct in the drift gate's `Map` lookups. A regression test pins this
+contract so a future contributor cannot silently narrow the key back to
+the legacy 2-key `(taskId, scenario)` form (which would clobber siblings
+under the same `(taskId, scenario)` and silently drop coverage from the
+drift gate).
+
+Byte-stable `lore eval baseline` output depends on the retrieval runner's
+pinned `DEFAULT_RETRIEVAL_NOW` clock. A future refactor that re-introduces
+`new Date()` into `runRetrievalSuite` will silently re-introduce
+nondeterminism into committed baselines; if you change the clock seam,
+update this section and the snapshot in lockstep.
+
+### When to refresh the baseline
+
+Refresh the baseline (`lore eval baseline ... --out evals/baselines/<suite>.json`
+followed by an explicit commit) when:
+
+- A new task lands and adds rows the baseline didn't have. The drift report
+  surfaces these under `New results (refresh baseline)`; the CI gate will not
+  regress on them, but operators should refresh so the next PR's drift check
+  has stable expectations.
+- A scenario expectation tightened intentionally (e.g., temporal-correctness
+  work landed and stale-memory `shouldNotSurface` lists were tightened to
+  list stale ids).
+- A retrieval improvement raised lift / lowered harm and the new metrics
+  should become the floor.
+
+Refreshing the baseline as a side effect of a PR that introduces a regression
+defeats the purpose of the gate — review the diff before committing.
 
 The JSON artifact is the comparison contract. Human CLI output is only a
 summary. `startedAt` is operational metadata; compare `results` and `summary`

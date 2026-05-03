@@ -4,6 +4,13 @@ import {
   type EvalRunArtifact,
   type RunEvalOptions,
 } from "../../eval/runner.js"
+import {
+  buildEvalBaselineSnapshot,
+  compareToEvalBaseline,
+  formatBaselineDriftReport,
+  readEvalBaselineSnapshot,
+  writeEvalBaselineSnapshot,
+} from "../../eval/baseline.js"
 import { EVAL_RUNNERS, type EvalRunner } from "../../eval/schema.js"
 import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
 
@@ -13,6 +20,7 @@ export interface EvalRunCliOptions {
   outPath?: string
   minLift?: number
   maxHarm?: number
+  baselinePath?: string
   json: boolean
 }
 
@@ -22,6 +30,7 @@ export function parseEvalRunCliOptions(raw: {
   out?: string
   minLift?: string
   maxHarm?: string
+  baseline?: string
   json?: boolean
 }): CliParseResult<EvalRunCliOptions> {
   const runner = raw.runner ?? "retrieval"
@@ -59,6 +68,7 @@ export function parseEvalRunCliOptions(raw: {
       outPath: raw.out,
       minLift: minLift.value,
       maxHarm: maxHarm.value,
+      baselinePath: raw.baseline,
       json: !!raw.json,
     },
   }
@@ -126,6 +136,10 @@ evalCommand.addCommand(
     .option("--out <path>", "Write the JSON artifact to a specific path")
     .option("--min-lift <n>", "Fail when memory lift is below this 0..1 threshold")
     .option("--max-harm <n>", "Fail when memory harm is above this 0..1 threshold")
+    .option(
+      "--baseline <path>",
+      "Compare results against a committed baseline snapshot and fail on regression"
+    )
     .option("--json", "Print the full JSON artifact to stdout")
     .action(
       async (
@@ -136,6 +150,7 @@ evalCommand.addCommand(
           out?: string
           minLift?: string
           maxHarm?: string
+          baseline?: string
           json?: boolean
         }
       ) => {
@@ -157,12 +172,35 @@ evalCommand.addCommand(
             minLift: parsed.value.minLift,
             maxHarm: parsed.value.maxHarm,
           })
+
+          let driftReportText: string | null = null
+          let driftRegressed = false
+          if (parsed.value.baselinePath) {
+            const baseline = await readEvalBaselineSnapshot(
+              parsed.value.baselinePath
+            )
+            const drift = compareToEvalBaseline({
+              artifact,
+              baseline,
+              baselinePath: parsed.value.baselinePath,
+            })
+            driftReportText = formatBaselineDriftReport(drift)
+            driftRegressed = drift.regressed
+          }
+
           if (parsed.value.json) {
             console.log(JSON.stringify(artifact, null, 2))
             for (const failure of thresholdFailures) {
               console.error(`Eval threshold failed: ${failure}`)
             }
-            if (artifact.summary.failedResults > 0 || thresholdFailures.length > 0) {
+            if (driftReportText) {
+              console.error(driftReportText)
+            }
+            if (
+              artifact.summary.failedResults > 0 ||
+              thresholdFailures.length > 0 ||
+              driftRegressed
+            ) {
               process.exit(1)
             }
             return
@@ -188,9 +226,55 @@ evalCommand.addCommand(
           for (const failure of thresholdFailures) {
             console.error(`Eval threshold failed: ${failure}`)
           }
-          if (failed > 0 || thresholdFailures.length > 0) process.exit(1)
+          if (driftReportText) {
+            console.log(driftReportText)
+          }
+          if (
+            failed > 0 ||
+            thresholdFailures.length > 0 ||
+            driftRegressed
+          ) {
+            process.exit(1)
+          }
         } catch (err) {
           console.error("Eval failed:", err instanceof Error ? err.message : err)
+          process.exit(1)
+        }
+      }
+    )
+)
+
+evalCommand.addCommand(
+  new Command("baseline")
+    .description(
+      "Run an eval suite and write a comparison-stable baseline snapshot under evals/baselines/"
+    )
+    .argument("<suite>", "Path to an eval suite YAML file")
+    .requiredOption(
+      "--out <path>",
+      "Write the baseline snapshot to this path (typically evals/baselines/<suite>.json)"
+    )
+    .option("--notes <text>", "Optional human-readable annotation")
+    .action(
+      async (
+        suite: string,
+        opts: { out: string; notes?: string }
+      ) => {
+        try {
+          const { artifact } = await runEvalSuite(suite, {})
+          const snapshot = buildEvalBaselineSnapshot(artifact, {
+            notes: opts.notes,
+          })
+          await writeEvalBaselineSnapshot(opts.out, snapshot)
+          console.log(`Baseline written: ${opts.out}`)
+          console.log(
+            `Captured ${snapshot.summary.totalResults} results across ${snapshot.summary.tasks} tasks.`
+          )
+        } catch (err) {
+          console.error(
+            "Eval baseline failed:",
+            err instanceof Error ? err.message : err
+          )
           process.exit(1)
         }
       }

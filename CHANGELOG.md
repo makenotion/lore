@@ -35,6 +35,17 @@ log is the canonical source for those.
   if a future change drops the filter. The Notion-backed runner can
   still report `memoryHarm > 0` against the same suite — that gap is
   the temporal-recall work tracked under #284. (#450)
+- **Committed eval baselines and CI drift gate.** New `lore eval baseline
+  <suite> --out <path>` writes a comparison-stable baseline snapshot
+  (per-result success / recall / precision plus aggregate retrieval
+  metrics). `lore eval run --baseline <path>` compares against a
+  committed snapshot and exits non-zero on regression — a previously-
+  passing result now failing, `failedResults` increasing, any
+  post-baseline `memoryHarm` bump (no tolerance), OR a baseline result
+  disappearing from the current run (silent loss of coverage). The committed
+  `evals/baselines/lore-core.json` is the reference that CI
+  diff-checks every PR against, in addition to the existing
+  `--min-lift` / `--max-harm` floor. (#450)
 - **Eval tasks can target any wake-up section, not just `taskMemories`.**
   Suites now declare a `surface` field per task selecting one of
   `wake-up.taskMemories` (default), `wake-up.memories`,

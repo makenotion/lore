@@ -40,7 +40,7 @@ jobs:
         run: npm run build
 
       - name: Eval starter suite
-        run: node dist/cli.js eval run evals/suites/lore-core.yaml --out evals/results/lore-core-ci.json --min-lift 0.5 --max-harm 0.0
+        run: node dist/cli.js eval run evals/suites/lore-core.yaml --out evals/results/lore-core-ci.json --min-lift 0.5 --max-harm 0.0 --baseline evals/baselines/lore-core.json
 
       - name: Upload eval artifact
         if: ${{ always() && hashFiles('evals/results/lore-core-ci.json') != '' }}
