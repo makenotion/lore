@@ -21,6 +21,14 @@ log is the canonical source for those.
 
 ### Fixed
 
+- **Author identity cache handles concurrent auth rotation.** Lazy
+  `users.me` lookups now keep in-flight entries long enough for callers under
+  the same auth snapshot to share one request, even when another token/base URL
+  starts resolving concurrently. Settled stale snapshots are still evicted so
+  attribution does not leak across auth changes.
+- **`resetIdentityCache()` keeps its no-arg compatibility.** External callers
+  can continue calling the exported reset helper without passing a resolver;
+  the no-arg form clears all resolver-owned identity caches in the process.
 - **Codex wake-up debounce now records attempts atomically.** The
   `UserPromptSubmit` marker is created before Notion initialization, applies to
   slash-command first prompts and transient wake-up load failures, honors
@@ -62,10 +70,10 @@ had not been cut as a GitHub Package release.
 - **Per-user attribution on every Memory write
   (DEFERRED-ATTRIBUTION).** The `Author` Memories column finally
   carries engineer identity now that ntn-issued tokens make it
-  reliably resolvable. New `src/auth/identity.ts` resolves the
-  display name once at MCP server startup via `LORE_USER_NAME` env
-  override (synchronous, wins over `users.me`) → bot owner user-name
-  fallback. `lore-memory action='save'`,
+  reliably resolvable. New `src/auth/identity.ts` lazily resolves the
+  display name only when a write omits an explicit `author`, using
+  `LORE_USER_NAME` env override (synchronous, wins over `users.me`) →
+  bot owner user-name fallback. `lore-memory action='save'`,
   `lore-decision action='create'`, and `lore-task action='create'`
   default `author` from the resolved identity when the caller
   omits it; an explicit `author` argument always wins. The
@@ -84,15 +92,13 @@ had not been cut as a GitHub Package release.
   line; rows without an attributed author render byte-identically
   to pre-DEFERRED-ATTRIBUTION output.
 
-  **Operational note:** Lore now makes one `users.me` API call at
-  every Lore process startup unless `LORE_USER_NAME` is set —
-  including one-shot CLI invocations like `lore status` or
-  `lore digest --dry-run` that don't write Memories. The
-  resolver is per-process memoized; long-running surfaces (the
-  MCP server) pay the cost once at startup. Operators on slow
-  networks who want the synchronous path export `LORE_USER_NAME`
-  in shell rc; failures collapse to `{ author: null }` and never
-  block startup.
+  **Operational note:** read-only startup and one-shot CLI invocations do
+  not call `users.me` for attribution. The resolver is per-process memoized by
+  active token/base URL and pays the Notion round-trip on the first
+  unattributed write only. Operators on slow networks who want the synchronous
+  path export `LORE_USER_NAME` in shell rc; failures collapse to
+  `{ author: null }` and never block writes.
+
 - **Dynamic Fact confidence mirror.** Facts now carry a mirrored numeric
   confidence score derived from the source Memory's system-managed
   `Confidence Score`, with a migration path for existing vaults. Query,

@@ -130,6 +130,10 @@ export async function initServicesFromConfig(
         },
       })
     : createLimitedClient(createClient(auth.token, auth.baseUrl), rateLimitOptions)
+  // When authRefresh is absent, the auth snapshot is intentionally static:
+  // env/config token sources do not rotate within one process. Any future
+  // non-refreshing token-rotation path must update authSnapshotRef and clear
+  // the identity resolver cache just like the onAuthChange branch above.
 
   const vault = new VaultManager(client, config.vault.pageId)
   const driftCheck = await resolveDriftCheck(configRoot, options.driftCheck)

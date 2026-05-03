@@ -91,15 +91,35 @@ Implications:
 - The visible bot identity is `Notion Workers CLI`, not `Lore`.
 - Page access follows the engineer's personal Notion permissions.
 
+## Author Attribution
+
+Lore resolves the default Memory `Author` lazily. Service initialization,
+read-only CLI commands, and MCP startup do not call `users.me` for attribution.
+Write paths that create authored Memory rows call the identity resolver only
+when the caller omits an explicit `author`.
+
+Resolution order:
+
+1. `LORE_USER_NAME`, trimmed and used synchronously
+2. `users.me().bot.owner.user.name`, cached by the active token/base URL
+3. no author value, when neither source produces a trusted name
+
+The `users.me` fallback is best-effort. Network failures, 4xx responses, and
+unexpected response shapes do not block writes; Lore omits the Author property
+and retries on the next unattributed write. Recognized no-owner responses are
+cached for the current auth snapshot. When ntn auth refresh changes the active
+token or base URL, Lore does not reuse a cached author resolved under the prior
+snapshot; the next unattributed write resolves under the new snapshot.
+
 ## Troubleshooting
 
-| Symptom | Where to look |
-| ------- | ------------- |
-| `No Notion auth configured` | Walk the `resolveAuth` priority chain in `src/config.ts`. |
-| `lore auth --status` shows multiple ntn workspaces | Set `NOTION_WORKSPACE_ID` or `auth.workspaceId` in `.lore.yaml`. |
-| 401 mid-session | Run `lore auth --login`; the client wrapper re-runs auth resolution after the first 401 and retries once when auth changes. |
-| `auth.json` malformed or absent | `loadNtnToken` in `src/auth/ntn.ts` returns null with a stderr hint; run `lore auth --login`. |
-| Direct `ntn login` used keychain mode | Re-run `lore auth --login`, or set `NOTION_KEYRING=0` before direct ntn login. |
+| Symptom                                            | Where to look                                                                                                                                              |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `No Notion auth configured`                        | Walk the `resolveAuth` priority chain in `src/config.ts`.                                                                                                  |
+| `lore auth --status` shows multiple ntn workspaces | Set `NOTION_WORKSPACE_ID` or `auth.workspaceId` in `.lore.yaml`.                                                                                           |
+| 401 mid-session                                    | Run `lore auth --login`; the client wrapper re-runs auth resolution after the first 401 and retries once when auth changes.                                |
+| `auth.json` malformed or absent                    | `loadNtnToken` in `src/auth/ntn.ts` returns null with a stderr hint; run `lore auth --login`.                                                              |
+| Direct `ntn login` used keychain mode              | Re-run `lore auth --login`, or set `NOTION_KEYRING=0` before direct ntn login.                                                                             |
 | Hook-spawned background save cannot read the vault | Check `spawnBackgroundSave` in `src/hooks/background.ts`; the child gets minimal env and discovers `.lore.yaml` by walking upward from the hook event cwd. |
 
 See [`docs/internal-rollout.md`](internal-rollout.md) for the operator-facing

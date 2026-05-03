@@ -32,9 +32,13 @@
  * otherwise pay on every unattributed write. The cache key includes a
  * hash of the active Notion token plus the API base URL so long-lived
  * processes do not reuse attribution across auth changes. Only the
- * latest auth snapshot is cached, and in-flight results are not moved
- * to a new key when auth changes underneath them. The raw token is
- * never stored in the cache key.
+ * latest settled auth snapshot is cached; older in-flight snapshots
+ * remain visible just long enough for same-snapshot concurrent callers
+ * to share one `users.me` request. In-flight results are not moved to a
+ * new key when auth changes underneath them. The raw token is never
+ * stored in the cache key. The cache can briefly hold multiple keys
+ * (one settled key plus in-flight keys for other auth snapshots) until
+ * those in-flight lookups settle and stale settled siblings are evicted.
  *
  * Failures (network, 4xx, unexpected response shape) all collapse to
  * `{ author: null }` and never throw. The Author column is advisory:
@@ -80,6 +84,13 @@ interface AuthorIdentityLookup {
   errorMessage?: string
 }
 
+interface CachedAuthorIdentityLookup {
+  promise: Promise<ResolvedIdentity>
+  pending: boolean
+}
+
+const resolverCaches = new Set<WeakRef<Map<string, CachedAuthorIdentityLookup>>>()
+
 /**
  * Build a lazy author resolver scoped to the active Notion auth context.
  *
@@ -91,7 +102,8 @@ export function createAuthorIdentityResolver(
   client: Client,
   getAuthSnapshot: () => AuthorIdentityAuthSnapshot
 ): AuthorIdentityResolver {
-  const cache = new Map<string, Promise<ResolvedIdentity>>()
+  const cache = new Map<string, CachedAuthorIdentityLookup>()
+  resolverCaches.add(new WeakRef(cache))
   let loggedEnvOverride = false
 
   return {
@@ -107,39 +119,45 @@ export function createAuthorIdentityResolver(
 
       const key = authCacheKey(getAuthSnapshot())
       const cached = cache.get(key)
-      if (cached) return (await cached).author
+      if (cached) return (await cached.promise).author
 
-      const pending = resolveAuthorFromUsersMe(client).then((lookup) => {
-        if (!lookup.cacheable) {
-          cache.delete(key)
-          logIdentityFailure(lookup.errorMessage)
-          return lookup.identity
-        }
+      const lookupPromise = resolveAuthorFromUsersMe(client)
+      const entry: CachedAuthorIdentityLookup = {
+        pending: true,
+        promise: lookupPromise.then((lookup) => {
+          entry.pending = false
+          if (!lookup.cacheable) {
+            if (cache.get(key) === entry) cache.delete(key)
+            logIdentityFailure(lookup.errorMessage)
+            return lookup.identity
+          }
 
-        if (authCacheKey(getAuthSnapshot()) !== key) {
-          cache.delete(key)
+          if (authCacheKey(getAuthSnapshot()) !== key) {
+            if (cache.get(key) === entry) cache.delete(key)
+            logIdentityDebug(
+              `resolved author (source=users.me, author=${authorPresence(
+                lookup.identity.author
+              )}, cache=skipped-auth-changed)`
+            )
+            return lookup.identity
+          }
+
           logIdentityDebug(
             `resolved author (source=users.me, author=${authorPresence(
               lookup.identity.author
-            )}, cache=skipped-auth-changed)`
+            )})`
           )
+          evictSettledOtherSnapshots(cache, key)
           return lookup.identity
-        }
-
-        logIdentityDebug(
-          `resolved author (source=users.me, author=${authorPresence(
-            lookup.identity.author
-          )})`
-        )
-        return lookup.identity
-      })
+        }),
+      }
 
       // Keep the resolver bounded to the current auth snapshot. Older
-      // in-flight lookups can still finish for their original caller, but
-      // they cannot accumulate as stale cache entries.
-      cache.clear()
-      cache.set(key, pending)
-      return (await pending).author
+      // in-flight lookups remain visible for same-snapshot concurrent
+      // callers, but settled stale snapshots cannot accumulate.
+      cache.set(key, entry)
+      evictSettledOtherSnapshots(cache, key)
+      return (await entry.promise).author
     },
     clearCache() {
       cache.clear()
@@ -225,6 +243,15 @@ function errorMessage(err: unknown): string | undefined {
   return undefined
 }
 
+function evictSettledOtherSnapshots(
+  cache: Map<string, CachedAuthorIdentityLookup>,
+  currentKey: string
+): void {
+  for (const [cachedKey, cached] of cache) {
+    if (cachedKey !== currentKey && !cached.pending) cache.delete(cachedKey)
+  }
+}
+
 /**
  * Walk the `users.me` response to the engineer's display name.
  *
@@ -254,10 +281,24 @@ function extractOwnerUserName(me: unknown): string | null {
 }
 
 /**
- * Drop a resolver-owned identity cache. Tests and cross-service cache
- * reset callers must pass the resolver they mean to clear; there is no
- * module-level singleton fallback.
+ * Drop resolver-owned identity caches. Passing a resolver clears that
+ * resolver only; omitting it clears every live resolver created in this
+ * process, preserving the pre-lazy public reset shape for external callers.
  */
-export function resetIdentityCache(resolver: AuthorIdentityResolver): void {
-  resolver.clearCache()
+export function resetIdentityCache(): void
+export function resetIdentityCache(resolver: AuthorIdentityResolver): void
+export function resetIdentityCache(resolver?: AuthorIdentityResolver): void {
+  if (resolver) {
+    resolver.clearCache()
+    return
+  }
+
+  for (const ref of resolverCaches) {
+    const cache = ref.deref()
+    if (!cache) {
+      resolverCaches.delete(ref)
+      continue
+    }
+    cache.clear()
+  }
 }

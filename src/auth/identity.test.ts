@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client } from "@notionhq/client"
-import { createAuthorIdentityResolver, resolveAuthorIdentity } from "./identity.js"
+import {
+  createAuthorIdentityResolver,
+  resetIdentityCache,
+  resolveAuthorIdentity,
+} from "./identity.js"
 
 const ORIGINAL_ENV = { ...process.env }
 
@@ -275,6 +279,59 @@ describe("resolveAuthorIdentity", () => {
     await expect(Promise.all([first, second])).resolves.toEqual(["Author A", "Author A"])
   })
 
+  it("dedupes concurrent users.me failures but retries after they settle", async () => {
+    const me = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary outage"))
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author A" } } } })
+    const client = { users: { me } } as unknown as Client
+    const resolver = createAuthorIdentityResolver(client, () => ({ token: "token-a" }))
+
+    const first = resolver.resolveAuthor()
+    const second = resolver.resolveAuthor()
+    await expect(Promise.all([first, second])).resolves.toEqual([null, null])
+    expect(me).toHaveBeenCalledOnce()
+
+    await expect(resolver.resolveAuthor()).resolves.toBe("Author A")
+    expect(me).toHaveBeenCalledTimes(2)
+  })
+
+  it("dedupes an in-flight old snapshot while a newer snapshot is resolving", async () => {
+    let snapshot = { token: "token-a", baseUrl: "https://api-a.notion.test" }
+    const pending: Array<(value: unknown) => void> = []
+    const me = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          pending.push(resolve)
+        })
+    )
+    const client = { users: { me } } as unknown as Client
+    const resolver = createAuthorIdentityResolver(client, () => snapshot)
+
+    const first = resolver.resolveAuthor()
+    await Promise.resolve()
+
+    snapshot = { token: "token-b", baseUrl: "https://api-a.notion.test" }
+    const second = resolver.resolveAuthor()
+    await Promise.resolve()
+
+    snapshot = { token: "token-a", baseUrl: "https://api-a.notion.test" }
+    const third = resolver.resolveAuthor()
+    await Promise.resolve()
+    expect(me).toHaveBeenCalledTimes(2)
+
+    pending[0]!({ bot: { owner: { user: { name: "Author A" } } } })
+    pending[1]!({ bot: { owner: { user: { name: "Author B" } } } })
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      "Author A",
+      "Author B",
+      "Author A",
+    ])
+
+    await expect(resolver.resolveAuthor()).resolves.toBe("Author A")
+    expect(me).toHaveBeenCalledTimes(2)
+  })
+
   it("keeps only the latest auth snapshot cached", async () => {
     let snapshot = { token: "token-a", baseUrl: "https://api-a.notion.test" }
     const me = vi
@@ -342,5 +399,64 @@ describe("resolveAuthorIdentity", () => {
       "[lore] identity: resolved author (source=users.me, author=present)\n",
       "[lore] identity: users.me failed: network failure\n",
     ])
+  })
+
+  it("keeps resetIdentityCache callable without arguments and clears every live resolver", async () => {
+    const firstMe = vi
+      .fn()
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author A1" } } } })
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author A2" } } } })
+    const secondMe = vi
+      .fn()
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author B1" } } } })
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author B2" } } } })
+    const first = createAuthorIdentityResolver(
+      { users: { me: firstMe } } as unknown as Client,
+      () => ({ token: "token-a" })
+    )
+    const second = createAuthorIdentityResolver(
+      { users: { me: secondMe } } as unknown as Client,
+      () => ({ token: "token-b" })
+    )
+
+    await expect(first.resolveAuthor()).resolves.toBe("Author A1")
+    await expect(second.resolveAuthor()).resolves.toBe("Author B1")
+    expect(firstMe).toHaveBeenCalledOnce()
+    expect(secondMe).toHaveBeenCalledOnce()
+
+    resetIdentityCache()
+
+    await expect(first.resolveAuthor()).resolves.toBe("Author A2")
+    await expect(second.resolveAuthor()).resolves.toBe("Author B2")
+    expect(firstMe).toHaveBeenCalledTimes(2)
+    expect(secondMe).toHaveBeenCalledTimes(2)
+  })
+
+  it("can reset one resolver without clearing another resolver's cache", async () => {
+    const firstMe = vi
+      .fn()
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author A1" } } } })
+      .mockResolvedValueOnce({ bot: { owner: { user: { name: "Author A2" } } } })
+    const secondMe = vi.fn(async () => ({
+      bot: { owner: { user: { name: "Author B" } } },
+    }))
+    const first = createAuthorIdentityResolver(
+      { users: { me: firstMe } } as unknown as Client,
+      () => ({ token: "token-a" })
+    )
+    const second = createAuthorIdentityResolver(
+      { users: { me: secondMe } } as unknown as Client,
+      () => ({ token: "token-b" })
+    )
+
+    await expect(first.resolveAuthor()).resolves.toBe("Author A1")
+    await expect(second.resolveAuthor()).resolves.toBe("Author B")
+
+    resetIdentityCache(first)
+
+    await expect(first.resolveAuthor()).resolves.toBe("Author A2")
+    await expect(second.resolveAuthor()).resolves.toBe("Author B")
+    expect(firstMe).toHaveBeenCalledTimes(2)
+    expect(secondMe).toHaveBeenCalledOnce()
   })
 })
