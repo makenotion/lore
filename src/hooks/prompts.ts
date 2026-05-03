@@ -126,12 +126,12 @@ If the session produced none of these, respond exactly "No Lore context to save.
 
 /**
  * Single source of truth for sourceMemoryId wording. Kept in its own helper
- * because P1-09 will strengthen this language — centralizing it here makes
- * that future rebase a one-line helper-body edit rather than a merge across
- * multiple inline bullet sentences (which are also asserted on by tests).
+ * so future contract wording changes stay in one helper-body edit rather
+ * than a merge across multiple inline bullet sentences (which are also
+ * asserted on by tests).
  */
 function buildSourceLinkGuidance(): string {
-  return `Every lore-fact action='create' call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory can't be retraced by lore-query action='ask'. Alternatively, pass the same session value on both the lore-memory action='save' and lore-fact action='create' calls and sourceMemoryId will auto-link to the memory you just saved.`
+  return `Every lore-fact action='create' call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory are rejected on create; lore-query action='ask' could not retrace them anyway. Alternatively, pass the same session value on both the lore-memory action='save' and lore-fact action='create' calls and sourceMemoryId will auto-link to the memory you just saved.`
 }
 
 /**
@@ -140,8 +140,8 @@ function buildSourceLinkGuidance(): string {
  * fields. `kind` is required on every `lore-memory` action='save' call —
  * diary-style memories with `kind: null` were the dominant pollution source
  * in the Mail vault. sourceMemoryId guidance lives in
- * `buildSourceLinkGuidance` so P1-09 can strengthen it without touching
- * this string.
+ * `buildSourceLinkGuidance` so contract wording can change without
+ * touching this string.
  *
  * P3-01 collapsed the 24-tool surface into polymorphic dispatchers;
  * PF3-06 added `lore-task` to subsume the standalone task tools landed by

@@ -52,6 +52,28 @@ log is the canonical source for those.
 - **Missing-database errors redact long vault page IDs by default.** Set
   `LORE_DEBUG=1` to include the full page ID in local diagnostic output.
 
+## [0.13.0] - 2026-05-03
+
+### Changed
+
+- **Fact creation now requires usable provenance.** MCP
+  `lore-fact action='create'` calls now hard-error before Entity or Fact writes
+  unless they pass an explicit live, project-compatible Memories-row
+  `sourceMemoryId` or a compatible same-process `agent`+`session` auto-link.
+  This flips the previous warning-and-write behavior into an agent-observable
+  hard error for all MCP consumers, including out-of-tree integrations.
+- **Explicit fact sources are validated before writes.** Explicit
+  `sourceMemoryId` fact creates now perform one additional Notion property read
+  to verify that the source resolves to a live Memories row whose project scope
+  is compatible with the fact. Session auto-link remains a process-local
+  optimization that trusts the in-process write order and tracker metadata.
+- **Memory property reads now require live Memories rows.**
+  `MemoryService.getPropertiesById` and `getManyById` now drop archived pages
+  and pages outside the configured Memories database/data source. This makes
+  provenance validation consistent with the intended memory-read contract and
+  means read-path callers no longer refresh decay metadata for archived or
+  cross-database source rows.
+
 ## [0.12.0] - 2026-05-03
 
 ### Changed
@@ -580,7 +602,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/makenotion/lore/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/makenotion/lore/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0

@@ -12,9 +12,10 @@ gotchas, durable facts, and tracked follow-up work.
 - **Memories**: use `lore-memory action='save'` for non-obvious discoveries,
   debugging insights, gotchas, and workarounds that are not formal decisions.
 - **Facts**: use `lore-fact action='create'` for relationships between system
-  components, such as `uses`, `depends_on`, or `is_a`. Save a supporting memory
-  first and pass `sourceMemoryId`, or pass `agent` and `session` so Lore can
-  auto-link to an earlier memory in the same process.
+  components, such as `uses`, `depends_on`, or `is_a`. Lore rejects fact
+  creation without resolvable provenance: pass an existing `sourceMemoryId`, or
+  pass `agent` and `session` matching an earlier memory saved in the same
+  process.
 - **Tasks**: use `lore-task action='create'` for tracked work such as open PRs,
   blocked dependencies, and follow-up investigations. Close tasks as soon as
   they are done or cancelled.

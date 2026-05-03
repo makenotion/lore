@@ -140,6 +140,7 @@ interface StubOpts {
   projectsFindByName?: ReturnType<typeof vi.fn>
   memoriesList?: ReturnType<typeof vi.fn>
   memoriesGetById?: ReturnType<typeof vi.fn>
+  memoriesGetPropertiesById?: ReturnType<typeof vi.fn>
   memoriesArchive?: ReturnType<typeof vi.fn>
   memoriesUpdate?: ReturnType<typeof vi.fn>
   memoriesCreate?: ReturnType<typeof vi.fn>
@@ -196,7 +197,9 @@ function makeServices(opts: StubOpts = {}): unknown {
       list:
         opts.memoriesList ?? vi.fn(async () => ({ items: [], nextCursor: undefined })),
       getById: opts.memoriesGetById ?? vi.fn(),
-      getPropertiesById: vi.fn(),
+      getPropertiesById:
+        opts.memoriesGetPropertiesById ??
+        vi.fn(async (id: string) => ({ id, projectIds: [] })),
       archive: opts.memoriesArchive ?? vi.fn(async () => undefined),
       update: opts.memoriesUpdate ?? vi.fn(),
       create: opts.memoriesCreate ?? vi.fn(),
@@ -849,8 +852,11 @@ describe("lore-fact polymorphic dispatcher", () => {
       subject: "Auth",
       predicate: "uses",
       object: "JWT",
+      sourceMemoryId: "mem-source",
     } as never)
-    expect(factsCreateWithDedup).toHaveBeenCalled()
+    expect(factsCreateWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMemoryId: "mem-source" })
+    )
   })
 })
 

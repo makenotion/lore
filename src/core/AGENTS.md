@@ -1365,6 +1365,12 @@ sentence-terminator punctuation, and Unicode NFC so cosmetic variants
 resolve to one row. Hashing keeps the stored key at 64 chars regardless
 of triple length, sidestepping Notion's 2000-char `rich_text` truncation.
 
+The MCP layer owns the public provenance contract for
+`lore-fact action='create'`: it validates usable source provenance before
+calling `FactService.createWithDedup`. Internal callers that create facts must
+still thread the originating memory id deliberately; current decision auto-edge
+and memory auto-mention emitters pass `sourceMemoryId` explicitly.
+
 - **Live match** → merge incoming metadata onto the existing row:
   - Extend `Review By` when the new request has a later date.
   - Union `projectIds` into `Project` (cross-project facts accumulate).

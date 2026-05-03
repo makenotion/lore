@@ -106,8 +106,9 @@ Use Lore for cross-session knowledge when the tools are available:
 - At session start, load context with `lore-context action='wake-up'`.
 - Capture architectural choices with `lore-decision action='create'`.
 - Save non-obvious discoveries with `lore-memory action='save'`.
-- Save durable relationships with `lore-fact action='create'`, linked to a
-  supporting memory when possible.
+- Save durable relationships with `lore-fact action='create'`; it requires a
+  supporting memory via `sourceMemoryId` or same-process `agent`+`session`
+  auto-link provenance.
 - Track follow-up work with `lore-task action='create'` and close tasks as soon
   as they are done or cancelled.
 - When memories are in tension, use `lore-memory action='compare'` with the

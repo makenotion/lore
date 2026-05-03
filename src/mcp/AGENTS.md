@@ -602,30 +602,40 @@ This prevents users from creating inconsistent decision edges via
 `lore-fact` — only `DecisionService` and the decision tools create
 these facts.
 
-**`lore-fact action='create'` expects `sourceMemoryId` (soft-phase).**
-Every fact should link back to a supporting memory so
-`lore-query action='ask'` can retrace the reasoning. The tool resolves
-the source in this order:
+**`lore-fact action='create'` requires provenance.** Every fact must link
+back to a supporting memory so `lore-query action='ask'` can retrace the
+reasoning. The tool resolves the source in this order:
 
-1. Explicit `sourceMemoryId` argument — always wins.
+1. Explicit `sourceMemoryId` argument — highest precedence, but it must
+   resolve to a live Memories row whose project scope intersects the fact's
+   (or either side is vault-wide). The property-tier read happens before
+   Entity resolution so typoed or inaccessible sources cannot leave
+   Entity side effects.
 2. Session auto-link: if the caller passes `agent`+`session` and a
    `lore-memory action='save'` / `lore-decision action='create'` call
    earlier in this process recorded a memory under the same composite
    key, that memory becomes the source **only if** its project scope
-   intersects the fact's (or either side is vault-wide). The response
-   shows "auto-linked from session" so the caller can retract on mis-match.
-3. Neither available → fact is created **with a prominent warning** in
-   the response. This soft-phase window lets deployed callers adopt
-   `sourceMemoryId` before we flip to a hard error in a future minor.
+   intersects the fact's (or either side is vault-wide). This path is a
+   process-local optimization: it trusts the in-process write order and
+   tracker metadata instead of re-reading the memory from Notion, so it
+   does not detect a source memory archived after it was saved in the
+   same process. The response shows "auto-linked from session" so the
+   caller can audit the link.
+3. Neither available, the explicit source is unresolved/incompatible, or
+   the session candidate is project-incompatible → the create call returns
+   an MCP error before Entity resolution or `FactService.createWithDedup`
+   runs. Pass a compatible `sourceMemoryId` explicitly to override an
+   incompatible session candidate.
 
-The Zod schema marks `sourceMemoryId` as optional. Runtime logic is
-stricter — it surfaces a warning when neither an explicit ID nor an
-auto-link candidate is available. The mismatch is intentional: schema-
-level strictness would break every deployed agent caller on day one,
-which is exactly what the soft-phase avoids. Agents that inspect the
-tool description see the contract; runtime surfaces the enforcement.
-When we flip to hard error, also tighten the Zod schema to a
-`superRefine` requiring either `sourceMemoryId` or `session`.
+The Zod schema marks `sourceMemoryId` as optional only because
+`agent`+`session` is also valid provenance input. A `superRefine` requires
+either an explicit `sourceMemoryId` or the complete `agent`+`session`
+pair, and runtime logic still rejects when the session tracker has no
+usable compatible memory.
+
+Existing orphan facts from the soft-phase window are handled out of band:
+operators should use `lore migrate --backfill-fact-sources` to propose and
+optionally apply conservative Source links.
 
 The session mapping lives on `services.sessionMemories` (a per-process
 `SessionMemoryTracker`). `lore-memory action='save'` and
@@ -690,6 +700,19 @@ and otherwise emits one stderr line per failure:
 ```
 [lore] partial-failure: root=<rootId> error=<message> tool=<toolName>
 ```
+
+`lore-fact action='create'` provenance precheck failures use a separate
+parser-friendly prefix:
+
+```
+[lore] fact-precheck-rejected: reason=<reason> agent=<agent> session=<session> sourceMemoryId=<sourceMemoryId> project=<projectIds>
+```
+
+This line is emitted only for runtime provenance failures after schema
+validation succeeds, such as unresolved session auto-link, cross-project
+session candidate, unresolved explicit source, or cross-project explicit
+source. `reason=` is the stable classifier; `agent`, `session`,
+`sourceMemoryId`, and `project` are diagnostic context.
 
 The convention is opt-in precisely because routine transients would flood
 stderr. Operators who want to distinguish a one-off 429 from a pathological
@@ -768,6 +791,7 @@ Historical bumps and what they signalled:
 | `0.10.1` | MCP startup diagnostics: interactive `initServices()` failures register diagnostic stubs for all seven `lore-*` dispatchers instead of disconnecting the client, while hook-spawned background-agent MCP children use `LORE_BACKGROUND_AGENT=true` to fail fast. `lore-task action='list'` response-shape clarification for issue #220: task-list headers now label totals as `(exact total)` or `(lower-bound total; listing capped at N)`, bucket totals gain `≥` only when the fetched window/cap saturated, and small-limit triage calls keep a bounded `4×limit` fetch window while larger explicit limits use a deeper bounded walk. Agent-observable MCP output change; four version literals move together.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `0.11.0` | 2026-05-03 — Post-ntn dogfood hardening release: per-user Memory/Decision/Task attribution (`DEFERRED-ATTRIBUTION`), dynamic Fact confidence mirror, first-class entity merge with fact repointing, bounded/resumable conflict scans, configurable background-agent command for Codex installs, MCP startup diagnostics, overdue tasks in query audit, Notion request throttling with 429 backoff, broader search/wake-up coverage, exact/lower-bound task totals, retry-safe topic-key upserts and compare dispatch, structural autosave dedup, duplicate-mine prevention, partial-failure reporting on multi-step writes, archived-row filtering across query/list surfaces, relation/vault pagination fixes, and hook/auth robustness. Agent-observable CLI/MCP output changes; four version literals move together. |
 | `0.12.0` | 2026-05-03 — Strict explicit project-scope release: MCP and CLI surfaces that accept explicit `projectName`, `projectNames`, or `--project` now fail closed for typo'd, archived, inaccessible, or ambiguous project names before scoped reads or writes run. Agent-observable CLI/MCP behavior change; four version literals move together. |
+| `0.13.0` | 2026-05-03 — `lore-fact action='create'` provenance enforcement: normal MCP fact creation now requires an explicit live, project-compatible Memories-row `sourceMemoryId` or a compatible session auto-link from `agent`+`session`, and rejects missing, malformed, unresolved, or project-incompatible provenance before fact or Entity writes. This flips previous warning-only guidance into an agent-observable hard error for all MCP consumers, including out-of-tree integrations. Explicit-source creates now perform +1 Notion property read before writing; session auto-link remains a process-local optimization that trusts the in-process write order. Read-path callers (`getPropertiesById`, `getManyById`) now drop archived and non-Memories-DB pages. Four version literals move together. |
 
 ## Server Startup
 

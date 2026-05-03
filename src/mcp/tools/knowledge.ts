@@ -103,6 +103,33 @@ function projectsCompatible(factProjectIds: string[], memoryProjectIds: string[]
   return factProjectIds.some((id) => memoryScope.has(id))
 }
 
+/**
+ * LORE_DEBUG parser contract: one rejected provenance precheck emits one
+ * newline-delimited `[lore] fact-precheck-rejected:` event.
+ */
+function debugLogFactPrecheckRejected(
+  reason:
+    | "provenance-unresolved"
+    | "provenance-cross-project"
+    | "provenance-source-unresolved"
+    | "provenance-source-cross-project",
+  args: Pick<LearnArgs, "agent" | "session" | "sourceMemoryId">,
+  factProjectIds: string[],
+): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  const clean = (value: string | undefined): string =>
+    Array.from(value ?? "<unset>", (char) => {
+      const code = char.charCodeAt(0)
+      return code <= 31 || code === 127 ? " " : char
+    }).join("")
+  const projectScope = factProjectIds.length > 0 ? factProjectIds.join(",") : "<vault-wide>"
+  process.stderr.write(
+    `[lore] fact-precheck-rejected: reason=${reason} ` +
+      `agent=${clean(args.agent)} session=${clean(args.session)} ` +
+      `sourceMemoryId=${clean(args.sourceMemoryId)} project=${projectScope}\n`,
+  )
+}
+
 function renderDecidedByLine(fact: Fact, decision: Decision, today: string): string {
   const review = decision.reviewBy
     ? decision.reviewBy <= today
@@ -289,9 +316,63 @@ export async function handleLearn(
     const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
     const factProjectIds = resolved.ids
 
-    let effectiveSource: string | undefined = args.sourceMemoryId
+    // Dispatcher schema already rejects blank sources; keep this for direct handler callers.
+    let effectiveSource: string | undefined = args.sourceMemoryId?.trim() || undefined
     let autoLinkedFromSession = false
     const toolWarnings: string[] = [...resolved.warnings]
+
+    if (effectiveSource) {
+      let sourceProjectIds: string[]
+      try {
+        const sourceMemory = await services.memories.getPropertiesById(effectiveSource)
+        sourceProjectIds = sourceMemory.projectIds
+      } catch {
+        debugLogFactPrecheckRejected("provenance-source-unresolved", args, factProjectIds)
+        return toolError(
+          new Error(
+            `provenance-source-unresolved: sourceMemoryId ${effectiveSource} did not resolve to a live Memories row. ` +
+              `Pass an existing supporting memory ID, or pass agent+session for session auto-link.`,
+          ),
+        )
+      }
+      if (!projectsCompatible(factProjectIds, sourceProjectIds)) {
+        debugLogFactPrecheckRejected("provenance-source-cross-project", args, factProjectIds)
+        return toolError(
+          new Error(
+            `provenance-source-cross-project: sourceMemoryId ${effectiveSource} is scoped to a different project than this fact. ` +
+              `Use a source memory from the same project, or a vault-wide source memory.`,
+          ),
+        )
+      }
+    } else {
+      const candidate = services.sessionMemories.get({ agent: args.agent, session: args.session })
+      if (candidate) {
+        if (projectsCompatible(factProjectIds, candidate.projectIds)) {
+          effectiveSource = candidate.memoryId
+          autoLinkedFromSession = true
+        } else {
+          debugLogFactPrecheckRejected("provenance-cross-project", args, factProjectIds)
+          return toolError(
+            new Error(
+              `provenance-cross-project: lore-fact create requires a compatible source memory. ` +
+                `Session memory ${candidate.memoryId} is scoped to a different project than this fact. ` +
+                `Pass sourceMemoryId explicitly to override the session candidate.`,
+            ),
+          )
+        }
+      }
+    }
+
+    if (!effectiveSource) {
+      debugLogFactPrecheckRejected("provenance-unresolved", args, factProjectIds)
+      return toolError(
+        new Error(
+          "provenance-unresolved: agent+session did not resolve to a compatible session memory. " +
+            "Pass sourceMemoryId with an existing supporting memory, or save a memory/decision " +
+            "under the same agent+session before creating the fact.",
+        ),
+      )
+    }
 
     // PF3-01 — resolve subject and object to canonical Entity rows.
     // Auto-creates on miss (default), surfaces ambiguity candidates
@@ -385,21 +466,6 @@ export async function handleLearn(
       }
     }
 
-    if (!effectiveSource) {
-      const candidate = services.sessionMemories.get({ agent: args.agent, session: args.session })
-      if (candidate) {
-        if (projectsCompatible(factProjectIds, candidate.projectIds)) {
-          effectiveSource = candidate.memoryId
-          autoLinkedFromSession = true
-        } else {
-          toolWarnings.push(
-            `Declined auto-link: session memory ${candidate.memoryId} is scoped to a different project ` +
-              `than this fact. Pass sourceMemoryId explicitly to override.`,
-          )
-        }
-      }
-    }
-
     const { fact, deduped, enriched } = await services.facts.createWithDedup({
       subject: args.subject,
       predicate: args.predicate,
@@ -423,17 +489,10 @@ export async function handleLearn(
     if (fact.reviewBy) {
       lines.push(`Review by: ${fact.reviewBy}`)
     }
-    if (effectiveSource && autoLinkedFromSession) {
+    if (autoLinkedFromSession) {
       lines.push(`Source (auto-linked from session): ${effectiveSource}`)
-    } else if (effectiveSource) {
-      lines.push(`Source: ${effectiveSource}`)
     } else {
-      lines.push(
-        "WARNING: No Source memory linked. Facts without a Source can't be retraced by `lore-query` action='ask'. " +
-          "Pass `sourceMemoryId` with an existing supporting memory, or pass `agent`+`session` " +
-          "matching an earlier `lore-memory`/`lore-decision` save call for auto-link. This becomes a " +
-          "hard error in a future release.",
-      )
+      lines.push(`Source: ${effectiveSource}`)
     }
     if (enriched.length > 0) {
       lines.push(`Merged: ${enriched.join("; ")}`)
@@ -1107,30 +1166,46 @@ export async function handleAudit(
   }
 }
 
-const factDispatchSchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("create"),
-    subject: z.string(),
-    predicate: z.enum(PREDICATE_VALUES),
-    object: z.string(),
-    projectName: z.string().optional(),
-    projectNames: z.array(z.string()).optional(),
-    reviewBy: z.string().regex(YMD_REGEX).optional(),
-    confidence: z.enum(CONFIDENCES).optional(),
-    sourceMemoryId: z.string().optional(),
-    session: z.string().optional(),
-    agent: z.string().optional(),
-  }),
-  z.object({
-    action: z.literal("invalidate"),
-    factId: z.string(),
-  }),
-  z.object({
-    action: z.literal("extend"),
-    factId: z.string(),
-    reviewBy: z.string().regex(YMD_REGEX),
-  }),
-])
+const factDispatchSchema = z
+  .discriminatedUnion("action", [
+    z.object({
+      action: z.literal("create"),
+      subject: z.string(),
+      predicate: z.enum(PREDICATE_VALUES),
+      object: z.string(),
+      projectName: z.string().optional(),
+      projectNames: z.array(z.string()).optional(),
+      reviewBy: z.string().regex(YMD_REGEX).optional(),
+      confidence: z.enum(CONFIDENCES).optional(),
+      sourceMemoryId: z.string().optional(),
+      session: z.string().optional(),
+      agent: z.string().optional(),
+    }),
+    z.object({
+      action: z.literal("invalidate"),
+      factId: z.string(),
+    }),
+    z.object({
+      action: z.literal("extend"),
+      factId: z.string(),
+      reviewBy: z.string().regex(YMD_REGEX),
+    }),
+  ])
+  .superRefine((args, ctx) => {
+    if (args.action !== "create") return
+    const sourceMemoryId = args.sourceMemoryId?.trim()
+    if (sourceMemoryId) return
+    const agent = args.agent?.trim()
+    const session = args.session?.trim()
+    if (agent && session) return
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["sourceMemoryId"],
+      message:
+        "provenance-missing: pass a non-empty sourceMemoryId, or pass both non-empty " +
+        "agent and session so Lore can auto-link a compatible session memory.",
+    })
+  })
 
 export function registerKnowledgeTools(server: McpServer, services: LoreServices): void {
   // -------------------------------------------------------------------------
@@ -1145,7 +1220,7 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         "- `action: 'create'` — add a Subject —predicate→ Object triple. Auto-dedupes against existing equivalent triples and merges metadata onto the survivor.\n" +
         "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` to today). Preserved for history.\n" +
         "- `action: 'extend'` — push back a fact's review-by date.\n\n" +
-        "Every created fact SHOULD link back to a supporting memory via `sourceMemoryId` so `lore-query action='ask'` can retrace the reasoning. Pass the memory ID directly, or pass `agent`+`session` matching an earlier `lore-memory action='save'` / `lore-decision action='create'` call in the same process and `sourceMemoryId` auto-links.\n\n" +
+        "Every created fact MUST link back to a supporting memory via `sourceMemoryId` so `lore-query action='ask'` can retrace the reasoning. Pass a live Memories row ID directly, or pass `agent`+`session` matching an earlier `lore-memory action='save'` / `lore-decision action='create'` call in the same process and `sourceMemoryId` auto-links. If neither path produces a compatible Source memory, the create call is rejected before writing.\n\n" +
         "Decision predicates (`decided_by`, `supersedes_decision`, `informs`) and the auto-emitted `mentions` predicate are internal-only and not accepted here — `decided_by` / `supersedes_decision` / `informs` are auto-created by the decision tool family; `mentions` is auto-emitted by `lore-memory action='save'`. Use richer relationship predicates (`uses`, `depends_on`, etc.) for agent-curated edges.",
       inputSchema: {
         action: z
@@ -1176,7 +1251,9 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         sourceMemoryId: z
           .string()
           .optional()
-          .describe("(action='create') ID of the memory that supports this fact."),
+          .describe(
+            "(action='create') ID of the memory that supports this fact. Required unless agent+session auto-links a compatible source memory.",
+          ),
         session: z
           .string()
           .optional()

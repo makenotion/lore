@@ -427,7 +427,7 @@ describe("buildBackgroundSavePrompt", () => {
       • lore-decision action='create' — Use this (not lore-memory) for architectural decisions. Include rationale, alternatives considered, consequences, affects (entity names), and reviewBy.
       • lore-task action='create' — Open a task for work that needs action, is waiting on someone, or is blocked. Pass subject (one-line title), state ("open" | "in-progress" | "blocked"), entity (the PR / service / person it's about), and dueDate (YYYY-MM-DD) when known. If state is "blocked", blockedBy is required.
 
-      Every lore-fact action='create' call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory can't be retraced by lore-query action='ask'. Alternatively, pass the same session value on both the lore-memory action='save' and lore-fact action='create' calls and sourceMemoryId will auto-link to the memory you just saved.
+      Every lore-fact action='create' call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory are rejected on create; lore-query action='ask' could not retrace them anyway. Alternatively, pass the same session value on both the lore-memory action='save' and lore-fact action='create' calls and sourceMemoryId will auto-link to the memory you just saved.
 
       Fill every field you can confidently populate — empty fields hurt recall later. Leave a field empty only when you'd be guessing.
 

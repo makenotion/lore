@@ -74,7 +74,7 @@ against that prompt.
 
 | Action       | Description                                                                                                                                                                       |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create`     | Add a subject-predicate-object fact triple. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task action='create'` instead. |
+| `create`     | Add a subject-predicate-object fact triple. Requires a live, project-compatible Memories row via `sourceMemoryId` or `agent`+`session` that auto-links a compatible source memory before writing. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task action='create'` instead. |
 | `invalidate` | Invalidate a fact (sets Valid Until date, preserves history)                                                                                                                      |
 | `extend`     | Push a fact's review-by date forward                                                                                                                                              |
 
@@ -82,6 +82,25 @@ After P3-02, `lore-query action='ask'` also surfaces tasks touching the entity.
 For tracked work triage, use `lore-task action='list'`. Un-migrated vaults may
 still contain historical tracking-predicate facts; `lore status` reports those
 rows for manual remediation.
+
+This is an agent-observable behavior change in 0.13.0: MCP fact creation
+without usable provenance now hard-errors instead of warning and writing a
+source-less fact. This is tool-surface enforcement, not a Notion schema
+invariant; direct Notion writes outside Lore can still create sourceless Fact
+rows.
+
+Stable provenance error reasons:
+
+- `provenance-missing` — neither a non-empty `sourceMemoryId` nor a complete
+  non-empty `agent`+`session` pair was provided.
+- `provenance-source-unresolved` — explicit `sourceMemoryId` did not resolve to
+  a live Memories row.
+- `provenance-source-cross-project` — explicit `sourceMemoryId` resolved but
+  its project scope is incompatible with the fact.
+- `provenance-unresolved` — `agent`+`session` was provided, but this process has
+  no compatible session memory recorded for that composite key.
+- `provenance-cross-project` — session auto-link found a memory, but its
+  project scope is incompatible with the fact.
 
 ## `lore-task` — tracked work
 

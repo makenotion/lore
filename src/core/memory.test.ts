@@ -8219,6 +8219,83 @@ describe("MemoryService.materializeContent", () => {
   })
 })
 
+describe("MemoryService.getPropertiesById", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildMemoryPage(
+    id: string,
+    overrides: Partial<PageObjectResponse> = {}
+  ): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: `Memory ${id}` }] },
+      },
+      {
+        id,
+        parent: { type: "database_id", database_id: db.databaseId },
+        ...overrides,
+      }
+    )
+  }
+
+  it("returns property-tier shape for a live Memories row without fetching markdown", async () => {
+    const retrieve = vi.fn(async () => buildMemoryPage("mem-live"))
+    const retrieveMarkdown = vi.fn()
+    const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const memory = await service.getPropertiesById("mem-live")
+
+    expect(memory.id).toBe("mem-live")
+    expect(memory.title).toBe("Memory mem-live")
+    expect(memory.content).toBe("")
+    expect(retrieve).toHaveBeenCalledWith({ page_id: "mem-live" })
+    expect(retrieveMarkdown).not.toHaveBeenCalled()
+  })
+
+  it("accepts v5 data_source_id parents for live Memories rows", async () => {
+    const retrieve = vi.fn(async () =>
+      buildMemoryPage("mem-live", {
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+          database_id: db.databaseId,
+        },
+      })
+    )
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.getPropertiesById("mem-live")).resolves.toMatchObject({
+      id: "mem-live",
+    })
+  })
+
+  it("rejects archived Memories rows", async () => {
+    const retrieve = vi.fn(async () => buildMemoryPage("mem-archived", { archived: true }))
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.getPropertiesById("mem-archived")).rejects.toThrow(
+      "Memory mem-archived is archived."
+    )
+  })
+
+  it("rejects accessible pages outside the Memories database", async () => {
+    const retrieve = vi.fn(async () =>
+      buildMemoryPage("fact-page", {
+        parent: { type: "database_id", database_id: "facts-db" },
+      })
+    )
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(service.getPropertiesById("fact-page")).rejects.toThrow(
+      "Memory fact-page is not in the Memories database."
+    )
+  })
+})
+
 // ---------------------------------------------------------------------------
 // getManyById — batched fetch used by `lore-query action='ask'` to seed
 // `touchOnRead` (issue 0.8.0/05). Pinned here so a future refactor of
@@ -8235,6 +8312,7 @@ describe("MemoryService.getManyById", () => {
         Title: { type: "title", title: [{ plain_text: title }] },
       }),
       id,
+      parent: { type: "database_id", database_id: db.databaseId },
       url: `https://notion.so/${id}`,
     } as PageObjectResponse
   }
@@ -8285,13 +8363,16 @@ describe("MemoryService.getManyById", () => {
     // surrounding tool's failure surface.
     const retrieve = vi.fn(async ({ page_id }: { page_id: string }) => {
       if (page_id === "m-gone") throw new Error("notion 404")
+      if (page_id === "m-archived") {
+        return { ...buildMemoryPage(page_id, `Memory ${page_id}`), archived: true }
+      }
       return buildMemoryPage(page_id, `Memory ${page_id}`)
     })
     const retrieveMarkdown = vi.fn()
     const client = { pages: { retrieve, retrieveMarkdown } } as unknown as Client
     const service = new MemoryService(client, db)
 
-    const memories = await service.getManyById(["m-1", "m-gone", "m-3"])
+    const memories = await service.getManyById(["m-1", "m-gone", "m-archived", "m-3"])
 
     expect(memories.map((m) => m.id)).toEqual(["m-1", "m-3"])
   })

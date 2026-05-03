@@ -1202,6 +1202,7 @@ describe("lore-fact action='create' projectName resolution", () => {
       subject: "AuthService",
       predicate: "depends_on",
       object: "Database",
+      sourceMemoryId: "mem-source",
       projectName: "Missing",
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1238,6 +1239,7 @@ describe("lore-fact action='create' projectName resolution", () => {
       subject: "AuthService",
       predicate: "depends_on",
       object: "Database",
+      sourceMemoryId: "mem-source",
       projectNames: ["Mail", "Missing"],
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
@@ -1251,9 +1253,49 @@ describe("lore-fact action='create' projectName resolution", () => {
 })
 
 describe("lore-learn sourceMemoryId discipline", () => {
+  const memoriesDb = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeSourceMemory(id: string, projectIds: string[] = []) {
+    return { id, projectIds }
+  }
+
+  function makeRetrievedSourcePage(
+    id: string,
+    overrides: Partial<PageObjectResponse> = {}
+  ): PageObjectResponse {
+    return {
+      object: "page",
+      id,
+      created_time: "2026-01-01T00:00:00.000Z",
+      last_edited_time: "2026-01-02T00:00:00.000Z",
+      archived: false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: `Memory ${id}` }] },
+        Project: { type: "relation", relation: [] },
+      } as unknown as PageObjectResponse["properties"],
+      parent: { type: "database_id", database_id: memoriesDb.databaseId },
+      url: `https://notion.so/${id}`,
+      ...overrides,
+    } as PageObjectResponse
+  }
+
+  function makeMemoryServiceForPage(page: PageObjectResponse) {
+    const client = {
+      pages: {
+        retrieve: vi.fn(async () => page),
+      },
+    } as unknown as Client
+    return new MemoryService(client, memoriesDb)
+  }
+
   function makeServices(overrides: Record<string, unknown> = {}) {
     return {
       projects: { findByName: vi.fn() },
+      memories: {
+        getPropertiesById: vi.fn().mockImplementation(async (id: string) =>
+          makeSourceMemory(id)
+        ),
+      },
       facts: {
         create: vi.fn().mockImplementation(async (input) =>
           makeFact("fact-created", {
@@ -1289,11 +1331,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
     }
   }
 
-  it("soft-phases missing sourceMemoryId: creates the fact with a prominent warning", async () => {
-    // The spec's soft-phase requirement: we do NOT hard-error when no source
-    // is available, because that would break every deployed caller on day
-    // one. Instead the fact is created and the response carries a loud
-    // warning. Flip to hard error in a future minor.
+  it("rejects missing provenance at the schema boundary before writing the fact", async () => {
     const mockServer = createMockServer()
     const services = makeServices()
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1307,13 +1345,35 @@ describe("lore-learn sourceMemoryId discipline", () => {
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toContain("WARNING")
-    expect(payload.content[0].text).toContain("sourceMemoryId")
-    // Fact IS created; we're warning, not refusing.
-    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceMemoryId: undefined })
-    )
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("Error: lore-fact: sourceMemoryId:")
+    expect(payload.content[0].text).toContain("provenance-missing")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["agent only", { agent: "claude" }],
+    ["session only", { session: "session-abc" }],
+    ["whitespace session", { agent: "claude", session: "  " }],
+  ])("rejects malformed session provenance at the schema boundary: %s", async (_name, partial) => {
+    const mockServer = createMockServer()
+    const services = makeServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      ...partial,
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("Error: lore-fact: sourceMemoryId:")
+    expect(payload.content[0].text).toContain("provenance-missing")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
   })
 
   it("creates the fact when sourceMemoryId is passed explicitly", async () => {
@@ -1334,9 +1394,128 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(payload.isError).toBeFalsy()
     expect(payload.content[0].text).toContain("Source: mem-explicit")
     expect(payload.content[0].text).not.toContain("WARNING")
+    expect(services.memories.getPropertiesById).toHaveBeenCalledWith("mem-explicit")
     expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-explicit" })
     )
+  })
+
+  it("rejects unresolved explicit sourceMemoryId before entity or fact writes", async () => {
+    const mockServer = createMockServer()
+    const resolveOrCreateEntity = vi.fn()
+    const services = makeServices({
+      entities: { resolveOrCreateEntity },
+      memories: {
+        getPropertiesById: vi.fn().mockRejectedValue(new Error("not found")),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "mem-typo",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("provenance-source-unresolved")
+    expect(payload.content[0].text).toContain("mem-typo")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    expect(resolveOrCreateEntity).not.toHaveBeenCalled()
+  })
+
+  it("rejects explicit sourceMemoryId from another database before entity or fact writes", async () => {
+    const mockServer = createMockServer()
+    const resolveOrCreateEntity = vi.fn()
+    const services = makeServices({
+      entities: { resolveOrCreateEntity },
+      memories: makeMemoryServiceForPage(
+        makeRetrievedSourcePage("fact-page", {
+          parent: { type: "database_id", database_id: "facts-db" },
+        })
+      ),
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "fact-page",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("provenance-source-unresolved")
+    expect(payload.content[0].text).toContain("live Memories row")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    expect(resolveOrCreateEntity).not.toHaveBeenCalled()
+  })
+
+  it("rejects archived explicit sourceMemoryId before entity or fact writes", async () => {
+    const mockServer = createMockServer()
+    const resolveOrCreateEntity = vi.fn()
+    const services = makeServices({
+      entities: { resolveOrCreateEntity },
+      memories: makeMemoryServiceForPage(
+        makeRetrievedSourcePage("mem-archived", { archived: true })
+      ),
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await loreLearn({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "mem-archived",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("provenance-source-unresolved")
+    expect(payload.content[0].text).toContain("live Memories row")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    expect(resolveOrCreateEntity).not.toHaveBeenCalled()
+  })
+
+  it("rejects project-incompatible explicit sourceMemoryId before entity or fact writes", async () => {
+    const mockServer = createMockServer()
+    const resolveOrCreateEntity = vi.fn()
+    const services = makeServices({
+      entities: { resolveOrCreateEntity },
+      projects: {
+        findByName: vi.fn().mockResolvedValue({ id: "proj-server", name: "server" }),
+      },
+      memories: {
+        getPropertiesById: vi.fn().mockResolvedValue(makeSourceMemory("mem-ios", ["proj-ios"])),
+      },
+    })
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const loreLearn = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await loreLearn({
+      subject: "EventQueue",
+      predicate: "uses",
+      object: "RMQ",
+      projectName: "server",
+      sourceMemoryId: "mem-ios",
+    } as never)
+
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("provenance-source-cross-project")
+    expect(payload.content[0].text).toContain("different project")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    expect(resolveOrCreateEntity).not.toHaveBeenCalled()
   })
 
   it("auto-links sourceMemoryId from the session tracker when the caller omits it", async () => {
@@ -1379,10 +1558,16 @@ describe("lore-learn sourceMemoryId discipline", () => {
 
   it("prefers the explicitly-passed sourceMemoryId over the session candidate", async () => {
     const mockServer = createMockServer()
+    const sessionGet = vi
+      .fn()
+      .mockReturnValue({ memoryId: "mem-from-session", projectIds: ["proj-ios"] })
     const services = makeServices({
+      projects: {
+        findByName: vi.fn().mockResolvedValue({ id: "proj-server", name: "server" }),
+      },
       sessionMemories: {
         record: vi.fn(),
-        get: vi.fn().mockReturnValue({ memoryId: "mem-from-session", projectIds: [] }),
+        get: sessionGet,
       },
     })
     registerKnowledgeTools(mockServer.server, services as never)
@@ -1393,6 +1578,7 @@ describe("lore-learn sourceMemoryId discipline", () => {
       subject: "AuthService",
       predicate: "uses",
       object: "JWT",
+      projectName: "server",
       session: "session-abc",
       agent: "claude",
       sourceMemoryId: "mem-explicit",
@@ -1401,18 +1587,23 @@ describe("lore-learn sourceMemoryId discipline", () => {
     expect(services.facts.createWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-explicit" })
     )
+    expect(services.memories.getPropertiesById).toHaveBeenCalledWith("mem-explicit")
+    expect(sessionGet).not.toHaveBeenCalled()
   })
 
-  it("declines auto-link when session memory's project is disjoint from the fact's project", async () => {
+  it("rejects auto-link when session memory's project is disjoint from the fact's project", async () => {
     // Reviewer blocker #2: an iOS-scoped memory must not silently become the
     // source for a server-scoped fact. The memory and the fact are both
-    // scoped; their project sets do not intersect; decline and warn.
+    // scoped; their project sets do not intersect, so the create must fail
+    // before the fact write unless the caller passes an explicit source.
     const mockServer = createMockServer()
+    const resolveOrCreateEntity = vi.fn()
     const projectsFindByName = vi.fn().mockImplementation(async (name: string) => {
       if (name === "server") return { id: "proj-server", name: "server" }
       return null
     })
     const services = makeServices({
+      entities: { resolveOrCreateEntity },
       projects: { findByName: projectsFindByName },
       sessionMemories: {
         record: vi.fn(),
@@ -1433,15 +1624,11 @@ describe("lore-learn sourceMemoryId discipline", () => {
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    // Auto-link refused — fact is created without a Source and with both
-    // the soft-phase warning AND the decline reason in the warnings line.
-    expect(payload.content[0].text).toContain("Declined auto-link")
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("provenance-cross-project")
     expect(payload.content[0].text).toContain("different project")
-    expect(payload.content[0].text).toContain("WARNING")
-    expect(services.facts.createWithDedup).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceMemoryId: undefined })
-    )
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    expect(resolveOrCreateEntity).not.toHaveBeenCalled()
   })
 
   it("accepts auto-link when fact has no project scope (vault-wide fact)", async () => {
@@ -1505,9 +1692,11 @@ describe("lore-learn sourceMemoryId discipline", () => {
     )
   })
 
-  it("soft-phase warning (no hard error) when session is present but the tracker has no entry", async () => {
+  it("rejects when session is present but the tracker has no entry", async () => {
     const mockServer = createMockServer()
+    const resolveOrCreateEntity = vi.fn()
     const services = makeServices({
+      entities: { resolveOrCreateEntity },
       sessionMemories: {
         record: vi.fn(),
         get: vi.fn().mockReturnValue(undefined),
@@ -1527,9 +1716,11 @@ describe("lore-learn sourceMemoryId discipline", () => {
     } as never)
 
     const payload = result as { content: Array<{ text: string }>; isError?: boolean }
-    expect(payload.isError).toBeFalsy()
-    expect(payload.content[0].text).toContain("WARNING")
-    expect(services.facts.createWithDedup).toHaveBeenCalled()
+    expect(payload.isError).toBe(true)
+    expect(payload.content[0].text).toContain("provenance-unresolved")
+    expect(payload.content[0].text).toContain("did not resolve")
+    expect(services.facts.createWithDedup).not.toHaveBeenCalled()
+    expect(resolveOrCreateEntity).not.toHaveBeenCalled()
   })
 })
 
@@ -1831,6 +2022,12 @@ describe("lore-learn — PF3-01 entity ambiguity surface", () => {
         queryByObject: vi.fn(),
       },
       decisions: { getById: vi.fn() },
+      memories: {
+        getPropertiesById: vi.fn().mockImplementation(async (id: string) => ({
+          id,
+          projectIds: [],
+        })),
+      },
       context: { project: null },
       sessionMemories: {
         record: vi.fn(),

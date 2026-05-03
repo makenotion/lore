@@ -1075,6 +1075,30 @@ export class MemoryService {
     this.writeEpoch++
   }
 
+  private isMemoryPageParent(parent: PageObjectResponse["parent"]): boolean {
+    if (parent.type === "database_id") {
+      return parent.database_id === this.db.databaseId
+    }
+    if (parent.type === "data_source_id") {
+      return parent.data_source_id === this.db.dataSourceId
+    }
+    return false
+  }
+
+  private requireLiveMemoryPage(page: unknown, id: string): PageObjectResponse {
+    if (!isFullPage(page as Parameters<typeof isFullPage>[0])) {
+      throw new Error(`Memory ${id} did not resolve to a full page.`)
+    }
+    const fullPage = page as PageObjectResponse
+    if (fullPage.archived) {
+      throw new Error(`Memory ${id} is archived.`)
+    }
+    if (!this.isMemoryPageParent(fullPage.parent)) {
+      throw new Error(`Memory ${id} is not in the Memories database.`)
+    }
+    return fullPage
+  }
+
   async create(input: CreateMemoryInput): Promise<Memory> {
     validateRichTextMetadataFields(input, "MemoryService.create")
 
@@ -1201,10 +1225,15 @@ export class MemoryService {
    * The returned `Memory.content` is `""`. Callers that need the body
    * should use `getById` instead, or hydrate via `materializeContent`
    * after a `getPropertiesById` if both shapes are needed.
+   *
+   * The ID must point at a live page in the configured Memories database.
+   * Accessible pages from sibling databases and archived memory rows are
+   * rejected before they can masquerade as vault-wide memories via the
+   * backward-compatible parser defaults.
    */
   async getPropertiesById(id: string): Promise<Memory> {
     const page = await this.client.pages.retrieve({ page_id: id })
-    return await this.pageToMemory(page as PageObjectResponse, "")
+    return await this.pageToMemory(this.requireLiveMemoryPage(page, id), "")
   }
 
   /**
@@ -1247,7 +1276,7 @@ export class MemoryService {
       distinct.map(async (id) => {
         try {
           const page = await this.client.pages.retrieve({ page_id: id })
-          return await this.pageToMemory(page as PageObjectResponse, "")
+          return await this.pageToMemory(this.requireLiveMemoryPage(page, id), "")
         } catch {
           return null
         }

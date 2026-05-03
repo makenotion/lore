@@ -88,8 +88,11 @@ export async function startServer(): Promise<void> {
   // entry points. Agents now get deterministic errors for typo'd,
   // archived, inaccessible, or ambiguous project names instead of
   // silently falling back to auto-detected or vault-wide scope.
+  //
+  // 0.13.0 flips normal MCP fact creation from warning-only provenance
+  // guidance to hard-error enforcement before fact or Entity writes.
   const server = new McpServer(
-    { name: "lore", version: "0.12.0" },
+    { name: "lore", version: "0.13.0" },
     {
       capabilities: {
         tools: {},
