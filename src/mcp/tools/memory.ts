@@ -24,6 +24,10 @@ import type {
 import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
+  RICH_TEXT_PROPERTY_MAX_LEN,
+  richTextPropertySchema,
+} from "./rich-text-schema.js"
+import {
   extractEntityCandidates,
   findAutosaveLearningDuplicate,
   findNearDuplicates,
@@ -2077,8 +2081,8 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     decidedAt: z.string().regex(YMD_REGEX).optional(),
     supersedesIds: z.array(z.string()).optional(),
     affectsIds: z.array(z.string()).optional(),
-    alternatives: z.string().optional(),
-    consequences: z.string().optional(),
+    alternatives: richTextPropertySchema("alternatives").optional(),
+    consequences: richTextPropertySchema("consequences").optional(),
     // Same kebab-case regex as `lore-memory action='save'`'s
     // (forthcoming) topic-key parameter — the format contract is
     // identical across save and update. See 0.9.0/#14 for the
@@ -2270,12 +2274,18 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .describe("(action='update') Replace the Affects relation with these memory IDs."),
         alternatives: z
           .string()
+          .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
-          .describe("(action='update') Alternatives text (replaces existing)."),
+          .describe(
+            `(action='update') Alternatives text, up to ${RICH_TEXT_PROPERTY_MAX_LEN} chars (replaces existing).`,
+          ),
         consequences: z
           .string()
+          .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
-          .describe("(action='update') Consequences text (replaces existing)."),
+          .describe(
+            `(action='update') Consequences text, up to ${RICH_TEXT_PROPERTY_MAX_LEN} chars (replaces existing).`,
+          ),
         // compare
         memoryIdA: z
           .string()

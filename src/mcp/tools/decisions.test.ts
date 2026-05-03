@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerDecisionTools } from "./decisions.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import type { Decision, Fact } from "../../types.js"
 
 function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {
@@ -1111,6 +1112,75 @@ describe("lore-decision synopsis surface (issue 0.7.0/02)", () => {
     expect(wrapped.content[0].text).toContain("synopsis")
     expect(services.decisions.create).not.toHaveBeenCalled()
   })
+})
+
+describe("lore-decision action='create' Alternatives/Consequences rich_text cap (#270)", () => {
+  function setUpCreateHarness() {
+    const mockServer = createMockServer()
+    const created = makeDecision("dec-rich-text-cap", { projectIds: [] })
+    const create = vi.fn().mockResolvedValue(created)
+    const services = {
+      decisions: { create, getById: vi.fn(), supersede: vi.fn() },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      memories: { decrementConfidence: vi.fn(), list: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+    registerDecisionTools(mockServer.server, services as never)
+    return {
+      handler: mockServer.getActionHandler("lore-decision", "create"),
+      create,
+    }
+  }
+
+  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+    const { handler, create } = setUpCreateHarness()
+    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+    const result = await handler({
+      decision: "Keep metadata capped",
+      rationale: "Long rationale still belongs in the body.",
+      alternatives: atCap,
+      consequences: atCap,
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        alternatives: atCap,
+        consequences: atCap,
+      }),
+    )
+  })
+
+  it.each([
+    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+  ] as const)(
+    "rejects over-cap %s before decisions.create",
+    async (field, input) => {
+      const { handler, create } = setUpCreateHarness()
+
+      const result = await handler({
+        decision: "Keep metadata capped",
+        rationale: "Long rationale still belongs in the body.",
+        ...input,
+      } as never)
+
+      const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+      expect(wrapped.isError).toBe(true)
+      expect(wrapped.content[0].text).toContain(field)
+      expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
+      expect(create).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe("lore-decision action='list' synopsis rendering (DEFERRED-01)", () => {

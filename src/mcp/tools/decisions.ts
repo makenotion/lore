@@ -18,6 +18,10 @@ import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import {
+  RICH_TEXT_PROPERTY_MAX_LEN,
+  richTextPropertySchema,
+} from "./rich-text-schema.js"
+import {
   findNearDuplicates,
   type NearDuplicateMatch,
 } from "../../core/near-duplicate.js"
@@ -964,8 +968,8 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     decidedAt: z.string().regex(YMD_REGEX).optional(),
     supersedesIds: z.array(z.string()).optional(),
     affects: z.array(z.string()).optional(),
-    alternatives: z.string().optional(),
-    consequences: z.string().optional(),
+    alternatives: richTextPropertySchema("alternatives").optional(),
+    consequences: richTextPropertySchema("consequences").optional(),
     tags: tagsSchema.optional(),
     keywords: keywordsSchema.optional(),
     synopsis: z.string().max(SYNOPSIS_MAX).optional(),
@@ -1105,12 +1109,18 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           ),
         alternatives: z
           .string()
+          .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
-          .describe("(action='create') Alternatives considered (≤2000 chars)."),
+          .describe(
+            `(action='create') Alternatives considered (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`,
+          ),
         consequences: z
           .string()
+          .max(RICH_TEXT_PROPERTY_MAX_LEN)
           .optional()
-          .describe("(action='create') Consequences accepted (≤2000 chars)."),
+          .describe(
+            `(action='create') Consequences accepted (≤${RICH_TEXT_PROPERTY_MAX_LEN} chars).`,
+          ),
         tags: tagsSchema.optional().describe("(action='create') Closed-vocabulary tags."),
         keywords: keywordsSchema.optional().describe("(action='create') Free-form labels."),
         synopsis: z

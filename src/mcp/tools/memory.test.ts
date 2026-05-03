@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
 import { registerQueryTools } from "./query.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import {
   appendCompareDispatchLedgerEntry,
   buildCompareDispatchLedgerEntry,
@@ -3535,6 +3536,68 @@ describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
   //   - DecisionService.create — `src/core/decision.test.ts`
   //   - TaskService.create / update — `src/core/task.test.ts`
   // Keep the proof at the seam, not at the helper.
+})
+
+describe("lore-memory action='update' Alternatives/Consequences rich_text cap (#270)", () => {
+  function setUpUpdateHarness() {
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue(makeMemory("mem-1"))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { author: null },
+    }
+    registerMemoryTools(mockServer.server, services as never)
+    return {
+      handler: mockServer.getActionHandler("lore-memory", "update"),
+      update,
+    }
+  }
+
+  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+    const { handler, update } = setUpUpdateHarness()
+    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+    const result = await handler({
+      memoryId: "mem-1",
+      alternatives: atCap,
+      consequences: atCap,
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(update).toHaveBeenCalledWith(
+      "mem-1",
+      expect.objectContaining({
+        alternatives: atCap,
+        consequences: atCap,
+      }),
+    )
+  })
+
+  it.each([
+    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+  ] as const)(
+    "rejects over-cap %s before memories.update",
+    async (field, input) => {
+      const { handler, update } = setUpUpdateHarness()
+
+      const result = await handler({
+        memoryId: "mem-1",
+        ...input,
+      } as never)
+
+      const wrapped = result as { content: Array<{ text: string }>; isError?: boolean }
+      expect(wrapped.isError).toBe(true)
+      expect(wrapped.content[0].text).toContain(field)
+      expect(wrapped.content[0].text).toContain(`${RICH_TEXT_PROPERTY_MAX_LEN}`)
+      expect(update).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe("lore-recall synopsis rendering (issue 0.7.0/03)", () => {
