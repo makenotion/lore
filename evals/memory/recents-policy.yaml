@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Recent policy update for the recents surface.
+memories:
+  - id: policy/code-review-two-approvals
+    title: Code review now requires two approvals on protected branches
+    kind: policy
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+    keywords: code review two approvals protected branch policy
+    synopsis: Protected-branch PRs now require two approving reviews before merge.
+  - id: note/coverage-checklist
+    title: Coverage checklist for new tests
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: assertion edge case
+    synopsis: Cover the happy path and at least one failure mode.

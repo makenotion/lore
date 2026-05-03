@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Related-memory surface — active deployment task seeds canary memory.
+memories:
+  - id: decision/canary-deployment-strategy
+    title: Canary deployment strategy decision
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - infrastructure
+    keywords: canary deployment strategy traffic
+    synopsis: Roll out new versions to 5% canary traffic before full deployment.
+  - id: note/coverage-checklist
+    title: Coverage checklist for new tests
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: assertion edge case
+    synopsis: Cover the happy path and at least one failure mode.
+tasks:
+  - id: task/active-canary-rollout
+    subject: Canary rollout dial-up
+    entity: canary deployment

@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Recent incident postmortem for the recents surface.
+memories:
+  - id: postmortem/queue-backlog-2026-04-22
+    title: Queue backlog incident postmortem
+    kind: postmortem
+    status: accepted
+    confidence: certain
+    tags:
+      - reliability
+    keywords: queue backlog incident postmortem worker pool
+    synopsis: Worker pool exhaustion caused queue backlog; fix shipped same day.
+  - id: note/structured-log-fields
+    title: Structured log field nomenclature
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - observability
+    keywords: log field severity timestamp
+    synopsis: Lowercase snake_case keys remain canonical across all module logs.

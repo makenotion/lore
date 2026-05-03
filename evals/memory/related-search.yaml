@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Related-memory surface — active search-relevance task seeds memory.
+memories:
+  - id: decision/search-rrf-merge
+    title: Search ranks via RRF merge across contains and semantic
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+    keywords: search rrf merge contains semantic relevance
+    synopsis: Reciprocal rank fusion merges contains and semantic branches.
+  - id: note/yaml-snapshot-hygiene
+    title: YAML snapshot hygiene
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: yaml snapshot prune orphan
+    synopsis: Periodically prune orphan YAML snapshots from removed modules.
+tasks:
+  - id: task/active-search-tuning
+    subject: Search relevance tuning follow-up
+    entity: search relevance

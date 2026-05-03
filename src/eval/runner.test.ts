@@ -19,10 +19,10 @@ describe("runEvalSuite", () => {
 
     expect(writtenPath).toBe(outPath)
     expect(artifact.summary).toMatchObject({
-      tasks: 3,
+      tasks: 21,
       trials: 1,
-      totalResults: 13,
-      passedResults: 13,
+      totalResults: 67,
+      passedResults: 67,
       failedResults: 0,
     })
     expect(artifact.summary.scenarios).toEqual([
@@ -34,7 +34,12 @@ describe("runEvalSuite", () => {
     ])
     expect(artifact.runner).toMatchObject({
       mode: "retrieval",
-      surface: "wake-up.taskMemories",
+      surfaces: [
+        "wake-up.memories",
+        "wake-up.relatedMemories",
+        "wake-up.staleConfidence",
+        "wake-up.taskMemories",
+      ],
       requestedTrials: 1,
       executedTrials: 1,
     })
@@ -240,6 +245,145 @@ tasks:
     ).toMatchObject({
       success: false,
       unexpectedMemoriesSurfaced: ["decision/auth-jwt-superseded"],
+    })
+  })
+
+  it("extracts surfaced ids from the wake-up.memories recents section", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/recent-architecture
+    title: Architecture decision in flight
+    synopsis: Authoritative recent decision.
+    keywords: architecture decision
+`,
+      },
+      suite: `version: 1
+name: memories-suite
+runner: retrieval
+tasks:
+  - id: surfaces-recent-decision
+    prompt: Catch up on recent architectural choices.
+    surface: wake-up.memories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/recent-architecture
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.memories"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/recent-architecture"],
+      retrieval: { surface: "wake-up.memories" },
+    })
+  })
+
+  it("extracts surfaced ids from the wake-up.relatedMemories surface", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/payments-retry-policy
+    title: Payments retry policy decision
+    synopsis: How to retry payment intent failures.
+    keywords: payments retry policy decision
+tasks:
+  - id: task/active-payments-followup
+    subject: Payments retry policy follow-up
+    entity: payments retry
+`,
+      },
+      suite: `version: 1
+name: related-suite
+runner: retrieval
+tasks:
+  - id: surfaces-related-memory-from-active-task
+    prompt: |
+      Pick up where the team left off on payments work.
+    surface: wake-up.relatedMemories
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/payments-retry-policy
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.relatedMemories"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/payments-retry-policy"],
+      retrieval: { surface: "wake-up.relatedMemories" },
+    })
+  })
+
+  it("extracts surfaced ids from the wake-up.staleConfidence surface", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/legacy-cache-eviction
+    title: Legacy cache eviction decision
+    synopsis: Marked for triage in stale-confidence.
+    isStaleConfidence: true
+  - id: note/coexisting-fresh-row
+    title: Fresh row that should not surface
+    synopsis: Not flagged for stale-confidence.
+`,
+      },
+      suite: `version: 1
+name: stale-confidence-suite
+runner: retrieval
+tasks:
+  - id: surfaces-flagged-stale-confidence-row
+    prompt: Show rows whose confidence has gone stale.
+    surface: wake-up.staleConfidence
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/legacy-cache-eviction
+        shouldNotSurface:
+          - note/coexisting-fresh-row
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.runner.surfaces).toEqual(["wake-up.staleConfidence"])
+    expect(
+      artifact.results.find((result) => result.scenario === "helpful-memory")
+    ).toMatchObject({
+      success: true,
+      surfacedMemoryIds: ["decision/legacy-cache-eviction"],
+      retrieval: { surface: "wake-up.staleConfidence" },
     })
   })
 })

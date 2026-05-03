@@ -42,6 +42,7 @@ runner: retrieval
 tasks:
   - id: respects-governing-auth-decision
     prompt: Add the requested feature while following the auth decision.
+    surface: wake-up.taskMemories  # default; omit for taskMemories
     memoryScenarios:
       no-lore: ../memory/no-lore.yaml
       empty-lore: ../memory/empty.yaml
@@ -52,6 +53,19 @@ tasks:
         shouldSurface:
           - decision/auth-model
 ```
+
+### Wake-up surfaces
+
+Each task targets one wake-up surface via the optional `surface` field. The
+runner zeroes out other section limits when running the task so the eval
+exercises only the surface under test.
+
+| Surface | Driver |
+| --- | --- |
+| `wake-up.taskMemories` (default) | The task's `prompt` becomes `userQuery`; relevance search ranks fixture memories. |
+| `wake-up.memories` | Recents — fixture `memories` array order is the recency order. |
+| `wake-up.relatedMemories` | Active tasks in the fixture's top-level `tasks: [...]` block seed entity-based search. The `entity` field on each task drives the seed query. |
+| `wake-up.staleConfidence` | Fixture memories with `isStaleConfidence: true` populate the surface. |
 
 Every task must include the `no-lore`, `empty-lore`, and `helpful-memory`
 ablations. Additional scenarios such as `noisy-memory` and `stale-memory` are

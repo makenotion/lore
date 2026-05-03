@@ -1,7 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, parse, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
-import { loadWakeUpData, type WakeUpServices } from "../core/wakeup.js"
+import {
+  loadWakeUpData,
+  type WakeUpData,
+  type WakeUpOptions,
+  type WakeUpServices,
+} from "../core/wakeup.js"
 import type {
   DecisionSummary,
   Fact,
@@ -10,12 +15,14 @@ import type {
   Memory,
   MemorySource,
   TaskSummary,
+  TaskState,
 } from "../types.js"
 import {
   loadEvalSuite,
   type EvalRunner,
   type EvalFixtureMemory,
   type EvalMemoryScenario,
+  type EvalSurface,
   type EvalTask,
   type LoadedEvalSuite,
 } from "./schema.js"
@@ -33,7 +40,13 @@ export interface EvalRunArtifact {
   startedAt: string
   runner: {
     mode: "retrieval"
-    surface: "wake-up.taskMemories"
+    /**
+     * Distinct retrieval surfaces exercised across the run, sorted. The
+     * pre-multi-surface artifacts pinned this to the literal
+     * `"wake-up.taskMemories"`; consumers that need to detect the legacy
+     * shape should compare against the array's length and contents.
+     */
+    surfaces: EvalSurface[]
     requestedTrials: number
     executedTrials: number
   }
@@ -51,7 +64,7 @@ export interface EvalTaskResult {
   missingExpectedMemories: string[]
   unexpectedMemoriesSurfaced: string[]
   retrieval: {
-    surface: "wake-up.taskMemories"
+    surface: EvalSurface
     limit: number
     recall: number | null
     precision: number | null
@@ -110,8 +123,10 @@ export async function runEvalSuite(
   const startedAt = (options.now ?? new Date()).toISOString()
   const results: EvalTaskResult[] = []
   const scenarioIds = new Set<string>()
+  const surfacesExercised = new Set<EvalSurface>()
 
   for (const task of loaded.suite.tasks) {
+    surfacesExercised.add(task.surface)
     const scenarios = await loadTaskScenarios(loaded, task)
     for (const scenario of scenarios) {
       scenarioIds.add(scenario.id)
@@ -127,7 +142,7 @@ export async function runEvalSuite(
     startedAt,
     runner: {
       mode: "retrieval",
-      surface: "wake-up.taskMemories",
+      surfaces: Array.from(surfacesExercised).sort(),
       requestedTrials,
       executedTrials,
     },
@@ -167,6 +182,66 @@ async function loadTaskScenarios(
   return scenarios
 }
 
+interface SurfaceConfig {
+  /**
+   * Build the WakeUpOptions overlay that drives `loadWakeUpData` toward
+   * surfacing rows in the named section. Every surface zeroes out the
+   * other section limits so the runner exercises only the surface under
+   * test. The user prompt is supplied separately so taskMemories can
+   * thread it into `userQuery`.
+   */
+  configureOptions: (limit: number, prompt: string) => Partial<WakeUpOptions>
+  /** Extract the section's surfaced memory ids from the loadWakeUpData result. */
+  extract: (data: WakeUpData) => string[]
+}
+
+const ZEROED_SECTION_OPTIONS: Partial<WakeUpOptions> = {
+  taskMemoryLimit: 0,
+  memoryLimit: 0,
+  memoryLimitWithDigest: 0,
+  relatedMemoryLimit: 0,
+  knowledgeFactLimit: 0,
+  taskLimit: 0,
+  includeDecisions: false,
+  includeStaleConfidence: false,
+}
+
+const SURFACE_REGISTRY: Record<EvalSurface, SurfaceConfig> = {
+  "wake-up.taskMemories": {
+    configureOptions: (limit, prompt) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      userQuery: prompt,
+      taskMemoryLimit: limit,
+    }),
+    extract: (data) => data.taskMemories.map((m) => m.id),
+  },
+  "wake-up.memories": {
+    configureOptions: (limit) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      memoryLimit: limit,
+      memoryLimitWithDigest: limit,
+    }),
+    extract: (data) => data.memories.map((m) => m.id),
+  },
+  "wake-up.relatedMemories": {
+    configureOptions: (limit) => ({
+      ...ZEROED_SECTION_OPTIONS,
+      // Active tasks must be > 0 for the related-memory search to seed.
+      // The fixture's tasks list drives the seed entities.
+      taskLimit: 5,
+      relatedMemoryLimit: limit,
+    }),
+    extract: (data) => data.relatedMemories.map((m) => m.id),
+  },
+  "wake-up.staleConfidence": {
+    configureOptions: () => ({
+      ...ZEROED_SECTION_OPTIONS,
+      includeStaleConfidence: true,
+    }),
+    extract: (data) => data.staleConfidence.map((m) => m.id),
+  },
+}
+
 async function runRetrievalTrial(
   task: EvalTask,
   scenario: LoadedScenario,
@@ -174,20 +249,13 @@ async function runRetrievalTrial(
   now: Date | undefined
 ): Promise<EvalTaskResult> {
   const limit = task.retrieval.limit
+  const config = SURFACE_REGISTRY[task.surface]
   const before = performance.now()
   const data = await loadWakeUpData(fixtureWakeUpServices(scenario.fixture), {
     projectId: EVAL_PROJECT_ID,
-    userQuery: task.prompt,
-    taskMemoryLimit: limit,
-    memoryLimit: 0,
-    memoryLimitWithDigest: 0,
-    relatedMemoryLimit: 0,
-    knowledgeFactLimit: 0,
-    taskLimit: 0,
-    includeDecisions: false,
-    includeStaleConfidence: false,
     includeMemoryContent: true,
     now: now?.getTime(),
+    ...config.configureOptions(limit, task.prompt),
   })
   return buildRetrievalResult({
     task,
@@ -195,7 +263,7 @@ async function runRetrievalTrial(
     trial,
     limit,
     elapsedMs: roundMetric(performance.now() - before),
-    surfacedMemoryIds: data.taskMemories.map((memory) => memory.id),
+    surfacedMemoryIds: config.extract(data),
   })
 }
 
@@ -242,7 +310,7 @@ function buildRetrievalResult(input: {
     missingExpectedMemories,
     unexpectedMemoriesSurfaced,
     retrieval: {
-      surface: "wake-up.taskMemories",
+      surface: input.task.surface,
       limit: input.limit,
       recall,
       precision,
@@ -254,18 +322,28 @@ function buildRetrievalResult(input: {
 }
 
 function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
-  const memories = scenario.memories.map(fixtureMemoryToMemory)
+  const memories = scenario.memories.map((memory, index) =>
+    fixtureMemoryToMemory(memory, index)
+  )
+  const memoriesById = new Map(memories.map((memory) => [memory.id, memory]))
+  const staleConfidenceMemories = scenario.memories
+    .filter((memory) => memory.isStaleConfidence)
+    .map((memory) => memoriesById.get(memory.id))
+    .filter((memory): memory is Memory => memory !== undefined)
+  const tasks = scenario.tasks.map((task) => fixtureTaskToSummary(task))
   return {
     memories: {
       list: async (opts) => {
         const filtered = opts.source
           ? memories.filter((memory) => memory.source === opts.source)
           : memories
-        return { items: filtered.slice(0, opts.limit) }
+        const limit = opts.limit ?? Number.MAX_SAFE_INTEGER
+        return { items: filtered.slice(0, limit) }
       },
       search: async (input) =>
         searchFixtureMemories(input.query, memories).slice(0, input.limit),
-      queryStaleConfidence: async () => [],
+      queryStaleConfidence: async (opts) =>
+        staleConfidenceMemories.slice(0, opts.limit),
     },
     facts: {
       listRecent: async () => ({ items: [] as Fact[], hasMore: false }),
@@ -279,10 +357,50 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
     },
     tasks: {
       list: async (_opts?: ListTasksOpts) => ({
-        items: [] as TaskSummary[],
+        items: tasks,
         nextCursor: undefined,
       }),
     },
+  }
+}
+
+function fixtureTaskToSummary(
+  task: EvalMemoryScenario["tasks"][number]
+): TaskSummary {
+  const createdAt = new Date(Date.UTC(2026, 0, 1)).toISOString()
+  return {
+    id: task.id,
+    title: task.subject,
+    projectIds: [EVAL_PROJECT_ID],
+    topicId: null,
+    source: "manual" satisfies MemorySource,
+    kind: "task",
+    status: "informational",
+    confidence: "certain",
+    confidenceScore: null,
+    reviewBy: null,
+    doneAt: null,
+    decidedAt: null,
+    lastReferencedAt: null,
+    supersedesIds: [],
+    affectsIds: [],
+    alternatives: "",
+    consequences: "",
+    author: "",
+    agent: "",
+    tags: [],
+    keywords: "",
+    synopsis: "",
+    session: "",
+    taskState: "open" satisfies TaskState,
+    blockedBy: "",
+    entity: task.entity,
+    topicKey: "",
+    revisionCount: 1,
+    comparedWith: [],
+    compareNotes: "",
+    createdAt,
+    updatedAt: createdAt,
   }
 }
 

@@ -1,0 +1,26 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Related-memory surface — active payments task seeds payments memory.
+memories:
+  - id: decision/payments-retry-policy
+    title: Payments retry policy decision
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - architecture
+    keywords: payments retry policy idempotency
+    synopsis: Payment intent retries follow exponential backoff with idempotency keys.
+  - id: note/dashboard-color-palette
+    title: Dashboard color palette tokens
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: palette swatch token shade
+    synopsis: Standard palette tokens for chart series.
+tasks:
+  - id: task/active-payments-followup
+    subject: Payments retry policy follow-up
+    entity: payments retry

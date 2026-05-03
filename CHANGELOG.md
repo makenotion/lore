@@ -30,6 +30,15 @@ log is the canonical source for those.
   stale-memory fixtures. `stale-memory` was already accepted by the
   schema and already counted in the `taskMemoryHarm` aggregation; this
   change adds the fixtures and the suite tasks that exercise it. (#450)
+- **Eval tasks can target any wake-up section, not just `taskMemories`.**
+  Suites now declare a `surface` field per task selecting one of
+  `wake-up.taskMemories` (default), `wake-up.memories`,
+  `wake-up.relatedMemories`, or `wake-up.staleConfidence`. The
+  `lore-core` suite expanded from 3 tasks to 21 tasks distributed across
+  those four surfaces, exercising debugging, deployment, retention,
+  recents, related-from-active-task, and stale-confidence triage
+  scenarios. Eval artifacts now expose `runner.surfaces: EvalSurface[]`
+  in place of the legacy `runner.surface` literal. (#450)
 - **Self-service Entities bootstrap for legacy vaults.** A new vault repair
   command creates the Entities database on four-database vaults and runs
   additive schema migration so Facts gains the `SubjectEntity` /

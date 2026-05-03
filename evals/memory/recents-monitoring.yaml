@@ -1,0 +1,22 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Recent monitoring decisions for the recents surface.
+memories:
+  - id: decision/monitoring-prometheus-default
+    title: Prometheus is the default metrics backend
+    kind: decision
+    status: accepted
+    confidence: certain
+    tags:
+      - observability
+    keywords: prometheus metrics monitoring backend default
+    synopsis: New services emit Prometheus metrics by default; OTLP is opt-in.
+  - id: note/yaml-snapshot-hygiene
+    title: YAML snapshot hygiene
+    kind: note
+    status: informational
+    confidence: likely
+    tags:
+      - hygiene
+    keywords: yaml snapshot prune orphan
+    synopsis: Periodically prune orphan YAML snapshots from removed modules.

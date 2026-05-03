@@ -1,0 +1,23 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: helpful-memory
+description: Stale-confidence surface — flagged onboarding memory needs triage.
+memories:
+  - id: runbook/onboarding-day-one
+    title: Day-one onboarding runbook
+    kind: runbook
+    status: informational
+    confidence: speculative
+    tags:
+      - hygiene
+    keywords: onboarding day one runbook
+    synopsis: Day-one onboarding steps; review periodically.
+    isStaleConfidence: true
+  - id: note/coexisting-fresh-row
+    title: Fresh onboarding addendum
+    kind: note
+    status: informational
+    confidence: certain
+    tags:
+      - hygiene
+    keywords: addendum recent
+    synopsis: Recent onboarding addendum; not flagged for stale-confidence.
