@@ -1,6 +1,30 @@
 import { Command } from "commander"
 import { initServices } from "../../services.js"
 import { notionPageUrl, terminalLink } from "../output.js"
+import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
+
+export interface SearchCliOptions {
+  projectName: string | undefined
+  tags: string[] | undefined
+  limit: number
+}
+
+export function parseSearchCliOptions(raw: {
+  project?: string
+  tags?: string
+  limit: string
+}): CliParseResult<SearchCliOptions> {
+  const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
+  if (!parsedLimit.ok) return parsedLimit
+  return {
+    ok: true,
+    value: {
+      projectName: raw.project,
+      tags: raw.tags?.split(",").map((t) => t.trim()),
+      limit: parsedLimit.value,
+    },
+  }
+}
 
 export const searchCommand = new Command("search")
   .description("Semantic search across memories")
@@ -10,14 +34,21 @@ export const searchCommand = new Command("search")
   .option("-n, --limit <n>", "Max results", "10")
   .action(
     async (query: string, opts: { project?: string; tags?: string; limit: string }) => {
+      const parsed = parseSearchCliOptions(opts)
+      if (!parsed.ok) {
+        console.error(`Search failed: ${parsed.message}`)
+        process.exit(1)
+        return
+      }
+
       try {
         const services = await initServices()
         let projectId: string | undefined
 
-        if (opts.project) {
-          const found = await services.projects.findByName(opts.project)
+        if (parsed.value.projectName) {
+          const found = await services.projects.findByName(parsed.value.projectName)
           if (found) projectId = found.id
-          else console.warn(`Project "${opts.project}" not found, searching vault-wide.`)
+          else console.warn(`Project "${parsed.value.projectName}" not found, searching vault-wide.`)
         } else if (services.context.project) {
           projectId = services.context.project.id
         }
@@ -25,8 +56,8 @@ export const searchCommand = new Command("search")
         const results = await services.memories.search({
           query,
           projectId,
-          tags: opts.tags?.split(",").map((t) => t.trim()),
-          limit: parseInt(opts.limit, 10),
+          tags: parsed.value.tags,
+          limit: parsed.value.limit,
         })
 
         if (results.length === 0) {

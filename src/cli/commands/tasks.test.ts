@@ -167,14 +167,20 @@ describe("parseReconcileCliOptions", () => {
     if (!result.ok) expect(result.message).toContain("between 0 and 1")
   })
 
-  it("rejects --limit with a non-numeric string", () => {
-    const result = parseReconcileCliOptions({
-      minScore: "0.5",
-      limit: "abc",
-    })
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain("--limit")
-  })
+  it.each(["abc", "", "3.7", "3abc", "1e3", "+5", "-1"])(
+    "rejects malformed --limit value %j",
+    (limit) => {
+      const result = parseReconcileCliOptions({
+        minScore: "0.5",
+        limit,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.message).toContain("--limit")
+        expect(result.message).toContain("decimal integer")
+      }
+    }
+  )
 
   it("rejects --limit below 1", () => {
     const result = parseReconcileCliOptions({
@@ -182,7 +188,7 @@ describe("parseReconcileCliOptions", () => {
       limit: "0",
     })
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain("between 1 and 100")
+    if (!result.ok) expect(result.message).toContain("positive integer")
   })
 
   it("rejects --limit above MAX_RECONCILE_LIMIT (100)", () => {
@@ -192,6 +198,15 @@ describe("parseReconcileCliOptions", () => {
     })
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.message).toContain("between 1 and 100")
+  })
+
+  it("rejects --limit beyond Number.MAX_SAFE_INTEGER", () => {
+    const result = parseReconcileCliOptions({
+      minScore: "0.5",
+      limit: "9007199254740992",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("safe integer range")
   })
 })
 

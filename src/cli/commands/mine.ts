@@ -16,6 +16,7 @@ import { MemoryCreatePartialFailureError } from "../../core/memory.js"
 import { initServices, type LoreServices } from "../../services.js"
 import { DEFAULT_NOTION_CONCURRENCY } from "../../notion/rate-limit.js"
 import type { Memory } from "../../types.js"
+import { parsePositiveDecimalInteger } from "../parse.js"
 
 const TEXT_EXTENSIONS = new Set([
   ".ts",
@@ -184,33 +185,9 @@ export function parseMineCliOptions(raw: {
 }): { ok: true; value: MineCliOptions } | { ok: false; message: string } {
   let limit = DEFAULT_MINE_LIMIT
   if (raw.limit !== undefined) {
-    // String-side digit-only check rejects:
-    //   "3.7"  → would parseInt-floor to 3
-    //   "3abc" → would parseInt-truncate to 3
-    //   "1e3"  → Number() returns 1000, Number.isInteger passes silently
-    //   "+5"   → Number() returns 5, Number.isInteger passes silently
-    //   ""     → empty, parseInt returns NaN
-    //   "  5"  → leading whitespace
-    if (!/^[0-9]+$/.test(raw.limit)) {
-      return {
-        ok: false,
-        message: `--limit must be a positive decimal integer, got "${raw.limit}"`,
-      }
-    }
-    const n = Number(raw.limit)
-    if (n < 1) {
-      return {
-        ok: false,
-        message: `--limit must be a positive integer, got ${n}`,
-      }
-    }
-    if (!Number.isSafeInteger(n)) {
-      return {
-        ok: false,
-        message: `--limit exceeds the safe integer range, got "${raw.limit}"`,
-      }
-    }
-    limit = n
+    const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
+    if (!parsedLimit.ok) return parsedLimit
+    limit = parsedLimit.value
   }
   return {
     ok: true,

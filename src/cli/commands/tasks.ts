@@ -7,6 +7,7 @@ import {
   DEFAULT_RECONCILE_MIN_SCORE,
   MAX_RECONCILE_LIMIT,
 } from "../../core/task-reconcile.js"
+import { parsePositiveDecimalInteger } from "../parse.js"
 
 /**
  * Parsed reconcile options after CLI-boundary validation. The action
@@ -55,17 +56,12 @@ export function parseReconcileCliOptions(raw: {
       message: `--min-score must be between 0 and 1, got ${minScore}`,
     }
   }
-  const limit = parseInt(raw.limit, 10)
-  if (!Number.isFinite(limit)) {
+  const parsedLimit = parsePositiveDecimalInteger("--limit", raw.limit)
+  if (!parsedLimit.ok) return parsedLimit
+  if (parsedLimit.value > MAX_RECONCILE_LIMIT) {
     return {
       ok: false,
-      message: `--limit must be a number, got "${raw.limit}"`,
-    }
-  }
-  if (limit < 1 || limit > MAX_RECONCILE_LIMIT) {
-    return {
-      ok: false,
-      message: `--limit must be between 1 and ${MAX_RECONCILE_LIMIT}, got ${limit}`,
+      message: `--limit must be between 1 and ${MAX_RECONCILE_LIMIT}, got ${parsedLimit.value}`,
     }
   }
   return {
@@ -73,7 +69,7 @@ export function parseReconcileCliOptions(raw: {
     value: {
       projectName: raw.project,
       minScore,
-      limit,
+      limit: parsedLimit.value,
     },
   }
 }
