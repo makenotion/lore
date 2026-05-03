@@ -199,7 +199,7 @@ auth:
 })
 
 describe("committed .lore.yaml", () => {
-  it("ships without live vault locators or credentials in this source repo", () => {
+  it("ships with shared vault config and without credentials", () => {
     const raw = readFileSync(new URL("../.lore.yaml", import.meta.url), "utf-8")
     const parsed = parseYaml(raw) as {
       auth?: { token?: unknown }
@@ -207,13 +207,9 @@ describe("committed .lore.yaml", () => {
     }
     const serializedConfig = JSON.stringify(parsed)
     const pageId = parsed.vault?.pageId
-    // Notion page IDs may appear as compact 32-hex strings or hyphenated UUIDs.
-    const notionPageIdPattern =
-      /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 
     expect(parsed.auth?.token).toBeUndefined()
-    expect(pageId).toEqual(expect.any(String))
-    expect(pageId).not.toMatch(notionPageIdPattern)
+    expect(pageId).toBe("343b35e6e67f81a0afa9c9801b35199f")
     expect(serializedConfig).not.toMatch(/ntn_|secret_/)
   })
 })

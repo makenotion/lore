@@ -64,6 +64,10 @@ export function migrationLockPath(scope: MigrationLockScope): string {
   return join(migrationStateDir(), `${key}.lock`)
 }
 
+function migrationLockReclaimPath(path: string): string {
+  return `${path}.reclaim`
+}
+
 function isProcessAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false
   try {
@@ -185,6 +189,24 @@ function tryCreateLockFile(path: string, ownerPid: number): MigrationLock | null
   }
 }
 
+function tryAcquireStaleReclaimGuard(path: string, ownerPid: number): MigrationLock | null {
+  const reclaimPath = migrationLockReclaimPath(path)
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = inspectExistingLock(reclaimPath)
+    if (existing.kind === "held") return null
+
+    if (existing.kind === "stale" && !removeIfSameSnapshot(reclaimPath, existing.snapshot)) {
+      continue
+    }
+
+    const lock = tryCreateLockFile(reclaimPath, ownerPid)
+    if (lock) return lock
+  }
+
+  return null
+}
+
 export function tryAcquireMigrationLock(
   scope: MigrationLockScope,
   ownerPid = process.pid
@@ -198,8 +220,25 @@ export function tryAcquireMigrationLock(
       return { acquired: false, path, ownerPid: existing.ownerPid }
     }
 
-    if (existing.kind === "stale" && !removeIfSameSnapshot(path, existing.snapshot)) {
-      continue
+    if (existing.kind === "stale") {
+      const reclaimGuard = tryAcquireStaleReclaimGuard(path, ownerPid)
+      if (!reclaimGuard) continue
+
+      try {
+        const latest = inspectExistingLock(path)
+        if (latest.kind === "held") {
+          return { acquired: false, path, ownerPid: latest.ownerPid }
+        }
+        if (latest.kind === "stale" && !removeIfSameSnapshot(path, latest.snapshot)) {
+          continue
+        }
+
+        const lock = tryCreateLockFile(path, ownerPid)
+        if (lock) return { acquired: true, lock }
+        continue
+      } finally {
+        removeIfSameContent(reclaimGuard.path, reclaimGuard.content)
+      }
     }
 
     const lock = tryCreateLockFile(path, ownerPid)
