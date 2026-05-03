@@ -409,7 +409,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
         }),
       })
 
-      expect(stderr).not.toHaveBeenCalled()
+      expect(stderr.mock.calls.length).toBe(0)
       expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
         includeCoverage: false,
       })
