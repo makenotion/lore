@@ -40,7 +40,7 @@ export const hooksCommand = new Command("hooks").description(
 
 hooksCommand
   .command("wakeup")
-  .description("Wake-up hook — fires on UserPromptSubmit / SessionStart")
+  .description("Wake-up hook — fires on UserPromptSubmit")
   .action(async () => {
     const stdin = await readStdinToString()
     const { wakeup } = await import("../../hooks/helpers.js")

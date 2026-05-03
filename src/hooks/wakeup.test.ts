@@ -10,6 +10,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const { findConfigFileMock, loadConfigMock, initServicesMock, loadWakeUpDataMock } =
   vi.hoisted(() => ({
@@ -135,13 +138,23 @@ function setupMocks(opts: {
 
 describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   let stdout: ReturnType<typeof vi.spyOn>
+  let stateDir: string
+  const savedStateDir = process.env["LORE_HOOK_STATE_DIR"]
 
   beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), "lore-wakeup-test-"))
+    process.env["LORE_HOOK_STATE_DIR"] = stateDir
     stdout = vi.spyOn(console, "log").mockImplementation(() => {})
   })
 
   afterEach(() => {
     stdout.mockRestore()
+    rmSync(stateDir, { recursive: true, force: true })
+    if (savedStateDir === undefined) {
+      delete process.env["LORE_HOOK_STATE_DIR"]
+    } else {
+      process.env["LORE_HOOK_STATE_DIR"] = savedStateDir
+    }
     vi.clearAllMocks()
   })
 
@@ -335,5 +348,104 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     expect(firstOverdue).toBeGreaterThan(-1)
     expect(stale).toBeGreaterThan(firstOverdue)
     expect(active).toBeGreaterThan(stale)
+  })
+
+  it("uses Codex UserPromptSubmit prompt as the ranked wake-up query", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-ranked",
+        turn_id: "turn-1",
+        prompt: "Make Codex wake-up query-aware",
+        cwd: "/tmp",
+      }),
+    })
+
+    expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
+      userQuery: "Make Codex wake-up query-aware",
+      memoryLimit: 3,
+      relatedMemoryLimit: 2,
+      knowledgeFactLimit: 10,
+      taskMemoryLimit: 3,
+    })
+  })
+
+  it("debounces repeated Codex UserPromptSubmit wake-up for the same session", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    const event = JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "codex-debounce",
+      turn_id: "turn-1",
+      prompt: "Make Codex wake-up query-aware",
+      cwd: "/tmp",
+    })
+
+    await wakeup({ event })
+    await wakeup({ event })
+
+    expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    expect(stdout).toHaveBeenCalledTimes(1)
+  })
+
+  it("debounces later slash-command Codex prompts after ranked wake-up has run", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-slash-debounce",
+        turn_id: "turn-1",
+        prompt: "Make Codex wake-up query-aware",
+        cwd: "/tmp",
+      }),
+    })
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-slash-debounce",
+        turn_id: "turn-2",
+        prompt: "/clear",
+        cwd: "/tmp",
+      }),
+    })
+
+    expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    expect(stdout).toHaveBeenCalledTimes(1)
   })
 })

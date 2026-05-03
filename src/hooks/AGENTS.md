@@ -443,21 +443,32 @@ actual question.
 | Hook                           | Trigger                  | User query?          |
 | ------------------------------ | ------------------------ | -------------------- |
 | Claude Code `UserPromptSubmit` | First user message       | Yes (`event.prompt`) |
-| Codex `SessionStart`           | Session startup / resume | No (fallback path)   |
+| Codex `UserPromptSubmit`       | First user message       | Yes (`event.prompt`) |
+| Legacy Codex `SessionStart`    | Session startup / resume | No (fallback path)   |
 
-The `lore hooks wakeup` dispatcher reads the JSON event off stdin (Claude Code)
-and calls the helper directly with `wakeup({ event: stdin })`. The legacy
-`hooks/wakeup.sh` wrapper uses the env-var bridge, forwarding stdin as
-`LORE_WAKEUP_EVENT` before invoking the helper. Codex's `SessionStart` event
-has no user message yet — stdin is typically empty and the helper's parser
-returns `undefined`, dropping wake-up to the unranked output that matches the
-pre-P3-05 shape exactly.
+The `lore hooks wakeup` dispatcher reads the JSON event off stdin and calls the
+helper directly with `wakeup({ event: stdin })`. The legacy `hooks/wakeup.sh`
+wrapper uses the env-var bridge, forwarding stdin as `LORE_WAKEUP_EVENT` before
+invoking the helper. Current Codex installs use `UserPromptSubmit`, whose
+payload includes `prompt`; older Codex installs wired wake-up to `SessionStart`,
+which has no user message yet. A `SessionStart` payload still returns
+`undefined`, dropping wake-up to the unranked output that matches the pre-P3-05
+shape exactly.
 
 `parseUserQueryFromEvent` (in `helpers.ts`) is the single point that
 extracts the prompt; pin its tests when changing the parsing contract.
 A malformed event, missing `prompt` field, or non-string `prompt` all
 degrade to the same fallback path — wake-up never crashes for an
 input-shape regression.
+
+Codex does not expose Claude Code's `runOnce` flag on `UserPromptSubmit`, so
+`wakeup()` owns a per-session filesystem marker
+(`$TMPDIR/lore-hook-state/<session>.wakeup`). The first prompt-bearing event
+runs the ranked path and writes the marker; later prompts in the same session
+return before Notion initialization. After `/clear` or a topical pivot inside
+the same Codex session, agents should explicitly rerun the MCP surface with
+`lore-context action='wake-up' userQuery='<new task prompt>'` to get fresh
+ranked context.
 
 ### Ranked output sections
 
@@ -489,6 +500,7 @@ line in `src/mcp/AGENTS.md`. Two variants:
 ```
 [lore] wakeup: ranked=true queryLen=42 memory=3 related=2 knowledge=10 taskMemories=3
 [lore] wakeup: ranked=false reason=no-user-query
+[lore] wakeup: ranked=false reason=already-ranked-for-session
 ```
 
 The ranked variant reports the per-section caps applied so an operator
@@ -496,9 +508,8 @@ triaging "why is wake-up surfacing only 3 memories?" can confirm the
 ranked path fired without chasing the constant. The fallback variant
 distinguishes the event-forwarder-not-forwarding case from a ranked-but-
 surprising-hits case — directing operators to fix the forwarder vs.
-inspect the relevance index. Gated behind `LORE_DEBUG=1` because Codex
-`SessionStart` _always_ hits the fallback path, and an unconditional
-log would flood stderr on every Codex session.
+inspect the relevance index. The already-ranked variant confirms Codex's
+per-session `UserPromptSubmit` debounce fired before any Notion calls.
 
 ## Concurrency guard
 

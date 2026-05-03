@@ -81,7 +81,7 @@ path is also what CI typically uses, via `secrets.GITHUB_TOKEN`.
      (auto-detected via `.pnp.cjs`).
    - `.codex/config.toml` with the Lore MCP server and
      `features.codex_hooks = true`, plus `.codex/hooks.json` entries for
-     `SessionStart` and `Stop` using `yarn run -T lore hooks <event>` (PnP)
+     `UserPromptSubmit` and `Stop` using `yarn run -T lore hooks <event>` (PnP)
      or `lore hooks <event>` (npm).
    - Project-scoped `.cursor/mcp.json` with the same MCP command / args shape
      as Claude Code. Use `--cursor-global` only when you want per-machine

@@ -2129,7 +2129,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         action: z
           .enum(["save", "update", "archive", "expand", "suggest-topic-key", "compare"])
           .describe(
-            "Operation: save | update | archive | expand | suggest-topic-key | compare. See description for details."
+            "Operation: save | update | archive | expand | suggest-topic-key | compare.",
           ),
         // save
         title: z

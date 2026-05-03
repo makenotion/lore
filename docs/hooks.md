@@ -23,10 +23,20 @@ relevance-matched against active task entities. Yarn PnP installs invoke it as
 memory titles and bodies, so the context behind each outstanding task comes in
 alongside the task itself.
 
-Claude Code injects wake-up context on `UserPromptSubmit`; Codex injects it on
-`SessionStart`. Set `hooks.wakeUp: false` in `.lore.yaml` to skip this
-injection for both assistants. If `.lore.yaml` fails to parse, the hook falls
-back to the default (on) and writes a `[lore]` warning to stderr.
+Claude Code and current Codex installs inject wake-up context on
+`UserPromptSubmit`, which lets Lore rank memories against the user's first real
+prompt. Legacy Codex installs used `SessionStart`; that event has no prompt, so
+it still falls back to unranked output until the project reruns
+`lore install --client codex`.
+
+Codex does not provide Claude Code's `runOnce` flag for `UserPromptSubmit`, so
+Lore keeps its own per-session debounce marker and skips later prompt events
+before initializing Notion. After `/clear` or a topic pivot inside the same
+Codex session, call the MCP surface explicitly with
+`lore-context action='wake-up' userQuery='<new task prompt>'` to refresh ranked
+context. Set `hooks.wakeUp: false` in `.lore.yaml` to skip automatic injection
+for supported assistants. If `.lore.yaml` fails to parse, the hook falls back to
+the default (on) and writes a `[lore]` warning to stderr.
 
 ## Auth Forwarding
 

@@ -1,12 +1,11 @@
 {
   "hooks": {
-    "SessionStart": [
+    "UserPromptSubmit": [
       {
-        "matcher": "startup|resume",
         "hooks": [
           {
             "type": "command",
-            "command": "LORE_AGENT_NAME=Codex \"${HOME}/.lore/hooks/wakeup.sh\"",
+            "command": "LORE_AGENT_NAME=Codex lore hooks wakeup",
             "statusMessage": "Loading Lore context"
           }
         ]
@@ -17,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "LORE_AGENT_NAME=Codex \"${HOME}/.lore/hooks/autosave.sh\"",
+            "command": "LORE_AGENT_NAME=Codex lore hooks autosave",
             "timeout": 30,
             "statusMessage": "Saving Lore context"
           }

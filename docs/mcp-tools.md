@@ -14,6 +14,10 @@ names and task aliases were removed in the 0.6.0 deprecation purge; see
 | `wake-up` | Load latest digest, ranked/recent memories, tasks, active facts, decisions needing attention, and memories related to active tasks |
 | `digest`  | Gather raw activity data for synthesis into a `source: "digest"` memory                                                            |
 
+Pass `userQuery` to `wake-up` when rerunning context after `/clear`, a resume,
+or a topic pivot; the response adds a **For Your Current Task** section ranked
+against that prompt.
+
 ## `lore-memory` — memory mutations + batch hydration
 
 | Action              | Description                                                   |

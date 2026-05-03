@@ -715,9 +715,8 @@ export function buildLegacyCodexHookCommand(scriptPath: string): string {
  * called with an arbitrary string — a typo'd event name would silently
  * produce a hook command that the helper rejects at runtime, and the
  * detector wouldn't recognize it as Lore-owned. The four values cover
- * the entire deploy surface today: `wakeup` (UserPromptSubmit /
- * SessionStart), `autosave` (Stop), and `session-end` (compatibility
- * shim).
+ * the entire deploy surface today: `wakeup` (UserPromptSubmit), `autosave`
+ * (Stop), and `session-end` (compatibility shim).
  */
 export type HookEventName = "wakeup" | "autosave" | "session-end"
 
@@ -2605,7 +2604,7 @@ export function printBackgroundAgentSummary(
   }
 }
 
-async function runCodexInstall(
+export async function runCodexInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
 ): Promise<void> {
@@ -2648,7 +2647,7 @@ async function runCodexInstall(
         ? "current"
         : "stale"
   const wakeupStatus = detectCodexHook(
-    codexHooks["SessionStart"],
+    codexHooks["UserPromptSubmit"],
     "wakeup.sh",
     legacyWakeupCommand,
     binWakeupCommand,
@@ -2659,6 +2658,13 @@ async function runCodexInstall(
     legacyAutosaveCommand,
     binAutosaveCommand,
   )
+  const hasLegacySessionStartWakeup =
+    detectCodexHook(
+      codexHooks["SessionStart"],
+      "wakeup.sh",
+      legacyWakeupCommand,
+      binWakeupCommand,
+    ) !== "missing"
 
   console.log("Codex:")
   console.log(`  MCP server:        ${statusLabel(mcpStatus, context.legacyPaths)}`)
@@ -2675,6 +2681,9 @@ async function runCodexInstall(
     `  Wakeup hook:       ${statusLabel(wakeupStatus, context.legacyPaths)}${wakeupStatusSuffix(context.wakeUpConfig)}`,
   )
   console.log(`  Autosave hook:     ${statusLabel(autosaveStatus, context.legacyPaths)}`)
+  if (hasLegacySessionStartWakeup) {
+    console.log("  Legacy hook:       SessionStart/wakeup -> will migrate")
+  }
 
   // Issue #194: Stop hooks shell out to a background agent CLI for
   // autosave / digest synthesis. Default is `claude -p` for Claude Code
@@ -2692,7 +2701,8 @@ async function runCodexInstall(
     isEffectivelyCurrent(mcpStatus, context.legacyPaths) &&
     hooksFeatureStatus === "current" &&
     isEffectivelyCurrent(wakeupStatus, context.legacyPaths) &&
-    isEffectivelyCurrent(autosaveStatus, context.legacyPaths)
+    isEffectivelyCurrent(autosaveStatus, context.legacyPaths) &&
+    !hasLegacySessionStartWakeup
 
   if (allCurrent) {
     console.log("  Everything is already installed.")
@@ -2718,11 +2728,10 @@ async function runCodexInstall(
   nextHookEvents = stripCodexScriptFromAllEvents(nextHookEvents, "autosave.sh")
   nextHookEvents = stripCodexBinDispatchHook(nextHookEvents, "wakeup")
   nextHookEvents = stripCodexBinDispatchHook(nextHookEvents, "autosave")
-  nextHookEvents["SessionStart"] = mergeCodexHookEntries(
-    nextHookEvents["SessionStart"],
+  nextHookEvents["UserPromptSubmit"] = mergeCodexHookEntries(
+    nextHookEvents["UserPromptSubmit"],
     desiredWakeupCommand,
     {
-      matcher: "startup|resume",
       statusMessage: "Loading Lore context",
     },
   )

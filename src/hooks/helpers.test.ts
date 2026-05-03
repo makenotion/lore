@@ -114,8 +114,10 @@ import {
   handleAutoDigest,
   handleStop,
   handleSessionEnd,
+  parseWakeupEventMetadata,
   parseUserQueryFromEvent,
   statePath,
+  wakeupStatePath,
 } from "./helpers.js"
 import { HOSTILE_SESSION_IDS } from "./path-injection-fixtures.js"
 import {
@@ -1074,6 +1076,17 @@ describe("parseUserQueryFromEvent", () => {
     expect(parseUserQueryFromEvent(raw)).toBe("How do I fix the auth bug?")
   })
 
+  it("extracts the prompt from Codex UserPromptSubmit events", () => {
+    const raw = JSON.stringify({
+      session_id: "codex-session",
+      hook_event_name: "UserPromptSubmit",
+      turn_id: "turn-1",
+      prompt: "Make Codex wake-up query-aware",
+      cwd: "/tmp",
+    })
+    expect(parseUserQueryFromEvent(raw)).toBe("Make Codex wake-up query-aware")
+  })
+
   it("trims surrounding whitespace from the prompt", () => {
     const raw = JSON.stringify({ prompt: "  fix auth bug  \n" })
     expect(parseUserQueryFromEvent(raw)).toBe("fix auth bug")
@@ -1211,6 +1224,28 @@ describe("parseUserQueryFromEvent", () => {
   })
 })
 
+describe("parseWakeupEventMetadata", () => {
+  it("extracts Codex debounce metadata without treating source as a query", () => {
+    const raw = JSON.stringify({
+      session_id: "codex-session",
+      hook_event_name: "UserPromptSubmit",
+      source: "startup",
+      prompt: "fix auth",
+    })
+    expect(parseWakeupEventMetadata(raw)).toEqual({
+      hookEventName: "UserPromptSubmit",
+      sessionId: "codex-session",
+      source: "startup",
+    })
+  })
+
+  it("returns an empty object for malformed or non-object payloads", () => {
+    expect(parseWakeupEventMetadata("not-json")).toEqual({})
+    expect(parseWakeupEventMetadata("[1,2,3]")).toEqual({})
+    expect(parseWakeupEventMetadata(undefined)).toEqual({})
+  })
+})
+
 describe("deriveAgentName", () => {
   // Snapshot env so the per-test mutations don't leak across tests in this
   // file (or into the suites above, which assume a clean fixture).
@@ -1342,5 +1377,16 @@ describe("statePath path injection resistance", () => {
     // of the common case.
     const uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
     expect(statePath(uuid)).toBe(`${getStateDir()}/${uuid}.count`)
+  })
+
+  it("applies the same sanitization to wakeup debounce markers", () => {
+    const hostileId = "../escape/me"
+    const stateDir = getStateDir()
+    const path = wakeupStatePath(hostileId)
+    expect(path.startsWith(`${stateDir}/`)).toBe(true)
+    expect(path).toMatch(/\.wakeup$/)
+    const segment = path.slice(stateDir.length + 1)
+    expect(segment).not.toContain("/")
+    expect(segment).not.toContain("\\")
   })
 })

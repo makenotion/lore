@@ -195,6 +195,9 @@ A minimal starter:
   that should not be shared.
 - At session start, call `lore-context` with `action: "wake-up"` to load recent
   project context when the tool is available.
+- In Codex, automatic wake-up ranks against the first prompt. After `/clear` or
+  a major topic pivot, call `lore-context` again with `action: "wake-up"` and
+  `userQuery` set to the new task prompt.
 - Save non-obvious discoveries with `lore-memory` and `action: "save"`.
 - Record architectural decisions with `lore-decision` and `action: "create"`.
 - Record durable component relationships with `lore-fact` and
@@ -304,7 +307,7 @@ Lore installs hook commands for supported AI coding assistants:
 - **Auto-save** (`lore hooks autosave`) runs on assistant `Stop` and saves
   the session after enough user messages.
 - **Wake-up** (`lore hooks wakeup`) loads the latest digest, recent memories,
-  active facts, and task-matched context at the start of a session.
+  active facts, and task-matched context before the first response.
 
 Claude Code and Codex installs wire hooks automatically using bin dispatch
 (`lore hooks ...`, or `yarn run -T lore hooks ...` under Yarn PnP). The

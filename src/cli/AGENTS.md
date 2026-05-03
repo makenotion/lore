@@ -625,10 +625,10 @@ fail at agent startup); on missing build output the command exits 1 with
 the same `Run 'npm run build' first.` message the install paths use.
 
 Hooks are not part of this surface. Stop / UserPromptSubmit hooks are
-Claude-Code-shaped today; operators of other hosts get the MCP tool
-surface only. `--print-config` does not pretend feature-equivalence
-across hosts — see the README "Other MCP hosts" subsection for the
-operator-facing framing.
+installed only by supported host-specific installers; operators of other hosts
+get the MCP tool surface only. `--print-config` does not pretend
+feature-equivalence across hosts — see the README "Other MCP hosts" subsection
+for the operator-facing framing.
 
 ### Agent identity via LORE_AGENT_NAME
 

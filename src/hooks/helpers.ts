@@ -64,6 +64,7 @@ interface HookEvent {
   transcript_path?: string
   cwd?: string
   hook_event_name?: string
+  source?: string
   last_assistant_message?: string
   stop_hook_active?: boolean
 }
@@ -151,6 +152,15 @@ export function statePath(sessionId: string): string {
   return join(getStateDir(), `${safeFilenameSegment(sessionId)}.count`)
 }
 
+/**
+ * Per-session marker for prompt-bearing wake-up hooks. Codex's
+ * `UserPromptSubmit` currently lacks Claude Code's `runOnce`, so the helper
+ * owns the debounce that keeps ranked wake-up to the first real prompt.
+ */
+export function wakeupStatePath(sessionId: string): string {
+  return join(getStateDir(), `${safeFilenameSegment(sessionId)}.wakeup`)
+}
+
 async function readSaveCount(sessionId: string | undefined): Promise<number> {
   if (!sessionId) return 0
   try {
@@ -168,6 +178,22 @@ async function writeSaveCount(
   if (!sessionId) return
   await ensureStateDir()
   await writeFile(statePath(sessionId), count.toString())
+}
+
+async function hasWakeupRun(sessionId: string | undefined): Promise<boolean> {
+  if (!sessionId) return false
+  try {
+    await readFile(wakeupStatePath(sessionId), "utf-8")
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function markWakeupRun(sessionId: string | undefined): Promise<void> {
+  if (!sessionId) return
+  await ensureStateDir()
+  await writeFile(wakeupStatePath(sessionId), "1")
 }
 
 // ---------------------------------------------------------------------------
@@ -563,21 +589,18 @@ export async function handleStop(
 }
 
 // ---------------------------------------------------------------------------
-// Wakeup — load context at session start (Codex) or first user prompt
-// (Claude Code, P3-05)
+// Wakeup — load context on the first user prompt (Claude Code and Codex)
 // ---------------------------------------------------------------------------
 //
 // Claude Code registration sets `runOnce: true` on the `UserPromptSubmit`
-// hook (see `mergeClaudeHookEntries` in `cli/commands/install.ts`). Without
-// that flag wake-up would fire on every user message — re-querying Notion
-// for the same digest, recents, and (now) task-memory ranking on every
-// turn. The current per-session-once contract is what keeps this hook
-// affordable on the hot path; if Claude Code's hook engine ever drops
-// `runOnce` semantics, wake-up needs a per-session debounce inside the
-// helper before that lands.
+// hook (see `mergeClaudeHookEntries` in `cli/commands/install.ts`). Codex's
+// `UserPromptSubmit` hook exposes the prompt too, but has no equivalent
+// `runOnce`, so the helper maintains a per-session marker before it touches
+// Notion. That keeps ranked wake-up as a first-prompt path instead of a
+// per-turn query.
 
 /**
- * Parse the JSON payload Claude Code's `UserPromptSubmit` hook delivers
+ * Parse the JSON payload host `UserPromptSubmit` hooks deliver
  * on stdin (forwarded by `wakeup.sh` via `LORE_WAKEUP_EVENT`). Returns
  * the user's prompt text when present, `undefined` otherwise. The
  * `undefined` return is the fallback signal — wake-up degrades to the
@@ -585,13 +608,13 @@ export async function handleStop(
  *
  * Several callers produce `undefined` and they all drop into the same
  * fallback path:
- * - Env var unset (Codex `SessionStart`; resumed Claude Code sessions
+ * - Env var unset (legacy Codex `SessionStart`; resumed sessions
  *   that fire `SessionStart` rather than `UserPromptSubmit`; legacy
  *   `wakeup.sh` that didn't forward stdin).
  * - Env var set but not JSON (a misconfigured hook script).
  * - Env var set with valid JSON but no `prompt` field, or a non-string
- *   `prompt` (a future Claude Code event shape we haven't seen yet —
- *   the field name has been stable since the hooks API shipped, but
+ *   `prompt` (a future host event shape we haven't seen yet — the field
+ *   name has been stable in Claude Code and Codex hook payloads, but
  *   pinning here means a rename degrades silently rather than crashes).
  * - Prompt parses cleanly but is a slash command (`/clear`,
  *   `/compact`, etc.). These would seed the relevance ranker with
@@ -601,11 +624,11 @@ export async function handleStop(
  * They're not distinguished because callers can't act on the difference
  * — the only useful signal is "did we get a usable prompt or not."
  *
- * The Claude Code hook payload schema (incl. the `prompt` field on
- * `UserPromptSubmit`) is documented at
+ * Hook payload schemas (incl. the `prompt` field on `UserPromptSubmit`) are
+ * documented at
  * https://docs.claude.com/en/docs/claude-code/hooks#userpromptsubmit;
- * if the field name changes, this parser is the one place that needs
- * updating.
+ * https://developers.openai.com/codex/hooks#userpromptsubmit; if the field
+ * name changes, this parser is the one place that needs updating.
  *
  * Exported for unit-test coverage; not part of the module's public
  * surface for production callers.
@@ -647,7 +670,55 @@ export function parseUserQueryFromEvent(raw: string | undefined): string | undef
   return trimmed
 }
 
+export function parseWakeupEventMetadata(raw: string | undefined): {
+  hookEventName?: string
+  sessionId?: string
+  source?: string
+} {
+  if (!raw || raw.trim().length === 0) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return {}
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return {}
+  }
+  const event = parsed as {
+    hook_event_name?: unknown
+    session_id?: unknown
+    source?: unknown
+  }
+  return {
+    hookEventName:
+      typeof event.hook_event_name === "string" ? event.hook_event_name : undefined,
+    sessionId:
+      typeof event.session_id === "string" && event.session_id.trim().length > 0
+        ? event.session_id
+        : undefined,
+    source: typeof event.source === "string" ? event.source : undefined,
+  }
+}
+
 export async function wakeup(opts: { event?: string } = {}): Promise<void> {
+  const rawEvent = opts.event ?? process.env["LORE_WAKEUP_EVENT"]
+  const eventMeta = parseWakeupEventMetadata(rawEvent)
+  const debug = process.env["LORE_DEBUG"] === "1"
+  const userQuery = parseUserQueryFromEvent(rawEvent)
+
+  if (
+    eventMeta.hookEventName === "UserPromptSubmit" &&
+    await hasWakeupRun(eventMeta.sessionId)
+  ) {
+    if (debug) {
+      process.stderr.write(
+        "[lore] wakeup: ranked=false reason=already-ranked-for-session\n",
+      )
+    }
+    return
+  }
+
   // Config opt-out: hooks.wakeUp: false suppresses context injection.
   // Check before service initialization so we avoid the Notion round-trip when disabled.
   const hookState = await loadHookState()
@@ -657,7 +728,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
 
   let services: Awaited<ReturnType<typeof initServicesFromConfig>>
   try {
-    // Wake-up fires on every session start / first user prompt. Drift
+    // Wake-up fires on the first user prompt. Drift
     // detection is debounced via the per-config-root marker so an
     // operator on a stale vault still gets occasional warnings without
     // the multi-page Topics scan running against the rate-limited
@@ -676,18 +747,12 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   }
   const project = services.context.project
 
-  // P3-05: when the host assistant is Claude Code on `UserPromptSubmit`,
-  // `wakeup.sh` forwards the event JSON via `LORE_WAKEUP_EVENT` so we can
-  // seed a relevance search from the user's actual question instead of
-  // dumping generic recents. Codex `SessionStart` and any other caller
-  // that has no prompt yet leaves the env var unset; we fall through to
-  // the data-layer defaults. The 0.11.0 bin-dispatch caller (`lore hooks
-  // wakeup`) reads stdin itself and passes the payload via `opts.event`,
-  // skipping the env-var indirection.
-  const userQuery = parseUserQueryFromEvent(
-    opts.event ?? process.env["LORE_WAKEUP_EVENT"]
-  )
-  const debug = process.env["LORE_DEBUG"] === "1"
+  // P3-05: `UserPromptSubmit` payloads carry the user's actual question,
+  // letting wake-up rank memories instead of dumping generic recents. Legacy
+  // Codex `SessionStart` installs and any other caller with no prompt fall
+  // through to the data-layer defaults. The 0.11.0 bin-dispatch caller
+  // (`lore hooks wakeup`) reads stdin itself and passes the payload via
+  // `opts.event`, skipping the env-var indirection.
   if (debug) {
     // Operator-facing log: report whether ranked output fired and which
     // caps applied. Useful when triaging "why did wake-up surface iOS
@@ -827,6 +892,16 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   if (sections.length > 0) {
     sections.unshift("# Lore Context")
     console.log(sections.join("\n"))
+  }
+
+  if (userQuery && eventMeta.hookEventName === "UserPromptSubmit") {
+    try {
+      await markWakeupRun(eventMeta.sessionId)
+    } catch (err) {
+      process.stderr.write(
+        `[lore] wakeup: debounce mark failed — ${err instanceof Error ? err.message : err}.\n`,
+      )
+    }
   }
 }
 

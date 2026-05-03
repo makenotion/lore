@@ -114,6 +114,8 @@ Operators can disable extraction with `LORE_DISABLE_LEARNING_EXTRACTION=1` or
 ## MCP Tool Checklist
 
 - Session start: `lore-context action='wake-up'`
+- After `/clear` or a topic pivot: `lore-context action='wake-up'` with
+  `userQuery` set to the new task prompt.
 - Formal decision: `lore-decision action='create'`
 - Superseding a decision: `lore-decision action='create'` with
   `supersedesIds`, or `lore-decision action='supersede'`

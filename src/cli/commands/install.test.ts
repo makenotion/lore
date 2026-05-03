@@ -56,6 +56,7 @@ import {
   removeClaudeScriptEntries,
   resolveBackgroundAgentForInstall,
   resolveCursorMcpPath,
+  runCodexInstall,
   runCursorInstall,
   stripLoreOwnedSessionEndEntries,
   stripShellEnvPrefix,
@@ -787,6 +788,115 @@ describe("stripShellEnvPrefix", () => {
 const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
 const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+describe("runCodexInstall (integration)", () => {
+  const SCRATCH = mkdtempSync(join(tmpdir(), "lore-install-codex-test-"))
+  afterAll(() => {
+    rmSync(SCRATCH, { recursive: true, force: true })
+  })
+
+  afterEach(() => {
+    consoleLogSpy.mockClear()
+    consoleWarnSpy.mockClear()
+    consoleErrorSpy.mockClear()
+  })
+
+  function makeContext(projectDir: string, pkgRoot: string): InstallContext {
+    return {
+      projectDir,
+      pkgRoot,
+      configRoot: projectDir,
+      autosavePath: join(pkgRoot, "hooks", "autosave.sh"),
+      wakeupPath: join(pkgRoot, "hooks", "wakeup.sh"),
+      mcpJsPath: join(pkgRoot, "dist", "mcp.js"),
+      skipPrompts: true,
+      legacyPaths: false,
+      yarnPnp: false,
+      wakeUpConfig: null,
+    }
+  }
+
+  type CodexHooksFixture = {
+    hooks: Record<
+      string,
+      Array<{ matcher?: string; hooks: Array<{ type?: string; command: string }> }>
+    >
+  }
+
+  it("writes query-aware wake-up on Codex UserPromptSubmit", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "fresh-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))
+
+    await runCodexInstall(makeContext(projectDir, pkgRoot), null)
+
+    const written = JSON.parse(
+      await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8"),
+    ) as CodexHooksFixture
+    expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
+      buildCodexHookCommand("wakeup"),
+    )
+    expect(written.hooks.SessionStart).toBeUndefined()
+    expect(written.hooks.Stop?.[0]?.hooks[0]?.command).toBe(
+      buildCodexHookCommand("autosave"),
+    )
+  })
+
+  it("rewrites stale Codex SessionStart wake-up entries to UserPromptSubmit", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "stale-session-start-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))
+    mkdirSync(join(projectDir, ".codex"), { recursive: true })
+    writeFileSync(
+      join(projectDir, ".codex", "hooks.json"),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              matcher: "startup|resume",
+              hooks: [{ type: "command", command: buildCodexHookCommand("wakeup") }],
+            },
+          ],
+        },
+      }, null, 2),
+    )
+
+    await runCodexInstall(makeContext(projectDir, pkgRoot), null)
+
+    const written = JSON.parse(
+      await readFile(join(projectDir, ".codex", "hooks.json"), "utf-8"),
+    ) as CodexHooksFixture
+    expect(written.hooks.SessionStart).toBeUndefined()
+    expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
+      buildCodexHookCommand("wakeup"),
+    )
+  })
+
+  it("removes leftover SessionStart wake-up when the current UserPromptSubmit hook exists", async () => {
+    const projectDir = mkdtempSync(join(SCRATCH, "duplicate-session-start-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))
+    const context = makeContext(projectDir, pkgRoot)
+
+    await runCodexInstall(context, null)
+
+    const hooksPath = join(projectDir, ".codex", "hooks.json")
+    const seeded = JSON.parse(await readFile(hooksPath, "utf-8")) as CodexHooksFixture
+    seeded.hooks.SessionStart = [
+      {
+        matcher: "startup|resume",
+        hooks: [{ type: "command", command: buildCodexHookCommand("wakeup") }],
+      },
+    ]
+    writeFileSync(hooksPath, JSON.stringify(seeded, null, 2))
+
+    await runCodexInstall(context, null)
+
+    const written = JSON.parse(await readFile(hooksPath, "utf-8")) as CodexHooksFixture
+    expect(written.hooks.SessionStart).toBeUndefined()
+    expect(written.hooks.UserPromptSubmit).toHaveLength(1)
+    expect(written.hooks.UserPromptSubmit?.[0]?.hooks[0]?.command).toBe(
+      buildCodexHookCommand("wakeup"),
+    )
+  })
+})
 
 describe("runCursorInstall (integration)", () => {
   // Drive the real `runCursorInstall` against an on-disk tmpdir. The function
