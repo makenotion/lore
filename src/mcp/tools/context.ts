@@ -651,30 +651,33 @@ async function handleWakeUp(
       // see depth even when only `proposedMemoryLimit` rows fit in
       // the section. When the slice is saturated, append a `(showing
       // N of T, oldest first)` cue plus an actionable pointer at
-      // the only shipped read path that surfaces the full set:
-      // `lore-query action='recall' status="proposed"` (which
-      // accepts a `limit` parameter and is paginatable). The MCP
-      // schema does NOT expose `proposedMemoryLimit` on
-      // `lore-context action='wake-up'`, and the dedicated
-      // `lore inbox list` CLI ships in Phase 4 of issue #281, so
-      // copy that points an agent at either of those paths today
-      // would dead-end. Keep the cue constrained to surfaces that
-      // exist in this PR.
+      // the paginatable read path: `lore-query action='recall'
+      // status="proposed"` (which accepts a `limit` parameter).
+      // The MCP schema does NOT expose `proposedMemoryLimit` on
+      // `lore-context action='wake-up'`, so a cue pointing agents
+      // at "widen the wake-up window" would dead-end. The
+      // `lore inbox list` CLI is the operator-side full-set view
+      // and ships in this PR, but agents reach proposed memories
+      // through MCP, not the CLI — keep the agent-facing cue on
+      // the recall path.
       const renderedTotal = proposedMemoriesTotal
       const slice = proposedMemories.length
       const saturated = renderedTotal > slice
       sections.push(`## Proposed Memories (${renderedTotal} pending review)\n`)
-      // Mechanical correctness: `lore-memory action='update'` is a
-      // mutation, not a filter. Discovery routes through the read
-      // path (`lore-query action='recall' status="proposed"`); the
-      // lifecycle actions are `lore-memory action='update' status='accepted'`
-      // / `'rejected'` until Phase 4 of #281 ships dedicated
-      // `approve` / `reject` actions.
+      // Discovery routes through `lore-query action='recall'
+      // status="proposed"`; the lifecycle actions are the dedicated
+      // `lore-memory action='approve' memoryId='<id>'` /
+      // `'reject' memoryId='<id>'` paths shipped in this Phase 4 of
+      // issue #281. Both route through `MemoryService.recordReview`,
+      // which appends a `## Reviewed (YYYY-MM-DD)` audit block with
+      // reviewer + timestamp — pointing agents at the bare
+      // `action='update' status='accepted'/'rejected'` mutation
+      // would skip the audit contract this PR exists to provide.
       const saturationCue = saturated
         ? ` Showing the ${slice} oldest of ${renderedTotal}; list the full set via \`lore-query action='recall' status="proposed" limit=<N>\` (paginatable).`
         : ""
       sections.push(
-        `*Memories awaiting review (\`Status = proposed\`). Excluded from default recall — list via \`lore-query action='recall' status="proposed"\`; promote via \`lore-memory action='update' memoryId='<id>' status='accepted'\` (or \`status='rejected'\`).${saturationCue} Phase 4 of #281 ships dedicated approve/reject actions.*\n`,
+        `*Memories awaiting review (\`Status = proposed\`). Excluded from default recall — list via \`lore-query action='recall' status="proposed"\`; review via \`lore-memory action='approve' memoryId='<id>'\` (or \`action='reject' memoryId='<id>'\`), each appending a \`## Reviewed (YYYY-MM-DD)\` audit block with the reviewer's identity.${saturationCue}*\n`,
       )
       for (const mem of proposedMemories) {
         sections.push(formatMemoryListItem(mem))

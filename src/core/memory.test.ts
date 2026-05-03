@@ -4582,6 +4582,359 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// MemoryService.recordReview — issue #281, AC #3 + AC #4
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.recordReview", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildProposedPage(
+    id: string,
+    overrides: { archived?: boolean; kind?: string } = {},
+  ): PageObjectResponse {
+    // `kind` defaults to `"note"` — not optional / undefined — because
+    // `pageToMemory` resolves `Kind` via `extractSelect(props["Kind"], "note")`
+    // (`src/core/memory.ts` `pageToMemory` helper), which substitutes
+    // `"note"` for any missing-or-empty Kind property at parse time.
+    // Test fixtures must match production parse semantics or the
+    // `recordReview` decision-guard test below would diverge from
+    // real-vault behavior — a future fixture-author tempted to
+    // make `kind?: string | undefined` would break that parity
+    // silently. Keep the default explicit here.
+    return {
+      object: "page",
+      id,
+      created_time: "2026-04-01T00:00:00Z",
+      last_edited_time: "2026-05-01T00:00:00Z",
+      archived: overrides.archived ?? false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Proposed memory" }] },
+        Status: { type: "select", select: { name: "proposed" } },
+        Kind: {
+          type: "select",
+          select: { name: overrides.kind ?? "note" },
+        },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      } as unknown as PageObjectResponse["properties"],
+      parent: { type: "data_source_id", data_source_id: db.dataSourceId },
+      url: `https://notion.so/${id}`,
+    } as PageObjectResponse
+  }
+
+  function buildAcceptedPage(id: string): PageObjectResponse {
+    return {
+      object: "page",
+      id,
+      created_time: "2026-04-01T00:00:00Z",
+      last_edited_time: "2026-05-01T00:00:00Z",
+      archived: false,
+      properties: {
+        Title: { type: "title", title: [{ plain_text: "Accepted memory" }] },
+        Status: { type: "select", select: { name: "accepted" } },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      } as unknown as PageObjectResponse["properties"],
+      parent: { type: "data_source_id", data_source_id: db.dataSourceId },
+      url: `https://notion.so/${id}`,
+    } as PageObjectResponse
+  }
+
+  it("approve flips Status to accepted and appends a Reviewed audit block", async () => {
+    const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-1"))
+    const retrieveMarkdownSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ markdown: "# Original body\n" })
+    const updateSpy = vi.fn().mockResolvedValueOnce(undefined)
+    const updateMarkdownSpy = vi.fn().mockResolvedValueOnce(undefined)
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordReview({
+      memoryId: "mem-1",
+      verdict: "approve",
+      reviewer: "Alice",
+    })
+
+    expect(result.previousStatus).toBe("proposed")
+    expect(result.memory.status).toBe("accepted")
+
+    // Property write FIRST — load-bearing partial-state posture.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy.mock.calls[0]![0]).toMatchObject({
+      page_id: "mem-1",
+      properties: { Status: { select: { name: "accepted" } } },
+    })
+
+    // Audit block appended SECOND.
+    expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    const body = (updateMarkdownSpy.mock.calls[0]![0] as {
+      replace_content: { new_str: string }
+    }).replace_content.new_str
+    expect(body).toContain("# Original body")
+    expect(body).toContain("## Reviewed (")
+    expect(body).toContain("**Verdict:** approved")
+    expect(body).toContain("**Reviewer:** Alice")
+    // ISO 8601 timestamp (issue #281, AC #4 — durable reviewer +
+    // timestamp evidence). Pinned via regex so the assertion
+    // doesn't bind to a specific second.
+    expect(body).toMatch(
+      /\*\*Reviewed At:\*\* \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/,
+    )
+  })
+
+  it("reject flips Status to rejected and records the optional reason", async () => {
+    const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-2"))
+    const retrieveMarkdownSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ markdown: "Body" })
+    const updateSpy = vi.fn().mockResolvedValueOnce(undefined)
+    const updateMarkdownSpy = vi.fn().mockResolvedValueOnce(undefined)
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.recordReview({
+      memoryId: "mem-2",
+      verdict: "reject",
+      reviewer: "Bob",
+      reason: "Duplicate of an earlier note",
+    })
+
+    expect(result.memory.status).toBe("rejected")
+    expect(updateSpy.mock.calls[0]![0]).toMatchObject({
+      properties: { Status: { select: { name: "rejected" } } },
+    })
+    const body = (updateMarkdownSpy.mock.calls[0]![0] as {
+      replace_content: { new_str: string }
+    }).replace_content.new_str
+    expect(body).toContain("**Verdict:** rejected")
+    expect(body).toContain("**Reviewer:** Bob")
+    expect(body).toContain("**Reason:** Duplicate of an earlier note")
+    // Same ISO 8601 timestamp invariant on the reject path.
+    expect(body).toMatch(
+      /\*\*Reviewed At:\*\* \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/,
+    )
+  })
+
+  it("throws MemoryReviewStateError when Status is not 'proposed'", async () => {
+    const retrieveSpy = vi.fn().mockResolvedValueOnce(buildAcceptedPage("mem-3"))
+    const retrieveMarkdownSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ markdown: "Body" })
+    const updateSpy = vi.fn()
+    const updateMarkdownSpy = vi.fn()
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { MemoryReviewStateError } = await import("./memory.js")
+
+    await expect(
+      service.recordReview({
+        memoryId: "mem-3",
+        verdict: "approve",
+        reviewer: "Alice",
+      }),
+    ).rejects.toBeInstanceOf(MemoryReviewStateError)
+    // Property + body writes must NOT fire on the rejected branch — the
+    // load-bearing fail-fast guard.
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    // The body fetch must ALSO not fire — `recordReview` reads
+    // properties via `getPropertiesById` for the structural guards
+    // and defers `retrieveMarkdown` until after the property write.
+    // Pinning the absence here proves the round-trip savings on
+    // the failure path that the `getPropertiesById` swap was meant
+    // to deliver.
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("throws on empty / whitespace-only reviewer", async () => {
+    const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-4"))
+    const retrieveMarkdownSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ markdown: "Body" })
+    const updateSpy = vi.fn()
+    const updateMarkdownSpy = vi.fn()
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.recordReview({
+        memoryId: "mem-4",
+        verdict: "approve",
+        reviewer: "   ",
+      }),
+    ).rejects.toThrow(/reviewer must be a non-empty string/)
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  it("throws MemoryReviewAuditError when audit-block write fails after status flip", async () => {
+    const retrieveSpy = vi.fn().mockResolvedValueOnce(buildProposedPage("mem-5"))
+    const retrieveMarkdownSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ markdown: "Body" })
+    const updateSpy = vi.fn().mockResolvedValueOnce(undefined)
+    const updateMarkdownSpy = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("notion 5xx"))
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { MemoryReviewAuditError } = await import("./memory.js")
+
+    await expect(
+      service.recordReview({
+        memoryId: "mem-5",
+        verdict: "approve",
+        reviewer: "Alice",
+      }),
+    ).rejects.toBeInstanceOf(MemoryReviewAuditError)
+    // Property write DID land — the partial-state contract pinned by
+    // the docstring. Operators see a clear error and the row is in
+    // its load-bearing post-review state.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("throws MemoryReviewStateError when Kind is 'decision' (decisions have their own lifecycle)", async () => {
+    // Issue #281's `proposedMemoryFilter()` excludes
+    // `Kind = decision` so the inbox count and slice surfaces
+    // never include proposed-state decisions. The mutation path
+    // must enforce the same contract — without this guard, an
+    // operator running `lore inbox approve <decision-id>` or
+    // `lore-memory action='reject' memoryId='<decision-id>'`
+    // would mutate the decision lifecycle through the memory inbox
+    // path, bypassing the decision surface that owns governance.
+    // Two stub calls (one per service.recordReview invocation) so
+    // the same fixture supports both the rejects-instanceof check
+    // and the message-contains check below.
+    const retrieveSpy = vi
+      .fn()
+      .mockResolvedValue(buildProposedPage("dec-1", { kind: "decision" }))
+    const retrieveMarkdownSpy = vi
+      .fn()
+      .mockResolvedValue({ markdown: "Body" })
+    const updateSpy = vi.fn()
+    const updateMarkdownSpy = vi.fn()
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const { MemoryReviewStateError } = await import("./memory.js")
+
+    let caught: unknown
+    try {
+      await service.recordReview({
+        memoryId: "dec-1",
+        verdict: "approve",
+        reviewer: "Alice",
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    expect(caught).toBeInstanceOf(MemoryReviewStateError)
+    // Pre-write guard: status property + body audit must NOT fire.
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    // The decision-guard read uses `getPropertiesById`, so the body
+    // fetch must NOT fire on the rejected branch. Companion to the
+    // status-guard assertion above — both inbox-touching guards
+    // share the property-only-read posture.
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+    // Error message redirects at the decision-lifecycle surface.
+    expect((caught as Error).message).toContain('Kind is "decision"')
+    expect((caught as Error).message).toContain(
+      "lore-decision action='supersede'",
+    )
+  })
+
+  it("rejects archived memory pages with the live-memory error before the Status guard runs", async () => {
+    // Strict-improvement contract pinning: the `getById → getPropertiesById`
+    // swap on the structural-guard fetch (issue #281 Phase 4 review r4)
+    // routes through `requireLiveMemoryPage`, which `getById` did not.
+    // An archived row therefore now rejects with "Memory <id> is
+    // archived." instead of falling through `pageToMemory`'s
+    // backward-compatible defaults and then hitting the Status guard
+    // for whatever residual status the parser inferred. Same posture
+    // applies to sibling-DB pages (rejected as "not in the Memories
+    // database"). Pin both branches so a future "let's relax
+    // requireLiveMemoryPage" refactor can't silently widen the
+    // inbox-approve attack surface.
+    const archivedPage = {
+      ...buildProposedPage("mem-archived"),
+      archived: true,
+    } as PageObjectResponse
+    const retrieveSpy = vi.fn().mockResolvedValueOnce(archivedPage)
+    const retrieveMarkdownSpy = vi.fn()
+    const updateSpy = vi.fn()
+    const updateMarkdownSpy = vi.fn()
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+        update: updateSpy,
+        updateMarkdown: updateMarkdownSpy,
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.recordReview({
+        memoryId: "mem-archived",
+        verdict: "approve",
+        reviewer: "Alice",
+      }),
+    ).rejects.toThrow(/Memory mem-archived is archived/)
+    // No Notion writes should land on the archived branch.
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(updateMarkdownSpy).not.toHaveBeenCalled()
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
+  })
+})
+
 describe("MemoryService.search", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
@@ -8495,10 +8848,15 @@ describe("MemoryService.list — pagination", () => {
 // Default-recall proposed-status exclusion (issue #281, AC #2)
 // ---------------------------------------------------------------------------
 
-describe("MemoryService.list — default-excludes Status = proposed", () => {
+describe("MemoryService.list — default-excludes review-terminal statuses", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 
-  it("emits a Status does_not_equal proposed clause by default", async () => {
+  it("emits Status does_not_equal clauses for both proposed and rejected by default", async () => {
+    // Phase 4 of issue #281 broadened the default-exclude from
+    // `Status = proposed` to the review-terminal pair (`proposed` +
+    // `rejected`). Without this, a `lore inbox reject <id>` flips
+    // the row to `rejected` but leaves it eligible for default
+    // recall.
     const query = vi
       .fn()
       .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
@@ -8514,6 +8872,7 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
         { property: "Status", select: { does_not_equal: "proposed" } },
+        { property: "Status", select: { does_not_equal: "rejected" } },
         {
           property: "Keywords",
           rich_text: { does_not_contain: "__lore-cleanup-orphan" },
@@ -8545,7 +8904,7 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
     // The inbox-review path passes `status: "proposed"` to surface the
     // very rows the default exclusion would otherwise hide. The
     // explicit equals filter must short-circuit the default
-    // does_not_equal clause — they cannot both be in the filter. The
+    // does_not_equal clauses — they cannot both be in the filter. The
     // cleanup-orphan exclusion (issue #477) is independent and still
     // applies.
     const query = vi
@@ -8559,6 +8918,31 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
         { property: "Status", select: { equals: "proposed" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
+    })
+  })
+
+  it("explicit status: 'rejected' surfaces the audit path without re-triggering the exclusion", async () => {
+    // The audit path (`lore inbox audit --status rejected`, a future
+    // tooling surface) must be able to surface rejected rows via
+    // explicit-status opt-in. Pinning that the explicit filter
+    // short-circuits the default-exclude branch. The cleanup-orphan
+    // exclusion (issue #477) is independent and still applies.
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({ status: "rejected", includeContent: false })
+
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      and: [
+        { property: "Status", select: { equals: "rejected" } },
         {
           property: "Keywords",
           rich_text: { does_not_contain: "__lore-cleanup-orphan" },
@@ -8587,6 +8971,7 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
           ],
         },
         { property: "Status", select: { does_not_equal: "proposed" } },
+        { property: "Status", select: { does_not_equal: "rejected" } },
         {
           property: "Keywords",
           rich_text: { does_not_contain: "__lore-cleanup-orphan" },

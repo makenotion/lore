@@ -2090,6 +2090,81 @@ export async function handleRecall(
   }
 }
 
+// -------------------------------------------------------------------------
+// Inbox review (issue #281, AC #3 + AC #4) — flip a Status: proposed
+// memory to accepted (`approve`) or rejected (`reject`) and append a
+// Reviewed audit block recording the verdict, reviewer, and timestamp.
+// -------------------------------------------------------------------------
+
+interface ReviewArgs {
+  memoryId: string
+  reviewer?: string
+  reason?: string
+}
+
+async function handleReview(
+  services: LoreServices,
+  args: ReviewArgs,
+  verdict: "approve" | "reject"
+): Promise<ToolResult> {
+  try {
+    // Resolve the reviewer name. Explicit `reviewer` arg wins; the
+    // engineer-identity resolver is the standard fallback used
+    // elsewhere on the write boundary. The service-layer helper
+    // throws on empty-string reviewers, so an unresolvable identity
+    // surfaces a clear error rather than landing a row attributed
+    // to "(unknown)".
+    // Trim BOTH the explicit `reviewer` arg and the resolver result.
+    // Without the resolver-side trim, a `users.me` response with a
+    // whitespace-only `name` (or `LORE_USER_NAME="   "`) would
+    // bypass this no-identity guard, forward into `recordReview`,
+    // and surface as the bare service-layer "reviewer must be a
+    // non-empty string" error instead of the friendly
+    // "set LORE_USER_NAME or pass `--reviewer`" guidance. Mirrors
+    // the CLI's resolver-trim posture (`src/cli/commands/inbox.ts`)
+    // for surface parity.
+    const trimmedExplicit = args.reviewer?.trim()
+    const resolved =
+      trimmedExplicit && trimmedExplicit.length > 0
+        ? trimmedExplicit
+        : (await services.identity.resolveAuthor())?.trim()
+    if (!resolved || resolved.length === 0) {
+      return toolError(
+        new Error(
+          `Cannot ${verdict} memory ${args.memoryId}: no reviewer identity ` +
+            `available. Pass an explicit \`reviewer\` argument or set ` +
+            `\`LORE_USER_NAME\` so the audit trail can record who ` +
+            `approved/rejected the row.`
+        )
+      )
+    }
+    const reviewer = resolved
+
+    const result = await services.memories.recordReview({
+      memoryId: args.memoryId,
+      verdict,
+      reviewer,
+      reason: args.reason,
+    })
+
+    const verdictLabel = verdict === "approve" ? "Approved" : "Rejected"
+    const newStatus = result.memory.status
+    const lines = [
+      `${verdictLabel} memory ${args.memoryId} (status: proposed → ${newStatus}).`,
+      `Reviewer: ${reviewer}`,
+    ]
+    if (args.reason && args.reason.trim().length > 0) {
+      lines.push(`Reason: ${args.reason.trim()}`)
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+    }
+  } catch (err) {
+    return toolError(err)
+  }
+}
+
 interface SearchArgs {
   query: string
   projectName?: string
@@ -2352,6 +2427,18 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     judgeConfidence: z.number().min(0).max(1).optional(),
     promptVersion: z.string().optional(),
   }),
+  z.object({
+    action: z.literal("approve"),
+    memoryId: z.string(),
+    reviewer: z.string().optional(),
+    reason: z.string().max(500).optional(),
+  }),
+  z.object({
+    action: z.literal("reject"),
+    memoryId: z.string(),
+    reviewer: z.string().optional(),
+    reason: z.string().max(500).optional(),
+  }),
 ])
 
 export function registerMemoryTools(server: McpServer, services: LoreServices): void {
@@ -2363,20 +2450,30 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
     {
       title: "Memory operations",
       description:
-        "Save, update, archive, batch-expand, suggest a topic key, or record a compare verdict on a memory pair. Action-dispatched:\n\n" +
+        "Save, update, archive, batch-expand, suggest a topic key, record a compare verdict, or review a proposed memory. Action-dispatched:\n\n" +
         "- `action: 'save'` — create a new memory page; runs a near-duplicate probe in parallel. With `topicKey` set, upserts onto an existing memory with the same key AND project-set (appends a revision block instead of creating a new row).\n" +
         "- `action: 'update'` — mutate an existing memory's title, body, tags, kind, status, or relations. Any field omitted is left untouched.\n" +
         "- `action: 'archive'` — soft-delete a memory by ID (Notion archive flag).\n" +
         "- `action: 'expand'` — batch-fetch full markdown bodies for up to 20 IDs in one parallel call. Companion to the title-tier defaults on `lore-query` recall/search.\n" +
         "- `action: 'suggest-topic-key'` — pure heuristic over (title, kind) → kebab-case key. Pass the result to `action: 'save'` as `topicKey`. Notes and tasks return null.\n" +
-        "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n\n" +
+        "- `action: 'compare'` — record a verdict on a memory pair (`conflicts_with` | `supersedes` | `scoped` | `related` | `compatible` | `not_conflict`). Asymmetric verdicts require `affectedMemoryId`. Idempotent on `(pair, verdict, affected)`.\n" +
+        "- `action: 'approve'` / `'reject'` — inbox-review a `Status: proposed` memory (#281); flips Status and appends a Reviewed audit block.\n\n" +
         "For architectural decisions prefer `lore-decision` with `action: 'create'` — it captures structured rationale and supersession chains.\n\n" +
         "`tags` is a closed vocabulary; for free-form labels (PR numbers, file paths, IDs) use `keywords`.",
       inputSchema: {
         action: z
-          .enum(["save", "update", "archive", "expand", "suggest-topic-key", "compare"])
+          .enum([
+            "save",
+            "update",
+            "archive",
+            "expand",
+            "suggest-topic-key",
+            "compare",
+            "approve",
+            "reject",
+          ])
           .describe(
-            "Operation: save | update | archive | expand | suggest-topic-key | compare."
+            "Operation: save | update | archive | expand | suggest-topic-key | compare | approve | reject."
           ),
         // save
         title: z
@@ -2391,12 +2488,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .describe(
             "Required for action='save'; new body (markdown) for action='update'."
           ),
-        // save | update | archive | expand
+        // save | update | archive | expand | approve | reject
         memoryId: z
           .string()
           .optional()
           .describe(
-            "Required for action='update' and action='archive'. The Notion page ID of the memory."
+            "Required for action='update'/'archive'/'approve'/'reject'. The Notion page ID of the memory."
           ),
         ids: z
           .array(z.string().uuid())
@@ -2549,10 +2646,10 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           ),
         reason: z
           .string()
-          .max(200)
+          .max(500)
           .optional()
           .describe(
-            "(action='compare') Short explanation, ≤200 chars. Recorded in Compare Notes audit trail."
+            "(action='compare') ≤200 chars; recorded in Compare Notes. (action='approve'/'reject') Optional rationale ≤500 chars; recorded in the Reviewed audit block."
           ),
         judgeConfidence: z
           .number()
@@ -2567,6 +2664,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .optional()
           .describe(
             "(action='compare') Optional prompt version (default: current `CONFLICT_JUDGE_PROMPT_VERSION`)."
+          ),
+        reviewer: z
+          .string()
+          .optional()
+          .describe(
+            "(action='approve'/'reject') Optional reviewer name. Defaults to the engineer identity resolver (LORE_USER_NAME → users.me)."
           ),
       },
     },
@@ -2588,6 +2691,10 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           return handleSuggestTopicKey(parsed.data)
         case "compare":
           return handleCompare(services, parsed.data)
+        case "approve":
+          return handleReview(services, parsed.data, "approve")
+        case "reject":
+          return handleReview(services, parsed.data, "reject")
       }
     }
   )

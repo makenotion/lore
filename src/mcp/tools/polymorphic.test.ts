@@ -144,8 +144,10 @@ interface StubOpts {
   memoriesArchive?: ReturnType<typeof vi.fn>
   memoriesUpdate?: ReturnType<typeof vi.fn>
   memoriesCreate?: ReturnType<typeof vi.fn>
+  memoriesRecordReview?: ReturnType<typeof vi.fn>
   memoriesSearch?: ReturnType<typeof vi.fn>
   memoriesSearchWithExplain?: ReturnType<typeof vi.fn>
+  identityResolveAuthor?: ReturnType<typeof vi.fn>
   factsCreate?: ReturnType<typeof vi.fn>
   factsCreateWithDedup?: ReturnType<typeof vi.fn>
   factsInvalidate?: ReturnType<typeof vi.fn>
@@ -212,6 +214,15 @@ function makeServices(opts: StubOpts = {}): unknown {
       decrementConfidence: vi.fn(async () => 0.45),
       queryStaleConfidence: vi.fn(async () => []),
       countProposed: vi.fn(async () => ({ total: 0, bySource: {}, byAgent: {} })),
+      recordReview:
+        opts.memoriesRecordReview ??
+        vi.fn(async ({ memoryId, verdict }: { memoryId: string; verdict: string }) => ({
+          memory: {
+            id: memoryId,
+            status: verdict === "approve" ? "accepted" : "rejected",
+          },
+          previousStatus: "proposed",
+        })),
     },
     facts: {
       create: opts.factsCreate ?? vi.fn(async () => ({})),
@@ -262,7 +273,10 @@ function makeServices(opts: StubOpts = {}): unknown {
       countClosedSince: vi.fn(async () => null),
     },
     sessionMemories: { record: vi.fn(), get: vi.fn(() => null) },
-    identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    identity: {
+      resolveAuthor: opts.identityResolveAuthor ?? vi.fn(async () => null),
+      clearCache: vi.fn(),
+    },
   }
 }
 
@@ -447,6 +461,155 @@ describe("lore-memory polymorphic dispatcher", () => {
     const mock = createMockServer()
     registerMemoryTools(mock.server, makeServices() as never)
     const result = await mock.get("lore-memory")({ action: "archive" } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-memory")
+  })
+
+  // ---------------------------------------------------------------------
+  // Inbox-review actions (issue #281, AC #3 + AC #4)
+  // ---------------------------------------------------------------------
+
+  it("dispatches action='approve' to memories.recordReview with the explicit reviewer", async () => {
+    const memoriesRecordReview = vi.fn(async () => ({
+      memory: { id: "mem-1", status: "accepted" },
+      previousStatus: "proposed",
+    }))
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server,
+      makeServices({ memoriesRecordReview }) as never,
+    )
+    const result = await mock.get("lore-memory")({
+      action: "approve",
+      memoryId: "mem-1",
+      reviewer: "Alice",
+      reason: "Looks good",
+    } as never)
+
+    expect(memoriesRecordReview).toHaveBeenCalledWith({
+      memoryId: "mem-1",
+      verdict: "approve",
+      reviewer: "Alice",
+      reason: "Looks good",
+    })
+    expect(extractText(result)).toContain("Approved memory mem-1")
+    expect(extractText(result)).toContain("Reviewer: Alice")
+  })
+
+  it("dispatches action='reject' to memories.recordReview with the explicit reviewer", async () => {
+    const memoriesRecordReview = vi.fn(async () => ({
+      memory: { id: "mem-2", status: "rejected" },
+      previousStatus: "proposed",
+    }))
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server,
+      makeServices({ memoriesRecordReview }) as never,
+    )
+    const result = await mock.get("lore-memory")({
+      action: "reject",
+      memoryId: "mem-2",
+      reviewer: "Bob",
+      reason: "Duplicate of an earlier note",
+    } as never)
+
+    expect(memoriesRecordReview).toHaveBeenCalledWith({
+      memoryId: "mem-2",
+      verdict: "reject",
+      reviewer: "Bob",
+      reason: "Duplicate of an earlier note",
+    })
+    expect(extractText(result)).toContain("Rejected memory mem-2")
+  })
+
+  it("falls back to identity.resolveAuthor when reviewer is omitted on approve", async () => {
+    const memoriesRecordReview = vi.fn(async () => ({
+      memory: { id: "mem-3", status: "accepted" },
+      previousStatus: "proposed",
+    }))
+    const identityResolveAuthor = vi.fn(async () => "Engineer From users.me")
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server,
+      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never,
+    )
+    await mock.get("lore-memory")({
+      action: "approve",
+      memoryId: "mem-3",
+    } as never)
+
+    expect(identityResolveAuthor).toHaveBeenCalled()
+    expect(memoriesRecordReview).toHaveBeenCalledWith({
+      memoryId: "mem-3",
+      verdict: "approve",
+      reviewer: "Engineer From users.me",
+      reason: undefined,
+    })
+  })
+
+  it("returns an actionable MCP error when no reviewer identity resolves", async () => {
+    // Acceptance criterion: a row attributed to "(unknown)" is
+    // worse than refusing the call. Pin the no-identity error
+    // shape so future refactors can't degrade it into a thrown
+    // exception that surfaces as a stack trace.
+    const memoriesRecordReview = vi.fn()
+    const identityResolveAuthor = vi.fn(async () => null)
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server,
+      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never,
+    )
+    const result = await mock.get("lore-memory")({
+      action: "approve",
+      memoryId: "mem-4",
+    } as never)
+
+    expect(memoriesRecordReview).not.toHaveBeenCalled()
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("no reviewer identity")
+  })
+
+  it("returns an actionable MCP error when reviewer identity resolves to whitespace", async () => {
+    // Resolver-trim parity with the CLI: a `users.me` response with
+    // a whitespace-only `name` (or `LORE_USER_NAME="   "`) must hit
+    // the no-identity guard at the MCP boundary, NOT fall through
+    // into `recordReview` and surface as the bare service-layer
+    // "reviewer must be a non-empty string" message. Pinned so a
+    // refactor that drops the resolver-trim regresses here rather
+    // than only at the end-to-end CLI test.
+    const memoriesRecordReview = vi.fn()
+    const identityResolveAuthor = vi.fn(async () => "   ")
+    const mock = createMockServer()
+    registerMemoryTools(
+      mock.server,
+      makeServices({ memoriesRecordReview, identityResolveAuthor }) as never,
+    )
+    const result = await mock.get("lore-memory")({
+      action: "reject",
+      memoryId: "mem-ws",
+    } as never)
+
+    expect(memoriesRecordReview).not.toHaveBeenCalled()
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("no reviewer identity")
+  })
+
+  it("rejects approve without memoryId via the discriminated union", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({ action: "approve" } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("lore-memory")
+  })
+
+  it("rejects reject with a reason longer than 500 chars at the dispatch boundary", async () => {
+    const mock = createMockServer()
+    registerMemoryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-memory")({
+      action: "reject",
+      memoryId: "mem-5",
+      reason: "x".repeat(501),
+    } as never)
     expect(isError(result)).toBe(true)
     expect(extractText(result)).toContain("lore-memory")
   })
@@ -1552,21 +1715,24 @@ describe("MCP tool surface", () => {
     // Combined ceiling. The surface has moved 7 → 8 → 7 across P3-01,
     // PF3-06, and the 0.6.0 purge; the budget covers the high-water
     // mark plus comfortable headroom so a future action lands without
-    // inviting a surface-doubling regression. Two recent bumps stack:
+    // inviting a surface-doubling regression. Three recent bumps stack:
     // (a) 7000 → 7100 in #265 to accommodate the `lore-task
     // action='create'` reuse note — agent-observable behavior change
     // that warranted a one-line schema signal alongside the
-    // response-text vocabulary; and (b) 7100 → 7200 in issue #281
-    // Phase 1 to absorb the proposed-memory inbox count line in
+    // response-text vocabulary; (b) 7100 → 7200 in issue #281 Phase 1
+    // to absorb the proposed-memory inbox count line in
     // `lore-context action='status'`'s description (now also names
     // the `Kind != decision` exclusion so an agent reading the schema
     // knows proposed-state decisions surface via `lore-decision`
-    // instead). Each delta stays within a "≤ ~200 chars per
-    // single-action-add" envelope; the doc-string clause is the
-    // expensive line, not the action-name addition itself. Future
-    // Phase 2 / 4 description adds will continue to stack the budget
-    // explicitly rather than burning headroom silently.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7200
+    // instead); and (c) 7200 → 7500 in issue #281 Phase 4 to absorb
+    // the `lore-memory action='approve' / 'reject'` inbox-review
+    // actions and their `reviewer` parameter (+300 chars). Each
+    // delta stays within a "≤ ~300 chars per single-action-add"
+    // envelope; doc-string clauses dominate, not the action-name
+    // additions themselves. Future description adds should continue
+    // to stack the budget explicitly rather than burning headroom
+    // silently.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7500
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1627,11 +1793,14 @@ describe("MCP tool surface", () => {
     // bump the entry here AND the combined ceiling above.
     //
     // Sum of per-tool ceilings (~8270) deliberately exceeds the
-    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (7200) so the
+    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (7500) so the
     // combined ceiling stays the real envelope; per-tool ceilings
     // exist to catch lopsided growth (one tool absorbs all the
     // additions while the others stay quiet — hides the growth from
-    // the combined-bump bookkeeping).
+    // the combined-bump bookkeeping). Keep the two numbers in sync
+    // when bumping either: a future combined-ceiling raise should
+    // confirm the sum-of-ceilings still has headroom (or bump
+    // individual entries alongside).
     const PER_TOOL_DESCRIPTION_LIMITS: Record<string, number> = {
       "lore-context": 1240,
       "lore-memory": 1520,
@@ -1676,7 +1845,11 @@ describe("MCP tool surface", () => {
     // save action; budget bumped from 5000 → 5200 to absorb that and
     // leave ~30% headroom for a future action without inviting a
     // paragraph of unstructured commentary in any param description.
-    const PER_TOOL_CONFIG_LIMIT = 5200
+    // Issue #281 Phase 4 bumped 5200 → 5700 for the `approve` / `reject`
+    // inbox-review actions plus their `reviewer` parameter; the +500
+    // chars cover two new discriminated-union branches and one new
+    // input field on `lore-memory` without leaking elsewhere.
+    const PER_TOOL_CONFIG_LIMIT = 5700
     const polymorphic = [
       "lore-context",
       "lore-memory",

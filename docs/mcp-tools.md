@@ -57,14 +57,16 @@ facts, memory bodies, or the raw `userQuery`.
 
 ## `lore-memory` — memory mutations + batch hydration
 
-| Action              | Description                                                   |
-| ------------------- | ------------------------------------------------------------- |
-| `save`              | Save a new memory (markdown content stored as page body)      |
-| `update`            | Update a memory's title, content, tags, or categorization     |
-| `archive`           | Soft-delete a memory by ID                                    |
-| `expand`            | Batch-fetch memory bodies by ID (up to 20, parallelized)      |
-| `suggest-topic-key` | Suggest a stable topic key for recurring memory topics        |
-| `compare`           | Record a conflict/compatibility verdict on a pair of memories |
+| Action              | Description                                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `save`              | Save a new memory (markdown content stored as page body)                                                                                                                                                                                   |
+| `update`            | Update a memory's title, content, tags, or categorization                                                                                                                                                                                  |
+| `archive`           | Soft-delete a memory by ID                                                                                                                                                                                                                 |
+| `expand`            | Batch-fetch memory bodies by ID (up to 20, parallelized)                                                                                                                                                                                   |
+| `suggest-topic-key` | Suggest a stable topic key for recurring memory topics                                                                                                                                                                                     |
+| `compare`           | Record a conflict/compatibility verdict on a pair of memories                                                                                                                                                                              |
+| `approve`           | Promote a `Status: proposed` memory to `accepted` and append a `## Reviewed (date)` audit block (issue #281). Inbox-only — non-proposed rows reject. Optional `reviewer` defaults to the engineer-identity resolver; optional `reason` recorded in audit body. |
+| `reject`            | Flip a `Status: proposed` memory to `rejected` and append the same audit block. Same inbox-only state guard as `approve`. Rejected rows are excluded from default `lore-query action='recall'` / `'search'`; surface them via explicit `status: "rejected"`.  |
 
 ## `lore-query` — vault read paths
 

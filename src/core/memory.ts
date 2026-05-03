@@ -239,7 +239,7 @@ function shouldUseSaturationCutoff(
  * Notion's `does_not_equal` is permissive on null — a row with no
  * `Kind` column set (a hand-edited or pre-migration page) passes the
  * filter, since it is by definition not `decision`. Same posture as
- * the `Status: { does_not_equal: "proposed" }` default-recall filter.
+ * the `reviewTerminalStatusExclusionFilters` default-recall filter.
  */
 export function proposedMemoryFilter(): { and: Array<Record<string, unknown>> } {
   return {
@@ -248,6 +248,66 @@ export function proposedMemoryFilter(): { and: Array<Record<string, unknown>> } 
       { property: "Kind", select: { does_not_equal: "decision" } },
     ],
   }
+}
+
+/**
+ * Status values whose rows are excluded from default recall (issue
+ * #281, Phase 4). These are the **review-terminal** states — rows
+ * that have either left or never entered the active recall surface:
+ *
+ * - `proposed` — awaiting reviewer approval. Surfaced through the
+ *   inbox (`lore inbox list`, wake-up `Proposed Memories`); excluded
+ *   from `lore-query action='recall'` / `'search'` so a noisy
+ *   autosave-as-proposed flow cannot pollute recall. The
+ *   `includeProposed: true` opt-in flag exists for this case.
+ * - `rejected` — a reviewer explicitly rejected the row via
+ *   `lore inbox reject` / `lore-memory action='reject'`. Permanently
+ *   off the recall surface; the audit body keeps the verdict +
+ *   reviewer + reason for forensics. No opt-in flag — rejected rows
+ *   surface only via explicit `status: "rejected"` (the audit path).
+ *
+ * Both are `Status: { does_not_equal: "<value>" }` server-side
+ * clauses pushed onto the existing filter `and:` chain.
+ */
+export const REVIEW_TERMINAL_STATUSES = ["proposed", "rejected"] as const
+
+/**
+ * Default-recall exclusion filter clauses for the review-terminal
+ * statuses (`proposed` / `rejected`). Returns an array because
+ * Notion's select filter has no `not_in` operator — each excluded
+ * value needs its own `does_not_equal` clause. Caller pushes the
+ * results onto the outer `and:` chain.
+ *
+ * Use this from every recall surface so a future contributor adding
+ * a new review-terminal state lands the change in one place. Read-
+ * paths that explicitly opt in via `status: "<value>"` short-
+ * circuit the exclusion at the caller level.
+ */
+export function reviewTerminalStatusExclusionFilters(): Array<
+  Record<string, unknown>
+> {
+  return REVIEW_TERMINAL_STATUSES.map((status) => ({
+    property: "Status",
+    select: { does_not_equal: status },
+  }))
+}
+
+/**
+ * Client-side post-filter predicate for the semantic-search branch.
+ * `client.search` lacks property-filter support, so the
+ * default-exclude has to run after the materialization. Returns
+ * `true` for rows that should remain in the result set —
+ * `false` for review-terminal rows to drop.
+ *
+ * Counterpart to `reviewTerminalStatusExclusionFilters`; both
+ * encode the same predicate, the server-side and client-side
+ * variants compose into the same observable behavior.
+ */
+export function isNotReviewTerminalStatus(page: PageObjectResponse): boolean {
+  const status = extractSelect(page.properties["Status"], "informational")
+  return !REVIEW_TERMINAL_STATUSES.includes(
+    status as (typeof REVIEW_TERMINAL_STATUSES)[number]
+  )
 }
 
 const MEMORY_RELATION_PROPERTIES = [
@@ -744,6 +804,64 @@ export class RekeyAuditError extends Error {
     this.memoryId = details.memoryId
     this.oldTopicKey = details.oldTopicKey
     this.newTopicKey = details.newTopicKey
+    this.cause = details.cause
+  }
+}
+
+/**
+ * Thrown by `MemoryService.recordReview` when the target row's
+ * current `Status` is not `"proposed"` (issue #281, AC #3). The
+ * approve / reject actions are inbox-only — applying them to an
+ * already-accepted, rejected, or otherwise non-proposed row would
+ * be a state error that masquerades as a no-op. Callers route
+ * through this distinct subclass so the MCP / CLI surfaces can
+ * render an actionable error pointing at `lore-memory
+ * action='update' status='<value>'` for direct status flips.
+ */
+export class MemoryReviewStateError extends Error {
+  readonly memoryId: string
+  readonly currentStatus: MemoryStatus
+
+  constructor(
+    message: string,
+    details: { memoryId: string; currentStatus: MemoryStatus }
+  ) {
+    super(message)
+    this.name = "MemoryReviewStateError"
+    this.memoryId = details.memoryId
+    this.currentStatus = details.currentStatus
+  }
+}
+
+/**
+ * Thrown by `MemoryService.recordReview` when the `Status` property
+ * write succeeded but the body audit-block append failed. Same
+ * partial-state shape as `RekeyAuditError`: the load-bearing
+ * status flip is durable; the cosmetic audit trail is what's
+ * missing. A retry would reject with `MemoryReviewStateError`
+ * because the row is no longer `"proposed"`. See
+ * `recordReview`'s docstring for the full failure-mode rationale.
+ */
+export class MemoryReviewAuditError extends Error {
+  readonly memoryId: string
+  readonly previousStatus: MemoryStatus
+  readonly newStatus: MemoryStatus
+  readonly cause: unknown
+
+  constructor(
+    message: string,
+    details: {
+      memoryId: string
+      previousStatus: MemoryStatus
+      newStatus: MemoryStatus
+      cause: unknown
+    }
+  ) {
+    super(message)
+    this.name = "MemoryReviewAuditError"
+    this.memoryId = details.memoryId
+    this.previousStatus = details.previousStatus
+    this.newStatus = details.newStatus
     this.cause = details.cause
   }
 }
@@ -2505,6 +2623,215 @@ export class MemoryService {
   }
 
   /**
+   * Record an inbox-review verdict on a proposed memory (issue #281,
+   * AC #3 + AC #4). The caller is the human or authorized agent
+   * deciding whether the auto-extracted learning belongs in the
+   * shared vault or not.
+   *
+   * Two verdicts:
+   *
+   * - **`approve`** — flips `Status` from `proposed` to `accepted`.
+   *   The row enters default recall on the next read pass.
+   * - **`reject`** — flips `Status` from `proposed` to `rejected`.
+   *   The row stays out of default recall (the Phase 2 default-exclude
+   *   filters `proposed` only, but recall-shaped consumers should
+   *   continue ignoring `rejected` via their own status filtering).
+   *
+   * Both verdicts append a `## Reviewed (YYYY-MM-DD)` audit block to
+   * the page body recording the verdict, the reviewer, the timestamp,
+   * and an optional reason. Audit-block prefix differs from the
+   * topic-key re-key prefix (`## Re-keyed`) so a future memory-history
+   * renderer can distinguish lifecycle events from identity events
+   * without parsing body text. The block is the AC #4 surface — it's
+   * what a future operator sees when inspecting why a row landed in
+   * its current state.
+   *
+   * **Status guard**: a non-proposed row throws
+   * `MemoryReviewStateError`. The verdicts only make sense on the
+   * inbox-state — applying them to an already-accepted row would be
+   * a no-op masquerading as a real review event. Operators who want
+   * to flip a non-proposed row's status use
+   * `lore-memory action='update' status='<value>'` directly.
+   *
+   * **Property write FIRST, audit-block append SECOND** — same
+   * partial-state posture as `rekeyTopicKey`. A property-write
+   * success followed by an audit-write failure leaves the load-
+   * bearing status flip in place; the cosmetic audit trail is what
+   * gets lost. A retry observes `Status !== "proposed"` and rejects
+   * with `MemoryReviewStateError`, surfacing the partial state to
+   * the operator. The audit-failure path throws `MemoryReviewAuditError`
+   * (a distinct subclass of `Error`) so callers can branch on
+   * `instanceof` and disambiguate "review didn't happen" from
+   * "review happened but audit is missing." Two distinct call sites
+   * inside the audit-block envelope can fail and produce that same
+   * partial state: the body fetch (`pages.retrieveMarkdown`, which
+   * runs AFTER the status flip so guard-rejection paths skip the
+   * round-trip entirely) and the body write (`pages.updateMarkdown`,
+   * the actual audit append). Both share one `try/catch` and one
+   * `MemoryReviewAuditError` envelope — the recovery contract is
+   * identical (next retry rejects with `MemoryReviewStateError`),
+   * so callers don't need to disambiguate which sub-step failed.
+   *
+   * **Concurrent reviews**: two operators racing on the same memory
+   * can both see `Status: proposed` and both call `recordReview`.
+   * The second-to-write wins: the property update is per-request
+   * atomic, so the row ends up with whichever verdict landed last.
+   * Both audit blocks land on the body via separate `updateMarkdown`
+   * calls — the trailing call's body read happens after the leading
+   * call's write, so audit blocks accumulate without clobbering. A
+   * future contributor adding stricter conflict detection would
+   * route through a per-memory lock similar to the autosave-learning
+   * gate; not needed for 0.11.x given low review concurrency.
+   */
+  async recordReview(input: {
+    memoryId: string
+    verdict: "approve" | "reject"
+    reviewer: string
+    reason?: string
+  }): Promise<{ memory: Memory; previousStatus: MemoryStatus }> {
+    // Properties-only fetch for the structural guards. `getPropertiesById`
+    // skips the `pages.retrieveMarkdown` round-trip that `getById` would
+    // pay for the body — the Status / Kind guards only inspect Notion
+    // select properties, and the body is needed solely on the success
+    // path for the audit-block append. Failing guards short-circuit
+    // before the body fetch fires. Mirrors `lore inbox archive`'s
+    // status guard at `src/cli/commands/inbox.ts:151`; both inbox-
+    // touching call sites now share the property-only-read posture.
+    const memory = await this.getPropertiesById(input.memoryId)
+    if (memory.status !== "proposed") {
+      throw new MemoryReviewStateError(
+        `Cannot ${input.verdict} memory ${input.memoryId}: ` +
+          `current status is "${memory.status}", expected "proposed". ` +
+          `The approve / reject actions are inbox-only — use ` +
+          `\`lore-memory action='update' status='<value>'\` to flip a ` +
+          `non-proposed row's status directly.`,
+        {
+          memoryId: input.memoryId,
+          currentStatus: memory.status,
+        }
+      )
+    }
+    // Inbox contract is structural, not just UI: `proposedMemoryFilter()`
+    // (the canonical inbox predicate) excludes `Kind = decision` because
+    // proposed-state decisions are part of the decision lifecycle, not
+    // the auto-extracted-learning inbox. Refusing here prevents an
+    // operator or agent from running the memory-inbox approve / reject
+    // path on a decision row and bypassing the decision surface that
+    // owns governance (`lore-decision action='accept'` / `'supersede'`
+    // / `'review'`). Same `proposedMemoryFilter()` "single source of
+    // truth" contract that the count and listing surfaces honor.
+    if (memory.kind === "decision") {
+      throw new MemoryReviewStateError(
+        `Cannot ${input.verdict} memory ${input.memoryId}: ` +
+          `Kind is "decision". Decisions have their own lifecycle — ` +
+          `use \`lore-decision action='supersede'\` to retire a ` +
+          `decision or \`lore-decision action='review'\` to clear ` +
+          `the proposed state. The memory-inbox approve / reject ` +
+          `actions are limited to non-decision proposed memories.`,
+        {
+          memoryId: input.memoryId,
+          currentStatus: memory.status,
+        }
+      )
+    }
+
+    const newStatus: MemoryStatus =
+      input.verdict === "approve" ? "accepted" : "rejected"
+    const trimmedReviewer = input.reviewer.trim()
+    if (trimmedReviewer.length === 0) {
+      throw new Error(
+        `MemoryService.recordReview: reviewer must be a non-empty string. ` +
+          `Resolve the engineer identity (LORE_USER_NAME env or ` +
+          `services.identity.resolveAuthor()) before calling.`
+      )
+    }
+
+    // Property write first — see the docstring above for the
+    // partial-state rationale. Direct partial-property update; not
+    // routed through `update()` to keep the title cache undisturbed
+    // and avoid touching `Last Referenced At` (review is a write,
+    // not a read citation).
+    await this.client.pages.update({
+      page_id: input.memoryId,
+      properties: {
+        Status: { select: { name: newStatus } },
+      } as CreatePageParameters["properties"],
+    })
+
+    const today = todayUtc()
+    const reviewedAtIso = new Date().toISOString()
+    const verdictLabel = input.verdict === "approve" ? "approved" : "rejected"
+    // ISO 8601 timestamp on a separate `**Reviewed At:**` line so the
+    // audit trail satisfies issue #281's AC #4 ("approval records
+    // reviewer and timestamp in Notion-visible metadata or audit
+    // body"). The heading keeps the date for human readability;
+    // `Reviewed At` carries the durable wall-clock evidence so a
+    // future audit walker can recover ordering / latency without
+    // relying on Notion's `last_edited_time` (which any subsequent
+    // edit overwrites).
+    const auditLines = [
+      "",
+      "---",
+      "",
+      `## Reviewed (${today})`,
+      "",
+      `**Verdict:** ${verdictLabel}`,
+      `**Reviewer:** ${trimmedReviewer}`,
+      `**Reviewed At:** ${reviewedAtIso}`,
+    ]
+    const trimmedReason = input.reason?.trim() ?? ""
+    if (trimmedReason.length > 0) {
+      auditLines.push(`**Reason:** ${trimmedReason}`)
+    }
+    const auditBlock = auditLines.join("\n")
+
+    // Body fetch + audit append are wrapped together: either a
+    // failed `retrieveMarkdown` (after the status flip already
+    // landed) or a failed `updateMarkdown` leaves the same partial
+    // state — Status column updated, body audit missing — so they
+    // share one `MemoryReviewAuditError` envelope. The body fetch
+    // is deliberately deferred until AFTER the property write so
+    // guard-rejection / property-write failures short-circuit
+    // without paying for the body round-trip.
+    let newBody: string
+    try {
+      const { markdown } = await this.client.pages.retrieveMarkdown({
+        page_id: input.memoryId,
+      })
+      newBody = markdown + auditBlock
+      await this.client.pages.updateMarkdown({
+        page_id: input.memoryId,
+        type: "replace_content",
+        replace_content: {
+          new_str: newBody,
+          allow_deleting_content: true,
+        },
+      })
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err)
+      throw new MemoryReviewAuditError(
+        `Review persisted (status: proposed → ${newStatus}) but ` +
+          `audit-block append failed: ${cause}. The Status column is ` +
+          `updated; the body audit trail is missing. A retry will ` +
+          `reject with MemoryReviewStateError because the row is no ` +
+          `longer in proposed state. Inspect memory ${input.memoryId} ` +
+          `on Notion and append the audit manually if needed.`,
+        {
+          memoryId: input.memoryId,
+          previousStatus: memory.status,
+          newStatus,
+          cause: err,
+        }
+      )
+    }
+
+    return {
+      memory: { ...memory, status: newStatus, content: newBody },
+      previousStatus: memory.status,
+    }
+  }
+
+  /**
    * Hydrate the markdown body for a memory whose properties are already
    * known. Sibling of `getById` that skips the `pages.retrieve` call —
    * issued exclusively for callers that just received the row from a
@@ -3667,13 +3994,11 @@ export class MemoryService {
     }
     if (opts.includeProposed !== true) {
       // Same default-exclude posture as `MemoryService.list` and
-      // `MemoryService.search` (issue #281, AC #2). Proposed rows
-      // belong in the wake-up Proposed Memories section, not the
-      // Stale Confidence triage list.
-      filters.push({
-        property: "Status",
-        select: { does_not_equal: "proposed" },
-      })
+      // `MemoryService.search` (issue #281, AC #2 + Phase 4): hide
+      // both `proposed` (inbox-pending) and `rejected` (terminal-
+      // off-recall) rows from triage so review-state never leaks
+      // into the Stale Confidence subsection.
+      filters.push(...reviewTerminalStatusExclusionFilters())
     }
     filters.push({
       property: "Confidence Score",
@@ -4001,18 +4326,17 @@ export class MemoryService {
         select: { equals: opts.status },
       })
     } else if (opts?.includeProposed !== true) {
-      // Default-exclude `Status = proposed` so proposed-memory inbox
-      // rows do not pollute default recall paths (issue #281, AC #2).
-      // Explicit `status` short-circuits this branch — when the
-      // caller asks for `status: "proposed"` directly, that filter
-      // wins. Notion's `does_not_equal` semantics cover both the
-      // explicit `proposed` value and the null / pre-migration case
-      // (a row with no Status column set is NOT `proposed` and
-      // therefore passes this filter).
-      filters.push({
-        property: "Status",
-        select: { does_not_equal: "proposed" },
-      })
+      // Default-exclude review-terminal statuses (`proposed` and
+      // `rejected`) so neither pollutes default recall paths
+      // (issue #281, AC #2 + Phase 4). Explicit `status` short-
+      // circuits this branch — when the caller asks for
+      // `status: "proposed"` (the inbox-review path) or
+      // `status: "rejected"` (the audit path) directly, that filter
+      // wins. Notion's `does_not_equal` semantics cover both
+      // explicit values and the null / pre-migration case (a row
+      // with no Status column set is NOT review-terminal and
+      // therefore passes the filter).
+      filters.push(...reviewTerminalStatusExclusionFilters())
     }
     if (opts?.reviewBefore) {
       filters.push({
@@ -4334,13 +4658,11 @@ export class MemoryService {
       filters.push({ property: "Status", select: { equals: input.status } })
     } else if (input.includeProposed !== true) {
       // Same default-exclude posture as `MemoryService.list` (issue
-      // #281, AC #2): proposed-memory inbox rows do not pollute
+      // #281, AC #2 + Phase 4): both `proposed` (inbox-pending) and
+      // `rejected` (terminal-off-recall) rows are filtered out of
       // default search recall paths. Explicit `status` short-circuits
       // this branch.
-      filters.push({
-        property: "Status",
-        select: { does_not_equal: "proposed" },
-      })
+      filters.push(...reviewTerminalStatusExclusionFilters())
     }
 
     // Empty-string query degenerates to "match every page in the data source"
@@ -4794,15 +5116,13 @@ export class MemoryService {
           extractSelect(page.properties["Status"], "informational") === input.status
       )
     } else if (input.includeProposed !== true) {
-      // Default-exclude proposed rows from semantic search (issue
-      // #281, AC #2). `client.search` has no property-filter support,
+      // Default-exclude review-terminal rows (`proposed` and
+      // `rejected`) from semantic search (issue #281, AC #2 +
+      // Phase 4). `client.search` has no property-filter support,
       // so the exclusion runs as a client-side post-filter — same
       // posture as the kind / status exact-match filters above.
       // Explicit `input.status` short-circuits this branch.
-      filtered = filtered.filter(
-        (page) =>
-          extractSelect(page.properties["Status"], "informational") !== "proposed"
-      )
+      filtered = filtered.filter(isNotReviewTerminalStatus)
     }
 
     return filtered

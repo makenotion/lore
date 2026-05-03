@@ -3714,12 +3714,17 @@ describe("lore-wake-up — Proposed Memories review inbox (issue #281, AC #2)", 
     expect(text).not.toContain("sections.proposedMemories=20")
   })
 
-  it("CTA points at lore-query for discovery and lore-memory action='update' for lifecycle", async () => {
-    // Mechanical correctness: `lore-memory action='update'
-    // status='proposed'` is a no-op (mutation that keeps the row
-    // proposed). Discovery routes through the read path
-    // (`lore-query action='recall' status="proposed"`); lifecycle
-    // mutates via `status='accepted'` / `status='rejected'`.
+  it("CTA points at lore-query for discovery and lore-memory action='approve'/'reject' for lifecycle", async () => {
+    // Mechanical correctness: discovery routes through the read
+    // path (`lore-query action='recall' status="proposed"`);
+    // lifecycle routes through this PR's dedicated
+    // `lore-memory action='approve' / 'reject'` actions, both of
+    // which go through `MemoryService.recordReview` and append a
+    // `## Reviewed (YYYY-MM-DD)` audit block. The bare
+    // `action='update' status='accepted'/'rejected'` mutation path
+    // is the pre-Phase-4 interim — pointing agents at it from this
+    // wake-up surface would bypass the audit contract this PR
+    // exists to provide.
     const mockServer = createMockServer()
     const services = makeWakeServices({
       proposedMemories: [makeMemory("p1", { title: "A proposal" })],
@@ -3729,11 +3734,19 @@ describe("lore-wake-up — Proposed Memories review inbox (issue #281, AC #2)", 
 
     const text = extractText(await wake({}))
     expect(text).toContain("lore-query action='recall' status=\"proposed\"")
-    expect(text).toContain("status='accepted'")
-    expect(text).toContain("status='rejected'")
+    expect(text).toContain("action='approve'")
+    expect(text).toContain("action='reject'")
+    expect(text).toContain("Reviewed (YYYY-MM-DD)")
+    // Pre-Phase-4 interim mutations must not be advertised here —
+    // they bypass `recordReview`'s audit contract.
+    expect(text).not.toContain("status='accepted'")
+    expect(text).not.toContain("status='rejected'")
     // Mechanically wrong copy must not regress.
     expect(text).not.toContain(
       "explicitly opt in via `status: \"proposed\"` on `lore-memory action='update'`",
     )
+    // The "Phase 4 ships" forward-looking framing must not appear
+    // now that Phase 4 IS this PR.
+    expect(text).not.toContain("Phase 4 of #281 ships")
   })
 })

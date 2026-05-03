@@ -17,6 +17,7 @@ debugging, manual search).
 | `commands/auth.ts`      | `lore auth` -- check/display authentication status                                                                                                                          |
 | `commands/search.ts`    | `lore search <query>` -- semantic search across memories                                                                                                                    |
 | `commands/mine.ts`      | `lore mine [path]` -- index project files as memories                                                                                                                       |
+| `commands/inbox.ts`     | `lore inbox` -- proposed-memory review inbox (issue #281): `list` / `approve` / `reject` / `archive`                                                                        |
 | `commands/status.ts`    | `lore status` -- vault status + subcommands (projects, topics)                                                                                                              |
 | `commands/install.ts`   | `lore install` -- install Lore assistant hooks and MCP config into a project (Claude Code + Codex + Cursor by default; opt in to one with `--client claude\|codex\|cursor`) |
 | `commands/migrate.ts`   | `lore migrate` -- add missing schema properties to vault data sources                                                                                                       |
@@ -578,17 +579,24 @@ empty"; mirrors the Agent `"unknown"` fallback for empty
 rich_text values.
 
 This line is the **read-side count surface** of the proposed-memory
-review inbox (issue #281). Phase 2 of the same epic ships the
-**default-recall filter** so proposed rows are excluded from
-`MemoryService.list` / `search` / `queryStaleConfidence` and do not
-pollute `lore-query action='recall'` / `lore-context action='wake-up'`;
-the wake-up data layer adds a dedicated `proposedMemories` section
-that explicitly opts in via `status: "proposed"`. The
-autosave-writes-as-proposed config and the approve/reject CLI/MCP
-actions ship in subsequent phases of the same epic. Same
-operator-facing pattern as the Memory confidence line: shared
+review inbox (issue #281). The full epic ships in four phases:
+
+- Phase 1 — this line + `MemoryService.countProposed`.
+- Phase 2 — default-recall exclusion (`includeProposed?: boolean` on
+  `list` / `search` / `queryStaleConfidence`) plus the wake-up
+  `Proposed Memories` section.
+- Phase 3 — `hooks.proposeAutosaveLearnings` config flag that routes
+  every auto-extracted learning through the inbox instead of
+  writing it directly to accepted recall.
+- Phase 4 — `lore inbox` CLI (`list` / `approve` / `reject` /
+  `archive`) and `lore-memory action='approve' / 'reject'` MCP
+  actions, with reviewer + timestamp recorded in a `## Reviewed`
+  audit block on the page body.
+
+Same operator-facing pattern as the Memory confidence line: shared
 between CLI and MCP via the core renderer + loader in
-`src/core/proposed-inbox.ts`.
+`src/core/proposed-inbox.ts`. Reviewers act on individual rows via
+`lore inbox` (CLI) or the `approve` / `reject` MCP actions.
 
 The **Wake-up coverage** section renders the same content-free
 `formatWakeUpCoverage` line the hook emits under `LORE_DEBUG=1`, prefixed
@@ -981,6 +989,52 @@ Distinct from `MemoryService.list` (which is recall-shaped):
 - **Archived rows filtered client-side** — Notion's `archived`
   flag lives on `PageObjectResponse`, not as a DB column. Same
   posture as `findByTopicKey` / `listAllForBackfill`.
+
+## The inbox Command
+
+`lore inbox` is the operator-facing surface for the proposed-memory
+review inbox (issue #281). Four subcommands:
+
+- `inbox list [--project <name>] [-n <limit>]` — list memories
+  whose `Status = proposed`. Empty inbox prints a single line and
+  exits 0; the silent path matches the `lore status` Proposed
+  memories line's posture (an empty inbox is uneventful).
+- `inbox approve <memoryId> [--reason <text>]` — promote a row
+  to `Status: accepted`. Wraps `MemoryService.recordReview` with
+  `verdict: "approve"`. Reviewer is resolved via
+  `services.identity.resolveAuthor()` (the same lazy
+  `LORE_USER_NAME` → `users.me` chain that authors Memory
+  writes); an unresolvable identity fails with exit 1 instead of
+  landing an audit row attributed to "(unknown)".
+- `inbox reject <memoryId> [--reason <text>]` — same shape, sets
+  `Status: rejected`.
+- `inbox archive <memoryId>` — soft-delete via the existing
+  `MemoryService.archive` path. Symmetric vocabulary with
+  approve / reject; provided so the inbox-triage flow doesn't
+  require operators to remember `lore-memory action='archive'`
+  for the reject-via-archive case.
+
+The CLI is intentionally narrow — no `bulk-approve`, no
+`--filter`, no audit-only inspection mode. Operators triage
+visually via `lore inbox list`, then act on individual IDs.
+A future `bulk-approve` is plausible follow-up if the inbox
+depth grows; not needed for the initial Phase 4 ship.
+
+The `## Reviewed (YYYY-MM-DD)` audit block format is the
+canonical record of reviewer + timestamp for AC #4. The block
+is appended after the property write per `recordReview`'s
+property-first / audit-second posture (see `src/core/AGENTS.md`),
+so a partial-failure on the audit append leaves the load-bearing
+status flip in place; the row's structural state is correct
+even when the cosmetic audit trail is missing.
+
+The MCP parallel surface is `lore-memory action='approve'` /
+`'reject'` — same handler shape, same reviewer-resolution chain,
+same `recordReview` service path. Both surfaces share the
+`MemoryReviewStateError` (non-proposed row) and
+`MemoryReviewAuditError` (property write succeeded, audit
+write failed) error types so callers can branch on `instanceof`
+to disambiguate failure modes.
 
 ## The mine Command
 

@@ -433,7 +433,9 @@ The autosave sub-agent then writes every atomic learning with
 (see `MemoryService.list` / `search` / `queryStaleConfidence`'s
 `includeProposed` flag) and surfaces it in the wake-up
 `Proposed Memories` section and the `lore status` inbox-count line
-until a reviewer approves it via the Phase 4 actions.
+until a reviewer approves it via `lore inbox approve <id>` (CLI) or
+`lore-memory action='approve'` (MCP), or rejects it via the matching
+`reject` surfaces.
 
 Default is `false` — existing installs see byte-identical autosave
 behavior. The trust boundary this knob enables: a fleet of agents

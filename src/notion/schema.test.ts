@@ -617,3 +617,31 @@ describe("factsProperties — required Entity relations", () => {
     })
   })
 })
+
+describe("memoriesProperties — Status select options (issue #281)", () => {
+  it("registers every MemoryStatus literal so recordReview's select.name writes never reference a missing option", () => {
+    // `MemoryService.recordReview` writes `Status: { select: { name:
+    // "accepted" } }` / `"rejected"` and validates pre-write against
+    // `MemoryStatus === "proposed"`. If a future schema rename
+    // dropped `accepted` / `rejected` / `proposed` from the option
+    // list, the writes would fail at the Notion API with no
+    // type-level signal at compile time. Pin every option so the
+    // schema and the `MemoryStatus` union stay in lockstep.
+    const props = memoriesProperties("p-ds", "t-ds", "m-ds")
+    const statusProp = props["Status"] as
+      | { select: { options: Array<{ name: string; color?: string }> } }
+      | undefined
+    expect(statusProp).toBeDefined()
+    const optionNames = statusProp!.select.options.map((o) => o.name)
+    expect(optionNames).toEqual(
+      expect.arrayContaining([
+        "informational",
+        "proposed",
+        "accepted",
+        "superseded",
+        "deprecated",
+        "rejected",
+      ]),
+    )
+  })
+})

@@ -109,26 +109,21 @@ proposed-memory review inbox (`Status = proposed`) instead of writing it
 directly into accepted recall. Default is `false` so existing installs see
 byte-identical autosave behavior. When enabled, the rows are filtered out of
 default `lore-query action='recall'` / `lore-context action='wake-up'` until
-a reviewer surfaces them via `lore-query action='recall' status="proposed"`.
-
-To **approve** a proposed row into shared recall, run
-`lore-memory action='update' memoryId='<id>' status='accepted'` — the row
-leaves the inbox and becomes eligible for default recall and wake-up. To
-**reject** a noisy proposal, run
-`lore-memory action='archive' memoryId='<id>'`: archive is Notion's
-soft-delete and removes the row from every read surface, which is what
-shared-vault rejection needs. Bare
-`lore-memory action='update' status='rejected'` is **not** a recall-exclusion
-mechanism on this base — the default-exclude only suppresses
-`Status = proposed`, so a rejected row leaves the inbox but remains visible
-to default recall/search/wake-up. A subsequent phase of issue #281 ships a
-dedicated `lore inbox` CLI plus `lore-memory action='approve' / 'reject'`
-MCP actions (with a paired filter extension that hides rejected rows from
-default recall and an audit-block append on the page body); until those
-land, archive is the operator-safe rejection path. The inbox depth surfaces
-in `lore status`'s Proposed memories line and the wake-up Proposed Memories
-section. Has no effect when `hooks.learningExtraction` is `false` — there
-is no learning save to gate.
+a reviewer approves or rejects them via `lore inbox` (CLI:
+`lore inbox list`, `lore inbox approve <id>`, `lore inbox reject <id>`,
+`lore inbox archive <id>`) or `lore-memory action='approve' / 'reject'`
+(MCP). Both surfaces share the same `MemoryService.recordReview`
+service path and append a `## Reviewed (YYYY-MM-DD)` audit block with
+the reviewer + timestamp. Both terminal verdicts drop the row out of
+the proposed-memory inbox: `approve` makes it eligible for default
+recall, `reject` keeps it off default recall (the
+`reviewTerminalStatusExclusionFilters` default-exclude this PR adds
+to `MemoryService.list` / `search` / `queryStaleConfidence` covers
+both `proposed` and `rejected`), so neither verdict pollutes shared
+recall with noisy auto-extractions. The inbox depth surfaces in
+`lore status`'s Proposed memories line and the wake-up Proposed
+Memories section. Has no effect when `hooks.learningExtraction` is
+`false` — there is no learning save to gate.
 
 Atomic learning saves are deduplicated more strictly than ordinary memory
 saves. In background-agent runs, a `source: "conversation"`, `kind: "note"`,

@@ -525,29 +525,21 @@ This routes every auto-extracted learning through the proposed-memory
 review inbox (`Status = proposed`) instead of writing it directly to
 accepted recall. The trust boundary keeps a noisy session from
 polluting recall for everyone before a human reviewer approves the
-learning.
-
-Reviewers list the inbox via
-`lore-query action='recall' status="proposed"`. To **approve** a row
-into shared recall, run
-`lore-memory action='update' memoryId='<id>' status='accepted'` —
-the row leaves the inbox and is eligible for default
-`lore-query action='recall'` / `lore-context action='wake-up'`. To
-**reject** a noisy proposal, run
-`lore-memory action='archive' memoryId='<id>'`: archive is
-Notion's soft-delete and removes the row from every read surface,
-which is what shared-vault rejection actually needs. Bare
-`lore-memory action='update' status='rejected'` is **not** a recall-
-exclusion mechanism in this PR's base — it leaves the inbox but
-remains visible to default recall/search/wake-up because the
-parent stack's default-exclude only suppresses `Status = proposed`.
-A subsequent phase of issue #281 ships a dedicated `lore inbox`
-CLI plus `lore-memory action='approve' / 'reject'` MCP actions
-(with a paired filter extension that hides rejected rows from
-default recall and an audit-block append on the page body); until
-those land, archive is the operator-safe rejection path. The
-inbox depth surfaces in `lore status`'s **Proposed memories**
-line and the wake-up **Proposed Memories** section.
+learning. Reviewers act on the inbox via `lore inbox list` /
+`lore inbox approve <id>` / `lore inbox reject <id>` /
+`lore inbox archive <id>` (CLI), or `lore-memory action='approve'` /
+`lore-memory action='reject'` (MCP); both surfaces share the same
+`MemoryService.recordReview` service path and append a
+`## Reviewed (YYYY-MM-DD)` audit block with the reviewer + timestamp.
+Both terminal verdicts drop the row out of the proposed-memory
+inbox: `approve` makes it eligible for default recall, `reject`
+keeps it off default recall (the
+`reviewTerminalStatusExclusionFilters` default-exclude this PR
+adds to `MemoryService.list` / `search` / `queryStaleConfidence`
+covers both `proposed` and `rejected`), so neither verdict
+pollutes shared recall with noisy auto-extractions. The inbox
+depth also surfaces in `lore status`'s **Proposed memories** line
+and the wake-up **Proposed Memories** section.
 
 Single-engineer / personal-vault deployments can leave the flag at
 its `false` default — the inbox surface still exists if the engineer
