@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -546,6 +546,36 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
     expect(stdout).toHaveBeenCalledTimes(1)
+  })
+
+  it("allows a Codex UserPromptSubmit without a session id without writing a wake-up marker", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        turn_id: "turn-1",
+        prompt: "Make Codex wake-up query-aware",
+        cwd: "/tmp",
+      }),
+    })
+
+    expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    expect(stdout).toHaveBeenCalledTimes(1)
+    expect(readdirSync(stateDir).filter((entry) => entry.endsWith(".wakeup"))).toEqual(
+      [],
+    )
   })
 
   it("debounces later slash-command Codex prompts after ranked wake-up has run", async () => {
