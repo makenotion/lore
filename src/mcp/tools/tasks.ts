@@ -35,6 +35,7 @@ import {
 import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
+import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -46,8 +47,6 @@ const TASK_STATES = ["open", "in-progress", "blocked", "done", "cancelled"] as c
 const CLOSE_STATES = ["done", "cancelled"] as const
 
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
-
-const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
  * Default cap for `lore-task action='list'` listings. Per-section,
@@ -311,7 +310,7 @@ interface UpdateArgs {
   state?: (typeof TASK_STATES)[number]
   blockedBy?: string
   entity?: string
-  dueDate?: string
+  dueDate?: string | null
   subject?: string
   description?: string
   tags?: string[]
@@ -324,20 +323,6 @@ async function handleUpdate(
   args: UpdateArgs
 ): Promise<ToolResult> {
   try {
-    // Validate dueDate manually so `""` (clear-the-date) is allowed
-    // without inflating the Zod schema. A malformed non-empty value
-    // is rejected before it hits Notion.
-    let dueDateValue: string | null | undefined
-    if (args.dueDate === undefined) {
-      dueDateValue = undefined
-    } else if (args.dueDate === "") {
-      dueDateValue = null
-    } else if (!YMD_REGEX.test(args.dueDate)) {
-      throw new Error(`dueDate must be YYYY-MM-DD or empty string, got "${args.dueDate}"`)
-    } else {
-      dueDateValue = args.dueDate
-    }
-
     // Mirror create's `state: "blocked"` requirement: if the caller
     // is transitioning into `blocked`, they must name the blocker
     // in the same call. This conservative check trips even when the
@@ -362,7 +347,7 @@ async function handleUpdate(
       state: args.state as TaskState | undefined,
       blockedBy: args.blockedBy,
       entity: args.entity,
-      dueDate: dueDateValue,
+      dueDate: args.dueDate,
       subject: args.subject,
       description: args.description,
       tags: args.tags,
@@ -669,7 +654,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     entity: z.string().optional(),
     state: z.enum(TASK_STATES).optional(),
     blockedBy: z.string().optional(),
-    dueDate: z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format").optional(),
+    dueDate: ymdDateSchema.optional(),
     affectsIds: z.array(z.string()).optional(),
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
@@ -689,9 +674,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     state: z.enum(TASK_STATES).optional(),
     blockedBy: z.string().optional(),
     entity: z.string().optional(),
-    // Manual YMD validation in `handleUpdate` permits empty string for
-    // clear-the-date semantics; the schema only enforces the type.
-    dueDate: z.string().optional(),
+    dueDate: clearableYmdDateSchema.optional(),
     subject: z.string().optional(),
     description: z.string().optional(),
     tags: tagsSchema.optional(),
@@ -708,7 +691,7 @@ const taskDispatchSchema = z.discriminatedUnion("action", [
     projectName: z.string().optional(),
     entity: z.string().optional(),
     state: z.enum(TASK_STATES).optional(),
-    dueBefore: z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format").optional(),
+    dueBefore: ymdDateSchema.optional(),
     limit: z.number().int().min(1).max(200).optional(),
     startCursor: z.string().min(1).optional(),
     includeSynopsis: z.boolean().optional(),
@@ -743,7 +726,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "action='ask' surfaces it in the Tasks bucket.\n" +
         "- `action: 'update'` — change state, blocker, due date, subject, " +
         "description, or scoping. Any field omitted is left untouched. Pass " +
-        '`dueDate: ""` to clear the due date.\n' +
+        '`dueDate: null` or `dueDate: ""` to clear the due date.\n' +
         "- `action: 'close'` — mark done (or cancelled — distinguished for metrics).\n" +
         "- `action: 'list'` — list task memories with Overdue and Active " +
         "sections. Labels totals as exact or lower-bound; " +
@@ -807,12 +790,11 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
             "(action='create' | 'update') Free-form blocker label (PR number, person, external service). " +
               "Required when state is `blocked`; pass an empty string on update to clear."
           ),
-        dueDate: z
-          .string()
+        dueDate: clearableYmdDateSchema
           .optional()
           .describe(
             "(action='create') Due date (YYYY-MM-DD). Maps to the Review By column. " +
-              "(action='update') New due date — pass empty string to clear."
+              "(action='update') New due date; pass null or empty string to clear."
           ),
         affectsIds: z
           .array(z.string())
@@ -881,8 +863,7 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
           .optional()
           .describe("(action='create') Session ID to group related saves."),
         // list
-        dueBefore: z
-          .string()
+        dueBefore: ymdDateSchema
           .optional()
           .describe(
             "(action='list') Only return tasks with a Review By date on or before this YYYY-MM-DD."

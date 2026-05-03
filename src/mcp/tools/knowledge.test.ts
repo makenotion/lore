@@ -1178,6 +1178,117 @@ describe("lore-fact action='create' — tracking-predicate Zod rejection", () =>
   }
 })
 
+describe("lore-fact date validation", () => {
+  function makeCreateServices() {
+    const createWithDedup = vi.fn().mockImplementation(async (input) => ({
+      fact: makeFact("fact-created", {
+        subject: input.subject,
+        predicate: input.predicate,
+        object: input.object,
+        reviewBy: input.reviewBy ?? null,
+      }),
+      deduped: false,
+      enriched: [],
+    }))
+    return {
+      services: {
+        projects: { findByName: vi.fn() },
+        facts: {
+          createWithDedup,
+          queryByEntity: vi.fn(),
+          queryByObject: vi.fn(),
+        },
+        decisions: { getById: vi.fn() },
+        memories: {
+          getPropertiesById: vi.fn().mockResolvedValue({
+            id: "mem-source",
+            projectIds: [],
+          }),
+        },
+        context: { project: null },
+        sessionMemories: { record: vi.fn(), get: vi.fn() },
+        identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+        entities: makeEntityService(),
+      },
+      createWithDedup,
+    }
+  }
+
+  it("treats reviewBy: null on create as no initial review date", async () => {
+    const mockServer = createMockServer()
+    const { services, createWithDedup } = makeCreateServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const create = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await create({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "mem-source",
+      reviewBy: null,
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBeFalsy()
+    expect(createWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewBy: undefined })
+    )
+  })
+
+  it("normalizes reviewBy: empty string on create to no initial review date", async () => {
+    const mockServer = createMockServer()
+    const { services, createWithDedup } = makeCreateServices()
+    registerKnowledgeTools(mockServer.server, services as never)
+    const create = mockServer.getActionHandler("lore-fact", "create")
+
+    const result = await create({
+      subject: "AuthService",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "mem-source",
+      reviewBy: "",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBeFalsy()
+    expect(createWithDedup).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewBy: undefined })
+    )
+  })
+
+  it("threads reviewBy: null on extend through as an explicit clear", async () => {
+    const mockServer = createMockServer()
+    const extendReview = vi.fn().mockResolvedValue(undefined)
+    registerKnowledgeTools(mockServer.server, { facts: { extendReview } } as never)
+    const extend = mockServer.getActionHandler("lore-fact", "extend")
+
+    await extend({ factId: "fact-1", reviewBy: null } as never)
+
+    expect(extendReview).toHaveBeenCalledWith("fact-1", null)
+  })
+
+  it("normalizes reviewBy: empty string on extend to an explicit clear", async () => {
+    const mockServer = createMockServer()
+    const extendReview = vi.fn().mockResolvedValue(undefined)
+    registerKnowledgeTools(mockServer.server, { facts: { extendReview } } as never)
+    const extend = mockServer.getActionHandler("lore-fact", "extend")
+
+    await extend({ factId: "fact-1", reviewBy: "" } as never)
+
+    expect(extendReview).toHaveBeenCalledWith("fact-1", null)
+  })
+
+  it("rejects malformed review dates before fact mutation", async () => {
+    const mockServer = createMockServer()
+    const extendReview = vi.fn()
+    registerKnowledgeTools(mockServer.server, { facts: { extendReview } } as never)
+    const extend = mockServer.getActionHandler("lore-fact", "extend")
+
+    const result = await extend({ factId: "fact-1", reviewBy: "05/03/2026" } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(extendReview).not.toHaveBeenCalled()
+  })
+})
+
 describe("lore-fact action='create' projectName resolution", () => {
   it("rejects an unresolved explicit projectName before creating a fact", async () => {
     const mockServer = createMockServer()

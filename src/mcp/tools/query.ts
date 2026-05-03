@@ -5,15 +5,9 @@ import { formatDispatchError, toolError } from "../helpers.js"
 import { handleRecall, handleSearch } from "./memory.js"
 import { handleAsk, handleAudit } from "./knowledge.js"
 import { tagsSchema } from "./tag-schema.js"
+import { ymdDateSchema } from "./date-schema.js"
 
-const KINDS = [
-  "note",
-  "decision",
-  "incident",
-  "runbook",
-  "postmortem",
-  "policy",
-] as const
+const KINDS = ["note", "decision", "incident", "runbook", "postmortem", "policy"] as const
 
 const STATUSES = [
   "informational",
@@ -25,8 +19,6 @@ const STATUSES = [
 ] as const
 
 const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as const
-
-const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 /**
  * Agent-facing description for `intent` on the `search` arm. Hoisted out of
@@ -66,7 +58,7 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
     source: z.enum(SOURCES).optional(),
     kind: z.enum(KINDS).optional(),
     status: z.enum(STATUSES).optional(),
-    reviewBefore: z.string().regex(YMD_REGEX).optional(),
+    reviewBefore: ymdDateSchema.optional(),
     limit: z.number().int().min(1).max(100).optional(),
     startCursor: z.string().min(1).optional(),
     includeContent: z.boolean().optional(),
@@ -128,7 +120,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         action: z
           .enum(["recall", "search", "ask", "audit"])
           .describe(
-            "Operation: recall (list recent), search (semantic), ask (entity facts), audit.",
+            "Operation: recall (list recent), search (semantic), ask (entity facts), audit."
           ),
         // search only
         query: z
@@ -151,7 +143,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(action='recall') Filter by topic name. " +
-              "(action='search') Scope to a topic. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+              "(action='search') Scope to a topic. Server-side filter in `contains`/`hybrid`; post-filter in `semantic`."
           ),
         source: z
           .enum(SOURCES)
@@ -163,28 +155,28 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .optional()
           .describe(
             "(action='recall') Filter by memory kind. " +
-              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`."
           ),
         status: z
           .enum(STATUSES)
           .optional()
           .describe(
             "(action='recall') Filter by lifecycle status. " +
-              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`.",
+              "(action='search') Server-side filter in `contains`/`hybrid`; post-filter in `semantic`."
           ),
         // recall only
-        reviewBefore: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+        reviewBefore: ymdDateSchema
           .optional()
-          .describe("(action='recall') Only return memories with `Review By` on or before."),
+          .describe(
+            "(action='recall') Only return memories with `Review By` on or before."
+          ),
         // search only
         tags: tagsSchema
           .optional()
           .describe(
             "(action='search') Filter by closed-vocabulary tags (matches any). " +
               "Server-side filter in `contains`/`hybrid`; post-filter in `semantic`. " +
-              "For free-form keyword filtering, use `query`.",
+              "For free-form keyword filtering, use `query`."
           ),
         // search only
         mode: z
@@ -194,14 +186,14 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
             "(action='search') Search mode (default `hybrid`). `contains` for DS-scoped substring " +
               "matching with server-side property filters; `semantic` for workspace-wide vector " +
               "relevance over titles AND bodies; `hybrid` fires both in parallel and uses contains " +
-              "alone when it saturates (≥ 3 hits) or RRF-fuses both branches when it doesn't.",
+              "alone when it saturates (≥ 3 hits) or RRF-fuses both branches when it doesn't."
           ),
         // search only
         explain: z
           .boolean()
           .optional()
           .describe(
-            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did.",
+            "(action='search') Append a `## Score trace` footer with per-row branch, contains/semantic ranks, and RRF score. Useful for diagnosing why a row sorted where it did."
           ),
         // search only
         intent: z.string().optional().describe(INTENT_DESCRIPTION),
@@ -212,9 +204,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .min(1)
           .max(200)
           .optional()
-          .describe(
-            "Max results. Defaults: recall 10, search 10, ask 5/bucket.",
-          ),
+          .describe("Max results. Defaults: recall 10, search 10, ask 5/bucket."),
         // recall only
         startCursor: z
           .string()
@@ -226,21 +216,21 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
           .boolean()
           .optional()
           .describe(
-            "(recall | search) Include each memory's markdown body (default false). One extra Notion round-trip per row.",
+            "(recall | search) Include each memory's markdown body (default false). One extra Notion round-trip per row."
           ),
         // recall | search
         includeSynopsis: z
           .boolean()
           .optional()
           .describe(
-            "(recall | search) Render the memory's 1–2 sentence synopsis (when present) under the title (default true). Pass false to restore the byte-identical pre-synopsis title-only output for narrow terminals or callers that already plan to fetch bodies.",
+            "(recall | search) Render the memory's 1–2 sentence synopsis (when present) under the title (default true). Pass false to restore the byte-identical pre-synopsis title-only output for narrow terminals or callers that already plan to fetch bodies."
           ),
         // ask only
         includeContext: z
           .boolean()
           .optional()
           .describe(
-            "(action='ask') Prepend a project framing block (name, description, siblings, catch-all warning) above the grouped-display sections (default true). Pass `false` when the agent's system prompt already supplies framing, to save output tokens.",
+            "(action='ask') Prepend a project framing block (name, description, siblings, catch-all warning) above the grouped-display sections (default true). Pass `false` when the agent's system prompt already supplies framing, to save output tokens."
           ),
       },
       annotations: { readOnlyHint: true },
@@ -248,9 +238,7 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
     async (args) => {
       const parsed = queryDispatchSchema.safeParse(args)
       if (!parsed.success) {
-        return toolError(
-          new Error(formatDispatchError("lore-query", parsed.error)),
-        )
+        return toolError(new Error(formatDispatchError("lore-query", parsed.error)))
       }
       switch (parsed.data.action) {
         case "recall":
@@ -262,6 +250,6 @@ export function registerQueryTools(server: McpServer, services: LoreServices): v
         case "audit":
           return handleAudit(services, parsed.data)
       }
-    },
+    }
   )
 }

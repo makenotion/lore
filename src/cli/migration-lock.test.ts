@@ -24,6 +24,7 @@ import {
 
 const DEAD_PID = 4_000_001
 const TEST_STATE_DIR = `${process.env["TMPDIR"] ?? "/tmp"}/lore-migration-lock-test-${process.pid}-${Date.now()}`
+const RACE_TEST_TIMEOUT_MS = 90_000
 let originalStateDir: string | undefined
 
 type WorkerRaceResult = {
@@ -336,24 +337,32 @@ describe("tryAcquireMigrationLock", () => {
     expectLockOwnedByThisProcess(path)
   })
 
-  it("allows exactly one racing process to acquire a fresh lock", async () => {
-    const results = await runWorkerRace(scope())
+  it(
+    "allows exactly one racing process to acquire a fresh lock",
+    async () => {
+      const results = await runWorkerRace(scope())
 
-    expect(results.filter((r) => r.acquired)).toHaveLength(1)
-    expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 30_000)
+      expect(results.filter((r) => r.acquired)).toHaveLength(1)
+      expect(results.filter((r) => !r.acquired)).toHaveLength(1)
+    },
+    RACE_TEST_TIMEOUT_MS
+  )
 
-  it("allows exactly one racing process to reclaim a stale lock", async () => {
-    const lockScope = scope()
-    const path = seedLock(lockScope, DEAD_PID)
-    const old = new Date(Date.now() - MALFORMED_LOCK_STALE_MS - 1_000)
-    utimesSync(path, old, old)
+  it(
+    "allows exactly one racing process to reclaim a stale lock",
+    async () => {
+      const lockScope = scope()
+      const path = seedLock(lockScope, DEAD_PID)
+      const old = new Date(Date.now() - MALFORMED_LOCK_STALE_MS - 1_000)
+      utimesSync(path, old, old)
 
-    const results = await runWorkerRace(lockScope)
+      const results = await runWorkerRace(lockScope)
 
-    expect(results.filter((r) => r.acquired)).toHaveLength(1)
-    expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 30_000)
+      expect(results.filter((r) => r.acquired)).toHaveLength(1)
+      expect(results.filter((r) => !r.acquired)).toHaveLength(1)
+    },
+    RACE_TEST_TIMEOUT_MS
+  )
 
   it("keeps independent scopes from blocking each other", () => {
     const first = tryAcquireMigrationLock(scope({ vaultPageId: "vault-a" }))

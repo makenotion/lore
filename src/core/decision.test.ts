@@ -797,6 +797,16 @@ describe("DecisionService.reviewCompleted", () => {
     })
   })
 
+  it("clears the review date when null is provided", async () => {
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await service.reviewCompleted("dec-1", null)
+
+    const updateArgs = (client.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(updateArgs.properties["Review By"]).toEqual({ date: null })
+  })
+
   it("defaults to +90 days when no date is given", async () => {
     const client = createMockClient()
     const service = new DecisionService(client, DB)

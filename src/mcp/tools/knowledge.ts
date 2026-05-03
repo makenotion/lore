@@ -19,6 +19,7 @@ import {
   renderTrustLine,
   resolveReferencedTitles,
 } from "../render.js"
+import { clearableYmdDateSchema } from "./date-schema.js"
 
 import type { Decision, Fact, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
@@ -83,8 +84,6 @@ const PREDICATE_VALUES = [
 
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
-const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
-
 /**
  * Return true when the auto-link candidate's project scope is compatible
  * with the fact's. Rules:
@@ -97,7 +96,10 @@ const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
  * Anything else is a durable cross-project mis-link risk and must be
  * declined. Mirror of the conservative stance in the backfill heuristic.
  */
-function projectsCompatible(factProjectIds: string[], memoryProjectIds: string[]): boolean {
+function projectsCompatible(
+  factProjectIds: string[],
+  memoryProjectIds: string[]
+): boolean {
   if (factProjectIds.length === 0 || memoryProjectIds.length === 0) return true
   const memoryScope = new Set(memoryProjectIds)
   return factProjectIds.some((id) => memoryScope.has(id))
@@ -176,7 +178,7 @@ function renderGenericTrailing(fact: Fact, today: string): string {
 
 function compareSortKeyDesc(
   a: { sortKey: string | null },
-  b: { sortKey: string | null },
+  b: { sortKey: string | null }
 ): number {
   if (a.sortKey === b.sortKey) return 0
   if (!a.sortKey) return 1
@@ -233,9 +235,9 @@ const FACT_RRF_K = 4
  * and the RRF pass devolves to monotonic-by-rank == byte-identical
  * pre-DEFERRED-02 recency ordering.
  */
-function applyConfidenceWeightedRrf<
-  T extends { sortKey: string | null; fact?: Fact },
->(items: T[]): T[] {
+function applyConfidenceWeightedRrf<T extends { sortKey: string | null; fact?: Fact }>(
+  items: T[]
+): T[] {
   if (items.length <= 1) return items
   // Recency-sort first to assign deterministic ranks. This is the
   // same shape `compareSortKeyDesc` already produces; we run it
@@ -276,7 +278,7 @@ function applyConfidenceWeightedRrf<
  */
 function collectAskSourceMemoryIds(
   visibleGovernance: ReadonlyArray<{ decision?: Decision; fact?: Fact }>,
-  visibleStructure: ReadonlyArray<{ fact: Fact }>,
+  visibleStructure: ReadonlyArray<{ fact: Fact }>
 ): string[] {
   const ids = new Set<string>()
   for (const item of visibleGovernance) {
@@ -301,7 +303,7 @@ interface LearnArgs {
   object: string
   projectName?: string
   projectNames?: string[]
-  reviewBy?: string
+  reviewBy?: string | null
   confidence?: (typeof CONFIDENCES)[number]
   sourceMemoryId?: string
   session?: string
@@ -310,10 +312,14 @@ interface LearnArgs {
 
 export async function handleLearn(
   services: LoreServices,
-  args: LearnArgs,
+  args: LearnArgs
 ): Promise<ToolResult> {
   try {
-    const resolved = await resolveProjectIds(services, args.projectName, args.projectNames)
+    const resolved = await resolveProjectIds(
+      services,
+      args.projectName,
+      args.projectNames
+    )
     const factProjectIds = resolved.ids
 
     // Dispatcher schema already rejects blank sources; keep this for direct handler callers.
@@ -379,7 +385,11 @@ export async function handleLearn(
     // back to the agent on multi-match.
     let subjectEntityId: string | undefined
     let objectEntityId: string | undefined
-    const ambiguous: Array<{ side: "subject" | "object"; input: string; candidates: string[] }> = []
+    const ambiguous: Array<{
+      side: "subject" | "object"
+      input: string
+      candidates: string[]
+    }> = []
     // Per-side `.catch(() => null)` instead of `Promise.all`: a
     // transient Notion 5xx on either resolver must NOT sink the
     // whole `lore-fact action='create'` call. Autosave callers have
@@ -400,7 +410,7 @@ export async function handleLearn(
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err)
           toolWarnings.push(
-            `Subject entity resolution failed: ${message}. Fact written without SubjectEntity relation.`,
+            `Subject entity resolution failed: ${message}. Fact written without SubjectEntity relation.`
           )
           return null
         }),
@@ -412,7 +422,7 @@ export async function handleLearn(
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err)
           toolWarnings.push(
-            `Object entity resolution failed: ${message}. Fact written without ObjectEntity relation.`,
+            `Object entity resolution failed: ${message}. Fact written without ObjectEntity relation.`
           )
           return null
         }),
@@ -461,7 +471,7 @@ export async function handleLearn(
         toolWarnings.push(
           `Ambiguous ${a.side} "${a.input}" — matched ${a.candidates.length} entities (${a.candidates.join(", ")}). ` +
             `Fact written without ${a.side === "subject" ? "Subject" : "Object"}Entity relation. ` +
-            `Re-issue with the canonical name to attach the relation.`,
+            `Re-issue with the canonical name to attach the relation.`
         )
       }
     }
@@ -471,7 +481,7 @@ export async function handleLearn(
       predicate: args.predicate,
       object: args.object,
       projectIds: factProjectIds.length > 0 ? factProjectIds : undefined,
-      reviewBy: args.reviewBy,
+      reviewBy: args.reviewBy ?? undefined,
       confidence: args.confidence,
       sourceMemoryId: effectiveSource,
       subjectEntityId,
@@ -511,7 +521,7 @@ export async function handleLearn(
 
 export async function handleInvalidate(
   services: LoreServices,
-  args: { factId: string },
+  args: { factId: string }
 ): Promise<ToolResult> {
   try {
     // Read first so we capture `sourceMemoryId` before the invalidate write —
@@ -538,9 +548,7 @@ export async function handleInvalidate(
       // because the decrement algebra reads only `id`, `confidence`,
       // `confidenceScore`, `lastReferencedAt`, `createdAt`.
       try {
-        const sourceMemory = await services.memories.getPropertiesById(
-          sourceMemoryId,
-        )
+        const sourceMemory = await services.memories.getPropertiesById(sourceMemoryId)
         await services.memories.decrementConfidence(sourceMemory)
       } catch (err) {
         debugLogContradictionFailure("invalidate", sourceMemoryId, err)
@@ -557,13 +565,21 @@ export async function handleInvalidate(
 
 export async function handleExtendFact(
   services: LoreServices,
-  args: { factId: string; reviewBy: string },
+  args: { factId: string; reviewBy: string | null }
 ): Promise<ToolResult> {
   try {
     await services.facts.extendReview(args.factId, args.reviewBy)
+    if (args.reviewBy === null) {
+      return {
+        content: [{ type: "text", text: `Cleared review date for ${args.factId}` }],
+      }
+    }
     return {
       content: [
-        { type: "text", text: `Extended review date for ${args.factId} to ${args.reviewBy}` },
+        {
+          type: "text",
+          text: `Extended review date for ${args.factId} to ${args.reviewBy}`,
+        },
       ],
     }
   } catch (err) {
@@ -581,7 +597,7 @@ interface AskArgs {
 export async function handleAsk(
   services: LoreServices,
   args: AskArgs,
-  toolName: string,
+  toolName: string
 ): Promise<ToolResult> {
   try {
     // Mirrors `handleWakeUp`'s explicit-projectName rule (issue 0.6.0/18,
@@ -619,7 +635,7 @@ export async function handleAsk(
           .join(", ")
         warnings.push(
           `"${args.entity}" matches ${resolution.candidates.length} entities — falling back to substring search. ` +
-            `Disambiguate by passing one of: ${candidateLabels}.`,
+            `Disambiguate by passing one of: ${candidateLabels}.`
         )
       } else if (resolution.entity) {
         entityId = resolution.entity.id
@@ -649,7 +665,7 @@ export async function handleAsk(
           : ""
       warnings.push(
         `Task recall capped at ${taskVariants.variants.length} alias variants for "${args.entity}" — ` +
-          `dropped ${droppedLabel}${remainder}. Tasks written under the dropped aliases may be missed.`,
+          `dropped ${droppedLabel}${remainder}. Tasks written under the dropped aliases may be missed.`
       )
     }
 
@@ -690,8 +706,8 @@ export async function handleAsk(
           composeProjectContext(
             resolvedProject,
             services.config,
-            resolvedCatchAllFallback,
-          ),
+            resolvedCatchAllFallback
+          )
         )
       : []
     const framingPrefix =
@@ -717,7 +733,7 @@ export async function handleAsk(
 
     const decidedByFacts = governance.filter((fact) => fact.predicate === "decided_by")
     const supersedesFacts = governance.filter(
-      (fact) => fact.predicate === "supersedes_decision",
+      (fact) => fact.predicate === "supersedes_decision"
     )
 
     // Dispatch the canonical-decision-link walk and the title-resolution
@@ -737,19 +753,17 @@ export async function handleAsk(
     // `null` (see `src/core/memory.ts`'s `fetchTitleAndCache`). If a
     // future change makes either callee throw, swap to
     // `Promise.allSettled` here so the failures bucket is still drained.
-    const [
-      { links: decisionLinks, failures: decisionFailures },
-      titleMap,
-    ] = await Promise.all([
-      resolveCanonicalDecisionLinks(services, decidedByFacts, { projectId }),
-      resolveReferencedTitles([...supersedesFacts, ...structure], services),
-    ])
+    const [{ links: decisionLinks, failures: decisionFailures }, titleMap] =
+      await Promise.all([
+        resolveCanonicalDecisionLinks(services, decidedByFacts, { projectId }),
+        resolveReferencedTitles([...supersedesFacts, ...structure], services),
+      ])
 
     if (decisionFailures.length > 0) {
       debugLogPartialFailures(toolName, decisionFailures)
       const rootIds = decisionFailures.map(({ rootId }) => rootId).join(", ")
       warnings.push(
-        `Could not resolve ${decisionFailures.length} decision root${decisionFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`,
+        `Could not resolve ${decisionFailures.length} decision root${decisionFailures.length === 1 ? "" : "s"} (${rootIds}) — retry before relying on this result.`
       )
     }
 
@@ -823,7 +837,7 @@ export async function handleAsk(
       sections.push(
         `### Governance (${governanceItems.length})${hiddenSuffix}\n${visibleGovernance
           .map((item) => item.line)
-          .join("\n")}`,
+          .join("\n")}`
       )
     }
 
@@ -835,7 +849,7 @@ export async function handleAsk(
       sections.push(
         `### Structure (${structureItems.length})${hiddenSuffix}\n${visibleStructure
           .map((item) => item.line)
-          .join("\n")}`,
+          .join("\n")}`
       )
     }
 
@@ -881,7 +895,7 @@ export async function handleAsk(
       sections.push(
         `### Tasks (${taskItems.length})${hiddenSuffix}\n${visible
           .map((item) => item.line)
-          .join("\n")}`,
+          .join("\n")}`
       )
     }
 
@@ -896,10 +910,7 @@ export async function handleAsk(
       }
     }
 
-    const totalFacts =
-      governanceItems.length +
-      structureItems.length +
-      taskItems.length
+    const totalFacts = governanceItems.length + structureItems.length + taskItems.length
     const overflowHint =
       anyOverflow && args.limit === undefined
         ? `\n\n(pass limit to raise the cap; e.g. limit=${SUGGESTED_OVERFLOW_LIMIT})`
@@ -908,8 +919,7 @@ export async function handleAsk(
     // Header noun: tasks become first-class in the same response, so a
     // vault with only tasks (post-migration, sparse facts) doesn't
     // misreport "0 facts" when the section actually rendered.
-    const noun =
-      taskItems.length > 0 && facts.length === 0 ? "results" : "facts"
+    const noun = taskItems.length > 0 && facts.length === 0 ? "results" : "facts"
     const response: ToolResult = {
       content: [
         {
@@ -933,10 +943,7 @@ export async function handleAsk(
     // (`(N hidden)`) are not surfaced to the agent, so touching their
     // backing memories would inflate RRF's confidence factor against
     // rows that were never cited. See `collectAskSourceMemoryIds`.
-    const sourceMemoryIds = collectAskSourceMemoryIds(
-      visibleGovernance,
-      visibleStructure,
-    )
+    const sourceMemoryIds = collectAskSourceMemoryIds(visibleGovernance, visibleStructure)
     if (sourceMemoryIds.length > 0) {
       try {
         const cited = await services.memories.getManyById(sourceMemoryIds)
@@ -967,7 +974,7 @@ export async function handleAsk(
 
 export async function handleAudit(
   services: LoreServices,
-  args: { projectName?: string },
+  args: { projectName?: string }
 ): Promise<ToolResult> {
   try {
     const { projectId } = await resolveReadProjectScope(services, args.projectName)
@@ -1001,12 +1008,12 @@ export async function handleAudit(
     const overdueTasks = overdueTaskWindow.items
     if (overdueDecisionWindow.capped) {
       warnings.push(
-        "Overdue decision scan reached the live-row refill cap; more overdue decisions may exist.",
+        "Overdue decision scan reached the live-row refill cap; more overdue decisions may exist."
       )
     }
     if (overdueTaskWindow.capped) {
       warnings.push(
-        "Overdue task scan reached the live-row refill cap; more overdue tasks may exist.",
+        "Overdue task scan reached the live-row refill cap; more overdue tasks may exist."
       )
     }
     const cappedFooter = paginationFooter(undefined, {
@@ -1021,10 +1028,9 @@ export async function handleAudit(
       overdueDecisions.length === 0 &&
       overdueTasks.length === 0
     ) {
-      const text =
-        taskLookupFailed
-          ? "No overdue facts or decisions found. Overdue tasks could not be checked."
-          : "No overdue facts, decisions, or tasks found."
+      const text = taskLookupFailed
+        ? "No overdue facts or decisions found. Overdue tasks could not be checked."
+        : "No overdue facts, decisions, or tasks found."
       return {
         content: [
           {
@@ -1042,7 +1048,7 @@ export async function handleAudit(
       const factLines = overdueFacts
         .map((f) => {
           const days = Math.floor(
-            (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000,
+            (new Date(today).getTime() - new Date(f.reviewBy!).getTime()) / 86_400_000
           )
           const since = f.validFrom ? ` (since ${f.validFrom})` : ""
           // DEFERRED-02 — emit the trust line between the title row
@@ -1072,8 +1078,7 @@ export async function handleAudit(
         .map((d) => {
           const days = d.reviewBy
             ? Math.floor(
-                (new Date(today).getTime() - new Date(d.reviewBy).getTime()) /
-                  86_400_000,
+                (new Date(today).getTime() - new Date(d.reviewBy).getTime()) / 86_400_000
               )
             : 0
           const decided = d.decidedAt ? ` | decided ${d.decidedAt}` : ""
@@ -1092,7 +1097,9 @@ export async function handleAudit(
           )
         })
         .join("\n")
-      sections.push(`## Overdue Decisions (${overdueDecisions.length})\n\n${decisionLines}`)
+      sections.push(
+        `## Overdue Decisions (${overdueDecisions.length})\n\n${decisionLines}`
+      )
     }
 
     if (overdueTasks.length > 0) {
@@ -1175,7 +1182,7 @@ const factDispatchSchema = z
       object: z.string(),
       projectName: z.string().optional(),
       projectNames: z.array(z.string()).optional(),
-      reviewBy: z.string().regex(YMD_REGEX).optional(),
+      reviewBy: clearableYmdDateSchema.optional(),
       confidence: z.enum(CONFIDENCES).optional(),
       sourceMemoryId: z.string().optional(),
       session: z.string().optional(),
@@ -1188,7 +1195,7 @@ const factDispatchSchema = z
     z.object({
       action: z.literal("extend"),
       factId: z.string(),
-      reviewBy: z.string().regex(YMD_REGEX),
+      reviewBy: clearableYmdDateSchema,
     }),
   ])
   .superRefine((args, ctx) => {
@@ -1216,16 +1223,16 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
     {
       title: "Knowledge graph fact mutations",
       description:
-        "Create, invalidate, or extend the review window of facts in the knowledge graph. Action-dispatched:\n\n" +
+        "Create/invalidate facts; set or clear fact review dates. Action-dispatched:\n\n" +
         "- `action: 'create'` — add a Subject —predicate→ Object triple. Auto-dedupes against existing equivalent triples and merges metadata onto the survivor.\n" +
         "- `action: 'invalidate'` — mark a fact as no longer true (sets `Valid Until` to today). Preserved for history.\n" +
-        "- `action: 'extend'` — push back a fact's review-by date.\n\n" +
+        "- `action: 'extend'` — set or clear a fact's review-by date.\n\n" +
         "Every created fact MUST link back to a supporting memory via `sourceMemoryId` so `lore-query action='ask'` can retrace the reasoning. Pass a live Memories row ID directly, or pass `agent`+`session` matching an earlier `lore-memory action='save'` / `lore-decision action='create'` call in the same process and `sourceMemoryId` auto-links. If neither path produces a compatible Source memory, the create call is rejected before writing.\n\n" +
         "Decision predicates (`decided_by`, `supersedes_decision`, `informs`) and the auto-emitted `mentions` predicate are internal-only and not accepted here — `decided_by` / `supersedes_decision` / `informs` are auto-created by the decision tool family; `mentions` is auto-emitted by `lore-memory action='save'`. Use richer relationship predicates (`uses`, `depends_on`, etc.) for agent-curated edges.",
       inputSchema: {
         action: z
           .enum(["create", "invalidate", "extend"])
-          .describe("Operation: create, invalidate, or extend (push back review date)."),
+          .describe("Operation: create, invalidate, or extend (set/clear review date)."),
         // create
         subject: z
           .string()
@@ -1239,7 +1246,10 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           .string()
           .optional()
           .describe("(action='create') The related entity or value."),
-        projectName: z.string().optional().describe("(action='create') Scope to a project."),
+        projectName: z
+          .string()
+          .optional()
+          .describe("(action='create') Scope to a project."),
         projectNames: z
           .array(z.string())
           .optional()
@@ -1258,35 +1268,31 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
           .string()
           .optional()
           .describe(
-            "(action='create') Session ID. With `agent`, used to auto-link `sourceMemoryId`.",
+            "(action='create') Session ID. With `agent`, used to auto-link `sourceMemoryId`."
           ),
         agent: z
           .string()
           .optional()
           .describe("(action='create') Agent name. Part of the session composite key."),
         // shared (create | extend)
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+        reviewBy: clearableYmdDateSchema
           .optional()
           .describe(
-            "(action='create' optional, action='extend' required) Review-by date (YYYY-MM-DD).",
+            "(action='create' optional, action='extend' required) Review-by date (YYYY-MM-DD). On create, null or empty string means no initial review date; on extend, null or empty string clears."
           ),
         // invalidate | extend
         factId: z
           .string()
           .optional()
           .describe(
-            "Required for action='invalidate' and action='extend'. The fact's page ID.",
+            "Required for action='invalidate' and action='extend'. The fact's page ID."
           ),
       },
     },
     async (args) => {
       const parsed = factDispatchSchema.safeParse(args)
       if (!parsed.success) {
-        return toolError(
-          new Error(formatDispatchError("lore-fact", parsed.error)),
-        )
+        return toolError(new Error(formatDispatchError("lore-fact", parsed.error)))
       }
       switch (parsed.data.action) {
         case "create":
@@ -1296,6 +1302,6 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
         case "extend":
           return handleExtendFact(services, parsed.data)
       }
-    },
+    }
   )
 }

@@ -318,9 +318,7 @@ export class FactService {
    * true this keeps per-fact failure isolated so a transient Notion error
    * does not block unrelated facts from being repaired.
    */
-  async repointEntity(
-    options: RepointEntityOptions
-  ): Promise<FactEntityRepointResult> {
+  async repointEntity(options: RepointEntityOptions): Promise<FactEntityRepointResult> {
     if (!options.fromEntityId) {
       throw new Error("FactService.repointEntity: fromEntityId is required")
     }
@@ -342,7 +340,7 @@ export class FactService {
           factId: fact.factId,
           subject: fact.subjectEntityId === options.fromEntityId,
           object: fact.objectEntityId === options.fromEntityId,
-        }),
+        })
       )
       .filter((plan) => plan.subject || plan.object)
 
@@ -452,11 +450,10 @@ export class FactService {
           factId: page.id,
           subjectEntityId:
             extractRelationIds(page.properties["SubjectEntity"])[0] ?? null,
-          objectEntityId:
-            extractRelationIds(page.properties["ObjectEntity"])[0] ?? null,
+          objectEntityId: extractRelationIds(page.properties["ObjectEntity"])[0] ?? null,
         })
       }
-      cursor = response.has_more ? response.next_cursor ?? undefined : undefined
+      cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
     return hits
@@ -568,15 +565,12 @@ export class FactService {
    * path for any duplicates that slip through.
    */
   async createWithDedup(input: CreateFactInput): Promise<CreateFactResult> {
-    return withEntityRelationLocks(
-      [input.subjectEntityId, input.objectEntityId],
-      () => this.createWithDedupLocked(input),
+    return withEntityRelationLocks([input.subjectEntityId, input.objectEntityId], () =>
+      this.createWithDedupLocked(input)
     )
   }
 
-  private async createWithDedupLocked(
-    input: CreateFactInput
-  ): Promise<CreateFactResult> {
+  private async createWithDedupLocked(input: CreateFactInput): Promise<CreateFactResult> {
     // Decode at the write boundary so a doubly-encoded `Foo &amp;amp; Bar`
     // input flowing in from the autosave/markdown path lands in Notion as
     // `Foo & Bar`. Idempotent — a clean value passes through unchanged.
@@ -587,8 +581,7 @@ export class FactService {
       subject: decodeTextEntities(input.subject),
       object: decodeTextEntities(input.object),
     }
-    const relationSafeInput =
-      await this.dropArchivedEntityRelations(decodedInput)
+    const relationSafeInput = await this.dropArchivedEntityRelations(decodedInput)
 
     const reviewBy = relationSafeInput.reviewBy
 
@@ -610,11 +603,7 @@ export class FactService {
     })
 
     if (existing) {
-      const enriched = await this.mergeOntoExisting(
-        existing,
-        relationSafeInput,
-        reviewBy,
-      )
+      const enriched = await this.mergeOntoExisting(existing, relationSafeInput, reviewBy)
       return { fact: existing, deduped: true, enriched }
     }
 
@@ -625,8 +614,7 @@ export class FactService {
         predicate: relationSafeInput.predicate,
         object: relationSafeInput.object,
         projectIds: relationSafeInput.projectIds,
-        validFrom:
-          relationSafeInput.validFrom ?? new Date().toISOString().split("T")[0],
+        validFrom: relationSafeInput.validFrom ?? new Date().toISOString().split("T")[0],
         reviewBy,
         sourceMemoryId: relationSafeInput.sourceMemoryId,
         confidence: relationSafeInput.confidence ?? "certain",
@@ -679,7 +667,9 @@ export class FactService {
     return { ...input, subjectEntityId, objectEntityId }
   }
 
-  private async liveEntityRelationId(id: string | undefined): Promise<string | undefined> {
+  private async liveEntityRelationId(
+    id: string | undefined
+  ): Promise<string | undefined> {
     if (!id) return undefined
     try {
       const page = await this.client.pages.retrieve({ page_id: id })
@@ -1405,11 +1395,11 @@ export class FactService {
     return await this.pageToFact(page as PageObjectResponse)
   }
 
-  async extendReview(id: string, reviewBy: string): Promise<void> {
+  async extendReview(id: string, reviewBy: string | null): Promise<void> {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        "Review By": { date: { start: reviewBy } },
+        "Review By": reviewBy === null ? { date: null } : { date: { start: reviewBy } },
       },
     })
   }

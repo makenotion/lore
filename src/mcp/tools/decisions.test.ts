@@ -875,6 +875,71 @@ describe("lore-list-decisions projectName resolution", () => {
   })
 })
 
+describe("lore-decision date validation", () => {
+  function setUpReviewHarness() {
+    const mockServer = createMockServer()
+    const reviewCompleted = vi.fn().mockResolvedValue(undefined)
+    const services = {
+      decisions: { reviewCompleted, create: vi.fn() },
+    }
+
+    registerDecisionTools(mockServer.server, services as never)
+    return {
+      review: mockServer.getActionHandler("lore-decision", "review"),
+      create: mockServer.getActionHandler("lore-decision", "create"),
+      reviewCompleted,
+      createDecision: services.decisions.create,
+    }
+  }
+
+  it("threads reviewBy: null through to decisions.reviewCompleted as an explicit clear", async () => {
+    const { review, reviewCompleted } = setUpReviewHarness()
+
+    await review({ decisionId: "dec-1", reviewBy: null } as never)
+
+    expect(reviewCompleted).toHaveBeenCalledWith("dec-1", null)
+  })
+
+  it("normalizes reviewBy: empty string to an explicit clear", async () => {
+    const { review, reviewCompleted } = setUpReviewHarness()
+
+    await review({ decisionId: "dec-1", reviewBy: "" } as never)
+
+    expect(reviewCompleted).toHaveBeenCalledWith("dec-1", null)
+  })
+
+  it("rejects malformed review dates before marking reviewed", async () => {
+    const { review, reviewCompleted } = setUpReviewHarness()
+
+    const result = await review({ decisionId: "dec-1", reviewBy: "05/03/2026" } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(reviewCompleted).not.toHaveBeenCalled()
+  })
+
+  it("keeps action='create' empty-string date behavior strict", async () => {
+    const { create, createDecision } = setUpReviewHarness()
+
+    for (const args of [
+      {
+        decision: "Use shared date schema",
+        rationale: "Keep behavior aligned.",
+        reviewBy: "",
+      },
+      {
+        decision: "Use shared date schema",
+        rationale: "Keep behavior aligned.",
+        decidedAt: "",
+      },
+    ]) {
+      const result = await create(args as never)
+
+      expect((result as { isError?: boolean }).isError).toBe(true)
+    }
+    expect(createDecision).not.toHaveBeenCalled()
+  })
+})
+
 describe("lore-decision-context projectName resolution", () => {
   it("returns an explicit error when projectName does not resolve", async () => {
     const mockServer = createMockServer()

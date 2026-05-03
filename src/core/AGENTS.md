@@ -1235,7 +1235,7 @@ and not a general clamp utility.
 
 | Method                          | Behavior                                         |
 | ------------------------------- | ------------------------------------------------ |
-| `extendReview(id, reviewBy)`    | Push forward the `Review By` date                |
+| `extendReview(id, reviewBy)`    | Set, advance, or clear the `Review By` date      |
 | `invalidate(id)`                | Mark no-longer-true (sets `Valid Until` = today) |
 | `setSource(id, sourceMemoryId)` | Overwrite the `Source` relation with one memory  |
 

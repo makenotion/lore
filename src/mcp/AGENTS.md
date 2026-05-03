@@ -19,17 +19,18 @@ and came out in the same purge. See "Deprecation timeline" below.
 
 ## Files
 
-| File                 | Responsibility                                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `server.ts`          | Server entry point: init services, register tools, start stdio transport                                                              |
-| `helpers.ts`         | `toolError()`, `paginationFooter()`, `debugLogPartialFailures()`, `formatDispatchError()`                                             |
-| `tools/context.ts`   | `lore-context` polymorphic dispatcher (`status` / `wake-up` / `digest`)                                                               |
-| `tools/memory.ts`    | `lore-memory` polymorphic dispatcher (`save` / `update` / `archive` / `expand` / `suggest-topic-key` / `compare`)                     |
-| `tools/query.ts`     | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts)                                      |
-| `tools/project.ts`   | `lore-project` polymorphic dispatcher (`list` / `get`)                                                                                |
-| `tools/knowledge.ts` | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `audit` handlers exported for `lore-query` |
-| `tools/decisions.ts` | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`)                               |
-| `tools/tasks.ts`     | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list` / `reconcile`) (P3-02 + PF3-06)                            |
+| File                   | Responsibility                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.ts`            | Server entry point: init services, register tools, start stdio transport                                                              |
+| `helpers.ts`           | `toolError()`, `paginationFooter()`, `debugLogPartialFailures()`, `formatDispatchError()`                                             |
+| `tools/context.ts`     | `lore-context` polymorphic dispatcher (`status` / `wake-up` / `digest`)                                                               |
+| `tools/memory.ts`      | `lore-memory` polymorphic dispatcher (`save` / `update` / `archive` / `expand` / `suggest-topic-key` / `compare`)                     |
+| `tools/query.ts`       | `lore-query` polymorphic (read-path dispatcher; reuses handlers from memory.ts and knowledge.ts)                                      |
+| `tools/project.ts`     | `lore-project` polymorphic dispatcher (`list` / `get`)                                                                                |
+| `tools/knowledge.ts`   | `lore-fact` polymorphic dispatcher (`create` / `invalidate` / `extend`); read-side `ask` / `audit` handlers exported for `lore-query` |
+| `tools/decisions.ts`   | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`)                               |
+| `tools/tasks.ts`       | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list` / `reconcile`) (P3-02 + PF3-06)                            |
+| `tools/date-schema.ts` | Shared `YYYY-MM-DD` and clearable date Zod schemas for MCP tool boundaries                                                            |
 
 ## Polymorphic dispatch pattern (P3-01 + PF3-06)
 
@@ -569,7 +570,7 @@ designed to remove.
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
 | `create`     | Add a subject-predicate-object fact triple (auto-dedupes via `DedupKey`). Tracking predicates were dropped from `FactPredicate` in 0.6.0 — the Zod-derived schema rejects them at the MCP boundary. | No               |
 | `invalidate` | Invalidate a fact (sets Valid Until, does not delete)                                                                                                                                               | No (destructive) |
-| `extend`     | Push back a fact's review-by date                                                                                                                                                                   | No               |
+| `extend`     | Set, advance, or clear a fact's review-by date                                                                                                                                                      | No               |
 
 Read-side fact paths (`ask`, `audit`) live on `lore-query` — see the
 table above. The `ask` action surfaces tasks touching the entity
@@ -619,7 +620,7 @@ atomic relationship objects. Tracking predicates were dropped from
 | `get`       | Load full rationale + metadata for one decision                                                                     | Yes       |
 | `context`   | Graph walk: every active decision governing an entity (via `decided_by` facts)                                      | Yes       |
 | `supersede` | Mark old decision as superseded by new; atomic + creates `supersedes_decision` fact                                 | No        |
-| `review`    | Mark a decision as reviewed, push `Review By` forward (default +90 days)                                            | No        |
+| `review`    | Mark a decision as reviewed; set, advance, or clear `Review By` (default +90 days)                                  | No        |
 
 **Decision predicates are internal-only.** `decided_by`, `supersedes_decision`,
 and `informs` are in the `FactPredicate` union and the Notion `Predicate`

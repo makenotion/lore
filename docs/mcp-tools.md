@@ -81,7 +81,7 @@ facts, memory bodies, or the raw `userQuery`.
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create`     | Add a subject-predicate-object fact triple. Requires a live, project-compatible Memories row via `sourceMemoryId` or `agent`+`session` that auto-links a compatible source memory before writing. Tracking predicates (`needs_action` / `waiting_on` / `blocked_by`) are rejected post-P3-02 — use `lore-task action='create'` instead. |
 | `invalidate` | Invalidate a fact (sets Valid Until date, preserves history)                                                                                                                      |
-| `extend`     | Push a fact's review-by date forward                                                                                                                                              |
+| `extend`     | Set, advance, or clear a fact's review-by date                                                                                                                                    |
 
 After P3-02, `lore-query action='ask'` also surfaces tasks touching the entity.
 For tracked work triage, use `lore-task action='list'`. Un-migrated vaults may
@@ -139,7 +139,7 @@ into tasks.
 | `get`       | Load full rationale + metadata for a specific decision                                        |
 | `context`   | Find every decision governing an entity via the facts graph                                   |
 | `supersede` | Mark an old decision as superseded by a new one; creates a `supersedes_decision` fact         |
-| `review`    | Mark a decision as reviewed, push `Review By` forward                                         |
+| `review`    | Mark a decision as reviewed; set, advance, or clear `Review By`                               |
 
 ## `lore-project` — project read paths
 

@@ -781,7 +781,7 @@ export function buildMemoryProps(input: {
   // surfacing as a Notion-side validation error instead of silently
   // collapsing to a column clear. Documented agent-facing inputs are
   // `null`, `undefined`, and `YYYY-MM-DD` (regex-enforced at the MCP
-  // Zod boundary, see `src/mcp/tools/memory.ts:YMD_REGEX`).
+  // Zod boundary, see `src/mcp/tools/date-schema.ts`).
   if (input.reviewBy !== undefined) {
     props["Review By"] =
       input.reviewBy === null ? { date: null } : { date: { start: input.reviewBy } }

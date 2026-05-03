@@ -411,16 +411,19 @@ export class DecisionService {
   }
 
   /**
-   * Mark a decision as reviewed. Pushes `Review By` forward — to the given
-   * date if provided, otherwise 90 days from today.
+   * Mark a decision as reviewed. Sets `Review By` to the given date, clears it
+   * when `null`, otherwise advances it to 90 days from today.
    */
-  async reviewCompleted(id: string, newReviewBy?: string): Promise<void> {
+  async reviewCompleted(id: string, newReviewBy?: string | null): Promise<void> {
     const reviewDate =
-      newReviewBy ?? addDaysISO(new Date(), DEFAULT_REVIEW_EXTENSION_DAYS)
+      newReviewBy === undefined
+        ? addDaysISO(new Date(), DEFAULT_REVIEW_EXTENSION_DAYS)
+        : newReviewBy
     await this.client.pages.update({
       page_id: id,
       properties: {
-        "Review By": { date: { start: reviewDate } },
+        "Review By":
+          reviewDate === null ? { date: null } : { date: { start: reviewDate } },
       } as CreatePageParameters["properties"],
     })
     this.idCache.delete(id)

@@ -10,6 +10,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { performance } from "node:perf_hooks"
 
 const LOCK_STALE_MS = 10 * 60 * 1000
 const LOCK_HEARTBEAT_MS = 30_000
@@ -180,7 +181,7 @@ async function acquireLock(lockKey: string): Promise<HeldLock> {
   const record: LockRecord = {
     token: randomUUID(),
     pid: process.pid,
-    createdAt: Date.now(),
+    createdAt: performance.timeOrigin + performance.now(),
   }
   const ownPath = contenderPath(path, record)
   writeFileSync(ownPath, JSON.stringify(record), { flag: "wx", mode: 0o600 })

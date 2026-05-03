@@ -606,6 +606,24 @@ describe("lore-task-update", () => {
     )
   })
 
+  it("threads dueDate: null through to TaskService.update as an explicit clear", async () => {
+    const svc = services()
+    svc.tasks.update = vi.fn().mockResolvedValue({
+      ...makeTask("t1"),
+      content: "",
+    })
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    await handler({ action: "update", taskId: "task-id", dueDate: null } as never)
+
+    expect(svc.tasks.update).toHaveBeenCalledWith(
+      "task-id",
+      expect.objectContaining({ dueDate: null })
+    )
+  })
+
   it("surfaces structured task update partial-failure messages as MCP errors", async () => {
     const bodyWriteError = new Error("notion 503")
     const svc = services()
@@ -916,11 +934,14 @@ describe("optional-string Zod boundary", () => {
       expect(ok).toBe(true)
     })
 
+    it("accepts null dueDate as clear-the-date", async () => {
+      const { ok } = await run({ ...baseInput, dueDate: null })
+      expect(ok).toBe(true)
+    })
+
     it("rejects malformed (non-YMD) dueDate", async () => {
-      // YMD enforcement on update lives in `handleUpdate`'s manual
-      // validation rather than the schema (so empty string can be
-      // distinguished as clear-the-date). Pin the rejection so the
-      // boundary stays sharp.
+      // Update uses the shared clearable date schema: malformed non-empty
+      // strings are rejected, while empty string/null remain clear-the-date.
       const { ok, message } = await run({ ...baseInput, dueDate: "not-a-date" })
       expect(ok).toBe(false)
       expect(message).toContain("YYYY-MM-DD")

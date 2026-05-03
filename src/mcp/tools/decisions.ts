@@ -17,6 +17,7 @@ import { displayId, renderTrustLine, resolveTitles, truncateSynopsis } from "../
 import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
+import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
 import {
   RICH_TEXT_PROPERTY_MAX_LEN,
   richTextPropertySchema,
@@ -222,8 +223,6 @@ const DECISION_STATUSES = [
 ] as const
 
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
-
-const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
 
 function todayISO(): string {
   return new Date().toISOString().split("T")[0]
@@ -910,11 +909,22 @@ async function handleSupersede(
 
 async function handleReview(
   services: LoreServices,
-  args: { decisionId: string; reviewBy?: string }
+  args: { decisionId: string; reviewBy?: string | null }
 ): Promise<ToolResult> {
   try {
-    const newDate = args.reviewBy ?? addDaysISO(new Date(), 90)
+    const newDate =
+      args.reviewBy === undefined ? addDaysISO(new Date(), 90) : args.reviewBy
     await services.decisions.reviewCompleted(args.decisionId, newDate)
+    if (newDate === null) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Cleared review date for decision ${args.decisionId}.`,
+          },
+        ],
+      }
+    }
     return {
       content: [
         {
@@ -939,8 +949,8 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     forceNewTopic: z.boolean().optional(),
     status: z.enum(DECISION_STATUSES).optional(),
     confidence: z.enum(CONFIDENCES).optional(),
-    reviewBy: z.string().regex(YMD_REGEX).optional(),
-    decidedAt: z.string().regex(YMD_REGEX).optional(),
+    reviewBy: ymdDateSchema.optional(),
+    decidedAt: ymdDateSchema.optional(),
     supersedesIds: z.array(z.string()).optional(),
     affects: z.array(z.string()).optional(),
     alternatives: richTextPropertySchema("alternatives").optional(),
@@ -956,7 +966,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
     action: z.literal("list"),
     projectName: z.string().optional(),
     status: z.enum(DECISION_STATUSES).optional(),
-    reviewBefore: z.string().regex(YMD_REGEX).optional(),
+    reviewBefore: ymdDateSchema.optional(),
     limit: z.number().int().min(1).max(100).optional(),
     startCursor: z.string().min(1).optional(),
     includeSynopsis: z.boolean().optional(),
@@ -979,7 +989,7 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("review"),
     decisionId: z.string(),
-    reviewBy: z.string().regex(YMD_REGEX).optional(),
+    reviewBy: clearableYmdDateSchema.optional(),
   }),
 ])
 
@@ -998,7 +1008,7 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
         "- `action: 'get'` — load full rationale + metadata + relations for one decision.\n" +
         "- `action: 'context'` — graph walk: every active decision governing an entity, resolved through any supersession chain.\n" +
         "- `action: 'supersede'` — atomically mark `oldDecisionId` superseded by `newDecisionId` and create the `supersedes_decision` fact.\n" +
-        "- `action: 'review'` — mark a decision reviewed, push the review-by date forward (default +90 days).",
+        "- `action: 'review'` — mark reviewed; set or clear the review-by date (default +90 days).",
       inputSchema: {
         action: z
           .enum(["create", "list", "get", "context", "supersede", "review"])
@@ -1058,26 +1068,20 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
           .optional()
           .describe("(action='create') Confidence (default: certain)."),
         // create | list | review
-        reviewBy: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+        reviewBy: clearableYmdDateSchema
           .optional()
           .describe(
-            "(action='create') Review-by date. (action='review') New review date (default +90d). " +
+            "(action='create') Review-by date; create requires YYYY-MM-DD. (action='review') New review date (default +90d); null or empty string clears. " +
               "Note: list filter uses `reviewBefore` instead."
           ),
         // list only
-        reviewBefore: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+        reviewBefore: ymdDateSchema
           .optional()
           .describe(
             "(action='list') Filter to decisions with `Review By` on or before this."
           ),
         // create
-        decidedAt: z
-          .string()
-          .regex(YMD_REGEX, "Must be YYYY-MM-DD format")
+        decidedAt: ymdDateSchema
           .optional()
           .describe("(action='create') Canonical decision date (default: today)."),
         supersedesIds: z

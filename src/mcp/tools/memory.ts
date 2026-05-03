@@ -25,6 +25,7 @@ import type {
 } from "../../types.js"
 import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
+import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
 import {
   RICH_TEXT_PROPERTY_MAX_LEN,
   richTextPropertySchema,
@@ -280,24 +281,6 @@ const STATUSES = [
 const CONFIDENCES = ["certain", "likely", "speculative"] as const
 
 const SOURCES = ["conversation", "file", "manual", "agent_diary", "digest"] as const
-
-const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/
-// Save requires real dates. Update accepts empty strings so MCP callers can
-// clear existing date properties while sharing the same YYYY-MM-DD contract.
-const ymdDateSchema = z.string().regex(YMD_REGEX, "Must be YYYY-MM-DD format")
-const clearableYmdDateSchema = z
-  .string()
-  .transform((value, ctx) => {
-    if (value === "") return null
-    if (YMD_REGEX.test(value)) return value
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Must be YYYY-MM-DD format",
-    })
-    return z.NEVER
-  })
-  .nullable()
 
 const EXPAND_MAX_IDS = 20
 
@@ -2386,12 +2369,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         reviewBy: clearableYmdDateSchema
           .optional()
           .describe(
-            "(save | update) Review-by date YYYY-MM-DD. On update, omit to keep, pass null or empty string to clear."
+            "(save | update) Review-by date YYYY-MM-DD. Save: must be YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
           ),
         decidedAt: clearableYmdDateSchema
           .optional()
           .describe(
-            "(save | update) Canonical decision date YYYY-MM-DD. On update, omit to keep, pass null or empty string to clear."
+            "(save | update) Canonical decision date YYYY-MM-DD. Save: must be YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
           ),
         tags: tagsSchema.optional().describe("(save | update) Closed-vocabulary tags."),
         keywords: keywordsSchema
