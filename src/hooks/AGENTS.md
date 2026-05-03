@@ -71,10 +71,10 @@ Current `BackgroundFailureKind` values:
 
 | Kind                       | Observes                                                                                 |
 | -------------------------- | ---------------------------------------------------------------------------------------- |
-| `autosave`                 | Foreground Stop hook failures before the detached autosave child successfully starts      |
-| `digest-scheduler`         | Detached auto-digest helper init/gather failures before synthesis spawn                   |
+| `autosave`                 | Foreground Stop hook failures before the detached autosave child successfully starts     |
+| `digest-scheduler`         | Detached auto-digest helper init/gather failures before synthesis spawn                  |
 | `digest-synthesizer`       | Auto-digest synthesis spawn setup failures (`binary-missing`, tempfile, spawn exception) |
-| `auto-digest-helper-spawn` | Foreground Stop hook failure to fork the detached `helpers.js auto-digest` child          |
+| `auto-digest-helper-spawn` | Foreground Stop hook failure to fork the detached `helpers.js auto-digest` child         |
 
 The supervision boundary is narrow by design: markers cover failures the
 foreground process or helper can directly observe at spawn/init/gather time.
@@ -342,8 +342,9 @@ creating a row.
 If a later autosave restates the same likely-note learning (including
 simple title/body reordering), `lore-memory action='save'` returns the
 existing row instead of creating another one. When project scope is not
-available, the gate falls back to the original same-session check rather
-than scanning the vault.
+available, or the only project is the auto-resolved monorepo catch-all,
+the gate falls back to the original same-session check rather than scanning
+across the catch-all.
 This gate does not apply to synopsis-style saves (`confidence` omitted
 or non-`likely`) so the session-level memory stays independent from the
 per-learning rows. The prompt therefore requires `confidence: "likely"`
@@ -385,11 +386,11 @@ block to ship).
   truthy-looking values (`"true"`, `"yes"`) fall through to the
   permissive branch.
 - `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` — env var, runtime
-  rollback for the structural autosave-learning reuse gate only. Learning
+  rollback for the structural autosave-learning reuse gate only, including
+  both same-session dedup and exact-project cross-session reuse. Learning
   extraction still runs; the save path simply stops blocking duplicate
-  learning rows. The shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
-  also disables this gate because it is a near-duplicate probe by
-  another name.
+  learning rows. The shared `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` also
+  disables this gate because it is a near-duplicate probe by another name.
 - `hooks.learningExtraction: false` — `.lore.yaml`, persistent.
   Defaults to `true` in `mergeHookDefaults`.
 

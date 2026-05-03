@@ -128,11 +128,16 @@ function isAutosaveLearningSave(args: SaveArgs, resolvedKind: MemoryKind): boole
 
 function formatAutosaveLearningDuplicate(
   match: AutosaveLearningDuplicateMatch,
-  currentSession?: string,
+  args: SaveArgs,
+  currentSession?: string
 ): string[] {
+  const matchSession = match.session.trim()
+  const normalizedCurrentSession = currentSession?.trim()
   const duplicateScope =
-    currentSession && match.session === currentSession ? "same-session" : "cross-session"
-  return [
+    normalizedCurrentSession && matchSession === normalizedCurrentSession
+      ? "same-session"
+      : "cross-session"
+  const lines = [
     `Reused existing autosave learning (${duplicateScope} duplicate): "${match.title}" (${match.id})`,
     `Similarity: title ${match.titleSimilarity.toFixed(2)}, ` +
       `content ${match.contentSimilarity.toFixed(2)}, ` +
@@ -141,6 +146,49 @@ function formatAutosaveLearningDuplicate(
     "No new memory was created. The existing memory stays available for this session.",
     "Recovery: set LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1 before autosave to force a separate row.",
   ]
+  const dropped = formatDroppedAutosaveLearningFields(args)
+  if (dropped) lines.splice(3, 0, dropped)
+  return lines
+}
+
+function formatDroppedAutosaveLearningFields(args: SaveArgs): string | null {
+  const dropped: string[] = []
+  const synopsisLength = args.synopsis?.trim().length ?? 0
+  if (synopsisLength > 0) dropped.push(`synopsis (${synopsisLength} chars)`)
+
+  const keywordCount = args.keywords?.trim().split(/\s+/).filter(Boolean).length ?? 0
+  if (keywordCount > 0) {
+    dropped.push(`keywords (${keywordCount} ${keywordCount === 1 ? "token" : "tokens"})`)
+  }
+
+  const tagCount = args.tags?.length ?? 0
+  if (tagCount > 0) dropped.push(`tags (${tagCount})`)
+  if (args.agent?.trim()) dropped.push(`agent=${args.agent.trim()}`)
+  if (args.author?.trim()) dropped.push(`author=${args.author.trim()}`)
+
+  return dropped.length > 0
+    ? `Dropped candidate metadata on reuse: ${dropped.join(", ")}.`
+    : null
+}
+
+// eslint-disable-next-line no-control-regex -- preserving one-event-per-line logs
+const DEBUG_LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
+
+function debugLogField(value: string | undefined): string {
+  const normalized = value && value.trim().length > 0 ? value.trim() : "none"
+  return JSON.stringify(normalized.replace(DEBUG_LOG_CONTROL_CHARS, " "))
+}
+
+function debugLogAutosaveLearningScopeDowngrade(opts: {
+  projectId: string
+  session: string | undefined
+}): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] autosave-learning-dedup-scope-downgrade: reason=catch-all-fallback ` +
+      `projectId=${debugLogField(opts.projectId)} session=${debugLogField(opts.session)} ` +
+      `source=lore-memory\n`
+  )
 }
 
 const KINDS = ["note", "decision", "incident", "runbook", "postmortem", "policy"] as const
@@ -316,28 +364,29 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         })
       : Promise.resolve([] as NearDuplicateMatch[])
 
-    // Active-task cross-reference probe (issue 0.7.0/11). Fires as soon
-    // as project scope is known so likely-note autosave saves can overlap
-    // this advisory query with the blocking learning-dedup probe. The
-    // write itself still waits for the blocking probe to clear so a
-    // duplicate hit never creates a row.
-    const taskCrossrefPromise = findRelatedActiveTasks(services, {
-      memoryTitle: args.title,
-      memoryKeywords: args.keywords,
-      memorySynopsis: args.synopsis,
-      projectId: probeProjectId,
-      onError: (err) =>
-        debugLogPartialFailures("lore-memory", [{ rootId: "task-crossref", error: err }]),
-    })
-
     if (isAutosaveLearningSave(args, resolvedKind)) {
+      const hasExplicitProjectScope =
+        Boolean(args.projectName) || Boolean(args.projectNames?.length)
+      const canUseProjectAutosaveDedup =
+        Boolean(probeProjectId) &&
+        (hasExplicitProjectScope || !services.context.isCatchAllFallback)
+      if (
+        probeProjectId &&
+        services.context.isCatchAllFallback &&
+        !hasExplicitProjectScope
+      ) {
+        debugLogAutosaveLearningScopeDowngrade({
+          projectId: probeProjectId,
+          session: args.session,
+        })
+      }
       const duplicate = await findAutosaveLearningDuplicate(services.memories, {
         title: args.title,
         content: args.content,
         projectId: probeProjectId,
         projectIds: resolved.ids,
         session: args.session,
-        scope: probeProjectId ? "project" : "session",
+        scope: canUseProjectAutosaveDedup ? "project" : "session",
         limit: AUTOSAVE_LEARNING_DUPLICATE_POOL_LIMIT,
         onError: (err) =>
           debugLogPartialFailures("lore-memory", [
@@ -360,7 +409,8 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
               type: "text",
               text: formatAutosaveLearningDuplicate(
                 duplicate,
-                args.session?.trim(),
+                args,
+                args.session?.trim()
               ).join("\n"),
             },
           ],
@@ -369,6 +419,21 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
     }
 
     const authorPromise = resolveAuthorForWrite(args.author, services.identity)
+
+    // Active-task cross-reference probe (issue 0.7.0/11). Starts only
+    // after the blocking autosave-learning dedup gate clears: duplicate
+    // early returns avoid this advisory read entirely because no new memory
+    // exists to cross-reference. The tradeoff is a small latency delay on
+    // non-duplicate autosave saves before this read starts; it still overlaps
+    // with the write below once the write path is known to create a row.
+    const taskCrossrefPromise = findRelatedActiveTasks(services, {
+      memoryTitle: args.title,
+      memoryKeywords: args.keywords,
+      memorySynopsis: args.synopsis,
+      projectId: probeProjectId,
+      onError: (err) =>
+        debugLogPartialFailures("lore-memory", [{ rootId: "task-crossref", error: err }]),
+    })
 
     let topicId: string | undefined
     let topicLabel = "none"
@@ -2137,7 +2202,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         action: z
           .enum(["save", "update", "archive", "expand", "suggest-topic-key", "compare"])
           .describe(
-            "Operation: save | update | archive | expand | suggest-topic-key | compare.",
+            "Operation: save | update | archive | expand | suggest-topic-key | compare."
           ),
         // save
         title: z

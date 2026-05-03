@@ -128,7 +128,7 @@ export interface FindNearDuplicatesOpts {
  */
 export async function findNearDuplicates(
   memories: MemoryLister,
-  opts: FindNearDuplicatesOpts,
+  opts: FindNearDuplicatesOpts
 ): Promise<NearDuplicateMatch[]> {
   // Operator kill-switch. Bulk-import, autosave hooks firing every few
   // messages, and test fixtures that spin up 50+ memories all pay a
@@ -163,9 +163,10 @@ export async function findNearDuplicates(
     return []
   }
 
-  const excludeKinds = opts.excludeKinds && opts.excludeKinds.length > 0
-    ? new Set<MemoryKind>(opts.excludeKinds)
-    : null
+  const excludeKinds =
+    opts.excludeKinds && opts.excludeKinds.length > 0
+      ? new Set<MemoryKind>(opts.excludeKinds)
+      : null
 
   const matches: NearDuplicateMatch[] = []
   for (const mem of items) {
@@ -216,7 +217,7 @@ export interface FindAutosaveLearningDuplicateOpts {
   /**
    * Duplicate search scope. Defaults to the historical same-session gate.
    * Project scope promotes cross-session autosave learnings to assertive reuse,
-   * but requires projectId so the probe never becomes vault-wide.
+   * but requires a non-empty project set so the probe never becomes vault-wide.
    */
   scope?: "session" | "project"
   /** Similarity threshold for blocking a duplicate create. */
@@ -263,7 +264,7 @@ function learningCombinedSimilarity(
   titleA: string,
   contentA: string,
   titleB: string,
-  contentB: string,
+  contentB: string
 ): number {
   return trigramJaccard(`${titleA}\n${contentA}`, `${titleB}\n${contentB}`)
 }
@@ -284,9 +285,7 @@ function normalizeLearningToken(raw: string): string {
 }
 
 function learningTokens(title: string, content: string): Set<string> {
-  const text = `${title}\n${content}`
-    .toLowerCase()
-    .replace(/\b([a-z0-9]+)['’]s\b/g, "$1")
+  const text = `${title}\n${content}`.toLowerCase().replace(/\b([a-z0-9]+)['’]s\b/g, "$1")
   const rawTokens = text.match(/[a-z0-9]+/g) ?? []
   const tokens = new Set<string>()
   for (const raw of rawTokens) {
@@ -300,7 +299,7 @@ function learningTokenSimilarity(
   titleA: string,
   contentA: string,
   titleB: string,
-  contentB: string,
+  contentB: string
 ): number {
   const A = learningTokens(titleA, contentA)
   const B = learningTokens(titleB, contentB)
@@ -329,17 +328,18 @@ function projectSetsEqual(a: readonly string[], b: readonly string[]): boolean {
 /**
  * Blocking duplicate finder for Stop-spawn atomic learnings.
  *
- * The regular `findNearDuplicates` probe is advisory and project-scoped.
- * Autosave learning extraction needs a stronger contract because the same
- * transcript window can be processed more than once, and the same durable fact
- * can reappear in later sessions. This helper reads only likely
- * conversation-sourced notes and fetches bodies so a duplicate body/combined-
- * text pair returns the existing row instead of letting the write path create
- * another memory.
+ * The regular `findNearDuplicates` probe is advisory; autosave learning
+ * extraction needs a stronger contract because the same transcript window can
+ * be processed more than once, and the same durable fact can reappear in later
+ * sessions. This helper reads only likely conversation-sourced notes and
+ * fetches bodies so a duplicate body/combined-text pair returns the existing
+ * row instead of letting the write path create another memory. Session scope
+ * preserves the historical same-session behavior; project scope is exact-set
+ * only and uses one project id as the bounded query anchor.
  */
 export async function findAutosaveLearningDuplicate(
   memories: MemoryLister,
-  opts: FindAutosaveLearningDuplicateOpts,
+  opts: FindAutosaveLearningDuplicateOpts
 ): Promise<AutosaveLearningDuplicateMatch | null> {
   if (
     process.env["LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP"] === "1" ||
@@ -356,7 +356,7 @@ export async function findAutosaveLearningDuplicate(
             ? opts.projectIds
             : opts.projectId
               ? [opts.projectId]
-              : [],
+              : []
         )
       : []
   const queryProjectId = scope === "project" ? requestedProjectIds[0] : opts.projectId
@@ -388,7 +388,11 @@ export async function findAutosaveLearningDuplicate(
     // Defense in depth: the server-side list filter above should already
     // narrow to this triple. Keeping the client-side guard means a future
     // list-filter regression cannot turn synopsis rows into blocking matches.
-    if (mem.source !== "conversation" || mem.kind !== "note" || mem.confidence !== "likely") {
+    if (
+      mem.source !== "conversation" ||
+      mem.kind !== "note" ||
+      mem.confidence !== "likely"
+    ) {
       continue
     }
     if (scope === "project" && !projectSetsEqual(mem.projectIds, requestedProjectIds)) {
@@ -400,13 +404,13 @@ export async function findAutosaveLearningDuplicate(
       opts.title,
       opts.content,
       mem.title,
-      mem.content,
+      mem.content
     )
     const tokenSimilarity = learningTokenSimilarity(
       opts.title,
       opts.content,
       mem.title,
-      mem.content,
+      mem.content
     )
 
     const duplicate =
@@ -435,13 +439,13 @@ export async function findAutosaveLearningDuplicate(
       a.titleSimilarity,
       a.contentSimilarity,
       a.combinedSimilarity,
-      a.tokenSimilarity,
+      a.tokenSimilarity
     )
     const bBest = Math.max(
       b.titleSimilarity,
       b.contentSimilarity,
       b.combinedSimilarity,
-      b.tokenSimilarity,
+      b.tokenSimilarity
     )
     return bBest - aBest
   })
@@ -510,7 +514,7 @@ export interface FindDuplicateActiveTasksOpts {
  */
 export async function findDuplicateActiveTasks(
   tasks: TaskLister,
-  opts: FindDuplicateActiveTasksOpts,
+  opts: FindDuplicateActiveTasksOpts
 ): Promise<TaskSummary[]> {
   if (process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1") return []
   if (!opts.entity || opts.entity.trim() === "") return []
@@ -779,7 +783,7 @@ function isMeaningfulCapitalizedMatch(s: string): boolean {
 export function extractEntityCandidates(
   title: string,
   keywords: string,
-  synopsis: string,
+  synopsis: string
 ): string[] {
   const text = [title, keywords, synopsis].filter((s) => s).join(" ")
   if (text.trim() === "") return []
@@ -845,10 +849,7 @@ const PATTERN_POST_PROCESS = new Map<RegExp, (raw: string) => string | null>([
     CAPITALIZED_MULTIWORD_PATTERN,
     (raw) => (isMeaningfulCapitalizedMatch(raw) ? raw : null),
   ],
-  [
-    CAPITALIZED_SINGLE_PATTERN,
-    (raw) => (isMeaningfulCapitalizedMatch(raw) ? raw : null),
-  ],
+  [CAPITALIZED_SINGLE_PATTERN, (raw) => (isMeaningfulCapitalizedMatch(raw) ? raw : null)],
 ])
 
 export interface FindRelatedActiveTasksOpts {
@@ -912,7 +913,7 @@ export interface FindRelatedActiveTasksOpts {
  */
 export async function findRelatedActiveTasks(
   services: { tasks: TaskLister },
-  opts: FindRelatedActiveTasksOpts,
+  opts: FindRelatedActiveTasksOpts
 ): Promise<TaskSummary[]> {
   if (process.env["LORE_DISABLE_TASK_CROSSREF"] === "1") return []
 
@@ -930,7 +931,7 @@ export async function findRelatedActiveTasks(
     const candidateEntities = extractEntityCandidates(
       opts.memoryTitle,
       opts.memoryKeywords ?? "",
-      opts.memorySynopsis ?? "",
+      opts.memorySynopsis ?? ""
     )
     if (candidateEntities.length === 0) return []
 
