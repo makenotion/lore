@@ -102,8 +102,9 @@ try {
 - Treat explicit project-scope misses as fatal. If a command accepts
   `--project <name>` and the name cannot be resolved, log an actionable
   error and exit with code 1 instead of falling back to auto-detected or
-  vault-wide scope. Use `formatUnresolvedProjectScopeError()` from
-  `src/core/project-scope.ts` so CLI wording stays aligned with MCP.
+  vault-wide scope. Use `resolveProjectByName()` or
+  `resolveProjectsByNames()` from `src/core/project-scope.ts` so CLI wording
+  stays aligned with MCP, including archived-specific diagnostics.
 - Non-fatal warnings use `console.warn` and continue execution only when the
   requested operation can still proceed without changing the user's explicit
   scope.
@@ -300,10 +301,12 @@ read-path or by a prior backfill are left alone. Idempotent — a second
 run reports 100% "already scored" and writes nothing.
 
 **Project scoping** via `--project <name>`: scopes the migration to one
-project. Unknown / typo'd names abort BEFORE plan or write. `--yes`
-consent for one project is not consent to mutate every null-scored row
-across the vault, so the strict-resolve gate is load-bearing safety.
-Omit `--project` for vault-wide scope.
+active project. Archived projects are rejected with an archived-specific
+diagnostic unless the operator also passes `--include-archived`. Unknown /
+typo'd names abort BEFORE plan or write. `--yes` consent for one project is
+not consent to mutate every null-scored row across the vault, so the
+strict-resolve gate is load-bearing safety. Omit `--project` for vault-wide
+scope.
 
 **Concurrent execution**: writes dispatch in chunked `Promise.all`
 batches sized to `notion.rateLimit.concurrency`

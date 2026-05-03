@@ -11,6 +11,16 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Added
+
+- **Archived project migration opt-in.** `lore migrate --project <name>` now
+  accepts `--include-archived` for the memory and fact confidence-score
+  backfills, allowing intentional maintenance on archived historical
+  projects while keeping archived scopes rejected by default.
+- **Explicit archived project listing modes.** `lore-project action='list'`
+  now accepts `status: "any"` to include active and archived projects, and
+  `lore status projects --archived-only` lists only archived projects.
+
 ### Changed
 
 - **Fact creation now requires usable provenance.** MCP
@@ -53,6 +63,14 @@ log is the canonical source for those.
   `lore-context action='status'` print the same content-free coverage line
   shape as the hook debug log, so operators and MCP-driven agents can inspect
   retrieval coverage without waiting for a live hook fire.
+- **Project listing defaults to active projects.** `ProjectService.list()`,
+  `lore-project action='list'`, and `lore status projects` now return active
+  projects by default. Use `status: "archived"` / `--archived-only` for
+  archived-only output or `status: "any"` / `--all` to include archived rows.
+- **Archived explicit project scopes get specific diagnostics.** CLI and MCP
+  read surfaces that accept explicit project names now route through the
+  shared project-scope resolver, so names that resolve only to archived rows
+  report that archived state instead of a generic not-found message.
 
 ### Added
 

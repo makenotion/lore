@@ -143,6 +143,7 @@ export interface VaultDatabases {
 
 export type ProjectType = "project" | "person" | "agent"
 export type ProjectStatus = "active" | "archived"
+export type ProjectListStatus = ProjectStatus | "any"
 
 export interface Project {
   id: string

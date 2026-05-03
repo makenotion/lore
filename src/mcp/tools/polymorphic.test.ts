@@ -294,6 +294,26 @@ describe("lore-project polymorphic dispatcher", () => {
     expect(extractText(result)).toContain("Mail")
   })
 
+  it("passes status='any' through to the project list handler", async () => {
+    const projectsList = vi.fn(async () => [])
+    const mock = createMockServer()
+    registerProjectTools(mock.server, makeServices({ projectsList }) as never)
+
+    await mock.get("lore-project")({ action: "list", status: "any" } as never)
+
+    expect(projectsList).toHaveBeenCalledWith("any")
+  })
+
+  it("passes status='archived' through to the project list handler", async () => {
+    const projectsList = vi.fn(async () => [])
+    const mock = createMockServer()
+    registerProjectTools(mock.server, makeServices({ projectsList }) as never)
+
+    await mock.get("lore-project")({ action: "list", status: "archived" } as never)
+
+    expect(projectsList).toHaveBeenCalledWith("archived")
+  })
+
   it("dispatches action='get' to the get handler", async () => {
     const projectsFindByName = vi.fn(async () => ({
       id: "p1",
@@ -311,6 +331,38 @@ describe("lore-project polymorphic dispatcher", () => {
     } as never)
     expect(projectsFindByName).toHaveBeenCalledWith("Mail")
     expect(extractText(result)).toContain("# Mail")
+  })
+
+  it("surfaces archived-specific diagnostics for action='get'", async () => {
+    const projectsFindByName = vi.fn(
+      async (name: string, options?: { includeArchived?: boolean }) =>
+        options?.includeArchived
+          ? {
+              id: "p-archive",
+              name,
+              path: "archive",
+              type: "project",
+              status: "archived",
+              description: "",
+            }
+          : null
+    )
+    const mock = createMockServer()
+    registerProjectTools(mock.server, makeServices({ projectsFindByName }) as never)
+
+    const result = await mock.get("lore-project")({
+      action: "get",
+      name: "Archive",
+    } as never)
+
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain(
+      'Project "Archive" could not be resolved because it is archived'
+    )
+    expect(projectsFindByName).toHaveBeenNthCalledWith(1, "Archive")
+    expect(projectsFindByName).toHaveBeenNthCalledWith(2, "Archive", {
+      includeArchived: true,
+    })
   })
 
   it("rejects an invalid action with a discriminator error", async () => {

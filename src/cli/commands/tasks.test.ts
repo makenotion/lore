@@ -219,7 +219,43 @@ describe("runReconcile", () => {
       'Project "Nonexistent" could not be resolved (not found, archived, or inaccessible).'
     )
 
-    expect(findByName).toHaveBeenCalledWith("Nonexistent")
+    expect(findByName).toHaveBeenNthCalledWith(1, "Nonexistent")
+    expect(findByName).toHaveBeenNthCalledWith(2, "Nonexistent", {
+      includeArchived: true,
+    })
+    const tasksList = services.tasks.list as ReturnType<typeof vi.fn>
+    expect(tasksList).not.toHaveBeenCalled()
+  })
+
+  it("rejects with archived-specific wording when --project resolves only as archived", async () => {
+    const findByName = vi.fn(
+      async (name: string, options?: { includeArchived?: boolean }) =>
+        options?.includeArchived
+          ? {
+              id: "p-archive",
+              name,
+              path: "archive",
+              type: "project",
+              status: "archived",
+              description: "",
+            }
+          : null
+    )
+    const services = makeServices({
+      findByName,
+      contextProject: { id: "ctx-proj", name: "AutoDetected", path: "." },
+    })
+
+    await expect(
+      runReconcile(services, { projectName: "Archive", minScore: 0.5, limit: 25 })
+    ).rejects.toThrow(
+      'Project "Archive" could not be resolved because it is archived.'
+    )
+
+    expect(findByName).toHaveBeenNthCalledWith(1, "Archive")
+    expect(findByName).toHaveBeenNthCalledWith(2, "Archive", {
+      includeArchived: true,
+    })
     const tasksList = services.tasks.list as ReturnType<typeof vi.fn>
     expect(tasksList).not.toHaveBeenCalled()
   })

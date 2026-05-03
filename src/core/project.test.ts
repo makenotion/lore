@@ -79,6 +79,63 @@ function activeAwareResults(
 }
 
 describe("ProjectService.list — pagination", () => {
+  it("lists active projects by default", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [projectPage("p1", "alpha")],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await service.list()
+
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: { property: "Status", select: { equals: "active" } },
+      })
+    )
+  })
+
+  it("can list only archived projects", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [projectPage("p1", "archive", { status: "archived" })],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await service.list("archived")
+
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: { property: "Status", select: { equals: "archived" } },
+      })
+    )
+  })
+
+  it("can list active and archived projects together", async () => {
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [
+        projectPage("p1", "alpha"),
+        projectPage("p2", "archive", { status: "archived" }),
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const service = new ProjectService(client, DB)
+
+    await service.list("any")
+
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: undefined,
+      })
+    )
+  })
+
   it("stops after one page when has_more is false even if next_cursor is non-null", async () => {
     const client = createMockClient()
     client.dataSources.query.mockResolvedValueOnce({
@@ -259,6 +316,7 @@ describe("ProjectService.resolveByName", () => {
         next_cursor: null,
       })
       .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
     const service = new ProjectService(client, DB)
 
     await expect(service.resolveByName("alpha")).resolves.toMatchObject({
@@ -267,6 +325,24 @@ describe("ProjectService.resolveByName", () => {
     })
     await expect(service.resolveByName("missing")).resolves.toEqual({
       kind: "missing",
+    })
+  })
+
+  it("reports archived-only matches without resolving them as active projects", async () => {
+    const archived = projectPage("p-archive", "alpha", { status: "archived" })
+    const client = createMockClient()
+    client.dataSources.query
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+      .mockResolvedValueOnce({
+        results: [archived],
+        has_more: false,
+        next_cursor: null,
+      })
+    const service = new ProjectService(client, DB)
+
+    await expect(service.resolveByName("alpha")).resolves.toMatchObject({
+      kind: "archived",
+      project: { id: "p-archive" },
     })
   })
 

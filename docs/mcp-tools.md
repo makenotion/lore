@@ -143,7 +143,7 @@ into tasks.
 
 ## `lore-project` — project read paths
 
-| Action | Description                                      |
-| ------ | ------------------------------------------------ |
-| `list` | List all projects in the vault                   |
-| `get`  | Get project details, topics, and recent activity |
+| Action | Description                                                                                 |
+| ------ | ------------------------------------------------------------------------------------------- |
+| `list` | List active projects; `status: "archived"` is archived-only and `status: "any"` lists both |
+| `get`  | Get active project details, topics, and recent activity                                     |

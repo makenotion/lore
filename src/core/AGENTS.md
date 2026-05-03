@@ -103,13 +103,18 @@ config without API calls for the same purpose.
 
 ### Explicit project-name misses
 
-`project-scope.ts` exports `formatUnresolvedProjectScopeError()` for
+`project-scope.ts` exports `resolveProjectByName()` /
+`resolveProjectsByNames()` and `formatUnresolvedProjectScopeError()` for
 operator-facing errors when a caller explicitly names a project that cannot be
 resolved. Boundary resolvers for explicit names (MCP, CLI, migrations, hooks)
-must use this helper so typo, archived, and inaccessible project failures stay
-consistent and fatal instead of falling back to auto-detected or vault-wide
-scope. `ProjectService.findByName()` owns the separate duplicate-active-name
-error; do not catch and soften it at the boundary.
+must use these helpers so typo, archived, and inaccessible project failures
+stay consistent and fatal instead of falling back to auto-detected or
+vault-wide scope. Archived projects require an explicit opt-in
+(`findByName(name, { includeArchived: true })`, normally surfaced as a
+command-specific flag such as `--include-archived`) and should produce an
+archived-specific diagnostic when rejected. `ProjectService.findByName()` owns
+the separate duplicate-active-name error; do not catch and soften it at the
+boundary.
 
 ## Memory Content Storage
 

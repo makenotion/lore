@@ -218,16 +218,24 @@ export const statusCommand = new Command("status")
 
 // Sub-commands
 const projectsCmd = new Command("projects")
-  .description("List all projects")
+  .description("List active projects")
   .option("-a, --all", "Include archived projects")
-  .action(async (opts: { all?: boolean }) => {
+  .option("--archived-only", "List only archived projects")
+  .action(async (opts: { all?: boolean; archivedOnly?: boolean }) => {
+    if (opts.all && opts.archivedOnly) {
+      console.error("--all and --archived-only cannot be combined.")
+      process.exit(1)
+      return
+    }
+
     try {
       // Sub-commands are narrow read-only listings — they don't surface
       // drift, so they take the default `false`. Made explicit so a
       // future contributor adding a third subcommand sees the policy in
       // grep, not just the AGENTS.md table.
       const services = await initServices(undefined, { driftCheck: false })
-      const projects = await services.projects.list(opts.all ? undefined : "active")
+      const status = opts.all ? "any" : opts.archivedOnly ? "archived" : "active"
+      const projects = await services.projects.list(status)
 
       if (projects.length === 0) {
         console.log("No projects found.")

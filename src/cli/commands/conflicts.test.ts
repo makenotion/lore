@@ -67,6 +67,10 @@ function scanStats(overrides: Partial<ScanStats> = {}): ScanStats {
 
 interface MakeServicesOpts {
   projectsByName?: Record<string, { id: string; name: string }>
+  archivedProjectsByName?: Record<
+    string,
+    { id: string; name: string; status: "archived" }
+  >
   projectsList?: Array<{ id: string; name: string }>
   /** Aligned with projectIds passed to listForScan. */
   memoriesByProjectId?: Record<string, Memory[]>
@@ -78,9 +82,14 @@ interface MakeServicesOpts {
  * and `memories.listForScan`. Anything else is cast through `unknown`.
  */
 function makeServices(opts: MakeServicesOpts): LoreServices {
-  const findByName = vi.fn(async (name: string) => {
-    return opts.projectsByName?.[name] ?? null
-  })
+  const findByName = vi.fn(
+    async (name: string, options?: { includeArchived?: boolean }) => {
+      if (options?.includeArchived) {
+        return opts.archivedProjectsByName?.[name] ?? null
+      }
+      return opts.projectsByName?.[name] ?? null
+    }
+  )
   const list = vi.fn(async () => opts.projectsList ?? [])
   const listForScan = vi.fn(
     async (args: {
@@ -232,6 +241,24 @@ describe("resolveScanProjects", () => {
     await expect(resolveScanProjects(services, "Nope")).rejects.toThrow(
       /Project "Nope" could not be resolved.*lore status projects/,
     )
+  })
+
+  it("throws archived-specific wording when --project resolves only as archived", async () => {
+    const services = makeServices({
+      archivedProjectsByName: {
+        Archive: { id: "p-archive", name: "Archive", status: "archived" },
+      },
+    })
+
+    await expect(resolveScanProjects(services, "Archive")).rejects.toThrow(
+      /Project "Archive" could not be resolved because it is archived/,
+    )
+
+    const findByName = services.projects.findByName as ReturnType<typeof vi.fn>
+    expect(findByName).toHaveBeenNthCalledWith(1, "Archive")
+    expect(findByName).toHaveBeenNthCalledWith(2, "Archive", {
+      includeArchived: true,
+    })
   })
 
   it("scopes the all-projects branch to active projects (calls projects.list with 'active' status)", async () => {

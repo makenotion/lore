@@ -116,6 +116,41 @@ describe("searchCommand", () => {
     expect(errorSpy.mock.calls.join("\n")).toContain("Fix the project scope")
   })
 
+  it("exits non-zero with archived wording when --project resolves only as archived", async () => {
+    const search = vi.fn()
+    const findByName = vi.fn(
+      async (name: string, options?: { includeArchived?: boolean }) =>
+        options?.includeArchived
+          ? {
+              id: "proj-archive",
+              name,
+              path: "archive",
+              type: "project",
+              status: "archived",
+              description: "",
+            }
+          : null
+    )
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName },
+      memories: { search },
+      context: { project: { id: "proj-ambient", name: "Ambient" } },
+    } as never)
+
+    await expect(
+      searchCommand.parseAsync(["auth", "--project", "Archive"], { from: "user" })
+    ).rejects.toThrow("__process_exit_1__")
+
+    expect(search).not.toHaveBeenCalled()
+    expect(errorSpy.mock.calls.join("\n")).toContain(
+      'Project "Archive" could not be resolved because it is archived'
+    )
+    expect(findByName).toHaveBeenNthCalledWith(1, "Archive")
+    expect(findByName).toHaveBeenNthCalledWith(2, "Archive", {
+      includeArchived: true,
+    })
+  })
+
   it("exits non-zero and skips search when --project is blank", async () => {
     const findByName = vi.fn()
     const search = vi.fn()

@@ -12,6 +12,7 @@ import type {
   CreateProjectInput,
   ProjectType,
   ProjectStatus,
+  ProjectListStatus,
   DatabaseRef,
 } from "../types.js"
 import { buildProjectProps } from "../notion/schema.js"
@@ -40,14 +41,15 @@ function activeProjectLookupFilter(
 
 export type ProjectNameResolution =
   | { kind: "resolved"; project: Project }
+  | { kind: "archived"; project: Project }
   | { kind: "missing" }
   | { kind: "transient-error"; cause: unknown }
 
 export class ProjectService {
   /**
-   * Name → Project cache. **Invariant**: every mutation that changes a
-   * Project's `Name` property must invalidate this cache, or a 60s
-   * stale-name→id window opens for every caller that names the project.
+   * Name → active Project cache. **Invariant**: every mutation that changes a
+   * Project's `Name` or `Status` property must invalidate this cache, or a 60s
+   * stale-name→id window opens for every caller that names an active project.
    * Today only `create` and `archive` touch the cache; a future rename
    * or `update` method must extend this list.
    */
@@ -83,8 +85,9 @@ export class ProjectService {
     return this.pageToProject(page as PageObjectResponse)
   }
 
-  async list(status?: ProjectStatus): Promise<Project[]> {
-    const filter = status ? { property: "Status", select: { equals: status } } : undefined
+  async list(status: ProjectListStatus = "active"): Promise<Project[]> {
+    const filter =
+      status === "any" ? undefined : { property: "Status", select: { equals: status } }
 
     const results: PageObjectResponse[] = []
     let cursor: string | undefined
@@ -146,7 +149,16 @@ export class ProjectService {
   ): Promise<ProjectNameResolution> {
     try {
       const project = await this.findByName(name, options)
-      return project ? { kind: "resolved", project } : { kind: "missing" }
+      if (project) return { kind: "resolved", project }
+
+      if (!options.includeArchived) {
+        const archived = await this.findByName(name, { includeArchived: true })
+        if (archived?.status === "archived") {
+          return { kind: "archived", project: archived }
+        }
+      }
+
+      return { kind: "missing" }
     } catch (err) {
       if (isTransientNotionError(err)) return { kind: "transient-error", cause: err }
       throw err

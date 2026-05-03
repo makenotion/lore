@@ -6,6 +6,8 @@ import type { Project } from "../types.js"
 import type { ProjectNameResolution } from "./project.js"
 
 export interface FormatUnresolvedProjectScopeErrorOptions {
+  archivedHint?: string
+  archivedNames?: readonly string[]
   docsHint?: string
   includeArchivedHint?: string
   listHint?: string
@@ -15,13 +17,17 @@ export interface FormatUnresolvedProjectScopeErrorOptions {
 export const PROJECT_SCOPE_MIGRATION_DOC =
   "docs/memory-workflows.md#migrating-from-unscoped-writes"
 
-export function formatUnresolvedProjectScopeError(
+function formatProjectSubject(names: readonly string[]): string {
+  const quoted = names.map((name) => `"${name}"`).join(", ")
+  return names.length === 1 ? `Project ${quoted}` : `Projects ${quoted}`
+}
+
+function formatUnresolvedNames(
   names: readonly string[],
   scopeFields: string,
-  options: FormatUnresolvedProjectScopeErrorOptions = {}
+  options: FormatUnresolvedProjectScopeErrorOptions
 ): string {
-  const quoted = names.map((name) => `"${name}"`).join(", ")
-  const subject = names.length === 1 ? `Project ${quoted}` : `Projects ${quoted}`
+  const subject = formatProjectSubject(names)
   const noun = names.length === 1 ? "name" : "names"
   const hint = options.listHint ? ` (${options.listHint})` : ""
   const omittedScopeLabel = options.omittedScopeLabel ?? "auto-detected scope"
@@ -36,6 +42,44 @@ export function formatUnresolvedProjectScopeError(
     includeArchived +
     docsHint
   )
+}
+
+function formatArchivedNames(
+  names: readonly string[],
+  options: FormatUnresolvedProjectScopeErrorOptions
+): string {
+  const subject = formatProjectSubject(names)
+  const verb = names.length === 1 ? "is" : "are"
+  const hint = options.listHint ? ` (${options.listHint})` : ""
+  const recovery =
+    options.archivedHint ??
+    options.includeArchivedHint ??
+    `Unarchive ${names.length === 1 ? "it" : "them"} or choose an active project${hint}`
+  const docsHint = options.docsHint ? ` See ${options.docsHint}.` : ""
+  return (
+    `${subject} could not be resolved because ${names.length === 1 ? "it" : "they"} ` +
+    `${verb} archived. ${recovery}.${docsHint}`
+  )
+}
+
+export function formatUnresolvedProjectScopeError(
+  names: readonly string[],
+  scopeFields: string,
+  options: FormatUnresolvedProjectScopeErrorOptions = {}
+): string {
+  const archived = new Set(options.archivedNames ?? [])
+  const archivedNames = names.filter((name) => archived.has(name))
+  const unresolvedNames = names.filter((name) => !archived.has(name))
+  const messages: string[] = []
+
+  if (archivedNames.length > 0) {
+    messages.push(formatArchivedNames(archivedNames, options))
+  }
+  if (unresolvedNames.length > 0) {
+    messages.push(formatUnresolvedNames(unresolvedNames, scopeFields, options))
+  }
+
+  return messages.join(" ")
 }
 
 function causeMessage(cause: unknown): string {
@@ -103,6 +147,29 @@ function findByNameFallback(
     : projects.findByName(name, { includeArchived })
 }
 
+async function resolveProjectNameResult(
+  projects: ProjectNameResolver,
+  name: string,
+  includeArchived: boolean | undefined
+): Promise<ProjectNameResolution | Project | null> {
+  if (projects.resolveByName) {
+    return projects.resolveByName(name, { includeArchived })
+  }
+
+  const project = await findByNameFallback(projects, name, includeArchived)
+  if (project !== null || includeArchived) return project
+
+  // Fatal explicit-scope misses pay one archived-inclusive probe so
+  // archived names can get a precise recovery hint. Do not collapse
+  // this into an unconditional include-archived lookup: active lookup
+  // owns the duplicate-active-name contract and the hot-path cache.
+  const archived = await findByNameFallback(projects, name, true)
+  if (archived?.status === "archived") {
+    return { kind: "archived", project: archived }
+  }
+  return null
+}
+
 export async function resolveProjectScopeName(
   projects: ProjectNameResolver,
   name: string,
@@ -111,9 +178,11 @@ export async function resolveProjectScopeName(
     includeArchived?: boolean
   } = {}
 ): Promise<Project> {
-  const result = projects.resolveByName
-    ? await projects.resolveByName(name, { includeArchived: options.includeArchived })
-    : ((await findByNameFallback(projects, name, options.includeArchived)) ?? null)
+  const result = await resolveProjectNameResult(
+    projects,
+    name,
+    options.includeArchived
+  )
 
   if (result === null) {
     throw new Error(formatUnresolvedProjectScopeError([name], scopeFields, options))
@@ -122,6 +191,13 @@ export async function resolveProjectScopeName(
     switch (result.kind) {
       case "resolved":
         return result.project
+      case "archived":
+        throw new Error(
+          formatUnresolvedProjectScopeError([name], scopeFields, {
+            ...options,
+            archivedNames: [name],
+          })
+        )
       case "missing":
         throw new Error(formatUnresolvedProjectScopeError([name], scopeFields, options))
       case "transient-error":
@@ -147,15 +223,16 @@ export async function resolveProjectScopeNames(
   const resolved = await Promise.all(
     names.map(async (name) => ({
       name,
-      result: projects.resolveByName
-        ? await projects.resolveByName(name, {
-            includeArchived: options.includeArchived,
-          })
-        : ((await findByNameFallback(projects, name, options.includeArchived)) ?? null),
+      result: await resolveProjectNameResult(
+        projects,
+        name,
+        options.includeArchived
+      ),
     }))
   )
 
   const missing: string[] = []
+  const archived: string[] = []
   const transient: Array<{ name: string; cause: unknown }> = []
   const projectsOut: Project[] = []
 
@@ -167,6 +244,7 @@ export async function resolveProjectScopeNames(
     }
     if ("kind" in result) {
       if (result.kind === "resolved") projectsOut.push(result.project)
+      else if (result.kind === "archived") archived.push(name)
       else if (result.kind === "missing") missing.push(name)
       else transient.push({ name, cause: result.cause })
       continue
@@ -182,12 +260,20 @@ export async function resolveProjectScopeNames(
       options
     )
   }
-  if (missing.length > 0) {
-    throw new Error(formatUnresolvedProjectScopeError(missing, scopeFields, options))
+  if (archived.length > 0 || missing.length > 0) {
+    throw new Error(
+      formatUnresolvedProjectScopeError([...archived, ...missing], scopeFields, {
+        ...options,
+        archivedNames: archived,
+      })
+    )
   }
 
   return projectsOut
 }
+
+export const resolveProjectByName = resolveProjectScopeName
+export const resolveProjectsByNames = resolveProjectScopeNames
 
 export function validateExplicitProjectScopeName(
   name: string | undefined,

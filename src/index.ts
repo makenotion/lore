@@ -6,6 +6,7 @@ export type {
   CreateProjectInput,
   ProjectType,
   ProjectStatus,
+  ProjectListStatus,
   Topic,
   CreateTopicInput,
   Memory,

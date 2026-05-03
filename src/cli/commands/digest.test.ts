@@ -1,8 +1,13 @@
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { resolveSpawnCwd } from "./digest.js"
+import { initServices } from "../../services.js"
+import { digestCommand, resolveSpawnCwd } from "./digest.js"
+
+vi.mock("../../services.js", () => ({
+  initServices: vi.fn(),
+}))
 
 // Real on-disk fixtures — `resolveSpawnCwd` calls `existsSync` and we want
 // to pin actual filesystem behavior, not a mock of it.
@@ -51,5 +56,59 @@ describe("resolveSpawnCwd", () => {
     // Stale → fallback. The important part is that we didn't try to resolve
     // against `/nope-still-stale` as an absolute path on disk.
     expect(result).toBe(process.cwd())
+  })
+})
+
+describe("digestCommand", () => {
+  let errorSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.mocked(initServices).mockReset()
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__process_exit_${typeof code === "number" ? code : 0}__`)
+    }) as never)
+    errorSpy = vi.fn()
+    vi.spyOn(console, "error").mockImplementation(errorSpy)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("exits with archived-specific wording when --project resolves only as archived", async () => {
+    const findByName = vi.fn(
+      async (name: string, options?: { includeArchived?: boolean }) =>
+        options?.includeArchived
+          ? {
+              id: "p-archive",
+              name,
+              path: "archive",
+              type: "project",
+              status: "archived",
+              description: "",
+            }
+          : null
+    )
+    vi.mocked(initServices).mockResolvedValue({
+      config: { projects: [] },
+      context: { project: null },
+      projects: { findByName },
+    } as never)
+
+    await expect(
+      digestCommand.parseAsync(["--project", "Archive", "--dry-run"], {
+        from: "user",
+      })
+    ).rejects.toThrow("__process_exit_1__")
+
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Digest failed:")
+    expect(errorText).toContain(
+      'Project "Archive" could not be resolved because it is archived'
+    )
+    expect(findByName).toHaveBeenNthCalledWith(1, "Archive")
+    expect(findByName).toHaveBeenNthCalledWith(2, "Archive", {
+      includeArchived: true,
+    })
   })
 })

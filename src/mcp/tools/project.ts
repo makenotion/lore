@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import { formatDispatchError, toolError } from "../helpers.js"
+import { resolveProjectByName } from "../../core/project-scope.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -15,7 +16,7 @@ type ToolResult = {
 
 async function handleList(
   services: LoreServices,
-  args: { status?: "active" | "archived" },
+  args: { status?: "active" | "archived" | "any" }
 ): Promise<ToolResult> {
   try {
     const projects = await services.projects.list(args.status)
@@ -49,16 +50,17 @@ async function handleList(
 
 async function handleGet(
   services: LoreServices,
-  args: { name: string },
+  args: { name: string }
 ): Promise<ToolResult> {
   try {
-    const project = await services.projects.findByName(args.name)
-    if (!project) {
-      return {
-        content: [{ type: "text", text: `Project "${args.name}" not found.` }],
-        isError: true,
+    const project = await resolveProjectByName(
+      services.projects,
+      args.name,
+      "name",
+      {
+        listHint: "call `lore-project action='list'` to see configured projects",
       }
-    }
+    )
 
     const [topics, { items: recentMemories }] = await Promise.all([
       services.topics.listByProject(project.id),
@@ -111,7 +113,7 @@ async function handleGet(
 const projectDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("list"),
-    status: z.enum(["active", "archived"]).optional(),
+    status: z.enum(["active", "archived", "any"]).optional(),
   }),
   z.object({
     action: z.literal("get"),
@@ -129,18 +131,20 @@ export function registerProjectTools(server: McpServer, services: LoreServices):
       title: "Project operations",
       description:
         "List projects or get details for one project. Action-dispatched:\n\n" +
-        "- `action: 'list'` — list all projects (optionally filtered by `status`).\n" +
+        "- `action: 'list'` — list active projects by default (optionally filtered by `status`; use `archived` for archived-only or `any` to include archived with active).\n" +
         "- `action: 'get'` — get details for a project by `name`, including topics and recent activity.",
       inputSchema: {
         action: z
           .enum(["list", "get"])
           .describe(
-            "Operation to perform. 'list' enumerates projects; 'get' loads details for one.",
+            "Operation to perform. 'list' enumerates projects; 'get' loads details for one."
           ),
         status: z
-          .enum(["active", "archived"])
+          .enum(["active", "archived", "any"])
           .optional()
-          .describe("(action='list') Filter by status. Default: all."),
+          .describe(
+            "(action='list') Filter by status. Default: active; use 'archived' for archived-only or 'any' to include both active and archived."
+          ),
         name: z
           .string()
           .optional()
@@ -151,9 +155,7 @@ export function registerProjectTools(server: McpServer, services: LoreServices):
     async (args) => {
       const parsed = projectDispatchSchema.safeParse(args)
       if (!parsed.success) {
-        return toolError(
-          new Error(formatDispatchError("lore-project", parsed.error)),
-        )
+        return toolError(new Error(formatDispatchError("lore-project", parsed.error)))
       }
       switch (parsed.data.action) {
         case "list":
@@ -161,6 +163,6 @@ export function registerProjectTools(server: McpServer, services: LoreServices):
         case "get":
           return handleGet(services, parsed.data)
       }
-    },
+    }
   )
 }

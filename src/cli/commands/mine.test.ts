@@ -398,7 +398,10 @@ describe("selectMineFiles", () => {
 
 describe("resolveMineProject", () => {
   function makeServices(opts: {
-    findByName?: (name: string) => Promise<{ id: string; name: string } | null>
+    findByName?: (
+      name: string,
+      options?: { includeArchived?: boolean }
+    ) => Promise<{ id: string; name: string; status?: string } | null>
     contextProject?: { id: string; name: string } | null
   }): LoreServices {
     return {
@@ -426,6 +429,24 @@ describe("resolveMineProject", () => {
     await expect(resolveMineProject(services, "Mial")).rejects.toThrow(
       /Project "Mial" could not be resolved.*lore status projects/,
     )
+  })
+
+  it("throws archived-specific wording when --project resolves only as archived", async () => {
+    const findByName = vi.fn(
+      async (name: string, options?: { includeArchived?: boolean }) =>
+        options?.includeArchived
+          ? { id: "p-archive", name, status: "archived" }
+          : null
+    )
+    const services = makeServices({ findByName })
+
+    await expect(resolveMineProject(services, "Archive")).rejects.toThrow(
+      /Project "Archive" could not be resolved because it is archived/,
+    )
+    expect(findByName).toHaveBeenNthCalledWith(1, "Archive")
+    expect(findByName).toHaveBeenNthCalledWith(2, "Archive", {
+      includeArchived: true,
+    })
   })
 
   it("falls back to context.project when --project is omitted", async () => {

@@ -555,10 +555,10 @@ designed to remove.
 
 ### `lore-project` — project read paths
 
-| Action | Purpose                                                  | Read-only |
-| ------ | -------------------------------------------------------- | --------- |
-| `list` | List all projects in the vault                           | Yes       |
-| `get`  | Get project details including topics and recent activity | Yes       |
+| Action | Purpose                                                                                | Read-only |
+| ------ | -------------------------------------------------------------------------------------- | --------- |
+| `list` | List active projects by default; `status: "archived"` is archived-only and `"any"` all | Yes       |
+| `get`  | Get active project details including topics and recent activity                        | Yes       |
 
 ### `lore-fact` — knowledge graph mutations
 
