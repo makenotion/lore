@@ -466,8 +466,12 @@ input-shape regression.
 
 Codex does not expose Claude Code's `runOnce` flag on `UserPromptSubmit`, so
 `wakeup()` owns a per-session filesystem marker
-(`$TMPDIR/lore-hook-state/<session>.wakeup`). The first prompt-bearing event
-runs the ranked path and writes the marker; later prompts in the same session
+(`$TMPDIR/lore-hook-state/<session>.wakeup`). After `hooks.wakeUp` opt-out and
+config discovery pass, the first prompt-bearing event atomically creates the
+marker with `O_EXCL` before Notion initialization. The marker means "wake-up
+was attempted for this session": slash-command prompts, service init failures,
+and transient `loadWakeUpData` failures are still debounced so Codex does not
+retry a decorative Notion path every turn. Later prompts in the same session
 return before Notion initialization. After `/clear` or a topical pivot inside
 the same Codex session, agents should explicitly rerun the MCP surface with
 `lore-context action='wake-up' userQuery='<new task prompt>'` to get fresh
@@ -498,12 +502,12 @@ blow Notion's query budget or drown relevance.
 
 `LORE_DEBUG=1` emits one stderr line per wake-up firing in the same
 `[lore] <subsystem>: key=value` shape as the `[lore] partial-failure:`
-line in `src/mcp/AGENTS.md`. Two variants:
+line in `src/mcp/AGENTS.md`. Current variants:
 
 ```
 [lore] wakeup: ranked=true queryLen=42 memory=3 related=2 knowledge=10 taskMemories=3
 [lore] wakeup: ranked=false reason=no-user-query
-[lore] wakeup: ranked=false reason=already-ranked-for-session
+[lore] wakeup: mode=default ranked=false reason=already-ranked-for-session
 ```
 
 The ranked variant reports the per-section caps applied so an operator

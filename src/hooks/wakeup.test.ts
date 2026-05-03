@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -49,7 +49,7 @@ vi.mock("../core/wakeup.js", async () => {
   }
 })
 
-import { wakeup } from "./helpers.js"
+import { wakeup, wakeupStatePath } from "./helpers.js"
 import type { Project, TaskSummary } from "../types.js"
 
 function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
@@ -99,6 +99,7 @@ function setupMocks(opts: {
   isCatchAllFallback: boolean
   configProjects: Array<{ name: string; path: string }>
   tasks?: TaskSummary[]
+  wakeUp?: boolean
 }): void {
   findConfigFileMock.mockResolvedValue({
     path: "/tmp/.lore.yaml",
@@ -108,7 +109,12 @@ function setupMocks(opts: {
     config: {
       vault: { pageId: "v1" },
       projects: opts.configProjects,
-      hooks: { wakeUp: true, autoSave: true, autoDigest: true, saveInterval: 5 },
+      hooks: {
+        wakeUp: opts.wakeUp ?? true,
+        autoSave: true,
+        autoDigest: true,
+        saveInterval: 5,
+      },
     },
     warnings: [],
   })
@@ -447,5 +453,139 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
 
     expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
     expect(stdout).toHaveBeenCalledTimes(1)
+  })
+
+  it("debounces slash-command first Codex prompts before later ranked prompts", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-slash-first",
+        turn_id: "turn-1",
+        prompt: "/clear",
+        cwd: "/tmp",
+      }),
+    })
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-slash-first",
+        turn_id: "turn-2",
+        prompt: "Make Codex wake-up query-aware",
+        cwd: "/tmp",
+      }),
+    })
+
+    expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
+      userQuery: undefined,
+    })
+    expect(stdout).toHaveBeenCalledTimes(1)
+  })
+
+  it("records the wake-up attempt before load failures so later prompts skip", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    loadWakeUpDataMock.mockRejectedValueOnce(new Error("notion down"))
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const event = JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "codex-load-failure",
+      turn_id: "turn-1",
+      prompt: "Make Codex wake-up query-aware",
+      cwd: "/tmp",
+    })
+
+    try {
+      await wakeup({ event })
+      await wakeup({ event })
+
+      expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+      expect(initServicesMock).toHaveBeenCalledTimes(1)
+      expect(stdout).not.toHaveBeenCalled()
+      expect(existsSync(wakeupStatePath("codex-load-failure"))).toBe(true)
+      expect(String(stderr.mock.calls[0]?.[0])).toContain("load failed")
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("uses an atomic wake-up attempt marker for concurrent Codex prompts", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    const event = JSON.stringify({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "codex-concurrent",
+      turn_id: "turn-1",
+      prompt: "Make Codex wake-up query-aware",
+      cwd: "/tmp",
+    })
+
+    await Promise.all([wakeup({ event }), wakeup({ event })])
+
+    expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
+    expect(stdout).toHaveBeenCalledTimes(1)
+  })
+
+  it("honors hooks.wakeUp false before writing a debounce marker", async () => {
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      wakeUp: false,
+    })
+
+    await wakeup({
+      event: JSON.stringify({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "codex-wakeup-disabled",
+        turn_id: "turn-1",
+        prompt: "Make Codex wake-up query-aware",
+        cwd: "/tmp",
+      }),
+    })
+
+    expect(initServicesMock).not.toHaveBeenCalled()
+    expect(loadWakeUpDataMock).not.toHaveBeenCalled()
+    expect(existsSync(wakeupStatePath("codex-wakeup-disabled"))).toBe(false)
   })
 })

@@ -11,6 +11,14 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex wake-up debounce now records attempts atomically.** The
+  `UserPromptSubmit` marker is created before Notion initialization, applies to
+  slash-command first prompts and transient wake-up load failures, honors
+  `hooks.wakeUp: false` before touching marker state, and uses atomic
+  create-if-absent so concurrent prompt hooks do not both run wake-up. (#310)
+
 ## [0.12.0] - 2026-05-03
 
 ### Changed

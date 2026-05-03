@@ -31,8 +31,11 @@ it still falls back to unranked output until the project reruns
 
 Codex does not provide Claude Code's `runOnce` flag for `UserPromptSubmit`, so
 Lore keeps its own per-session debounce marker and skips later prompt events
-before initializing Notion. After `/clear` or a topic pivot inside the same
-Codex session, call the MCP surface explicitly with
+before initializing Notion. The marker records the first enabled
+`UserPromptSubmit` attempt, even when the prompt is a slash command or a
+transient Notion failure prevents context injection, so Codex does not retry the
+same decorative wake-up path every turn. After `/clear` or a topic pivot inside
+the same Codex session, call the MCP surface explicitly with
 `lore-context action='wake-up' userQuery='<new task prompt>'` to refresh ranked
 context. Set `hooks.wakeUp: false` in `.lore.yaml` to skip automatic injection
 for supported assistants. If `.lore.yaml` fails to parse, the hook falls back to

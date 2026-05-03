@@ -153,9 +153,9 @@ export function statePath(sessionId: string): string {
 }
 
 /**
- * Per-session marker for prompt-bearing wake-up hooks. Codex's
+ * Per-session attempt marker for prompt-bearing wake-up hooks. Codex's
  * `UserPromptSubmit` currently lacks Claude Code's `runOnce`, so the helper
- * owns the debounce that keeps ranked wake-up to the first real prompt.
+ * owns the debounce that keeps wake-up to the first enabled prompt event.
  */
 export function wakeupStatePath(sessionId: string): string {
   return join(getStateDir(), `${safeFilenameSegment(sessionId)}.wakeup`)
@@ -180,20 +180,16 @@ async function writeSaveCount(
   await writeFile(statePath(sessionId), count.toString())
 }
 
-async function hasWakeupRun(sessionId: string | undefined): Promise<boolean> {
-  if (!sessionId) return false
-  try {
-    await readFile(wakeupStatePath(sessionId), "utf-8")
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function markWakeupRun(sessionId: string | undefined): Promise<void> {
-  if (!sessionId) return
+async function tryMarkWakeupRun(sessionId: string | undefined): Promise<boolean> {
+  if (!sessionId) return true
   await ensureStateDir()
-  await writeFile(wakeupStatePath(sessionId), "1")
+  try {
+    await writeFile(wakeupStatePath(sessionId), "1", { flag: "wx", mode: 0o600 })
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false
+    throw err
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -707,24 +703,31 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   const debug = process.env["LORE_DEBUG"] === "1"
   const userQuery = parseUserQueryFromEvent(rawEvent)
 
-  if (
-    eventMeta.hookEventName === "UserPromptSubmit" &&
-    await hasWakeupRun(eventMeta.sessionId)
-  ) {
-    if (debug) {
-      process.stderr.write(
-        "[lore] wakeup: ranked=false reason=already-ranked-for-session\n",
-      )
-    }
-    return
-  }
-
   // Config opt-out: hooks.wakeUp: false suppresses context injection.
   // Check before service initialization so we avoid the Notion round-trip when disabled.
   const hookState = await loadHookState()
   const { hookConfig } = hookState
   if (!hookConfig.wakeUp) return
   if (!hookState.config || !hookState.configRoot) return
+
+  if (eventMeta.hookEventName === "UserPromptSubmit") {
+    let marked = true
+    try {
+      marked = await tryMarkWakeupRun(eventMeta.sessionId)
+    } catch (err) {
+      process.stderr.write(
+        `[lore] wakeup: debounce mark failed — ${err instanceof Error ? err.message : err}.\n`,
+      )
+    }
+    if (!marked) {
+      if (debug) {
+        process.stderr.write(
+          "[lore] wakeup: mode=default ranked=false reason=already-ranked-for-session\n",
+        )
+      }
+      return
+    }
+  }
 
   let services: Awaited<ReturnType<typeof initServicesFromConfig>>
   try {
@@ -892,16 +895,6 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   if (sections.length > 0) {
     sections.unshift("# Lore Context")
     console.log(sections.join("\n"))
-  }
-
-  if (userQuery && eventMeta.hookEventName === "UserPromptSubmit") {
-    try {
-      await markWakeupRun(eventMeta.sessionId)
-    } catch (err) {
-      process.stderr.write(
-        `[lore] wakeup: debounce mark failed — ${err instanceof Error ? err.message : err}.\n`,
-      )
-    }
   }
 }
 
