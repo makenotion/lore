@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { describe, expect, it, vi } from "vitest"
 import { registerDecisionTools } from "./decisions.js"
-import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "../../core/rich-text-schema.js"
 import type { Decision, Fact } from "../../types.js"
 
 function makeDecision(id: string, overrides: Partial<Decision> = {}): Decision {

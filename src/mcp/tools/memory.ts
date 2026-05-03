@@ -23,7 +23,10 @@ import type {
 } from "../../types.js"
 import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
-import { RICH_TEXT_PROPERTY_MAX_LEN, richTextPropertySchema } from "./rich-text-schema.js"
+import {
+  RICH_TEXT_PROPERTY_MAX_LEN,
+  richTextPropertySchema,
+} from "../../core/rich-text-schema.js"
 import {
   extractEntityCandidates,
   findAutosaveLearningDuplicate,

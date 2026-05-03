@@ -37,6 +37,7 @@ import {
 import { isFullPage, isLiveFullPage } from "../notion/extractors.js"
 import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
+import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 
 /** Days to push `Review By` forward when `reviewCompleted` is called with no explicit date. */
 const DEFAULT_REVIEW_EXTENSION_DAYS = 90
@@ -151,6 +152,8 @@ export class DecisionService {
   ) {}
 
   async create(input: CreateDecisionInput): Promise<Decision> {
+    validateRichTextMetadataFields(input, "DecisionService.create")
+
     const decidedAt = input.decidedAt ?? todayISO()
     const status = input.status ?? "accepted"
     const confidence = input.confidence ?? "certain"

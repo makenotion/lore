@@ -22,6 +22,7 @@ import {
   SEMANTIC_SEARCH_MAX_PAGES,
   type RrfEntry,
 } from "./memory.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import { encodeCompareNotesRichText } from "../notion/schema.js"
 import type { DatabaseRef } from "../types.js"
 import { buildMemoryProps } from "../notion/schema.js"
@@ -299,6 +300,68 @@ describe("MemoryService.create — Confidence Score write semantics (#01)", () =
 
     const props = createSpy.mock.calls[0]![0].properties
     expect("Confidence Score" in props).toBe(false)
+  })
+})
+
+describe("MemoryService.create — rich_text metadata cap", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeCreateClient() {
+    const createSpy = vi.fn(
+      async (_args: { parent: unknown; properties: Record<string, unknown> }) => ({
+        object: "page",
+        id: "mem-1",
+        created_time: "2026-04-20T00:00:00.000Z",
+        last_edited_time: "2026-04-20T00:00:00.000Z",
+        archived: false,
+        properties: { Title: { type: "title", title: [{ plain_text: "x" }] } },
+        parent: { type: "database_id", database_id: db.databaseId },
+        url: "",
+      })
+    )
+    const client = {
+      pages: { create: createSpy, updateMarkdown: vi.fn(async () => ({})) },
+    } as unknown as Client
+    return { client, createSpy }
+  }
+
+  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+    await service.create({
+      title: "Keep metadata capped",
+      content: "",
+      alternatives: atCap,
+      consequences: atCap,
+    })
+
+    const props = createSpy.mock.calls[0]![0].properties as {
+      Alternatives: { rich_text: Array<{ text: { content: string } }> }
+      Consequences: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Alternatives.rich_text[0].text.content).toBe(atCap)
+    expect(props.Consequences.rich_text[0].text.content).toBe(atCap)
+  })
+
+  it.each([
+    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+  ] as const)("rejects over-cap %s before any Notion write", async (field, input) => {
+    const { client, createSpy } = makeCreateClient()
+    const service = new MemoryService(client, db)
+
+    await expect(
+      service.create({
+        title: "Keep metadata capped",
+        content: "",
+        ...input,
+      })
+    ).rejects.toThrow(
+      new RegExp(`MemoryService\\.create.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
+    )
+    expect(createSpy).not.toHaveBeenCalled()
   })
 })
 
@@ -635,6 +698,67 @@ describe("MemoryService.update — Confidence Score write semantics (#01)", () =
 
     const props = updateSpy.mock.calls[0]![0].properties
     expect(props["Confidence Score"]).toEqual({ number: 0 })
+  })
+})
+
+describe("MemoryService.update — rich_text metadata cap", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function makeUpdateClient() {
+    const updateSpy = vi.fn(async (_args: { page_id: string; properties: Record<string, unknown> }) => ({}))
+    const retrieveSpy = vi.fn(async () =>
+      buildPage(
+        {
+          Title: { type: "title", title: [{ plain_text: "Memory" }] },
+          Project: { type: "relation", relation: [] },
+          Topic: { type: "relation", relation: [] },
+          Source: { type: "select", select: { name: "manual" } },
+        },
+        { id: "mem-1" }
+      )
+    )
+    const retrieveMarkdownSpy = vi.fn(async () => ({ markdown: "" }))
+    const client = {
+      pages: {
+        update: updateSpy,
+        retrieve: retrieveSpy,
+        retrieveMarkdown: retrieveMarkdownSpy,
+      },
+    } as unknown as Client
+    return { client, updateSpy, retrieveSpy, retrieveMarkdownSpy }
+  }
+
+  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+    const { client, updateSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+    await service.update("mem-1", {
+      alternatives: atCap,
+      consequences: atCap,
+    })
+
+    const props = updateSpy.mock.calls[0]![0].properties as {
+      Alternatives: { rich_text: Array<{ text: { content: string } }> }
+      Consequences: { rich_text: Array<{ text: { content: string } }> }
+    }
+    expect(props.Alternatives.rich_text[0].text.content).toBe(atCap)
+    expect(props.Consequences.rich_text[0].text.content).toBe(atCap)
+  })
+
+  it.each([
+    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+  ] as const)("rejects over-cap %s before any Notion write", async (field, input) => {
+    const { client, updateSpy, retrieveSpy, retrieveMarkdownSpy } = makeUpdateClient()
+    const service = new MemoryService(client, db)
+
+    await expect(service.update("mem-1", input)).rejects.toThrow(
+      new RegExp(`MemoryService\\.update.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
+    )
+    expect(updateSpy).not.toHaveBeenCalled()
+    expect(retrieveSpy).not.toHaveBeenCalled()
+    expect(retrieveMarkdownSpy).not.toHaveBeenCalled()
   })
 })
 

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { registerMemoryTools } from "./memory.js"
 import { registerQueryTools } from "./query.js"
-import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "../../core/rich-text-schema.js"
 import {
   appendCompareDispatchLedgerEntry,
   buildCompareDispatchLedgerEntry,

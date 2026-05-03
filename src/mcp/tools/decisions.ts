@@ -17,7 +17,10 @@ import { displayId, renderTrustLine, resolveTitles, truncateSynopsis } from "../
 import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
-import { RICH_TEXT_PROPERTY_MAX_LEN, richTextPropertySchema } from "./rich-text-schema.js"
+import {
+  RICH_TEXT_PROPERTY_MAX_LEN,
+  richTextPropertySchema,
+} from "../../core/rich-text-schema.js"
 import { findNearDuplicates, type NearDuplicateMatch } from "../../core/near-duplicate.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 

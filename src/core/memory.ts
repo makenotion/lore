@@ -53,6 +53,7 @@ import {
   type BackfillReport,
 } from "./synopsis-backfill.js"
 import { LruCache } from "./cache.js"
+import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 import {
   bumpConfidenceScore,
   confidenceFactor,
@@ -1075,6 +1076,8 @@ export class MemoryService {
   }
 
   async create(input: CreateMemoryInput): Promise<Memory> {
+    validateRichTextMetadataFields(input, "MemoryService.create")
+
     // Decode at the write boundary so doubly-encoded values from the
     // autosave/markdown path land in Notion as plain text. Idempotent: a
     // clean value passes through unchanged. Covers every plain-text
@@ -2120,6 +2123,8 @@ export class MemoryService {
   }
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
+    validateRichTextMetadataFields(input, "MemoryService.update")
+
     // Same decode-at-write discipline as `create`: encoded titles /
     // content / alternatives / consequences flowing in from re-saves of
     // autosave-rendered transcripts must land in Notion clean. Without

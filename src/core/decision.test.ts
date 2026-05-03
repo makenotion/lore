@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { DecisionCreatePartialFailureError, DecisionService } from "./decision.js"
+import { RICH_TEXT_PROPERTY_MAX_LEN } from "./rich-text-schema.js"
 import type { DatabaseRef, MemoryKind } from "../types.js"
 
 /**
@@ -151,6 +152,48 @@ describe("DecisionService.create", () => {
     expect(markdownArgs.insert_content.content).toBe(
       "YAML frontmatter gets destroyed by full_page updates."
     )
+  })
+
+  it("accepts alternatives and consequences at the Notion rich_text cap", async () => {
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+    const atCap = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+
+    await service.create({
+      decision: "Keep metadata capped",
+      rationale: "",
+      alternatives: atCap,
+      consequences: atCap,
+    })
+
+    const createArgs = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(createArgs.properties.Alternatives).toEqual({
+      rich_text: [{ text: { content: atCap } }],
+    })
+    expect(createArgs.properties.Consequences).toEqual({
+      rich_text: [{ text: { content: atCap } }],
+    })
+  })
+
+  it.each([
+    ["alternatives", { alternatives: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+    ["consequences", { consequences: "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN + 1) }],
+  ] as const)("rejects over-cap %s before creating a Notion page", async (field, input) => {
+    const client = createMockClient()
+    const service = new DecisionService(client, DB)
+
+    await expect(
+      service.create({
+        decision: "Keep metadata capped",
+        rationale: "Long rationale still belongs in the body.",
+        ...input,
+      })
+    ).rejects.toThrow(
+      new RegExp(`DecisionService\\.create.*${field}.*${RICH_TEXT_PROPERTY_MAX_LEN}`)
+    )
+
+    expect(client.pages.create).not.toHaveBeenCalled()
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled()
   })
 
   it("archives orphan and throws structured error when rationale write fails", async () => {
