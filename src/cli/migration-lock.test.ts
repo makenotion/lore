@@ -56,7 +56,21 @@ function writeRaceWorker(): string {
   const moduleUrl = pathToFileURL(join(process.cwd(), "src/cli/migration-lock.ts")).href
   writeFileSync(
     workerPath,
-    `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
+    `import { existsSync, writeFileSync } from "node:fs"
+import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
+
+const readyPath = process.env["LOCK_READY_PATH"]
+const startPath = process.env["LOCK_START_PATH"]
+if (readyPath && startPath) {
+  writeFileSync(readyPath, String(process.pid))
+  const deadline = Date.now() + Number(process.env["LOCK_START_TIMEOUT_MS"] ?? "10000")
+  while (!existsSync(startPath)) {
+    if (Date.now() > deadline) {
+      throw new Error("timed out waiting for race start")
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
 const result = tryAcquireMigrationLock(scope)
@@ -76,6 +90,16 @@ if (result.acquired) {
   return workerPath
 }
 
+async function waitForFiles(paths: string[], timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!paths.every((path) => existsSync(path))) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for files: ${paths.join(", ")}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
 async function runWorkerRace(lockScope: MigrationLockScope): Promise<
   Array<{
     acquired: boolean
@@ -85,7 +109,11 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
 > {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
-  const children = Array.from({ length: 2 }, () => {
+  const startPath = join(TEST_STATE_DIR, "migration-lock-race.start")
+  const readyPaths = Array.from({ length: 2 }, (_, index) =>
+    join(TEST_STATE_DIR, `migration-lock-race-${index}.ready`)
+  )
+  const children = readyPaths.map((readyPath) => {
     return spawn(process.execPath, [viteNode, workerPath], {
       cwd: process.cwd(),
       env: {
@@ -93,10 +121,16 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
         LOCK_HOLD_MS: "750",
+        LOCK_READY_PATH: readyPath,
+        LOCK_START_PATH: startPath,
+        LOCK_START_TIMEOUT_MS: "10000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
   })
+
+  await waitForFiles(readyPaths, 10_000)
+  writeFileSync(startPath, "start")
 
   return Promise.all(
     children.map(async (child) => {

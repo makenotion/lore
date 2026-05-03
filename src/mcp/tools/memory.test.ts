@@ -4200,6 +4200,41 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
     expect((result as { isError?: boolean }).isError).toBe(true)
     expect(create).not.toHaveBeenCalled()
   })
+
+  it("normalizes action='save' empty-string dates in the MCP-visible flat input schema", async () => {
+    const mockServer = createMockServer()
+    const create = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const inputSchema = mockServer.getInputSchema("lore-memory")
+    const parsed = inputSchema.safeParse({
+      action: "save",
+      title: "Saved",
+      content: "body",
+      reviewBy: "",
+      decidedAt: "",
+    })
+
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(parsed.data.reviewBy).toBeNull()
+    expect(parsed.data.decidedAt).toBeNull()
+
+    const remember = mockServer.getHandler("lore-memory")
+    const result = await remember(parsed.data as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(create).not.toHaveBeenCalled()
+  })
 })
 
 describe("lore-memory synopsis surface (issue 0.7.0/02)", () => {
