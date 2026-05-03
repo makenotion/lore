@@ -103,6 +103,16 @@ responses, and do not double-save a discovery you already wrote explicitly.
 Operators can disable extraction with `LORE_DISABLE_LEARNING_EXTRACTION=1` or
 `hooks.learningExtraction: false` in `.lore.yaml`.
 
+Atomic learning saves are deduplicated more strictly than ordinary memory
+saves. In background-agent runs, a `source: "conversation"`, `kind: "note"`,
+`confidence: "likely"` save with a session id checks likely conversation notes
+before creating a row. Project-scoped autosaves reuse same-project-set matches
+across sessions, including legacy unscoped rows; projectless and catch-all
+fallback autosaves stay same-session scoped. If Lore cannot read the duplicate
+candidate set, the autosave learning save fails before creating a possible
+duplicate. To force a separate row during recovery or migration, set
+`LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` for that autosave run.
+
 ## Task Hygiene
 
 - Create tasks for work that needs cross-session tracking.

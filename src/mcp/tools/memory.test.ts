@@ -763,6 +763,49 @@ describe("lore-remember near-duplicate probe", () => {
     expect(text).toContain("Saved memory:")
     expect(text).not.toContain("Warning:")
   })
+
+  it("fails closed when the autosave-learning duplicate probe query fails", async () => {
+    const mockServer = createMockServer()
+    const list = vi.fn().mockRejectedValue(new Error("notion 503"))
+    const createWithResult = vi.fn()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { createWithResult, list },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    vi.stubEnv("LORE_BACKGROUND_AGENT", "true")
+    try {
+      registerMemoryTools(mockServer.server, services as never)
+      registerQueryTools(mockServer.server, services as never)
+      const remember = mockServer.getActionHandler("lore-memory", "save")
+
+      const result = await remember({
+        title: "relation filters reject empty arrays",
+        content: "Notion dataSources.query rejects relation filters with empty arrays.",
+        kind: "note",
+        confidence: "likely",
+        session: "session-1",
+        agent: "Codex",
+      } as never)
+      const toolResult = result as {
+        isError?: boolean
+        content: Array<{ text: string }>
+      }
+
+      expect(toolResult.isError).toBe(true)
+      expect(toolResult.content[0].text).toContain(
+        "Autosave learning duplicate probe failed; refusing to create a possible duplicate."
+      )
+      expect(createWithResult).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 describe("lore-memory action='save' autosave-learning structural dedup", () => {
