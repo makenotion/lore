@@ -101,6 +101,43 @@ hooks:
     expect(config.hooks).toBeUndefined()
     expect(warnings[0]).toContain("All mapping items must start at the same column")
   })
+
+  it("parses optional vault topology fields without changing single-vault defaults", () => {
+    const single = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: abc123
+`)
+    expect(single.warnings).toEqual([])
+    expect(single.config.upstreamVaults).toBeUndefined()
+    expect(single.config.promotionTargets).toBeUndefined()
+
+    const { config, warnings } = parseConfigAllowingInvalidHooks(`
+vault:
+  pageId: project-vault
+upstreamVaults:
+  - name: Engineering
+    pageId: engineering-vault
+    mode: read-only
+    priority: 10
+promotionTargets:
+  - name: Team
+    pageId: team-vault
+    requireReview: true
+`)
+
+    expect(warnings).toEqual([])
+    expect(config.upstreamVaults).toEqual([
+      {
+        name: "Engineering",
+        pageId: "engineering-vault",
+        mode: "read-only",
+        priority: 10,
+      },
+    ])
+    expect(config.promotionTargets).toEqual([
+      { name: "Team", pageId: "team-vault", requireReview: true },
+    ])
+  })
 })
 
 // ---------------------------------------------------------------------------

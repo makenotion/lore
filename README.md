@@ -331,6 +331,18 @@ vault:
 # auth:
 #   token: "<legacy-token>"
 
+# Optional: read-only inherited vaults and deliberate promotion destinations.
+# Normal save/update tools still write only to vault.pageId.
+# upstreamVaults:
+#   - name: "Engineering"
+#     pageId: "engineering-vault-id"
+#     mode: read-only
+#     priority: 10
+# promotionTargets:
+#   - name: "Team"
+#     pageId: "team-vault-id"
+#     requireReview: true
+
 # Map directories to named projects (for monorepo support)
 projects:
   - name: "Server"

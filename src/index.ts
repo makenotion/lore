@@ -31,7 +31,10 @@ export type {
   FactConfidence,
   LoreConfig,
   ProjectConfig,
+  PromotionTargetConfig,
   ResolvedContext,
+  UpstreamVaultConfig,
+  UpstreamVaultMode,
 } from "./types.js"
 
 export { findConfigFile, loadConfig, resolveToken, resolveAuth } from "./config.js"
@@ -88,6 +91,18 @@ export {
   catchAllProjectName,
 } from "./core/context.js"
 export type { ProjectResolution } from "./core/context.js"
+export {
+  DEFAULT_UPSTREAM_MODE,
+  DEFAULT_UPSTREAM_PRIORITY,
+  buildVaultTopology,
+  hasConfiguredTopology,
+} from "./core/topology.js"
+export type {
+  PrimaryVaultTopologyRef,
+  PromotionTargetTopologyRef,
+  UpstreamVaultTopologyRef,
+  VaultTopology,
+} from "./core/topology.js"
 export type { OAuthCredentials, OAuthConfig, VaultAccessResult } from "./auth/oauth.js"
 export {
   runOAuthFlow,

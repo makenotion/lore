@@ -24,10 +24,30 @@ const hookConfigSchema = z
   })
   .optional()
 
+const namedVaultRefSchema = z.object({
+  name: z.string().min(1),
+  pageId: z.string().min(1),
+})
+
 const configSchema = z.object({
   vault: z.object({
     pageId: z.string().min(1, "vault.pageId is required"),
   }),
+  upstreamVaults: z
+    .array(
+      namedVaultRefSchema.extend({
+        mode: z.literal("read-only").optional(),
+        priority: z.number().int().optional(),
+      })
+    )
+    .optional(),
+  promotionTargets: z
+    .array(
+      namedVaultRefSchema.extend({
+        requireReview: z.boolean().optional(),
+      })
+    )
+    .optional(),
   auth: z
     .object({
       token: z.string().optional(),

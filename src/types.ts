@@ -1196,10 +1196,45 @@ export interface ProjectConfig {
   tags?: string[]
 }
 
+export type UpstreamVaultMode = "read-only"
+
+export interface UpstreamVaultConfig {
+  name: string
+  pageId: string
+  /**
+   * Upstream vaults are inherited read sources only. Normal save/update tools
+   * continue to write exclusively to the primary vault.
+   */
+  mode?: UpstreamVaultMode
+  /**
+   * Lower numbers render first. Defaults to 100 when omitted.
+   */
+  priority?: number
+}
+
+export interface PromotionTargetConfig {
+  name: string
+  pageId: string
+  /**
+   * Whether promotion into this vault should land as a reviewed/proposed flow.
+   * Defaults to false until the promotion command implements policy handling.
+   */
+  requireReview?: boolean
+}
+
 export interface LoreConfig {
   vault: {
     pageId: string
   }
+  /**
+   * Read-only vaults whose memories can be inherited by topology-aware read
+   * paths. The primary vault remains the only normal write target.
+   */
+  upstreamVaults?: UpstreamVaultConfig[]
+  /**
+   * Explicit cross-vault destinations for deliberate memory promotion.
+   */
+  promotionTargets?: PromotionTargetConfig[]
   auth?: {
     /**
      * Soft-deprecated in 0.10.0 — `resolveAuth` treats this as a fallback
