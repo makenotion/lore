@@ -4,6 +4,7 @@ import {
   extractEntityCandidates,
   findAutosaveLearningDuplicate,
   findDuplicateActiveTasks,
+  findExactReuseTarget,
   findNearDuplicates,
   findRelatedActiveTasks,
   type MemoryLister,
@@ -808,7 +809,16 @@ describe("findDuplicateActiveTasks", () => {
     expect(lister.listSpy).not.toHaveBeenCalled()
   })
 
-  it("forwards entity, projectId, ACTIVE_TASK_STATES, and limit=10 into the list query", async () => {
+  it("forwards entity, projectId, ACTIVE_TASK_STATES, limit=10, and sortBy='updatedAtDesc' into the list query", async () => {
+    // The `sortBy: "updatedAtDesc"` pin is load-bearing for #265's
+    // assertive-reuse contract: `findExactReuseTarget` returns the
+    // first matching candidate, and the AGENTS.md / docstring claim
+    // is "most-recently-edited wins on ties." `TaskService.list`'s
+    // default sort is `reviewByAsc` — without an explicit override
+    // the reuse helper would silently surface an older row when
+    // multiple exact matches exist. A regression that drops the
+    // sortBy here would make the recency tiebreak claim a lie; pin
+    // it.
     const lister = makeTaskLister([])
     await findDuplicateActiveTasks(lister, {
       entity: "PR-25750",
@@ -819,6 +829,7 @@ describe("findDuplicateActiveTasks", () => {
       entities: ["PR-25750"],
       states: ["open", "in-progress", "blocked"],
       limit: 10,
+      sortBy: "updatedAtDesc",
     })
   })
 
@@ -881,6 +892,368 @@ describe("findDuplicateActiveTasks", () => {
     expect(lister.listSpy).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: undefined })
     )
+  })
+
+  it("decodes HTML entities in `entity` before issuing the server-side `Entity contains` filter (issue #265)", async () => {
+    // `TaskService.create` decodes `entity` at the write boundary
+    // (`src/core/task.ts:180`), so a stored row's Entity column is
+    // the decoded form. A caller passing `"PR &amp; Review"` should
+    // probe for `"PR & Review"` to find any pre-PF1-06 row whose
+    // Entity column was decoded at write time. Without the decode
+    // here, the encoded form would substring-miss on the server
+    // side and reuse would silently fall through to create.
+    const lister = makeTaskLister([])
+    await findDuplicateActiveTasks(lister, {
+      entity: "PR &amp; Review",
+      projectId: "proj-a",
+    })
+    expect(lister.listSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: ["PR & Review"] })
+    )
+  })
+
+  it("short-circuits to [] when entity decodes to whitespace-only (degenerate input)", async () => {
+    // A pathological caller passing `"&nbsp;"` decodes to a
+    // non-breaking space; treat it the same as the raw whitespace-
+    // only short-circuit above so the helper does not issue a
+    // server-side `Entity contains " "` query.
+    const lister = makeTaskLister([])
+    const result = await findDuplicateActiveTasks(lister, {
+      entity: "&#32;",
+      projectId: "proj-a",
+    })
+    expect(result).toEqual([])
+    expect(lister.listSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe("findExactReuseTarget (issue #265 — assertive task reuse)", () => {
+  it("returns null when LORE_DISABLE_TASK_REUSE=1 (single-axis kill switch)", () => {
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review",
+        entity: "PR-25750",
+      }),
+    ]
+    vi.stubEnv("LORE_DISABLE_TASK_REUSE", "1")
+    try {
+      expect(
+        findExactReuseTarget(candidates, {
+          subject: "Track PR-25750 review",
+          entity: "PR-25750",
+          projectIds: ["proj-a"],
+        })
+      ).toBeNull()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("runs normally when LORE_DISABLE_TASK_REUSE is unset or anything other than '1'", () => {
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review",
+        entity: "PR-25750",
+      }),
+    ]
+    vi.stubEnv("LORE_DISABLE_TASK_REUSE", "0")
+    try {
+      const target = findExactReuseTarget(candidates, {
+        subject: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a"],
+      })
+      expect(target?.id).toBe("task-1")
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("returns null on whitespace-only subject (degenerate input must not silently reuse)", () => {
+    const candidates = [
+      makeTaskSummary({ id: "task-1", title: "   ", entity: "PR-25750" }),
+    ]
+    expect(
+      findExactReuseTarget(candidates, {
+        subject: "   ",
+        entity: "PR-25750",
+        projectIds: ["proj-a"],
+      })
+    ).toBeNull()
+  })
+
+  it("returns null on whitespace-only entity", () => {
+    const candidates = [
+      makeTaskSummary({ id: "task-1", title: "Rotate keys", entity: "  " }),
+    ]
+    expect(
+      findExactReuseTarget(candidates, {
+        subject: "Rotate keys",
+        entity: " ",
+        projectIds: ["proj-a"],
+      })
+    ).toBeNull()
+  })
+
+  it("matches on exact normalized title and entity in the same project set", () => {
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a"],
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+      projectIds: ["proj-a"],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("normalizes case, NFKC, and internal whitespace before equality", () => {
+    // Stored row was saved with idiosyncratic casing and a full-width
+    // hash; the new caller normalizes both — same task. Pre-#265 the
+    // probe would surface the row in the advisory footer; #265 reuses
+    // it.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR ＃25750  Review",
+        entity: "pr-25750",
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "track pr #25750 review",
+      entity: "PR-25750",
+      projectIds: ["proj-a"],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("decodes HTML entities before equality (un-migrated vault encoded titles match decoded callers)", () => {
+    // Pre-PF1-06 vault: stored row carries an encoded title because
+    // the autosave hook delivered the field with an HTML-entity-
+    // escaped `&`. Post-PF1-06 caller passes the decoded subject.
+    // `TaskService.create` decodes at the write boundary, so the
+    // structural identity is the decoded form — reuse must compute
+    // the same canonical form on both sides. Without the decode
+    // step in `normalizeReuseKey`, this test fails: the encoded
+    // title's `"&amp;"` literal does not normalize to the decoded
+    // caller's `"&"` and reuse misses, landing a duplicate row —
+    // exactly the silent-miss the principal review flagged as a
+    // blocker.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Café &amp; Bar review",
+        entity: "Café &amp; Bar",
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Café & Bar review",
+      entity: "Café & Bar",
+      projectIds: ["proj-a"],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("uses locale-independent .toLowerCase() so reuse is consistent across engineer locales", () => {
+    // Vault state is shared across engineers; comparison is per-
+    // process. Turkish-locale `.toLocaleLowerCase()` collapses
+    // `"INVOICE"` to `"ınvoice"` (dotless-ı), en-US to `"invoice"`.
+    // A reuse predicate based on `.toLocaleLowerCase()` would
+    // produce different verdicts for the same vault on engineers
+    // running under different locales — a consistency hazard the
+    // rest of the codebase avoids by using `.toLowerCase()`.
+    //
+    // The Turkish-locale dotless-ı failure mode is most cleanly
+    // demonstrated on uppercase `"I"`: `"AUDIT INVOICE".toLocaleLowerCase("tr-TR")`
+    // produces `"audıt ınvoice"`. Locale-independent lowercase
+    // produces `"audit invoice"` regardless of the host locale.
+    // This test mounts directly on `normalizeReuseKey`'s output
+    // shape: a stored title `"Audit Invoice"` plus a caller
+    // subject `"AUDIT INVOICE"` must reuse — both normalize to
+    // `"audit invoice"` under `.toLowerCase()`.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Audit Invoice",
+        entity: "Invoice-2026",
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "AUDIT INVOICE",
+      entity: "INVOICE-2026",
+      projectIds: ["proj-a"],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("collapses multiple-space subject differences before equality", () => {
+    // Pre-#265 the autosave learning extractor surfaced the same
+    // follow-up across two sessions with slightly-different
+    // whitespace ("Track  PR-25750  review" vs "Track PR-25750
+    // review"). The whitespace-collapse step in `normalizeReuseKey`
+    // makes those structurally identical — reuse must fire. A
+    // future contributor narrowing the normalizer (e.g. dropping
+    // the `\s+ → " "` step) trips this fixture.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review",
+        entity: "PR-25750",
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Track  PR-25750   review",
+      entity: "PR-25750",
+      projectIds: ["proj-a"],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("rejects an entity SUPERSTRING match (probe widens; predicate narrows)", () => {
+    // Server-side `Entity contains "PR-1"` matches a stored row whose
+    // entity is `"PR-100"`. Without the post-fetch normalized-equality
+    // check, reuse would fire on a task tracking the wrong PR — the
+    // exact failure mode the predicate is designed to prevent.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track review",
+        entity: "PR-100",
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Track review",
+      entity: "PR-1",
+      projectIds: ["proj-a"],
+    })
+    expect(target).toBeNull()
+  })
+
+  it("rejects when the existing title is a superstring of the new subject", () => {
+    // Probe surfaces the candidate via entity match, but the stored
+    // title strictly contains the caller's subject — different task.
+    // Without the title-equality check, reuse would fire on a row
+    // whose title was extended over time and silently shadow the new
+    // create.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review and follow up",
+        entity: "PR-25750",
+      }),
+    ]
+    expect(
+      findExactReuseTarget(candidates, {
+        subject: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a"],
+      })
+    ).toBeNull()
+  })
+
+  it("rejects when project sets diverge (set-equality, not overlap)", () => {
+    // Mirrors `MemoryService.upsertByTopicKey`: `[A]` does not match
+    // `[A, B]`. A scoped task and a multi-scoped task with the same
+    // subject/entity are NOT the same task structurally.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a"],
+      }),
+    ]
+    expect(
+      findExactReuseTarget(candidates, {
+        subject: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a", "proj-b"],
+      })
+    ).toBeNull()
+  })
+
+  it("matches multi-project tasks under set-equality (order-independent)", () => {
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a", "proj-b"],
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+      projectIds: ["proj-b", "proj-a"],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("matches an empty-projectIds (repo-wide) task against another empty-projectIds caller", () => {
+    const candidates = [
+      makeTaskSummary({
+        id: "task-1",
+        title: "Audit auth flow",
+        entity: "AuthService",
+        projectIds: [],
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Audit auth flow",
+      entity: "AuthService",
+      projectIds: [],
+    })
+    expect(target?.id).toBe("task-1")
+  })
+
+  it("returns null on empty candidate list (advisory probe upstream returned [])", () => {
+    expect(
+      findExactReuseTarget([], {
+        subject: "Track PR-25750 review",
+        entity: "PR-25750",
+        projectIds: ["proj-a"],
+      })
+    ).toBeNull()
+  })
+
+  it("returns the FIRST matching candidate when multiple exact matches exist (input-order tiebreak)", () => {
+    // `findExactReuseTarget` is a pure predicate over a pre-sorted
+    // input list — it iterates and returns the first match. The
+    // upstream `findDuplicateActiveTasks` calls `tasks.list` with
+    // `sortBy: "updatedAtDesc"`, so the most-recently-edited row
+    // lands at index 0; the predicate's "first match wins"
+    // contract surfaces the recency winner end-to-end. This unit
+    // test pins the predicate's input-order contract directly
+    // (independent of the upstream sort), so a regression that
+    // re-orders the helper's iteration trips here. The
+    // upstream-sort claim is pinned separately by the
+    // `forwards entity, projectId, ACTIVE_TASK_STATES, limit=10,
+    // and sortBy='updatedAtDesc' into the list query` test above.
+    const candidates = [
+      makeTaskSummary({
+        id: "task-recent",
+        title: "Rotate keys",
+        entity: "AuthService",
+      }),
+      makeTaskSummary({
+        id: "task-older",
+        title: "Rotate keys",
+        entity: "AuthService",
+      }),
+    ]
+    const target = findExactReuseTarget(candidates, {
+      subject: "Rotate keys",
+      entity: "AuthService",
+      projectIds: ["proj-a"],
+    })
+    expect(target?.id).toBe("task-recent")
   })
 })
 

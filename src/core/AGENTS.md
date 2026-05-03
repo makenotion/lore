@@ -1908,6 +1908,196 @@ verdict requires a prompt-version bump for the same reason a
 wording change does — historical verdicts must remain
 interpretable.
 
+## Task duplicate probe and assertive reuse (issue #265)
+
+`findDuplicateActiveTasks()` in `near-duplicate.ts` is the
+write-path probe for `lore-task action='create'`, and
+`findExactReuseTarget()` is the assertive-reuse predicate over
+its result. Together they implement the duplicate-handling
+promotion called out in issue #265 — promoting one currently
+advisory path to idempotent reuse without losing the advisory
+escape hatch.
+
+**Pre-#265 (advisory only).** The probe ran in parallel with
+`services.tasks.create` via `Promise.all`. Every active task
+matching the new task's `Entity` substring landed in a trailing
+`Other active tasks tracking "<entity>" (N) — close any that are
+obsolete:` footer. Structural duplicates (same subject, same
+entity, same project-set) created a fresh row and the agent had
+to manually close one of the pair. High-volume autosave / Stop-
+hook surfaces re-emitted the same follow-up across sessions and
+the vault accumulated near-identical task rows.
+
+**#265 promotion (assertive reuse).** The probe is now sequenced
+BEFORE `services.tasks.create`. Its result feeds two consumers:
+
+1. `findExactReuseTarget(candidates, { subject, entity, projectIds })`
+   returns the first candidate whose
+   normalized `(title, entity, projectIds)` equal the caller's
+   `(subject, entity, projectIds)`. On a hit, `handleCreate`
+   short-circuits to a `Reused existing task: "<title>" (<id>)`
+   response — no `services.tasks.create` call, no
+   `services.topics.getOrCreate` call (orphan-topic prevention,
+   same discipline as `MemoryService.createWithResult`'s autosave-
+   learning gate). Vocabulary distinguishes reuse from create at
+   the response boundary so agents can branch on the leading line.
+
+2. The residual probe result (after exact-match exclusion) renders
+   in the same advisory close-CTA footer as before. Different-
+   subject peers on the same entity continue to surface as advisory
+   suggestions; the agent decides whether to close them.
+
+**Cost.** The sequenced probe adds one bounded
+`dataSources.query` round-trip (`limit: 10`, server-side filtered
+by entity + active states) on the create path. Same posture
+`MemoryService.upsertByTopicKey` adopted for `findByTopicKey`. The
+parallel posture would block exact reuse at write time and force a
+post-create `pages.update({ archived: true })` — race-fragile and
+visible to any concurrent reader.
+
+**Exclusion mechanics.** Since the probe runs before create, the
+just-created id cannot appear in its result by construction. The
+post-create `filter((t) => t.id !== task.id)` was dropped as
+dead code under the new sequencing — the probe completes strictly
+before create dispatches, so by construction `task.id` cannot
+appear in the probe result. The pre-#265 filter existed to close
+the eventual-consistency race between parallel create and probe;
+sequencing makes it unnecessary.
+
+**Normalization.** `normalizeReuseKey` (in `near-duplicate.ts`)
+runs the four-step pipeline `decodeTextEntities → NFKC → toLowerCase →
+whitespace-collapse + trim` on `subject`, `entity`, and each
+candidate's `title` / `entity` before equality. `projectIds` is
+compared set-wise via `projectSetEqual`. Pipeline parity with
+`similarity.ts:normalizeTitle`'s decode-then-fold-fold-trim shape so
+reuse keys agree with the trigram probe's canonical form. Three
+deliberate divergences pinned in the helper docstring:
+
+- **`decodeTextEntities` is load-bearing.** `TaskService.create`
+  decodes `subject` / `entity` at the write boundary
+  (`src/core/task.ts:176, 180`). Without the same decode here, a
+  caller passing `"Café & Bar"` against a stored title `"Café
+  &amp; Bar"` (pre-PF1-06 vault) would normalize differently and
+  miss reuse — exactly the silent-miss the
+  `lore migrate --fix-memory-encoding` migration was designed to
+  close. AGENTS.md "Near-Duplicate Probe" calls this out as
+  load-bearing for the trigram pipeline; the same logic applies to
+  the exact-equality predicate.
+- **Locale-independent `.toLowerCase()`, not `.toLocaleLowerCase()`.**
+  Vault state is shared across engineers; comparison is
+  per-process. Turkish-locale `"INVOICE".toLocaleLowerCase()` is
+  `"ınvoice"` (dotless-ı), en-US is `"invoice"` — two engineers
+  running Lore against the same vault would otherwise reach
+  different reuse verdicts. The rest of the codebase
+  (`similarity.ts:normalizeTitle`) already sticks to
+  `.toLowerCase()` for the same reason.
+- **NFKC, not NFC.** `similarity.ts:normalizeTitle` uses NFC.
+  NFKC additionally folds compatibility variants (`＃` → `#`, `ﬁ`
+  → `fi`, full-width digits, etc.). For an exact-equality
+  predicate the more aggressive folding is the safer choice — two
+  tasks differing only by full-width vs ASCII punctuation are
+  structurally the same task; NFC would let the duplicate land. A
+  future contributor "harmonizing the normalizers" by switching
+  this to NFC would silently weaken reuse on full-width / ligature
+  inputs.
+
+`findDuplicateActiveTasks` ALSO decodes its `entity` arg before
+issuing the server-side `Entity contains` filter, so the probe and
+the predicate compare against the same canonical form — without
+that, a caller's encoded entity would query for the encoded form
+and miss every row whose Entity column was decoded at write time.
+
+Trigram-specific punct stripping is deliberately omitted — exact
+equality, not fuzzy similarity. Whitespace-only subject or entity
+short-circuits to no match (degenerate input must not silently
+reuse an unrelated row).
+
+**Project-set equality is set-equal, not overlap.** `[A]` does NOT
+match `[A, B]`. Mirrors the rule
+`MemoryService.upsertByTopicKey` enforces via `findByTopicKey`. A
+scoped task and a multi-scoped task with the same subject + entity
+are NOT structurally the same task — different audit boundaries,
+different project owners.
+
+**Probe widens; predicate narrows.** Notion's server-side
+`Entity contains "PR-1"` filter matches stored
+`Entity = "PR-100"` (substring semantics). Without the
+post-fetch normalized-equality check on `entity`, reuse would
+fire on a task tracking the wrong PR. The widened pool is
+deliberate (broad recall for the advisory footer); the
+post-filter is what keeps reuse precise.
+
+**Recovery path on ambiguous matches.** When subject and entity
+match but project-sets diverge, the existing row surfaces in the
+advisory footer and the create proceeds — the agent sees both
+rows and decides. When subject differs from existing peers, the
+create proceeds with the advisory footer. When the probe
+rejects (transient Notion error), `findDuplicateActiveTasks`
+returns `[]`, `findExactReuseTarget` returns `null`, and create
+proceeds — probe failures must never block the create path
+(advisory-then-create posture preserved for the failure mode).
+
+**Concurrent creates can both miss reuse.** Two parallel
+`lore-task action='create'` calls with identical
+`(subject, entity, projectIds)` can both probe before either
+create lands and both see no exact match — producing two
+structurally identical rows, the same hazard
+`MemoryService.upsertByTopicKey` documents under "Concurrent
+upserts." Single-agent serial usage is the common case for the
+hot autosave / reconcile paths and the helper does not adopt a
+filesystem lock today; if real-vault data shows the race matters,
+a follow-up can extend the autosave-learning lock posture
+(`autosave-learning-lock.ts`) to the task-reuse path. Operators
+collapse any duplicate pair via `lore-task action='close'` on the
+losing row.
+
+**Kill-switches** (single-axis, same posture as
+`LORE_DISABLE_TASK_CROSSREF`):
+
+- `LORE_DISABLE_TASK_REUSE=1` — disables ONLY assertive reuse.
+  The advisory probe still runs and surfaces the close-CTA
+  footer (pre-#265 behavior). Use when the operator wants the
+  visibility but distrusts auto-reuse on a vault.
+- `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` — broader switch shared
+  with the memory and decision near-duplicate probes; disables
+  both the probe and (transitively, via empty input) the reuse
+  helper. Use for bulk-import flows.
+
+**Response vocabulary** distinguishes states agents can branch on:
+
+| Outcome                              | Leading line                              | Distinguishing footer                                         |
+| ------------------------------------ | ----------------------------------------- | ------------------------------------------------------------- |
+| Fresh create, no peers               | `Created task: "<title>" (<id>)`          | No advisory footer                                            |
+| Fresh create, peers on same entity   | `Created task: "<title>" (<id>)`          | `Other active tasks tracking "<entity>" (N) — close any …`    |
+| Exact-match reuse (#265)             | `Reused existing task: "<title>" (<id>)`  | `Subject and entity match an existing active task; nothing was created.` |
+| Exact-match reuse with ignored args  | `Reused existing task: "<title>" (<id>)`  | `Ignored on reuse: <comma-separated field names> — use lore-task({ action: 'update', … })` |
+| Reuse disabled, exact match exists   | `Created task: "<title>" (<id>)`          | Footer surfaces the duplicate as advisory only                |
+
+The five outcomes are observable through the leading line and
+footer presence; downstream automation can branch on them without
+parsing free-form prose. The `Reused existing task:` prefix is the
+load-bearing programmatic-consumer signal — a hook or autosave
+extractor that previously keyed off `text.startsWith("Created task:")`
+to detect fresh-create events must also recognize the reuse prefix
+or extract the `(<id>)` suffix (which appears on both shapes) to
+get the task id.
+
+**Ignored-arg disclosure (suggested by principal review).** The
+reuse predicate consumes only `(subject, entity, projectIds)`. Any
+of `description`, `state`, `blockedBy`, `dueDate`, `affectsIds`,
+`topicName`, `forceNewTopic`, `confidence`, `tags`, `keywords`, or
+`synopsis` passed by the caller is structurally dropped on the
+reuse path — `services.tasks.create` was never called, so those
+fields had no observable effect on the existing row. The
+`Ignored on reuse:` audit line names every dropped field so an
+agent calling create to bump state, due-date, or description gets a
+loud signal that none of those changes landed and the
+`lore-task({ action: 'update', … })` CTA is the right next step.
+`agent` / `session` / `author` are session / provenance metadata,
+not task fields, and are excluded from the disclosure.
+`projectName` / `projectNames` participate in the reuse-key
+(project-set) and are excluded for the same reason.
+
 ## Active-task cross-reference probe
 
 `findRelatedActiveTasks()` in `near-duplicate.ts` is the third leg of

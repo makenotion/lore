@@ -203,8 +203,13 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     const svc = services()
     svc.tasks.create = vi.fn().mockResolvedValue(created)
     // The probe rides the same `services.tasks.list` surface — return
-    // two existing rows so the footer renders, including the just-
-    // created row to verify the post-fetch `t.id !== task.id` filter.
+    // two existing rows whose subjects DIFFER from the caller's so the
+    // advisory footer renders without triggering the issue #265
+    // assertive-reuse short-circuit. (Pre-#265 the fixture also seeded
+    // a "just-created row" entry to simulate eventual-consistency
+    // between the parallel probe and create, but #265's sequential
+    // probe-before-create posture means the new row cannot appear in
+    // the probe response — the create hasn't run yet.)
     svc.tasks.list = vi.fn().mockResolvedValue({
       items: [
         makeTask("t-existing-1", {
@@ -217,10 +222,6 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
           entity: "PR-25750",
           taskState: "open",
         }),
-        // The probe's view of the just-created row (eventual-
-        // consistency simulation). Must be filtered out by the
-        // caller's post-fetch `t.id !== task.id` filter.
-        makeTask("t-new", { title: "New PR-25750 task", entity: "PR-25750" }),
       ],
     })
     const mockServer = createMockServer()
@@ -238,11 +239,9 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     expect(text).toContain('"Track PR-25750 review" [in-progress]')
     expect(text).toContain('"PR-25750 follow-up" [open]')
     expect(text).toContain("lore-task({ action: 'close', taskId: 't-existing-1' })")
-    // Just-created row stays out of the duplicate-list — caller-side
-    // filter is the SOLE exclusion mechanism. Scope the negative
-    // assertion to the bulleted duplicate lines (`  - "..." [...] — ...`)
-    // since the post-#09 closure CTA legitimately references `task.id`
-    // on its own line and would otherwise trip a naive substring check.
+    // Advisory footer carries exactly the two pre-existing rows; no
+    // self-references to the just-created row leak into the close
+    // incantations (the bullet lines start with `  - `).
     const duplicateListLines = text.split("\n").filter((l) => l.startsWith("  - "))
     expect(duplicateListLines).toHaveLength(2)
     for (const line of duplicateListLines) {
@@ -397,20 +396,25 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     }
   })
 
-  it("fires the probe in parallel with the create (Promise.all posture)", async () => {
-    // Pin the parallel posture: if a future refactor accidentally
-    // sequenced create→probe (or worse, gated probe behind create
-    // success), the create's wall-clock would regress. We can't
-    // measure wall-clock in a unit test, but we can pin that the
-    // probe was invoked even when the create's promise has not yet
-    // resolved by the time the probe is dispatched.
-    let createResolve!: (task: Task) => void
-    const createPromise = new Promise<Task>((resolve) => {
-      createResolve = resolve
+  it("sequences the probe BEFORE create so reuse can short-circuit (issue #265)", async () => {
+    // Pre-#265 the probe ran in parallel with `services.tasks.create`
+    // because it was advisory-only. Promotion to assertive reuse
+    // forces the sequence: the entity-matched candidate set must be in
+    // hand before the create decision so `findExactReuseTarget` can
+    // short-circuit without leaving an orphan task. Pin the new
+    // contract by verifying create is NOT called until the probe has
+    // resolved — a regression that re-parallelizes them would call
+    // create immediately and trip this assertion.
+    let listResolve!: (result: { items: TaskSummary[] }) => void
+    const listPromise = new Promise<{ items: TaskSummary[] }>((resolve) => {
+      listResolve = resolve
     })
     const svc = services()
-    svc.tasks.create = vi.fn().mockReturnValue(createPromise)
-    svc.tasks.list = vi.fn().mockResolvedValue({ items: [] })
+    svc.tasks.create = vi.fn().mockResolvedValue({
+      ...makeTask("t1", { entity: "PR-25750" }),
+      content: "",
+    } as Task)
+    svc.tasks.list = vi.fn().mockReturnValue(listPromise)
     const mockServer = createMockServer()
     registerTaskTools(mockServer.server, svc as never)
 
@@ -421,18 +425,20 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
       entity: "PR-25750",
     } as never)
 
-    // Yield the microtask queue so the parallel `Promise.all` can
-    // dispatch both branches before we assert.
+    // Yield the microtask queue. Probe is in flight; create must NOT
+    // have been dispatched yet under the sequential posture.
     await Promise.resolve()
     await Promise.resolve()
 
     expect(svc.tasks.list).toHaveBeenCalledTimes(1)
+    expect(svc.tasks.create).not.toHaveBeenCalled()
 
-    createResolve({
-      ...makeTask("t1", { entity: "PR-25750" }),
-      content: "",
-    } as Task)
+    listResolve({ items: [] })
     await handlerPromise
+
+    // After probe resolves with no exact-match candidate, the create
+    // dispatches normally.
+    expect(svc.tasks.create).toHaveBeenCalledTimes(1)
   })
 
   it("falls back to subject when entity is omitted (probe scopes to the same default the row uses)", async () => {
@@ -455,6 +461,581 @@ describe("lore-task-create duplicate-task probe (#10)", () => {
     expect(svc.tasks.list).toHaveBeenCalledWith(
       expect.objectContaining({ entities: ["AuthService"] })
     )
+  })
+})
+
+describe("lore-task-create assertive reuse (issue #265)", () => {
+  // Promotion of the duplicate-task probe from advisory-only to
+  // assertive reuse on exact `(subject, entity, project-set)` match.
+  // Pre-#265: the probe surfaced matches in a "close any obsolete"
+  // footer; the agent had to manually close the just-created
+  // duplicate. #265: structural duplicates short-circuit to reuse
+  // BEFORE create runs, with `Reused existing task:` vocabulary that
+  // distinguishes the response from the `Created task:` baseline.
+
+  it("returns the existing task without creating when subject + entity + project-set match", async () => {
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          taskState: "in-progress",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Assertive reuse — no create call landed.
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    // Vocabulary distinguishes reused from created.
+    expect(text).toContain('Reused existing task: "Track PR-25750 review" (t-existing)')
+    expect(text).not.toContain("Created task")
+    // Reuse-path response carries an explicit "nothing was created"
+    // disclosure plus update / close incantations targeting the
+    // existing row, NOT a fresh id.
+    expect(text).toContain("Subject and entity match an existing active task")
+    expect(text).toContain("nothing was created")
+    expect(text).toContain("lore-task({ action: 'update', taskId: 't-existing'")
+    expect(text).toContain("lore-task({ action: 'close', taskId: 't-existing' })")
+  })
+
+  it("does NOT reuse when entity is a substring (probe widens; predicate narrows)", async () => {
+    // Server-side `Entity contains "PR-1"` matches stored `"PR-100"`.
+    // The post-fetch normalized-equality check in `findExactReuseTarget`
+    // rejects the substring match — different PR, different task.
+    const created: Task = {
+      ...makeTask("t-fresh", { entity: "PR-1" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track review",
+          entity: "PR-100",
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track review",
+      entity: "PR-1",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).toHaveBeenCalledTimes(1)
+    expect(text).toContain("Created task")
+    expect(text).not.toContain("Reused")
+  })
+
+  it("falls through to create + advisory footer when no exact match exists", async () => {
+    // Same entity, DIFFERENT subject — the probe surfaces the existing
+    // row in the close-CTA footer (advisory) but does NOT reuse.
+    const created: Task = {
+      ...makeTask("t-new", { entity: "PR-25750" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Different work tracking PR-25750",
+          entity: "PR-25750",
+          taskState: "open",
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).toHaveBeenCalledTimes(1)
+    expect(text).toContain("Created task")
+    expect(text).not.toContain("Reused")
+    // Advisory footer still renders — the existing row is a peer, not
+    // a structural duplicate.
+    expect(text).toContain('Other active tasks tracking "PR-25750" (1)')
+    expect(text).toContain('"Different work tracking PR-25750" [open]')
+    expect(text).toContain("lore-task({ action: 'close', taskId: 't-existing' })")
+  })
+
+  it("does NOT create a topic on reuse (orphan-topic prevention)", async () => {
+    // Mirrors `MemoryService.upsertByTopicKey`'s discipline: duplicate
+    // reuse must not leak an orphan Topic. The pre-#265 code created
+    // the topic before the (parallel) probe could resolve; #265's
+    // reuse gate runs BEFORE topic creation so a reuse short-circuit
+    // never touches `topics.getOrCreate`.
+    const svc = services({
+      context: {
+        project: { id: "proj-ambient", name: "Ambient", path: "." },
+        isCatchAllFallback: false,
+      },
+    })
+    svc.projects.findByName = vi
+      .fn()
+      .mockResolvedValue({ id: "proj-a", name: "Ambient", path: "." })
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          projectIds: ["proj-a"],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+      projectName: "Ambient",
+      topicName: "Reviews",
+    } as never)
+
+    expect(svc.topics.getOrCreate).not.toHaveBeenCalled()
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+  })
+
+  it("records the reused task in sessionMemories so fact auto-link still resolves", async () => {
+    // The session pointer carries `{ memoryId, projectIds }` of the row
+    // a follow-up `lore-fact action='create'` can auto-link as Source.
+    // Reuse must not break that wire — without this record, an agent
+    // saving a fact in the same call sequence would see "no source
+    // resolved" even though there's a perfectly valid task to point at.
+    // Existing task is repo-wide (`projectIds: []`) so the caller's
+    // no-project-scope create matches under set-equality and the
+    // reuse path fires. Mismatched project sets would reject reuse and
+    // the test would assert against the wrong code path.
+    const existingTask = makeTask("t-existing", {
+      title: "Track PR-25750 review",
+      entity: "PR-25750",
+      projectIds: [],
+    })
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({ items: [existingTask] })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+      agent: "test-agent",
+      session: "session-xyz",
+    } as never)
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect(svc.sessionMemories.record).toHaveBeenCalledWith(
+      { agent: "test-agent", session: "session-xyz" },
+      { memoryId: "t-existing", projectIds: [] }
+    )
+  })
+
+  it("respects LORE_DISABLE_TASK_REUSE=1 — falls back to pre-#265 advisory behavior", async () => {
+    // Operator escape hatch: an exact-match candidate exists, but the
+    // env switch keeps the probe in advisory-only mode. Create still
+    // lands; the existing row appears in the advisory footer.
+    const created: Task = {
+      ...makeTask("t-new", { entity: "PR-25750", title: "Track PR-25750 review" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    vi.stubEnv("LORE_DISABLE_TASK_REUSE", "1")
+    try {
+      const handler = mockServer.getHandler("lore-task")
+      const result = await handler({
+        action: "create",
+        subject: "Track PR-25750 review",
+        entity: "PR-25750",
+      } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      expect(svc.tasks.create).toHaveBeenCalledTimes(1)
+      expect(text).toContain("Created task")
+      expect(text).not.toContain("Reused")
+      expect(text).toContain('Other active tasks tracking "PR-25750"')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("falls through to create when the probe rejects (failure must not block the create path)", async () => {
+    // `findDuplicateActiveTasks` swallows list errors and returns [].
+    // An empty candidate set produces a null reuse target, so create
+    // proceeds. Verifies the probe's failure-domain isolation survives
+    // the sequential posture #265 introduces.
+    const created: Task = {
+      ...makeTask("t-new", { entity: "PR-25750" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.list = vi.fn().mockRejectedValue(new Error("notion 503"))
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).toHaveBeenCalledTimes(1)
+    expect(text).toContain("Created task")
+    expect(text).not.toContain("Error")
+  })
+
+  it("respects the broader LORE_DISABLE_NEAR_DUPLICATE_PROBE=1 switch (transitive disable)", async () => {
+    // The broader probe-disable switch zeros the probe entirely,
+    // which transitively disables reuse via empty input — even an
+    // exact-match candidate would never reach `findExactReuseTarget`.
+    // Pin the transitive contract at the MCP layer: the per-helper
+    // unit test in `near-duplicate.test.ts` covers each kill switch
+    // independently; this test confirms the composition at the
+    // dispatcher boundary so an env-var rollback genuinely restores
+    // pre-#265 behavior end-to-end.
+    const created: Task = {
+      ...makeTask("t-new", {
+        entity: "PR-25750",
+        title: "Track PR-25750 review",
+      }),
+      content: "",
+    } as Task
+    const svc = services()
+    // `findDuplicateActiveTasks` short-circuits to [] before even
+    // calling `tasks.list` when the env var is set.
+    svc.tasks.list = vi.fn()
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    vi.stubEnv("LORE_DISABLE_NEAR_DUPLICATE_PROBE", "1")
+    try {
+      const handler = mockServer.getHandler("lore-task")
+      const result = await handler({
+        action: "create",
+        subject: "Track PR-25750 review",
+        entity: "PR-25750",
+      } as never)
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+      expect(svc.tasks.list).not.toHaveBeenCalled()
+      expect(svc.tasks.create).toHaveBeenCalledTimes(1)
+      expect(text).toContain("Created task")
+      expect(text).not.toContain("Reused")
+      // Advisory footer is also gone — the broader switch disables
+      // the probe entirely, so there's no candidate set to render.
+      expect(text).not.toContain("Other active tasks tracking")
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("reuses across pure case-only subject difference", async () => {
+    // Common autosave-extractor pattern: the same follow-up task
+    // surfaces across two sessions with case-only differences in the
+    // subject (one Pythonic, one human-cased). Pin reuse fires at
+    // the dispatcher boundary so a future contributor narrowing the
+    // normalizer (e.g. dropping `.toLowerCase()`) trips a loud test
+    // instead of a quiet vault regression.
+    //
+    // Probe-arg flow-through pinned via `entities`: case folding lives
+    // in `findExactReuseTarget`'s post-fetch normalization, NOT in the
+    // server-side probe filter. The probe issues
+    // `Entity contains <caller-arg verbatim>` (after the
+    // decode-at-boundary step, which is a no-op for these unencoded
+    // inputs) and relies on Notion's case-insensitive `contains`
+    // semantics on rich_text columns to surface the lowercased stored
+    // row. A future contributor "optimizing" the probe to use
+    // `Entity equals` (case-sensitive in Notion's filter API) would
+    // pass the predicate-level test on the strength of the mock
+    // returning the row regardless of filter — but production would
+    // miss. Pin the literal arg here so a regression to a stricter
+    // filter shape trips loudly at the integration boundary, mirroring
+    // the encoded-input test's `entities: ["Café & Bar"]` assertion.
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "rotate auth keys",
+          entity: "AuthService",
+          taskState: "open",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Rotate Auth Keys",
+      entity: "authservice",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect(text).toContain('Reused existing task: "rotate auth keys" (t-existing)')
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: ["authservice"] })
+    )
+  })
+
+  it("reuses across whitespace-only subject difference", async () => {
+    // Two-space vs one-space variants of the same subject must
+    // collapse to the same reuse key — pre-#265 this was the
+    // `findDuplicateActiveTasks` advisory case and the agent had
+    // to manually close one of the pair. Pin the
+    // whitespace-collapse step at the dispatcher boundary so a
+    // future normalizer narrowing trips here.
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track  PR-25750   review",
+      entity: "PR-25750",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect(text).toContain('Reused existing task: "Track PR-25750 review" (t-existing)')
+  })
+
+  it("reuses encoded-input callers against decoded stored rows (PF1-06 silent-miss closer)", async () => {
+    // Pre-PF1-06 vaults still carry rows whose Title and Entity
+    // were saved with HTML-entity-escaped `&`. `TaskService.create`
+    // decodes those fields at the write boundary, so a stored row's
+    // structural identity is the decoded form. A caller passing
+    // the encoded subject `"Café &amp; Bar review"` must reuse the
+    // decoded stored row — the principal review flagged this as
+    // the load-bearing failure mode the assertive-reuse promotion
+    // is supposed to close.
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Café & Bar review",
+          entity: "Café & Bar",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Café &amp; Bar review",
+      entity: "Café &amp; Bar",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect(text).toContain('Reused existing task: "Café & Bar review" (t-existing)')
+    // The probe also queried Notion with the decoded entity, not
+    // the encoded form — without the decode boundary the server-
+    // side `Entity contains` filter would substring-miss the
+    // stored decoded row.
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: ["Café & Bar"] })
+    )
+  })
+
+  it("renders the advisory footer with the decoded entity (probe + footer agreement under encoded input)", async () => {
+    // Pre-#265 the probe issued raw `Entity contains <encoded>` and
+    // the footer rendered the same encoded form — internally
+    // consistent. Post-#265 the probe decodes at the boundary, so
+    // the footer must also render the decoded form or an operator
+    // would see `Other active tasks tracking "Café &amp; Bar"`
+    // pointing at a row whose actual Entity column is `Café & Bar`.
+    // Pin the decode-then-render path on the non-reuse branch
+    // (subject differs from existing peers) so a regression to
+    // raw-rendering trips loudly.
+    const created: Task = {
+      ...makeTask("t-new", { entity: "Café & Bar" }),
+      content: "",
+    } as Task
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Different work for Café & Bar",
+          entity: "Café & Bar",
+          taskState: "open",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn().mockResolvedValue(created)
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Audit Café &amp; Bar payroll",
+      entity: "Café &amp; Bar",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Probe queried with decoded entity.
+    expect(svc.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: ["Café & Bar"] })
+    )
+    // Footer renders the decoded canonical form, not the caller's
+    // encoded `&amp;`.
+    expect(text).toContain('Other active tasks tracking "Café & Bar"')
+    expect(text).not.toContain("Café &amp; Bar")
+  })
+
+  it("surfaces an `Ignored on reuse:` audit line naming caller-provided non-key fields", async () => {
+    // The reuse predicate consumes only `(subject, entity, projectIds)`.
+    // When the caller passes any of the create-time non-key fields
+    // (description, state, blockedBy, dueDate, affectsIds,
+    // topicName, forceNewTopic, confidence, tags, keywords,
+    // synopsis), the reuse path drops them silently — the
+    // existing row's Notion state is unchanged. Without an audit
+    // line the agent has no way to distinguish "I bumped state
+    // and dueDate" from "I tried to bump state and dueDate but
+    // nothing landed because reuse fired"; the principal review
+    // flagged this as a missing audit-trail signal.
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          taskState: "open",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+      description: "Updated rationale",
+      state: "in-progress",
+      dueDate: "2026-06-01",
+      tags: ["bug"],
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect(text).toContain("Reused existing task")
+    // Each ignored field is named explicitly so the agent can see
+    // which arguments were dropped on the reuse path.
+    expect(text).toContain("Ignored on reuse:")
+    expect(text).toContain("description")
+    expect(text).toContain("state")
+    expect(text).toContain("dueDate")
+    expect(text).toContain("tags")
+    // The line embeds the existing task's id in the update CTA so
+    // the agent can paste-and-go.
+    expect(text).toContain("lore-task({ action: 'update', taskId: 't-existing', ... })")
+  })
+
+  it("omits the `Ignored on reuse:` line when the caller passed only the reuse-key fields", async () => {
+    // The audit line should fire only when there's something to
+    // disclose. A bare reuse call with subject + entity (and
+    // optionally project-scope, agent, session) drops nothing
+    // observable — surfacing an empty audit line would be noise.
+    const svc = services()
+    svc.tasks.list = vi.fn().mockResolvedValue({
+      items: [
+        makeTask("t-existing", {
+          title: "Track PR-25750 review",
+          entity: "PR-25750",
+          projectIds: [],
+        }),
+      ],
+    })
+    svc.tasks.create = vi.fn()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const handler = mockServer.getHandler("lore-task")
+    const result = await handler({
+      action: "create",
+      subject: "Track PR-25750 review",
+      entity: "PR-25750",
+      // session / agent are session metadata, not task fields —
+      // not surfaced in the audit line by design.
+      agent: "test-agent",
+      session: "session-xyz",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    expect(text).toContain("Reused existing task")
+    expect(text).not.toContain("Ignored on reuse:")
   })
 })
 

@@ -1466,8 +1466,12 @@ describe("MCP tool surface", () => {
     // Combined ceiling. The surface has moved 7 → 8 → 7 across P3-01,
     // PF3-06, and the 0.6.0 purge; the budget covers the high-water
     // mark plus comfortable headroom so a future action lands without
-    // inviting a surface-doubling regression.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7000
+    // inviting a surface-doubling regression. Bumped 7000 → 7100 in
+    // #265 to accommodate the `lore-task action='create'` reuse note —
+    // agent-observable behavior change that warrants a one-line schema
+    // signal alongside the response-text vocabulary, per the principal
+    // review.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7100
     const polymorphic = [
       "lore-context",
       "lore-memory",

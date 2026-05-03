@@ -25,6 +25,7 @@ import type {
   TaskSummary,
 } from "../types.js"
 import { ACTIVE_TASK_STATES } from "../types.js"
+import { decodeTextEntities } from "../notion/html-entities.js"
 import { trigramJaccard, tagOverlap } from "./similarity.js"
 
 export interface NearDuplicateMatch {
@@ -488,6 +489,7 @@ export interface TaskLister {
     entities?: string[]
     states?: TaskState[]
     limit?: number
+    sortBy?: "reviewByAsc" | "updatedAtAsc" | "updatedAtDesc"
   }): Promise<{ items: TaskSummary[]; nextCursor?: string }>
 }
 
@@ -519,21 +521,48 @@ export interface FindDuplicateActiveTasksOpts {
 /**
  * Probe for active tasks in the same project whose `Entity` column
  * contains the given string. Sibling of `findNearDuplicates` for the
- * `lore-task action='create'` path. Advisory only — returns `[]` on
- * failure, never throws, must not block the create.
+ * `lore-task action='create'` path. Returns `[]` on failure, never
+ * throws — probe failures must not block the create.
  *
- * Deliberately performs **no exclusion**. The `lore-task action='create'`
- * wire-in fires this probe in parallel with `services.tasks.create`,
- * so at probe-fire time the just-created task's id is not yet known.
- * Exclusion of the just-created row is the caller's responsibility —
- * the post-fetch `t.id !== task.id` filter at the `handleCreate` site,
- * applied after `Promise.all([create, probe])` resolves. Any
- * exclusion logic inside this helper would be a misleading no-op
- * (the id we'd want to exclude doesn't exist when we run).
+ * **Sequenced before create as of issue #265.** The `lore-task
+ * action='create'` wire-in awaits this probe BEFORE dispatching
+ * `services.tasks.create`, so the entity-matched candidate pool is
+ * available to `findExactReuseTarget` for the assertive-reuse short-
+ * circuit. Pre-#265 this probe ran in parallel with the create as an
+ * advisory-only sibling of `findNearDuplicates` — that contract is
+ * gone; the helper now powers two consumers (assertive reuse +
+ * advisory close-CTA footer) and the call site sequences them.
+ *
+ * **Encoded-input handling.** `entity` is decoded with
+ * `decodeTextEntities` before going onto the wire, mirroring
+ * `TaskService.create`'s `decodeTextEntities(input.entity ?? input.subject)`
+ * write-side decode (`src/core/task.ts:180`). Without this, a caller
+ * passing `entity: "PR &amp; Review"` would query Notion for the encoded
+ * form and miss any stored row whose `Entity` column was decoded at
+ * write time — re-introducing the silent-miss case PF1-06's decode
+ * boundary was designed to close, exactly the failure mode #265 is
+ * supposed to prevent on the reuse path.
+ *
+ * **Sort order.** Pinned to `updatedAtDesc` so the first candidate is
+ * the most-recently-edited row. `findExactReuseTarget` returns the
+ * first matching candidate, so this sort is what makes the predicate's
+ * "most-recently-edited wins on ties" contract real. Pre-#265 the
+ * default sort (`reviewByAsc`) was acceptable because the result was
+ * advisory-only and the agent saw all peers at once; under assertive
+ * reuse the sort is load-bearing.
+ *
+ * **No just-created-row exclusion** is applied inside this helper.
+ * Pre-#265 the parallel-with-create posture meant the just-created id
+ * couldn't be known at probe-fire time; under #265's sequencing the
+ * just-created id literally cannot appear (probe completes strictly
+ * before create dispatches). Either way, the helper performs no
+ * exclusion of its own.
  *
  * Honors `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` for parity with the
- * memory / decision probes — one operator switch, every advisory
- * probe respects it.
+ * memory / decision probes — one operator switch, every duplicate
+ * probe respects it. The narrower `LORE_DISABLE_TASK_REUSE=1` switch
+ * (read inside `findExactReuseTarget`) keeps the probe alive but
+ * disables only the assertive-reuse promotion.
  */
 export async function findDuplicateActiveTasks(
   tasks: TaskLister,
@@ -542,18 +571,173 @@ export async function findDuplicateActiveTasks(
   if (process.env["LORE_DISABLE_NEAR_DUPLICATE_PROBE"] === "1") return []
   if (!opts.entity || opts.entity.trim() === "") return []
 
+  // Decode at the boundary so the server-side `Entity contains` filter
+  // sees the same canonical form `TaskService.create` writes (see
+  // `src/core/task.ts:180`). Whitespace-only after decode short-
+  // circuits — same posture as the raw-input guard above.
+  const decodedEntity = decodeTextEntities(opts.entity)
+  if (decodedEntity.trim() === "") return []
+
   try {
     const { items } = await tasks.list({
       projectId: opts.projectId,
-      entities: [opts.entity],
+      entities: [decodedEntity],
       states: ACTIVE_TASK_STATES,
       limit: 10,
+      sortBy: "updatedAtDesc",
     })
     return items
   } catch (err) {
     opts.onError?.(err)
     return []
   }
+}
+
+export interface FindExactReuseTargetInput {
+  /**
+   * Caller's requested `subject`. Compared against each candidate's
+   * `title` after normalization (HTML-entity decode, NFKC fold,
+   * locale-independent lowercase, internal-whitespace collapse).
+   * Whitespace-only inputs short-circuit to no match — a degenerate
+   * subject must not silently reuse an unrelated row whose title also
+   * normalizes to empty.
+   */
+  subject: string
+  /**
+   * Caller's `entity` value (post-default — i.e. `args.entity ?? args.subject`).
+   * Required as part of the structural-match key because two tasks
+   * sharing a title but tracking different entities are NOT the same
+   * task. The probe pre-filters server-side on `Entity contains entity`,
+   * which lets a candidate slip in whose entity is a SUPERSTRING of the
+   * input (e.g. probe entity `"PR-1"` matches stored entity `"PR-100"`);
+   * the post-fetch normalized-equality check here closes that gap.
+   */
+  entity: string
+  /**
+   * Resolved project ids for the create. Compared set-equal against
+   * each candidate's `projectIds` — same posture as topic-key upsert
+   * (`MemoryService.upsertByTopicKey`). `[]` (repo-wide tasks) only
+   * matches another `[]` candidate; cross-scope reuse is intentionally
+   * rejected so an `[A]` task does not get reused for an `[A, B]`
+   * create.
+   */
+  projectIds: string[]
+}
+
+/**
+ * Pure reuse predicate over a `findDuplicateActiveTasks` result. Returns
+ * the first candidate whose `(entity, title, projectIds)` normalize
+ * identically to the caller's `(entity, subject, projectIds)` — the
+ * structural-duplicate case where creating a fresh row would produce
+ * pollution rather than signal.
+ *
+ * Sibling of (and assertive promotion over) `findDuplicateActiveTasks`'s
+ * advisory-only behavior: that helper says "here are tasks tracking the
+ * same entity, you decide"; this helper says "here is the SAME task,
+ * reuse it." The caller (`lore-task action='create'`) wires the two
+ * together — exact match short-circuits to reuse, the residual probe
+ * results render as the existing advisory close-CTA footer.
+ *
+ * Pure function over the probe result — no I/O. The reuse switch lives
+ * here so all callers (current MCP wire-in plus any future CLI / hook
+ * surfaces) honor it without duplicate plumbing. `findDuplicateActiveTasks`
+ * already honors `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1` (returns `[]`,
+ * making this helper a no-op via empty input); the narrower
+ * `LORE_DISABLE_TASK_REUSE=1` switch keeps the advisory probe enabled
+ * and disables only the assertive promotion. Same single-axis posture
+ * as `LORE_DISABLE_TASK_CROSSREF` vs the broader probe switch.
+ *
+ * Returns `null` when no candidate matches or when reuse is disabled.
+ * The probe result's order is fixed by `findDuplicateActiveTasks` to
+ * `updatedAtDesc` so the first matching candidate is the most-recently-
+ * edited row — the recency tiebreak agents see across every other
+ * surface.
+ */
+export function findExactReuseTarget(
+  candidates: TaskSummary[],
+  input: FindExactReuseTargetInput
+): TaskSummary | null {
+  if (process.env["LORE_DISABLE_TASK_REUSE"] === "1") return null
+
+  const normalizedSubject = normalizeReuseKey(input.subject)
+  if (normalizedSubject === "") return null
+  const normalizedEntity = normalizeReuseKey(input.entity)
+  if (normalizedEntity === "") return null
+
+  for (const candidate of candidates) {
+    if (normalizeReuseKey(candidate.title) !== normalizedSubject) continue
+    if (normalizeReuseKey(candidate.entity) !== normalizedEntity) continue
+    if (!projectSetEqual(candidate.projectIds, input.projectIds)) continue
+    return candidate
+  }
+  return null
+}
+
+/**
+ * Normalize a string for structural reuse comparison: HTML-entity
+ * decode, NFKC unicode fold, locale-independent lowercase, internal-
+ * whitespace collapse, trim. Match-key only — never written back to
+ * Notion.
+ *
+ * Pipeline parity with `similarity.ts:normalizeTitle`'s decode-then-
+ * fold-fold-trim shape so reuse keys agree with the trigram probe's
+ * canonical form. Three deliberate divergences:
+ *
+ * - **`decodeTextEntities` is load-bearing.** `TaskService.create`
+ *   decodes `subject`/`entity` at the write boundary
+ *   (`src/core/task.ts:176, 180`), so a stored row's title is the
+ *   decoded form. Without the decode here, a caller passing the
+ *   already-decoded subject `"Café & Bar"` against a stored title
+ *   `"Café &amp; Bar"` (pre-PF1-06 vault) would normalize differently
+ *   and miss reuse — exactly the silent-miss the
+ *   `lore migrate --fix-memory-encoding` migration was designed to
+ *   close. AGENTS.md "Near-Duplicate Probe" calls this out as
+ *   load-bearing for the trigram pipeline; the same logic applies to
+ *   the exact-equality predicate.
+ *
+ * - **`.toLowerCase()` not `.toLocaleLowerCase()`.** Vault state is
+ *   shared across engineers; comparison is per-process. A Turkish-
+ *   locale machine's `"INVOICE".toLocaleLowerCase()` is `"ınvoice"`
+ *   (dotless-ı), an en-US machine's is `"invoice"` — two engineers
+ *   reaching different reuse verdicts on the same vault is a
+ *   consistency hazard the rest of the codebase avoids by sticking
+ *   to locale-independent `.toLowerCase()`.
+ *
+ * - **NFKC, not NFC.** `similarity.ts:normalizeTitle` uses NFC.
+ *   NFKC additionally folds compatibility variants (`＃` → `#`, `ﬁ`
+ *   → `fi`, full-width digits, etc.). For an exact-equality predicate
+ *   the more aggressive folding is the safer choice — two tasks whose
+ *   titles differ only by full-width vs ASCII punctuation are
+ *   structurally the same task, and NFC would let the duplicate land.
+ *   The looser fold is intentional and tested
+ *   (`near-duplicate.test.ts: "normalizes case, NFKC, and internal
+ *   whitespace before equality"`); a future contributor "harmonizing
+ *   the normalizers" by switching this to NFC would silently weaken
+ *   reuse on full-width / ligature inputs.
+ *
+ * Trigram-specific punct stripping is deliberately omitted — exact
+ * equality, not fuzzy similarity.
+ */
+function normalizeReuseKey(s: string): string {
+  return decodeTextEntities(s)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+/**
+ * Set-equality check over project-id arrays. `[]` matches only `[]`.
+ * Mirrors the rule `MemoryService.upsertByTopicKey` enforces via
+ * `findByTopicKey` — `[A]` does not match `[A, B]`.
+ */
+function projectSetEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const set = new Set(a)
+  for (const id of b) {
+    if (!set.has(id)) return false
+  }
+  return true
 }
 
 /**

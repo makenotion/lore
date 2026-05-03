@@ -23,7 +23,11 @@ import {
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { taskDaysOverdue } from "../../core/task.js"
-import { findDuplicateActiveTasks } from "../../core/near-duplicate.js"
+import {
+  findDuplicateActiveTasks,
+  findExactReuseTarget,
+} from "../../core/near-duplicate.js"
+import { decodeTextEntities } from "../../notion/html-entities.js"
 import { renderTrustLine, truncateSynopsis } from "../render.js"
 import {
   reconcileActiveTasks,
@@ -147,6 +151,39 @@ interface CreateArgs {
   session?: string
 }
 
+/**
+ * Names the caller-provided non-key fields that the assertive-reuse
+ * branch will silently ignore. Issue #265's reuse predicate consumes
+ * only `(subject, entity, projectIds)` — every other create-time field
+ * is structurally dropped if reuse fires. Surfacing the dropped names
+ * in the response prevents an agent from believing a state transition
+ * or due-date bump landed when only the subject + entity were honored.
+ *
+ * `agent`, `session`, and `author` are excluded — they are session /
+ * provenance metadata, not task fields the operator intends to mutate.
+ * `projectName` / `projectNames` are excluded because they participate
+ * in the reuse-key (project-set), not as ignored side-channel data.
+ * `topicName` and `forceNewTopic` ARE listed because `topics.getOrCreate`
+ * is deferred until after the reuse gate, so passing them on a reuse
+ * call had no observable effect on the existing row's topic relation.
+ */
+function collectIgnoredReuseFields(args: CreateArgs): string[] {
+  const ignored: string[] = []
+  if (args.description !== undefined) ignored.push("description")
+  if (args.state !== undefined) ignored.push("state")
+  if (args.blockedBy !== undefined) ignored.push("blockedBy")
+  if (args.dueDate !== undefined) ignored.push("dueDate")
+  if (args.affectsIds !== undefined && args.affectsIds.length > 0)
+    ignored.push("affectsIds")
+  if (args.topicName !== undefined) ignored.push("topicName")
+  if (args.forceNewTopic !== undefined) ignored.push("forceNewTopic")
+  if (args.confidence !== undefined) ignored.push("confidence")
+  if (args.tags !== undefined && args.tags.length > 0) ignored.push("tags")
+  if (args.keywords !== undefined) ignored.push("keywords")
+  if (args.synopsis !== undefined) ignored.push("synopsis")
+  return ignored
+}
+
 async function handleCreate(
   services: LoreServices,
   args: CreateArgs
@@ -173,6 +210,132 @@ async function handleCreate(
       args.projectNames
     )
 
+    // Sequenced probe — issue #265's assertive-reuse promotion needs
+    // the entity-matched candidate set in hand BEFORE deciding whether
+    // to create, so an exact `(entity, subject, project-set)` match can
+    // short-circuit to reuse without leaving an orphan task or topic.
+    // Pre-#265 this probe ran in parallel with `services.tasks.create`
+    // since it was advisory-only; promotion to assertive forces the
+    // sequence (same posture as `MemoryService.upsertByTopicKey`'s
+    // pre-create `findByTopicKey` lookup). Cost is one extra
+    // `dataSources.query` round-trip on the create path; bounded
+    // (limit=10) and the same query the advisory footer needs anyway.
+    //
+    // Server-side scope is `projectId: resolved.ids[0]` (single id) —
+    // sufficient because Notion's `Project contains <id>` matches every
+    // row whose Project relation includes that id regardless of other
+    // memberships. A multi-project caller's `[A, B]` create still finds
+    // every existing `[A]`, `[A, B]`, `[A, B, C]`, `[A, C]` row via
+    // `contains "A"`. The full-set equality check on the predicate side
+    // (`findExactReuseTarget`) catches structural mismatches post-fetch.
+    // An empty `resolved.ids[]` (repo-wide create) flows `undefined`
+    // through to `tasks.list`, which queries unscoped — correct for
+    // matching another repo-wide row.
+    //
+    // `probeEntity` is the decoded canonical form. `TaskService.create`
+    // decodes `args.entity ?? args.subject` at the write boundary, so
+    // every consumer that compares against a stored row's Entity column
+    // must operate on the decoded form: the probe issues
+    // `Entity contains <decodedEntity>` server-side, the predicate
+    // (`findExactReuseTarget`) compares decoded titles via
+    // `normalizeReuseKey`, and the advisory close-CTA footer renders the
+    // same canonical form an operator sees in Notion. Decoding once
+    // here keeps the three consumers internally consistent — pre-#265's
+    // raw-input path was uniformly encoded end-to-end (probe issued
+    // encoded, footer rendered encoded), so the fix is to make the
+    // post-#265 path uniformly decoded. `decodeTextEntities` is
+    // idempotent, so the redundant decode inside `findDuplicateActiveTasks`
+    // and `normalizeReuseKey` remains correct (and load-bearing for
+    // non-MCP callers that don't pre-decode).
+    const probeEntity = decodeTextEntities(args.entity ?? args.subject)
+    const duplicates = await findDuplicateActiveTasks(services.tasks, {
+      entity: probeEntity,
+      projectId: resolved.ids[0],
+      onError: (err) =>
+        debugLogPartialFailures("lore-task", [{ rootId: "duplicate-probe", error: err }]),
+    })
+
+    // Assertive reuse: an exact structural duplicate (same normalized
+    // entity, subject, and project-set) returns the existing task
+    // without creating. Topic creation is deferred until after this
+    // gate so a reuse hit does not leak an orphan Topic — same
+    // discipline `lore-memory action='save'` follows for the autosave
+    // learning duplicate gate. `LORE_DISABLE_TASK_REUSE=1` (or the
+    // broader `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`) restores the
+    // pre-#265 advisory-only behavior.
+    const reuseTarget = findExactReuseTarget(duplicates, {
+      subject: args.subject,
+      entity: probeEntity,
+      projectIds: resolved.ids,
+    })
+
+    if (reuseTarget !== null) {
+      // Record for `lore-fact action='create'` session auto-link,
+      // mirroring the create branch — a fact emitted later in the
+      // session should still resolve to this task as its source even
+      // when the row was reused rather than freshly created.
+      services.sessionMemories.record(
+        { agent: args.agent, session: args.session },
+        { memoryId: reuseTarget.id, projectIds: reuseTarget.projectIds }
+      )
+
+      const projectLabel = resolved.ids.length
+        ? (args.projectNames?.join(", ") ??
+          args.projectName ??
+          services.context.project?.name ??
+          "auto-detected")
+        : "none (repo-wide)"
+
+      const reuseLines = [
+        `Reused existing task: "${reuseTarget.title}" (${reuseTarget.id})`,
+        `State: ${reuseTarget.taskState ?? "open"}`,
+        `Project: ${projectLabel}`,
+      ]
+      if (reuseTarget.entity && reuseTarget.entity !== reuseTarget.title) {
+        reuseLines.push(`Entity: ${reuseTarget.entity}`)
+      }
+      if (reuseTarget.reviewBy) {
+        reuseLines.push(`Due: ${reuseTarget.reviewBy}`)
+      }
+      if (reuseTarget.blockedBy) {
+        reuseLines.push(`Blocked by: ${reuseTarget.blockedBy}`)
+      }
+      if (resolved.warnings.length > 0) {
+        reuseLines.push(`Warnings: ${resolved.warnings.join("; ")}`)
+      }
+
+      // Surface the caller-provided non-key fields that were dropped on
+      // reuse. Reuse only consumes `(subject, entity, projectIds)` — every
+      // other field on the create payload is structurally ignored, which
+      // can blindside an agent calling create to land a state transition,
+      // due-date bump, or description update against an existing task.
+      // The audit-trail discipline matches Lore's other write-side
+      // surfaces (e.g. `MemoryService.upsertByTopicKey`'s promotion
+      // advisory, `FactService.createWithDedup`'s `enriched` field):
+      // assertive idempotency must name what it ignored.
+      const ignoredFields = collectIgnoredReuseFields(args)
+      if (ignoredFields.length > 0) {
+        reuseLines.push(
+          `Ignored on reuse: ${ignoredFields.join(", ")} — use ` +
+            `lore-task({ action: 'update', taskId: '${reuseTarget.id}', ... }) ` +
+            `to change them.`
+        )
+      }
+
+      reuseLines.push(
+        "",
+        "Subject and entity match an existing active task; nothing was created.",
+        `Update the existing row if needed: ` +
+          `lore-task({ action: 'update', taskId: '${reuseTarget.id}', ... })`,
+        `Close it when the work is done: ` +
+          `lore-task({ action: 'close', taskId: '${reuseTarget.id}' })`
+      )
+
+      return {
+        content: [{ type: "text", text: reuseLines.join("\n") }],
+      }
+    }
+
     let topicId: string | undefined
     let topicLabel = "none"
     if (args.topicName && resolved.ids.length > 0) {
@@ -187,53 +350,35 @@ async function handleCreate(
       )
     }
 
-    // Probe runs in parallel with the create — sequencing them would double
-    // wall-clock latency on the hot write path. The just-created row is
-    // filtered out post-resolve (the helper can't know task.id at probe-fire).
-    // Probe is advisory: failures return [] silently and never block the create,
-    // and the wasted query on a rejecting create is the deliberate parallelism cost.
-    const probeEntity = args.entity ?? args.subject
-    const duplicateProbePromise = findDuplicateActiveTasks(services.tasks, {
-      entity: probeEntity,
-      projectId: resolved.ids[0],
-      onError: (err) =>
-        debugLogPartialFailures("lore-task", [{ rootId: "duplicate-probe", error: err }]),
-    })
     const resolvedAuthor = await authorPromise
-    const [task, duplicates] = await Promise.all([
-      services.tasks.create({
-        subject: args.subject,
-        description: args.description,
-        entity: args.entity,
-        state: args.state as TaskState | undefined,
-        blockedBy: args.blockedBy,
-        dueDate: args.dueDate,
-        affectsIds: args.affectsIds,
-        projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
-        topicId,
-        confidence: args.confidence,
-        tags: args.tags,
-        keywords: args.keywords,
-        synopsis: args.synopsis,
-        // DEFERRED-ATTRIBUTION: caller override wins without touching
-        // identity resolution; omitted authors use the lazy resolver.
-        author: resolvedAuthor,
-        agent: args.agent,
-        session: args.session,
-      }),
-      duplicateProbePromise,
-    ])
+    const task = await services.tasks.create({
+      subject: args.subject,
+      description: args.description,
+      entity: args.entity,
+      state: args.state as TaskState | undefined,
+      blockedBy: args.blockedBy,
+      dueDate: args.dueDate,
+      affectsIds: args.affectsIds,
+      projectIds: resolved.ids.length > 0 ? resolved.ids : undefined,
+      topicId,
+      confidence: args.confidence,
+      tags: args.tags,
+      keywords: args.keywords,
+      synopsis: args.synopsis,
+      // DEFERRED-ATTRIBUTION: caller override wins without touching
+      // identity resolution; omitted authors use the lazy resolver.
+      author: resolvedAuthor,
+      agent: args.agent,
+      session: args.session,
+    })
 
-    // Post-filter the just-created row out of the probe results. This
-    // is the SOLE exclusion mechanism — the parallel posture means
-    // `findDuplicateActiveTasks` can't know `task.id` at probe-fire
-    // time, so the helper performs no exclusion of its own. Closes
-    // the eventual-consistency race between create and the query
-    // index; same posture as the memory near-dup probe. The footer's
-    // `(${filteredDuplicates.length})` count derives from this filtered
-    // list, not the raw probe response — agent sees the same N rows
-    // and the same N in the heading.
-    const filteredDuplicates = duplicates.filter((t) => t.id !== task.id)
+    // The probe ran before create, so by construction `task.id` cannot
+    // appear in `duplicates`. Pre-#265 the parallel-probe posture
+    // required a post-fetch `t.id !== task.id` filter to close the
+    // eventual-consistency window between create and the query index;
+    // sequencing makes that filter dead code. The advisory footer
+    // renders `duplicates` directly.
+    const filteredDuplicates = duplicates
 
     // Record for `lore-fact action='create'` session auto-link,
     // mirroring how `lore-memory` action='save' and
@@ -721,9 +866,11 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         'work completes. Closed tasks are the source of truth for "done"; ' +
         "unclosed tasks keep surfacing in wake-up.\n\n" +
         "Action-dispatched:\n\n" +
-        "- `action: 'create'` — open a new task. Use `entity` when the task is about " +
-        "a specific subject other facts/decisions also reference; `lore-query` " +
-        "action='ask' surfaces it in the Tasks bucket.\n" +
+        "- `action: 'create'` — open a new task (idempotent on exact " +
+        "`(subject, entity, projectIds)` match). Use `entity` when " +
+        "the task is about a specific subject other facts/decisions " +
+        "also reference; `lore-query` action='ask' surfaces it in " +
+        "the Tasks bucket.\n" +
         "- `action: 'update'` — change state, blocker, due date, subject, " +
         "description, or scoping. Any field omitted is left untouched. Pass " +
         '`dueDate: null` or `dueDate: ""` to clear the due date.\n' +

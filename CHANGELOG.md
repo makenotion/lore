@@ -63,6 +63,37 @@ log is the canonical source for those.
 
 ### Changed
 
+- **Breaking response-shape contract: `lore-task action='create'` now returns
+  `Reused existing task:` instead of `Created task:` on exact structural
+  duplicates.** The duplicate probe is sequenced before the create call;
+  when an existing active task has a normalized title, normalized entity,
+  and project-set that exactly equal the new caller's
+  `(subject, entity, projectIds)` — set-equality, so `[A]` does not match
+  `[A, B]` — Lore returns the existing row with the new prefix instead of
+  cloning. The leading line is the agent-visible signal — programmatic
+  consumers that key off `text.startsWith("Created task:")` to detect
+  fresh creates must add a `Reused existing task:` branch (or read the
+  `taskId` out of the unchanged `(<id>)` suffix, which appears on both
+  shapes). When the caller passed any non-key fields the reuse path drops
+  (description, state, blockedBy, dueDate, affectsIds, topicName,
+  forceNewTopic, confidence, tags, keywords, synopsis), the response also
+  carries an `Ignored on reuse: <fields>` audit line naming what was
+  dropped. Subject- or entity-different peers on the same entity still
+  surface in the unchanged `Other active tasks tracking "<entity>" (N)`
+  advisory footer. The probe runs with `sortBy: "updatedAtDesc"` so the
+  most-recently-edited candidate is the reuse target on the rare two-
+  active-exact-matches case. The promotion follows
+  `MemoryService.upsertByTopicKey`'s posture: orphan topics are prevented
+  by deferring `topics.getOrCreate` until after the reuse gate, and
+  `services.sessionMemories.record` runs on the reused row so a follow-up
+  `lore-fact action='create'` in the same session can still auto-link the
+  task as its source. Reuse normalization decodes HTML entities (matching
+  `TaskService.create`'s decode boundary) and uses locale-independent
+  lowercase + NFKC fold so two engineers running Lore against the same
+  vault under different locales reach the same reuse verdict. Set
+  `LORE_DISABLE_TASK_REUSE=1` to keep the advisory probe and skip the
+  assertive promotion; the broader `LORE_DISABLE_NEAR_DUPLICATE_PROBE=1`
+  switch continues to disable the probe entirely. (#265)
 - **Fact creation now requires usable provenance.** MCP
   `lore-fact action='create'` calls now hard-error before Entity or Fact writes
   unless they pass an explicit live, project-compatible Memories-row
