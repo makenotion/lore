@@ -451,6 +451,8 @@ async function handleWakeUp(
       tasks,
       taskBucketCoverage,
       taskMemories,
+      proposedMemories,
+      proposedMemoriesTotal,
       staleConfidence,
       coverage,
     } = await loadWakeUpData(services, {
@@ -478,6 +480,14 @@ async function handleWakeUp(
       decisions: proposedDecisions.length + overdueDecisions.length,
       proposedDecisions: proposedDecisions.length,
       overdueDecisions: overdueDecisions.length,
+      // True inbox depth, NOT the rendered slice. Operators reading
+      // `lore-context action='wake-up' debug=true` need to see the
+      // same number that lands in the section heading and the
+      // `lore-context action='status'` count line — a 25-row inbox
+      // with a 20-row cap reports `sections.proposedMemories=25`,
+      // not 20. The rendered slice is a triage budget; coverage is
+      // a depth signal.
+      proposedMemories: proposedMemoriesTotal,
       staleConfidence: staleConfidence.length,
     }
 
@@ -620,6 +630,54 @@ async function handleWakeUp(
       const buildMeta = staleConfidenceMetaBuilder(today)
       for (const mem of staleConfidence) {
         sections.push(formatMemoryListItem(mem, { meta: buildMeta }))
+        sections.push("")
+      }
+    }
+
+    // Proposed Memories review inbox subsection (issue #281, AC #2).
+    // Mirrors the Stale Confidence + Decisions Requiring Attention
+    // posture: dedicated section so the agent can triage proposed
+    // memories explicitly without seeing them blended into Recent
+    // Memories or Related to Active Tasks. Memories surfaced here are
+    // deliberately NOT touched (`recordSurfaced` is intentionally not
+    // called) — touching would bump `Last Referenced At` and signal
+    // engagement that hasn't actually happened. The agent
+    // approves / rejects via the inbox review flow (Phase 4 of
+    // issue #281); reading them via `lore-memory action='expand'`
+    // routes through the normal touch path at the right moment.
+    if (proposedMemories.length > 0) {
+      // Heading uses the true count (`proposedMemoriesTotal`), not
+      // the rendered slice — operators with deeper inboxes need to
+      // see depth even when only `proposedMemoryLimit` rows fit in
+      // the section. When the slice is saturated, append a `(showing
+      // N of T, oldest first)` cue plus an actionable pointer at
+      // the only shipped read path that surfaces the full set:
+      // `lore-query action='recall' status="proposed"` (which
+      // accepts a `limit` parameter and is paginatable). The MCP
+      // schema does NOT expose `proposedMemoryLimit` on
+      // `lore-context action='wake-up'`, and the dedicated
+      // `lore inbox list` CLI ships in Phase 4 of issue #281, so
+      // copy that points an agent at either of those paths today
+      // would dead-end. Keep the cue constrained to surfaces that
+      // exist in this PR.
+      const renderedTotal = proposedMemoriesTotal
+      const slice = proposedMemories.length
+      const saturated = renderedTotal > slice
+      sections.push(`## Proposed Memories (${renderedTotal} pending review)\n`)
+      // Mechanical correctness: `lore-memory action='update'` is a
+      // mutation, not a filter. Discovery routes through the read
+      // path (`lore-query action='recall' status="proposed"`); the
+      // lifecycle actions are `lore-memory action='update' status='accepted'`
+      // / `'rejected'` until Phase 4 of #281 ships dedicated
+      // `approve` / `reject` actions.
+      const saturationCue = saturated
+        ? ` Showing the ${slice} oldest of ${renderedTotal}; list the full set via \`lore-query action='recall' status="proposed" limit=<N>\` (paginatable).`
+        : ""
+      sections.push(
+        `*Memories awaiting review (\`Status = proposed\`). Excluded from default recall — list via \`lore-query action='recall' status="proposed"\`; promote via \`lore-memory action='update' memoryId='<id>' status='accepted'\` (or \`status='rejected'\`).${saturationCue} Phase 4 of #281 ships dedicated approve/reject actions.*\n`,
+      )
+      for (const mem of proposedMemories) {
+        sections.push(formatMemoryListItem(mem))
         sections.push("")
       }
     }

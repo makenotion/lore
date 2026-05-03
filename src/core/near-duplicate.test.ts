@@ -244,6 +244,54 @@ describe("findNearDuplicates", () => {
     expect(result.map((m) => m.id)).toEqual(["dec-accepted"])
   })
 
+  it("forwards includeProposed: true when statuses includes 'proposed' (decision-probe write-safety opt-in)", async () => {
+    // Issue #281 Phase 2 added `Status != proposed` as the
+    // default-recall filter on `MemoryService.list`. Without
+    // an opt-in, the decision near-duplicate probe — which
+    // contracts to scan `accepted | proposed` candidates —
+    // would silently lose every proposed decision from the
+    // candidate pool, breaking warning/supersession suggestions
+    // on `lore-decision action='create'`. Pin that
+    // `findNearDuplicates` forwards `includeProposed: true`
+    // through to the lister whenever its post-fetch `statuses`
+    // whitelist includes `proposed`.
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    await findNearDuplicates(
+      { list: listSpy },
+      {
+        title: "Replace auth middleware",
+        tags: [],
+        projectId: "proj-a",
+        kind: "decision",
+        statuses: ["accepted", "proposed"],
+        threshold: 0.6,
+      },
+    )
+    expect(listSpy).toHaveBeenCalledTimes(1)
+    expect(listSpy.mock.calls[0]![0]).toMatchObject({ includeProposed: true })
+  })
+
+  it("omits includeProposed when statuses does not include 'proposed' (memory-probe default-recall posture)", async () => {
+    // Memory near-dup probes pass no `statuses` (or only
+    // `accepted`); the default-recall posture is correct —
+    // proposed inbox rows do not surface as memory-side
+    // near-duplicate candidates. Pin that the helper does NOT
+    // opt in absent an explicit `proposed` in the status set,
+    // so the inbox stays out of memory-write warnings.
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    await findNearDuplicates(
+      { list: listSpy },
+      {
+        title: "Wakeup hook crash",
+        tags: [],
+        projectId: "proj-a",
+        threshold: 0.7,
+      },
+    )
+    expect(listSpy).toHaveBeenCalledTimes(1)
+    expect(listSpy.mock.calls[0]![0].includeProposed).toBeUndefined()
+  })
+
   it("filters out kinds listed in excludeKinds (memory probe drops decisions)", async () => {
     const lister = makeLister([
       makeMemory({ id: "note", title: "Wakeup hook crash", kind: "note" }),
@@ -408,6 +456,15 @@ describe("findAutosaveLearningDuplicate", () => {
       limit: 50,
       includeContent: true,
       includeUnscoped: undefined,
+      // `includeProposed: true` is load-bearing: issue #281 Phase 2
+      // added `Status != proposed` as the default-recall filter on
+      // `MemoryService.list`, and Phase 3 may write atomic learnings
+      // as proposed when `hooks.proposeAutosaveLearnings` is set.
+      // Without the opt-in, the dedup gate would silently miss the
+      // very rows the previous autosave run just wrote — repeated
+      // sessions would duplicate proposed learnings instead of
+      // reusing them.
+      includeProposed: true,
     })
   })
 
@@ -432,6 +489,10 @@ describe("findAutosaveLearningDuplicate", () => {
       limit: 50,
       includeContent: true,
       includeUnscoped: true,
+      // See companion comment on the session-scope test above —
+      // both scopes are write-safety gates and must opt out of
+      // the Phase 2 default-recall filter.
+      includeProposed: true,
     })
   })
 

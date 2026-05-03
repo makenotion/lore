@@ -50,6 +50,7 @@ type LeafFilter =
   | { property: "Title"; title: { contains: string } }
   | { property: "Keywords"; rich_text: { contains: string } }
   | { property: "Synopsis"; rich_text: { contains: string } }
+  | { property: "Status"; select: { does_not_equal: string } }
 type CompoundFilter = { and?: Filter[] } | { or?: Filter[] }
 type Filter = LeafFilter | CompoundFilter
 
@@ -99,6 +100,15 @@ class MemoriesFixtureVault {
         return row.synopsis
           .toLowerCase()
           .includes(filter.rich_text.contains.toLowerCase())
+      }
+      if (filter.property === "Status" && "select" in filter) {
+        // Phase 2 of issue #281 introduces a default-exclude
+        // `Status: { does_not_equal: "proposed" }` clause on
+        // `MemoryService.search`. Fixture rows have no Status set, so
+        // the extractor defaults to `"informational"` and the row passes
+        // the exclusion. Modeled here so the fixture's exhaustiveness
+        // throw doesn't reject the new clause.
+        return "informational" !== filter.select.does_not_equal
       }
       // Inside-block throw — a future contributor adding a new property
       // leg (e.g. `Status select.equals`) who forgets to wire its arm

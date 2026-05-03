@@ -3399,6 +3399,14 @@ export class MemoryService {
     limit: number
     /** YYYY-MM-DD anchor; same shape as `taskDaysOverdue` etc. */
     today: string
+    /**
+     * When `true`, do NOT exclude `Status = proposed` rows. Defaults
+     * to `false` so the wake-up Stale Confidence subsection mirrors
+     * the rest of the default-recall posture (issue #281, AC #2):
+     * proposed memories belong in the inbox surface, not in normal
+     * triage lists. The inbox-review flow opts in.
+     */
+    includeProposed?: boolean
   }): Promise<Memory[]> {
     const neglectCutoff = new Date(
       new Date(opts.today).getTime() - STALE_CONFIDENCE_DAYS * MS_PER_DAY
@@ -3409,6 +3417,16 @@ export class MemoryService {
     const filters: Array<Record<string, unknown>> = []
     if (opts.projectId) {
       filters.push(projectOrUnscopedFilter(opts.projectId))
+    }
+    if (opts.includeProposed !== true) {
+      // Same default-exclude posture as `MemoryService.list` and
+      // `MemoryService.search` (issue #281, AC #2). Proposed rows
+      // belong in the wake-up Proposed Memories section, not the
+      // Stale Confidence triage list.
+      filters.push({
+        property: "Status",
+        select: { does_not_equal: "proposed" },
+      })
     }
     filters.push({
       property: "Confidence Score",
@@ -3592,6 +3610,27 @@ export class MemoryService {
     topicId?: string
     source?: MemorySource
     kind?: MemoryKind
+    /**
+     * Negative `Kind` filter. Each entry is excluded server-side via
+     * a `select.does_not_equal` clause on the `Kind` column. Mirrors
+     * the existing `excludeKinds` parameter on the memory
+     * near-duplicate probe (`src/core/near-duplicate.ts`); use the
+     * same `excludeKinds: ["decision"]` posture when surfacing
+     * "memories that need triage" without conflating with governance
+     * decisions.
+     *
+     * Mutually exclusive with `kind` semantically (a server-side
+     * `equals` already narrows to one kind). The two compose
+     * literally — `kind: "note"` AND `excludeKinds: ["decision"]`
+     * is well-formed but redundant — but no caller passes both.
+     *
+     * Notion's `does_not_equal` is permissive on null, so a row
+     * with no `Kind` column set passes the filter unless it
+     * happens to match a listed exclusion (it can't, since null is
+     * not equal to any literal). Matches the inbox-status filter
+     * posture.
+     */
+    excludeKinds?: MemoryKind[]
     confidence?: MemoryConfidence
     status?: MemoryStatus
     reviewBefore?: string
@@ -3613,11 +3652,38 @@ export class MemoryService {
      */
     includeUnscoped?: boolean
     /**
+     * When `true`, do NOT exclude `Status = proposed` rows from the
+     * result set. The default (`false`) adds a server-side
+     * `does_not_equal: "proposed"` filter on the Status column so
+     * proposed-memory inbox rows do not pollute default recall paths
+     * (issue #281, AC #2).
+     *
+     * Explicit `status` wins: when the caller passes `status:
+     * "proposed"` (the inbox-review path), `includeProposed` is
+     * irrelevant — the row passes via the explicit `equals` filter
+     * regardless of the default exclusion.
+     *
+     * Set `true` for code paths that need to see every memory
+     * regardless of review state — e.g. `lore mine`'s upsert
+     * idempotency lookup (a re-mine must match a prior proposed
+     * row), the conflict scanner (operates on every live row), or
+     * the inbox-review CLI / MCP flows.
+     */
+    includeProposed?: boolean
+    /**
      * Notion timestamp field to sort by. Defaults to `last_edited_time`
      * (general-purpose "most recently touched"). Pass `created_time` for
      * "most recently created" ordering — e.g. latest-digest lookup.
      */
     sortBy?: "created_time" | "last_edited_time"
+    /**
+     * Sort direction. Defaults to `"descending"` (newest first) —
+     * matches Notion's recency-default and pre-issue-#281 behavior.
+     * Pass `"ascending"` for oldest-first ordering, e.g. the
+     * proposed-memory inbox surface where stale review debt should
+     * surface ahead of recent additions.
+     */
+    direction?: "ascending" | "descending"
     /**
      * Opaque cursor from a previous page's `nextCursor`. When provided,
      * continues enumeration from where that page ended. The filter/sort
@@ -3653,6 +3719,16 @@ export class MemoryService {
         select: { equals: opts.kind },
       })
     }
+    if (opts?.excludeKinds && opts.excludeKinds.length > 0) {
+      // One `does_not_equal` clause per excluded kind — Notion's
+      // select filter has no `not_in` operator, so each value
+      // gets its own clause. Pushed onto the outer `and:` chain
+      // by the surrounding combiner. Mirrors the
+      // `reviewTerminalStatusExclusionFilters` posture below.
+      for (const k of opts.excludeKinds) {
+        filters.push({ property: "Kind", select: { does_not_equal: k } })
+      }
+    }
     if (opts?.confidence) {
       filters.push({
         property: "Confidence",
@@ -3663,6 +3739,19 @@ export class MemoryService {
       filters.push({
         property: "Status",
         select: { equals: opts.status },
+      })
+    } else if (opts?.includeProposed !== true) {
+      // Default-exclude `Status = proposed` so proposed-memory inbox
+      // rows do not pollute default recall paths (issue #281, AC #2).
+      // Explicit `status` short-circuits this branch — when the
+      // caller asks for `status: "proposed"` directly, that filter
+      // wins. Notion's `does_not_equal` semantics cover both the
+      // explicit `proposed` value and the null / pre-migration case
+      // (a row with no Status column set is NOT `proposed` and
+      // therefore passes this filter).
+      filters.push({
+        property: "Status",
+        select: { does_not_equal: "proposed" },
       })
     }
     if (opts?.reviewBefore) {
@@ -3723,7 +3812,10 @@ export class MemoryService {
           data_source_id: this.db.dataSourceId,
           filter: filter as QueryDataSourceParameters["filter"],
           sorts: [
-            { timestamp: opts?.sortBy ?? "last_edited_time", direction: "descending" },
+            {
+              timestamp: opts?.sortBy ?? "last_edited_time",
+              direction: opts?.direction ?? "descending",
+            },
           ],
           page_size,
           start_cursor,
@@ -3970,6 +4062,15 @@ export class MemoryService {
     }
     if (input.status) {
       filters.push({ property: "Status", select: { equals: input.status } })
+    } else if (input.includeProposed !== true) {
+      // Same default-exclude posture as `MemoryService.list` (issue
+      // #281, AC #2): proposed-memory inbox rows do not pollute
+      // default search recall paths. Explicit `status` short-circuits
+      // this branch.
+      filters.push({
+        property: "Status",
+        select: { does_not_equal: "proposed" },
+      })
     }
 
     // Empty-string query degenerates to "match every page in the data source"
@@ -4269,6 +4370,16 @@ export class MemoryService {
       filtered = filtered.filter(
         (page) =>
           extractSelect(page.properties["Status"], "informational") === input.status
+      )
+    } else if (input.includeProposed !== true) {
+      // Default-exclude proposed rows from semantic search (issue
+      // #281, AC #2). `client.search` has no property-filter support,
+      // so the exclusion runs as a client-side post-filter — same
+      // posture as the kind / status exact-match filters above.
+      // Explicit `input.status` short-circuits this branch.
+      filtered = filtered.filter(
+        (page) =>
+          extractSelect(page.properties["Status"], "informational") !== "proposed"
       )
     }
 

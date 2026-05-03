@@ -830,6 +830,13 @@ export async function findExistingFileMemory(
     projectId,
     limit: FIND_EXISTING_LIMIT,
     includeContent: false,
+    // Mine's upsert idempotency must match against proposed rows too
+    // (issue #281, AC #2). The default-exclude on `MemoryService.search`
+    // would otherwise let a re-mine create a duplicate row against a
+    // file memory whose `Status` was set to `proposed` (manually or
+    // by a future autosave-as-proposed flow). The upsert lookup is
+    // identity-shaped, not recall-shaped, so review state is irrelevant.
+    includeProposed: true,
   })
   const expectedProjectIds = projectId ? [projectId] : []
   const match = results.find(

@@ -482,12 +482,18 @@ operator can distinguish "saved as manual" from "Source column
 empty"; mirrors the Agent `"unknown"` fallback for empty
 rich_text values.
 
-This is the **read-side surface** of the proposed-memory review
-inbox (issue #281). The autosave-writes-as-proposed config, the
-default-recall filter, and the approve/reject CLI/MCP actions ship
-in subsequent phases of the same epic. Same operator-facing pattern
-as the Memory confidence line: shared between CLI and MCP via the
-core renderer + loader.
+This line is the **read-side count surface** of the proposed-memory
+review inbox (issue #281). Phase 2 of the same epic ships the
+**default-recall filter** so proposed rows are excluded from
+`MemoryService.list` / `search` / `queryStaleConfidence` and do not
+pollute `lore-query action='recall'` / `lore-context action='wake-up'`;
+the wake-up data layer adds a dedicated `proposedMemories` section
+that explicitly opts in via `status: "proposed"`. The
+autosave-writes-as-proposed config and the approve/reject CLI/MCP
+actions ship in subsequent phases of the same epic. Same
+operator-facing pattern as the Memory confidence line: shared
+between CLI and MCP via the core renderer + loader in
+`src/core/proposed-inbox.ts`.
 
 The **Wake-up coverage** section renders the same content-free
 `formatWakeUpCoverage` line the hook emits under `LORE_DEBUG=1`, prefixed

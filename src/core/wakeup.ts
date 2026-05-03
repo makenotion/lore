@@ -31,6 +31,8 @@ import type {
   ListTasksOpts,
   Memory,
   MemorySource,
+  MemoryKind,
+  MemoryStatus,
   TaskSummary,
 } from "../types.js"
 import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT, STALE_TASK_DAYS } from "../types.js"
@@ -73,6 +75,15 @@ export const DEFAULT_WAKEUP_TASK_LIMIT = 10
  * default.
  */
 export const DEFAULT_WAKEUP_TASK_MEMORY_LIMIT = 3
+/**
+ * Cap on the proposed-memory inbox section rendered at session start
+ * (issue #281, AC #2). Mirrors the `proposedDecisions` cap of 20: a
+ * triage surface, not an inventory. Operators with deeper inbox depth
+ * see the full count surfaced via `WakeUpSectionCounts.proposedMemories`
+ * + `lore status`'s Proposed memories line; the wake-up section caps
+ * to keep the prompt budget bounded.
+ */
+export const DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT = 20
 /**
  * Per-section caps applied when the caller passes a non-empty `userQuery`
  * and hasn't overridden the section explicitly. Tighter than the
@@ -165,10 +176,14 @@ export interface WakeUpServices {
     list(opts: {
       projectId?: string
       source?: MemorySource
+      status?: MemoryStatus
+      excludeKinds?: MemoryKind[]
       limit?: number
       includeContent?: boolean
       includeUnscoped?: boolean
+      includeProposed?: boolean
       sortBy?: "created_time" | "last_edited_time"
+      direction?: "ascending" | "descending"
     }): Promise<{ items: Memory[]; nextCursor?: string }>
     search(input: {
       query: string
@@ -192,6 +207,18 @@ export interface WakeUpServices {
       limit: number
       today: string
     }): Promise<Memory[]>
+    /**
+     * True proposed-memory inbox depth (issue #281). Required on the
+     * structural type so the type system catches a forgotten wiring
+     * — same posture as `queryStaleConfidence`. Hook callers skip
+     * the query via `includeProposedMemories: false` /
+     * `proposedMemoryLimit: 0`, NOT by omitting the method.
+     */
+    countProposed(opts: { projectId?: string }): Promise<{
+      total: number
+      bySource: Record<string, number>
+      byAgent: Record<string, number>
+    }>
   }
   facts: {
     listRecent(opts: {
@@ -239,6 +266,7 @@ export interface WakeUpSectionCounts {
   decisions: number
   proposedDecisions: number
   overdueDecisions: number
+  proposedMemories: number
   staleConfidence: number
 }
 
@@ -283,6 +311,21 @@ export interface WakeUpCoverageInput {
   knowledgeFacts: readonly Fact[]
   proposedDecisions: readonly DecisionSummary[]
   overdueDecisions: readonly DecisionSummary[]
+  /**
+   * Optional so pre-Phase-2 (issue #281) call sites and test
+   * fixtures stay structurally compatible. Defaults to `[]` inside
+   * `computeWakeUpCoverage` — `sectionCounts.proposedMemories`
+   * collapses to zero in that case.
+   */
+  proposedMemories?: readonly Memory[]
+  /**
+   * True inbox depth from `MemoryService.countProposed`. When
+   * supplied, takes precedence over `proposedMemories.length` for
+   * `sectionCounts.proposedMemories` so a deep inbox isn't
+   * under-reported by the rendered-slice cap. Optional for the same
+   * back-compat reason as `proposedMemories`.
+   */
+  proposedMemoriesTotal?: number
   staleConfidence: readonly Memory[]
 }
 
@@ -304,6 +347,7 @@ function emptyWakeUpSectionCounts(): WakeUpSectionCounts {
     decisions: 0,
     proposedDecisions: 0,
     overdueDecisions: 0,
+    proposedMemories: 0,
     staleConfidence: 0,
   }
 }
@@ -380,6 +424,21 @@ export interface WakeUpOptions {
    */
   includeStaleConfidence?: boolean
   /**
+   * When false, skip the proposed-memory inbox query (issue #281,
+   * AC #2). The shell hook never renders the section, so it has no
+   * reason to pay the extra Notion round-trip on every session
+   * start. Defaults to true so MCP callers (which DO render the
+   * section) keep working. Same posture as `includeDecisions` /
+   * `includeStaleConfidence`.
+   */
+  includeProposedMemories?: boolean
+  /**
+   * Override the proposed-memory inbox section cap. Defaults to
+   * `DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT` (20). Pass `0` to skip
+   * the query without touching `includeProposedMemories`.
+   */
+  proposedMemoryLimit?: number
+  /**
    * When true, compute privacy-conscious wake-up coverage counters for
    * observability surfaces (`LORE_DEBUG=1` hook logging and MCP
    * `lore-context action='wake-up' debug: true`). Defaults to false so
@@ -443,6 +502,34 @@ export interface WakeUpData {
    */
   taskMemories: Memory[]
   /**
+   * Memories awaiting review (`Status = proposed`) — the wake-up
+   * surface of the proposed-memory inbox (issue #281, AC #2).
+   * Project-scoped when `projectId` is supplied, vault-wide
+   * otherwise. Capped at `PROPOSED_MEMORY_LIMIT` so a large inbox
+   * cannot dominate wake-up; the count surfaces in
+   * `WakeUpSectionCounts.proposedMemories` so an operator sees the
+   * total even when the rendered slice is capped.
+   *
+   * Disjoint by construction: this section is the only surface that
+   * sees `Status = proposed` rows; every other section applies the
+   * default-exclude added by Phase 2 of issue #281. No id-dedup
+   * needed. Empty when the option `includeProposedMemories` is
+   * false (hook path) or no proposed rows exist for the requested
+   * scope. Sorted oldest-first so stale review debt surfaces ahead
+   * of recent additions.
+   */
+  proposedMemories: Memory[]
+  /**
+   * True proposed-memory inbox depth — `MemoryService.countProposed`'s
+   * total, NOT `proposedMemories.length` (which is the rendered
+   * slice capped at `proposedMemoryLimit`). Surfaced separately so
+   * the section heading and `WakeUpSectionCounts.proposedMemories`
+   * reflect inbox depth on operators-most-at-risk-of-nudge-fatigue
+   * — a 25-row inbox with a 20-row cap renders as
+   * `(25 pending review)`, not `(20 pending review)`.
+   */
+  proposedMemoriesTotal: number
+  /**
    * Memories scored below `CONFIDENCE_DISPLAY_THRESHOLD` OR with
    * `Last Referenced At` past the `STALE_CONFIDENCE_DAYS` cutoff
    * (0.8.0/#10). Sorted by score ascending, capped at
@@ -487,6 +574,7 @@ export function buildEmptyWakeUpCoverage(
       decisions: 0,
       proposedDecisions: 0,
       overdueDecisions: 0,
+      proposedMemories: 0,
       staleConfidence: 0,
       ...overrides.sectionCounts,
     },
@@ -527,6 +615,13 @@ export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverag
       decisions: proposedDecisionCount + overdueDecisionCount,
       proposedDecisions: proposedDecisionCount,
       overdueDecisions: overdueDecisionCount,
+      // Use the true total when threaded; fall back to slice length
+      // for pre-#281 callers and tests that don't compute the total.
+      // Operators with deep inboxes need to see depth here, not the
+      // capped slice — see `WakeUpData.proposedMemoriesTotal`'s
+      // docstring.
+      proposedMemories:
+        input.proposedMemoriesTotal ?? input.proposedMemories?.length ?? 0,
       staleConfidence: input.staleConfidence.length,
     },
   }
@@ -573,6 +668,7 @@ export function formatWakeUpCoverage(
     `sections.decisions=${counts.decisions}`,
     `sections.proposedDecisions=${counts.proposedDecisions}`,
     `sections.overdueDecisions=${counts.overdueDecisions}`,
+    `sections.proposedMemories=${counts.proposedMemories}`,
     `sections.staleConfidence=${counts.staleConfidence}`,
   )
 
@@ -601,6 +697,9 @@ export async function loadWakeUpData(
   const includeContent = opts.includeMemoryContent ?? true
   const includeDecisions = opts.includeDecisions ?? true
   const includeStaleConfidence = opts.includeStaleConfidence ?? true
+  const includeProposedMemories = opts.includeProposedMemories ?? true
+  const proposedMemoryLimit =
+    opts.proposedMemoryLimit ?? DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT
   const now = opts.now ?? Date.now()
   const todayDate = opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
   const userQuery = sanitizeUserQuery(opts.userQuery)
@@ -674,6 +773,54 @@ export async function loadWakeUpData(
       })
     : Promise.resolve([] as Memory[])
 
+  // Proposed-memory inbox surface (issue #281, AC #2). Two parallel
+  // queries: a slice (rendered as the section body, sorted oldest-
+  // first so stale review debt surfaces ahead of recent additions)
+  // and a count (the true inbox depth, surfaced in the section
+  // heading + `WakeUpSectionCounts.proposedMemories` so an operator
+  // sees `(25 pending review)` even when only 20 fit in the
+  // section).
+  //
+  // Both Notion round-trips overlap with the rest of the wake-up
+  // fan-out so they cost no extra wall-clock. Hook callers turn the
+  // pair off via `includeProposedMemories: false`; the numeric
+  // escape `proposedMemoryLimit: 0` skips both without changing the
+  // boolean. Vault-wide wake-up (`projectId === undefined`) also
+  // fires the queries — `MemoryService.list` /
+  // `MemoryService.countProposed` skip the project filter in that
+  // branch, matching the `MemoryService.confidenceStats` /
+  // `queryStaleConfidence` posture.
+  const includeProposedSection =
+    includeProposedMemories && proposedMemoryLimit > 0
+  const proposedMemoriesQuery = includeProposedSection
+    ? services.memories.list({
+        projectId,
+        status: "proposed",
+        // `excludeKinds: ["decision"]` mirrors `proposedMemoryFilter()`'s
+        // `Kind != decision` clause so the slice and the count surface
+        // the SAME row set. Without this, a proposed-Kind-`decision`
+        // row would render in the section body but `countProposed`
+        // (and the section heading driven by `proposedMemoriesTotal`)
+        // would exclude it — heading-vs-slice drift the
+        // single-source-of-truth helper exists to prevent. The
+        // `lore-decision action='accept'` / `'supersede'` flow is the
+        // canonical lifecycle for proposed-state decisions, not the
+        // memory inbox.
+        excludeKinds: ["decision"],
+        limit: proposedMemoryLimit,
+        includeContent,
+        sortBy: "created_time",
+        direction: "ascending",
+      })
+    : Promise.resolve({ items: [] as Memory[] })
+  const proposedMemoriesTotalQuery = includeProposedSection
+    ? services.memories.countProposed({ projectId })
+    : Promise.resolve({
+        total: 0,
+        bySource: {} as Record<string, number>,
+        byAgent: {} as Record<string, number>,
+      })
+
   const [
     { items: rawMemories },
     { items: latestDigestList },
@@ -683,6 +830,8 @@ export async function loadWakeUpData(
     taskWindow,
     taskCandidates,
     staleConfidence,
+    { items: proposedMemories },
+    { total: proposedMemoriesTotal },
   ]: [
     { items: Memory[] },
     { items: Memory[] },
@@ -692,6 +841,12 @@ export async function loadWakeUpData(
     { tasks: TaskSummary[]; coverage: WakeUpTaskBucketCoverage },
     Memory[],
     Memory[],
+    { items: Memory[] },
+    {
+      total: number
+      bySource: Record<string, number>
+      byAgent: Record<string, number>
+    },
   ] = await Promise.all([
     memoryLimit > 0 || memoryLimitWithDigest > 0
       ? services.memories.list({
@@ -748,6 +903,8 @@ export async function loadWakeUpData(
         })
       : Promise.resolve([] as Memory[]),
     staleConfidenceQuery,
+    proposedMemoriesQuery,
+    proposedMemoriesTotalQuery,
   ])
   const tasks = taskWindow.tasks
   const overdueDecisions = overdueDecisionWindow.items
@@ -859,6 +1016,8 @@ export async function loadWakeUpData(
         knowledgeFacts,
         proposedDecisions,
         overdueDecisions,
+        proposedMemories,
+        proposedMemoriesTotal,
         staleConfidence,
       })
     : null
@@ -874,6 +1033,8 @@ export async function loadWakeUpData(
     tasks,
     taskBucketCoverage: taskWindow.coverage,
     taskMemories,
+    proposedMemories,
+    proposedMemoriesTotal,
     staleConfidence,
     coverage,
   }

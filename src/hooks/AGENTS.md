@@ -532,25 +532,28 @@ line.
 knowledge=10 taskMemories=3 digestAvailable=true digestFresh=true
 digestAgeDays=1 sections.digest=1 sections.currentTask=3 sections.recent=3
 sections.related=2 sections.tasks=10 sections.facts=10 sections.decisions=0
-sections.proposedDecisions=0 sections.overdueDecisions=0 sections.staleConfidence=0
+sections.proposedDecisions=0 sections.overdueDecisions=0
+sections.proposedMemories=0 sections.staleConfidence=0
 
 [lore] wakeup: mode=default ranked=false reason=no-ranked-search
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
 sections.currentTask=0 sections.recent=10 sections.related=5 sections.tasks=10
 sections.facts=25 sections.decisions=0 sections.proposedDecisions=0
-sections.overdueDecisions=0 sections.staleConfidence=0
+sections.overdueDecisions=0 sections.proposedMemories=0
+sections.staleConfidence=0
 
 [lore] wakeup: mode=default ranked=false reason=already-ranked-for-session
 digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
 sections.currentTask=0 sections.recent=0 sections.related=0 sections.tasks=0
 sections.facts=0 sections.decisions=0 sections.proposedDecisions=0
-sections.overdueDecisions=0 sections.staleConfidence=0
+sections.overdueDecisions=0 sections.proposedMemories=0
+sections.staleConfidence=0
 
 [lore] wakeup: mode=error ranked=false reason=load-failed digestAvailable=false
 digestFresh=false digestAgeDays=none sections.digest=0 sections.currentTask=0
 sections.recent=0 sections.related=0 sections.tasks=0 sections.facts=0
 sections.decisions=0 sections.proposedDecisions=0 sections.overdueDecisions=0
-sections.staleConfidence=0
+sections.proposedMemories=0 sections.staleConfidence=0
 ```
 
 The ranked variant reports the per-section caps applied so an operator
@@ -572,6 +575,16 @@ memory-lift quality measurement belongs to the eval harness. Gated behind
 `LORE_DEBUG=1` because unconditional logging would flood stderr on every
 session. `lore status` and `lore-context action='status'` render the same
 content-free coverage line on demand.
+
+The hook's wake-up call passes `includeProposedMemories: false` because
+the hook's wake-up render never includes the inbox section. As a
+result, `sections.proposedMemories` in the hook `LORE_DEBUG=1` log is
+always `0` by design — the depth signal that issue #281 surfaces lives
+on the MCP `lore-context action='wake-up' debug=true` output and the
+`lore status` coverage line, both of which fan out the
+`countProposed` query the hook deliberately skips. An operator who
+wants to monitor inbox depth from the shell uses `lore status`, not
+the wake-up hook log.
 
 ## Concurrency guard
 

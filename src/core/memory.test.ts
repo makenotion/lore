@@ -4928,7 +4928,12 @@ describe("MemoryService.search — contains mode", () => {
     const { client, querySpy } = makeQueryClient([])
     const service = new MemoryService(client, db)
 
-    await service.search({ query: "PR-25650", mode: "contains" })
+    // Pass `includeProposed: true` so the default `Status !=
+    // proposed` clause (issue #281, AC #2) is suppressed for this
+    // assertion — the test's focus is the title/keywords/synopsis
+    // contains-OR, not the proposed-exclusion default. The default
+    // behavior is pinned by its own dedicated tests.
+    await service.search({ query: "PR-25650", mode: "contains", includeProposed: true })
 
     const filter = querySpy.mock.calls[0][0]["filter"] as
       | { or?: Array<Record<string, unknown>>; and?: Array<Record<string, unknown>> }
@@ -5011,8 +5016,15 @@ describe("MemoryService.search — contains mode", () => {
 
     // An empty query in semantic mode degenerates because `contains: ""`
     // matches every row. Skip the text clause entirely so the surrounding
-    // property filters drive the result set.
-    await service.search({ query: "   ", projectId: "proj-1", mode: "contains" })
+    // property filters drive the result set. `includeProposed: true`
+    // suppresses the default proposed-exclusion clause (issue #281)
+    // so the assertion can pin the bare project filter shape.
+    await service.search({
+      query: "   ",
+      projectId: "proj-1",
+      mode: "contains",
+      includeProposed: true,
+    })
 
     const filter = querySpy.mock.calls[0][0]["filter"] as
       | { and?: Array<Record<string, unknown>>; or?: Array<Record<string, unknown>> }
@@ -7574,7 +7586,14 @@ describe("MemoryService.list — pagination", () => {
     const { client, querySpy } = createClient({ results: [] })
     const service = new MemoryService(client, db)
 
-    await service.list({ session: "session-1", includeContent: false })
+    // `includeProposed: true` suppresses the default proposed-status
+    // exclusion (issue #281) so this assertion can pin the bare Session
+    // filter without an `and:` wrapper.
+    await service.list({
+      session: "session-1",
+      includeContent: false,
+      includeProposed: true,
+    })
 
     expect(querySpy.mock.calls[0][0].filter).toEqual({
       property: "Session",
@@ -7586,12 +7605,242 @@ describe("MemoryService.list — pagination", () => {
     const { client, querySpy } = createClient({ results: [] })
     const service = new MemoryService(client, db)
 
-    await service.list({ confidence: "likely", includeContent: false })
+    await service.list({
+      confidence: "likely",
+      includeContent: false,
+      includeProposed: true,
+    })
 
     expect(querySpy.mock.calls[0][0].filter).toEqual({
       property: "Confidence",
       select: { equals: "likely" },
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Default-recall proposed-status exclusion (issue #281, AC #2)
+// ---------------------------------------------------------------------------
+
+describe("MemoryService.list — default-excludes Status = proposed", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("emits a Status does_not_equal proposed clause by default", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({ includeContent: false })
+
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      property: "Status",
+      select: { does_not_equal: "proposed" },
+    })
+  })
+
+  it("suppresses the default exclusion when includeProposed is true", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({ includeContent: false, includeProposed: true })
+
+    expect(query.mock.calls[0]![0].filter).toBeUndefined()
+  })
+
+  it("explicit status: 'proposed' wins over the default exclusion", async () => {
+    // The inbox-review path passes `status: "proposed"` to surface the
+    // very rows the default exclusion would otherwise hide. The
+    // explicit equals filter must short-circuit the default
+    // does_not_equal clause — they cannot both be in the filter.
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({ status: "proposed", includeContent: false })
+
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      property: "Status",
+      select: { equals: "proposed" },
+    })
+  })
+
+  it("composes the exclusion with project scope under an `and:` wrapper", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({ projectId: "p1", includeContent: false })
+
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      and: [
+        {
+          or: [
+            { property: "Project", relation: { contains: "p1" } },
+            { property: "Project", relation: { is_empty: true } },
+          ],
+        },
+        { property: "Status", select: { does_not_equal: "proposed" } },
+      ],
+    })
+  })
+})
+
+describe("MemoryService.search — default-excludes Status = proposed (contains)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("contains mode emits the does_not_equal proposed clause by default", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "foo", mode: "contains" })
+
+    const filter = query.mock.calls[0]![0].filter as { and: Array<unknown> }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        { property: "Status", select: { does_not_equal: "proposed" } },
+      ]),
+    )
+  })
+
+  it("contains mode suppresses the exclusion under includeProposed: true", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.search({ query: "foo", mode: "contains", includeProposed: true })
+
+    const filter = query.mock.calls[0]![0].filter as { and?: Array<unknown> } | undefined
+    const serialized = JSON.stringify(filter)
+    expect(serialized).not.toContain("does_not_equal")
+  })
+})
+
+describe("MemoryService.queryStaleConfidence — default-excludes Status = proposed", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("includes the does_not_equal proposed clause by default", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({ limit: 5, today: "2026-05-03" })
+
+    const filter = query.mock.calls[0]![0].filter as { and: Array<unknown> }
+    expect(filter.and).toEqual(
+      expect.arrayContaining([
+        { property: "Status", select: { does_not_equal: "proposed" } },
+      ]),
+    )
+  })
+
+  it("suppresses the exclusion under includeProposed: true", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.queryStaleConfidence({
+      limit: 5,
+      today: "2026-05-03",
+      includeProposed: true,
+    })
+
+    const filter = query.mock.calls[0]![0].filter as { and: Array<unknown> }
+    const serialized = JSON.stringify(filter)
+    expect(serialized).not.toContain("does_not_equal")
+  })
+})
+
+describe("MemoryService.list — excludeKinds (issue #281)", () => {
+  // Pin the per-kind `does_not_equal` clauses emitted by the
+  // `excludeKinds` parameter. The wake-up Proposed Memories slice and
+  // `lore inbox list` rely on this knob to mirror
+  // `proposedMemoryFilter()`'s `Kind != decision` half. Without this
+  // unit test, a future refactor that swaps the per-kind loop for an
+  // unsupported `not_in` operator (or drops the loop entirely) would
+  // slip past the indirect end-to-end coverage.
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  it("emits one Status / Kind clause per excluded kind", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({
+      includeContent: false,
+      includeProposed: true,
+      excludeKinds: ["decision"],
+    })
+
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      property: "Kind",
+      select: { does_not_equal: "decision" },
+    })
+  })
+
+  it("emits separate clauses for two excluded kinds (Notion select has no not_in operator)", async () => {
+    // Pinned because the per-kind loop at `MemoryService.list` is the
+    // load-bearing detail — Notion's select filter doesn't support
+    // `not_in`, so each excluded kind needs its own clause. A future
+    // refactor that swaps the loop for an unsupported `not_in` would
+    // silently match nothing.
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({
+      includeContent: false,
+      includeProposed: true,
+      excludeKinds: ["decision", "task"],
+    })
+
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      and: [
+        { property: "Kind", select: { does_not_equal: "decision" } },
+        { property: "Kind", select: { does_not_equal: "task" } },
+      ],
+    })
+  })
+
+  it("treats an empty excludeKinds array as a no-op (omits the clause)", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.list({
+      includeContent: false,
+      includeProposed: true,
+      excludeKinds: [],
+    })
+
+    // No clauses survived (no `kind`, no `excludeKinds`, no
+    // `includeProposed: false` exclusion) — filter is undefined.
+    expect(query.mock.calls[0]![0].filter).toBeUndefined()
   })
 })
 

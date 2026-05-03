@@ -427,6 +427,7 @@ function fixtureWakeUpServices(scenario: EvalMemoryScenario): WakeUpServices {
         searchFixtureMemories(input.query, memories).slice(0, input.limit),
       queryStaleConfidence: async (opts) =>
         staleConfidenceMemories.slice(0, opts.limit),
+      countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
     },
     facts: {
       listRecent: async () => ({ items: [] as Fact[], hasMore: false }),

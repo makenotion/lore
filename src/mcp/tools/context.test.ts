@@ -242,6 +242,22 @@ interface WakeServicesOverrides {
    */
   staleConfidence?: Memory[]
   /**
+   * Memories returned by the proposed-memory inbox query (issue #281,
+   * AC #2). The wake-up data layer dispatches via
+   * `services.memories.list({ status: "proposed", ... })`; this
+   * override populates the dedicated section without leaking into
+   * the recent-memories surface.
+   */
+  proposedMemories?: Memory[]
+  /**
+   * True inbox depth from `services.memories.countProposed` —
+   * defaults to `proposedMemories.length` so the no-saturation case
+   * reads as "rendered slice IS inbox depth." Set explicitly to
+   * simulate a deep inbox where the rendered slice is smaller than
+   * the true total.
+   */
+  proposedMemoriesTotal?: number
+  /**
    * Override the auto-detected project on `services.context.project`.
    * Defaults to a minimal Mail project with no description and `path:
    * "/mail"` to match the pre-issue-18 fixture exactly.
@@ -292,9 +308,16 @@ interface WakeServicesOverrides {
 }
 
 function makeWakeServices(overrides: WakeServicesOverrides = {}) {
-  const memoriesList = vi.fn(async (args: { source?: string }) => {
+  const memoriesList = vi.fn(async (args: { source?: string; status?: string }) => {
     if (args.source === "digest") {
       return { items: overrides.digest ? [overrides.digest] : [] }
+    }
+    if (args.status === "proposed") {
+      // Phase 2 of issue #281 fans out a proposed-memory inbox
+      // query in `loadWakeUpData`. Test fixtures that don't
+      // override `proposedMemories` should not see their `memories`
+      // override leak into the inbox section.
+      return { items: overrides.proposedMemories ?? [] }
     }
     return { items: overrides.memories ?? [] }
   })
@@ -334,7 +357,16 @@ function makeWakeServices(overrides: WakeServicesOverrides = {}) {
     ? vi.fn(overrides.findByName)
     : vi.fn(async () => null)
   const countProposed = vi.fn(async () => ({
-    total: overrides.proposedInbox?.total ?? 0,
+    // Two override paths: `proposedInbox` for `lore-context
+    // action='status'` tests (which only assert the rendered total
+    // line), and `proposedMemoriesTotal` for `lore-context
+    // action='wake-up'` saturation tests (which need to simulate a
+    // deeper inbox than the rendered slice).
+    total:
+      overrides.proposedMemoriesTotal ??
+      overrides.proposedInbox?.total ??
+      overrides.proposedMemories?.length ??
+      0,
     bySource: overrides.proposedInbox?.bySource ?? {},
     byAgent: overrides.proposedInbox?.byAgent ?? {},
   }))
@@ -2051,8 +2083,10 @@ describe("lore-wake-up — Part G: synopsis rendering (issue 0.7.0/03)", () => {
 
     // Pre-#03 wake-up calls memories.list once for the digest probe and
     // once for the recent memories query — two calls total. #03 must
-    // not introduce a third.
-    expect(services._calls.memoriesList).toHaveBeenCalledTimes(2)
+    // not introduce a third. Phase 2 of issue #281 adds a third call
+    // for the proposed-memory inbox section, fanned out in the same
+    // `Promise.all` as the existing queries.
+    expect(services._calls.memoriesList).toHaveBeenCalledTimes(3)
   })
 })
 
@@ -3596,5 +3630,110 @@ describe("lore-wake-up — Decisions Requiring Attention trust indicator (0.9.0/
     const text = extractText(result)
     expect(text).toContain("Well-cited proposal")
     expect(text).not.toContain("confidence_")
+  })
+})
+
+describe("lore-wake-up — Proposed Memories review inbox (issue #281, AC #2)", () => {
+  it("omits the section when no proposed memories exist", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({ proposedMemories: [] })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).not.toContain("## Proposed Memories")
+  })
+
+  it("renders the section heading with the true total when below the cap", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      proposedMemories: [
+        makeMemory("p1", { title: "First proposal" }),
+        makeMemory("p2", { title: "Second proposal" }),
+      ],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("## Proposed Memories (2 pending review)")
+    // No saturation cue when slice IS the total.
+    expect(text).not.toContain("Showing the")
+  })
+
+  it("surfaces a saturation cue when the slice is smaller than the true total", async () => {
+    // Acceptance criterion: a 25-row inbox with the 20-row default
+    // cap shows `(25 pending review)` AND a `Showing the 20 oldest
+    // of 25` cue pointing at the only shipped read path that
+    // surfaces the full set: `lore-query action='recall'
+    // status="proposed" limit=<N>`. The MCP schema does not expose
+    // `proposedMemoryLimit` and `lore inbox list` doesn't ship
+    // until Phase 4 of #281, so any cue that points at either
+    // would be a dead-end on this PR's surface area.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      proposedMemories: Array.from({ length: 20 }, (_, i) =>
+        makeMemory(`p${i}`, { title: `Proposal ${i}` }),
+      ),
+      proposedMemoriesTotal: 25,
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("## Proposed Memories (25 pending review)")
+    expect(text).toContain("Showing the 20 oldest of 25")
+    // Pin that the cue does NOT advertise unshipped paths.
+    expect(text).not.toContain("widen the window")
+    expect(text).not.toContain("lore inbox list")
+    // Pin that the cue points at the actual recall surface.
+    expect(text).toContain("lore-query action='recall' status=\"proposed\"")
+  })
+
+  it("debug coverage line reports the true total, not the rendered slice", async () => {
+    // Acceptance criterion: an operator running
+    // `lore-context action='wake-up' debug=true` needs to see the
+    // same `sections.proposedMemories=25` number that lands in the
+    // section heading and `lore-context action='status'`'s count
+    // line. Pre-fix the renderer overrode `sectionCounts` with
+    // `renderedCoverageCounts.proposedMemories: proposedMemories.length`,
+    // which collapsed depth to the 20-row slice on a saturated
+    // inbox.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      proposedMemories: Array.from({ length: 20 }, (_, i) =>
+        makeMemory(`p${i}`, { title: `Proposal ${i}` }),
+      ),
+      proposedMemoriesTotal: 25,
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({ debug: true }))
+    expect(text).toContain("sections.proposedMemories=25")
+    expect(text).not.toContain("sections.proposedMemories=20")
+  })
+
+  it("CTA points at lore-query for discovery and lore-memory action='update' for lifecycle", async () => {
+    // Mechanical correctness: `lore-memory action='update'
+    // status='proposed'` is a no-op (mutation that keeps the row
+    // proposed). Discovery routes through the read path
+    // (`lore-query action='recall' status="proposed"`); lifecycle
+    // mutates via `status='accepted'` / `status='rejected'`.
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      proposedMemories: [makeMemory("p1", { title: "A proposal" })],
+    })
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+
+    const text = extractText(await wake({}))
+    expect(text).toContain("lore-query action='recall' status=\"proposed\"")
+    expect(text).toContain("status='accepted'")
+    expect(text).toContain("status='rejected'")
+    // Mechanically wrong copy must not regress.
+    expect(text).not.toContain(
+      "explicitly opt in via `status: \"proposed\"` on `lore-memory action='update'`",
+    )
   })
 })

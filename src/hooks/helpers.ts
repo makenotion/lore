@@ -793,6 +793,12 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       // the extra Notion query for the same reason. Same posture as
       // `includeDecisions: false` above.
       includeStaleConfidence: false,
+      // Hook never renders the Proposed Memories inbox section
+      // (issue #281, AC #2) — skip the extra Notion query so the
+      // session-start latency stays unchanged. Same posture as
+      // `includeDecisions: false` and `includeStaleConfidence:
+      // false` above.
+      includeProposedMemories: false,
       includeCoverage: debug,
       userQuery,
       ...rankedLimits,

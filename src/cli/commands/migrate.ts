@@ -728,10 +728,18 @@ async function migrateOutOfVocabTags(
   // Phase 1 — scan: collect plans across every cursor page without
   // writing. No update() call inside this loop, so the sort order is
   // stable for the duration of pagination.
+  //
+  // `includeProposed: true` opts out of issue #281 Phase 2's
+  // `Status != proposed` default-recall filter. This is a maintenance
+  // path that promises a full-vault scan ("Reclassified N memories ...
+  // M memories scanned"); silently skipping proposed rows would
+  // mis-report the scanned total and break idempotency (a follow-up
+  // run after a row leaves proposed state would suddenly find it).
   for (;;) {
     const { items, nextCursor } = await services.memories.list({
       limit: PAGE_SIZE,
       includeContent: false,
+      includeProposed: true,
       startCursor: cursor,
     })
     if (items.length === 0 && !nextCursor) break
@@ -829,10 +837,19 @@ async function upgradeLegacyDecisionTags(services: LoreServices): Promise<number
   let upgraded = 0
 
   while (true) {
+    // `includeProposed: true` opts out of issue #281 Phase 2's
+    // `Status != proposed` default-recall filter. Pre-`Kind` legacy
+    // rows tagged `decision` may carry any status — including
+    // proposed — and the upgrade-then-strip contract must catch
+    // every such row to be idempotent. Without the opt-in, a
+    // proposed-status legacy `decision`-tagged row would persist
+    // across the migration and resurface only after the row's
+    // status changes.
     const { items: batch } = await services.memories.list({
       tags: ["decision"],
       limit: BATCH_SIZE,
       includeContent: false,
+      includeProposed: true,
     })
 
     // Defensive filter in case a memory is already Kind=decision but still

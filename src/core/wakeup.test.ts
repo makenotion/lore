@@ -21,6 +21,8 @@ import type {
   ListTasksOpts,
   Memory,
   MemorySource,
+  MemoryKind,
+  MemoryStatus,
   TaskSummary,
 } from "../types.js"
 
@@ -179,10 +181,14 @@ function compareReviewBy(a: TaskSummary, b: TaskSummary): number {
 type ListCall = {
   projectId?: string
   source?: MemorySource
+  status?: MemoryStatus
+  excludeKinds?: MemoryKind[]
   limit?: number
   includeContent?: boolean
   includeUnscoped?: boolean
+  includeProposed?: boolean
   sortBy?: "created_time" | "last_edited_time"
+  direction?: "ascending" | "descending"
 }
 
 type SearchCall = {
@@ -214,6 +220,29 @@ interface StubServices extends WakeUpServices {
   staleConfidenceCalls: StaleConfidenceCall[]
 }
 
+/**
+ * Simulates Notion's server-side `Kind: { does_not_equal: <kind> }`
+ * filter for stubbed `MemoryService.list` paths in this test suite.
+ * Hoisted out of the per-test ad-hoc override so every stub-driven
+ * `list` return shares one filter shape with production — if
+ * `MemoryService.list`'s real `excludeKinds` semantics ever shift
+ * (kind-aliasing, case sensitivity, alternate operator), exactly
+ * one helper here moves in lockstep instead of N copies in N tests.
+ *
+ * Empty / undefined `excludeKinds` is a no-op pass-through. The
+ * narrow type predicate keeps the test fixture stub-agnostic — the
+ * helper applies cleanly to any `Memory[]` regardless of which
+ * other props the fixture builder filled in.
+ */
+function applyExcludeKinds(
+  items: Memory[],
+  excludeKinds?: MemoryKind[],
+): Memory[] {
+  if (!excludeKinds || excludeKinds.length === 0) return items
+  const exclude = new Set(excludeKinds)
+  return items.filter((m) => !exclude.has(m.kind))
+}
+
 function stubServices(opts: {
   rawMemories?: Memory[]
   digestMemories?: Memory[]
@@ -231,6 +260,22 @@ function stubServices(opts: {
   overdueDecisions?: DecisionSummary[]
   tasks?: TaskSummary[]
   staleConfidence?: Memory[]
+  /**
+   * Memories returned for the proposed-memory inbox query (issue #281,
+   * AC #2). The wake-up data layer dispatches via
+   * `services.memories.list({ status: "proposed", ... })`; this stub
+   * routes that call to its own bucket so the test can distinguish
+   * inbox responses from the recents query.
+   */
+  proposedMemories?: Memory[]
+  /**
+   * True inbox depth returned by `services.memories.countProposed`
+   * for the wake-up section heading. Defaults to
+   * `proposedMemories.length` (the no-saturation case); set
+   * explicitly to simulate a deep inbox where the rendered slice is
+   * smaller than the true total.
+   */
+  proposedMemoriesTotal?: number
 } = {}): StubServices {
   const memoriesCalls: ListCall[] = []
   const memoriesSearchCalls: SearchCall[] = []
@@ -245,10 +290,20 @@ function stubServices(opts: {
     memories: {
       list: vi.fn(async (args: ListCall) => {
         memoriesCalls.push(args)
-        const items = args.source === "digest"
-          ? opts.digestMemories ?? []
-          : opts.rawMemories ?? []
-        return { items }
+        // Route to the right fixture bucket, then run `excludeKinds`
+        // through the shared simulator so every list path applies the
+        // production-shaped filter consistently (Notion's `Kind:
+        // does_not_equal` server-side filter). Without the shared
+        // helper, only the proposed-memory path used to apply the
+        // filter; raw / digest paths would pass kinds the caller
+        // explicitly excluded.
+        if (args.source === "digest") {
+          return { items: applyExcludeKinds(opts.digestMemories ?? [], args.excludeKinds) }
+        }
+        if (args.status === "proposed") {
+          return { items: applyExcludeKinds(opts.proposedMemories ?? [], args.excludeKinds) }
+        }
+        return { items: applyExcludeKinds(opts.rawMemories ?? [], args.excludeKinds) }
       }),
       search: vi.fn(async (args: SearchCall) => {
         memoriesSearchCalls.push(args)
@@ -268,6 +323,16 @@ function stubServices(opts: {
         // simulate saturation.
         return (opts.staleConfidence ?? []).slice(0, args.limit)
       }),
+      countProposed: vi.fn(async () => ({
+        // Default to the slice length so tests that don't override
+        // the inbox total see "rendered slice IS the inbox depth"
+        // (matches the pre-#281-Phase-2-fix posture). Tests that
+        // simulate saturation set `proposedMemoriesTotal` directly.
+        total:
+          opts.proposedMemoriesTotal ?? (opts.proposedMemories?.length ?? 0),
+        bySource: {} as Record<string, number>,
+        byAgent: {} as Record<string, number>,
+      })),
     },
     facts: {
       listRecent: vi.fn(async (listOpts: ListRecentCall) => {
@@ -365,6 +430,7 @@ describe("wake-up coverage counters", () => {
       decisions: 2,
       proposedDecisions: 1,
       overdueDecisions: 1,
+      proposedMemories: 0,
       staleConfidence: 1,
     })
   })
@@ -712,7 +778,7 @@ describe("loadWakeUpData", () => {
 
     await loadWakeUpData(services, { projectId: "p1", memoryLimit: 10, now: NOW })
 
-    const rawListCall = services.memoriesCalls.find((c) => c.source === undefined)
+    const rawListCall = services.memoriesCalls.find((c) => c.source === undefined && c.status !== "proposed")
     expect(rawListCall?.limit).toBe(11)
   })
 
@@ -751,7 +817,7 @@ describe("loadWakeUpData", () => {
 
     await loadWakeUpData(services, { projectId: "p1", includeMemoryContent: false, now: NOW })
 
-    const rawListCall = services.memoriesCalls.find((c) => c.source === undefined)
+    const rawListCall = services.memoriesCalls.find((c) => c.source === undefined && c.status !== "proposed")
     expect(rawListCall?.includeContent).toBe(false)
     // Digest call always keeps content — that's what renders.
     const digestCall = services.memoriesCalls.find((c) => c.source === "digest")
@@ -831,7 +897,7 @@ describe("loadWakeUpData", () => {
     })
 
     const recentCalls = services.memoriesCalls.filter(
-      (c) => c.source === undefined,
+      (c) => c.source === undefined && c.status !== "proposed",
     )
     expect(recentCalls).toHaveLength(0)
     expect(data.memories).toEqual([])
@@ -856,7 +922,7 @@ describe("loadWakeUpData", () => {
     })
 
     const recentCalls = services.memoriesCalls.filter(
-      (c) => c.source === undefined,
+      (c) => c.source === undefined && c.status !== "proposed",
     )
     expect(recentCalls).toHaveLength(1)
   })
@@ -994,6 +1060,182 @@ describe("loadWakeUpData", () => {
     expect(data.overdueDecisions).toEqual([])
     expect(services.decisions.list).not.toHaveBeenCalled()
     expect(services.decisions.queryOverdue).not.toHaveBeenCalled()
+  })
+
+  it("populates proposedMemories from a status: 'proposed' memories.list call (issue #281, AC #2)", async () => {
+    const proposed = [
+      buildMemory({ id: "p1", createdAt: "2026-04-21T00:00:00Z" }),
+      buildMemory({ id: "p2", createdAt: "2026-04-22T00:00:00Z" }),
+    ]
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedMemories: proposed,
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.proposedMemories.map((m) => m.id)).toEqual(["p1", "p2"])
+    // The data layer routes through `memories.list({ status: "proposed" })`
+    // — same precedent as `proposedDecisions`. Sort is `created_time
+    // ascending` so the oldest unreviewed rows surface first; under
+    // a saturated cap, newest rows roll off rather than oldest stale
+    // review debt.
+    const proposedCall = services.memoriesCalls.find((c) => c.status === "proposed")
+    expect(proposedCall).toBeDefined()
+    expect(proposedCall?.projectId).toBe("p1")
+    expect(proposedCall?.limit).toBe(20)
+    expect(proposedCall?.sortBy).toBe("created_time")
+    expect(proposedCall?.direction).toBe("ascending")
+    // Mirrors `proposedMemoryFilter()`'s `Kind != decision` clause so
+    // the rendered slice and the count-driven section heading agree
+    // on which rows count as inbox memories. Without this, a
+    // proposed-Kind-`decision` row would inflate the slice but not
+    // the count — heading-vs-slice drift the single-source-of-truth
+    // helper exists to prevent.
+    expect(proposedCall?.excludeKinds).toEqual(["decision"])
+  })
+
+  it("excludes Kind = decision from the inbox slice so heading and body agree", async () => {
+    // Heading-vs-slice consistency under a kind-mixed vault.
+    // `countProposed` uses `proposedMemoryFilter()` which filters
+    // `Kind != decision`. The wake-up slice must apply the same
+    // predicate so a proposed-decision row never renders in the
+    // section body. The stub's `applyExcludeKinds` simulator (above)
+    // mirrors Notion's `Kind: does_not_equal` server-side filter
+    // for every list path, so this test asserts the slice path
+    // passes `excludeKinds: ["decision"]` and lets the shared helper
+    // drop the proposed-decision row.
+    const proposedNote = buildMemory({
+      id: "note-1",
+      kind: "note",
+      status: "proposed",
+      createdAt: "2026-04-21T00:00:00Z",
+    })
+    const proposedDecision = buildMemory({
+      id: "dec-1",
+      kind: "decision",
+      status: "proposed",
+      createdAt: "2026-04-22T00:00:00Z",
+    })
+
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedMemories: [proposedNote, proposedDecision],
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.proposedMemories.map((m) => m.id)).toEqual(["note-1"])
+    expect(data.proposedMemories).toHaveLength(1)
+  })
+
+  it("threads the true proposed-memory total via countProposed for the section heading", async () => {
+    // Acceptance criterion: a 25-row inbox with a 20-row cap shows
+    // `(25 pending review)` in the section heading and renders the
+    // 20 oldest. Pinning that the data layer fans out a
+    // `countProposed` call alongside the slice fetch and surfaces
+    // the true total via `WakeUpData.proposedMemoriesTotal`.
+    const sliced = [
+      buildMemory({ id: "p1", createdAt: "2026-04-21T00:00:00Z" }),
+      buildMemory({ id: "p2", createdAt: "2026-04-22T00:00:00Z" }),
+    ]
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedMemories: sliced,
+      proposedMemoriesTotal: 25,
+    })
+
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.proposedMemoriesTotal).toBe(25)
+    expect(data.proposedMemories).toHaveLength(2)
+    expect(services.memories.countProposed).toHaveBeenCalledWith({ projectId: "p1" })
+  })
+
+  it("section count uses the true total, not the rendered slice", async () => {
+    // `WakeUpSectionCounts.proposedMemories` must reflect inbox
+    // depth so the MCP debug-coverage surfaces (`lore status`
+    // coverage line, MCP `lore-context action='wake-up' debug=true`
+    // output) report `sections.proposedMemories=25` for a 25-row
+    // inbox even when only 20 rows fit in the rendered slice.
+    // Operators most at risk of nudge fatigue should see depth.
+    //
+    // The shell hook (`src/hooks/helpers.ts`) intentionally passes
+    // `includeProposedMemories: false`, so its `LORE_DEBUG=1` log
+    // reports `sections.proposedMemories=0` by design. The depth
+    // signal lives on the MCP and CLI status surfaces, not on the
+    // hook log.
+    const sliced = [buildMemory({ id: "p1", createdAt: "2026-04-21T00:00:00Z" })]
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedMemories: sliced,
+      proposedMemoriesTotal: 25,
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      now: NOW,
+      includeCoverage: true,
+    })
+
+    expect(data.coverage?.sectionCounts.proposedMemories).toBe(25)
+  })
+
+  it("skips countProposed alongside the slice when includeProposedMemories is false", async () => {
+    // Hook wake-up doesn't render the section, so neither the slice
+    // nor the count should fire. Same posture as `includeDecisions:
+    // false`.
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedMemories: [buildMemory({ id: "p1", createdAt: "2026-04-21T00:00:00Z" })],
+    })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      includeProposedMemories: false,
+      now: NOW,
+    })
+
+    expect(services.memories.countProposed).not.toHaveBeenCalled()
+  })
+
+  it("skips the proposed-memory query when includeProposedMemories is false", async () => {
+    // Hook wake-up renders no inbox section — same posture as
+    // `includeDecisions: false` and `includeStaleConfidence: false`.
+    const services = stubServices({
+      rawMemories: [],
+      digestMemories: [],
+      proposedMemories: [buildMemory({ id: "p1", createdAt: "2026-04-21T00:00:00Z" })],
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      includeProposedMemories: false,
+      now: NOW,
+    })
+
+    expect(data.proposedMemories).toEqual([])
+    const proposedCall = services.memoriesCalls.find((c) => c.status === "proposed")
+    expect(proposedCall).toBeUndefined()
+  })
+
+  it("skips the proposed-memory query when proposedMemoryLimit is 0", async () => {
+    // The numeric escape hatch — same shape as `taskLimit: 0`.
+    const services = stubServices({ rawMemories: [], digestMemories: [] })
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      proposedMemoryLimit: 0,
+      now: NOW,
+    })
+
+    const proposedCall = services.memoriesCalls.find((c) => c.status === "proposed")
+    expect(proposedCall).toBeUndefined()
   })
 
   it("surfaces related memories seeded by active task entities", async () => {

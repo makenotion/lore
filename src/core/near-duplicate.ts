@@ -49,6 +49,15 @@ export interface NearDuplicateMatch {
  * narrow lets tests pass a plain object without constructing a full
  * service, and documents exactly which query shape the probe depends on
  * so future `list()` signature changes don't silently break the probe.
+ *
+ * `includeProposed` is load-bearing on the write-safety paths after Phase
+ * 2 of issue #281: `MemoryService.list` adds a `Status != proposed`
+ * default-recall filter when no explicit `status` is passed. Probes that
+ * need to consider proposed rows (decision near-duplicate over
+ * `accepted | proposed`, autosave-learning dedup against rows Phase 3
+ * may write as `proposed`) must opt in via this flag, otherwise the
+ * candidate pool silently drops the very rows the probe is meant to
+ * deduplicate against.
  */
 export interface MemoryLister {
   list(opts: {
@@ -62,6 +71,15 @@ export interface MemoryLister {
     limit?: number
     includeContent?: boolean
     includeUnscoped?: boolean
+    includeProposed?: boolean
+    // If you extend `findNearDuplicates` (or `findAutosaveLearning
+    // Duplicate`) to pass another `MemoryService.list` parameter,
+    // widen this narrow shape in lockstep — otherwise the test
+    // seam types stop matching the production signature and the
+    // probe call sites silently fall back to defaults that hide
+    // the new dimension. The narrow shape exists so test fixtures
+    // pass plain objects without constructing the full service;
+    // every probe-used field MUST be enumerated here.
   }): Promise<{ items: Memory[]; nextCursor?: string }>
 }
 
@@ -148,6 +166,17 @@ export async function findNearDuplicates(
   // zero tags means no tag filter (project scope alone).
   const topTags = opts.tags.slice(0, 2)
 
+  // The probe's `statuses` filter is post-fetch and lets the decision
+  // path keep one server query for an `accepted | proposed` candidate
+  // pool. Since Phase 2 of issue #281 added a default-exclude filter
+  // for `Status = proposed` to `MemoryService.list`, the
+  // post-fetch `statuses` whitelist runs against an already-narrowed
+  // set whenever `proposed` is in the requested set. Opt in to
+  // proposed rows on the way down so the post-filter sees the
+  // intended candidate pool. Memory near-dup probes (no `statuses`
+  // passed) keep the default-recall posture — proposed inbox rows
+  // do not surface as memory-side near-duplicate candidates.
+  const includeProposed = opts.statuses?.includes("proposed") ?? false
   let items: Memory[]
   try {
     const result = await memories.list({
@@ -157,6 +186,15 @@ export async function findNearDuplicates(
       kind: opts.kind,
       limit: opts.limit ?? 50,
       includeContent: false,
+      // `|| undefined` (not just `includeProposed`) keeps the lister
+      // payload byte-identical to the pre-#281 shape on the
+      // memory-path probe (no `statuses`) — `false` and `undefined`
+      // route through different code paths in some `MemoryService.list`
+      // mocks, and the `near-duplicate.test.ts` no-opt-in assertion
+      // pins `includeProposed` to be undefined on the lister call.
+      // Do not simplify to `includeProposed`; the literal `false`
+      // would visibly change the lister payload shape.
+      includeProposed: includeProposed || undefined,
     })
     items = result.items
   } catch (err) {
@@ -377,6 +415,17 @@ export async function findAutosaveLearningDuplicate(
   if (scope === "project" && !queryProjectId) return null
   if (opts.title.trim() === "") return null
 
+  // `includeProposed: true` is a write-safety opt-in. Phase 2 of
+  // issue #281 added `Status != proposed` to `MemoryService.list`'s
+  // default filter; Phase 3 lets autosave hooks write atomic learnings
+  // as `Status: proposed` when `hooks.proposeAutosaveLearnings` is
+  // enabled. Without this flag, the dedup gate silently misses the
+  // very rows the previous autosave run just wrote — repeated runs
+  // would duplicate proposed learnings instead of reusing them. Same
+  // posture as `findNearDuplicates`'s decision-path opt-in: a
+  // write-safety probe must see candidates regardless of recall
+  // visibility, because the inbox state and the duplicate-prevention
+  // contract are orthogonal concerns.
   let items: Memory[]
   try {
     const result = await memories.list({
@@ -388,6 +437,7 @@ export async function findAutosaveLearningDuplicate(
       limit: opts.limit ?? 50,
       includeContent: true,
       includeUnscoped: scope === "project" ? true : undefined,
+      includeProposed: true,
     })
     items = result.items
   } catch (err) {

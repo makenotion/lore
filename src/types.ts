@@ -693,6 +693,21 @@ export interface SearchMemoriesInput {
    */
   kind?: MemoryKind
   status?: MemoryStatus
+  /**
+   * When `true`, do NOT exclude `Status = proposed` rows from the
+   * search result set. Defaults to `false` — proposed-memory inbox
+   * rows are filtered out of default recall paths so a noisy
+   * autosave-as-proposed flow cannot pollute search (issue #281,
+   * AC #2). Explicit `status: "proposed"` short-circuits this
+   * default and surfaces the inbox directly.
+   *
+   * Mirrors `MemoryService.list`'s `includeProposed` flag with the
+   * same semantics. Server-side filter in `"contains"` (and the
+   * contains leg of `"hybrid"`); client-side post-filter in
+   * `"semantic"` because `client.search` lacks property-filter
+   * support.
+   */
+  includeProposed?: boolean
   limit?: number
   /**
    * When false, skip the per-page `retrieveMarkdown` round-trip and return
