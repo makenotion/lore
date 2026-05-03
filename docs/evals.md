@@ -1,11 +1,12 @@
 # Lore Evals
 
 Lore evals measure whether memory changes agent outcomes, not just whether
-search returns plausible rows. The first harness is intentionally local and
-retrieval-only: it reads committed YAML fixtures, loads them into fixture-backed
-services, runs the production `loadWakeUpData` wake-up retrieval composition,
-scores surfaced memory IDs, and writes a JSON artifact. It never reads or writes
-a live Notion vault.
+search returns plausible rows. The default harness is the **retrieval runner**:
+it reads committed YAML fixtures, loads them into fixture-backed services,
+runs the production `loadWakeUpData` wake-up retrieval composition, scores
+surfaced memory IDs, and writes a JSON artifact. The retrieval runner never
+reads or writes a live Notion vault — its fixture adapter replaces Notion
+search.
 
 The retrieval runner protects four wake-up memory-surfacing sections:
 `taskMemories` (the default), `memories` (recents), `relatedMemories`, and
@@ -14,12 +15,86 @@ The retrieval runner protects four wake-up memory-surfacing sections:
 retrieval runner does not claim to benchmark Notion vector ranking or the
 wake-up debug metrics emitted by the observability path.
 
+A second mode, the **Notion-backed runner** (`--runner notion`), points the
+same suite YAML at an operator-configured sandbox project and exercises the
+real retrieval stack — Notion's rate limiter, hybrid search composition,
+contains/semantic fusion, ranking. It performs **live Notion reads** scoped
+to the project named via `--project`, but does not write to the vault. Use it
+nightly or on PRs that touch retrieval composition; don't use it as the
+per-PR hot-path gate.
+
 ## Run The Starter Suite
 
 ```bash
 npm run build
 node dist/cli.js eval run evals/suites/lore-core.yaml
 ```
+
+## Runner modes
+
+Two runners ship today, sharing the same suite YAML format and the same surface
+registry:
+
+| Runner | What it exercises | Where to use it |
+| --- | --- | --- |
+| `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls. | Per-PR CI; the inner-loop fast feedback. |
+| `notion` | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion. | Nightly CI; PRs that touch retrieval composition or ranking. |
+
+Pass `--runner notion --project <SandboxProject>` to route a run through the
+production retrieval stack (rate limiter, hybrid search, contains/semantic
+fusion, ranking) against an operator-maintained sandbox vault. Per-task results
+collapse to a single synthetic `live-vault` scenario; the runner uses the
+helpful-memory expectation as the live-vault assertion **because the live
+vault IS the "memory is present" state by definition**. The other ablations
+(`no-lore`, `empty-lore`, `noisy-memory`, `stale-memory`) cannot be replayed
+against a single live vault state without seed/cleanup infrastructure, so
+notion-mode is structurally one-scenario-per-task. Lift / harm metrics
+therefore stay `null` in notion mode. `shouldNotSurface` lists from the
+helpful-memory expectation are forwarded into the live-vault assertion but
+are typically empty in retrieval-mode helpful scenarios; if non-empty, those
+ids almost certainly don't exist in the live vault and the assertion silently
+passes.
+
+### Sandbox vault discipline
+
+Notion-mode suites typically live alongside the fixture suite but reference
+**real Notion page ids** in `shouldSurface`. The committed `lore-core` suite
+uses synthetic ids (e.g. `decision/auth-model`) and will not match anything
+on a real vault — author a parallel suite under
+`evals/suites/<name>-sandbox.yaml` whose `shouldSurface` lists the actual ids
+from the operator's sandbox vault.
+
+The CLI rejects project names that don't **word-boundary**-match one of
+`sandbox`, `eval`, `test`, `scratch`, `staging`, `dev`, or `playground`
+unless `LORE_EVAL_NOTION_ALLOW_PRODUCTION=1` is set in the environment.
+Notion-mode reads are technically read-only, but pointing the runner at a
+production vault still hammers per-token rate limits and surfaces
+misleading "drift" against fixture-shaped expectations — the env-var
+gate forces an explicit decision.
+
+The boundary is a regex `\b` word boundary, so `Mail-staging`, `Eval-Project`,
+and `dev-vault` all pass, but **camel-case names without a separator**
+(`EvalProject`, `TestVault`) reject — the regex sees those as embedded
+substrings rather than standalone markers. If your sandbox uses a
+camel-case convention, either add a separator (`Eval-Project`) or set the
+env var to opt in.
+
+Because the sandbox vault is not committed, runners against it are not
+deterministic the way fixture runs are; treat notion-mode CI as a coarser
+signal that catches retrieval-stack regressions across the rate limiter,
+search composition, and Notion-side ranking — not the per-row precision the
+fixture suite measures. Single-task pass/fail flips between adjacent runs
+are expected noise from Notion's hybrid search; only aggregate trends and
+sustained per-task regressions matter.
+
+### Baselines and the runner contract
+
+Baselines record their `runner` mode. `lore eval run --baseline <path>`
+refuses to compare a baseline captured in one mode against an artifact from
+another (they key results on disjoint scenario spaces — retrieval baselines
+on ablations, notion baselines on `live-vault`). Capture a runner-matched
+baseline with `lore eval baseline --runner <mode> ... <suite>` before
+comparing.
 
 By default, result artifacts are written under `evals/results/`, which is
 ignored by git. Use `--out <path>` to choose a deterministic artifact path for
@@ -187,11 +262,16 @@ the legacy 2-key `(taskId, scenario)` form (which would clobber siblings
 under the same `(taskId, scenario)` and silently drop coverage from the
 drift gate).
 
-Byte-stable `lore eval baseline` output depends on the retrieval runner's
-pinned `DEFAULT_RETRIEVAL_NOW` clock. A future refactor that re-introduces
-`new Date()` into `runRetrievalSuite` will silently re-introduce
-nondeterminism into committed baselines; if you change the clock seam,
-update this section and the snapshot in lockstep.
+Byte-stable `lore eval baseline` output is **retrieval-mode only**. The
+retrieval runner pins `DEFAULT_RETRIEVAL_NOW` so per-result rows and
+aggregate metrics reproduce across runs. The notion runner uses real
+wall-clock time and hits live Notion, so its baselines record real
+timestamps and may have per-trial variance from hybrid-search noise — the
+drift gate is a coarser per-result success/recall comparator there, not a
+byte-equality check. A future refactor that re-introduces `new Date()`
+into `runRetrievalSuite` will silently re-introduce nondeterminism into
+retrieval-mode baselines; if you change the clock seam, update this
+section and the snapshot in lockstep.
 
 ### When to refresh the baseline
 

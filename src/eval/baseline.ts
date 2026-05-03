@@ -49,7 +49,7 @@ export const evalBaselineSnapshotSchema = z
      * Runner mode that produced this baseline. Cross-runner comparisons
      * are rejected by `compareToEvalBaseline` because retrieval-mode
      * baselines key results by ablation scenario (`no-lore`,
-     * `helpful-memory`, ...) while a future notion-mode baseline would
+     * `helpful-memory`, ...) while a notion-mode baseline would
      * key on `live-vault` — direct comparison would surface every
      * result as either new or removed and trip the drift gate for the
      * wrong reason. Pre-runner-field baselines default to `retrieval`
@@ -100,7 +100,7 @@ export class BaselineSuiteMismatchError extends Error {
  * Cross-runner mismatch — a baseline captured in one runner mode
  * cannot be compared against a fresh artifact from another mode. The
  * scenario keys are disjoint (retrieval baselines key on ablation
- * scenarios; a future notion-mode baseline would key on `live-vault`),
+ * scenarios; a notion-mode baseline would key on `live-vault`),
  * so the comparison would surface every result as either `newResults`
  * or `removedResults` and trip the drift gate for the wrong reason.
  * The CI baseline gate this PR installs depends on this guard:

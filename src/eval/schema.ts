@@ -5,7 +5,7 @@ import { z } from "zod"
 
 export const EVAL_SUITE_VERSION = 1
 
-export const EVAL_RUNNERS = ["retrieval"] as const
+export const EVAL_RUNNERS = ["retrieval", "notion"] as const
 
 export const REQUIRED_ABLATION_SCENARIOS = [
   "no-lore",

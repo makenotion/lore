@@ -32,6 +32,17 @@ export interface RunEvalOptions {
   trials?: number
   outPath?: string
   now?: Date
+  /**
+   * Notion-runner: services factory. Defaults to `initServices()` so
+   * production callers exercise the real Notion stack; tests inject a
+   * stubbed `WakeUpServices` with a resolved `projectId` to avoid
+   * hitting Notion. The factory is invoked exactly once per run and the
+   * resolved services are reused across every task and surface.
+   */
+  notionServices?: () => Promise<{
+    services: WakeUpServices
+    projectId: string
+  }>
 }
 
 export interface EvalRunArtifact {
@@ -39,7 +50,8 @@ export interface EvalRunArtifact {
   description: string
   startedAt: string
   runner: {
-    mode: "retrieval"
+    /** Eval runner mode that produced this artifact. */
+    mode: EvalRunner
     /**
      * Distinct retrieval surfaces exercised across the run, sorted
      * alphabetically by surface name (default `Array.prototype.sort()`
@@ -110,13 +122,24 @@ const EVAL_PROJECT_ID = "eval-project"
 
 /**
  * Deterministic clock used when the caller does not supply `options.now`.
- * The eval runner is contractually deterministic; without a pinned clock
- * the relatedMemories and staleConfidence surfaces drift with wall-clock
- * time. Pinned to a stable date that's far enough back that any
- * fixture-defined `createdAt` (currently 2026-01-N for the N-th memory)
- * is in the past relative to it.
+ * The retrieval runner is contractually deterministic; without a pinned
+ * clock the relatedMemories and staleConfidence surfaces drift with
+ * wall-clock time. Pinned to a stable date that's far enough forward
+ * that fixture `createdAt` values (FIXTURE_BASE_DATE-indexed, see
+ * `fixtureMemoryToMemory`) are in the past relative to it. The notion
+ * runner ignores this default and uses real wall-clock time because
+ * its target is the live vault.
  */
 const DEFAULT_RETRIEVAL_NOW = new Date("2026-05-03T12:00:00.000Z")
+
+/**
+ * Synthetic scenario id used by the Notion-backed runner. Only one
+ * scenario exists in notion mode: the live vault. The runner uses
+ * `expectedRetrieval["helpful-memory"]` as the live-vault expectation
+ * since the live vault is the "memory is present" state by definition.
+ * Notion-mode artifacts list this id under `summary.scenarios`.
+ */
+export const NOTION_LIVE_SCENARIO_ID = "live-vault"
 
 export async function runEvalSuite(
   suitePath: string,
@@ -124,9 +147,9 @@ export async function runEvalSuite(
 ): Promise<{ artifact: EvalRunArtifact; outPath: string }> {
   const loaded = await loadEvalSuite(suitePath)
   const runner = options.runner ?? loaded.suite.runner
-  if (runner !== "retrieval") {
+  if (runner !== "retrieval" && runner !== "notion") {
     throw new Error(
-      `Unsupported eval runner "${runner}". Only "retrieval" is implemented.`
+      `Unsupported eval runner "${runner}". Use "retrieval" or "notion".`
     )
   }
 
@@ -136,33 +159,36 @@ export async function runEvalSuite(
   }
   if (requestedTrials !== 1) {
     throw new Error(
-      `The retrieval eval runner requires trials to be 1; got ${requestedTrials}.`
+      `The ${runner} eval runner requires trials to be 1; got ${requestedTrials}.`
     )
   }
   const executedTrials = 1
 
-  // Pin a deterministic clock for the whole run when the caller did not
-  // supply one. wake-up.relatedMemories and wake-up.staleConfidence both
-  // call into time-sensitive task-bucketing helpers (taskDaysStale,
-  // STALE_CONFIDENCE_DAYS) — without a fixed `now`, eval results would
-  // drift with wall-clock time on a calendar boundary. The deterministic
-  // default mirrors the suite's "trials: 1, retrieval is deterministic"
-  // contract.
-  const now = options.now ?? DEFAULT_RETRIEVAL_NOW
+  // Retrieval mode pins a deterministic clock when the caller did not
+  // supply one (wake-up.relatedMemories and wake-up.staleConfidence both
+  // call into time-sensitive task-bucketing helpers, so without a fixed
+  // `now` the eval results would drift with wall-clock time on a
+  // calendar boundary). Notion mode is targeting the live vault and
+  // uses real wall-clock time so the rate limiter and stale-confidence
+  // queries see the same `now` an operator would.
+  const now =
+    options.now ?? (runner === "retrieval" ? DEFAULT_RETRIEVAL_NOW : new Date())
   const startedAt = now.toISOString()
-  const results: EvalTaskResult[] = []
-  const scenarioIds = new Set<string>()
   const surfacesExercised = new Set<EvalSurface>()
-
   for (const task of loaded.suite.tasks) {
     surfacesExercised.add(task.surface)
-    const scenarios = await loadTaskScenarios(loaded, task)
-    for (const scenario of scenarios) {
-      scenarioIds.add(scenario.id)
-      for (let trial = 1; trial <= executedTrials; trial++) {
-        results.push(await runRetrievalTrial(task, scenario, trial, now))
-      }
-    }
+  }
+
+  let results: EvalTaskResult[]
+  let scenarioIds: string[]
+  if (runner === "retrieval") {
+    const ran = await runRetrievalSuite(loaded, { ...options, now })
+    results = ran.results
+    scenarioIds = ran.scenarioIds
+  } else {
+    const ran = await runNotionSuite(loaded, { ...options, now })
+    results = ran.results
+    scenarioIds = ran.scenarioIds
   }
 
   const artifact: EvalRunArtifact = {
@@ -170,18 +196,13 @@ export async function runEvalSuite(
     description: loaded.suite.description,
     startedAt,
     runner: {
-      mode: "retrieval",
+      mode: runner,
       surfaces: Array.from(surfacesExercised).sort(),
       requestedTrials,
       executedTrials,
     },
     results,
-    summary: summarizeResults(
-      loaded.suite.tasks,
-      Array.from(scenarioIds),
-      executedTrials,
-      results
-    ),
+    summary: summarizeResults(loaded.suite.tasks, scenarioIds, executedTrials, results),
   }
 
   const outPath = resolve(
@@ -191,6 +212,47 @@ export async function runEvalSuite(
   await writeFile(outPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf-8")
 
   return { artifact, outPath }
+}
+
+async function runRetrievalSuite(
+  loaded: LoadedEvalSuite,
+  options: RunEvalOptions
+): Promise<{ results: EvalTaskResult[]; scenarioIds: string[] }> {
+  const now = options.now ?? DEFAULT_RETRIEVAL_NOW
+  const results: EvalTaskResult[] = []
+  const scenarioIds = new Set<string>()
+  for (const task of loaded.suite.tasks) {
+    const scenarios = await loadTaskScenarios(loaded, task)
+    for (const scenario of scenarios) {
+      scenarioIds.add(scenario.id)
+      results.push(await runRetrievalTrial(task, scenario, 1, now))
+    }
+  }
+  return { results, scenarioIds: Array.from(scenarioIds) }
+}
+
+async function runNotionSuite(
+  loaded: LoadedEvalSuite,
+  options: RunEvalOptions
+): Promise<{ results: EvalTaskResult[]; scenarioIds: string[] }> {
+  if (!options.notionServices) {
+    throw new Error(
+      "Notion runner requires `notionServices` resolver; pass --project on the CLI to wire it up."
+    )
+  }
+  const { services, projectId } = await options.notionServices()
+  const results: EvalTaskResult[] = []
+  for (const task of loaded.suite.tasks) {
+    results.push(
+      await runNotionTrial({
+        task,
+        services,
+        projectId,
+        now: options.now,
+      })
+    )
+  }
+  return { results, scenarioIds: [NOTION_LIVE_SCENARIO_ID] }
 }
 
 async function loadTaskScenarios(
@@ -320,6 +382,54 @@ async function runRetrievalTrial(
     task,
     scenarioId: scenario.id,
     trial,
+    limit,
+    elapsedMs: roundMetric(performance.now() - before),
+    surfacedMemoryIds: config.extract(data, limit),
+  })
+}
+
+async function runNotionTrial(input: {
+  task: EvalTask
+  services: WakeUpServices
+  projectId: string
+  now: Date | undefined
+}): Promise<EvalTaskResult> {
+  const limit = input.task.retrieval.limit
+  const config = SURFACE_REGISTRY[input.task.surface]
+  const before = performance.now()
+  const data = await loadWakeUpData(input.services, {
+    projectId: input.projectId,
+    includeMemoryContent: true,
+    now: input.now?.getTime(),
+    ...config.configureOptions(limit, input.task.prompt),
+  })
+  // Notion mode reuses the helpful-memory expectation against the live
+  // vault. The retrieval-mode helpful-memory scenario assumes the
+  // helpful row is present in a fixture; the live vault is by
+  // definition that "memory is present" state, so the same expectation
+  // applies. Reject (rather than silently passing with empty arrays)
+  // when the expectation is missing — the suite schema's superRefine
+  // already enforces this for retrieval mode, but a defensive throw
+  // here guards against any future loosening that would otherwise
+  // produce a vacuous null-recall pass.
+  const expectation = input.task.expectedRetrieval["helpful-memory"]
+  if (!expectation) {
+    throw new Error(
+      `Notion runner: task "${input.task.id}" is missing expectedRetrieval["helpful-memory"]; ` +
+        "notion mode keys the live-vault assertion off the helpful-memory expectation, so it is required."
+    )
+  }
+  // Build a synthetic task whose expectedRetrieval is keyed on the
+  // live-vault scenario id so `buildRetrievalResult` can score it
+  // through the existing path without changes.
+  const projected: EvalTask = {
+    ...input.task,
+    expectedRetrieval: { [NOTION_LIVE_SCENARIO_ID]: expectation },
+  }
+  return buildRetrievalResult({
+    task: projected,
+    scenarioId: NOTION_LIVE_SCENARIO_ID,
+    trial: 1,
     limit,
     elapsedMs: roundMetric(performance.now() - before),
     surfacedMemoryIds: config.extract(data, limit),

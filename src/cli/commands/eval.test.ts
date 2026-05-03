@@ -1,13 +1,17 @@
-import { describe, expect, it } from "vitest"
-import { collectEvalThresholdFailures, parseEvalRunCliOptions } from "./eval.js"
+import { afterEach, describe, expect, it } from "vitest"
+import {
+  assertSandboxProjectName,
+  collectEvalThresholdFailures,
+  parseEvalRunCliOptions,
+} from "./eval.js"
 import type { EvalRunArtifact } from "../../eval/runner.js"
 
 describe("parseEvalRunCliOptions", () => {
-  it("defaults to the retrieval runner", () => {
+  it("leaves runner undefined when --runner is not passed (suite YAML wins)", () => {
     const result = parseEvalRunCliOptions({})
     expect(result.ok).toBe(true)
     if (result.ok) {
-      expect(result.value.runner).toBe("retrieval")
+      expect(result.value.runner).toBeUndefined()
       expect(result.value.json).toBe(false)
     }
   })
@@ -24,10 +28,10 @@ describe("parseEvalRunCliOptions", () => {
     if (!result.ok) expect(result.message).toContain("--trials")
   })
 
-  it("rejects non-one retrieval trial counts", () => {
+  it("rejects non-one trial counts when --runner is implicit", () => {
     const result = parseEvalRunCliOptions({ trials: "2" })
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.message).toContain("retrieval mode")
+    if (!result.ok) expect(result.message).toContain("this runner")
   })
 
   it("parses metric thresholds", () => {
@@ -53,6 +57,77 @@ describe("parseEvalRunCliOptions", () => {
     if (result.ok) {
       expect(result.value.baselinePath).toBe("evals/baselines/lore-core.json")
     }
+  })
+
+  it("requires --project when --runner notion is set", () => {
+    const result = parseEvalRunCliOptions({ runner: "notion" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--project")
+    }
+  })
+
+  it("accepts --runner notion when --project is provided", () => {
+    const result = parseEvalRunCliOptions({
+      runner: "notion",
+      project: "Mail",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.runner).toBe("notion")
+      expect(result.value.projectName).toBe("Mail")
+    }
+  })
+
+  it("phrases the trials error in terms of the selected runner", () => {
+    const result = parseEvalRunCliOptions({ runner: "notion", trials: "3" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("notion mode")
+      expect(result.message).not.toContain("retrieval mode")
+    }
+  })
+})
+
+describe("assertSandboxProjectName", () => {
+  const original = process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"]
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"]
+    } else {
+      process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"] = original
+    }
+  })
+
+  it.each([
+    "Mail-sandbox",
+    "Eval-Project",
+    "Test-Vault",
+    "scratch",
+    "Mail-staging",
+    "dev-vault",
+    "Playground",
+  ])("accepts sandbox-shaped project names like %s", (name) => {
+    delete process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"]
+    expect(() => assertSandboxProjectName(name)).not.toThrow()
+  })
+
+  it.each([
+    "Mail",
+    "Greatest hits",
+    "Latest releases",
+    "Evaluation Q1",
+    "EvalProject", // no word boundary between Eval/Project — embedded substring
+  ])("rejects production-shaped project names like %s", (name) => {
+    delete process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"]
+    expect(() => assertSandboxProjectName(name)).toThrow(
+      /LORE_EVAL_NOTION_ALLOW_PRODUCTION=1/
+    )
+  })
+
+  it("allows production-shaped names when LORE_EVAL_NOTION_ALLOW_PRODUCTION=1", () => {
+    process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"] = "1"
+    expect(() => assertSandboxProjectName("Mail")).not.toThrow()
   })
 })
 

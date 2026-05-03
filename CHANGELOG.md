@@ -35,6 +35,22 @@ log is the canonical source for those.
   if a future change drops the filter. The Notion-backed runner can
   still report `memoryHarm > 0` against the same suite — that gap is
   the temporal-recall work tracked under #284. (#450)
+- **Notion-backed eval runner.** `lore eval run --runner notion --project
+  <SandboxProject>` exercises the real retrieval stack — Notion's rate
+  limiter, hybrid search composition, contains/semantic fusion, and
+  ranking — against an operator-maintained sandbox vault. The runner
+  collapses each task to one synthetic `live-vault` scenario keyed on
+  the helpful-memory expectation, so the same suite YAML drives both
+  fixture-mode and notion-mode runs. Lift / harm stay null in notion
+  mode because there is only one scenario per task. Baseline snapshots
+  carry their `runner` mode and the drift gate refuses cross-runner
+  comparisons. The `LORE_EVAL_NOTION_ALLOW_PRODUCTION=1` env-var guard
+  is required to point notion-mode at a vault whose name does not
+  word-boundary-match one of `sandbox` / `eval` / `test` / `scratch` /
+  `staging` / `dev` / `playground`, so a misconfigured CI job cannot
+  accidentally hammer a production vault. Slower and
+  rate-limited; appropriate for nightly CI or PRs that touch
+  retrieval composition, not every push. (#450)
 - **Committed eval baselines and CI drift gate.** New `lore eval baseline
   <suite> --out <path>` writes a comparison-stable baseline snapshot
   (per-result success / recall / precision plus aggregate retrieval

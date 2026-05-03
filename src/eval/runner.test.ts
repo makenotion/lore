@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
+import type { WakeUpServices } from "../core/wakeup.js"
 import { STALE_CONFIDENCE_LIMIT } from "../types.js"
 import { runEvalSuite, type EvalRunArtifact } from "./runner.js"
 
@@ -480,6 +481,211 @@ tasks:
     // `buildRetrievalResult` correctly.
     expect(result.success).toBe(false)
     expect(result.unexpectedMemoriesSurfaced).toContain("note/recents-distractor")
+  })
+
+  it("notion runner exercises real services and surfaces a single live-vault scenario", async () => {
+    // Build a stubbed `WakeUpServices` that mimics what the live Notion
+    // runner would see. The same fixture-search is fine for a unit test;
+    // the integration value of the notion runner is exercised against
+    // production read-only flows separately.
+    const liveMemories = [
+      {
+        id: "decision/live-vault-row",
+        title: "Live vault decision",
+        synopsis: "Authoritative live decision.",
+        keywords: "live vault decision",
+      },
+    ]
+    const stubServices: WakeUpServices = {
+      memories: {
+        list: async () => ({ items: [] }),
+        search: async (input) => {
+          // Token-overlap fixture-search to keep the test deterministic.
+          const tokens = (input.query.toLowerCase().match(/[a-z0-9]+/g) ?? []).join(
+            " "
+          )
+          return tokens.includes("live")
+            ? (liveMemories.map((m) => ({
+                id: m.id,
+                title: m.title,
+                projectIds: ["project-live"],
+                topicId: null,
+                source: "manual" as const,
+                kind: "decision" as const,
+                status: "accepted" as const,
+                confidence: "certain" as const,
+                confidenceScore: null,
+                reviewBy: null,
+                doneAt: null,
+                decidedAt: null,
+                lastReferencedAt: null,
+                supersedesIds: [],
+                affectsIds: [],
+                alternatives: "",
+                consequences: "",
+                author: "",
+                agent: "",
+                tags: [],
+                keywords: m.keywords,
+                synopsis: m.synopsis,
+                session: "",
+                content: "",
+                taskState: null,
+                blockedBy: "",
+                entity: "",
+                topicKey: "",
+                revisionCount: 1,
+                comparedWith: [],
+                compareNotes: "",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              })) as never[])
+            : []
+        },
+        queryStaleConfidence: async () => [],
+        countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
+      },
+      facts: { listRecent: async () => ({ items: [], hasMore: false }) },
+      decisions: {
+        list: async () => ({ items: [], nextCursor: undefined }),
+        queryOverdue: async () => [],
+      },
+      tasks: { list: async () => ({ items: [], nextCursor: undefined }) },
+    }
+
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": `name: helpful-memory
+memories:
+  - id: decision/live-vault-row
+    title: Live vault decision
+    synopsis: Authoritative live decision.
+    keywords: live vault decision
+`,
+      },
+      suite: `version: 1
+name: notion-suite
+runner: retrieval
+tasks:
+  - id: live-vault-task
+    prompt: Surface the live vault decision.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/live-vault-row
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, {
+      runner: "notion",
+      outPath,
+      notionServices: async () => ({
+        services: stubServices,
+        projectId: "project-live",
+      }),
+    })
+
+    expect(artifact.runner.mode).toBe("notion")
+    expect(artifact.summary.scenarios).toEqual(["live-vault"])
+    expect(artifact.results).toHaveLength(1)
+    expect(artifact.results[0]).toMatchObject({
+      taskId: "live-vault-task",
+      scenario: "live-vault",
+      success: true,
+      surfacedMemoryIds: ["decision/live-vault-row"],
+    })
+  })
+
+  it("YAML-declared runner: notion drives notion mode when CLI omits --runner", async () => {
+    // Pins the orchestrator wiring fix: a suite with `runner: notion`
+    // declared in YAML must dispatch to runNotionSuite when the caller
+    // supplies a `notionServices` factory but leaves `options.runner`
+    // undefined. A future regression that gates `notionServices` on
+    // `options.runner === "notion"` would re-introduce the YAML UX
+    // cliff the prior review flagged.
+    const stubServices: WakeUpServices = {
+      memories: {
+        list: async () => ({ items: [] }),
+        search: async () => [],
+        queryStaleConfidence: async () => [],
+        countProposed: async () => ({ total: 0, bySource: {}, byAgent: {} }),
+      },
+      facts: { listRecent: async () => ({ items: [], hasMore: false }) },
+      decisions: {
+        list: async () => ({ items: [], nextCursor: undefined }),
+        queryOverdue: async () => [],
+      },
+      tasks: { list: async () => ({ items: [], nextCursor: undefined }) },
+    }
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": authDecisionScenario("helpful-memory"),
+      },
+      suite: `version: 1
+name: yaml-driven-notion
+runner: notion
+tasks:
+  - id: t
+    prompt: p
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/auth-model
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, {
+      // Note: NO `runner: "notion"` here — the YAML wins.
+      outPath,
+      notionServices: async () => ({
+        services: stubServices,
+        projectId: "project-live",
+      }),
+    })
+
+    expect(artifact.runner.mode).toBe("notion")
+    expect(artifact.summary.scenarios).toEqual(["live-vault"])
+  })
+
+  it("notion runner refuses to run without a notionServices factory", async () => {
+    const { suitePath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "helpful.yaml": authDecisionScenario("helpful-memory"),
+      },
+      suite: `version: 1
+name: notion-no-factory
+runner: retrieval
+tasks:
+  - id: t
+    prompt: p
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      helpful-memory:
+        shouldSurface:
+          - decision/auth-model
+`,
+    })
+
+    await expect(
+      runEvalSuite(suitePath, { runner: "notion" })
+    ).rejects.toThrow("notionServices")
   })
 
   it("extracts surfaced ids from the wake-up.staleConfidence surface", async () => {

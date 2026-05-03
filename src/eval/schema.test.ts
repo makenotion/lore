@@ -163,4 +163,37 @@ tasks:
       )
     }
   })
+
+  it("accepts the supported runner modes and rejects unknown ones", () => {
+    const baseTask = {
+      id: "task-one",
+      prompt: "Do the task",
+      memoryScenarios: {
+        "no-lore": "../memory/no-lore.yaml",
+        "empty-lore": "../memory/empty.yaml",
+        "helpful-memory": "../memory/helpful.yaml",
+      },
+      expectedRetrieval: {
+        "helpful-memory": { shouldSurface: ["memory/helpful"] },
+      },
+    }
+
+    for (const runner of ["retrieval", "notion"]) {
+      const result = evalSuiteSchema.safeParse({
+        version: 1,
+        name: "runner-modes",
+        runner,
+        tasks: [baseTask],
+      })
+      expect(result.success, `runner=${runner} should parse`).toBe(true)
+    }
+
+    const rejected = evalSuiteSchema.safeParse({
+      version: 1,
+      name: "runner-modes",
+      runner: "live-agent",
+      tasks: [baseTask],
+    })
+    expect(rejected.success).toBe(false)
+  })
 })

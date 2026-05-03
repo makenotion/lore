@@ -1,4 +1,5 @@
 import { Command } from "commander"
+import { initServices } from "../../services.js"
 import {
   runEvalSuite,
   type EvalRunArtifact,
@@ -11,16 +12,22 @@ import {
   readEvalBaselineSnapshot,
   writeEvalBaselineSnapshot,
 } from "../../eval/baseline.js"
+import { resolveProjectByName } from "../../core/project-scope.js"
 import { EVAL_RUNNERS, type EvalRunner } from "../../eval/schema.js"
 import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
 
 export interface EvalRunCliOptions {
-  runner: EvalRunner
+  /**
+   * Selected runner mode. `undefined` means the CLI did not specify
+   * `--runner` and the eval suite YAML's `runner` field should win.
+   */
+  runner?: EvalRunner
   trials?: number
   outPath?: string
   minLift?: number
   maxHarm?: number
   baselinePath?: string
+  projectName?: string
   json: boolean
 }
 
@@ -31,10 +38,15 @@ export function parseEvalRunCliOptions(raw: {
   minLift?: string
   maxHarm?: string
   baseline?: string
+  project?: string
   json?: boolean
 }): CliParseResult<EvalRunCliOptions> {
-  const runner = raw.runner ?? "retrieval"
-  if (!isEvalRunner(runner)) {
+  // When `raw.runner` is omitted on the CLI, leave `runner` undefined so
+  // the suite YAML's `runner` field wins inside `runEvalSuite`. Default
+  // only applies when neither CLI nor YAML specifies one (handled in
+  // runner.ts via `loaded.suite.runner`'s schema default).
+  const runner = raw.runner === undefined ? undefined : raw.runner
+  if (runner !== undefined && !isEvalRunner(runner)) {
     return {
       ok: false,
       message: `--runner must be one of: ${EVAL_RUNNERS.join(", ")}, got "${runner}"`,
@@ -46,9 +58,10 @@ export function parseEvalRunCliOptions(raw: {
     const parsedTrials = parsePositiveDecimalInteger("--trials", raw.trials)
     if (!parsedTrials.ok) return parsedTrials
     if (parsedTrials.value !== 1) {
+      const modeLabel = runner !== undefined ? `${runner} mode` : "this runner"
       return {
         ok: false,
-        message: `--trials must be 1 for retrieval mode, got ${parsedTrials.value}`,
+        message: `--trials must be 1 for ${modeLabel}, got ${parsedTrials.value}`,
       }
     }
     trials = parsedTrials.value
@@ -60,6 +73,14 @@ export function parseEvalRunCliOptions(raw: {
   const maxHarm = parseOptionalUnitInterval("--max-harm", raw.maxHarm)
   if (!maxHarm.ok) return maxHarm
 
+  if (runner === "notion" && (raw.project === undefined || raw.project.length === 0)) {
+    return {
+      ok: false,
+      message:
+        '--project is required when --runner notion is set; the live vault has many projects.',
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -69,6 +90,7 @@ export function parseEvalRunCliOptions(raw: {
       minLift: minLift.value,
       maxHarm: maxHarm.value,
       baselinePath: raw.baseline,
+      projectName: raw.project,
       json: !!raw.json,
     },
   }
@@ -125,13 +147,76 @@ function parseOptionalUnitInterval(
   return { ok: true, value: n }
 }
 
+/**
+ * Vault-isolation guard. Notion-mode reads are technically read-only,
+ * but the docs target nightly CI: a misconfigured CI job pointing at a
+ * production vault would still hammer rate limits and surface misleading
+ * "drift" against fixture-shaped expectations. Reject project names
+ * that don't smell like a sandbox unless the operator explicitly opts
+ * in via env var.
+ *
+ * The match uses **word-boundary** regex (not substring) so
+ * production names that incidentally embed `eval` / `test` / `sandbox`
+ * substrings (e.g., "Evaluations Q1") don't slip through as
+ * sandboxes — and a project named "Greatest hits" is no longer falsely
+ * accepted because of `eval` matching `evaluations` `greate`. The
+ * accepted markers are the conventional internal sandbox names.
+ *
+ * @throws when the project name lacks a sandbox marker and the
+ *   `LORE_EVAL_NOTION_ALLOW_PRODUCTION` env var is unset.
+ */
+const SANDBOX_NAME_MARKERS = /\b(?:sandbox|eval|test|scratch|staging|dev|playground)\b/i
+
+export function assertSandboxProjectName(projectName: string): void {
+  if (SANDBOX_NAME_MARKERS.test(projectName)) return
+  const allowProd = process.env["LORE_EVAL_NOTION_ALLOW_PRODUCTION"]
+  if (allowProd === "1" || allowProd === "true") return
+  throw new Error(
+    `Project "${projectName}" does not look like a sandbox (no word-bounded match for sandbox/eval/test/scratch/staging/dev/playground). ` +
+      `Set LORE_EVAL_NOTION_ALLOW_PRODUCTION=1 to confirm pointing notion-mode at this project on purpose.`
+  )
+}
+
+/**
+ * Build the `notionServices` factory from a `--project` value. Returns
+ * undefined when no project name was supplied. The factory is wired
+ * unconditionally whenever `--project` is set so a YAML-declared
+ * `runner: notion` suite (with `--project` on the CLI but no
+ * `--runner notion` flag) gets the factory it needs. `runEvalSuite`
+ * ignores the factory when the resolved runner is `retrieval`, so the
+ * sandbox-name check is moved INTO the async factory body — that way
+ * `lore eval baseline suite.yaml --project Mail` for a retrieval-mode
+ * suite does not surprise the operator with a sandbox-name throw on a
+ * factory that's never invoked.
+ */
+export function buildNotionServicesFactory(
+  projectName: string | undefined
+): RunEvalOptions["notionServices"] | undefined {
+  if (!projectName) return undefined
+  return async () => {
+    // Sandbox-name guard runs at factory invocation time so it only
+    // fires when the resolved runner actually needs notion services.
+    assertSandboxProjectName(projectName)
+    const services = await initServices(undefined, { driftCheck: false })
+    const project = await resolveProjectByName(
+      services.projects,
+      projectName,
+      "eval --project"
+    )
+    return { services, projectId: project.id }
+  }
+}
+
 export const evalCommand = new Command("eval").description("Run Lore evaluation suites")
 
 evalCommand.addCommand(
   new Command("run")
     .description("Run a local eval suite and emit a JSON artifact")
     .argument("<suite>", "Path to an eval suite YAML file")
-    .option("--runner <mode>", "Runner mode", "retrieval")
+    .option(
+      "--runner <mode>",
+      "Runner mode (retrieval|notion); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
+    )
     .option("--trials <n>", "Trial count; retrieval mode requires 1")
     .option("--out <path>", "Write the JSON artifact to a specific path")
     .option("--min-lift <n>", "Fail when memory lift is below this 0..1 threshold")
@@ -139,6 +224,10 @@ evalCommand.addCommand(
     .option(
       "--baseline <path>",
       "Compare results against a committed baseline snapshot and fail on regression"
+    )
+    .option(
+      "--project <name>",
+      "Sandbox project to scope retrieval against (required for --runner notion)"
     )
     .option("--json", "Print the full JSON artifact to stdout")
     .action(
@@ -151,6 +240,7 @@ evalCommand.addCommand(
           minLift?: string
           maxHarm?: string
           baseline?: string
+          project?: string
           json?: boolean
         }
       ) => {
@@ -166,6 +256,7 @@ evalCommand.addCommand(
             runner: parsed.value.runner,
             trials: parsed.value.trials,
             outPath: parsed.value.outPath,
+            notionServices: buildNotionServicesFactory(parsed.value.projectName),
           }
           const { artifact, outPath } = await runEvalSuite(suite, runOptions)
           const thresholdFailures = collectEvalThresholdFailures(artifact, {
@@ -254,19 +345,43 @@ evalCommand.addCommand(
       "--out <path>",
       "Write the baseline snapshot to this path (typically evals/baselines/<suite>.json)"
     )
+    .option("--runner <mode>", "Runner mode (retrieval|notion)")
+    .option(
+      "--project <name>",
+      "Sandbox project to scope retrieval against (required for --runner notion)"
+    )
     .option("--notes <text>", "Optional human-readable annotation")
     .action(
       async (
         suite: string,
-        opts: { out: string; notes?: string }
+        opts: {
+          out: string
+          notes?: string
+          runner?: string
+          project?: string
+        }
       ) => {
+        const parsed = parseEvalRunCliOptions({
+          runner: opts.runner,
+          project: opts.project,
+        })
+        if (!parsed.ok) {
+          console.error(`Eval baseline failed: ${parsed.message}`)
+          process.exit(1)
+          return
+        }
+
         try {
-          const { artifact } = await runEvalSuite(suite, {})
+          const runOptions: RunEvalOptions = {
+            runner: parsed.value.runner,
+            notionServices: buildNotionServicesFactory(parsed.value.projectName),
+          }
+          const { artifact } = await runEvalSuite(suite, runOptions)
           const snapshot = buildEvalBaselineSnapshot(artifact, {
             notes: opts.notes,
           })
           await writeEvalBaselineSnapshot(opts.out, snapshot)
-          console.log(`Baseline written: ${opts.out}`)
+          console.log(`Baseline written: ${opts.out} (runner=${snapshot.runner})`)
           console.log(
             `Captured ${snapshot.summary.totalResults} results across ${snapshot.summary.tasks} tasks.`
           )
