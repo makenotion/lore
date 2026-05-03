@@ -1145,6 +1145,71 @@ describe("lore-wake-up — Part E: P3-05 ranked output (userQuery)", () => {
   })
 })
 
+describe("lore-wake-up — coverage counters (issue #361)", () => {
+  it("keeps coverage counters out of the default MCP response", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [makeMemory("m1", { title: "Default wake-up memory" })],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({} as never)
+
+    const text = extractText(result)
+    expect(text).not.toContain("Wake-Up Coverage")
+    expect(text).not.toContain("[lore] wakeup:")
+  })
+
+  it("renders privacy-conscious, display-adjusted counters when debug is true", async () => {
+    const mockServer = createMockServer()
+    const services = makeWakeServices({
+      memories: [
+        makeMemory("recent-1", {
+          title: "OAuth retry debugging",
+          tags: ["auth", "oauth"],
+        }),
+        makeMemory("recent-2", {
+          title: "OAuth retry debugging notes",
+          tags: ["auth", "oauth"],
+        }),
+        makeMemory("recent-3", {
+          title: "OAuth retry debugging followup",
+          tags: ["auth", "oauth"],
+        }),
+      ],
+      taskQuery: "Fix retrieval metrics",
+      taskMemories: [
+        makeMemory("task-1", { title: "Metric probe wiring" }),
+        makeMemory("task-2", { title: "Wake-up debug knobs" }),
+      ],
+      facts: [makeFact({ id: "fact-1" })],
+    })
+
+    registerContextTools(mockServer.server, services as never)
+    const wake = mockServer.getActionHandler("lore-context", "wake-up")
+    const result = await wake({
+      userQuery: "Fix retrieval metrics",
+      debug: true,
+    } as never)
+
+    const text = extractText(result)
+    expect(text).toContain("## Wake-Up Coverage")
+    expect(text).toContain("mode=ranked")
+    expect(text).toContain("queryLen=21")
+    expect(text).toContain("memory=3")
+    expect(text).toContain("related=2")
+    expect(text).toContain("knowledge=10")
+    expect(text).toContain("taskMemories=3")
+    expect(text).toContain("sections.currentTask=2")
+    // Three fetched recents collapse into one rendered cluster; MCP
+    // coverage reports what the caller sees, not the over-fetch window.
+    expect(text).toContain("sections.recent=1")
+    expect(text).toContain("sections.facts=1")
+    expect(text).not.toContain("Fix retrieval metrics")
+  })
+})
+
 // Issue 0.6.0/18: project framing block on wake-up.
 describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () => {
   it("renders description and siblings under the Project header", async () => {

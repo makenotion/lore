@@ -17,7 +17,10 @@ import {
   RANKED_WAKEUP_LIMITS,
   computeTasksFetchLimit,
   dateBucket,
+  formatWakeUpCoverage,
   loadWakeUpData,
+  type WakeUpCoverageCaps,
+  type WakeUpSectionCounts,
 } from "../../core/wakeup.js"
 import { gatherDigestData } from "../../core/digest.js"
 import {
@@ -329,6 +332,7 @@ async function handleWakeUp(
     taskLimit?: number
     userQuery?: string
     taskMemoryLimit?: number
+    debug?: boolean
   },
 ): Promise<ToolResult> {
   try {
@@ -416,6 +420,7 @@ async function handleWakeUp(
       taskBucketCoverage,
       taskMemories,
       staleConfidence,
+      coverage,
     } = await loadWakeUpData(services, {
       projectId: projectId ?? undefined,
       memoryLimit: recentOverfetch,
@@ -426,10 +431,23 @@ async function handleWakeUp(
       userQuery: args.userQuery,
       taskMemoryLimit: taskOverfetch,
       includeMemoryContent: includeContent,
+      includeCoverage: args.debug === true,
       todayDate: today,
     })
 
     const sections: string[] = []
+    const renderedCoverageCounts: WakeUpSectionCounts = {
+      digest: digest ? 1 : 0,
+      currentTaskMemories: 0,
+      recentMemories: 0,
+      relatedMemories: 0,
+      tasks: 0,
+      knowledgeFacts: knowledgeFacts.length,
+      decisions: proposedDecisions.length + overdueDecisions.length,
+      proposedDecisions: proposedDecisions.length,
+      overdueDecisions: overdueDecisions.length,
+      staleConfidence: staleConfidence.length,
+    }
 
     const projectContext = composeProjectContext(
       resolvedProject,
@@ -499,6 +517,7 @@ async function handleWakeUp(
         "*Memories ranked by relevance to your `userQuery`. Deduped against the digest, Recent Memories, and Related sections so the same page never renders twice.*\n",
       )
       const groups = collapseOverlappingMemories(taskMemories).slice(0, taskCap)
+      renderedCoverageCounts.currentTaskMemories = groups.length
       for (const group of groups) {
         sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
         recordSurfaced(group)
@@ -511,6 +530,7 @@ async function handleWakeUp(
         : "## Recent Memories\n"
       sections.push(heading)
       const groups = collapseOverlappingMemories(memories).slice(0, recentCap)
+      renderedCoverageCounts.recentMemories = groups.length
       const groupsByKeepId = new Map(groups.map((g) => [g.keep.id, g]))
       const buckets = new Map<string, Memory[]>()
       for (const group of groups) {
@@ -578,6 +598,7 @@ async function handleWakeUp(
         "*Memories surfaced by a relevance query seeded from your active task entities. Deduped against the digest and Recent Memories above, so these are the *next* most relevant pages the recents didn't already cover.*\n",
       )
       const groups = collapseOverlappingMemories(relatedMemories).slice(0, relatedCap)
+      renderedCoverageCounts.relatedMemories = groups.length
       for (const group of groups) {
         sections.push(...renderMemoryEntry(group.keep, group, includeContent, 3))
         recordSurfaced(group)
@@ -672,6 +693,8 @@ async function handleWakeUp(
       const overdueShown = overdueBucket.slice(0, bucketedTaskLimit)
       const staleShown = staleBucket.slice(0, bucketedTaskLimit)
       const activeShown = activeBucket.slice(0, bucketedTaskLimit)
+      renderedCoverageCounts.tasks =
+        overdueShown.length + staleShown.length + activeShown.length
 
       // Saturation marker. When a bucket fills its bounded fetch window,
       // that bucket's total and hidden count are lower bounds, not
@@ -789,6 +812,21 @@ async function handleWakeUp(
       }
     }
 
+    if (coverage) {
+      const renderedCoverage = {
+        ...coverage,
+        sectionCounts: renderedCoverageCounts,
+      }
+      const coverageCaps: WakeUpCoverageCaps = {
+        memoryLimit: recentCap,
+        relatedMemoryLimit: relatedCap,
+        knowledgeFactLimit,
+        taskMemoryLimit: taskCap,
+      }
+      sections.push("", "## Wake-Up Coverage\n")
+      sections.push(`\`${formatWakeUpCoverage(renderedCoverage, coverageCaps)}\`\n`)
+    }
+
     const response: ToolResult = {
       content: [{ type: "text", text: sections.join("\n") }],
     }
@@ -881,6 +919,7 @@ const contextDispatchSchema = z.discriminatedUnion("action", [
     taskLimit: z.number().int().min(0).max(50).optional(),
     userQuery: z.string().optional(),
     taskMemoryLimit: z.number().int().min(0).max(20).optional(),
+    debug: z.boolean().optional(),
   }),
   z.object({
     action: z.literal("digest"),
@@ -902,7 +941,7 @@ export function registerContextTools(server: McpServer, services: LoreServices):
       description:
         "Vault status, session priming, and project digest in one polymorphic tool. Action-dispatched:\n\n" +
         "- `action: 'status'` — vault page id, database counts, active project, configured projects, and a task summary line (active / overdue / stale / in-progress / blocked, plus a closure-rate line on vaults with the `Done At` column).\n" +
-        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question.\n" +
+        "- `action: 'wake-up'` — load digest + (when `userQuery` is set) For-Your-Current-Task ranked memories + recent memories + tasks + active facts + decisions requiring attention. Title-tier rows by default; `expand: true` for bodies. Pass `userQuery` after `/clear` or a session-pivot so wake-up ranks pages by the user's actual question. Pass `debug: true` to append privacy-conscious coverage counters.\n" +
         "- `action: 'digest'` — gather raw activity data for synthesis into a digest memory. Save the synthesis via `lore-memory` action='save' with source='digest'.",
       inputSchema: {
         action: z
@@ -959,6 +998,12 @@ export function registerContextTools(server: McpServer, services: LoreServices):
           .optional()
           .describe(
             `(action='wake-up') Max memories surfaced for the user's current task (default ${DEFAULT_WAKEUP_TASK_MEMORY_LIMIT}). Honored only when 'userQuery' is non-empty. Set 0 to skip the section entirely even when a query is provided.`,
+          ),
+        debug: z
+          .boolean()
+          .optional()
+          .describe(
+            "(action='wake-up') Include privacy-conscious wake-up coverage counters in the response. Counters include only mode, caps, section counts, and digest age; they never include memory titles, fact text, or the raw userQuery.",
           ),
         // digest
         period: z

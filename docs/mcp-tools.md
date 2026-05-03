@@ -50,6 +50,11 @@ Pass `userQuery` to `wake-up` when rerunning context after `/clear`, a resume,
 or a topic pivot; the response adds a **For Your Current Task** section ranked
 against that prompt.
 
+Pass `debug: true` to `wake-up` when investigating why a context load is too
+thin or too noisy. The response appends privacy-conscious coverage counters
+for mode, caps, section counts, and digest age; it does not include titles,
+facts, memory bodies, or the raw `userQuery`.
+
 ## `lore-memory` — memory mutations + batch hydration
 
 | Action              | Description                                                   |

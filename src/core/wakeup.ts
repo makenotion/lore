@@ -346,9 +346,10 @@ export interface WakeUpOptions {
    */
   includeStaleConfidence?: boolean
   /**
-   * When true, compute the hook-oriented wake-up coverage counters used by
-   * `LORE_DEBUG=1`. Defaults to false so MCP/default wake-up callers do not
-   * pay for counters they do not render.
+   * When true, compute privacy-conscious wake-up coverage counters for
+   * observability surfaces (`LORE_DEBUG=1` hook logging and MCP
+   * `lore-context action='wake-up' debug: true`). Defaults to false so
+   * normal wake-up callers do not pay for counters they do not render.
    */
   includeCoverage?: boolean
   /**
@@ -420,12 +421,11 @@ export interface WakeUpData {
    */
   staleConfidence: Memory[]
   /**
-   * Privacy-conscious wake-up coverage counters for hook debug logging. Null
-   * unless `includeCoverage` was requested; MCP callers intentionally ignore
-   * this hook-only observability payload. Counts track rendered section rows;
-   * the `tasks` array can still carry an over-fetched candidate window, but
-   * `coverage.sectionCounts.tasks` is capped to the task rows a flat wake-up
-   * renderer should surface.
+   * Privacy-conscious wake-up coverage counters. Null unless
+   * `includeCoverage` was requested. Counts track rendered section rows; the
+   * data layer caps flat-rendered task counts, and renderers that collapse or
+   * re-bucket rows must adjust affected counts before logging or rendering
+   * debug output.
    */
   coverage: WakeUpCoverageMetrics | null
 }

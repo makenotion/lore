@@ -353,6 +353,16 @@ hook ships on first prompt.
   server version is bumped (`0.4.0 → 0.5.0`) so reconnecting clients
   observe the change.
 
+#### Wake-up coverage counters
+
+`lore-context action='wake-up'` accepts `debug: true` to append the same
+privacy-conscious coverage line that the shell hook logs under
+`LORE_DEBUG=1`. The MCP renderer must adjust the data-layer counters before
+formatting them: Recent, Related, and For-Your-Current-Task counts are
+post-collapse visible clusters, and Tasks is the post-bucketing visible row
+count. Do not include raw query text, memory titles, fact text, or bodies in
+coverage output.
+
 ### `lore-memory` — memory mutations + batch hydration
 
 | Action              | Purpose                                                                      | Read-only        |
