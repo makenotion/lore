@@ -757,16 +757,16 @@ generation (a 5,000-memory project produces up to ~12.5M pairs).
 
 ### Output shapes
 
-- **Markdown (default)** — prompt-ready for an interactive Claude
+- **Markdown (default)** — prompt-ready for an interactive agent
   session. Header references the verdict vocabulary by name (six
-  values, defined in CLAUDE.md per #04 and in
-  `src/core/prompts/conflict-judge.ts` per #03). The 0.9.0 scan
-  does NOT inline the locked prompt verbatim — the calling agent
-  already has the operating-contract block in context.
+  values, defined in `docs/memory-workflows.md` and in
+  `src/core/prompts/conflict-judge.ts` per #03). The scan does NOT
+  inline the locked prompt verbatim; the calling agent follows the
+  linked contract.
 - **JSON (`--json`)** — for programmatic consumers. Carries a
   top-level `compareContract` block with the asymmetric /
   symmetric verdict split, the four direction rules, and a
-  back-reference to CLAUDE.md for canonical verdict definitions.
+  back-reference to `docs/memory-workflows.md` for canonical verdict definitions.
   Self-describing so an agent piping `--json` into another tool
   doesn't need prior context to produce correctly-shaped
   `compare` calls.

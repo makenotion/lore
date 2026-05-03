@@ -13,7 +13,7 @@ Compare verdicts are a closed vocabulary. `conflicts_with` and `supersedes` are
 asymmetric and require `affectedMemoryId` naming the memory whose confidence
 score should be reduced. `scoped`, `related`, `compatible`, and `not_conflict`
 are symmetric and must omit `affectedMemoryId`. The `--json` output includes a
-`compareContract` block, and [`CLAUDE.md`](../CLAUDE.md#conflict-verdicts-090)
+`compareContract` block. [`docs/memory-workflows.md`](memory-workflows.md)
 has the canonical verdict definitions.
 
 ## Scan Caps
@@ -52,5 +52,5 @@ lore conflicts scan --project Mail --exhaustive --limit 50
 
 `--json` swaps the markdown report for a JSON document carrying a top-level
 `compareContract` block: asymmetric vs. symmetric verdict split, direction
-rules, and a back-reference to `CLAUDE.md` for canonical verdict definitions.
+rules, and a back-reference to the canonical verdict definitions.
 Progress messages route to stderr so `--json` is pipe-clean.

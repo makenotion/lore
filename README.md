@@ -180,7 +180,7 @@ paste the emitted MCP server snippet into the host's config file. See
 agents still need repo-local instructions that tell them to prefer the shared
 Lore vault for team knowledge. Add a "Memory and note-taking" section to the
 root `AGENTS.md` and, when the repo uses Claude Code, mirror it in
-`CLAUDE.md`.
+`CLAUDE.md` or another host-specific instruction file.
 
 A minimal starter:
 
@@ -241,7 +241,7 @@ agent-writable categorical stance. The separate numeric `Confidence Score`
 column is system-managed: read citations raise it, contradiction/supersession
 signals lower it, and neglect decay reduces untouched memories over time. Do
 not try to write the numeric score through MCP inputs; see
-[`AGENTS.md`](AGENTS.md#confidence-categorical-vs-numeric-080) for the full
+[`docs/memory-workflows.md`](docs/memory-workflows.md#confidence) for the full
 contract.
 
 **Memory sources**: `conversation`, `file`, `manual`, `agent_diary`, `digest`
@@ -260,8 +260,8 @@ new memory. Use stable prefixes matching recurring families:
 apply to recurring categories; `note` and `task` kinds do not form revision
 chains. Use
 `lore-memory action='suggest-topic-key'` to derive a key, and see
-[`AGENTS.md`](AGENTS.md#topic-keys-for-evolving-memories-090) for promotion
-and re-keying rules.
+[`docs/memory-workflows.md`](docs/memory-workflows.md#topic-keys) for
+promotion and re-keying rules.
 
 Save digests regularly (`lore-context action='digest'` → synthesize →
 `lore-memory action='save'` with `source: "digest"`). When a digest from the

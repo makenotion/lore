@@ -389,8 +389,8 @@ function toScanPairMemory(
  * header explicitly tells the agent the next move (call
  * `lore-memory action='compare'`) and references the verdict
  * vocabulary by name. The 0.9.0 scan does NOT inline the locked prompt
- * verbatim — referencing CLAUDE.md is sufficient because the calling
- * agent already has it in context.
+ * verbatim. The canonical verdict definitions live in
+ * docs/memory-workflows.md.
  */
 export function renderScanMarkdown(report: ScanReport): string {
   const lines: string[] = []
@@ -401,7 +401,7 @@ export function renderScanMarkdown(report: ScanReport): string {
   lines.push(`**Scanned at:** ${report.scannedAt}`)
   lines.push(`**Prompt version:** ${report.promptVersion}`)
   lines.push("")
-  lines.push(`**Verdict vocabulary:** see CLAUDE.md "Conflict verdicts (0.9.0+)".`)
+  lines.push(`**Verdict vocabulary:** see docs/memory-workflows.md#conflict-verdicts.`)
   // One line for each prose paragraph rather than splitting mid-
   // sentence: backtick boundaries inside soft wraps read awkwardly,
   // and Markdown collapses the soft break into a space at render time
@@ -551,8 +551,8 @@ export function dynamicCodeFence(content: string): string {
 /**
  * Render the scan as JSON for programmatic consumers. The JSON variant
  * carries a `compareContract` block so an agent piping `--json` into
- * another lore tool doesn't have to consult CLAUDE.md to figure out
- * which ID is which. ~400 bytes per run; negligible cost for the
+ * another lore tool doesn't have to consult separate prose to figure
+ * out which ID is which. ~400 bytes per run; negligible cost for the
  * contract clarity it buys.
  */
 export function renderScanJson(report: ScanReport): string {
@@ -577,7 +577,7 @@ export function renderScanJson(report: ScanReport): string {
             "verdict='supersedes' requires the affectedMemoryId memory to have kind='decision'.",
           ],
           verdictDefinitions:
-            "see CLAUDE.md 'Conflict verdicts (0.9.0+)' for the canonical definitions",
+            "see docs/memory-workflows.md#conflict-verdicts for the canonical definitions",
         },
         pairs: report.pairs,
       },

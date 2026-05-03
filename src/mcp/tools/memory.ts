@@ -2257,7 +2257,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
               "block, bumps Revision Count); requires `kind` ∈ {decision, runbook, " +
               "incident, postmortem, policy}. On update: re-keys, appending a " +
               "`## Re-keyed` audit block; cannot be combined with `kind`. " +
-              "See CLAUDE.md 'Topic keys for evolving memories'.",
+              "See docs/memory-workflows.md#topic-keys.",
           ),
         // update only
         supersedesIds: z
@@ -2291,7 +2291,7 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .enum(COMPARE_VERDICTS)
           .optional()
           .describe(
-            "(action='compare') Verdict on the pair. See CLAUDE.md 'Conflict verdicts'.",
+            "(action='compare') Verdict on the pair. See docs/memory-workflows.md#conflict-verdicts.",
           ),
         affectedMemoryId: z
           .string()

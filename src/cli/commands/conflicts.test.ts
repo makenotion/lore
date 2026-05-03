@@ -932,9 +932,9 @@ describe("renderScanJson", () => {
     expect(rules.some((r) => r.includes("kind='decision'"))).toBe(true)
   })
 
-  it("includes a back-reference to CLAUDE.md for verdictDefinitions (not the definitions themselves)", () => {
+  it("includes a back-reference to the docs for verdictDefinitions (not the definitions themselves)", () => {
     const out = JSON.parse(renderScanJson(buildReport()))
-    expect(out.compareContract.verdictDefinitions).toContain("CLAUDE.md")
+    expect(out.compareContract.verdictDefinitions).toContain("docs/memory-workflows.md#conflict-verdicts")
   })
 
   it("each pair entry carries kind for both memories so the agent can validate supersedes-decision client-side", () => {
@@ -993,7 +993,7 @@ describe("renderScanMarkdown", () => {
     // Plural "pairs" when length === 0 (English plural for zero
     // counts; matches the spec's example "0 pairs surfaced").
     expect(md).toContain("0 pairs surfaced")
-    expect(md).toContain("Conflict verdicts (0.9.0+)")
+    expect(md).toContain("docs/memory-workflows.md#conflict-verdicts")
     expect(md).toContain("lore-memory action='compare'")
     expect(md).toContain("No candidate pairs to surface")
     expect(md).toContain("exhausted the scan scope")
