@@ -1,0 +1,7 @@
+{
+  "name": "lore-eval-fix-import",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic eval workspace. The agent must fix the import path in index.js to point at the real helpers module."
+}

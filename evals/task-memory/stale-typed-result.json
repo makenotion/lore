@@ -1,0 +1,10 @@
+{
+  "memories": [
+    {
+      "id": "decision/error-handling-throw-superseded",
+      "title": "Throw exceptions from service boundaries (superseded)",
+      "status": "superseded",
+      "summary": "Previously the project threw exceptions across boundaries. Superseded by the Result-type decision."
+    }
+  ]
+}

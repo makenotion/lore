@@ -1,0 +1,157 @@
+version: 1
+name: lore-task-starter
+description: |
+  End-to-end task-eval suite. Five tasks across the same scenario types
+  as the retrieval suite (debugging, refactor, design decision, code
+  review, incident response), each exercised against the full memory-
+  condition matrix (no-lore / helpful / noisy / stale). Real Codex runs
+  require LORE_EVAL_TASK_REAL=1; otherwise CodexAgentAdapter exits with
+  a recognizable refusal so misconfigured CI never racks up unbounded
+  model spend.
+
+tasks:
+  - id: add-readme-mentioning-package
+    prompt: |
+      The repository at the working directory is a synthetic Node package.
+      Add a README.md to the root that explains what the `greet` function
+      in `index.js` does. Mention the package name "lore-eval-add-readme"
+      somewhere in the README so reviewers can identify the package. Do
+      not modify index.js or package.json. If `.lore-memories.json`
+      exists, follow any non-superseded memory's guidance.
+    agent: codex
+    workspace: ../workspaces/add-readme
+    memoryConditions:
+      no-lore: ../task-memory/no-lore.json
+      helpful: ../task-memory/helpful-add-readme.json
+      noisy: ../task-memory/noisy-add-readme.json
+      stale: ../task-memory/stale-add-readme.json
+    verifiers:
+      - type: file-exists
+        path: README.md
+      - type: file-contents-match
+        path: README.md
+        pattern: lore-eval-add-readme
+      - type: file-contents-match
+        path: README.md
+        pattern: greet
+      - type: file-unchanged
+        path: index.js
+      - type: file-unchanged
+        path: package.json
+
+  - id: fix-broken-import-path
+    prompt: |
+      `index.js` imports `greet` from `./missing/helpers.js`, which does
+      not exist. The real helpers module lives at `./helpers.js`. Fix
+      the import path in `index.js` so the module resolves. Do not
+      modify `helpers.js` or `package.json`. If `.lore-memories.json`
+      exists, follow any non-superseded memory's guidance.
+    agent: codex
+    workspace: ../workspaces/fix-import
+    memoryConditions:
+      no-lore: ../task-memory/no-lore.json
+      helpful: ../task-memory/helpful-fix-import.json
+      noisy: ../task-memory/noisy-fix-import.json
+      stale: ../task-memory/stale-fix-import.json
+    verifiers:
+      # Must be an actual import declaration, not a substring in a comment.
+      # `new RegExp(pattern)` compiles without the `m` flag, so anchor on
+      # `(?:^|\n)` rather than `^` so the pattern ignores leading comment
+      # lines but still requires the `import { greet } from "./helpers.js"`
+      # statement to start a fresh line.
+      - type: file-contents-match
+        path: index.js
+        pattern: '(?:^|\n)import\s+\{\s*greet\s*\}\s+from\s+"\.\/helpers\.js"'
+      # Forbid the broken path only on an actual import declaration so a
+      # caller-supplied comment that mentions `missing/helpers` cannot
+      # fail a valid one-line repair. The line-boundary anchor is
+      # `(?:^|\n)` because `new RegExp(p)` compiles without the `m` flag.
+      - type: file-contents-match
+        path: index.js
+        pattern: '(?:^|\n)import\b[^\n]*missing/helpers'
+        mode: forbid
+      - type: file-unchanged
+        path: helpers.js
+      - type: file-unchanged
+        path: package.json
+
+  - id: returns-result-from-service-boundary
+    prompt: |
+      Add a `fetchUserProfile(userId)` function to `service.js` that
+      returns a Result by calling the helpers from `result.js` (`ok` /
+      `err`). Do not modify `result.js`. If `.lore-memories.json`
+      exists, follow any non-superseded memory's guidance.
+    agent: codex
+    workspace: ../workspaces/typed-result
+    memoryConditions:
+      no-lore: ../task-memory/no-lore.json
+      helpful: ../task-memory/helpful-typed-result.json
+      noisy: ../task-memory/noisy-typed-result.json
+      stale: ../task-memory/stale-typed-result.json
+    verifiers:
+      # Must declare the function — not just mention the name in a comment.
+      - type: file-contents-match
+        path: service.js
+        pattern: 'export\s+(?:async\s+)?function\s+fetchUserProfile'
+      # Must call the typed helper at a return site — not just import it.
+      - type: file-contents-match
+        path: service.js
+        pattern: 'return\s+(?:ok|err)\('
+      - type: file-contents-match
+        path: service.js
+        pattern: throw new Error
+        mode: forbid
+      - type: file-unchanged
+        path: result.js
+      - type: file-unchanged
+        path: package.json
+
+  - id: rewrite-logger-fields-snake-case
+    prompt: |
+      Update `logger.js` so the JSON payload uses snake_case field
+      names (e.g., `event_name` instead of `eventName`). Keep the
+      function signature the same. If `.lore-memories.json` exists,
+      follow any non-superseded memory's guidance.
+    agent: codex
+    workspace: ../workspaces/log-format
+    memoryConditions:
+      no-lore: ../task-memory/no-lore.json
+      helpful: ../task-memory/helpful-log-format.json
+      noisy: ../task-memory/noisy-log-format.json
+      stale: ../task-memory/stale-log-format.json
+    verifiers:
+      - type: file-contents-match
+        path: logger.js
+        pattern: event_name
+      - type: file-contents-match
+        path: logger.js
+        pattern: eventName
+        mode: forbid
+      - type: file-unchanged
+        path: package.json
+
+  - id: enable-checkout-feature-flag
+    prompt: |
+      Flip `flags.newCheckoutFlow` in `config.json` from `false` to
+      `true`. Do not modify any other field, and do not modify
+      `index.js` (the flag read there is already correct). If
+      `.lore-memories.json` exists, follow any non-superseded memory's
+      guidance.
+    agent: codex
+    workspace: ../workspaces/feature-flag
+    memoryConditions:
+      no-lore: ../task-memory/no-lore.json
+      helpful: ../task-memory/helpful-feature-flag.json
+      noisy: ../task-memory/noisy-feature-flag.json
+      stale: ../task-memory/stale-feature-flag.json
+    verifiers:
+      - type: file-contents-match
+        path: config.json
+        pattern: '"newCheckoutFlow":\s*true'
+      - type: file-contents-match
+        path: config.json
+        pattern: '"darkMode":\s*true'
+      - type: file-unchanged
+        path: index.js
+      - type: file-unchanged
+        path: package.json

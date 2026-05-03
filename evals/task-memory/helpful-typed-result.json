@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "decision/error-handling-result-type",
+      "title": "Return Result types from service boundaries",
+      "summary": "Service boundaries return Result<T,E> via ok()/err(); never throw across boundaries."
+    }
+  ]
+}

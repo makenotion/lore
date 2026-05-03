@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "decision/relative-imports",
+      "title": "Relative imports must point at sibling files in the same package",
+      "summary": "When index.js imports a sibling helper, the path is './helpers.js' — never a non-existent subdirectory."
+    }
+  ]
+}

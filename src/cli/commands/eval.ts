@@ -12,6 +12,7 @@ import {
   readEvalBaselineSnapshot,
   writeEvalBaselineSnapshot,
 } from "../../eval/baseline.js"
+import { runTaskEvalSuite } from "../../eval/task-runner.js"
 import { resolveProjectByName } from "../../core/project-scope.js"
 import { EVAL_RUNNERS, type EvalRunner } from "../../eval/schema.js"
 import { parsePositiveDecimalInteger, type CliParseResult } from "../parse.js"
@@ -81,6 +82,27 @@ export function parseEvalRunCliOptions(raw: {
     }
   }
 
+  if (runner === "task") {
+    // Task mode short-circuits to runTaskEvalSuite and does not consume
+    // any of these flags. Silently dropping them would let an operator
+    // wire `--baseline` into a CI gate that never gates anything; reject
+    // up front so the misconfiguration is loud.
+    const taskIncompatible: Array<{ flag: string; raw: string | undefined }> = [
+      { flag: "--baseline", raw: raw.baseline },
+      { flag: "--min-lift", raw: raw.minLift },
+      { flag: "--max-harm", raw: raw.maxHarm },
+      { flag: "--project", raw: raw.project },
+    ]
+    for (const { flag, raw: value } of taskIncompatible) {
+      if (value !== undefined) {
+        return {
+          ok: false,
+          message: `${flag} is not supported with --runner task; task-mode artifacts are scored by deterministic verifiers, not retrieval metrics.`,
+        }
+      }
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -124,6 +146,28 @@ export function collectEvalThresholdFailures(
 
 function isEvalRunner(value: string): value is EvalRunner {
   return (EVAL_RUNNERS as readonly string[]).includes(value)
+}
+
+/**
+ * Reject `--runner task` for the `eval baseline` subcommand. Task-mode
+ * artifacts are scored by deterministic verifiers, not retrieval
+ * metrics, so a baseline snapshot has nothing to compare. Without this
+ * gate, `eval baseline ... --runner task` falls through to
+ * `runEvalSuite` and surfaces a retrieval-suite Zod error — useless to
+ * the operator. Extracted for unit testing the contract; the action
+ * body just propagates the message.
+ */
+export function validateBaselineRunnerSupport(
+  runner: EvalRunner | undefined
+): CliParseResult<void> {
+  if (runner === "task") {
+    return {
+      ok: false,
+      message:
+        "--runner task is not supported by the baseline subcommand. Task-mode artifacts are scored by deterministic verifiers, not retrieval metrics, so baseline comparisons do not apply.",
+    }
+  }
+  return { ok: true, value: undefined }
 }
 
 function parseOptionalUnitInterval(
@@ -215,7 +259,7 @@ evalCommand.addCommand(
     .argument("<suite>", "Path to an eval suite YAML file")
     .option(
       "--runner <mode>",
-      "Runner mode (retrieval|notion); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
+      "Runner mode (retrieval|notion|task); defaults to the suite YAML's `runner` field, or `retrieval` if absent"
     )
     .option("--trials <n>", "Trial count; retrieval mode requires 1")
     .option("--out <path>", "Write the JSON artifact to a specific path")
@@ -252,6 +296,50 @@ evalCommand.addCommand(
         }
 
         try {
+          if (parsed.value.runner === "task") {
+            const { artifact, outPath } = await runTaskEvalSuite(suite, {
+              outPath: parsed.value.outPath,
+            })
+            if (parsed.value.json) {
+              console.log(JSON.stringify(artifact, null, 2))
+            } else {
+              const status = artifact.summary.failedTasks === 0 ? "passed" : "failed"
+              console.log(
+                `Task eval ${status}: ${artifact.summary.passedTasks}/${artifact.summary.tasks} tasks passed.`
+              )
+              console.log(`Artifact: ${outPath}`)
+              for (const result of artifact.results) {
+                if (!result.success) {
+                  const failed = result.verifiers.filter((v) => !v.passed)
+                  const conditionTag = result.memoryCondition
+                    ? ` [${result.memoryCondition}]`
+                    : ""
+                  console.log(`  - ${result.taskId}${conditionTag}:`)
+                  if (result.agentRun.timedOut) {
+                    console.log(`    agent timed out`)
+                  }
+                  if (result.agentRun.exitCode !== 0) {
+                    console.log(`    agent exit code: ${result.agentRun.exitCode}`)
+                    // Surface the first stderr line so the cost-guardrail
+                    // refusal ("set LORE_EVAL_TASK_REAL=1 to opt in...")
+                    // and other adapter-side messages reach the operator
+                    // instead of disappearing into the artifact.
+                    const firstStderrLine = result.agentRun.stderr
+                      .split("\n")
+                      .map((line) => line.trim())
+                      .find((line) => line.length > 0)
+                    if (firstStderrLine) {
+                      console.log(`    stderr: ${firstStderrLine}`)
+                    }
+                  }
+                  for (const v of failed) console.log(`    - ${v.message}`)
+                }
+              }
+            }
+            if (artifact.summary.failedTasks > 0) process.exit(1)
+            return
+          }
+
           const runOptions: RunEvalOptions = {
             runner: parsed.value.runner,
             trials: parsed.value.trials,
@@ -367,6 +455,12 @@ evalCommand.addCommand(
         })
         if (!parsed.ok) {
           console.error(`Eval baseline failed: ${parsed.message}`)
+          process.exit(1)
+          return
+        }
+        const baselineRunnerCheck = validateBaselineRunnerSupport(parsed.value.runner)
+        if (!baselineRunnerCheck.ok) {
+          console.error(`Eval baseline failed: ${baselineRunnerCheck.message}`)
           process.exit(1)
           return
         }

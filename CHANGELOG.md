@@ -37,6 +37,26 @@ log is the canonical source for those.
   if a future change drops the filter. The Notion-backed runner can
   still report `memoryHarm > 0` against the same suite — that gap is
   the temporal-recall work tracked under #284. (#450)
+- **End-to-end task-eval runner.** New `lore eval run --runner task
+  <task-suite>` exercises an agent (`codex exec` first) against a
+  synthetic workspace and scores the result with deterministic
+  verifiers. Task-eval suites live under `evals/task-suites/` and use
+  a separate YAML schema from retrieval suites: each task names a
+  workspace fixture, a prompt, an agent, and a list of verifiers
+  (`file-exists`, `file-contents-match`, and `file-unchanged` ship
+  today). The runner copies the workspace to a tmp directory, shells
+  out to `codex exec --cd ... --sandbox workspace-write` with a
+  scrubbed environment (only `PATH` / `HOME` / `CODEX_*` /
+  `OPENAI_API_KEY` / `LANG` / `LC_*` / `TZ` forwarded; secrets like
+  `NOTION_API_TOKEN` and `LORE_NOTION_TOKEN` are stripped), runs the
+  agent in a detached process group so timeout cancellation kills the
+  whole tree, and runs the verifiers against the post-run workspace.
+  Pluggable agent-adapter contract lets tests inject a mock without
+  invoking a real model. Real Codex invocation is gated behind
+  `LORE_EVAL_TASK_REAL=1` so a misconfigured CI job cannot rack up
+  unbounded model spend. The committed `evals/task-suites/starter.yaml`
+  ships five tasks across the same scenario types as the retrieval
+  suite. (#450)
 - **Notion-backed eval runner.** `lore eval run --runner notion --project
   <SandboxProject>` exercises the real retrieval stack — Notion's rate
   limiter, hybrid search composition, contains/semantic fusion, and

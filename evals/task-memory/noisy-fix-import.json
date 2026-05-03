@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "note/yaml-snapshot-hygiene",
+      "title": "YAML snapshot hygiene",
+      "summary": "Periodically prune orphan YAML snapshots."
+    }
+  ]
+}

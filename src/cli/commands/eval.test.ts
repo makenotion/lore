@@ -3,6 +3,7 @@ import {
   assertSandboxProjectName,
   collectEvalThresholdFailures,
   parseEvalRunCliOptions,
+  validateBaselineRunnerSupport,
 } from "./eval.js"
 import type { EvalRunArtifact } from "../../eval/runner.js"
 
@@ -56,6 +57,22 @@ describe("parseEvalRunCliOptions", () => {
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.value.baselinePath).toBe("evals/baselines/lore-core.json")
+    }
+  })
+
+  it.each([
+    { flag: "baseline", value: "evals/baselines/x.json" },
+    { flag: "minLift", value: "0.5" },
+    { flag: "maxHarm", value: "0" },
+    { flag: "project", value: "Mail" },
+  ])("rejects --$flag with --runner task ($flag)", ({ flag, value }) => {
+    const result = parseEvalRunCliOptions({
+      runner: "task",
+      [flag]: value,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("not supported with --runner task")
     }
   })
 
@@ -154,6 +171,22 @@ describe("collectEvalThresholdFailures", () => {
       "Memory lift is unavailable; expected >= 0.5.",
       "Memory harm is unavailable; expected <= 0.",
     ])
+  })
+})
+
+describe("validateBaselineRunnerSupport", () => {
+  it("rejects --runner task with an actionable operator message", () => {
+    const result = validateBaselineRunnerSupport("task")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("--runner task is not supported")
+      expect(result.message).toContain("baseline subcommand")
+    }
+  })
+
+  it("accepts retrieval and notion runners", () => {
+    expect(validateBaselineRunnerSupport("retrieval").ok).toBe(true)
+    expect(validateBaselineRunnerSupport("notion").ok).toBe(true)
   })
 })
 

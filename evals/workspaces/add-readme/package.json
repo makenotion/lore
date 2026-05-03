@@ -1,0 +1,7 @@
+{
+  "name": "lore-eval-add-readme",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic eval workspace. The agent must add a README.md describing this package."
+}

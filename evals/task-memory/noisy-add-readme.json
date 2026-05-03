@@ -1,0 +1,14 @@
+{
+  "memories": [
+    {
+      "id": "note/dashboard-color-palette",
+      "title": "Dashboard color palette tokens",
+      "summary": "Standard palette tokens for chart series."
+    },
+    {
+      "id": "runbook/oncall-escalation",
+      "title": "On-call escalation runbook",
+      "summary": "Page secondary after 5 minutes."
+    }
+  ]
+}

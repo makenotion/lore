@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "note/cache-warmup-quirks",
+      "title": "Cache warmup quirks",
+      "summary": "Cache warmup can drop tail latency 40% with staggered requests."
+    }
+  ]
+}

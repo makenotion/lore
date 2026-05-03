@@ -1,0 +1,10 @@
+{
+  "memories": [
+    {
+      "id": "policy/log-field-camelcase-superseded",
+      "title": "camelCase log field names (superseded)",
+      "status": "superseded",
+      "summary": "Older modules used camelCase log keys. This guidance is superseded by the snake_case policy."
+    }
+  ]
+}

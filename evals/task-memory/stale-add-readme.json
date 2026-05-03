@@ -1,0 +1,10 @@
+{
+  "memories": [
+    {
+      "id": "policy/readme-superseded",
+      "title": "Old README format (superseded)",
+      "status": "superseded",
+      "summary": "Previously, READMEs were optional. This guidance is superseded; current packages must ship a README that mentions the package name and explains exported functions."
+    }
+  ]
+}

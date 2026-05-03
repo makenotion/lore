@@ -1,0 +1,7 @@
+{
+  "name": "lore-eval-feature-flag",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic eval workspace. The agent must flip a feature flag to enabled in config.json without touching index.js."
+}

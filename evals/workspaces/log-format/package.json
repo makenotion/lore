@@ -1,0 +1,7 @@
+{
+  "name": "lore-eval-log-format",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic eval workspace. The agent must update logger.js to use snake_case structured fields."
+}

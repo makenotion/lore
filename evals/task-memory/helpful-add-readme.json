@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "policy/readme-conventions",
+      "title": "README format requires the package name and a short description of every exported function",
+      "summary": "Package READMEs name the package, list exported functions, and explain what each one does."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "policy/log-field-snake-case",
+      "title": "Structured log field names use snake_case",
+      "summary": "Log emitter payloads must use lowercase snake_case keys (e.g., event_name) for cross-module compatibility."
+    }
+  ]
+}

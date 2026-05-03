@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "runbook/ci-flake-triage",
+      "title": "CI flake triage runbook",
+      "summary": "Rerun the failing job once before opening an issue."
+    }
+  ]
+}

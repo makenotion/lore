@@ -1,0 +1,10 @@
+{
+  "memories": [
+    {
+      "id": "decision/import-aliases-superseded",
+      "title": "Use bundler aliases for imports (superseded)",
+      "status": "superseded",
+      "summary": "Previously the project used bundler aliases like '@/helpers'. This was superseded by relative imports."
+    }
+  ]
+}

@@ -5,7 +5,38 @@ import { z } from "zod"
 
 export const EVAL_SUITE_VERSION = 1
 
-export const EVAL_RUNNERS = ["retrieval", "notion"] as const
+export const EVAL_RUNNERS = ["retrieval", "notion", "task"] as const
+
+/**
+ * Agents the committed task-eval YAML may reference. `mock` is
+ * intentionally NOT in this list — tests pass mock adapters via
+ * `RunTaskEvalOptions.adapters` directly, but a committed YAML cannot
+ * reference an agent that has no production implementation. Adding a
+ * new agent (Claude Code headless, etc.) is a one-entry edit here plus
+ * the matching `AgentAdapter` implementation.
+ */
+export const TASK_EVAL_AGENTS = ["codex"] as const
+
+export const TASK_EVAL_SUITE_VERSION = 1
+
+export type TaskEvalAgent = (typeof TASK_EVAL_AGENTS)[number]
+
+/**
+ * Memory conditions for the task-eval matrix (#450 Gap 3 spec).
+ * Each task is exercised against every condition listed in its
+ * `memoryConditions` map; the runner seeds the workspace with the
+ * condition's fixture file before invoking the agent. Mirrors the
+ * retrieval-suite ablations with the same names so the two surfaces
+ * stay aligned.
+ */
+export const TASK_EVAL_MEMORY_CONDITIONS = [
+  "no-lore",
+  "helpful",
+  "noisy",
+  "stale",
+] as const
+
+export type TaskEvalMemoryCondition = (typeof TASK_EVAL_MEMORY_CONDITIONS)[number]
 
 export const REQUIRED_ABLATION_SCENARIOS = [
   "no-lore",

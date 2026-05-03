@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "decision/checkout-rollout",
+      "title": "Enable newCheckoutFlow for next release",
+      "summary": "The new checkout flow is ready; flip the flag to true. Do not modify index.js — the flag read is correct as-is."
+    }
+  ]
+}

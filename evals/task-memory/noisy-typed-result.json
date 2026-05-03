@@ -1,0 +1,9 @@
+{
+  "memories": [
+    {
+      "id": "note/structured-log-fields",
+      "title": "Structured log field nomenclature",
+      "summary": "Lowercase snake_case keys remain canonical."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "memories": [
+    {
+      "id": "decision/checkout-rollout-deferred-superseded",
+      "title": "Defer newCheckoutFlow rollout (superseded)",
+      "status": "superseded",
+      "summary": "Previously the rollout was deferred. This guidance is superseded; flip the flag to true now."
+    }
+  ]
+}

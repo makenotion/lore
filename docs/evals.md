@@ -32,13 +32,15 @@ node dist/cli.js eval run evals/suites/lore-core.yaml
 
 ## Runner modes
 
-Two runners ship today, sharing the same suite YAML format and the same surface
-registry:
+Three runners ship today; the first two share the same suite YAML format and
+surface registry, the third is its own format because it scores agent-produced
+workspace state rather than retrieved memory ids:
 
 | Runner | What it exercises | Where to use it |
 | --- | --- | --- |
 | `retrieval` (default) | Fixture-backed `loadWakeUpData` with deterministic token-overlap search. No Notion calls. | Per-PR CI; the inner-loop fast feedback. |
 | `notion` | Real `loadWakeUpData` against `LoreServices` initialized from `.lore.yaml`. Hits Notion. | Nightly CI; PRs that touch retrieval composition or ranking. |
+| `task` | End-to-end agent run against a synthetic workspace, scored by deterministic verifiers. Shells out to `codex exec`. | Nightly CI; opt-in PRs. Slow + model-cost; not the per-PR hot path. |
 
 Pass `--runner notion --project <SandboxProject>` to route a run through the
 production retrieval stack (rate limiter, hybrid search, contains/semantic
@@ -95,6 +97,107 @@ another (they key results on disjoint scenario spaces — retrieval baselines
 on ablations, notion baselines on `live-vault`). Capture a runner-matched
 baseline with `lore eval baseline --runner <mode> ... <suite>` before
 comparing.
+
+## Task-eval suites (end-to-end)
+
+Task-eval suites live under `evals/task-suites/` and use a different YAML
+schema from retrieval suites — the unit of measurement is a task, not a
+retrieval surface. Each task names:
+
+- A `prompt` for the agent
+- A `workspace` fixture path (relative to the suite); the runner copies it to
+  a tmp directory before the run so workspaces stay read-only on disk
+- An `agent` — only `codex` is registered as a production agent today; tests
+  inject mock adapters under arbitrary string ids via `RunTaskEvalOptions.adapters`
+- An optional `memoryConditions` matrix mapping condition (`no-lore` /
+  `helpful` / `noisy` / `stale`) to a fixture path; the runner runs the
+  task once per declared condition and seeds `.lore-memories.json` into
+  the workspace from the fixture
+- A list of `verifiers` that score the post-run workspace state
+
+```yaml
+version: 1
+name: lore-task-starter
+tasks:
+  - id: add-readme-mentioning-package
+    prompt: Add a README that explains the greet function.
+    agent: codex
+    workspace: ../workspaces/add-readme
+    memoryConditions:
+      no-lore: ../task-memory/no-lore.json
+      helpful: ../task-memory/helpful-add-readme.json
+      noisy: ../task-memory/noisy-add-readme.json
+      stale: ../task-memory/stale-add-readme.json
+    verifiers:
+      - type: file-exists
+        path: README.md
+      - type: file-contents-match
+        path: README.md
+        pattern: greet
+      - type: file-contents-match
+        path: index.js
+        pattern: throw new Error
+        mode: forbid
+      - type: file-unchanged
+        path: package.json
+```
+
+Three verifier types ship today:
+
+- `file-exists` — passes if the path exists in the post-run workspace.
+- `file-contents-match` — reads the file, applies the regex pattern. Mode
+  `match` (default) passes when the pattern hits; mode `forbid` passes when
+  the pattern does NOT hit. Patterns are validated as JavaScript regexes at
+  schema parse time.
+- `file-unchanged` — sha256-compares the workspace file to the source
+  fixture; passes when they're byte-identical. Use this to pin "the agent
+  must not modify this file" contracts the prompt declares.
+
+Run with `lore eval run --runner task evals/task-suites/starter.yaml`. The
+runner copies the workspace, optionally seeds the memory-condition fixture,
+shells out to `codex exec --cd <workspace> --sandbox workspace-write
+--skip-git-repo-check <prompt>`, then runs the verifiers against the
+result.
+
+### Production safety gates
+
+- **Cost guardrail.** Real Codex invocation requires
+  `LORE_EVAL_TASK_REAL=1` in the environment. Without it,
+  `CodexAgentAdapter.run` exits with a recognizable refusal stderr line
+  and a non-zero exit code. The CLI failure summary surfaces the first
+  stderr line so the operator sees the refusal directly.
+- **Env scrubbing.** The Codex child inherits an explicit allowlist
+  env (`PATH`, `HOME`, `TMPDIR`, `TZ`, `LANG`, `LC_*`, `OPENAI_API_KEY`,
+  plus `CODEX_*`). Secrets like `NOTION_API_TOKEN`, `LORE_NOTION_TOKEN`,
+  and `GITHUB_TOKEN` are stripped — both from the child env and from
+  any echo into the captured stdout/stderr.
+- **Process-tree teardown.** The Codex child runs in a detached process
+  group; timeout cancellation kills `-pid` so subprocesses Codex
+  spawned (test watchers, dev servers, package installs) terminate
+  too. POSIX-only — Windows would need a `taskkill /T` reimplementation.
+- **Capture cap.** stdout / stderr each cap at 1 MiB; truncation is
+  marked in the captured text so the operator knows.
+- **Workspace cleanup.** Tmp workspaces are removed via `try/finally`
+  after each trial. Pass `keepWorkspaces: true` programmatically (or
+  `--keep-workspaces` once exposed on the CLI) for debugging.
+
+Adapter contract: `AgentAdapter` is a 2-member interface (`id`, `run`)
+that lets tests inject a mock without shelling out to a real model.
+Production callers get the `CodexAgentAdapter`; tests pass a custom
+adapter via `RunTaskEvalOptions.adapters`.
+
+The committed `evals/task-suites/starter.yaml` ships **five tasks** across
+the same scenario types as the retrieval suite, each exercised against
+the full memory-condition matrix (5 tasks × 4 conditions = 20 trials).
+The artifact's `summary.totalTrials` reflects the matrix; per-result
+`failureReason` discriminates between adapter refusal, timeout, spawn
+error, agent exit, and verifier failure.
+
+`--baseline`, `--min-lift`, `--max-harm`, and `--project` are not
+supported with `--runner task` (task-mode artifacts are scored by
+verifiers, not retrieval metrics). The CLI parser rejects the
+combination so a CI job that wires one of those into a task-mode gate
+fails loudly instead of silently never gating.
 
 By default, result artifacts are written under `evals/results/`, which is
 ignored by git. Use `--out <path>` to choose a deterministic artifact path for

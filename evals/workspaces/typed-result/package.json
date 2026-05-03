@@ -1,0 +1,7 @@
+{
+  "name": "lore-eval-typed-result",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic eval workspace. The agent must add a service method that returns Result<T,E> rather than throwing."
+}
