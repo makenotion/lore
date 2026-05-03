@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { LoreServices } from "../server.js"
 import {
   formatDispatchError,
+  formatSkippedTopicWarning,
   paginationFooter,
   toolError,
   debugLogPartialFailures,
@@ -303,9 +304,7 @@ async function handleCreate(
       // collapse landed on an existing row.
       topicLabel = topic.name
     } else if (args.topicName) {
-      resolved.warnings.push(
-        `Topic "${args.topicName}" skipped (requires at least one project)`
-      )
+      resolved.warnings.push(formatSkippedTopicWarning(args.topicName))
     }
 
     const probeProjectId = resolved.ids[0]

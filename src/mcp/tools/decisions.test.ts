@@ -205,12 +205,13 @@ describe("registerDecisionTools", () => {
     const mockServer = createMockServer()
     const created = makeDecision("decision-unscoped", {
       title: "unscoped topic skip",
+      projectIds: [],
     })
     const getOrCreate = vi.fn()
-    const create = vi.fn().mockResolvedValue(created)
+    const createDecision = vi.fn().mockResolvedValue(created)
     const services = {
       decisions: {
-        create,
+        create: createDecision,
       },
       topics: {
         getOrCreate,
@@ -230,26 +231,25 @@ describe("registerDecisionTools", () => {
     }
 
     registerDecisionTools(mockServer.server, services as never)
-    const createDecision = mockServer.getActionHandler("lore-decision", "create")
+    const create = mockServer.getActionHandler("lore-decision", "create")
 
-    const result = await createDecision({
+    const result = await create({
       decision: "unscoped topic skip",
       rationale: "Keep decision topic handling consistent with memory and task creates.",
       topicName: "Eval & Testing",
     } as never)
 
-    expect(create).toHaveBeenCalledWith(
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(createDecision).toHaveBeenCalledWith(
       expect.objectContaining({
         projectIds: undefined,
         topicId: undefined,
       })
     )
     expect(getOrCreate).not.toHaveBeenCalled()
-
-    const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("Topic: none")
     expect(text).toContain(
-      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
+      'Warnings: Topic "Eval & Testing" skipped (no project scope; pass projectName or projectNames)'
     )
   })
 

@@ -59,6 +59,9 @@ function writeRaceWorker(): string {
     `import { tryAcquireMigrationLock } from ${JSON.stringify(moduleUrl)}
 
 const scope = JSON.parse(process.env["LOCK_SCOPE"] ?? "{}")
+process.stdout.write("READY\\n")
+await new Promise((resolve) => process.stdin.once("data", resolve))
+
 const result = tryAcquireMigrationLock(scope)
 process.stdout.write(JSON.stringify({
   acquired: result.acquired,
@@ -67,9 +70,7 @@ process.stdout.write(JSON.stringify({
 }) + "\\n")
 
 if (result.acquired) {
-  await new Promise((resolve) =>
-    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "750"))
-  )
+  await new Promise((resolve) => process.stdin.once("data", resolve))
 }
 `
   )
@@ -92,34 +93,84 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
-        LOCK_HOLD_MS: "750",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     })
   })
 
-  return Promise.all(
-    children.map(async (child) => {
-      let stdout = ""
-      let stderr = ""
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8")
-      })
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8")
-      })
+  const handles = children.map((child) => {
+    let stdoutBuffer = ""
+    let stderr = ""
+    let ready = false
+    let resolveReady: () => void
+    let resolveResult: (result: {
+      acquired: boolean
+      ownerPid: number | null
+      pid: number
+    }) => void
+    const readyPromise = new Promise<void>((resolve) => {
+      resolveReady = resolve
+    })
+    const resultPromise = new Promise<{
+      acquired: boolean
+      ownerPid: number | null
+      pid: number
+    }>((resolve) => {
+      resolveResult = resolve
+    })
 
-      const [code] = (await once(child, "exit")) as [number | null]
-      if (code !== 0) {
-        throw new Error(`worker exited ${code}: ${stderr}`)
-      }
-      return JSON.parse(stdout.trim()) as {
-        acquired: boolean
-        ownerPid: number | null
-        pid: number
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString("utf8")
+      let newlineIndex = stdoutBuffer.indexOf("\n")
+      while (newlineIndex !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIndex)
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1)
+        if (!ready && line === "READY") {
+          ready = true
+          resolveReady()
+        } else if (line.startsWith("{")) {
+          resolveResult(
+            JSON.parse(line) as {
+              acquired: boolean
+              ownerPid: number | null
+              pid: number
+            }
+          )
+        }
+        newlineIndex = stdoutBuffer.indexOf("\n")
       }
     })
-  )
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8")
+    })
+
+    return {
+      child,
+      ready: readyPromise,
+      result: resultPromise,
+      exit: async () => {
+        const [code] = (await once(child, "exit")) as [number | null]
+        if (code !== 0) {
+          throw new Error(`worker exited ${code}: ${stderr}`)
+        }
+      },
+    }
+  })
+
+  // Wait for both vite-node workers to load before starting the lock attempt;
+  // otherwise the first worker can acquire and exit before the second starts.
+  await Promise.all(handles.map((handle) => handle.ready))
+  for (const { child } of handles) {
+    child.stdin?.write("go\n")
+  }
+
+  const results = await Promise.all(handles.map((handle) => handle.result))
+  for (const { child } of handles) {
+    child.stdin?.write("release\n")
+    child.stdin?.end()
+  }
+  await Promise.all(handles.map((handle) => handle.exit()))
+  return results
 }
 
 describe("tryAcquireMigrationLock", () => {
@@ -222,7 +273,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("allows exactly one racing process to reclaim a stale lock", async () => {
     const lockScope = scope()
@@ -234,7 +285,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("keeps independent scopes from blocking each other", () => {
     const first = tryAcquireMigrationLock(scope({ vaultPageId: "vault-a" }))

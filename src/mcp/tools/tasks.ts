@@ -17,6 +17,7 @@ import type { LoreServices } from "../server.js"
 import {
   debugLogPartialFailures,
   formatDispatchError,
+  formatSkippedTopicWarning,
   paginationFooter,
   toolError,
 } from "../helpers.js"
@@ -183,9 +184,7 @@ async function handleCreate(
       topicId = topic.id
       topicLabel = topic.name
     } else if (args.topicName) {
-      resolved.warnings.push(
-        `Topic "${args.topicName}" skipped (requires at least one project)`
-      )
+      resolved.warnings.push(formatSkippedTopicWarning(args.topicName))
     }
 
     // Probe runs in parallel with the create — sequencing them would double

@@ -4,6 +4,7 @@ import type { LoreServices } from "../server.js"
 import {
   debugLogAutoFactFailure,
   formatDispatchError,
+  formatSkippedTopicWarning,
   paginationFooter,
   toolError,
   debugLogPartialFailures,
@@ -448,9 +449,7 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
       // is now linked to a topic with a different name.
       topicLabel = topic.name
     } else if (args.topicName) {
-      resolved.warnings.push(
-        `Topic "${args.topicName}" skipped (requires at least one project)`
-      )
+      resolved.warnings.push(formatSkippedTopicWarning(args.topicName))
     }
 
     // Topic-key upsert dispatch (0.9.0/#06). When `topicKey` is set,
@@ -862,9 +861,7 @@ async function handleUpdate(
           }
         }
         if (!topicScope || topicScope.length === 0) {
-          warnings.push(
-            `Topic "${args.topicName}" skipped (requires at least one project)`
-          )
+          warnings.push(formatSkippedTopicWarning(args.topicName))
         } else {
           const topic = await services.topics.getOrCreate(args.topicName, topicScope, {
             forceNew: args.forceNewTopic,

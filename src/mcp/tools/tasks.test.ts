@@ -189,7 +189,7 @@ describe("lore-task-create", () => {
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("Topic: none")
     expect(text).toContain(
-      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
+      'Warnings: Topic "Eval & Testing" skipped (no project scope; pass projectName or projectNames)'
     )
   })
 })

@@ -121,7 +121,7 @@ function lockContent(ownerPid: number): string {
 
 function removeIfSameSnapshot(path: string, snapshot: LockSnapshot): boolean {
   const current = readLockSnapshot(path)
-  if (!current) return true
+  if (!current) return false
   if (!sameSnapshot(snapshot, current)) return false
 
   try {

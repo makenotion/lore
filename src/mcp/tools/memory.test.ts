@@ -366,7 +366,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     expect(getOrCreate).not.toHaveBeenCalled()
     expect(text).toContain("Topic: none")
     expect(text).toContain(
-      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
+      'Warnings: Topic "Eval & Testing" skipped (no project scope; pass projectName or projectNames)'
     )
   })
 
@@ -414,7 +414,7 @@ describe("lore-remember forceNewTopic (issue #109)", () => {
     expect(getOrCreate).not.toHaveBeenCalled()
     expect(text).toContain('Updated memory: "unscoped topic update"')
     expect(text).toContain(
-      'Warnings: Topic "Eval & Testing" skipped (requires at least one project)'
+      'Warnings: Topic "Eval & Testing" skipped (no project scope; pass projectName or projectNames)'
     )
   })
 

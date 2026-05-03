@@ -24,6 +24,10 @@ export function toolError(err: unknown): ToolResult {
   }
 }
 
+export function formatSkippedTopicWarning(topicName: string): string {
+  return `Topic "${topicName}" skipped (no project scope; pass projectName or projectNames)`
+}
+
 /**
  * Render the pagination footer a cursor-aware list tool appends to its text
  * response when more results exist. Absence of the footer signals end-of-list.
