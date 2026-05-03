@@ -223,6 +223,62 @@ export interface WakeUpTaskBucketCoverage {
   activeCapped: boolean
 }
 
+export type WakeUpCoverageMode = "ranked" | "default"
+
+export interface WakeUpSectionCounts {
+  digest: number
+  currentTaskMemories: number
+  recentMemories: number
+  relatedMemories: number
+  tasks: number
+  knowledgeFacts: number
+  decisions: number
+  proposedDecisions: number
+  overdueDecisions: number
+  staleConfidence: number
+}
+
+export interface WakeUpDigestCoverage {
+  /** Whether a latest digest row existed, regardless of freshness. */
+  available: boolean
+  /** Whether that digest was fresh enough to render in wake-up. */
+  fresh: boolean
+  /** Age of the latest digest in whole days, or null when absent/future-dated. */
+  ageDays: number | null
+}
+
+export interface WakeUpCoverageMetrics {
+  mode: WakeUpCoverageMode
+  /** Length of the sanitized user query. Zero when ranked search did not run. */
+  queryLength: number
+  digest: WakeUpDigestCoverage
+  sectionCounts: WakeUpSectionCounts
+}
+
+export interface WakeUpCoverageInput {
+  userQuery?: string
+  now?: number
+  /** True only when the user-query relevance search actually ran. */
+  rankedSearchAttempted?: boolean
+  latestDigest: Memory | null
+  digestFreshnessDays?: number
+  memories: readonly Memory[]
+  relatedMemories: readonly Memory[]
+  taskMemories: readonly Memory[]
+  tasks: readonly TaskSummary[]
+  knowledgeFacts: readonly Fact[]
+  proposedDecisions: readonly DecisionSummary[]
+  overdueDecisions: readonly DecisionSummary[]
+  staleConfidence: readonly Memory[]
+}
+
+export interface WakeUpCoverageCaps {
+  memoryLimit?: number
+  relatedMemoryLimit?: number
+  knowledgeFactLimit?: number
+  taskMemoryLimit?: number
+}
+
 export interface WakeUpOptions {
   projectId?: string
   /** Max non-digest memories when no fresh digest exists. */
@@ -281,6 +337,12 @@ export interface WakeUpOptions {
    * posture as `includeDecisions`.
    */
   includeStaleConfidence?: boolean
+  /**
+   * When true, compute the hook-oriented wake-up coverage counters used by
+   * `LORE_DEBUG=1`. Defaults to false so MCP/default wake-up callers do not
+   * pay for counters they do not render.
+   */
+  includeCoverage?: boolean
   /**
    * Anchor date (`YYYY-MM-DD`) for the Stale Confidence query's
    * neglect cutoff and the renderer's `Nd ago` arithmetic. Threaded
@@ -349,6 +411,98 @@ export interface WakeUpData {
    * tells the agent the row is recent AND triage-worthy.
    */
   staleConfidence: Memory[]
+  /**
+   * Privacy-conscious wake-up coverage counters for hook debug logging. Null
+   * unless `includeCoverage` was requested; MCP callers intentionally ignore
+   * this hook-only observability payload. Counts are post-fetch data-layer
+   * counts, so renderers that hide or re-bucket rows must adjust affected
+   * section counts before logging.
+   */
+  coverage: WakeUpCoverageMetrics | null
+}
+
+export function computeWakeUpCoverage(input: WakeUpCoverageInput): WakeUpCoverageMetrics {
+  const userQuery = sanitizeUserQuery(input.userQuery)
+  const ranked = Boolean(userQuery && input.rankedSearchAttempted)
+  const proposedDecisionCount = input.proposedDecisions.length
+  const overdueDecisionCount = input.overdueDecisions.length
+  const now = input.now ?? Date.now()
+  const digestFresh = isFreshDigest(
+    input.latestDigest,
+    input.digestFreshnessDays ?? DEFAULT_DIGEST_FRESHNESS_DAYS,
+    now,
+  )
+
+  return {
+    mode: ranked ? "ranked" : "default",
+    queryLength: ranked ? userQuery?.length ?? 0 : 0,
+    digest: {
+      available: input.latestDigest !== null,
+      fresh: digestFresh,
+      ageDays: digestAgeDays(input.latestDigest, now),
+    },
+    sectionCounts: {
+      digest: digestFresh ? 1 : 0,
+      currentTaskMemories: input.taskMemories.length,
+      recentMemories: input.memories.length,
+      relatedMemories: input.relatedMemories.length,
+      tasks: input.tasks.length,
+      knowledgeFacts: input.knowledgeFacts.length,
+      // Keep this rollup adjacent to its addends so any new decision bucket
+      // updates the aggregate and the per-bucket counters together.
+      decisions: proposedDecisionCount + overdueDecisionCount,
+      proposedDecisions: proposedDecisionCount,
+      overdueDecisions: overdueDecisionCount,
+      staleConfidence: input.staleConfidence.length,
+    },
+  }
+}
+
+export function formatWakeUpCoverage(
+  coverage: WakeUpCoverageMetrics,
+  caps: WakeUpCoverageCaps = {},
+): string {
+  const counts = coverage.sectionCounts
+  const parts = [
+    "[lore] wakeup:",
+    `mode=${coverage.mode}`,
+    `ranked=${coverage.mode === "ranked"}`,
+  ]
+
+  if (coverage.mode === "ranked") {
+    parts.push(`queryLen=${coverage.queryLength}`)
+  } else {
+    parts.push("reason=no-ranked-search")
+  }
+
+  if (caps.memoryLimit !== undefined) parts.push(`memory=${caps.memoryLimit}`)
+  if (caps.relatedMemoryLimit !== undefined) {
+    parts.push(`related=${caps.relatedMemoryLimit}`)
+  }
+  if (caps.knowledgeFactLimit !== undefined) {
+    parts.push(`knowledge=${caps.knowledgeFactLimit}`)
+  }
+  if (caps.taskMemoryLimit !== undefined) {
+    parts.push(`taskMemories=${caps.taskMemoryLimit}`)
+  }
+
+  parts.push(
+    `digestAvailable=${coverage.digest.available}`,
+    `digestFresh=${coverage.digest.fresh}`,
+    `digestAgeDays=${coverage.digest.ageDays ?? "none"}`,
+    `sections.digest=${counts.digest}`,
+    `sections.currentTask=${counts.currentTaskMemories}`,
+    `sections.recent=${counts.recentMemories}`,
+    `sections.related=${counts.relatedMemories}`,
+    `sections.tasks=${counts.tasks}`,
+    `sections.facts=${counts.knowledgeFacts}`,
+    `sections.decisions=${counts.decisions}`,
+    `sections.proposedDecisions=${counts.proposedDecisions}`,
+    `sections.overdueDecisions=${counts.overdueDecisions}`,
+    `sections.staleConfidence=${counts.staleConfidence}`,
+  )
+
+  return parts.join(" ")
 }
 
 export async function loadWakeUpData(
@@ -408,6 +562,7 @@ export async function loadWakeUpData(
     userQuery && taskMemoryLimit > 0
       ? Math.min(NOTION_PAGE_SIZE, taskMemoryLimit + taskFetchSlack)
       : 0
+  const rankedSearchAttempted = Boolean(projectId && userQuery && taskFetchLimit > 0)
   // Fetch active tasks through bounded per-bucket windows instead of one
   // due-date-sorted window. Notion sorts null `Review By` dates after
   // dated rows, so one active due-dated cluster can otherwise fill the
@@ -609,6 +764,24 @@ export async function loadWakeUpData(
     }
   }
 
+  const coverage = opts.includeCoverage
+    ? computeWakeUpCoverage({
+        userQuery,
+        now,
+        rankedSearchAttempted,
+        latestDigest,
+        digestFreshnessDays: freshnessDays,
+        memories,
+        relatedMemories,
+        taskMemories,
+        tasks,
+        knowledgeFacts,
+        proposedDecisions,
+        overdueDecisions,
+        staleConfidence,
+      })
+    : null
+
   return {
     digest,
     memories,
@@ -621,6 +794,7 @@ export async function loadWakeUpData(
     taskBucketCoverage: taskWindow.coverage,
     taskMemories,
     staleConfidence,
+    coverage,
   }
 }
 
@@ -780,6 +954,13 @@ function isFreshDigest(digest: Memory | null, maxAgeDays: number, now: number): 
   if (!digest) return false
   const ageMs = now - new Date(digest.createdAt).getTime()
   return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < maxAgeDays * MS_PER_DAY
+}
+
+function digestAgeDays(digest: Memory | null, now: number): number | null {
+  if (!digest) return null
+  const ageMs = now - new Date(digest.createdAt).getTime()
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null
+  return Math.floor(ageMs / MS_PER_DAY)
 }
 
 /**

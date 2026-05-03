@@ -5,7 +5,9 @@ import {
   DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+  computeWakeUpCoverage,
   dateBucket,
+  formatWakeUpCoverage,
   loadWakeUpData,
   type WakeUpServices,
 } from "./wakeup.js"
@@ -116,6 +118,21 @@ function buildTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummar
     updatedAt: "2026-04-01T00:00:00Z",
   }
   return { ...base, ...overrides }
+}
+
+function buildDecision(
+  overrides: Partial<DecisionSummary> & {
+    id: string
+    status: DecisionSummary["status"]
+  },
+): DecisionSummary {
+  const base = buildMemory({
+    id: overrides.id,
+    kind: "decision",
+    status: overrides.status,
+    createdAt: overrides.createdAt ?? "2026-04-01T00:00:00Z",
+  })
+  return { ...base, ...overrides, kind: "decision", status: overrides.status }
 }
 
 function filterAndSortTasks(
@@ -293,7 +310,244 @@ function stubServices(opts: {
   }
 }
 
+describe("wake-up coverage counters", () => {
+  it("computes ranked/default mode, section counts, and digest freshness", () => {
+    const latestDigest = buildMemory({
+      id: "digest",
+      source: "digest",
+      createdAt: "2026-04-19T12:00:00Z",
+    })
+    const recent = buildMemory({
+      id: "recent",
+      createdAt: "2026-04-20T00:00:00Z",
+    })
+    const related = buildMemory({
+      id: "related",
+      createdAt: "2026-04-18T00:00:00Z",
+    })
+    const taskMemory = buildMemory({
+      id: "task-memory",
+      createdAt: "2026-04-17T00:00:00Z",
+    })
+    const stale = buildMemory({
+      id: "stale-confidence",
+      createdAt: "2026-04-16T00:00:00Z",
+    })
+
+    const coverage = computeWakeUpCoverage({
+      userQuery: "  Fix retrieval metrics  ",
+      now: NOW,
+      rankedSearchAttempted: true,
+      latestDigest,
+      memories: [recent],
+      relatedMemories: [related],
+      taskMemories: [taskMemory],
+      tasks: [buildTask({ id: "task" })],
+      knowledgeFacts: [buildFact({ id: "fact" })],
+      proposedDecisions: [buildDecision({ id: "proposed", status: "proposed" })],
+      overdueDecisions: [buildDecision({ id: "overdue", status: "accepted" })],
+      staleConfidence: [stale],
+    })
+
+    expect(coverage.mode).toBe("ranked")
+    expect(coverage.queryLength).toBe("Fix retrieval metrics".length)
+    expect(coverage.digest).toEqual({ available: true, fresh: true, ageDays: 1 })
+    expect(coverage.sectionCounts).toEqual({
+      digest: 1,
+      currentTaskMemories: 1,
+      recentMemories: 1,
+      relatedMemories: 1,
+      tasks: 1,
+      knowledgeFacts: 1,
+      decisions: 2,
+      proposedDecisions: 1,
+      overdueDecisions: 1,
+      staleConfidence: 1,
+    })
+  })
+
+  it("reports stale digest availability without marking it fresh", () => {
+    const staleDigest = buildMemory({
+      id: "stale-digest",
+      source: "digest",
+      createdAt: "2026-04-01T00:00:00Z",
+    })
+
+    const coverage = computeWakeUpCoverage({
+      userQuery: undefined,
+      now: NOW,
+      latestDigest: staleDigest,
+      memories: [],
+      relatedMemories: [],
+      taskMemories: [],
+      tasks: [],
+      knowledgeFacts: [],
+      proposedDecisions: [],
+      overdueDecisions: [],
+      staleConfidence: [],
+    })
+
+    expect(coverage.mode).toBe("default")
+    expect(coverage.queryLength).toBe(0)
+    expect(coverage.digest).toEqual({ available: true, fresh: false, ageDays: 19 })
+    expect(coverage.sectionCounts.digest).toBe(0)
+  })
+
+  it("does not call a future-dated digest fresh or compute a negative age", () => {
+    const futureDigest = buildMemory({
+      id: "future-digest",
+      source: "digest",
+      createdAt: "2026-05-01T00:00:00Z",
+    })
+
+    const coverage = computeWakeUpCoverage({
+      userQuery: "Fix retrieval metrics",
+      now: NOW,
+      rankedSearchAttempted: true,
+      latestDigest: futureDigest,
+      memories: [],
+      relatedMemories: [],
+      taskMemories: [],
+      tasks: [],
+      knowledgeFacts: [],
+      proposedDecisions: [],
+      overdueDecisions: [],
+      staleConfidence: [],
+    })
+
+    expect(coverage.digest).toEqual({
+      available: true,
+      fresh: false,
+      ageDays: null,
+    })
+    expect(coverage.sectionCounts.digest).toBe(0)
+  })
+
+  it("uses default mode when a user query exists but ranked search did not run", () => {
+    const coverage = computeWakeUpCoverage({
+      userQuery: "Fix retrieval metrics",
+      now: NOW,
+      rankedSearchAttempted: false,
+      latestDigest: null,
+      memories: [],
+      relatedMemories: [],
+      taskMemories: [],
+      tasks: [],
+      knowledgeFacts: [],
+      proposedDecisions: [],
+      overdueDecisions: [],
+      staleConfidence: [],
+    })
+
+    expect(coverage.mode).toBe("default")
+    expect(coverage.queryLength).toBe(0)
+  })
+
+  it("formats one privacy-conscious debug line with caps and counts", () => {
+    const line = formatWakeUpCoverage(
+      {
+        mode: "ranked",
+        queryLength: 42,
+        digest: { available: true, fresh: true, ageDays: 2 },
+        sectionCounts: {
+          digest: 1,
+          currentTaskMemories: 3,
+          recentMemories: 2,
+          relatedMemories: 1,
+          tasks: 4,
+          knowledgeFacts: 5,
+          decisions: 6,
+          proposedDecisions: 2,
+          overdueDecisions: 4,
+          staleConfidence: 0,
+        },
+      },
+      {
+        memoryLimit: 3,
+        relatedMemoryLimit: 2,
+        knowledgeFactLimit: 10,
+        taskMemoryLimit: 3,
+      },
+    )
+
+    expect(line).toContain("mode=ranked")
+    expect(line).toContain("ranked=true")
+    expect(line).toContain("queryLen=42")
+    expect(line).toContain("memory=3")
+    expect(line).toContain("sections.currentTask=3")
+    expect(line).toContain("sections.decisions=6")
+    expect(line).toContain("digestAgeDays=2")
+    expect(line).not.toContain("Fix retrieval metrics")
+  })
+})
+
 describe("loadWakeUpData", () => {
+  it("skips coverage counters unless requested", async () => {
+    const services = stubServices()
+    const data = await loadWakeUpData(services, { projectId: "p1", now: NOW })
+
+    expect(data.coverage).toBeNull()
+  })
+
+  it("returns coverage counters for the loaded wake-up sections when requested", async () => {
+    const fresh = buildMemory({
+      id: "digest",
+      title: "Digest - 2026-04-19",
+      source: "digest",
+      createdAt: "2026-04-19T00:00:00Z",
+    })
+    const recent = buildMemory({
+      id: "recent",
+      title: "Recent work",
+      createdAt: "2026-04-20T00:00:00Z",
+    })
+    const related = buildMemory({
+      id: "related",
+      title: "Related work",
+      createdAt: "2026-04-18T00:00:00Z",
+    })
+    const taskMemory = buildMemory({
+      id: "task-memory",
+      title: "Current task work",
+      createdAt: "2026-04-17T00:00:00Z",
+    })
+    const services = stubServices({
+      rawMemories: [recent],
+      digestMemories: [fresh],
+      relatedMemories: [related],
+      taskQuery: "Fix wake-up metrics",
+      taskMemories: [taskMemory],
+      tasks: [buildTask({ id: "task", entity: "wake-up metrics" })],
+      facts: [buildFact({ id: "fact", predicate: "uses" })],
+      proposedDecisions: [buildDecision({ id: "decision", status: "proposed" })],
+    })
+
+    const data = await loadWakeUpData(services, {
+      projectId: "p1",
+      userQuery: "Fix wake-up metrics",
+      includeCoverage: true,
+      now: NOW,
+    })
+
+    expect(data.coverage).not.toBeNull()
+    if (!data.coverage) throw new Error("Expected coverage counters")
+    expect(data.coverage.mode).toBe("ranked")
+    expect(data.coverage.digest).toEqual({
+      available: true,
+      fresh: true,
+      ageDays: 1,
+    })
+    expect(data.coverage.sectionCounts).toMatchObject({
+      digest: 1,
+      currentTaskMemories: 1,
+      recentMemories: 1,
+      relatedMemories: 1,
+      tasks: 1,
+      knowledgeFacts: 1,
+      decisions: 1,
+    })
+  })
+
   it("surfaces a fresh digest and trims raw memories", async () => {
     const fresh = buildMemory({
       id: "d1",

@@ -40,6 +40,7 @@ import {
   DEFAULT_WAKEUP_TASK_LIMIT,
   RANKED_WAKEUP_LIMITS,
   dateBucket,
+  formatWakeUpCoverage,
   loadWakeUpData,
 } from "../core/wakeup.js"
 import {
@@ -751,48 +752,43 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   const project = services.context.project
 
   // P3-05: `UserPromptSubmit` payloads carry the user's actual question,
-  // letting wake-up rank memories instead of dumping generic recents. Legacy
-  // Codex `SessionStart` installs and any other caller with no prompt fall
-  // through to the data-layer defaults. The 0.11.0 bin-dispatch caller
-  // (`lore hooks wakeup`) reads stdin itself and passes the payload via
-  // `opts.event`, skipping the env-var indirection.
-  if (debug) {
-    // Operator-facing log: report whether ranked output fired and which
-    // caps applied. Useful when triaging "why did wake-up surface iOS
-    // notes when I asked about backend auth?" — distinguishes the
-    // fallback path (no query reached the helper) from a ranked path
-    // that simply produced surprising hits, which in turn directs
-    // operators to the right next step (fix the wakeup.sh forwarding
-    // vs. inspect the relevance index).
-    // Format mirrors `[lore] partial-failure: key=value key=value` so a
-    // single grep against `[lore] ` parses uniformly across operator logs.
-    if (userQuery) {
-      process.stderr.write(
-        `[lore] wakeup: ranked=true queryLen=${userQuery.length} memory=${RANKED_WAKEUP_LIMITS.memoryLimit} related=${RANKED_WAKEUP_LIMITS.relatedMemoryLimit} knowledge=${RANKED_WAKEUP_LIMITS.knowledgeFactLimit} taskMemories=${RANKED_WAKEUP_LIMITS.taskMemoryLimit}\n`
-      )
-    } else {
-      process.stderr.write("[lore] wakeup: ranked=false reason=no-user-query\n")
-    }
-  }
+  // letting wake-up rank memories instead of dumping generic recents. Current
+  // Claude Code and Codex installs pass the payload via stdin/`opts.event`;
+  // legacy `SessionStart` installs and other callers with no prompt fall
+  // through to the data-layer defaults.
   const rankedLimits = userQuery ? RANKED_WAKEUP_LIMITS : {}
 
-  let digest, memories, tasks, knowledgeFacts, relatedMemories, taskMemories
+  let digest,
+    memories,
+    tasks,
+    knowledgeFacts,
+    relatedMemories,
+    taskMemories,
+    coverage
   try {
-    ;({ digest, memories, tasks, knowledgeFacts, relatedMemories, taskMemories } =
-      await loadWakeUpData(services, {
-        projectId: project?.id,
-        // Hook rendering only uses title/source/date — skip the N+1 markdown fetch.
-        includeMemoryContent: false,
-        // Hook never renders decisions — skip the two Notion queries so
-        // session-start latency doesn't regress on the hot path.
-        includeDecisions: false,
-        // Hook never renders the Stale Confidence section either — skip
-        // the extra Notion query for the same reason. Same posture as
-        // `includeDecisions: false` above.
-        includeStaleConfidence: false,
-        userQuery,
-        ...rankedLimits,
-      }))
+    ;({
+      digest,
+      memories,
+      tasks,
+      knowledgeFacts,
+      relatedMemories,
+      taskMemories,
+      coverage,
+    } = await loadWakeUpData(services, {
+      projectId: project?.id,
+      // Hook rendering only uses title/source/date - skip the N+1 markdown fetch.
+      includeMemoryContent: false,
+      // Hook never renders decisions - skip the two Notion queries so
+      // session-start latency doesn't regress on the hot path.
+      includeDecisions: false,
+      // Hook never renders the Stale Confidence section either - skip
+      // the extra Notion query for the same reason. Same posture as
+      // `includeDecisions: false` above.
+      includeStaleConfidence: false,
+      includeCoverage: debug,
+      userQuery,
+      ...rankedLimits,
+    }))
   } catch (err) {
     // Wake-up is decorative. A transient Notion failure must not block
     // session startup — log and exit clean.
@@ -800,6 +796,42 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       `[lore] wakeup: load failed — ${err instanceof Error ? err.message : err}. Skipping context injection.\n`
     )
     return
+  }
+
+  const today = new Date().toISOString().split("T")[0]
+  // The data layer may return far more rows than the hook should print.
+  // Pick an urgency-ordered visible subset with reserved space for
+  // Stale / Active so a large overdue set doesn't hide null-date work.
+  const visibleTasks = selectHookWakeUpTasks(tasks, DEFAULT_WAKEUP_TASK_LIMIT, today)
+
+  if (debug) {
+    // Operator-facing log: report the ranked/default path, the applied
+    // ranked caps, and rendered section counts. It intentionally carries
+    // only lengths and ages: no titles, memory bodies, fact text, or query
+    // text. Operators can tune retrieval without leaking vault content
+    // into stderr.
+    if (coverage) {
+      const renderedCoverage = {
+        ...coverage,
+        sectionCounts: {
+          ...coverage.sectionCounts,
+          tasks: visibleTasks.length,
+        },
+      }
+      process.stderr.write(
+        `${formatWakeUpCoverage(
+          renderedCoverage,
+          userQuery
+            ? {
+                memoryLimit: RANKED_WAKEUP_LIMITS.memoryLimit,
+                relatedMemoryLimit: RANKED_WAKEUP_LIMITS.relatedMemoryLimit,
+                knowledgeFactLimit: RANKED_WAKEUP_LIMITS.knowledgeFactLimit,
+                taskMemoryLimit: RANKED_WAKEUP_LIMITS.taskMemoryLimit,
+              }
+            : {},
+        )}\n`,
+      )
+    }
   }
 
   const sections: string[] = []
@@ -858,11 +890,6 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
   }
 
   if (tasks.length > 0) {
-    const today = new Date().toISOString().split("T")[0]
-    // The data layer may return far more rows than the hook should print.
-    // Pick an urgency-ordered visible subset with reserved space for
-    // Stale / Active so a large overdue set doesn't hide null-date work.
-    const visibleTasks = selectHookWakeUpTasks(tasks, DEFAULT_WAKEUP_TASK_LIMIT, today)
     sections.push("\n## Tasks")
     for (const task of visibleTasks) {
       const stateLabel = task.taskState ?? "open"

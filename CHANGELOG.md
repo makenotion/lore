@@ -11,6 +11,14 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+### Changed
+
+- **Wake-up debug logging now uses coverage-counter vocabulary.** The
+  `LORE_DEBUG=1` hook wake-up line reports `mode=ranked|default` and
+  `reason=no-ranked-search` for the unranked path, replacing the older
+  `reason=no-user-query` wording so operator filters cover every case where
+  ranked search did not run.
+
 ### Fixed
 
 - **Codex wake-up debounce now records attempts atomically.** The

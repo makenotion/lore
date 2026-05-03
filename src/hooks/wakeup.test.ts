@@ -51,6 +51,7 @@ vi.mock("../core/wakeup.js", async () => {
 
 import { wakeup, wakeupStatePath } from "./helpers.js"
 import type { Project, TaskSummary } from "../types.js"
+import type { WakeUpCoverageMetrics } from "../core/wakeup.js"
 
 function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary {
   const base: TaskSummary = {
@@ -90,6 +91,26 @@ function makeTask(overrides: Partial<TaskSummary> & { id: string }): TaskSummary
   return { ...base, ...overrides }
 }
 
+function buildEmptyWakeUpCoverage(tasks = 0): WakeUpCoverageMetrics {
+  return {
+    mode: "default",
+    queryLength: 0,
+    digest: { available: false, fresh: false, ageDays: null },
+    sectionCounts: {
+      digest: 0,
+      currentTaskMemories: 0,
+      recentMemories: 0,
+      relatedMemories: 0,
+      tasks,
+      knowledgeFacts: 0,
+      decisions: 0,
+      proposedDecisions: 0,
+      overdueDecisions: 0,
+      staleConfidence: 0,
+    },
+  }
+}
+
 // Tests use the full `Project` type from production rather than a
 // hand-rolled shape so the fixture stays in lockstep with the type. If
 // `Project` ever grows a required field (or renames one), these tests
@@ -100,6 +121,7 @@ function setupMocks(opts: {
   configProjects: Array<{ name: string; path: string }>
   tasks?: TaskSummary[]
   wakeUp?: boolean
+  coverage?: WakeUpCoverageMetrics
 }): void {
   findConfigFileMock.mockResolvedValue({
     path: "/tmp/.lore.yaml",
@@ -139,6 +161,8 @@ function setupMocks(opts: {
     knowledgeFacts: [],
     relatedMemories: [],
     taskMemories: [],
+    staleConfidence: [],
+    coverage: opts.coverage ?? buildEmptyWakeUpCoverage(opts.tasks?.length ?? 0),
   })
 }
 
@@ -146,6 +170,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
   let stdout: ReturnType<typeof vi.spyOn>
   let stateDir: string
   const savedStateDir = process.env["LORE_HOOK_STATE_DIR"]
+  const savedDebug = process.env["LORE_DEBUG"]
 
   beforeEach(() => {
     stateDir = mkdtempSync(join(tmpdir(), "lore-wakeup-test-"))
@@ -160,6 +185,11 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       delete process.env["LORE_HOOK_STATE_DIR"]
     } else {
       process.env["LORE_HOOK_STATE_DIR"] = savedStateDir
+    }
+    if (savedDebug === undefined) {
+      delete process.env["LORE_DEBUG"]
+    } else {
+      process.env["LORE_DEBUG"] = savedDebug
     }
     vi.clearAllMocks()
   })
@@ -286,6 +316,106 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     // skipped. This pins the "no synthetic content for missing data"
     // contract.
     expect(stdout).not.toHaveBeenCalled()
+  })
+
+  it("emits privacy-conscious coverage counters when LORE_DEBUG=1", async () => {
+    process.env["LORE_DEBUG"] = "1"
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+      tasks: [makeTask({ id: "task-1" }), makeTask({ id: "task-2" })],
+      coverage: {
+        mode: "ranked",
+        queryLength: 24,
+        digest: { available: true, fresh: true, ageDays: 1 },
+        sectionCounts: {
+          digest: 1,
+          currentTaskMemories: 2,
+          recentMemories: 3,
+          relatedMemories: 1,
+          tasks: 40,
+          knowledgeFacts: 5,
+          decisions: 0,
+          proposedDecisions: 0,
+          overdueDecisions: 0,
+          staleConfidence: 0,
+        },
+      },
+    })
+
+    try {
+      await wakeup({
+        event: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          prompt: "Fix retrieval metrics",
+        }),
+      })
+
+      const logLine = String(stderr.mock.calls.find((call) =>
+        String(call[0]).startsWith("[lore] wakeup:"),
+      )?.[0])
+      expect(logLine).toContain("mode=ranked")
+      expect(logLine).toContain("memory=3")
+      expect(logLine).toContain("sections.currentTask=2")
+      expect(logLine).toContain("sections.facts=5")
+      expect(logLine).toContain("sections.tasks=2")
+      expect(logLine).toContain("digestAgeDays=1")
+      expect(logLine).not.toContain("Fix retrieval metrics")
+      expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
+        includeCoverage: true,
+      })
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("does not emit wake-up coverage counters when LORE_DEBUG is unset", async () => {
+    delete process.env["LORE_DEBUG"]
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+
+    try {
+      await wakeup({
+        event: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "debug-off",
+          prompt: "Fix retrieval metrics",
+        }),
+      })
+
+      expect(stderr).not.toHaveBeenCalled()
+      expect(loadWakeUpDataMock.mock.calls[0][1]).toMatchObject({
+        includeCoverage: false,
+      })
+    } finally {
+      stderr.mockRestore()
+    }
   })
 
   it("renders a fair task subset when overdue rows dominate the wake-up window", async () => {

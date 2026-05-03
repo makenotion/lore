@@ -447,7 +447,7 @@ actual question.
 | ------------------------------ | ------------------------ | -------------------- |
 | Claude Code `UserPromptSubmit` | First user message       | Yes (`event.prompt`) |
 | Codex `UserPromptSubmit`       | First user message       | Yes (`event.prompt`) |
-| Legacy Codex `SessionStart`    | Session startup / resume | No (fallback path)   |
+| Legacy Codex `SessionStart`    | Session startup / resume | No (default path)    |
 
 The `lore hooks wakeup` dispatcher reads the JSON event off stdin and calls the
 helper directly with `wakeup({ event: stdin })`. The legacy `hooks/wakeup.sh`
@@ -461,7 +461,7 @@ shape exactly.
 `parseUserQueryFromEvent` (in `helpers.ts`) is the single point that
 extracts the prompt; pin its tests when changing the parsing contract.
 A malformed event, missing `prompt` field, or non-string `prompt` all
-degrade to the same fallback path — wake-up never crashes for an
+degrade to the same default path — wake-up never crashes for an
 input-shape regression.
 
 Codex does not expose Claude Code's `runOnce` flag on `UserPromptSubmit`, so
@@ -483,7 +483,7 @@ When a user query is present the hook tightens per-section caps via
 `RANKED_WAKEUP_LIMITS` (memory: 3, related: 2, knowledge: 10,
 taskMemories: 3) and adds a top-of-output **For Your Current Task**
 section seeded by `MemoryService.search(userQuery)`.
-The section is omitted entirely on the fallback path so unranked
+The section is omitted entirely on the default path so unranked
 output stays identical to the pre-P3-05 shape.
 
 `RANKED_WAKEUP_LIMITS` lives in `src/core/wakeup.ts` and is shared
@@ -500,23 +500,44 @@ blow Notion's query budget or drown relevance.
 
 ### Operator log
 
-`LORE_DEBUG=1` emits one stderr line per wake-up firing in the same
+`LORE_DEBUG=1` emits one stderr line per successful wake-up load in the same
 `[lore] <subsystem>: key=value` shape as the `[lore] partial-failure:`
-line in `src/mcp/AGENTS.md`. Current variants:
+line in `src/mcp/AGENTS.md`. The line is intentionally content-free: no
+query text, memory titles, fact text, or page bodies, only mode, caps,
+digest freshness, and counts. Examples below are wrapped for readability;
+the hook emits each event as one line.
 
 ```
-[lore] wakeup: ranked=true queryLen=42 memory=3 related=2 knowledge=10 taskMemories=3
-[lore] wakeup: ranked=false reason=no-user-query
+[lore] wakeup: mode=ranked ranked=true queryLen=42 memory=3 related=2
+knowledge=10 taskMemories=3 digestAvailable=true digestFresh=true
+digestAgeDays=1 sections.digest=1 sections.currentTask=3 sections.recent=3
+sections.related=2 sections.tasks=10 sections.facts=10 sections.decisions=0
+sections.proposedDecisions=0 sections.overdueDecisions=0 sections.staleConfidence=0
+
+[lore] wakeup: mode=default ranked=false reason=no-ranked-search
+digestAvailable=false digestFresh=false digestAgeDays=none sections.digest=0
+sections.currentTask=0 sections.recent=10 sections.related=5 sections.tasks=10
+sections.facts=25 sections.decisions=0 sections.proposedDecisions=0
+sections.overdueDecisions=0 sections.staleConfidence=0
+
 [lore] wakeup: mode=default ranked=false reason=already-ranked-for-session
 ```
 
 The ranked variant reports the per-section caps applied so an operator
 triaging "why is wake-up surfacing only 3 memories?" can confirm the
-ranked path fired without chasing the constant. The fallback variant
-distinguishes the event-forwarder-not-forwarding case from a ranked-but-
-surprising-hits case — directing operators to fix the forwarder vs.
-inspect the relevance index. The already-ranked variant confirms Codex's
-per-session `UserPromptSubmit` debounce fired before any Notion calls.
+ranked path fired without chasing the constant. The default variant means
+the user-query relevance search did not run; on legacy Codex `SessionStart`
+that is expected, while on `UserPromptSubmit` it usually points at event
+forwarding or project-scope issues. The already-ranked variant confirms
+Codex's per-session `UserPromptSubmit` debounce fired before any Notion calls.
+The `sections.*` values are the first supported wake-up coverage counters:
+use them to compare signal density across digest, current-task, recent,
+related, task, fact, decision, and stale-confidence sections while tuning caps
+and ranking. They are per-firing counters rather than relevance-quality
+scores, so aggregate multiple lines before tuning; precision / recall /
+memory-lift quality measurement belongs to the eval harness. Gated behind
+`LORE_DEBUG=1` because unconditional logging would flood stderr on every
+session.
 
 ## Concurrency guard
 

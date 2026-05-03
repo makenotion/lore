@@ -41,6 +41,16 @@ context. Set `hooks.wakeUp: false` in `.lore.yaml` to skip automatic injection
 for supported assistants. If `.lore.yaml` fails to parse, the hook falls back to
 the default (on) and writes a `[lore]` warning to stderr.
 
+Set `LORE_DEBUG=1` to inspect wake-up coverage counters on stderr. The log line
+does not include query text, memory titles, facts, or page bodies; it reports
+only the retrieval mode, ranked caps, digest freshness, and per-section counts.
+Use `mode=ranked|default` to verify whether the user-query ranker actually ran,
+`digestFresh` / `digestAgeDays` to judge whether the digest is carrying the
+session, and `sections.*` counts to spot when wake-up is too noisy or too thin.
+These are per-firing counters, not relevance-quality scores; aggregate multiple
+lines before tuning caps, and use the eval harness for precision / recall /
+memory-lift quality measurements.
+
 ## Auth Forwarding
 
 Hooks resolve Notion auth through the same priority chain as the CLI and MCP
