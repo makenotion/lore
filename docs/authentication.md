@@ -14,7 +14,14 @@ resolution point for the MCP server, CLI, and hooks.
 ## `NOTION_API_TOKEN`
 
 This is the canonical explicit environment variable. When set, no other source
-in the chain runs.
+in the chain supplies the bearer token.
+
+Lore still inspects `.lore.yaml` for `auth.token` before returning the
+canonical env token. If that field is present, Lore emits the
+`auth.token in .lore.yaml is soft-deprecated` warning even though
+`NOTION_API_TOKEN` wins authentication. This is intentional because
+`.lore.yaml` is usually committed repo config; the warning is tied to removing
+the unsafe field, not to which source supplied the runtime token.
 
 ## ntn-Resolved Auth
 
@@ -65,8 +72,11 @@ Lore tests against `MIN_NTN_VERSION` in `src/auth/ntn.ts`, currently `0.12.0`.
 ## Legacy Sources
 
 `LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` still work in 0.10.x, but
-both are soft-deprecated and emit a debounced warning. `lore auth --migrate`
-walks operators through moving to ntn-issued auth.
+both are soft-deprecated and emit a debounced warning. `LORE_NOTION_TOKEN`
+warns when it is the selected source. `auth.token` warns whenever the field is
+present in `.lore.yaml`, including migration-window setups where
+`NOTION_API_TOKEN`, ntn auth, or `LORE_NOTION_TOKEN` supplies the token.
+`lore auth --migrate` walks operators through moving to ntn-issued auth.
 
 Hard removal is expected no earlier than 0.11.0 or 1.0.0, contingent on
 telemetry showing the internal team no longer relies on the legacy paths.

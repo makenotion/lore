@@ -197,7 +197,9 @@ export async function loadConfigAllowingInvalidHooks(
  * will land on path 1 directly. `ntn-auth-json` is the temporary bridge
  * that reads ntn's private storage until DEFERRED-OFFICIAL-EXPORT ships.
  * The remaining two sources are soft-deprecated; they continue to work but
- * surface a debounced warning on first use.
+ * surface debounced warnings. `LORE_NOTION_TOKEN` warns when selected, while
+ * config `auth.token` warns on field presence because `.lore.yaml` is
+ * committable repo config.
  */
 export type AuthSource =
   | "env-notion-api-token"
