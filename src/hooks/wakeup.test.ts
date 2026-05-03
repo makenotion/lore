@@ -662,7 +662,7 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     }
   })
 
-  it("uses an atomic wake-up attempt marker for concurrent Codex prompts", async () => {
+  it("skips a same-process Codex prompt after the marker write hits EEXIST", async () => {
     setupMocks({
       project: {
         id: "proj-mail",
@@ -683,6 +683,9 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
       cwd: "/tmp",
     })
 
+    // This same-process Promise.all pins the EEXIST branch: one await creates
+    // the marker, and the second observes it. Cross-process atomicity comes
+    // from the filesystem's O_EXCL create-if-absent contract, not JS scheduling.
     await Promise.all([wakeup({ event }), wakeup({ event })])
 
     expect(loadWakeUpDataMock).toHaveBeenCalledTimes(1)
