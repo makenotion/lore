@@ -19,12 +19,19 @@ describe("runEvalSuite", () => {
 
     expect(writtenPath).toBe(outPath)
     expect(artifact.summary).toMatchObject({
-      tasks: 1,
+      tasks: 3,
       trials: 1,
-      totalResults: 4,
-      passedResults: 4,
+      totalResults: 13,
+      passedResults: 13,
       failedResults: 0,
     })
+    expect(artifact.summary.scenarios).toEqual([
+      "empty-lore",
+      "helpful-memory",
+      "no-lore",
+      "noisy-memory",
+      "stale-memory",
+    ])
     expect(artifact.runner).toMatchObject({
       mode: "retrieval",
       surface: "wake-up.taskMemories",
@@ -37,10 +44,25 @@ describe("runEvalSuite", () => {
     const persisted = JSON.parse(await readFile(outPath, "utf-8")) as EvalRunArtifact
     expect(persisted.startedAt).toBe("2026-05-03T12:00:00.000Z")
     expect(
-      persisted.results.find((result) => result.scenario === "helpful-memory")
+      persisted.results.find(
+        (result) =>
+          result.taskId === "respects-governing-auth-decision" &&
+          result.scenario === "helpful-memory"
+      )
     ).toMatchObject({
       expectedMemoriesSurfaced: ["decision/auth-model"],
       missingExpectedMemories: [],
+    })
+    expect(
+      persisted.results.find(
+        (result) =>
+          result.taskId === "respects-governing-auth-decision" &&
+          result.scenario === "stale-memory"
+      )
+    ).toMatchObject({
+      success: true,
+      missingExpectedMemories: [],
+      unexpectedMemoriesSurfaced: [],
     })
   })
 
@@ -171,6 +193,53 @@ tasks:
     ).toMatchObject({
       success: false,
       unexpectedMemoriesSurfaced: ["note/deprecated-auth"],
+    })
+  })
+
+  it("counts stale-memory in the harm aggregation when stale guidance surfaces", async () => {
+    const { suitePath, outPath } = await writeTempEvalSuite({
+      fixtures: {
+        "no-lore.yaml": emptyScenario("no-lore"),
+        "empty.yaml": emptyScenario("empty-lore"),
+        "stale.yaml": `name: stale-memory
+memories:
+  - id: decision/auth-jwt-superseded
+    title: Bearer JWT auth path
+    status: superseded
+    synopsis: Earlier auth path; superseded but tokens may still match a query.
+    keywords: auth path bearer
+`,
+        "helpful.yaml": authDecisionScenario("helpful-memory"),
+      },
+      suite: `version: 1
+name: stale-harm-suite
+runner: retrieval
+tasks:
+  - id: stale-memory-harms-task
+    prompt: Follow the auth path decision.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      stale-memory: ../memory/stale.yaml
+      helpful-memory: ../memory/helpful.yaml
+    expectedRetrieval:
+      stale-memory:
+        shouldNotSurface:
+          - decision/auth-jwt-superseded
+      helpful-memory:
+        shouldSurface:
+          - decision/auth-model
+`,
+    })
+
+    const { artifact } = await runEvalSuite(suitePath, { outPath })
+
+    expect(artifact.summary.retrieval.memoryHarm).toBe(1)
+    expect(
+      artifact.results.find((result) => result.scenario === "stale-memory")
+    ).toMatchObject({
+      success: false,
+      unexpectedMemoriesSurfaced: ["decision/auth-jwt-superseded"],
     })
   })
 })

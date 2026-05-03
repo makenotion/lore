@@ -57,6 +57,19 @@ Every task must include the `no-lore`, `empty-lore`, and `helpful-memory`
 ablations. Additional scenarios such as `noisy-memory` and `stale-memory` are
 allowed as the suite grows.
 
+`stale-memory` is the ablation that captures temporal correctness: the
+fixture contains a previously-accepted decision (or other memory) that has
+since been superseded or deprecated. The expectation is that retrieval does
+not promote the stale row over the current one. Today's fixture-only runner
+has no status-aware filtering, so the assertion follows the same pattern as
+`noisy-memory`: the helpful memory id is listed under `shouldNotSurface` for
+the stale scenario, since the helpful row is absent from the stale fixture
+and cannot be surfaced from it. Once status-aware retrieval is wired in
+(tracked alongside the temporal-recall work), tighten the expectation by
+listing the stale memory id under `shouldNotSurface` for the helpful and
+stale scenarios — at that point the harm metric will measure whether
+retrieval correctly suppresses superseded rows.
+
 The suite `version` is required. Retrieval mode is deterministic and requires
 `trials: 1`; the CLI rejects other trial counts until a nondeterministic runner
 exists.

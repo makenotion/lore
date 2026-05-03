@@ -1,0 +1,21 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: stale-memory
+description: A previously-accepted auth decision that has since been superseded.
+memories:
+  - id: decision/auth-bearer-tokens-superseded
+    title: Use bearer JWT tokens for browser auth (superseded)
+    kind: decision
+    status: superseded
+    confidence: certain
+    tags:
+      - architecture
+      - security
+    keywords: jwt bearer token browser auth legacy superseded
+    synopsis: |
+      Earlier accepted decision to use bearer JWT tokens for browser auth.
+      Superseded by the signed-session-cookie decision; do not use this guidance.
+    content: |
+      This decision was the project's previous browser-auth approach: bearer JWT
+      tokens issued at login and attached to every web request. It has been
+      superseded by the current decision requiring signed session cookies. Old
+      revisions may still reference this approach; new code must not.

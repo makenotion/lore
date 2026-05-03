@@ -13,6 +13,7 @@ tasks:
       no-lore: ../memory/no-lore.yaml
       empty-lore: ../memory/empty.yaml
       noisy-memory: ../memory/noisy.yaml
+      stale-memory: ../memory/stale-auth-decision.yaml
       helpful-memory: ../memory/auth-decision.yaml
     retrieval:
       limit: 3
@@ -29,8 +30,72 @@ tasks:
         shouldSurface: []
         shouldNotSurface:
           - decision/auth-model
+      stale-memory:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/auth-model
       helpful-memory:
         shouldSurface:
           - decision/auth-model
         shouldNotSurface:
           - note/general-ui-polish
+
+  - id: prefers-current-test-runner
+    prompt: |
+      Add a unit test for the new payment validator using the project's current test runner.
+      Do not adopt the superseded runner.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      stale-memory: ../memory/stale-test-runner.yaml
+      helpful-memory: ../memory/test-runner-decision.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      no-lore:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/test-runner-vitest
+      empty-lore:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/test-runner-vitest
+      stale-memory:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/test-runner-vitest
+      helpful-memory:
+        shouldSurface:
+          - decision/test-runner-vitest
+        shouldNotSurface:
+          - note/yaml-snapshot-hygiene
+
+  - id: returns-result-from-service-boundary
+    prompt: |
+      Add a new service method that fetches the user profile and returns the project's standard
+      error-handling shape. Do not adopt the superseded throw-based pattern.
+    memoryScenarios:
+      no-lore: ../memory/no-lore.yaml
+      empty-lore: ../memory/empty.yaml
+      stale-memory: ../memory/stale-error-handling.yaml
+      helpful-memory: ../memory/error-handling-decision.yaml
+    retrieval:
+      limit: 3
+    expectedRetrieval:
+      no-lore:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/error-handling-result-type
+      empty-lore:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/error-handling-result-type
+      stale-memory:
+        shouldSurface: []
+        shouldNotSurface:
+          - decision/error-handling-result-type
+      helpful-memory:
+        shouldSurface:
+          - decision/error-handling-result-type
+        shouldNotSurface:
+          - note/structured-log-fields

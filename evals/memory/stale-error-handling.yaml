@@ -1,0 +1,20 @@
+# Synthetic fixture. Do not copy production vault content into eval fixtures.
+name: stale-memory
+description: A previously-accepted error-handling decision that has since been superseded.
+memories:
+  - id: decision/error-handling-throw-superseded
+    title: Throw exceptions from service boundaries (superseded)
+    kind: decision
+    status: superseded
+    confidence: certain
+    tags:
+      - architecture
+      - reliability
+    keywords: throw exception error handling service boundary legacy superseded
+    synopsis: |
+      Earlier accepted decision to throw exceptions across service boundaries.
+      Superseded by the Result-type decision; do not adopt this pattern.
+    content: |
+      This decision committed the project to throwing exceptions across service
+      boundaries. It was superseded by the Result-type decision. Some legacy
+      modules still throw, but new boundaries must follow the current decision.
