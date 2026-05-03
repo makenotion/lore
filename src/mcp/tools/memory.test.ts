@@ -4133,6 +4133,20 @@ describe("lore-memory action='update' date clearing (issue #271)", () => {
     expect(parsed.data.decidedAt).toBeNull()
   })
 
+  it("describes update clearing with the same wording pattern as synopsis", () => {
+    const { inputSchema } = setUpUpdateHarness()
+
+    expect(inputSchema.shape.reviewBy.description).toBe(
+      "(save | update) Review-by date YYYY-MM-DD. On update, omit to keep, pass null or empty string to clear."
+    )
+    expect(inputSchema.shape.decidedAt.description).toBe(
+      "(save | update) Canonical decision date YYYY-MM-DD. On update, omit to keep, pass null or empty string to clear."
+    )
+    expect(inputSchema.shape.synopsis.description).toContain(
+      "On update, omit to keep, pass empty string to clear."
+    )
+  })
+
   it("still rejects malformed date strings before any update", async () => {
     const { lore, update } = setUpUpdateHarness()
 

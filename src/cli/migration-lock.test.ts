@@ -92,7 +92,11 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         ...process.env,
         LORE_HOOK_STATE_DIR: TEST_STATE_DIR,
         LOCK_SCOPE: JSON.stringify(lockScope),
-        LOCK_HOLD_MS: "750",
+        // vite-node startup can stagger the two workers enough that a
+        // short-lived winner exits before its peer reaches acquisition,
+        // making the peer's stale-PID reclaim legitimate rather than
+        // a failed exclusion check.
+        LOCK_HOLD_MS: "10000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -222,7 +226,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("allows exactly one racing process to reclaim a stale lock", async () => {
     const lockScope = scope()
@@ -234,7 +238,7 @@ describe("tryAcquireMigrationLock", () => {
 
     expect(results.filter((r) => r.acquired)).toHaveLength(1)
     expect(results.filter((r) => !r.acquired)).toHaveLength(1)
-  }, 15_000)
+  }, 30_000)
 
   it("keeps independent scopes from blocking each other", () => {
     const first = tryAcquireMigrationLock(scope({ vaultPageId: "vault-a" }))

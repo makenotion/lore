@@ -2279,12 +2279,12 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
         reviewBy: clearableYmdDateSchema
           .optional()
           .describe(
-            "(save | update) Review-by date YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
+            "(save | update) Review-by date YYYY-MM-DD. On update, omit to keep, pass null or empty string to clear."
           ),
         decidedAt: clearableYmdDateSchema
           .optional()
           .describe(
-            "(save | update) Canonical decision date YYYY-MM-DD. Update: null or empty string clears; omit leaves unchanged."
+            "(save | update) Canonical decision date YYYY-MM-DD. On update, omit to keep, pass null or empty string to clear."
           ),
         tags: tagsSchema.optional().describe("(save | update) Closed-vocabulary tags."),
         keywords: keywordsSchema
