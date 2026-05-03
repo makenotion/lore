@@ -7,6 +7,7 @@ import { configKey } from "./hooks/marker-key.js"
 import type { LoreConfig } from "./types.js"
 
 const CONFIG_FILENAME = ".lore.yaml"
+const PLACEHOLDER_PAGE_ID_PATTERN = /^<.+>$/
 
 const hookConfigSchema = z
   .object({
@@ -24,9 +25,18 @@ const hookConfigSchema = z
   })
   .optional()
 
+const pageIdSchema = (requiredMessage = "pageId is required") =>
+  z
+    .string()
+    .min(1, requiredMessage)
+    .refine((value) => !PLACEHOLDER_PAGE_ID_PATTERN.test(value.trim()), {
+      message:
+        "pageId still contains the starter placeholder; replace it with a real Notion page ID.",
+    })
+
 const namedVaultRefSchema = z.object({
   name: z.string().min(1),
-  pageId: z.string().min(1),
+  pageId: pageIdSchema(),
 })
 
 const bearerShapedAuthTokenPattern = /^(?:Bearer\s+)?(?:ntn_|secret_)/
@@ -41,7 +51,7 @@ const configAuthTokenSchema = z.string().refine(
 
 const configSchema = z.object({
   vault: z.object({
-    pageId: z.string().min(1, "vault.pageId is required"),
+    pageId: pageIdSchema("vault.pageId is required"),
   }),
   upstreamVaults: z
     .array(
