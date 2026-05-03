@@ -82,6 +82,17 @@ describe("resolveProjectIds", () => {
     expect(result.warnings).toContain(`Project "Missing" not found`)
   })
 
+  it("treats archived explicit project names as not found", async () => {
+    const services = makeServices({
+      findByName: { Archive: null },
+    })
+
+    const result = await resolveProjectIds(services, "Archive")
+
+    expect(result.ids).toEqual([])
+    expect(result.warnings).toEqual([`Project "Archive" not found`])
+  })
+
   it("does not warn when falling back to a sub-project from context", async () => {
     const backend = makeProject("Mail Backend")
     const services = makeServices({

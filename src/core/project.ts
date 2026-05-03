@@ -6,7 +6,7 @@
  */
 
 import type { Client } from "@notionhq/client"
-import type { PageObjectResponse } from "@notionhq/client"
+import type { PageObjectResponse, QueryDataSourceParameters } from "@notionhq/client"
 import type {
   Project,
   CreateProjectInput,
@@ -28,6 +28,14 @@ import { LruCache } from "./cache.js"
  *  few and long-lived. */
 const NAME_CACHE_TTL_MS = 60_000
 const NAME_CACHE_MAX = 200
+
+function activeProjectLookupFilter(
+  lookup: Record<string, unknown>
+): QueryDataSourceParameters["filter"] {
+  return {
+    and: [lookup, { property: "Status", select: { equals: "active" } }],
+  } as QueryDataSourceParameters["filter"]
+}
 
 export class ProjectService {
   /**
@@ -92,17 +100,17 @@ export class ProjectService {
   async findByPath(path: string): Promise<Project | null> {
     const response = await this.client.dataSources.query({
       data_source_id: this.db.dataSourceId,
-      filter: {
+      filter: activeProjectLookupFilter({
         property: "Path",
         rich_text: { equals: path },
-      },
+      }),
     })
     const page = response.results.filter(isFullPage)[0] as PageObjectResponse | undefined
     return page ? this.pageToProject(page) : null
   }
 
   /**
-   * Look up a project by exact name match. Cached in-process for
+   * Look up an active project by exact name match. Cached in-process for
    * `NAME_CACHE_TTL_MS` so a multi-tool MCP conversation referencing the
    * same project pays one Notion round-trip, not one per tool call.
    *
@@ -118,10 +126,10 @@ export class ProjectService {
     return this.nameCache.getOrLoad(name, async () => {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
-        filter: {
+        filter: activeProjectLookupFilter({
           property: "Name",
           title: { equals: name },
-        },
+        }),
       })
       const page = response.results.filter(isFullPage)[0] as
         | PageObjectResponse

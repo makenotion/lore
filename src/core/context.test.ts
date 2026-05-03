@@ -179,6 +179,24 @@ describe("resolveProject", () => {
     const result = await resolveProject(configRoot, configRoot, MONOREPO_CONFIG, projects)
     expect(result.project).toEqual(mail)
   })
+
+  it("returns null when the matching configured project is archived-only", async () => {
+    const findByPath = vi.fn().mockResolvedValue(null)
+    const findByName = vi.fn().mockResolvedValue(null)
+    const projects = makeProjectService({ findByPath, findByName })
+
+    const result = await resolveProject(
+      `${configRoot}/services/mail/graphql`,
+      configRoot,
+      MONOREPO_CONFIG,
+      projects,
+    )
+
+    expect(result.project).toBeNull()
+    expect(result.isCatchAllFallback).toBe(false)
+    expect(findByPath).toHaveBeenCalledWith("services/mail")
+    expect(findByName).toHaveBeenCalledWith("Mail Backend")
+  })
 })
 
 describe("resolveProjectPathFromCwd", () => {

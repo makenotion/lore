@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { ProjectService } from "./project.js"
-import type { DatabaseRef } from "../types.js"
+import type { DatabaseRef, ProjectStatus } from "../types.js"
 
-function projectPage(id: string, name: string): PageObjectResponse {
+function projectPage(
+  id: string,
+  name: string,
+  opts: { path?: string; status?: ProjectStatus } = {},
+): PageObjectResponse {
   return {
     object: "page",
     id,
@@ -15,8 +19,14 @@ function projectPage(id: string, name: string): PageObjectResponse {
     properties: {
       Name: { type: "title", title: [{ plain_text: name }] } as unknown,
       Type: { type: "select", select: { name: "project" } } as unknown,
-      Path: { type: "rich_text", rich_text: [] } as unknown,
-      Status: { type: "select", select: { name: "active" } } as unknown,
+      Path: {
+        type: "rich_text",
+        rich_text: opts.path ? [{ plain_text: opts.path }] : [],
+      } as unknown,
+      Status: {
+        type: "select",
+        select: { name: opts.status ?? "active" },
+      } as unknown,
       Description: { type: "rich_text", rich_text: [] } as unknown,
     } as PageObjectResponse["properties"],
   } as PageObjectResponse
@@ -43,6 +53,29 @@ function createMockClient() {
 const DB: DatabaseRef = {
   databaseId: "projects-db-id",
   dataSourceId: "projects-ds-id",
+}
+
+function hasActiveStatusClause(filter: unknown): boolean {
+  if (!filter || typeof filter !== "object") return false
+  const candidate = filter as {
+    and?: unknown[]
+    property?: string
+    select?: { equals?: string }
+  }
+
+  if (Array.isArray(candidate.and)) return candidate.and.some(hasActiveStatusClause)
+  return candidate.property === "Status" && candidate.select?.equals === "active"
+}
+
+function activeAwareResults(
+  activeResults: PageObjectResponse[],
+  archivedResults: PageObjectResponse[],
+) {
+  return async ({ filter }: { filter?: unknown }) => ({
+    results: hasActiveStatusClause(filter) ? activeResults : archivedResults,
+    has_more: false,
+    next_cursor: null,
+  })
 }
 
 describe("ProjectService.list — pagination", () => {
@@ -81,6 +114,80 @@ describe("ProjectService.list — pagination", () => {
     expect(projects.map((p) => p.id)).toEqual(["p1", "p2"])
     expect(client.dataSources.query).toHaveBeenCalledTimes(2)
     expect(client.dataSources.query.mock.calls[1][0].start_cursor).toBe("page-2")
+  })
+})
+
+describe("ProjectService.findByPath — active-only lookup", () => {
+  it("returns the active row when active and archived rows share a path", async () => {
+    const active = projectPage("p-active", "alpha", { path: "services/mail" })
+    const archived = projectPage("p-archived", "alpha", {
+      path: "services/mail",
+      status: "archived",
+    })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementation(activeAwareResults([active], [archived, active]))
+    const service = new ProjectService(client, DB)
+
+    const project = await service.findByPath("services/mail")
+
+    expect(project?.id).toBe("p-active")
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data_source_id: DB.dataSourceId,
+        filter: {
+          and: [
+            { property: "Path", rich_text: { equals: "services/mail" } },
+            { property: "Status", select: { equals: "active" } },
+          ],
+        },
+      }),
+    )
+  })
+
+  it("returns null when only archived rows match a path", async () => {
+    const archived = projectPage("p-archived", "alpha", {
+      path: "services/mail",
+      status: "archived",
+    })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementation(activeAwareResults([], [archived]))
+    const service = new ProjectService(client, DB)
+
+    await expect(service.findByPath("services/mail")).resolves.toBeNull()
+  })
+})
+
+describe("ProjectService.findByName — active-only lookup", () => {
+  it("returns the active row when active and archived rows share a name", async () => {
+    const active = projectPage("p-active", "alpha")
+    const archived = projectPage("p-archived", "alpha", { status: "archived" })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementation(activeAwareResults([active], [archived, active]))
+    const service = new ProjectService(client, DB)
+
+    const project = await service.findByName("alpha")
+
+    expect(project?.id).toBe("p-active")
+    expect(client.dataSources.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data_source_id: DB.dataSourceId,
+        filter: {
+          and: [
+            { property: "Name", title: { equals: "alpha" } },
+            { property: "Status", select: { equals: "active" } },
+          ],
+        },
+      }),
+    )
+  })
+
+  it("returns null when only archived rows match a name", async () => {
+    const archived = projectPage("p-archived", "alpha", { status: "archived" })
+    const client = createMockClient()
+    client.dataSources.query.mockImplementation(activeAwareResults([], [archived]))
+    const service = new ProjectService(client, DB)
+
+    await expect(service.findByName("alpha")).resolves.toBeNull()
   })
 })
 
