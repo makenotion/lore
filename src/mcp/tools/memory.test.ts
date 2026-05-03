@@ -916,7 +916,7 @@ describe("lore-remember near-duplicate probe", () => {
 })
 
 describe("lore-memory action='save' autosave-learning structural dedup", () => {
-  it("returns the existing same-session learning instead of creating a duplicate", async () => {
+  it("returns same-session duplicates with the dropped metadata footer", async () => {
     const mockServer = createMockServer()
     const existing = makeMemory("mem-existing", {
       title: "relation filters reject empty arrays",

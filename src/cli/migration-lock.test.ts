@@ -26,6 +26,12 @@ const DEAD_PID = 4_000_001
 const TEST_STATE_DIR = `${process.env["TMPDIR"] ?? "/tmp"}/lore-migration-lock-test-${process.pid}-${Date.now()}`
 let originalStateDir: string | undefined
 
+type WorkerRaceResult = {
+  acquired: boolean
+  ownerPid: number | null
+  pid: number
+}
+
 function scope(overrides: Partial<MigrationLockScope> = {}): MigrationLockScope {
   return {
     name: "build-entities",
@@ -68,7 +74,7 @@ process.stdout.write(JSON.stringify({
 
 if (result.acquired) {
   await new Promise((resolve) =>
-    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "750"))
+    setTimeout(resolve, Number(process.env["LOCK_HOLD_MS"] ?? "30000"))
   )
 }
 `
@@ -76,13 +82,59 @@ if (result.acquired) {
   return workerPath
 }
 
-async function runWorkerRace(lockScope: MigrationLockScope): Promise<
-  Array<{
-    acquired: boolean
-    ownerPid: number | null
-    pid: number
-  }>
-> {
+function waitForWorkerResult(child: ReturnType<typeof spawn>): Promise<WorkerRaceResult> {
+  let stdout = ""
+  let stderr = ""
+  let settled = false
+
+  return new Promise((resolve, reject) => {
+    function finishResolve(value: WorkerRaceResult) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+
+    function finishReject(error: Error) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(error)
+    }
+
+    const timer = setTimeout(() => {
+      finishReject(
+        new Error(`worker timed out before reporting: ${stderr || "<no stderr>"}`)
+      )
+    }, 20_000)
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8")
+      const lineEnd = stdout.indexOf("\n")
+      if (lineEnd === -1) return
+
+      try {
+        finishResolve(JSON.parse(stdout.slice(0, lineEnd)))
+      } catch (err) {
+        finishReject(
+          new Error(
+            `worker emitted invalid JSON: ${err instanceof Error ? err.message : err}`
+          )
+        )
+      }
+    })
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8")
+    })
+    child.on("exit", (code) => {
+      if (!settled) finishReject(new Error(`worker exited ${code}: ${stderr}`))
+    })
+  })
+}
+
+async function runWorkerRace(
+  lockScope: MigrationLockScope
+): Promise<WorkerRaceResult[]> {
   const workerPath = writeRaceWorker()
   const viteNode = join(process.cwd(), "node_modules/vite-node/vite-node.mjs")
   const children = Array.from({ length: 2 }, () => {
@@ -96,34 +148,28 @@ async function runWorkerRace(lockScope: MigrationLockScope): Promise<
         // short-lived winner exits before its peer reaches acquisition,
         // making the peer's stale-PID reclaim legitimate rather than
         // a failed exclusion check.
-        LOCK_HOLD_MS: "10000",
+        LOCK_HOLD_MS: "30000",
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
   })
 
-  return Promise.all(
-    children.map(async (child) => {
-      let stdout = ""
-      let stderr = ""
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8")
-      })
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8")
-      })
-
-      const [code] = (await once(child, "exit")) as [number | null]
-      if (code !== 0) {
-        throw new Error(`worker exited ${code}: ${stderr}`)
+  try {
+    return await Promise.all(children.map(waitForWorkerResult))
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill()
       }
-      return JSON.parse(stdout.trim()) as {
-        acquired: boolean
-        ownerPid: number | null
-        pid: number
-      }
-    })
-  )
+    }
+    await Promise.all(
+      children.map((child) =>
+        child.exitCode === null && child.signalCode === null
+          ? once(child, "exit")
+          : Promise.resolve()
+      )
+    )
+  }
 }
 
 describe("tryAcquireMigrationLock", () => {

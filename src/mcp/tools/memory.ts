@@ -146,6 +146,8 @@ function formatAutosaveLearningDuplicate(
     "No new memory was created. The existing memory stays available for this session.",
     "Recovery: set LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1 before autosave to force a separate row.",
   ]
+  // Any reuse scope drops candidate-only metadata because no new row is
+  // created, so surface the footer for same-session and cross-session hits.
   const dropped = formatDroppedAutosaveLearningFields(args)
   if (dropped) lines.splice(3, 0, dropped)
   return lines
