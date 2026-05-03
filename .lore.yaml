@@ -1,0 +1,7 @@
+vault:
+  pageId: "343b35e6e67f81a0afa9c9801b35199f"
+projects: []
+hooks:
+  autoSave: true
+  wakeUp: true
+  saveInterval: 5

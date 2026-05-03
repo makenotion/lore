@@ -6,9 +6,6 @@ dist/
 .env
 .env.local
 
-# Lore config with secrets
-.lore.yaml
-
 # OS
 .DS_Store
 Thumbs.db
