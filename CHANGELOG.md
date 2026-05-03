@@ -16,10 +16,39 @@ log is the canonical source for those.
 - **Archived project migration opt-in.** `lore migrate --project <name>` now
   accepts `--include-archived` for the memory and fact confidence-score
   backfills, allowing intentional maintenance on archived historical
-  projects while keeping archived scopes rejected by default.
+  projects while keeping archived scopes rejected by default. (#337)
 - **Explicit archived project listing modes.** `lore-project action='list'`
   now accepts `status: "any"` to include active and archived projects, and
-  `lore status projects --archived-only` lists only archived projects.
+  `lore status projects --archived-only` lists only archived projects. (#337)
+- **Local Lore evals can run from the CLI.** `lore eval run <suite>` loads
+  versioned YAML suites, runs deterministic retrieval evals against
+  fixture-backed services, and writes JSON artifacts without live Notion
+  access. (#306)
+- **Self-service Entities bootstrap for legacy vaults.** A new vault repair
+  command creates the Entities database on four-database vaults and runs
+  additive schema migration so Facts gains the `SubjectEntity` /
+  `ObjectEntity` relation columns. Run it as `lore vault ensure-entities`
+  before `lore migrate --build-entities --yes`. (#336)
+- **Vault topology is now visible in status output.** `lore status` and
+  `lore-context action='status'` report vault topology health for operator
+  checks, and the public package exports the status types for callers that
+  consume Lore as a library. (#308, #322)
+- **Wake-up coverage debug output reaches hooks and MCP.** `LORE_DEBUG=1`
+  hook wake-up logs and `lore-context action='wake-up'` with `debug: true`
+  expose privacy-conscious coverage counters: ranked/default/error mode,
+  digest freshness/age, rendered section counts, `reason=no-ranked-search` for
+  the unranked path, and explicit `already-ranked-for-session` /
+  `load-failed` variants. Counts reflect rendered rows after topical collapse
+  and task bucketing without logging query text, titles, facts, or page bodies.
+  (#307, #416, #429, #436)
+- **Background hook failures appear in status.** `lore status` and
+  `lore-context action='status'` now surface recent autosave and digest failure
+  markers with context, log paths, structured MCP JSON, and recovery hints.
+  (#300, #334)
+- **Committed config has a pre-commit secret guard.** The installed Git hook
+  blocks staged `.lore.yaml` additions that contain `auth.token` or personal
+  Notion page IDs while still allowing the repository's shared vault locator.
+  (#445)
 
 ### Changed
 
@@ -28,22 +57,24 @@ log is the canonical source for those.
   unless they pass an explicit live, project-compatible Memories-row
   `sourceMemoryId` or a compatible same-process `agent`+`session` auto-link.
   This flips the previous warning-and-write behavior into an agent-observable
-  hard error for all MCP consumers, including out-of-tree integrations.
+  hard error for all MCP consumers, including out-of-tree integrations. (#296)
 - **Explicit fact sources are validated before writes.** Explicit
   `sourceMemoryId` fact creates now perform one additional Notion property read
   to verify that the source resolves to a live Memories row whose project scope
   is compatible with the fact. Session auto-link remains a process-local
   optimization that trusts the in-process write order and tracker metadata.
+  (#296)
 - **Memory property reads now require live Memories rows.**
   `MemoryService.getPropertiesById` and `getManyById` now drop archived pages
   and pages outside the configured Memories database/data source. This makes
   provenance validation consistent with the intended memory-read contract and
   means read-path callers no longer refresh decay metadata for archived or
-  cross-database source rows.
-- **Explicit project scope now fails closed.** MCP tools and CLI commands that
-  accept `projectName`, `projectNames`, or `--project` now reject typo'd,
-  archived, inaccessible, or ambiguous project names before scoped reads or
-  writes run. Omit the project field intentionally to use auto-detected scope.
+  cross-database source rows. (#296)
+- **Breaking project-scope contract: explicit project scope now fails closed.**
+  MCP tools and CLI commands that accept `projectName`, `projectNames`, or
+  `--project` now reject typo'd, archived, inaccessible, or ambiguous project
+  names before scoped reads or writes run. Omit the project field intentionally
+  to use auto-detected scope. (#301)
 - **Breaking vault-shape contract: Entities is now required.** Vault
   verification now requires the five-database schema
   Projects/Topics/Memories/Entities/Facts, `LoreServices.entities` is
@@ -52,33 +83,74 @@ log is the canonical source for those.
   four-database vaults fail fast with manual repair guidance instead of
   falling back to no-Entities compatibility. Row-level `SubjectKey`
   fallback remains for Fact rows whose entity relations have not been
-  backfilled yet. (#272)
-- **Wake-up debug logging now uses coverage-counter vocabulary.** The
-  `LORE_DEBUG=1` hook wake-up line reports `mode=ranked|default|error`,
-  `reason=no-ranked-search` for the unranked path, and explicit
-  `already-ranked-for-session` / `load-failed` variants, replacing the older
-  `reason=no-user-query` wording so operator filters cover every case where
-  ranked search did not run.
+  backfilled yet. (#272, #302)
+- **Autosave learning dedup reuses exact-project matches across sessions.**
+  Hook-spawned autosave learning extraction now reuses an existing likely
+  conversation note when the duplicate is scoped to the same resolved project,
+  falls back to same-session dedup for auto-resolved catch-all scope, includes
+  legacy unscoped duplicate learnings at the core write boundary, serializes the
+  probe/write window with a project-scoped local lock, reuses marker-backed
+  duplicates when coordination succeeds, warns when lock/marker coordination
+  degrades, and reports when the MCP memory save path reused an existing
+  learning. Set
+  `LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1` to recover the previous
+  create-every-time behavior. (#305, #323, #335, #352)
+- **Lore vault config can be committed intentionally.** `.lore.yaml` is no
+  longer ignored by default so private deployments can carry shared,
+  credential-free vault config in git when that is intentional. (#268)
+- **Unscoped topic updates warn when they are skipped.** MCP memory, decision,
+  and task write paths that include topic fields without a resolvable target
+  now return a structured warning and still skip the topic update instead of
+  failing or silently dropping it. (#291, #326)
+- **Archived projects are excluded from default resolution.** Project lookup by
+  path or name now ignores archived Notion rows, so scripted callers no longer
+  resolve to retired project scopes. (#292)
+- **`lore mine` includes Dockerfile-style filenames.** Mine file selection now
+  matches `Dockerfile` and related Dockerfile name variants, changing which
+  files are eligible for indexing. (#293)
+- **`lore mine` preserves Markdown fences in mined content.** Mined Markdown
+  output chooses wrapper fence lengths so inner fenced blocks remain intact.
+  (#294)
+- **Rich-text metadata limits are enforced in every write path.** MCP schemas
+  and core memory, decision, task, and topic-key write services now validate
+  Notion-sized metadata before reads or writes, and known cap errors render
+  from structured issue fields. (#295, #333, #434, #439)
+- **MCP date fields can be cleared consistently.** Date-typed memory update
+  fields, decision review dates, fact review dates, and task due dates now
+  accept `null` or the MCP-friendly empty-string clear sentinel where an
+  existing Notion date can be cleared, while create-only date fields still
+  reject empty clears. Tool descriptions document the keep-vs-clear behavior.
+  (#297, #330, #421, #438)
+- **CLI numeric flags parse strictly.** `lore search --limit`,
+  `lore tasks reconcile --limit`, and `lore tasks reconcile --min-score` now
+  reject malformed, fractional, signed, out-of-range, or exponent/coerced
+  values instead of accepting partial parses. (#298, #328)
+- **Author identity resolution is lazy, write-scoped, and auth-scoped.**
+  Read-only CLI invocations and startup paths no longer call `users.me` solely
+  to resolve attribution; in-flight lookups are shared only for the same active
+  token/base URL snapshot and stale settled snapshots are evicted. (#299, #331)
+- **MCP memory tool instructions stay under the config budget.** The
+  `lore-memory` MCP tool description is shorter while preserving the author
+  field contract, reducing agent-visible tool-config pressure. (#303)
 - **Wake-up coverage counters now surface in status.** `lore status` and
   `lore-context action='status'` print the same content-free coverage line
   shape as the hook debug log, so operators and MCP-driven agents can inspect
-  retrieval coverage without waiting for a live hook fire.
+  retrieval coverage without waiting for a live hook fire. (#436)
 - **Project listing defaults to active projects.** `ProjectService.list()`,
   `lore-project action='list'`, and `lore status projects` now return active
   projects by default. Use `status: "archived"` / `--archived-only` for
   archived-only output or `status: "any"` / `--all` to include archived rows.
+  (#337)
 - **Archived explicit project scopes get specific diagnostics.** CLI and MCP
   read surfaces that accept explicit project names now route through the
   shared project-scope resolver, so names that resolve only to archived rows
-  report that archived state instead of a generic not-found message.
-
-### Added
-
-- **Self-service Entities bootstrap for legacy vaults.** A new vault repair
-  command creates the Entities database on four-database vaults and runs
-  additive schema migration so Facts gains the `SubjectEntity` /
-  `ObjectEntity` relation columns. Run it as `lore vault ensure-entities`
-  before `lore migrate --build-entities --yes`.
+  report that archived state instead of a generic not-found message. (#337)
+- **Codex wake-up is query-aware and debounced by attempt.** Codex hook installs
+  now use `UserPromptSubmit`, parse the prompt-bearing event shape via
+  `LORE_WAKEUP_EVENT`, rank wake-up context against the submitted prompt, and
+  create an atomic per-session attempt marker before Notion initialization so
+  slash-first prompts, transient load failures, and concurrent prompt hooks do
+  not run wake-up repeatedly. (#304, #332)
 
 ### Fixed
 
@@ -86,30 +158,42 @@ log is the canonical source for those.
   `users.me` lookups now keep in-flight entries long enough for callers under
   the same auth snapshot to share one request, even when another token/base URL
   starts resolving concurrently. Settled stale snapshots are still evicted so
-  attribution does not leak across auth changes.
+  attribution does not leak across auth changes. (#331)
 - **`resetIdentityCache()` keeps its no-arg compatibility.** External callers
   can continue calling the exported reset helper without passing a resolver;
   the no-arg form clears all resolver-owned identity caches in the process.
+  (#331)
 - **Autosave learning reuse now applies at the core write boundary.** Likely
   conversation-note autosaves reuse same-session, cross-session, and legacy
   unscoped duplicate learnings through `MemoryService`, fail closed when the
   blocking duplicate probe cannot read Notion, and surface explicit
   `cross-session` / `unknown-session` reuse labels in MCP output. (#324)
-
 - **Codex wake-up debounce now records attempts atomically.** The
   `UserPromptSubmit` marker is created before Notion initialization, applies to
   slash-command first prompts and transient wake-up load failures, honors
   `hooks.wakeUp: false` before touching marker state, and uses atomic
-  create-if-absent so concurrent prompt hooks do not both run wake-up. (#310)
+  create-if-absent so concurrent prompt hooks do not both run wake-up. (#310,
+  #332)
+- **Lore config rejects unsafe committed values before Notion calls.**
+  Config parsing warns on `auth.token`, rejects token-shaped values such as
+  `ntn_`, `secret_`, and `Bearer secret_`, rejects starter-style `<...>` page
+  IDs in local, upstream, and promotion vault config, and keeps the committed
+  shared vault locator credential-free. (#327, #408, #418, #444)
+- **Project-scoped migrations require an explicit scope decision.**
+  Project-capable data migrations now reject missing, archived, inaccessible,
+  ambiguous, or transiently unreadable project names unless the operator passes
+  a valid `--project` or an intentional `--allow-unscoped`. (#356)
+- **Migration lock reclaim is serialized.** Concurrent migration runs can no
+  longer both acquire the same stale lock during reclaim. (#444)
 - **Partial-vault detection now sees renamed Lore databases.** Vault
   verification falls back to schema fingerprints when expected child
   database titles are missing, preventing `lore init` from duplicating a
-  page where an existing Lore database was renamed.
+  page where an existing Lore database was renamed. (#336)
 - **MCP startup diagnostics cover missing-Entities vaults.** MCP startup
   still registers diagnostic tools when strict service init fails on a
-  partial vault and points operators at `lore vault ensure-entities`.
+  partial vault and points operators at `lore vault ensure-entities`. (#336)
 - **Missing-database errors redact long vault page IDs by default.** Set
-  `LORE_DEBUG=1` to include the full page ID in local diagnostic output.
+  `LORE_DEBUG=1` to include the full page ID in local diagnostic output. (#336)
 
 ## [0.11.0] - 2026-05-03
 
@@ -151,7 +235,9 @@ had not been cut as a GitHub Package release.
   active token/base URL and pays the Notion round-trip on the first
   unattributed write only. Operators on slow networks who want the synchronous
   path export `LORE_USER_NAME` in shell rc; failures collapse to
-  `{ author: null }` and never block writes.
+  `{ author: null }` and never block writes. This supersedes the original
+  0.11.0 startup-cost note that every Lore process startup paid one
+  `users.me` call unless `LORE_USER_NAME` was set. (#299, #331)
 
 - **Dynamic Fact confidence mirror.** Facts now carry a mirrored numeric
   confidence score derived from the source Memory's system-managed
