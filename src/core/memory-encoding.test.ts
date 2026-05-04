@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import {
   BODY_SIZE_CAP_BYTES,
   findEncodedMemories,
@@ -199,8 +200,8 @@ describe("findEncodedMemories", () => {
       expect.objectContaining({
         filter: {
           or: [
-            { property: "Project", relation: { contains: "project-a" } },
-            { property: "Project", relation: { is_empty: true } },
+            { property: MEMORY_PROPS.PROJECT, relation: { contains: "project-a" } },
+            { property: MEMORY_PROPS.PROJECT, relation: { is_empty: true } },
           ],
         },
       })

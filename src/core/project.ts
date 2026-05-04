@@ -15,7 +15,7 @@ import type {
   ProjectListStatus,
   DatabaseRef,
 } from "../types.js"
-import { buildProjectProps } from "../notion/schema.js"
+import { buildProjectProps, PROJECT_PROPS } from "../notion/schema.js"
 import {
   isFullPage,
   extractTitle,
@@ -35,7 +35,7 @@ function activeProjectLookupFilter(
   lookup: Record<string, unknown>
 ): QueryDataSourceParameters["filter"] {
   return {
-    and: [lookup, { property: "Status", select: { equals: "active" } }],
+    and: [lookup, { property: PROJECT_PROPS.STATUS, select: { equals: "active" } }],
   } as QueryDataSourceParameters["filter"]
 }
 
@@ -87,7 +87,7 @@ export class ProjectService {
 
   async list(status: ProjectListStatus = "active"): Promise<Project[]> {
     const filter =
-      status === "any" ? undefined : { property: "Status", select: { equals: status } }
+      status === "any" ? undefined : { property: PROJECT_PROPS.STATUS, select: { equals: status } }
 
     const results: PageObjectResponse[] = []
     let cursor: string | undefined
@@ -96,7 +96,7 @@ export class ProjectService {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter,
-        sorts: [{ property: "Name", direction: "ascending" }],
+        sorts: [{ property: PROJECT_PROPS.NAME, direction: "ascending" }],
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
@@ -110,7 +110,7 @@ export class ProjectService {
     const response = await this.client.dataSources.query({
       data_source_id: this.db.dataSourceId,
       filter: activeProjectLookupFilter({
-        property: "Path",
+        property: PROJECT_PROPS.PATH,
         rich_text: { equals: path },
       }),
     })
@@ -169,7 +169,7 @@ export class ProjectService {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        Status: { select: { name: "archived" } },
+        [PROJECT_PROPS.STATUS]: { select: { name: "archived" } },
       },
     })
     // Archiving flips a status field inside any cached copy. We don't
@@ -189,7 +189,7 @@ export class ProjectService {
     options: { includeArchived: boolean }
   ): Promise<Project | null> {
     const lookup = {
-      property: "Name",
+      property: PROJECT_PROPS.NAME,
       title: { equals: name },
     }
     const response = await this.client.dataSources.query({
@@ -216,11 +216,11 @@ export class ProjectService {
     const props = page.properties
     return {
       id: page.id,
-      name: extractTitle(props["Name"]),
-      type: extractSelect(props["Type"], "project") as ProjectType,
-      path: extractRichText(props["Path"]),
-      status: extractSelect(props["Status"], "active") as ProjectStatus,
-      description: extractRichText(props["Description"]),
+      name: extractTitle(props[PROJECT_PROPS.NAME]),
+      type: extractSelect(props[PROJECT_PROPS.TYPE], "project") as ProjectType,
+      path: extractRichText(props[PROJECT_PROPS.PATH]),
+      status: extractSelect(props[PROJECT_PROPS.STATUS], "active") as ProjectStatus,
+      description: extractRichText(props[PROJECT_PROPS.DESCRIPTION]),
     }
   }
 }

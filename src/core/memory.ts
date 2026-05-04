@@ -42,6 +42,7 @@ import {
   buildMemoryProps,
   COMPARE_NOTES_MAX_CHARS,
   encodeCompareNotesRichText,
+  MEMORY_PROPS,
   type CompareNotesTextChunk,
 } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
@@ -147,7 +148,7 @@ function sleep(ms: number): Promise<void> {
  */
 function cleanupOrphanExclusionFilter(): Record<string, unknown> {
   return {
-    property: "Keywords",
+    property: MEMORY_PROPS.KEYWORDS,
     rich_text: { does_not_contain: MEMORY_CLEANUP_ORPHAN_SENTINEL },
   }
 }
@@ -244,8 +245,8 @@ function shouldUseSaturationCutoff(
 export function proposedMemoryFilter(): { and: Array<Record<string, unknown>> } {
   return {
     and: [
-      { property: "Status", select: { equals: "proposed" } },
-      { property: "Kind", select: { does_not_equal: "decision" } },
+      { property: MEMORY_PROPS.STATUS, select: { equals: "proposed" } },
+      { property: MEMORY_PROPS.KIND, select: { does_not_equal: "decision" } },
     ],
   }
 }
@@ -287,7 +288,7 @@ export function reviewTerminalStatusExclusionFilters(): Array<
   Record<string, unknown>
 > {
   return REVIEW_TERMINAL_STATUSES.map((status) => ({
-    property: "Status",
+    property: MEMORY_PROPS.STATUS,
     select: { does_not_equal: status },
   }))
 }
@@ -304,18 +305,18 @@ export function reviewTerminalStatusExclusionFilters(): Array<
  * variants compose into the same observable behavior.
  */
 export function isNotReviewTerminalStatus(page: PageObjectResponse): boolean {
-  const status = extractSelect(page.properties["Status"], "informational")
+  const status = extractSelect(page.properties[MEMORY_PROPS.STATUS], "informational")
   return !REVIEW_TERMINAL_STATUSES.includes(
     status as (typeof REVIEW_TERMINAL_STATUSES)[number]
   )
 }
 
 const MEMORY_RELATION_PROPERTIES = [
-  "Project",
-  "Topic",
-  "Supersedes",
-  "Affects",
-  "Compared With",
+  MEMORY_PROPS.PROJECT,
+  MEMORY_PROPS.TOPIC,
+  MEMORY_PROPS.SUPERSEDES,
+  MEMORY_PROPS.AFFECTS,
+  MEMORY_PROPS.COMPARED_WITH,
 ] as const
 
 export async function hydrateMemoryRelationProperties(
@@ -498,12 +499,12 @@ function rerankByConfidence(
 ): PageObjectResponse[] {
   if (pages.length === 0) return pages
   const allUnscored = pages.every(
-    (page) => extractNumber(page.properties["Confidence Score"]) === null
+    (page) => extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]) === null
   )
   if (allUnscored) return pages
   return pages
     .map((page, rank): RrfEntry => {
-      const score = extractNumber(page.properties["Confidence Score"])
+      const score = extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE])
       const factor = confidenceFactor(score)
       return {
         page,
@@ -1738,7 +1739,7 @@ export class MemoryService {
             page_id: page.id,
             archived: true,
             properties: {
-              Keywords: {
+              [MEMORY_PROPS.KEYWORDS]: {
                 rich_text: cleanupKeywordsRichText,
               },
             },
@@ -1946,9 +1947,9 @@ export class MemoryService {
         data_source_id: this.db.dataSourceId,
         filter: withCleanupOrphanExclusion({
           and: [
-            { property: "Topic Key", rich_text: { equals: input.topicKey } },
+            { property: MEMORY_PROPS.TOPIC_KEY, rich_text: { equals: input.topicKey } },
             ...input.projectIds.map((id) => ({
-              property: "Project",
+              property: MEMORY_PROPS.PROJECT,
               relation: { contains: id },
             })),
           ],
@@ -2571,7 +2572,7 @@ export class MemoryService {
       // title cache). Re-keying touches `Topic Key` only; `Revision
       // Count` and `Last Referenced At` are deliberately untouched.
       properties: {
-        "Topic Key": {
+        [MEMORY_PROPS.TOPIC_KEY]: {
           rich_text: [{ text: { content: input.newTopicKey } }],
         },
       } as CreatePageParameters["properties"],
@@ -2754,7 +2755,7 @@ export class MemoryService {
     await this.client.pages.update({
       page_id: input.memoryId,
       properties: {
-        Status: { select: { name: newStatus } },
+        [MEMORY_PROPS.STATUS]: { select: { name: newStatus } },
       } as CreatePageParameters["properties"],
     })
 
@@ -2945,7 +2946,7 @@ export class MemoryService {
 
     const extractResolved = (): string | null => {
       if (!isFullPage(page) || page.archived) return null
-      const title = extractTitle(page.properties["Title"])
+      const title = extractTitle(page.properties[MEMORY_PROPS.TITLE])
       return title || null
     }
     const resolved = extractResolved()
@@ -2992,41 +2993,41 @@ export class MemoryService {
       // entry; the post-write `set` installs the authoritative value.
       this.bumpWriteEpoch()
       this.titleCache.delete(id)
-      props["Title"] = { title: [{ text: { content: decoded.title } }] }
+      props[MEMORY_PROPS.TITLE] = { title: [{ text: { content: decoded.title } }] }
     }
     if (input.projectIds) {
-      props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
+      props[MEMORY_PROPS.PROJECT] = { relation: input.projectIds.map((id) => ({ id })) }
     }
     if (input.topicId) {
-      props["Topic"] = { relation: [{ id: input.topicId }] }
+      props[MEMORY_PROPS.TOPIC] = { relation: [{ id: input.topicId }] }
     }
     if (input.tags) {
-      props["Tags"] = {
+      props[MEMORY_PROPS.TAGS] = {
         multi_select: input.tags.map((t) => ({ name: t })),
       }
     }
     if (decoded.keywords !== undefined) {
-      props["Keywords"] = {
+      props[MEMORY_PROPS.KEYWORDS] = {
         rich_text: [{ text: { content: decoded.keywords } }],
       }
     }
     if (decoded.synopsis !== undefined) {
-      props["Synopsis"] = {
+      props[MEMORY_PROPS.SYNOPSIS] = {
         rich_text: [{ text: { content: decoded.synopsis } }],
       }
     }
     if (input.kind) {
-      props["Kind"] = { select: { name: input.kind } }
+      props[MEMORY_PROPS.KIND] = { select: { name: input.kind } }
     }
     if (input.status) {
-      props["Status"] = { select: { name: input.status } }
+      props[MEMORY_PROPS.STATUS] = { select: { name: input.status } }
     }
     if (input.confidence) {
-      props["Confidence"] = { select: { name: input.confidence } }
+      props[MEMORY_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
     }
     // See `buildMemoryProps` for the three-state rationale.
     if (input.confidenceScore !== undefined) {
-      props["Confidence Score"] =
+      props[MEMORY_PROPS.CONFIDENCE_SCORE] =
         input.confidenceScore === null
           ? { number: null }
           : { number: input.confidenceScore }
@@ -3035,45 +3036,45 @@ export class MemoryService {
     // Strict `=== null` matches `buildMemoryProps`' shape so update and
     // create use one consistent rule for "is this a clear or a set?"
     if (input.reviewBy !== undefined) {
-      props["Review By"] =
+      props[MEMORY_PROPS.REVIEW_BY] =
         input.reviewBy === null ? { date: null } : { date: { start: input.reviewBy } }
     }
     if (input.decidedAt !== undefined) {
-      props["Decided At"] =
+      props[MEMORY_PROPS.DECIDED_AT] =
         input.decidedAt === null ? { date: null } : { date: { start: input.decidedAt } }
     }
     if (input.lastReferencedAt !== undefined) {
-      props["Last Referenced At"] =
+      props[MEMORY_PROPS.LAST_REFERENCED_AT] =
         input.lastReferencedAt === null
           ? { date: null }
           : { date: { start: input.lastReferencedAt } }
     }
     if (input.supersedesIds) {
-      props["Supersedes"] = { relation: input.supersedesIds.map((id) => ({ id })) }
+      props[MEMORY_PROPS.SUPERSEDES] = { relation: input.supersedesIds.map((id) => ({ id })) }
     }
     if (input.affectsIds) {
-      props["Affects"] = { relation: input.affectsIds.map((id) => ({ id })) }
+      props[MEMORY_PROPS.AFFECTS] = { relation: input.affectsIds.map((id) => ({ id })) }
     }
     if (decoded.alternatives !== undefined) {
-      props["Alternatives"] = {
+      props[MEMORY_PROPS.ALTERNATIVES] = {
         rich_text: [{ text: { content: decoded.alternatives } }],
       }
     }
     if (decoded.consequences !== undefined) {
-      props["Consequences"] = {
+      props[MEMORY_PROPS.CONSEQUENCES] = {
         rich_text: [{ text: { content: decoded.consequences } }],
       }
     }
     if (input.taskState) {
-      props["Task State"] = { select: { name: input.taskState } }
+      props[MEMORY_PROPS.TASK_STATE] = { select: { name: input.taskState } }
     }
     if (decoded.blockedBy !== undefined) {
-      props["Blocked By"] = {
+      props[MEMORY_PROPS.BLOCKED_BY] = {
         rich_text: [{ text: { content: decoded.blockedBy } }],
       }
     }
     if (decoded.entity !== undefined) {
-      props["Entity"] = {
+      props[MEMORY_PROPS.ENTITY] = {
         rich_text: [{ text: { content: decoded.entity } }],
       }
     }
@@ -3271,8 +3272,8 @@ export class MemoryService {
           await this.client.pages.update({
             page_id: memory.id,
             properties: {
-              "Last Referenced At": { date: { start: today } },
-              "Confidence Score": { number: nextScore },
+              [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
+              [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: nextScore },
             },
           })
         } catch (error) {
@@ -3336,11 +3337,11 @@ export class MemoryService {
     }
     const next = decrementConfidenceScore(current)
     const properties: CreatePageParameters["properties"] = {
-      "Confidence Score": { number: next },
-      "Last Referenced At": { date: { start: today } },
+      [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: next },
+      [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
     }
     if (opts?.compareNotes !== undefined) {
-      properties["Compare Notes"] = {
+      properties[MEMORY_PROPS.COMPARE_NOTES] = {
         rich_text: encodeCompareNotesRichText(opts.compareNotes),
       }
     }
@@ -3515,10 +3516,10 @@ export class MemoryService {
         promise: this.client.pages.update({
           page_id: memoryA.id,
           properties: {
-            "Compared With": {
+            [MEMORY_PROPS.COMPARED_WITH]: {
               relation: nextComparedWithA.map((id) => ({ id })),
             },
-            "Compare Notes": {
+            [MEMORY_PROPS.COMPARE_NOTES]: {
               rich_text: encodeCompareNotesRichText(nextNotesA),
             },
           },
@@ -3537,10 +3538,10 @@ export class MemoryService {
         promise: this.client.pages.update({
           page_id: memoryB.id,
           properties: {
-            "Compared With": {
+            [MEMORY_PROPS.COMPARED_WITH]: {
               relation: nextComparedWithB.map((id) => ({ id })),
             },
-            "Compare Notes": {
+            [MEMORY_PROPS.COMPARE_NOTES]: {
               rich_text: encodeCompareNotesRichText(nextNotesB),
             },
           },
@@ -3720,8 +3721,8 @@ export class MemoryService {
     await this.client.pages.update({
       page_id: memoryId,
       properties: {
-        "Confidence Score": { number: score },
-        "Last Referenced At": { date: { start: lastReferencedAt } },
+        [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: score },
+        [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: { start: lastReferencedAt } },
       },
     })
   }
@@ -3906,13 +3907,13 @@ export class MemoryService {
       })
       for (const page of response.results.filter(isLiveFullPage)) {
         total += 1
-        const sourceProp = page.properties["Source"]
+        const sourceProp = page.properties[MEMORY_PROPS.SOURCE]
         const sourceKey =
           sourceProp && sourceProp.type === "select" && sourceProp.select
             ? sourceProp.select.name
             : "unknown"
         bySource[sourceKey] = (bySource[sourceKey] ?? 0) + 1
-        const agentRaw = extractRichText(page.properties["Agent"]).trim()
+        const agentRaw = extractRichText(page.properties[MEMORY_PROPS.AGENT]).trim()
         const agentKey = agentRaw.length > 0 ? agentRaw : "unknown"
         byAgent[agentKey] = (byAgent[agentKey] ?? 0) + 1
       }
@@ -4001,17 +4002,17 @@ export class MemoryService {
       filters.push(...reviewTerminalStatusExclusionFilters())
     }
     filters.push({
-      property: "Confidence Score",
+      property: MEMORY_PROPS.CONFIDENCE_SCORE,
       number: { is_not_empty: true },
     })
     filters.push({
       or: [
         {
-          property: "Confidence Score",
+          property: MEMORY_PROPS.CONFIDENCE_SCORE,
           number: { less_than: CONFIDENCE_DISPLAY_THRESHOLD },
         },
         {
-          property: "Last Referenced At",
+          property: MEMORY_PROPS.LAST_REFERENCED_AT,
           date: { on_or_before: neglectCutoff },
         },
       ],
@@ -4054,7 +4055,7 @@ export class MemoryService {
           this.client.dataSources.query({
             data_source_id: this.db.dataSourceId,
             filter,
-            sorts: [{ property: "Confidence Score", direction: "ascending" }],
+            sorts: [{ property: MEMORY_PROPS.CONFIDENCE_SCORE, direction: "ascending" }],
             page_size,
             start_cursor,
           }),
@@ -4153,7 +4154,7 @@ export class MemoryService {
           // and the per-pair `findConflictCandidates` work would pair
           // it against legitimate rows.
           filter: withCleanupOrphanExclusion({
-            property: "Project",
+            property: MEMORY_PROPS.PROJECT,
             relation: { contains: projectId },
           }) as QueryDataSourceParameters["filter"],
           page_size: 100,
@@ -4282,25 +4283,25 @@ export class MemoryService {
     if (opts?.projectId) {
       filters.push(
         opts.includeUnscoped === false
-          ? { property: "Project", relation: { contains: opts.projectId } }
+          ? { property: MEMORY_PROPS.PROJECT, relation: { contains: opts.projectId } }
           : projectOrUnscopedFilter(opts.projectId)
       )
     }
     if (opts?.topicId) {
       filters.push({
-        property: "Topic",
+        property: MEMORY_PROPS.TOPIC,
         relation: { contains: opts.topicId },
       })
     }
     if (opts?.source) {
       filters.push({
-        property: "Source",
+        property: MEMORY_PROPS.SOURCE,
         select: { equals: opts.source },
       })
     }
     if (opts?.kind) {
       filters.push({
-        property: "Kind",
+        property: MEMORY_PROPS.KIND,
         select: { equals: opts.kind },
       })
     }
@@ -4311,18 +4312,18 @@ export class MemoryService {
       // by the surrounding combiner. Mirrors the
       // `reviewTerminalStatusExclusionFilters` posture below.
       for (const k of opts.excludeKinds) {
-        filters.push({ property: "Kind", select: { does_not_equal: k } })
+        filters.push({ property: MEMORY_PROPS.KIND, select: { does_not_equal: k } })
       }
     }
     if (opts?.confidence) {
       filters.push({
-        property: "Confidence",
+        property: MEMORY_PROPS.CONFIDENCE,
         select: { equals: opts.confidence },
       })
     }
     if (opts?.status) {
       filters.push({
-        property: "Status",
+        property: MEMORY_PROPS.STATUS,
         select: { equals: opts.status },
       })
     } else if (opts?.includeProposed !== true) {
@@ -4340,17 +4341,17 @@ export class MemoryService {
     }
     if (opts?.reviewBefore) {
       filters.push({
-        property: "Review By",
+        property: MEMORY_PROPS.REVIEW_BY,
         date: { on_or_before: opts.reviewBefore },
       })
     }
     if (opts?.tags?.length) {
       if (opts.tags.length === 1) {
-        filters.push({ property: "Tags", multi_select: { contains: opts.tags[0] } })
+        filters.push({ property: MEMORY_PROPS.TAGS, multi_select: { contains: opts.tags[0] } })
       } else {
         filters.push({
           or: opts.tags.map((t) => ({
-            property: "Tags",
+            property: MEMORY_PROPS.TAGS,
             multi_select: { contains: t },
           })),
         })
@@ -4358,7 +4359,7 @@ export class MemoryService {
     }
     if (opts?.session) {
       filters.push({
-        property: "Session",
+        property: MEMORY_PROPS.SESSION,
         rich_text: { equals: opts.session },
       })
     }
@@ -4559,7 +4560,7 @@ export class MemoryService {
     const selectedPages = pages.slice(0, limit)
     const memories = await this.materializeMemories(selectedPages, input.includeContent)
     const explain = selectedPages.map((page, i): SearchExplain => {
-      const factor = confidenceFactor(extractNumber(page.properties["Confidence Score"]))
+      const factor = confidenceFactor(extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]))
       if (explainBranch === "contains-only") {
         return {
           memoryId: page.id,
@@ -4634,7 +4635,7 @@ export class MemoryService {
       filters.push(projectOrUnscopedFilter(input.projectId))
     }
     if (input.topicId) {
-      filters.push({ property: "Topic", relation: { contains: input.topicId } })
+      filters.push({ property: MEMORY_PROPS.TOPIC, relation: { contains: input.topicId } })
     }
     if (input.tags?.length) {
       // Mirrors the OR semantics of `MemoryService.list`: any-tag-matches.
@@ -4642,20 +4643,20 @@ export class MemoryService {
       // multi-tag queries.
       filters.push(
         input.tags.length === 1
-          ? { property: "Tags", multi_select: { contains: input.tags[0] } }
+          ? { property: MEMORY_PROPS.TAGS, multi_select: { contains: input.tags[0] } }
           : {
               or: input.tags.map((t) => ({
-                property: "Tags",
+                property: MEMORY_PROPS.TAGS,
                 multi_select: { contains: t },
               })),
             }
       )
     }
     if (input.kind) {
-      filters.push({ property: "Kind", select: { equals: input.kind } })
+      filters.push({ property: MEMORY_PROPS.KIND, select: { equals: input.kind } })
     }
     if (input.status) {
-      filters.push({ property: "Status", select: { equals: input.status } })
+      filters.push({ property: MEMORY_PROPS.STATUS, select: { equals: input.status } })
     } else if (input.includeProposed !== true) {
       // Same default-exclude posture as `MemoryService.list` (issue
       // #281, AC #2 + Phase 4): both `proposed` (inbox-pending) and
@@ -4674,9 +4675,9 @@ export class MemoryService {
     if (trimmed.length > 0) {
       filters.push({
         or: [
-          { property: "Title", title: { contains: trimmed } },
-          { property: "Keywords", rich_text: { contains: trimmed } },
-          { property: "Synopsis", rich_text: { contains: trimmed } },
+          { property: MEMORY_PROPS.TITLE, title: { contains: trimmed } },
+          { property: MEMORY_PROPS.KEYWORDS, rich_text: { contains: trimmed } },
+          { property: MEMORY_PROPS.SYNOPSIS, rich_text: { contains: trimmed } },
         ],
       })
     }
@@ -5058,7 +5059,7 @@ export class MemoryService {
       } else {
         return false
       }
-      const keywords = extractRichText(page.properties["Keywords"])
+      const keywords = extractRichText(page.properties[MEMORY_PROPS.KEYWORDS])
       if (keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) return false
       return true
     })
@@ -5066,8 +5067,8 @@ export class MemoryService {
     // Apply additional filters (project, topic, tags, kind, status). The
     // search API has no property-filter support, so these are post-filters.
     const filterRelationProperties: string[] = []
-    if (input.projectId) filterRelationProperties.push("Project")
-    if (input.topicId) filterRelationProperties.push("Topic")
+    if (input.projectId) filterRelationProperties.push(MEMORY_PROPS.PROJECT)
+    if (input.topicId) filterRelationProperties.push(MEMORY_PROPS.TOPIC)
     if (filterRelationProperties.length > 0) {
       // Re-check the signal immediately before hydration. Hydration
       // is the heavy step (one `pages.retrieve` per row that lacks
@@ -5089,31 +5090,31 @@ export class MemoryService {
 
     if (input.projectId) {
       filtered = filtered.filter((page) => {
-        const ids = extractRelationIds(page.properties["Project"])
+        const ids = extractRelationIds(page.properties[MEMORY_PROPS.PROJECT])
         return ids.length === 0 || ids.includes(input.projectId!)
       })
     }
     if (input.topicId) {
       filtered = filtered.filter((page) => {
-        const ids = extractRelationIds(page.properties["Topic"])
+        const ids = extractRelationIds(page.properties[MEMORY_PROPS.TOPIC])
         return ids.includes(input.topicId!)
       })
     }
     if (input.tags?.length) {
       filtered = filtered.filter((page) => {
-        const pageTags = extractMultiSelect(page.properties["Tags"])
+        const pageTags = extractMultiSelect(page.properties[MEMORY_PROPS.TAGS])
         return input.tags!.some((t) => pageTags.includes(t))
       })
     }
     if (input.kind) {
       filtered = filtered.filter(
-        (page) => extractSelect(page.properties["Kind"], "note") === input.kind
+        (page) => extractSelect(page.properties[MEMORY_PROPS.KIND], "note") === input.kind
       )
     }
     if (input.status) {
       filtered = filtered.filter(
         (page) =>
-          extractSelect(page.properties["Status"], "informational") === input.status
+          extractSelect(page.properties[MEMORY_PROPS.STATUS], "informational") === input.status
       )
     } else if (input.includeProposed !== true) {
       // Default-exclude review-terminal rows (`proposed` and
@@ -5386,7 +5387,7 @@ export class MemoryService {
           semanticRank: null,
           rrfScore: null,
           confidenceFactor: confidenceFactor(
-            extractNumber(page.properties["Confidence Score"])
+            extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE])
           ),
         })
       })
@@ -5423,7 +5424,7 @@ export class MemoryService {
         const prev = scored.get(page.id)
         const factor =
           prev?.confidenceFactor ??
-          confidenceFactor(extractNumber(page.properties["Confidence Score"]))
+          confidenceFactor(extractNumber(page.properties[MEMORY_PROPS.CONFIDENCE_SCORE]))
         const score = (1 / (RRF_K + rank + 1)) * weight * factor
         if (prev) {
           prev.score += score
@@ -5514,14 +5515,14 @@ export class MemoryService {
  */
 export function pageToMemory(page: PageObjectResponse, content?: string): Memory {
   const props = page.properties
-  const topicIds = extractRelationIds(props["Topic"])
-  const session = extractRichText(props["Session"]).trim()
+  const topicIds = extractRelationIds(props[MEMORY_PROPS.TOPIC])
+  const session = extractRichText(props[MEMORY_PROPS.SESSION]).trim()
 
   // Read `Task State` only when the column exists *and* a select is set.
   // `extractSelect` falls back when the column is missing — fine for
   // pre-migration pages — but we want a true `null` (not `"open"`) on
   // every non-task memory so downstream code can branch on the field.
-  const taskStateProp = props["Task State"]
+  const taskStateProp = props[MEMORY_PROPS.TASK_STATE]
   const taskState =
     taskStateProp && taskStateProp.type === "select" && taskStateProp.select
       ? (taskStateProp.select.name as TaskState)
@@ -5529,37 +5530,37 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
 
   return {
     id: page.id,
-    title: extractTitle(props["Title"]),
-    projectIds: extractRelationIds(props["Project"]),
+    title: extractTitle(props[MEMORY_PROPS.TITLE]),
+    projectIds: extractRelationIds(props[MEMORY_PROPS.PROJECT]),
     topicId: topicIds[0] ?? null,
-    source: extractSelect(props["Source"], "manual") as MemorySource,
+    source: extractSelect(props[MEMORY_PROPS.SOURCE], "manual") as MemorySource,
     // Decision-related columns. Pre-migration pages default gracefully
     // via the hardened extractors — no backfill required.
-    kind: extractSelect(props["Kind"], "note") as MemoryKind,
-    status: extractSelect(props["Status"], "informational") as MemoryStatus,
-    confidence: extractSelect(props["Confidence"], "certain") as MemoryConfidence,
-    confidenceScore: extractNumber(props["Confidence Score"]),
-    reviewBy: extractDate(props["Review By"]),
-    doneAt: extractDate(props["Done At"]),
-    decidedAt: extractDate(props["Decided At"]),
-    lastReferencedAt: extractDate(props["Last Referenced At"]),
-    supersedesIds: extractRelationIds(props["Supersedes"]),
-    affectsIds: extractRelationIds(props["Affects"]),
-    alternatives: extractRichText(props["Alternatives"]),
-    consequences: extractRichText(props["Consequences"]),
-    author: extractRichText(props["Author"]),
-    agent: extractRichText(props["Agent"]),
-    tags: extractMultiSelect(props["Tags"]),
-    keywords: extractRichText(props["Keywords"]),
-    synopsis: extractRichText(props["Synopsis"]),
+    kind: extractSelect(props[MEMORY_PROPS.KIND], "note") as MemoryKind,
+    status: extractSelect(props[MEMORY_PROPS.STATUS], "informational") as MemoryStatus,
+    confidence: extractSelect(props[MEMORY_PROPS.CONFIDENCE], "certain") as MemoryConfidence,
+    confidenceScore: extractNumber(props[MEMORY_PROPS.CONFIDENCE_SCORE]),
+    reviewBy: extractDate(props[MEMORY_PROPS.REVIEW_BY]),
+    doneAt: extractDate(props[MEMORY_PROPS.DONE_AT]),
+    decidedAt: extractDate(props[MEMORY_PROPS.DECIDED_AT]),
+    lastReferencedAt: extractDate(props[MEMORY_PROPS.LAST_REFERENCED_AT]),
+    supersedesIds: extractRelationIds(props[MEMORY_PROPS.SUPERSEDES]),
+    affectsIds: extractRelationIds(props[MEMORY_PROPS.AFFECTS]),
+    alternatives: extractRichText(props[MEMORY_PROPS.ALTERNATIVES]),
+    consequences: extractRichText(props[MEMORY_PROPS.CONSEQUENCES]),
+    author: extractRichText(props[MEMORY_PROPS.AUTHOR]),
+    agent: extractRichText(props[MEMORY_PROPS.AGENT]),
+    tags: extractMultiSelect(props[MEMORY_PROPS.TAGS]),
+    keywords: extractRichText(props[MEMORY_PROPS.KEYWORDS]),
+    synopsis: extractRichText(props[MEMORY_PROPS.SYNOPSIS]),
     session: session.length > 0 ? session : null,
     content: content ?? "",
     createdAt: page.created_time,
     updatedAt: page.last_edited_time,
     taskState,
-    blockedBy: extractRichText(props["Blocked By"]),
-    entity: extractRichText(props["Entity"]),
-    topicKey: extractRichText(props["Topic Key"]),
+    blockedBy: extractRichText(props[MEMORY_PROPS.BLOCKED_BY]),
+    entity: extractRichText(props[MEMORY_PROPS.ENTITY]),
+    topicKey: extractRichText(props[MEMORY_PROPS.TOPIC_KEY]),
     // Legacy rows (pre-0.9.0) have a null `Revision Count` column.
     // Coalesce to 1 — every existing row has been "saved once," so
     // formatMemoryListItem (#10) treats the count as single-revision
@@ -5567,9 +5568,9 @@ export function pageToMemory(page: PageObjectResponse, content?: string): Memory
     // path (which preserves null to signal "never scored") because
     // Revision Count carries no "uninitialized" semantic — every row
     // has been written at least once by definition.
-    revisionCount: extractNumber(props["Revision Count"]) ?? 1,
-    comparedWith: extractRelationIds(props["Compared With"]),
-    compareNotes: extractRichText(props["Compare Notes"]),
+    revisionCount: extractNumber(props[MEMORY_PROPS.REVISION_COUNT]) ?? 1,
+    comparedWith: extractRelationIds(props[MEMORY_PROPS.COMPARED_WITH]),
+    compareNotes: extractRichText(props[MEMORY_PROPS.COMPARE_NOTES]),
   }
 }
 

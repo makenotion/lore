@@ -19,6 +19,7 @@
  */
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import {
   backfillSynopses,
   buildSynopsisSynthesisPrompt,
@@ -760,7 +761,7 @@ describe("backfillSynopses — placeholder backend", () => {
     const queryCall = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
       .calls[0][0]
     expect(queryCall.filter).toEqual({
-      property: "Synopsis",
+      property: MEMORY_PROPS.SYNOPSIS,
       rich_text: { is_empty: true },
     })
   })
@@ -773,7 +774,7 @@ describe("backfillSynopses — discovery query shape", () => {
     const queryCall = (client.dataSources.query as ReturnType<typeof vi.fn>).mock
       .calls[0][0]
     expect(queryCall.filter).toEqual({
-      property: "Synopsis",
+      property: MEMORY_PROPS.SYNOPSIS,
       rich_text: { is_empty: true },
     })
     expect(queryCall.data_source_id).toBe("memories-ds")
@@ -1003,7 +1004,7 @@ describe("findSynopsisCandidates", () => {
 
     const call = queryMock.mock.calls[0][0]
     expect(call.filter).toEqual({
-      property: "Synopsis",
+      property: MEMORY_PROPS.SYNOPSIS,
       rich_text: { is_empty: true },
     })
     expect(call.sorts).toEqual([{ timestamp: "created_time", direction: "ascending" }])
@@ -1025,11 +1026,11 @@ describe("findSynopsisCandidates", () => {
 
     expect(queryMock.mock.calls[0][0].filter).toEqual({
       and: [
-        { property: "Synopsis", rich_text: { is_empty: true } },
+        { property: MEMORY_PROPS.SYNOPSIS, rich_text: { is_empty: true } },
         {
           or: [
-            { property: "Project", relation: { contains: "project-a" } },
-            { property: "Project", relation: { is_empty: true } },
+            { property: MEMORY_PROPS.PROJECT, relation: { contains: "project-a" } },
+            { property: MEMORY_PROPS.PROJECT, relation: { is_empty: true } },
           ],
         },
       ],

@@ -26,7 +26,7 @@ import type {
   ListDecisionsOpts,
   DatabaseRef,
 } from "../types.js"
-import { buildMemoryProps } from "../notion/schema.js"
+import { buildMemoryProps, MEMORY_PROPS } from "../notion/schema.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
@@ -288,18 +288,18 @@ export class DecisionService {
     opts?: ListDecisionsOpts
   ): Promise<{ items: DecisionSummary[]; nextCursor?: string; capped: boolean }> {
     const filters: Array<Record<string, unknown>> = [
-      { property: "Kind", select: { equals: "decision" } },
+      { property: MEMORY_PROPS.KIND, select: { equals: "decision" } },
     ]
 
     if (opts?.projectId) {
       filters.push(projectOrUnscopedFilter(opts.projectId))
     }
     if (opts?.status) {
-      filters.push({ property: "Status", select: { equals: opts.status } })
+      filters.push({ property: MEMORY_PROPS.STATUS, select: { equals: opts.status } })
     }
     if (opts?.reviewBefore) {
       filters.push({
-        property: "Review By",
+        property: MEMORY_PROPS.REVIEW_BY,
         date: { on_or_before: opts.reviewBefore },
       })
     }
@@ -393,7 +393,7 @@ export class DecisionService {
       await this.client.pages.update({
         page_id: newId,
         properties: {
-          Supersedes: { relation: merged.map((id) => ({ id })) },
+          [MEMORY_PROPS.SUPERSEDES]: { relation: merged.map((id) => ({ id })) },
         } as CreatePageParameters["properties"],
       })
       // Post-write eviction: the Supersedes relation just changed on
@@ -404,7 +404,7 @@ export class DecisionService {
       await this.client.pages.update({
         page_id: oldId,
         properties: {
-          Status: { select: { name: "superseded" } },
+          [MEMORY_PROPS.STATUS]: { select: { name: "superseded" } },
         } as CreatePageParameters["properties"],
       })
       this.idCache.delete(oldId)
@@ -446,7 +446,7 @@ export class DecisionService {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        "Review By":
+        [MEMORY_PROPS.REVIEW_BY]:
           reviewDate === null ? { date: null } : { date: { start: reviewDate } },
       } as CreatePageParameters["properties"],
     })
@@ -476,12 +476,12 @@ export class DecisionService {
   }): Promise<OverdueDecisionWindow> {
     const today = todayISO()
     const filters: Array<Record<string, unknown>> = [
-      { property: "Kind", select: { equals: "decision" } },
-      { property: "Review By", date: { on_or_before: today } },
+      { property: MEMORY_PROPS.KIND, select: { equals: "decision" } },
+      { property: MEMORY_PROPS.REVIEW_BY, date: { on_or_before: today } },
       {
         or: [
-          { property: "Status", select: { equals: "proposed" } },
-          { property: "Status", select: { equals: "accepted" } },
+          { property: MEMORY_PROPS.STATUS, select: { equals: "proposed" } },
+          { property: MEMORY_PROPS.STATUS, select: { equals: "accepted" } },
         ],
       },
     ]
@@ -498,7 +498,7 @@ export class DecisionService {
         this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,
           filter: { and: filters } as QueryDataSourceParameters["filter"],
-          sorts: [{ property: "Review By", direction: "ascending" }],
+          sorts: [{ property: MEMORY_PROPS.REVIEW_BY, direction: "ascending" }],
           page_size,
           start_cursor,
         }),

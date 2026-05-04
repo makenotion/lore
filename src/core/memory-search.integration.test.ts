@@ -36,6 +36,7 @@ import type {
   QueryDataSourceParameters,
 } from "@notionhq/client"
 import { MemoryService } from "./memory.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import type { DatabaseRef } from "../types.js"
 
 interface MemoryRow {
@@ -47,10 +48,13 @@ interface MemoryRow {
 }
 
 type LeafFilter =
-  | { property: "Title"; title: { contains: string } }
-  | { property: "Keywords"; rich_text: { contains: string } | { does_not_contain: string } }
-  | { property: "Synopsis"; rich_text: { contains: string } }
-  | { property: "Status"; select: { does_not_equal: string } }
+  | { property: typeof MEMORY_PROPS.TITLE; title: { contains: string } }
+  | {
+      property: typeof MEMORY_PROPS.KEYWORDS
+      rich_text: { contains: string } | { does_not_contain: string }
+    }
+  | { property: typeof MEMORY_PROPS.SYNOPSIS; rich_text: { contains: string } }
+  | { property: typeof MEMORY_PROPS.STATUS; select: { does_not_equal: string } }
 type CompoundFilter = { and?: Filter[] } | { or?: Filter[] }
 type Filter = LeafFilter | CompoundFilter
 
@@ -235,8 +239,8 @@ const MEMORIES_DB: DatabaseRef = {
 function preSynopsisOrClause(query: string): QueryDataSourceParameters["filter"] {
   return {
     or: [
-      { property: "Title", title: { contains: query } },
-      { property: "Keywords", rich_text: { contains: query } },
+      { property: MEMORY_PROPS.TITLE, title: { contains: query } },
+      { property: MEMORY_PROPS.KEYWORDS, rich_text: { contains: query } },
     ],
   } as QueryDataSourceParameters["filter"]
 }
@@ -252,9 +256,9 @@ function postSynopsisOrClause(
 ): QueryDataSourceParameters["filter"] {
   return {
     or: [
-      { property: "Title", title: { contains: query } },
-      { property: "Keywords", rich_text: { contains: query } },
-      { property: "Synopsis", rich_text: { contains: query } },
+      { property: MEMORY_PROPS.TITLE, title: { contains: query } },
+      { property: MEMORY_PROPS.KEYWORDS, rich_text: { contains: query } },
+      { property: MEMORY_PROPS.SYNOPSIS, rich_text: { contains: query } },
     ],
   } as QueryDataSourceParameters["filter"]
 }

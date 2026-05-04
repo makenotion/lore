@@ -36,7 +36,7 @@ import type {
   EntityResolution,
 } from "../types.js"
 import { ENTITY_KINDS } from "../types.js"
-import { buildEntityProps } from "../notion/schema.js"
+import { buildEntityProps, ENTITY_PROPS } from "../notion/schema.js"
 import { computeSubjectKey } from "../notion/normalize.js"
 import {
   isFullPage,
@@ -337,7 +337,7 @@ export class EntityService {
     do {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
-        sorts: [{ property: "Name", direction: "ascending" }],
+        sorts: [{ property: ENTITY_PROPS.NAME, direction: "ascending" }],
         page_size: NOTION_MAX_PAGE_SIZE,
         start_cursor: cursor,
       })
@@ -368,7 +368,7 @@ export class EntityService {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: {
-          property: "Name",
+          property: ENTITY_PROPS.NAME,
           title: { equals: name },
         } as QueryDataSourceParameters["filter"],
         page_size: 5,
@@ -402,7 +402,7 @@ export class EntityService {
           const fallback = await this.client.dataSources.query({
             data_source_id: this.db.dataSourceId,
             filter: {
-              property: "Name",
+              property: ENTITY_PROPS.NAME,
               title: { contains: name },
             } as QueryDataSourceParameters["filter"],
             page_size: NOTION_MAX_PAGE_SIZE,
@@ -413,7 +413,7 @@ export class EntityService {
             isActiveEntityPage
           ) as PageObjectResponse[]
           for (const page of fallbackPages) {
-            const rawName = extractTitle(page.properties["Name"])
+            const rawName = extractTitle(page.properties[ENTITY_PROPS.NAME])
             if (normalizeEntityKey(rawName) !== key) continue
             return await this.pageToEntity(page)
           }
@@ -467,7 +467,7 @@ export class EntityService {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: {
-          property: "Aliases",
+          property: ENTITY_PROPS.ALIASES,
           rich_text: { contains: alias },
         } as QueryDataSourceParameters["filter"],
         page_size: NOTION_MAX_PAGE_SIZE,
@@ -476,7 +476,7 @@ export class EntityService {
       pagesFetched += 1
       const pages = response.results.filter(isActiveEntityPage) as PageObjectResponse[]
       for (const page of pages) {
-        const rawAliases = parseAliases(extractRichText(page.properties["Aliases"]))
+        const rawAliases = parseAliases(extractRichText(page.properties[ENTITY_PROPS.ALIASES]))
         if (!rawAliases.some((a) => normalizeEntityKey(a) === key)) continue
         matches.push(await this.pageToEntity(page))
       }
@@ -792,20 +792,20 @@ export class EntityService {
   }
 
   private async pageToEntity(page: PageObjectResponse): Promise<Entity> {
-    page = await hydrateRelationProperties(this.client, page, ["Project"])
+    page = await hydrateRelationProperties(this.client, page, [ENTITY_PROPS.PROJECT])
     const props = page.properties
-    const rawKind = extractSelect(props["Kind"], "")
+    const rawKind = extractSelect(props[ENTITY_PROPS.KIND], "")
     const kind = (ENTITY_KINDS as string[]).includes(rawKind)
       ? (rawKind as EntityKind)
       : null
 
     return {
       id: page.id,
-      name: extractTitle(props["Name"]),
-      aliases: parseAliases(extractRichText(props["Aliases"])),
+      name: extractTitle(props[ENTITY_PROPS.NAME]),
+      aliases: parseAliases(extractRichText(props[ENTITY_PROPS.ALIASES])),
       kind,
-      description: extractRichText(props["Description"]),
-      projectIds: extractRelationIds(props["Project"]),
+      description: extractRichText(props[ENTITY_PROPS.DESCRIPTION]),
+      projectIds: extractRelationIds(props[ENTITY_PROPS.PROJECT]),
       archived: page.archived,
     }
   }

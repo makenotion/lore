@@ -29,6 +29,7 @@ import type { DatabaseRef } from "../types.js"
 import { extractRichText, isFullPage } from "../notion/extractors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { canonicalizeAgentName } from "../hooks/agent-identity.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 
 /**
  * One memory row whose stored `Agent` differs from its canonical form.
@@ -100,19 +101,19 @@ export async function findNormalizableAgents(
       filter: (options.projectId
         ? {
             and: [
-              { property: "Agent", rich_text: { is_not_empty: true } },
+              { property: MEMORY_PROPS.AGENT, rich_text: { is_not_empty: true } },
               projectOrUnscopedFilter(options.projectId),
             ],
           }
         : {
-            property: "Agent",
+            property: MEMORY_PROPS.AGENT,
             rich_text: { is_not_empty: true },
           }) as QueryDataSourceParameters["filter"],
     } as QueryDataSourceParameters)
 
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
       if (page.archived) continue
-      const rawAgent = extractRichText(page.properties["Agent"])
+      const rawAgent = extractRichText(page.properties[MEMORY_PROPS.AGENT])
       if (!rawAgent) continue
       const canonicalAgent = canonicalizeAgentName(rawAgent)
       if (canonicalAgent === rawAgent) continue
@@ -166,7 +167,7 @@ export async function normalizeAgents(
       await client.pages.update({
         page_id: row.id,
         properties: {
-          Agent: { rich_text: [{ text: { content: row.canonicalAgent } }] },
+          [MEMORY_PROPS.AGENT]: { rich_text: [{ text: { content: row.canonicalAgent } }] },
         } as CreatePageParameters["properties"],
       })
       fixes.push(row)

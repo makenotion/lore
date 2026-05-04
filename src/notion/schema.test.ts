@@ -4,9 +4,17 @@ import {
   buildFactProps,
   buildMemoryProps,
   COMPARE_NOTES_MAX_CHARS,
+  ENTITY_PROPS,
+  entitiesProperties,
+  FACT_PROPS,
   factsProperties,
+  MEMORY_PROPS,
   memoriesProperties,
   memoriesSelfRelationProperties,
+  PROJECT_PROPS,
+  projectsProperties,
+  TOPIC_PROPS,
+  topicsProperties,
 } from "./schema.js"
 
 describe("memoriesProperties — Last Referenced At column (0.8.0/02)", () => {
@@ -643,5 +651,75 @@ describe("memoriesProperties — Status select options (issue #281)", () => {
         "rejected",
       ]),
     )
+  })
+})
+
+describe("*_PROPS constants match the schema-builder definitions (issue #482)", () => {
+  // The PR introducing *_PROPS centralized the property-name strings so a
+  // future rename would be caught by TypeScript at every call site. That
+  // protection only holds if the *_PROPS values stay aligned with what the
+  // builder functions actually emit. A rename made *only* in the constant
+  // (without updating the schema shape) would leave both halves silently
+  // disagreeing — the very failure mode the PR exists to prevent. These
+  // tests turn that drift from impossible-to-mistype into impossible-to-
+  // merge. Compare every constant value against the keys the corresponding
+  // builder writes, in BOTH directions: every constant maps to a real
+  // schema column AND every schema column has a constant.
+  const SCENARIOS = [
+    {
+      name: "PROJECT_PROPS / projectsProperties",
+      constantValues: new Set<string>(Object.values(PROJECT_PROPS)),
+      schemaKeys: new Set(Object.keys(projectsProperties)),
+    },
+    {
+      name: "TOPIC_PROPS / topicsProperties",
+      constantValues: new Set<string>(Object.values(TOPIC_PROPS)),
+      schemaKeys: new Set(Object.keys(topicsProperties("p-ds"))),
+    },
+    {
+      name: "MEMORY_PROPS / memoriesProperties (with self-relations)",
+      constantValues: new Set<string>(Object.values(MEMORY_PROPS)),
+      // The self-relation columns (Supersedes / Affects / Compared With)
+      // only land when memoriesProperties is called with `memoriesDsId`
+      // — pass it so the comparison covers the full vault shape.
+      schemaKeys: new Set(Object.keys(memoriesProperties("p-ds", "t-ds", "m-ds"))),
+    },
+    {
+      name: "ENTITY_PROPS / entitiesProperties",
+      constantValues: new Set<string>(Object.values(ENTITY_PROPS)),
+      schemaKeys: new Set(Object.keys(entitiesProperties("p-ds", "m-ds"))),
+    },
+    {
+      name: "FACT_PROPS / factsProperties",
+      constantValues: new Set<string>(Object.values(FACT_PROPS)),
+      schemaKeys: new Set(Object.keys(factsProperties("p-ds", "m-ds", "e-ds"))),
+    },
+  ]
+
+  for (const scenario of SCENARIOS) {
+    it(`${scenario.name}: every constant value maps to a schema column`, () => {
+      const orphanConstants = [...scenario.constantValues].filter(
+        (value) => !scenario.schemaKeys.has(value),
+      )
+      expect(orphanConstants).toEqual([])
+    })
+
+    it(`${scenario.name}: every schema column has a constant`, () => {
+      const orphanColumns = [...scenario.schemaKeys].filter(
+        (key) => !scenario.constantValues.has(key),
+      )
+      expect(orphanColumns).toEqual([])
+    })
+  }
+
+  it("MEMORY_PROPS covers the self-relation-only properties (memoriesSelfRelationProperties)", () => {
+    // memoriesSelfRelationProperties is the patch-in-after-creation shape
+    // for the Memories DB's self-relation columns. Its keys must be a
+    // subset of MEMORY_PROPS — every self-relation patch points at a
+    // column that the consolidated `memoriesProperties` shape also writes.
+    const selfRelKeys = new Set(Object.keys(memoriesSelfRelationProperties("m-ds")))
+    const memoryConstantValues = new Set<string>(Object.values(MEMORY_PROPS))
+    const orphans = [...selfRelKeys].filter((k) => !memoryConstantValues.has(k))
+    expect(orphans).toEqual([])
   })
 })

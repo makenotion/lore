@@ -26,9 +26,24 @@ type PropertyConfig = Record<string, Record<string, unknown>>
 export const PROJECTS_DB_TITLE = "Projects"
 export const PROJECTS_DB_ICON = "🗂️"
 
+/**
+ * Notion property names for the Projects DB. The single source of truth for
+ * every read and write on this database. AGENTS.md forbids renaming
+ * properties; centralizing the names here turns that social rule into a
+ * compile-time invariant — a future rename touches one declaration and
+ * TypeScript surfaces every drifted call site.
+ */
+export const PROJECT_PROPS = {
+  NAME: "Name",
+  TYPE: "Type",
+  PATH: "Path",
+  STATUS: "Status",
+  DESCRIPTION: "Description",
+} as const
+
 export const projectsProperties: PropertyConfig = {
-  Name: { title: {} },
-  Type: {
+  [PROJECT_PROPS.NAME]: { title: {} },
+  [PROJECT_PROPS.TYPE]: {
     select: {
       options: [
         { name: "project", color: "blue" },
@@ -37,8 +52,8 @@ export const projectsProperties: PropertyConfig = {
       ],
     },
   },
-  Path: { rich_text: {} },
-  Status: {
+  [PROJECT_PROPS.PATH]: { rich_text: {} },
+  [PROJECT_PROPS.STATUS]: {
     select: {
       options: [
         { name: "active", color: "green" },
@@ -46,7 +61,7 @@ export const projectsProperties: PropertyConfig = {
       ],
     },
   },
-  Description: { rich_text: {} },
+  [PROJECT_PROPS.DESCRIPTION]: { rich_text: {} },
 }
 
 // ---------------------------------------------------------------------------
@@ -56,10 +71,17 @@ export const projectsProperties: PropertyConfig = {
 export const TOPICS_DB_TITLE = "Topics"
 export const TOPICS_DB_ICON = "📑"
 
+/** Notion property names for the Topics DB. See `PROJECT_PROPS` doc. */
+export const TOPIC_PROPS = {
+  NAME: "Name",
+  PROJECT: "Project",
+  DESCRIPTION: "Description",
+} as const
+
 export function topicsProperties(projectsDbId: string): PropertyConfig {
   return {
-    Name: { title: {} },
-    Project: {
+    [TOPIC_PROPS.NAME]: { title: {} },
+    [TOPIC_PROPS.PROJECT]: {
       relation: {
         // Many-to-many: a topic can span multiple projects so cross-cutting
         // concerns (e.g. "GraphQL federation" in a monorepo) accumulate one
@@ -68,7 +90,7 @@ export function topicsProperties(projectsDbId: string): PropertyConfig {
         data_source_id: projectsDbId,
       },
     },
-    Description: { rich_text: {} },
+    [TOPIC_PROPS.DESCRIPTION]: { rich_text: {} },
   }
 }
 
@@ -78,6 +100,39 @@ export function topicsProperties(projectsDbId: string): PropertyConfig {
 
 export const MEMORIES_DB_TITLE = "Memories"
 export const MEMORIES_DB_ICON = "🧠"
+
+/** Notion property names for the Memories DB. See `PROJECT_PROPS` doc. */
+export const MEMORY_PROPS = {
+  TITLE: "Title",
+  PROJECT: "Project",
+  TOPIC: "Topic",
+  SOURCE: "Source",
+  KIND: "Kind",
+  TASK_STATE: "Task State",
+  BLOCKED_BY: "Blocked By",
+  ENTITY: "Entity",
+  STATUS: "Status",
+  CONFIDENCE: "Confidence",
+  CONFIDENCE_SCORE: "Confidence Score",
+  TOPIC_KEY: "Topic Key",
+  REVISION_COUNT: "Revision Count",
+  COMPARE_NOTES: "Compare Notes",
+  REVIEW_BY: "Review By",
+  DONE_AT: "Done At",
+  DECIDED_AT: "Decided At",
+  LAST_REFERENCED_AT: "Last Referenced At",
+  ALTERNATIVES: "Alternatives",
+  CONSEQUENCES: "Consequences",
+  AUTHOR: "Author",
+  AGENT: "Agent",
+  TAGS: "Tags",
+  KEYWORDS: "Keywords",
+  SYNOPSIS: "Synopsis",
+  SESSION: "Session",
+  SUPERSEDES: "Supersedes",
+  AFFECTS: "Affects",
+  COMPARED_WITH: "Compared With",
+} as const
 
 /**
  * Build Memories DB property config.
@@ -93,20 +148,20 @@ export function memoriesProperties(
   memoriesDsId?: string
 ): PropertyConfig {
   const base: PropertyConfig = {
-    Title: { title: {} },
-    Project: {
+    [MEMORY_PROPS.TITLE]: { title: {} },
+    [MEMORY_PROPS.PROJECT]: {
       relation: {
         single_property: {},
         data_source_id: projectsDbId,
       },
     },
-    Topic: {
+    [MEMORY_PROPS.TOPIC]: {
       relation: {
         single_property: {},
         data_source_id: topicsDbId,
       },
     },
-    Source: {
+    [MEMORY_PROPS.SOURCE]: {
       select: {
         options: [
           { name: "conversation", color: "blue" },
@@ -117,7 +172,7 @@ export function memoriesProperties(
         ],
       },
     },
-    Kind: {
+    [MEMORY_PROPS.KIND]: {
       select: {
         options: [
           { name: "note", color: "default" },
@@ -130,7 +185,7 @@ export function memoriesProperties(
         ],
       },
     },
-    "Task State": {
+    [MEMORY_PROPS.TASK_STATE]: {
       select: {
         options: [
           { name: "open", color: "yellow" },
@@ -141,9 +196,9 @@ export function memoriesProperties(
         ],
       },
     },
-    "Blocked By": { rich_text: {} },
-    Entity: { rich_text: {} },
-    Status: {
+    [MEMORY_PROPS.BLOCKED_BY]: { rich_text: {} },
+    [MEMORY_PROPS.ENTITY]: { rich_text: {} },
+    [MEMORY_PROPS.STATUS]: {
       select: {
         options: [
           { name: "informational", color: "default" },
@@ -155,7 +210,7 @@ export function memoriesProperties(
         ],
       },
     },
-    Confidence: {
+    [MEMORY_PROPS.CONFIDENCE]: {
       select: {
         options: [
           { name: "certain", color: "green" },
@@ -170,7 +225,7 @@ export function memoriesProperties(
     // contradiction (#06); decays on neglect. Empty until first touch —
     // `pageToMemory` returns `null` when missing so the RRF integration
     // (#08) can distinguish "never scored" from "scored zero."
-    "Confidence Score": { number: { format: "number" } },
+    [MEMORY_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
     // 0.9.0 scalar cluster between `Confidence Score` and `Review By`:
     //   Confidence Score → Topic Key → Revision Count → Compare Notes → Review By
     // `Topic Key` and `Revision Count` are added by 0.9.0/#01 (Topic-key
@@ -187,14 +242,14 @@ export function memoriesProperties(
     // kebab-case path like `decision/jwt-auth`, enforced at the save-
     // path validation in #06; stored verbatim. Empty string and missing
     // both mean "no upsert grouping" (the 0.8.x save behavior).
-    "Topic Key": { rich_text: {} },
+    [MEMORY_PROPS.TOPIC_KEY]: { rich_text: {} },
     // System-managed counter tracking how many times the memory has
     // been touched via the topic-key upsert path (0.9.0/#06). Default
     // for new rows is 1 (the create itself counts as revision 1).
     // Pre-0.9.0 rows have a null `Revision Count` — `extractNumber`
     // returns null, which `pageToMemory` coalesces to 1 so
     // formatMemoryListItem (#10) treats legacy rows as single-revision.
-    "Revision Count": { number: { format: "number" } },
+    [MEMORY_PROPS.REVISION_COUNT]: { number: { format: "number" } },
     // Append-only NDJSON audit trail for `lore-memory action='compare'`
     // (0.9.0/#05). One JSON line per verdict — `{"verdict": ...,
     // "target": ..., "reason": ..., "judgedAt": ..., "promptVersion":
@@ -202,8 +257,8 @@ export function memoriesProperties(
     // append-past-cap throws so over-compared rows surface to the
     // operator instead of silently truncating. Empty for legacy rows
     // and for memories that have never been compared.
-    "Compare Notes": { rich_text: {} },
-    "Review By": { date: {} },
+    [MEMORY_PROPS.COMPARE_NOTES]: { rich_text: {} },
+    [MEMORY_PROPS.REVIEW_BY]: { date: {} },
     // Most recent close timestamp for tasks. Stamped whenever a task
     // transitions to a terminal state — either via `TaskService.close()`
     // or via `TaskService.update({ state: 'done' | 'cancelled' })` —
@@ -212,45 +267,45 @@ export function memoriesProperties(
     // null on non-task memories and on tasks that have never reached a
     // terminal state. Read by `lore status` (#13) for closure-rate
     // metrics — the only consumer in 0.7.0.
-    "Done At": { date: {} },
-    "Decided At": { date: {} },
+    [MEMORY_PROPS.DONE_AT]: { date: {} },
+    [MEMORY_PROPS.DECIDED_AT]: { date: {} },
     // System-managed read-citation timestamp; distinct from
     // `last_edited_time` which tracks writes. Written by
     // `MemoryService.touchOnRead` (0.8.0/#03), read by the decay function
     // and the stale-confidence wake-up subsection (0.8.0/#10).
-    "Last Referenced At": { date: {} },
-    Alternatives: { rich_text: {} },
-    Consequences: { rich_text: {} },
-    Author: { rich_text: {} },
-    Agent: { rich_text: {} },
-    Tags: { multi_select: { options: [] } },
+    [MEMORY_PROPS.LAST_REFERENCED_AT]: { date: {} },
+    [MEMORY_PROPS.ALTERNATIVES]: { rich_text: {} },
+    [MEMORY_PROPS.CONSEQUENCES]: { rich_text: {} },
+    [MEMORY_PROPS.AUTHOR]: { rich_text: {} },
+    [MEMORY_PROPS.AGENT]: { rich_text: {} },
+    [MEMORY_PROPS.TAGS]: { multi_select: { options: [] } },
     // Free-form companion to Tags: PR numbers, ticket IDs, file paths, class
     // or function names — anything too point-in-time to belong in the closed
     // tag vocabulary. Indexed by Notion's text search.
-    Keywords: { rich_text: {} },
+    [MEMORY_PROPS.KEYWORDS]: { rich_text: {} },
     // Free-form 1–2 sentence synopsis surfaced inline on title-tier
     // rendering (recall, search, wake-up). Lives in page properties so
     // listings return synopses without a per-row retrieveMarkdown call.
     // Soft-capped at 500 chars at the MCP boundary; Notion rich_text
     // caps at 2000 per block which is the hard ceiling.
-    Synopsis: { rich_text: {} },
-    Session: { rich_text: {} },
+    [MEMORY_PROPS.SYNOPSIS]: { rich_text: {} },
+    [MEMORY_PROPS.SESSION]: { rich_text: {} },
   }
 
   if (memoriesDsId) {
-    base["Supersedes"] = {
+    base[MEMORY_PROPS.SUPERSEDES] = {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
       },
     }
-    base["Affects"] = {
+    base[MEMORY_PROPS.AFFECTS] = {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
       },
     }
-    base["Compared With"] = {
+    base[MEMORY_PROPS.COMPARED_WITH] = {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
@@ -270,13 +325,13 @@ export function memoriesSelfRelationProperties(
   memoriesDsId: string
 ): PropertyConfig {
   return {
-    Supersedes: {
+    [MEMORY_PROPS.SUPERSEDES]: {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
       },
     },
-    Affects: {
+    [MEMORY_PROPS.AFFECTS]: {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
@@ -290,7 +345,7 @@ export function memoriesSelfRelationProperties(
     // Set membership encodes "have these two been judged?" and the
     // `lore conflicts scan` (0.9.0/#09) candidate filter consults it
     // to skip already-judged pairs.
-    "Compared With": {
+    [MEMORY_PROPS.COMPARED_WITH]: {
       relation: {
         single_property: {},
         data_source_id: memoriesDsId,
@@ -305,6 +360,16 @@ export function memoriesSelfRelationProperties(
 
 export const ENTITIES_DB_TITLE = "Entities"
 export const ENTITIES_DB_ICON = "🪪"
+
+/** Notion property names for the Entities DB. See `PROJECT_PROPS` doc. */
+export const ENTITY_PROPS = {
+  NAME: "Name",
+  ALIASES: "Aliases",
+  KIND: "Kind",
+  DESCRIPTION: "Description",
+  PROJECT: "Project",
+  SOURCE: "Source",
+} as const
 
 /**
  * `Aliases` is a single rich_text cell holding a comma-separated list
@@ -323,9 +388,9 @@ export function entitiesProperties(
   memoriesDbId: string
 ): PropertyConfig {
   return {
-    Name: { title: {} },
-    Aliases: { rich_text: {} },
-    Kind: {
+    [ENTITY_PROPS.NAME]: { title: {} },
+    [ENTITY_PROPS.ALIASES]: { rich_text: {} },
+    [ENTITY_PROPS.KIND]: {
       select: {
         options: [
           { name: "class", color: "blue" },
@@ -339,8 +404,8 @@ export function entitiesProperties(
         ],
       },
     },
-    Description: { rich_text: {} },
-    Project: {
+    [ENTITY_PROPS.DESCRIPTION]: { rich_text: {} },
+    [ENTITY_PROPS.PROJECT]: {
       relation: {
         // Many-to-many: a class or workflow may span the same set of
         // projects its referencing facts span (e.g. "AuthMiddleware"
@@ -358,7 +423,7 @@ export function entitiesProperties(
      * tools that want to surface "where did this entity first appear"
      * without walking every fact.
      */
-    Source: {
+    [ENTITY_PROPS.SOURCE]: {
       relation: {
         single_property: {},
         data_source_id: memoriesDbId,
@@ -374,6 +439,25 @@ export function entitiesProperties(
 export const FACTS_DB_TITLE = "Facts"
 export const FACTS_DB_ICON = "🔗"
 
+/** Notion property names for the Facts DB. See `PROJECT_PROPS` doc. */
+export const FACT_PROPS = {
+  SUBJECT: "Subject",
+  PREDICATE: "Predicate",
+  OBJECT: "Object",
+  PROJECT: "Project",
+  SOURCE: "Source",
+  CONFIDENCE: "Confidence",
+  CONFIDENCE_SCORE: "Confidence Score",
+  VALID_FROM: "Valid From",
+  VALID_UNTIL: "Valid Until",
+  REVIEW_BY: "Review By",
+  LAST_REFERENCED_AT: "Last Referenced At",
+  DEDUP_KEY: "DedupKey",
+  SUBJECT_KEY: "SubjectKey",
+  SUBJECT_ENTITY: "SubjectEntity",
+  OBJECT_ENTITY: "ObjectEntity",
+} as const
+
 /**
  * Build the Facts DB property config. The Entities DB is part of the
  * supported vault shape, so the canonical relation columns are always in
@@ -386,8 +470,8 @@ export function factsProperties(
   entitiesDsId: string
 ): PropertyConfig {
   return {
-    Subject: { title: {} },
-    Predicate: {
+    [FACT_PROPS.SUBJECT]: { title: {} },
+    [FACT_PROPS.PREDICATE]: {
       select: {
         options: [
           { name: "is_a", color: "blue" },
@@ -419,23 +503,23 @@ export function factsProperties(
         ],
       },
     },
-    Object: { rich_text: {} },
-    Project: {
+    [FACT_PROPS.OBJECT]: { rich_text: {} },
+    [FACT_PROPS.PROJECT]: {
       relation: {
         single_property: {},
         data_source_id: projectsDbId,
       },
     },
-    "Valid From": { date: {} },
-    "Valid Until": { date: {} },
-    "Review By": { date: {} },
-    Source: {
+    [FACT_PROPS.VALID_FROM]: { date: {} },
+    [FACT_PROPS.VALID_UNTIL]: { date: {} },
+    [FACT_PROPS.REVIEW_BY]: { date: {} },
+    [FACT_PROPS.SOURCE]: {
       relation: {
         single_property: {},
         data_source_id: memoriesDbId,
       },
     },
-    Confidence: {
+    [FACT_PROPS.CONFIDENCE]: {
       select: {
         options: [
           { name: "certain", color: "green" },
@@ -452,37 +536,37 @@ export function factsProperties(
     // contradiction signal. Empty until first touch — `pageToFact` returns
     // `null` when missing so the RRF integration in `lore-ask` distinguishes
     // "never scored" from "scored zero." (DEFERRED-02.)
-    "Confidence Score": { number: { format: "number" } },
+    [FACT_PROPS.CONFIDENCE_SCORE]: { number: { format: "number" } },
     // System-managed read-citation timestamp; distinct from
     // `last_edited_time` which tracks writes. Written by
     // `FactService.touchOnRead` and `FactService.invalidate` (via
     // `decrementConfidence`), read by the decay function. Mirrors the
     // Memories DB column. (DEFERRED-02.)
-    "Last Referenced At": { date: {} },
+    [FACT_PROPS.LAST_REFERENCED_AT]: { date: {} },
     // Normalized `subject␟predicate␟object` key used by `FactService.create`
     // to coalesce cosmetic duplicates (case, whitespace, trailing punctuation)
     // into a single row. Pre-migration pages have this blank; the migrate
     // command backfills it.
-    DedupKey: { rich_text: {} },
+    [FACT_PROPS.DEDUP_KEY]: { rich_text: {} },
     // Lowercased + whitespace-collapsed form of `Subject`, used by
     // `FactService.queryBySubject` for case-insensitive matching (P3-03
     // Part A). Pre-migration rows have this blank; `lore migrate
     // --dedup-keys` backfills it. Distinct from `DedupKey` (a hash) because
     // we need `contains` substring matching, which Notion doesn't run
     // against hashed values.
-    SubjectKey: { rich_text: {} },
+    [FACT_PROPS.SUBJECT_KEY]: { rich_text: {} },
     // Canonical entity relation columns. Filled by the build-entities
     // migration and by `lore-fact action='create'` after the resolver
     // picks an Entity row. Unbackfilled rows have empty relations; queries
     // that filter by entity ID fall back to the SubjectKey path on those
     // rows.
-    SubjectEntity: {
+    [FACT_PROPS.SUBJECT_ENTITY]: {
       relation: {
         single_property: {},
         data_source_id: entitiesDsId,
       },
     },
-    ObjectEntity: {
+    [FACT_PROPS.OBJECT_ENTITY]: {
       relation: {
         single_property: {},
         data_source_id: entitiesDsId,
@@ -678,20 +762,20 @@ export function buildProjectProps(input: {
   description?: string
 }): PageProperties {
   const props: PageProperties = {
-    Name: { title: [{ text: { content: input.name } }] },
+    [PROJECT_PROPS.NAME]: { title: [{ text: { content: input.name } }] },
   }
   if (input.type) {
-    props["Type"] = { select: { name: input.type } }
+    props[PROJECT_PROPS.TYPE] = { select: { name: input.type } }
   }
   if (input.path) {
-    props["Path"] = { rich_text: [{ text: { content: input.path } }] }
+    props[PROJECT_PROPS.PATH] = { rich_text: [{ text: { content: input.path } }] }
   }
   if (input.description) {
-    props["Description"] = {
+    props[PROJECT_PROPS.DESCRIPTION] = {
       rich_text: [{ text: { content: input.description } }],
     }
   }
-  props["Status"] = { select: { name: "active" } }
+  props[PROJECT_PROPS.STATUS] = { select: { name: "active" } }
   return props
 }
 
@@ -701,11 +785,11 @@ export function buildTopicProps(input: {
   description?: string
 }): PageProperties {
   const props: PageProperties = {
-    Name: { title: [{ text: { content: input.name } }] },
-    Project: { relation: input.projectIds.map((id) => ({ id })) },
+    [TOPIC_PROPS.NAME]: { title: [{ text: { content: input.name } }] },
+    [TOPIC_PROPS.PROJECT]: { relation: input.projectIds.map((id) => ({ id })) },
   }
   if (input.description) {
-    props["Description"] = {
+    props[TOPIC_PROPS.DESCRIPTION] = {
       rich_text: [{ text: { content: input.description } }],
     }
   }
@@ -744,32 +828,32 @@ export function buildMemoryProps(input: {
   compareNotes?: string
 }): PageProperties {
   const props: PageProperties = {
-    Title: { title: [{ text: { content: input.title } }] },
+    [MEMORY_PROPS.TITLE]: { title: [{ text: { content: input.title } }] },
   }
   if (input.projectIds?.length) {
-    props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
+    props[MEMORY_PROPS.PROJECT] = { relation: input.projectIds.map((id) => ({ id })) }
   }
   if (input.topicId) {
-    props["Topic"] = { relation: [{ id: input.topicId }] }
+    props[MEMORY_PROPS.TOPIC] = { relation: [{ id: input.topicId }] }
   }
   if (input.source) {
-    props["Source"] = { select: { name: input.source } }
+    props[MEMORY_PROPS.SOURCE] = { select: { name: input.source } }
   }
   if (input.kind) {
-    props["Kind"] = { select: { name: input.kind } }
+    props[MEMORY_PROPS.KIND] = { select: { name: input.kind } }
   }
   if (input.status) {
-    props["Status"] = { select: { name: input.status } }
+    props[MEMORY_PROPS.STATUS] = { select: { name: input.status } }
   }
   if (input.confidence) {
-    props["Confidence"] = { select: { name: input.confidence } }
+    props[MEMORY_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
   }
   // Three-state semantics: `undefined` leaves the column untouched,
   // `null` clears the column to "never scored", a number writes the
   // value verbatim. Production read/write helpers in #03 only emit
   // numbers; the `null` clear path is the test-fixture / migration path.
   if (input.confidenceScore !== undefined) {
-    props["Confidence Score"] =
+    props[MEMORY_PROPS.CONFIDENCE_SCORE] =
       input.confidenceScore === null
         ? { number: null }
         : { number: input.confidenceScore }
@@ -783,63 +867,63 @@ export function buildMemoryProps(input: {
   // `null`, `undefined`, and `YYYY-MM-DD` (regex-enforced at the MCP
   // Zod boundary, see `src/mcp/tools/date-schema.ts`).
   if (input.reviewBy !== undefined) {
-    props["Review By"] =
+    props[MEMORY_PROPS.REVIEW_BY] =
       input.reviewBy === null ? { date: null } : { date: { start: input.reviewBy } }
   }
   if (input.doneAt !== undefined) {
-    props["Done At"] =
+    props[MEMORY_PROPS.DONE_AT] =
       input.doneAt === null ? { date: null } : { date: { start: input.doneAt } }
   }
   if (input.decidedAt !== undefined) {
-    props["Decided At"] =
+    props[MEMORY_PROPS.DECIDED_AT] =
       input.decidedAt === null ? { date: null } : { date: { start: input.decidedAt } }
   }
   if (input.lastReferencedAt !== undefined) {
-    props["Last Referenced At"] =
+    props[MEMORY_PROPS.LAST_REFERENCED_AT] =
       input.lastReferencedAt === null
         ? { date: null }
         : { date: { start: input.lastReferencedAt } }
   }
   if (input.supersedesIds) {
-    props["Supersedes"] = { relation: input.supersedesIds.map((id) => ({ id })) }
+    props[MEMORY_PROPS.SUPERSEDES] = { relation: input.supersedesIds.map((id) => ({ id })) }
   }
   if (input.affectsIds) {
-    props["Affects"] = { relation: input.affectsIds.map((id) => ({ id })) }
+    props[MEMORY_PROPS.AFFECTS] = { relation: input.affectsIds.map((id) => ({ id })) }
   }
   if (input.alternatives !== undefined) {
-    props["Alternatives"] = { rich_text: [{ text: { content: input.alternatives } }] }
+    props[MEMORY_PROPS.ALTERNATIVES] = { rich_text: [{ text: { content: input.alternatives } }] }
   }
   if (input.consequences !== undefined) {
-    props["Consequences"] = { rich_text: [{ text: { content: input.consequences } }] }
+    props[MEMORY_PROPS.CONSEQUENCES] = { rich_text: [{ text: { content: input.consequences } }] }
   }
   if (input.author) {
-    props["Author"] = { rich_text: [{ text: { content: input.author } }] }
+    props[MEMORY_PROPS.AUTHOR] = { rich_text: [{ text: { content: input.author } }] }
   }
   if (input.agent) {
-    props["Agent"] = { rich_text: [{ text: { content: input.agent } }] }
+    props[MEMORY_PROPS.AGENT] = { rich_text: [{ text: { content: input.agent } }] }
   }
   if (input.tags?.length) {
-    props["Tags"] = {
+    props[MEMORY_PROPS.TAGS] = {
       multi_select: input.tags.map((t) => ({ name: t })),
     }
   }
   if (input.keywords !== undefined) {
-    props["Keywords"] = { rich_text: [{ text: { content: input.keywords } }] }
+    props[MEMORY_PROPS.KEYWORDS] = { rich_text: [{ text: { content: input.keywords } }] }
   }
   if (input.synopsis !== undefined) {
-    props["Synopsis"] = { rich_text: [{ text: { content: input.synopsis } }] }
+    props[MEMORY_PROPS.SYNOPSIS] = { rich_text: [{ text: { content: input.synopsis } }] }
   }
   if (input.session) {
-    props["Session"] = { rich_text: [{ text: { content: input.session } }] }
+    props[MEMORY_PROPS.SESSION] = { rich_text: [{ text: { content: input.session } }] }
   }
   if (input.taskState) {
-    props["Task State"] = { select: { name: input.taskState } }
+    props[MEMORY_PROPS.TASK_STATE] = { select: { name: input.taskState } }
   }
   if (input.blockedBy !== undefined) {
-    props["Blocked By"] = { rich_text: [{ text: { content: input.blockedBy } }] }
+    props[MEMORY_PROPS.BLOCKED_BY] = { rich_text: [{ text: { content: input.blockedBy } }] }
   }
   if (input.entity !== undefined) {
-    props["Entity"] = { rich_text: [{ text: { content: input.entity } }] }
+    props[MEMORY_PROPS.ENTITY] = { rich_text: [{ text: { content: input.entity } }] }
   }
   // `undefined` leaves the column untouched; explicit empty-string writes
   // through (the agent-facing detach signal — see 0.9.0/#14). Empty
@@ -847,10 +931,10 @@ export function buildMemoryProps(input: {
   // ships the schema before #06 wires upsert; until then every save
   // passes `topicKey: undefined` and the column stays null on new rows.
   if (input.topicKey !== undefined) {
-    props["Topic Key"] = { rich_text: [{ text: { content: input.topicKey } }] }
+    props[MEMORY_PROPS.TOPIC_KEY] = { rich_text: [{ text: { content: input.topicKey } }] }
   }
   if (input.revisionCount !== undefined) {
-    props["Revision Count"] = { number: input.revisionCount }
+    props[MEMORY_PROPS.REVISION_COUNT] = { number: input.revisionCount }
   }
   // Three-state semantics, mirrors `supersedesIds` / `affectsIds` /
   // `tags`: `undefined` leaves the column untouched, an empty array
@@ -860,7 +944,7 @@ export function buildMemoryProps(input: {
   // would silently change the clear semantics for callers that pass
   // an empty array intending a write.
   if (input.comparedWith) {
-    props["Compared With"] = { relation: input.comparedWith.map((id) => ({ id })) }
+    props[MEMORY_PROPS.COMPARED_WITH] = { relation: input.comparedWith.map((id) => ({ id })) }
   }
   // 0.9.0/#02 — Compare Notes is an append-only NDJSON cell. Routes
   // through `encodeCompareNotesRichText` so any string up to
@@ -872,7 +956,7 @@ export function buildMemoryProps(input: {
   // write payloads sees one shape regardless of which path produced
   // it.
   if (input.compareNotes !== undefined) {
-    props["Compare Notes"] = {
+    props[MEMORY_PROPS.COMPARE_NOTES] = {
       rich_text: encodeCompareNotesRichText(input.compareNotes),
     }
   }
@@ -894,28 +978,28 @@ export function buildEntityProps(input: {
   sourceMemoryId?: string
 }): PageProperties {
   const props: PageProperties = {
-    Name: { title: [{ text: { content: input.name } }] },
+    [ENTITY_PROPS.NAME]: { title: [{ text: { content: input.name } }] },
   }
   if (input.aliases !== undefined) {
     // Always emit, even on empty arrays, so a clear-aliases update can
     // wipe the cell. Notion ignores `rich_text: []` on missing fields,
     // so the explicit empty-string text block is the cleanest write path.
     const joined = input.aliases.join(", ")
-    props["Aliases"] = { rich_text: [{ text: { content: joined } }] }
+    props[ENTITY_PROPS.ALIASES] = { rich_text: [{ text: { content: joined } }] }
   }
   if (input.kind) {
-    props["Kind"] = { select: { name: input.kind } }
+    props[ENTITY_PROPS.KIND] = { select: { name: input.kind } }
   }
   if (input.description !== undefined) {
-    props["Description"] = {
+    props[ENTITY_PROPS.DESCRIPTION] = {
       rich_text: [{ text: { content: input.description } }],
     }
   }
   if (input.projectIds?.length) {
-    props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
+    props[ENTITY_PROPS.PROJECT] = { relation: input.projectIds.map((id) => ({ id })) }
   }
   if (input.sourceMemoryId) {
-    props["Source"] = { relation: [{ id: input.sourceMemoryId }] }
+    props[ENTITY_PROPS.SOURCE] = { relation: [{ id: input.sourceMemoryId }] }
   }
   return props
 }
@@ -951,62 +1035,62 @@ export function buildFactProps(input: {
   objectEntityId?: string
 }): PageProperties {
   const props: PageProperties = {
-    Subject: { title: [{ text: { content: input.subject } }] },
-    Predicate: { select: { name: input.predicate } },
-    Object: { rich_text: [{ text: { content: input.object } }] },
+    [FACT_PROPS.SUBJECT]: { title: [{ text: { content: input.subject } }] },
+    [FACT_PROPS.PREDICATE]: { select: { name: input.predicate } },
+    [FACT_PROPS.OBJECT]: { rich_text: [{ text: { content: input.object } }] },
   }
   if (input.projectIds?.length) {
-    props["Project"] = { relation: input.projectIds.map((id) => ({ id })) }
+    props[FACT_PROPS.PROJECT] = { relation: input.projectIds.map((id) => ({ id })) }
   }
   if (input.validFrom) {
-    props["Valid From"] = { date: { start: input.validFrom } }
+    props[FACT_PROPS.VALID_FROM] = { date: { start: input.validFrom } }
   }
   if (input.validUntil !== undefined) {
-    props["Valid Until"] =
+    props[FACT_PROPS.VALID_UNTIL] =
       input.validUntil === null ? { date: null } : { date: { start: input.validUntil } }
   }
   if (input.reviewBy) {
-    props["Review By"] = { date: { start: input.reviewBy } }
+    props[FACT_PROPS.REVIEW_BY] = { date: { start: input.reviewBy } }
   }
   if (input.sourceMemoryId) {
-    props["Source"] = { relation: [{ id: input.sourceMemoryId }] }
+    props[FACT_PROPS.SOURCE] = { relation: [{ id: input.sourceMemoryId }] }
   }
   if (input.confidence) {
-    props["Confidence"] = { select: { name: input.confidence } }
+    props[FACT_PROPS.CONFIDENCE] = { select: { name: input.confidence } }
   }
   // Mirror Memories `confidenceScore` semantics (DEFERRED-02):
   // `undefined` leaves the column untouched; `null` clears; a number writes.
   if (input.confidenceScore !== undefined) {
-    props["Confidence Score"] =
+    props[FACT_PROPS.CONFIDENCE_SCORE] =
       input.confidenceScore === null
         ? { number: null }
         : { number: input.confidenceScore }
   }
   if (input.lastReferencedAt !== undefined) {
-    props["Last Referenced At"] =
+    props[FACT_PROPS.LAST_REFERENCED_AT] =
       input.lastReferencedAt === null
         ? { date: null }
         : { date: { start: input.lastReferencedAt } }
   }
   if (input.dedupKey) {
-    props["DedupKey"] = { rich_text: [{ text: { content: input.dedupKey } }] }
+    props[FACT_PROPS.DEDUP_KEY] = { rich_text: [{ text: { content: input.dedupKey } }] }
   }
   // Truthy-gate would silently skip the column for punctuation-only subjects
   // (e.g. `"."` normalizes to `""`), creating rows that the dedup backfill
   // then has to re-pick-up. Write the empty string explicitly so the create
   // path is consistent with the backfill path's "always populate" contract.
   if (input.subjectKey !== undefined) {
-    props["SubjectKey"] = {
+    props[FACT_PROPS.SUBJECT_KEY] = {
       rich_text: [{ text: { content: input.subjectKey } }],
     }
   }
   if (input.subjectEntityId) {
-    props["SubjectEntity"] = {
+    props[FACT_PROPS.SUBJECT_ENTITY] = {
       relation: [{ id: input.subjectEntityId }],
     }
   }
   if (input.objectEntityId) {
-    props["ObjectEntity"] = {
+    props[FACT_PROPS.OBJECT_ENTITY] = {
       relation: [{ id: input.objectEntityId }],
     }
   }

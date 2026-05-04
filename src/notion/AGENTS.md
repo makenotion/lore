@@ -153,13 +153,43 @@ The `isFullPage()` type guard narrows `QueryDataSourceResponse` results to
 
 ## Schema Definitions Pattern
 
-`schema.ts` defines two things per database:
+`schema.ts` defines three things per database:
 
-1. **Property configuration** (`PropertyConfig`) -- used by `setup.ts` when creating
-   databases via `initial_data_source.properties`.
+1. **Property name constants** (`PROJECT_PROPS`, `TOPIC_PROPS`, `MEMORY_PROPS`,
+   `ENTITY_PROPS`, `FACT_PROPS`) — `as const` named-tuple objects exporting
+   the canonical Notion property name for every column. **Always reference
+   the constant when accessing a property** — never inline a bare string
+   literal in production code:
 
-2. **Property builder functions** (`buildProjectProps`, `buildMemoryProps`, etc.) --
-   used by core services when creating or updating pages.
+   ```typescript
+   // Correct
+   const subject = extractTitle(props[FACT_PROPS.SUBJECT])
+   filters.push({ property: MEMORY_PROPS.STATUS, select: { equals: "active" } })
+
+   // Wrong — bypasses the rename invariant
+   const subject = extractTitle(props["Subject"])
+   filters.push({ property: "Status", select: { equals: "active" } })
+   ```
+
+   The `*_PROPS` constants are the single source of truth for Notion
+   property names. AGENTS.md's "do not rename database properties" rule
+   becomes a compile-time invariant when every read and write goes
+   through the constant: a future rename touches one declaration and
+   TypeScript flags every drifted call site. The schema-drift suite in
+   `schema.test.ts` keeps each constant aligned with the keys its
+   builder function emits, so a rename made only on one half cannot
+   silently land. Test fixtures may keep bare literals for
+   wire-format readability when that intent is explicit.
+
+2. **Property configuration** (`PropertyConfig`) — used by `setup.ts` when creating
+   databases via `initial_data_source.properties`. Builders compose the
+   `*_PROPS` constants as computed property keys
+   (`{ [PROJECT_PROPS.NAME]: { title: {} } }`) so the config and the
+   constants share one source.
+
+3. **Property builder functions** (`buildProjectProps`, `buildMemoryProps`, etc.) --
+   used by core services when creating or updating pages. Same posture:
+   the builders write through `*_PROPS` constants.
 
 Databases that have relations to other databases use functions (not constants) so
 the related database ID can be passed in:

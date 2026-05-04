@@ -39,7 +39,7 @@ import type {
   DatabaseRef,
 } from "../types.js"
 import { ACTIVE_TASK_STATES, STALE_TASK_DAYS } from "../types.js"
-import { buildMemoryProps } from "../notion/schema.js"
+import { buildMemoryProps, MEMORY_PROPS } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
@@ -305,7 +305,7 @@ export class TaskService {
     opts?: ListTasksOpts
   ): Promise<{ items: TaskSummary[]; nextCursor?: string; capped: boolean }> {
     const filters: Array<Record<string, unknown>> = [
-      { property: "Kind", select: { equals: "task" } },
+      { property: MEMORY_PROPS.KIND, select: { equals: "task" } },
     ]
 
     if (opts?.projectId) {
@@ -313,11 +313,11 @@ export class TaskService {
     }
     const states = opts?.states ?? ACTIVE_TASK_STATES
     if (states.length === 1) {
-      filters.push({ property: "Task State", select: { equals: states[0] } })
+      filters.push({ property: MEMORY_PROPS.TASK_STATE, select: { equals: states[0] } })
     } else if (states.length > 1) {
       filters.push({
         or: states.map((s) => ({
-          property: "Task State",
+          property: MEMORY_PROPS.TASK_STATE,
           select: { equals: s },
         })),
       })
@@ -332,13 +332,13 @@ export class TaskService {
       // shape they did pre-PF4.
       if (opts.entities.length === 1) {
         filters.push({
-          property: "Entity",
+          property: MEMORY_PROPS.ENTITY,
           rich_text: { contains: opts.entities[0] },
         })
       } else {
         filters.push({
           or: opts.entities.map((variant) => ({
-            property: "Entity",
+            property: MEMORY_PROPS.ENTITY,
             rich_text: { contains: variant },
           })),
         })
@@ -346,7 +346,7 @@ export class TaskService {
     }
     if (opts?.dueBefore) {
       filters.push({
-        property: "Review By",
+        property: MEMORY_PROPS.REVIEW_BY,
         date: { on_or_before: opts.dueBefore },
       })
     }
@@ -354,11 +354,11 @@ export class TaskService {
       filters.push({
         or: [
           {
-            property: "Review By",
+            property: MEMORY_PROPS.REVIEW_BY,
             date: { is_empty: true },
           },
           {
-            property: "Review By",
+            property: MEMORY_PROPS.REVIEW_BY,
             date: { after: opts.dueAfterOrEmpty },
           },
         ],
@@ -370,17 +370,17 @@ export class TaskService {
       opts?.sortBy === "updatedAtAsc"
         ? [
             { timestamp: "last_edited_time", direction: "ascending" },
-            { property: "Review By", direction: "ascending" },
+            { property: MEMORY_PROPS.REVIEW_BY, direction: "ascending" },
             { timestamp: "created_time", direction: "descending" },
           ]
         : opts?.sortBy === "updatedAtDesc"
           ? [
               { timestamp: "last_edited_time", direction: "descending" },
-              { property: "Review By", direction: "ascending" },
+              { property: MEMORY_PROPS.REVIEW_BY, direction: "ascending" },
               { timestamp: "created_time", direction: "descending" },
             ]
           : [
-              { property: "Review By", direction: "ascending" },
+              { property: MEMORY_PROPS.REVIEW_BY, direction: "ascending" },
               { timestamp: "created_time", direction: "descending" },
             ]
 
@@ -435,12 +435,12 @@ export class TaskService {
     const props: Record<string, unknown> = {}
 
     if (input.subject !== undefined) {
-      props["Title"] = {
+      props[MEMORY_PROPS.TITLE] = {
         title: [{ text: { content: decodeTextEntities(input.subject) } }],
       }
     }
     if (input.state) {
-      props["Task State"] = { select: { name: input.state } }
+      props[MEMORY_PROPS.TASK_STATE] = { select: { name: input.state } }
       // Update-to-terminal stamps `Done At` in the same atom as the
       // state write so a closure-via-update produces the same on-disk
       // shape as `close()`. Without this, every update-to-terminal
@@ -449,26 +449,26 @@ export class TaskService {
       // tracks "most recent close timestamp" as historical fact.
       if (input.state === "done" || input.state === "cancelled") {
         const today = new Date().toISOString().split("T")[0]
-        props["Done At"] = { date: { start: today } }
+        props[MEMORY_PROPS.DONE_AT] = { date: { start: today } }
       }
     }
     if (input.blockedBy !== undefined) {
-      props["Blocked By"] = {
+      props[MEMORY_PROPS.BLOCKED_BY] = {
         rich_text: [{ text: { content: decodeTextEntities(input.blockedBy) } }],
       }
     }
     if (input.entity !== undefined) {
-      props["Entity"] = {
+      props[MEMORY_PROPS.ENTITY] = {
         rich_text: [{ text: { content: decodeTextEntities(input.entity) } }],
       }
     }
     if (input.tags) {
-      props["Tags"] = {
+      props[MEMORY_PROPS.TAGS] = {
         multi_select: input.tags.map((t) => ({ name: t })),
       }
     }
     if (input.keywords !== undefined) {
-      props["Keywords"] = {
+      props[MEMORY_PROPS.KEYWORDS] = {
         rich_text: [{ text: { content: decodeTextEntities(input.keywords) } }],
       }
     }
@@ -477,12 +477,12 @@ export class TaskService {
     // write and lands in Notion as a cleared rich_text. Using `isCleared`
     // would diverge from sibling text-field semantics for no benefit.
     if (input.synopsis !== undefined) {
-      props["Synopsis"] = {
+      props[MEMORY_PROPS.SYNOPSIS] = {
         rich_text: [{ text: { content: decodeTextEntities(input.synopsis) } }],
       }
     }
     if (input.affectsIds) {
-      props["Affects"] = {
+      props[MEMORY_PROPS.AFFECTS] = {
         relation: input.affectsIds.map((rid) => ({ id: rid })),
       }
     }
@@ -494,7 +494,7 @@ export class TaskService {
     // type (rich_text) accepts an empty string verbatim, so they
     // don't need the explicit `{ date: null }` translation here.
     if (input.dueDate !== undefined) {
-      props["Review By"] = isCleared(input.dueDate)
+      props[MEMORY_PROPS.REVIEW_BY] = isCleared(input.dueDate)
         ? { date: null }
         : { date: { start: input.dueDate as string } }
     }
@@ -572,8 +572,8 @@ export class TaskService {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        "Task State": { select: { name: state } },
-        "Done At": { date: { start: today } },
+        [MEMORY_PROPS.TASK_STATE]: { select: { name: state } },
+        [MEMORY_PROPS.DONE_AT]: { date: { start: today } },
       } as CreatePageParameters["properties"],
     })
   }
@@ -664,12 +664,12 @@ export class TaskService {
       let cursor: string | undefined = undefined
       do {
         const filters: Array<Record<string, unknown>> = [
-          { property: "Kind", select: { equals: "task" } },
-          { property: "Done At", date: { on_or_after: date } },
+          { property: MEMORY_PROPS.KIND, select: { equals: "task" } },
+          { property: MEMORY_PROPS.DONE_AT, date: { on_or_after: date } },
           {
             or: [
-              { property: "Task State", select: { equals: "done" } },
-              { property: "Task State", select: { equals: "cancelled" } },
+              { property: MEMORY_PROPS.TASK_STATE, select: { equals: "done" } },
+              { property: MEMORY_PROPS.TASK_STATE, select: { equals: "cancelled" } },
             ],
           },
         ]
@@ -711,11 +711,11 @@ export class TaskService {
   }): Promise<OverdueTaskWindow> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
-      { property: "Kind", select: { equals: "task" } },
-      { property: "Review By", date: { on_or_before: today } },
+      { property: MEMORY_PROPS.KIND, select: { equals: "task" } },
+      { property: MEMORY_PROPS.REVIEW_BY, date: { on_or_before: today } },
       {
         or: ACTIVE_TASK_STATES.map((s) => ({
-          property: "Task State",
+          property: MEMORY_PROPS.TASK_STATE,
           select: { equals: s },
         })),
       },
@@ -733,7 +733,7 @@ export class TaskService {
         this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,
           filter: { and: filters } as QueryDataSourceParameters["filter"],
-          sorts: [{ property: "Review By", direction: "ascending" }],
+          sorts: [{ property: MEMORY_PROPS.REVIEW_BY, direction: "ascending" }],
           page_size,
           start_cursor,
         }),

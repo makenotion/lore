@@ -15,7 +15,7 @@ import type { Client } from "@notionhq/client"
 import type { CreatePageParameters, PageObjectResponse } from "@notionhq/client"
 import type { DatabaseRef } from "../types.js"
 import { isFullPage, extractTitle, extractRelationIds } from "../notion/extractors.js"
-import { buildTopicProps } from "../notion/schema.js"
+import { buildTopicProps, MEMORY_PROPS, TOPIC_PROPS } from "../notion/schema.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { hydrateRelationPropertiesForPages } from "../notion/relation-properties.js"
 import { normalizeTopicNameForLookup } from "./topic-normalize.js"
@@ -77,7 +77,7 @@ export async function findDuplicateTopicNames(
       page_size: 100,
     })
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-      const name = extractTitle(page.properties["Name"])
+      const name = extractTitle(page.properties[TOPIC_PROPS.NAME])
       if (name.length > 0) allTopics.push({ id: page.id, name })
     }
     cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
@@ -118,7 +118,7 @@ async function scanTopicNames(
       page_size: 100,
     })
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-      const rawName = extractTitle(page.properties["Name"])
+      const rawName = extractTitle(page.properties[TOPIC_PROPS.NAME])
       if (rawName.length === 0) continue
       snapshot.push({
         id: page.id,
@@ -203,7 +203,7 @@ export async function fixTopicEncoding(
     await client.pages.update({
       page_id: row.id,
       properties: {
-        Name: { title: [{ text: { content: row.decodedName } }] },
+        [TOPIC_PROPS.NAME]: { title: [{ text: { content: row.decodedName } }] },
       } as CreatePageParameters["properties"],
     })
     results.push({
@@ -266,7 +266,7 @@ async function mergeOneGroup(
   })
   const [canonical, ...losers] = sorted
 
-  const canonicalProjectIds = extractRelationIds(canonical.properties["Project"])
+  const canonicalProjectIds = extractRelationIds(canonical.properties[TOPIC_PROPS.PROJECT])
   const union = unionAllProjectIds(pages)
   const missing = union.filter((id) => !canonicalProjectIds.includes(id))
   const mergedProjectIds = [...canonicalProjectIds, ...missing]
@@ -275,7 +275,7 @@ async function mergeOneGroup(
     await client.pages.update({
       page_id: canonical.id,
       properties: {
-        Project: { relation: mergedProjectIds.map((id) => ({ id })) },
+        [TOPIC_PROPS.PROJECT]: { relation: mergedProjectIds.map((id) => ({ id })) },
       } as CreatePageParameters["properties"],
     })
   }
@@ -287,7 +287,7 @@ async function mergeOneGroup(
       await client.pages.update({
         page_id: memoryId,
         properties: {
-          Topic: { relation: [{ id: canonical.id }] },
+          [MEMORY_PROPS.TOPIC]: { relation: [{ id: canonical.id }] },
         } as CreatePageParameters["properties"],
       })
       reassignedMemoryIds.push(memoryId)
@@ -324,7 +324,7 @@ async function listTopicPagesByName(
     const response = await client.dataSources.query({
       data_source_id: topicsDb.dataSourceId,
       filter: {
-        property: "Name",
+        property: TOPIC_PROPS.NAME,
         title: { equals: name },
       },
       start_cursor: cursor,
@@ -333,7 +333,7 @@ async function listTopicPagesByName(
     cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
   } while (cursor)
 
-  return hydrateRelationPropertiesForPages(client, results, ["Project"])
+  return hydrateRelationPropertiesForPages(client, results, [TOPIC_PROPS.PROJECT])
 }
 
 async function listMemoryIdsByTopic(
@@ -348,7 +348,7 @@ async function listMemoryIdsByTopic(
     const response = await client.dataSources.query({
       data_source_id: memoriesDb.dataSourceId,
       filter: {
-        property: "Topic",
+        property: MEMORY_PROPS.TOPIC,
         relation: { contains: topicId },
       },
       start_cursor: cursor,
@@ -367,7 +367,7 @@ function unionAllProjectIds(pages: PageObjectResponse[]): string[] {
   const seen = new Set<string>()
   const ordered: string[] = []
   for (const page of pages) {
-    for (const id of extractRelationIds(page.properties["Project"])) {
+    for (const id of extractRelationIds(page.properties[TOPIC_PROPS.PROJECT])) {
       if (seen.has(id)) continue
       seen.add(id)
       ordered.push(id)
@@ -448,7 +448,7 @@ export async function findSimilarTopicGroups(
 
   const byKey = new Map<string, PageObjectResponse[]>()
   for (const page of allTopics) {
-    const name = extractTitle(page.properties["Name"])
+    const name = extractTitle(page.properties[TOPIC_PROPS.NAME])
     if (name.length === 0) continue
     const key = normalizeTopicNameForLookup(name)
     if (key.length === 0) continue
@@ -461,7 +461,7 @@ export async function findSimilarTopicGroups(
   for (const [normalizedKey, pages] of byKey.entries()) {
     if (pages.length < 2) continue
 
-    const distinctNames = new Set(pages.map((p) => extractTitle(p.properties["Name"])))
+    const distinctNames = new Set(pages.map((p) => extractTitle(p.properties[TOPIC_PROPS.NAME])))
     // Pure exact-name duplicates surface via `findDuplicateTopicNames`;
     // here we want only groups where stored names actually differ.
     if (distinctNames.size < 2) continue
@@ -474,12 +474,12 @@ export async function findSimilarTopicGroups(
     const [canonical, ...rest] = sorted
     groups.push({
       normalizedKey,
-      canonicalName: extractTitle(canonical.properties["Name"]),
+      canonicalName: extractTitle(canonical.properties[TOPIC_PROPS.NAME]),
       canonicalId: canonical.id,
       siblingIds: rest.map((p) => p.id),
       siblings: rest.map((p) => ({
         id: p.id,
-        name: extractTitle(p.properties["Name"]),
+        name: extractTitle(p.properties[TOPIC_PROPS.NAME]),
       })),
     })
   }
@@ -539,7 +539,7 @@ async function mergeOneSimilarGroup(
     if (page.archived) continue
     fetchedPages.push(page)
   }
-  const pages = await hydrateRelationPropertiesForPages(client, fetchedPages, ["Project"])
+  const pages = await hydrateRelationPropertiesForPages(client, fetchedPages, [TOPIC_PROPS.PROJECT])
 
   const canonical = pages.find((p) => p.id === group.canonicalId)
   if (!canonical) {
@@ -557,7 +557,7 @@ async function mergeOneSimilarGroup(
   }
   const siblings = pages.filter((p) => p.id !== group.canonicalId)
 
-  const canonicalProjectIds = extractRelationIds(canonical.properties["Project"])
+  const canonicalProjectIds = extractRelationIds(canonical.properties[TOPIC_PROPS.PROJECT])
   const union = unionAllProjectIds(pages)
   const missing = union.filter((id) => !canonicalProjectIds.includes(id))
   const mergedProjectIds = [...canonicalProjectIds, ...missing]
@@ -566,7 +566,7 @@ async function mergeOneSimilarGroup(
     await client.pages.update({
       page_id: canonical.id,
       properties: {
-        Project: { relation: mergedProjectIds.map((id) => ({ id })) },
+        [TOPIC_PROPS.PROJECT]: { relation: mergedProjectIds.map((id) => ({ id })) },
       } as CreatePageParameters["properties"],
     })
   }
@@ -579,7 +579,7 @@ async function mergeOneSimilarGroup(
         await client.pages.update({
           page_id: memoryId,
           properties: {
-            Topic: { relation: [{ id: canonical.id }] },
+            [MEMORY_PROPS.TOPIC]: { relation: [{ id: canonical.id }] },
           } as CreatePageParameters["properties"],
         })
       }
@@ -816,7 +816,7 @@ async function mergeOneAliasPlan(
       canonicalId: existingCanonical?.id ?? null,
       canonicalCreated: false,
       canonicalProjectIds: existingCanonical
-        ? extractRelationIds(existingCanonical.properties["Project"])
+        ? extractRelationIds(existingCanonical.properties[TOPIC_PROPS.PROJECT])
         : [],
       archivedAliases: [],
       reassignedMemoryIds: [],
@@ -846,14 +846,14 @@ async function mergeOneAliasPlan(
     canonicalCreated = true
   } else {
     const canonicalProjectIds = extractRelationIds(
-      existingCanonical.properties["Project"]
+      existingCanonical.properties[TOPIC_PROPS.PROJECT]
     )
     const missing = unionProjectIds.filter((id) => !canonicalProjectIds.includes(id))
     if (missing.length > 0 && !options.dryRun) {
       await client.pages.update({
         page_id: existingCanonical.id,
         properties: {
-          Project: { relation: unionProjectIds.map((id) => ({ id })) },
+          [TOPIC_PROPS.PROJECT]: { relation: unionProjectIds.map((id) => ({ id })) },
         } as CreatePageParameters["properties"],
       })
     }
@@ -870,7 +870,7 @@ async function mergeOneAliasPlan(
           await client.pages.update({
             page_id: memoryId,
             properties: {
-              Topic: { relation: [{ id: canonicalId }] },
+              [MEMORY_PROPS.TOPIC]: { relation: [{ id: canonicalId }] },
             } as CreatePageParameters["properties"],
           })
         }

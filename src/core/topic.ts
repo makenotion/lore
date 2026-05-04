@@ -13,7 +13,7 @@ import type {
   QueryDataSourceParameters,
 } from "@notionhq/client"
 import type { Topic, CreateTopicInput, DatabaseRef } from "../types.js"
-import { buildTopicProps } from "../notion/schema.js"
+import { buildTopicProps, TOPIC_PROPS } from "../notion/schema.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   isFullPage,
@@ -139,10 +139,10 @@ export class TopicService {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: {
-          property: "Project",
+          property: TOPIC_PROPS.PROJECT,
           relation: { contains: projectId },
         },
-        sorts: [{ property: "Name", direction: "ascending" }],
+        sorts: [{ property: TOPIC_PROPS.NAME, direction: "ascending" }],
         start_cursor: cursor,
       })
       results.push(...(response.results.filter(isFullPage) as PageObjectResponse[]))
@@ -167,7 +167,7 @@ export class TopicService {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: {
-          property: "Name",
+          property: TOPIC_PROPS.NAME,
           title: { equals: name },
         },
         start_cursor: cursor,
@@ -206,10 +206,10 @@ export class TopicService {
     // `topicName` before writing memories — onto one Notion query.
     const fetch = async (): Promise<Topic | null> => {
       const filters: Array<Record<string, unknown>> = [
-        { property: "Name", title: { equals: decoded } },
+        { property: TOPIC_PROPS.NAME, title: { equals: decoded } },
       ]
       if (projectId) {
-        filters.push({ property: "Project", relation: { contains: projectId } })
+        filters.push({ property: TOPIC_PROPS.PROJECT, relation: { contains: projectId } })
       }
 
       const filter = filters.length > 1 ? { and: filters } : filters[0]
@@ -322,7 +322,7 @@ export class TopicService {
       await this.client.pages.update({
         page_id: existing.id,
         properties: {
-          Project: { relation: merged.map((id) => ({ id })) },
+          [TOPIC_PROPS.PROJECT]: { relation: merged.map((id) => ({ id })) },
         } as CreatePageParameters["properties"],
       })
 
@@ -420,13 +420,13 @@ export class TopicService {
   }
 
   private async pageToTopic(page: PageObjectResponse): Promise<Topic> {
-    page = await hydrateRelationProperties(this.client, page, ["Project"])
+    page = await hydrateRelationProperties(this.client, page, [TOPIC_PROPS.PROJECT])
     const props = page.properties
     return {
       id: page.id,
-      name: extractTitle(props["Name"]),
-      projectIds: extractRelationIds(props["Project"]),
-      description: extractRichText(props["Description"]),
+      name: extractTitle(props[TOPIC_PROPS.NAME]),
+      projectIds: extractRelationIds(props[TOPIC_PROPS.PROJECT]),
+      description: extractRichText(props[TOPIC_PROPS.DESCRIPTION]),
     }
   }
 }

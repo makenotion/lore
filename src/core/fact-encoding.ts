@@ -31,6 +31,7 @@ import {
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
+import { FACT_PROPS } from "../notion/schema.js"
 
 /** One fact row whose stored Subject or Object contains HTML entities that
  *  would decode to a cleaner string. Also used as the return shape of an
@@ -271,10 +272,10 @@ export async function fixFactEncoding(
     await client.pages.update({
       page_id: row.id,
       properties: {
-        Subject: { title: [{ text: { content: row.decodedSubject } }] },
-        Object: { rich_text: [{ text: { content: row.decodedObject } }] },
-        DedupKey: { rich_text: [{ text: { content: row.decodedDedupKey } }] },
-        SubjectKey: {
+        [FACT_PROPS.SUBJECT]: { title: [{ text: { content: row.decodedSubject } }] },
+        [FACT_PROPS.OBJECT]: { rich_text: [{ text: { content: row.decodedObject } }] },
+        [FACT_PROPS.DEDUP_KEY]: { rich_text: [{ text: { content: row.decodedDedupKey } }] },
+        [FACT_PROPS.SUBJECT_KEY]: {
           rich_text: [{ text: { content: decodedSubjectKey } }],
         },
       } as CreatePageParameters["properties"],
@@ -298,7 +299,8 @@ async function scanFactRows(
       data_source_id: factsDb.dataSourceId,
       filter: options.projectId
         ? (projectOrUnscopedFilter(
-            options.projectId
+            options.projectId,
+            FACT_PROPS.PROJECT
           ) as QueryDataSourceParameters["filter"])
         : undefined,
       // Deterministic order for testability. The collision grouping is
@@ -311,14 +313,14 @@ async function scanFactRows(
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
       rows.push({
         id: page.id,
-        subject: extractTitle(page.properties["Subject"]),
+        subject: extractTitle(page.properties[FACT_PROPS.SUBJECT]),
         predicate: extractSelect(
-          page.properties["Predicate"],
+          page.properties[FACT_PROPS.PREDICATE],
           "related_to"
         ) as FactPredicate,
-        object: extractRichText(page.properties["Object"]),
-        dedupKey: extractRichText(page.properties["DedupKey"]),
-        validUntil: extractDate(page.properties["Valid Until"]),
+        object: extractRichText(page.properties[FACT_PROPS.OBJECT]),
+        dedupKey: extractRichText(page.properties[FACT_PROPS.DEDUP_KEY]),
+        validUntil: extractDate(page.properties[FACT_PROPS.VALID_UNTIL]),
       })
     }
     cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined

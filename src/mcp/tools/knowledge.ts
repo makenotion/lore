@@ -29,6 +29,7 @@ import {
   composeProjectContext,
   renderProjectContextLines,
 } from "../../core/project-context.js"
+import { FACT_PROPS } from "../../notion/schema.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -471,7 +472,7 @@ export async function handleLearn(
       for (const a of ambiguous) {
         toolWarnings.push(
           `Ambiguous ${a.side} "${a.input}" — matched ${a.candidates.length} entities (${a.candidates.join(", ")}). ` +
-            `Fact written without ${a.side === "subject" ? "Subject" : "Object"}Entity relation. ` +
+            `Fact written without ${a.side === "subject" ? FACT_PROPS.SUBJECT_ENTITY : FACT_PROPS.OBJECT_ENTITY} relation. ` +
             `Re-issue with the canonical name to attach the relation.`
         )
       }

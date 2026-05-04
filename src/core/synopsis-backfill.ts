@@ -34,6 +34,7 @@ import type { DatabaseRef } from "../types.js"
 import { SYNOPSIS_MAX } from "../types.js"
 import { extractTitle, isFullPage } from "../notion/extractors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 import { findBackgroundBinary, renderAgentArgs } from "../hooks/background.js"
 import {
   DEFAULT_BACKGROUND_ARGS,
@@ -445,12 +446,12 @@ export async function findSynopsisCandidates(
       filter: (options.projectId
         ? {
             and: [
-              { property: "Synopsis", rich_text: { is_empty: true } },
+              { property: MEMORY_PROPS.SYNOPSIS, rich_text: { is_empty: true } },
               projectOrUnscopedFilter(options.projectId),
             ],
           }
         : {
-            property: "Synopsis",
+            property: MEMORY_PROPS.SYNOPSIS,
             rich_text: { is_empty: true },
           }) as QueryDataSourceParameters["filter"],
       // Deterministic order for the dry-run preview — matches the
@@ -461,7 +462,7 @@ export async function findSynopsisCandidates(
     } as QueryDataSourceParameters)
 
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
-      const title = extractTitle(page.properties["Title"])
+      const title = extractTitle(page.properties[MEMORY_PROPS.TITLE])
       if (page.archived) {
         archivedSkipped++
         if (archivedExamples.length < ARCHIVED_EXAMPLES_LIMIT) {
@@ -750,7 +751,7 @@ async function writeSynopsis(
   await client.pages.update({
     page_id: pageId,
     properties: {
-      Synopsis: { rich_text: [{ text: { content: text } }] },
+      [MEMORY_PROPS.SYNOPSIS]: { rich_text: [{ text: { content: text } }] },
     } as CreatePageParameters["properties"],
   })
 }

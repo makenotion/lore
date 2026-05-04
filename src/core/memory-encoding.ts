@@ -27,6 +27,7 @@ import type { DatabaseRef } from "../types.js"
 import { extractTitle, isFullPage } from "../notion/extractors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
+import { MEMORY_PROPS } from "../notion/schema.js"
 
 /**
  * 100 KB cap on body markdown we'll migrate in a single pass. `lore mine`
@@ -148,7 +149,7 @@ export async function findEncodedMemories(
     // transient-fail bodies.
     const rowsForBatch = await Promise.all(
       pages.map(async (page) => {
-        const rawTitle = extractTitle(page.properties["Title"])
+        const rawTitle = extractTitle(page.properties[MEMORY_PROPS.TITLE])
         const decodedTitle = decodeTextEntities(rawTitle)
         const titleNeedsFix = rawTitle !== decodedTitle
 
@@ -253,7 +254,7 @@ export async function fixMemoryEncoding(
       await client.pages.update({
         page_id: row.id,
         properties: {
-          Title: { title: [{ text: { content: row.decodedTitle } }] },
+          [MEMORY_PROPS.TITLE]: { title: [{ text: { content: row.decodedTitle } }] },
         } as CreatePageParameters["properties"],
       })
       titleFixed = true

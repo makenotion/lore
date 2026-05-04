@@ -37,6 +37,7 @@ import {
   tryAcquireMigrationLock,
   type MigrationLock,
 } from "../migration-lock.js"
+import { MEMORY_PROPS } from "../../notion/schema.js"
 
 export const migrateCommand = new Command("migrate")
   .description("Add missing schema properties to the vault's data sources")
@@ -385,7 +386,7 @@ export const migrateCommand = new Command("migrate")
           // missing live; abort with a directive error rather than letting
           // a later, non-dry-run --tags pass fail mid-loop against Notion.
           const memoriesDiff = diffs.find((d) => d.database === "memories")
-          const keywordsMissing = memoriesDiff?.missing.includes("Keywords") ?? false
+          const keywordsMissing = memoriesDiff?.missing.includes(MEMORY_PROPS.KEYWORDS) ?? false
           if (keywordsMissing && opts.dryRun) {
             console.log(
               "\n--tags requires the `Keywords` property, which the live schema is missing. " +

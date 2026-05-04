@@ -18,7 +18,7 @@ import type {
   FactConfidence,
   DatabaseRef,
 } from "../types.js"
-import { buildFactProps } from "../notion/schema.js"
+import { buildFactProps, FACT_PROPS } from "../notion/schema.js"
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter } from "../notion/filters.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
@@ -93,7 +93,7 @@ const NOTION_MAX_PAGE_SIZE = 100
 // Only multi-relation columns belong here. Source/SubjectEntity/ObjectEntity
 // are 0-or-1 relation columns, so they cannot be truncated by Notion's
 // inline relation limit.
-const FACT_RELATION_PROPERTIES = ["Project"] as const
+const FACT_RELATION_PROPERTIES = [FACT_PROPS.PROJECT] as const
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -166,13 +166,13 @@ function predicateFilterClause(
   if (!predicates?.length) return undefined
   if (predicates.length === 1) {
     return {
-      property: "Predicate",
+      property: FACT_PROPS.PREDICATE,
       select: { equals: predicates[0] },
     }
   }
   return {
     or: predicates.map((p) => ({
-      property: "Predicate",
+      property: FACT_PROPS.PREDICATE,
       select: { equals: p },
     })),
   }
@@ -312,12 +312,12 @@ export class FactService {
   ): Promise<void> {
     const properties: Record<string, unknown> = {}
     if (relations.subjectEntityId !== undefined) {
-      properties["SubjectEntity"] = {
+      properties[FACT_PROPS.SUBJECT_ENTITY] = {
         relation: relations.subjectEntityId ? [{ id: relations.subjectEntityId }] : [],
       }
     }
     if (relations.objectEntityId !== undefined) {
-      properties["ObjectEntity"] = {
+      properties[FACT_PROPS.OBJECT_ENTITY] = {
         relation: relations.objectEntityId ? [{ id: relations.objectEntityId }] : [],
       }
     }
@@ -438,15 +438,15 @@ export class FactService {
     const filters: Array<Record<string, unknown>> = [
       {
         or: [
-          { property: "SubjectEntity", relation: { contains: entityId } },
-          { property: "ObjectEntity", relation: { contains: entityId } },
+          { property: FACT_PROPS.SUBJECT_ENTITY, relation: { contains: entityId } },
+          { property: FACT_PROPS.OBJECT_ENTITY, relation: { contains: entityId } },
         ],
       },
     ]
 
     if (!opts?.includeInvalidated) {
       filters.push({
-        property: "Valid Until",
+        property: FACT_PROPS.VALID_UNTIL,
         date: { is_empty: true },
       })
     }
@@ -466,8 +466,8 @@ export class FactService {
         hits.push({
           factId: page.id,
           subjectEntityId:
-            extractRelationIds(page.properties["SubjectEntity"])[0] ?? null,
-          objectEntityId: extractRelationIds(page.properties["ObjectEntity"])[0] ?? null,
+            extractRelationIds(page.properties[FACT_PROPS.SUBJECT_ENTITY])[0] ?? null,
+          objectEntityId: extractRelationIds(page.properties[FACT_PROPS.OBJECT_ENTITY])[0] ?? null,
         })
       }
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
@@ -509,18 +509,18 @@ export class FactService {
     const filters: Array<Record<string, unknown>> = [
       {
         or: [
-          { property: "SubjectEntity", relation: { contains: entityId } },
-          { property: "ObjectEntity", relation: { contains: entityId } },
+          { property: FACT_PROPS.SUBJECT_ENTITY, relation: { contains: entityId } },
+          { property: FACT_PROPS.OBJECT_ENTITY, relation: { contains: entityId } },
         ],
       },
     ]
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
     if (!opts?.includeInvalidated) {
       filters.push({
-        property: "Valid Until",
+        property: FACT_PROPS.VALID_UNTIL,
         date: { is_empty: true },
       })
     }
@@ -799,11 +799,11 @@ export class FactService {
     )
 
     if (extendingReview) {
-      properties["Review By"] = { date: { start: reviewBy } }
+      properties[FACT_PROPS.REVIEW_BY] = { date: { start: reviewBy } }
       enriched.push(`extended review to ${reviewBy}`)
     }
     if (mergedProjectIds) {
-      properties["Project"] = {
+      properties[FACT_PROPS.PROJECT] = {
         relation: mergedProjectIds.map((id) => ({ id })),
       }
       enriched.push(
@@ -811,19 +811,19 @@ export class FactService {
       )
     }
     if (fillingSource) {
-      properties["Source"] = {
+      properties[FACT_PROPS.SOURCE] = {
         relation: [{ id: decodedInput.sourceMemoryId }],
       }
       enriched.push("linked source memory")
     }
     if (fillingSubjectEntity) {
-      properties["SubjectEntity"] = {
+      properties[FACT_PROPS.SUBJECT_ENTITY] = {
         relation: [{ id: decodedInput.subjectEntityId }],
       }
       enriched.push("linked subject entity")
     }
     if (fillingObjectEntity) {
-      properties["ObjectEntity"] = {
+      properties[FACT_PROPS.OBJECT_ENTITY] = {
         relation: [{ id: decodedInput.objectEntityId }],
       }
       enriched.push("linked object entity")
@@ -879,8 +879,8 @@ export class FactService {
       data_source_id: this.db.dataSourceId,
       filter: {
         and: [
-          { property: "DedupKey", rich_text: { equals: dedupKey } },
-          { property: "Valid Until", date: { is_empty: true } },
+          { property: FACT_PROPS.DEDUP_KEY, rich_text: { equals: dedupKey } },
+          { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
         ],
       } as QueryDataSourceParameters["filter"],
       page_size: 1,
@@ -937,24 +937,24 @@ export class FactService {
         filters.push({
           or: [
             {
-              property: "SubjectKey",
+              property: FACT_PROPS.SUBJECT_KEY,
               rich_text: { contains: normalizedKey },
             },
-            { property: "Subject", title: { contains: subject } },
+            { property: FACT_PROPS.SUBJECT, title: { contains: subject } },
           ],
         })
       } else {
-        filters.push({ property: "Subject", title: { contains: subject } })
+        filters.push({ property: FACT_PROPS.SUBJECT, title: { contains: subject } })
       }
     }
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     if (!opts?.includeInvalidated) {
       filters.push({
-        property: "Valid Until",
+        property: FACT_PROPS.VALID_UNTIL,
         date: { is_empty: true },
       })
     }
@@ -962,13 +962,13 @@ export class FactService {
     if (opts?.predicates?.length) {
       if (opts.predicates.length === 1) {
         filters.push({
-          property: "Predicate",
+          property: FACT_PROPS.PREDICATE,
           select: { equals: opts.predicates[0] },
         })
       } else {
         filters.push({
           or: opts.predicates.map((p) => ({
-            property: "Predicate",
+            property: FACT_PROPS.PREDICATE,
             select: { equals: p },
           })),
         })
@@ -1022,16 +1022,16 @@ export class FactService {
       // alone; an `ObjectKey` mirror is Part B work (Entities DB) and
       // intentionally out of scope. Until then, `queryByEntity` is
       // half-canonical: case-folded against Subject, raw against Object.
-      filters.push({ property: "Object", rich_text: { contains: object } })
+      filters.push({ property: FACT_PROPS.OBJECT, rich_text: { contains: object } })
     }
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     if (!opts?.includeInvalidated) {
       filters.push({
-        property: "Valid Until",
+        property: FACT_PROPS.VALID_UNTIL,
         date: { is_empty: true },
       })
     }
@@ -1039,13 +1039,13 @@ export class FactService {
     if (opts?.predicates?.length) {
       if (opts.predicates.length === 1) {
         filters.push({
-          property: "Predicate",
+          property: FACT_PROPS.PREDICATE,
           select: { equals: opts.predicates[0] },
         })
       } else {
         filters.push({
           or: opts.predicates.map((p) => ({
-            property: "Predicate",
+            property: FACT_PROPS.PREDICATE,
             select: { equals: p },
           })),
         })
@@ -1088,18 +1088,18 @@ export class FactService {
   ): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
       {
-        property: "Source",
+        property: FACT_PROPS.SOURCE,
         relation: { contains: sourceMemoryId },
       },
     ]
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     if (!opts?.includeInvalidated) {
       filters.push({
-        property: "Valid Until",
+        property: FACT_PROPS.VALID_UNTIL,
         date: { is_empty: true },
       })
     }
@@ -1107,13 +1107,13 @@ export class FactService {
     if (opts?.predicates?.length) {
       if (opts.predicates.length === 1) {
         filters.push({
-          property: "Predicate",
+          property: FACT_PROPS.PREDICATE,
           select: { equals: opts.predicates[0] },
         })
       } else {
         filters.push({
           or: opts.predicates.map((p) => ({
-            property: "Predicate",
+            property: FACT_PROPS.PREDICATE,
             select: { equals: p },
           })),
         })
@@ -1162,12 +1162,12 @@ export class FactService {
     const filters: Array<Record<string, unknown>> = []
 
     if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     if (!opts.includeInvalidated) {
       filters.push({
-        property: "Valid Until",
+        property: FACT_PROPS.VALID_UNTIL,
         date: { is_empty: true },
       })
     }
@@ -1320,12 +1320,12 @@ export class FactService {
       // as "schema drift has not been repaired; substring fallback
       // already ran through the unresolved-entity path elsewhere —
       // return empty here so we don't double-count."
-      { property: "SubjectEntity", relation: { is_empty: true } },
-      { property: "ObjectEntity", relation: { is_empty: true } },
-      { property: "Valid Until", date: { is_empty: true } },
+      { property: FACT_PROPS.SUBJECT_ENTITY, relation: { is_empty: true } },
+      { property: FACT_PROPS.OBJECT_ENTITY, relation: { is_empty: true } },
+      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
     ]
     if (opts?.projectId) {
-      baseFilters.push(projectOrUnscopedFilter(opts.projectId))
+      baseFilters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     const predicateClause = predicateFilterClause(opts?.predicates)
@@ -1335,13 +1335,13 @@ export class FactService {
     const textOr: Array<Record<string, unknown>> = []
     if (subjectKey) {
       textOr.push({
-        property: "SubjectKey",
+        property: FACT_PROPS.SUBJECT_KEY,
         rich_text: { contains: subjectKey },
       })
     }
     textOr.push(
-      { property: "Subject", title: { contains: entity } },
-      { property: "Object", rich_text: { contains: entity } }
+      { property: FACT_PROPS.SUBJECT, title: { contains: entity } },
+      { property: FACT_PROPS.OBJECT, rich_text: { contains: entity } }
     )
     baseFilters.push({ or: textOr })
 
@@ -1392,12 +1392,12 @@ export class FactService {
    */
   async queryOrphans(opts?: { projectId?: string }): Promise<Fact[]> {
     const filters: Array<Record<string, unknown>> = [
-      { property: "Source", relation: { is_empty: true } },
-      { property: "Valid Until", date: { is_empty: true } },
+      { property: FACT_PROPS.SOURCE, relation: { is_empty: true } },
+      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
     ]
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     const results: PageObjectResponse[] = []
@@ -1422,12 +1422,12 @@ export class FactService {
   async queryOverdue(opts?: { projectId?: string; limit?: number }): Promise<Fact[]> {
     const today = new Date().toISOString().split("T")[0]
     const filters: Array<Record<string, unknown>> = [
-      { property: "Review By", date: { on_or_before: today } },
-      { property: "Valid Until", date: { is_empty: true } },
+      { property: FACT_PROPS.REVIEW_BY, date: { on_or_before: today } },
+      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
     ]
 
     if (opts?.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
 
     // Paginate to exhaustion (or to `limit`) — Notion's default page is 100
@@ -1441,7 +1441,7 @@ export class FactService {
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: { and: filters } as QueryDataSourceParameters["filter"],
-        sorts: [{ property: "Review By", direction: "ascending" }],
+        sorts: [{ property: FACT_PROPS.REVIEW_BY, direction: "ascending" }],
         page_size: Math.min(limit ?? NOTION_MAX_PAGE_SIZE, NOTION_MAX_PAGE_SIZE),
         start_cursor: cursor,
       })
@@ -1494,7 +1494,7 @@ export class FactService {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        "Review By": reviewBy === null ? { date: null } : { date: { start: reviewBy } },
+        [FACT_PROPS.REVIEW_BY]: reviewBy === null ? { date: null } : { date: { start: reviewBy } },
       },
     })
   }
@@ -1514,7 +1514,7 @@ export class FactService {
     await this.client.pages.update({
       page_id: id,
       properties: {
-        Source: { relation: [{ id: sourceMemoryId }] },
+        [FACT_PROPS.SOURCE]: { relation: [{ id: sourceMemoryId }] },
       },
     })
   }
@@ -1646,7 +1646,7 @@ export class FactService {
     }
 
     const properties: Record<string, unknown> = {
-      "Valid Until": { date: { start: today } },
+      [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
     }
 
     if (fact !== null) {
@@ -1670,8 +1670,8 @@ export class FactService {
         )
       }
       const next = decrementConfidenceScore(current)
-      properties["Confidence Score"] = { number: next }
-      properties["Last Referenced At"] = { date: { start: today } }
+      properties[FACT_PROPS.CONFIDENCE_SCORE] = { number: next }
+      properties[FACT_PROPS.LAST_REFERENCED_AT] = { date: { start: today } }
     }
 
     try {
@@ -1689,7 +1689,7 @@ export class FactService {
         await this.client.pages.update({
           page_id: id,
           properties: {
-            "Valid Until": { date: { start: today } },
+            [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
           },
         })
         return
@@ -1756,8 +1756,8 @@ export class FactService {
           await this.client.pages.update({
             page_id: fact.id,
             properties: {
-              "Last Referenced At": { date: { start: today } },
-              "Confidence Score": { number: nextScore },
+              [FACT_PROPS.LAST_REFERENCED_AT]: { date: { start: today } },
+              [FACT_PROPS.CONFIDENCE_SCORE]: { number: nextScore },
             },
           })
         } catch (error) {
@@ -1787,10 +1787,10 @@ export class FactService {
     } = {}
   ): AsyncGenerator<Fact, void, void> {
     const filters: Array<Record<string, unknown>> = [
-      { property: "Valid Until", date: { is_empty: true } },
+      { property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } },
     ]
     if (opts.projectId) {
-      filters.push(projectOrUnscopedFilter(opts.projectId))
+      filters.push(projectOrUnscopedFilter(opts.projectId, FACT_PROPS.PROJECT))
     }
     const filter = filters.length > 1 ? { and: filters } : filters[0]
     let cursor: string | undefined
@@ -1832,8 +1832,8 @@ export class FactService {
     await this.client.pages.update({
       page_id: factId,
       properties: {
-        "Confidence Score": { number: score },
-        "Last Referenced At": { date: { start: lastReferencedAt } },
+        [FACT_PROPS.CONFIDENCE_SCORE]: { number: score },
+        [FACT_PROPS.LAST_REFERENCED_AT]: { date: { start: lastReferencedAt } },
       },
     })
   }
@@ -1876,16 +1876,16 @@ export class FactService {
 
     const predicateClause: Record<string, unknown> =
       strings.length === 1
-        ? { property: "Predicate", select: { equals: strings[0] } }
+        ? { property: FACT_PROPS.PREDICATE, select: { equals: strings[0] } }
         : {
             or: strings.map((p) => ({
-              property: "Predicate",
+              property: FACT_PROPS.PREDICATE,
               select: { equals: p },
             })),
           }
 
     const filter = {
-      and: [{ property: "Valid Until", date: { is_empty: true } }, predicateClause],
+      and: [{ property: FACT_PROPS.VALID_UNTIL, date: { is_empty: true } }, predicateClause],
     }
 
     let count = 0
@@ -1978,38 +1978,38 @@ export class FactService {
    */
   private pageToFactSync(page: PageObjectResponse): Fact | null {
     const props = page.properties
-    const rawPredicate = extractSelect(props["Predicate"], "related_to")
+    const rawPredicate = extractSelect(props[FACT_PROPS.PREDICATE], "related_to")
     if (HISTORICAL_TRACKING_PREDICATE_VALUES.has(rawPredicate)) {
       return null
     }
-    const sourceIds = extractRelationIds(props["Source"])
+    const sourceIds = extractRelationIds(props[FACT_PROPS.SOURCE])
     // PF3-01 — relation columns return `[]` on un-migrated rows
     // because Notion responds with an empty list when the column
     // exists in the schema but is unset on the row. Treat any populated
     // relation as the canonical entity id; ignore the [1+] case (a
     // Fact only ever points at one canonical Entity per side).
-    const subjectEntityIds = extractRelationIds(props["SubjectEntity"])
-    const objectEntityIds = extractRelationIds(props["ObjectEntity"])
+    const subjectEntityIds = extractRelationIds(props[FACT_PROPS.SUBJECT_ENTITY])
+    const objectEntityIds = extractRelationIds(props[FACT_PROPS.OBJECT_ENTITY])
 
     return {
       id: page.id,
-      subject: extractTitle(props["Subject"]),
+      subject: extractTitle(props[FACT_PROPS.SUBJECT]),
       predicate: rawPredicate as FactPredicate,
-      object: extractRichText(props["Object"]),
-      projectIds: extractRelationIds(props["Project"]),
-      validFrom: extractDate(props["Valid From"]),
-      validUntil: extractDate(props["Valid Until"]),
-      reviewBy: extractDate(props["Review By"]),
+      object: extractRichText(props[FACT_PROPS.OBJECT]),
+      projectIds: extractRelationIds(props[FACT_PROPS.PROJECT]),
+      validFrom: extractDate(props[FACT_PROPS.VALID_FROM]),
+      validUntil: extractDate(props[FACT_PROPS.VALID_UNTIL]),
+      reviewBy: extractDate(props[FACT_PROPS.REVIEW_BY]),
       sourceMemoryId: sourceIds[0] ?? null,
-      confidence: extractSelect(props["Confidence"], "certain") as FactConfidence,
+      confidence: extractSelect(props[FACT_PROPS.CONFIDENCE], "certain") as FactConfidence,
       // DEFERRED-02 — system-managed numeric mirror of the categorical
       // `Confidence` select. `null` on pre-migration rows; populated by
       // `touchOnRead` / `decrementConfidence` / the build-fact-confidence-
       // scores migration. `extractNumber` returns `null` for missing
       // columns so legacy vaults that haven't run schema migration deserialize
       // cleanly.
-      confidenceScore: extractNumber(props["Confidence Score"]),
-      lastReferencedAt: extractDate(props["Last Referenced At"]),
+      confidenceScore: extractNumber(props[FACT_PROPS.CONFIDENCE_SCORE]),
+      lastReferencedAt: extractDate(props[FACT_PROPS.LAST_REFERENCED_AT]),
       createdAt: page.created_time,
       subjectEntityId: subjectEntityIds[0] ?? null,
       objectEntityId: objectEntityIds[0] ?? null,

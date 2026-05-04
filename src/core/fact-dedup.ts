@@ -27,6 +27,7 @@ import {
   extractDate,
 } from "../notion/extractors.js"
 import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
+import { FACT_PROPS } from "../notion/schema.js"
 
 export interface FactMergePlan {
   /** Key shared by the survivor and every loser (stable hash digest). */
@@ -126,12 +127,12 @@ export async function runFactDedupBackfill(
     if (!options.dryRun) {
       const properties: Record<string, unknown> = {}
       if (dedupNeedsWrite) {
-        properties["DedupKey"] = {
+        properties[FACT_PROPS.DEDUP_KEY] = {
           rich_text: [{ text: { content: expectedDedupKey } }],
         }
       }
       if (subjectNeedsWrite) {
-        properties["SubjectKey"] = {
+        properties[FACT_PROPS.SUBJECT_KEY] = {
           rich_text: [{ text: { content: expectedSubjectKey } }],
         }
       }
@@ -209,7 +210,7 @@ export async function runFactDedupBackfill(
         await client.pages.update({
           page_id: loserId,
           properties: {
-            "Valid Until": { date: { start: today } },
+            [FACT_PROPS.VALID_UNTIL]: { date: { start: today } },
           },
         })
         invalidated++
@@ -260,13 +261,13 @@ async function listAllFacts(
     for (const page of response.results.filter(isFullPage) as PageObjectResponse[]) {
       rows.push({
         id: page.id,
-        subject: extractTitle(page.properties["Subject"]),
-        predicate: extractSelect(page.properties["Predicate"], "related_to"),
-        object: extractRichText(page.properties["Object"]),
-        dedupKey: extractRichText(page.properties["DedupKey"]),
-        subjectKey: extractRichText(page.properties["SubjectKey"]),
-        validUntil: extractDate(page.properties["Valid Until"]),
-        reviewBy: extractDate(page.properties["Review By"]),
+        subject: extractTitle(page.properties[FACT_PROPS.SUBJECT]),
+        predicate: extractSelect(page.properties[FACT_PROPS.PREDICATE], "related_to"),
+        object: extractRichText(page.properties[FACT_PROPS.OBJECT]),
+        dedupKey: extractRichText(page.properties[FACT_PROPS.DEDUP_KEY]),
+        subjectKey: extractRichText(page.properties[FACT_PROPS.SUBJECT_KEY]),
+        validUntil: extractDate(page.properties[FACT_PROPS.VALID_UNTIL]),
+        reviewBy: extractDate(page.properties[FACT_PROPS.REVIEW_BY]),
         createdTime: page.created_time,
       })
     }
