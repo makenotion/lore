@@ -198,6 +198,10 @@ async function promotionTargetStatusRow(
   }
 }
 
+// The non-cached probe path. Returns a status with no `checkedAt` /
+// `freshness` so `formatHealthFreshness` emits no marker — the
+// markerless render is the documented direct-caller carve-out in
+// `docs/topology.md`'s "Freshness markers" section.
 async function safeProbeVault(
   pageId: string,
   probe: (pageId: string) => Promise<VaultHealthStatus>
@@ -212,6 +216,14 @@ async function safeProbeVault(
   }
 }
 
+/**
+ * Operator-facing health string contract for `lore status`'s topology
+ * section: `docs/topology.md`. This function and the two it delegates
+ * to (`formatVaultHealth`, `formatHealthFreshness`) compose the line
+ * shape operators triage by — change either the field separator, field
+ * order, or any health-prefix string and the doc must move in the same
+ * patch.
+ */
 function formatTopologyRow(row: TopologyStatusRow, now: Date): string {
   const parts = [row.label, `mode ${row.mode}`]
   if (row.priority !== undefined) parts.push(`priority ${row.priority}`)
@@ -219,6 +231,10 @@ function formatTopologyRow(row: TopologyStatusRow, now: Date): string {
   return parts.join(" · ")
 }
 
+// Operator-contract: docs/topology.md "Health states". The three
+// prefixes (`ok`, `missing databases`, `unavailable`) are grepped by
+// operators triaging degraded vaults — bump the doc on any prefix or
+// parenthetical-shape change.
 function formatVaultHealth(health: VaultHealthStatus, now: Date): string {
   const freshness = formatHealthFreshness(health, now)
   if (health.kind === "ok") {
@@ -389,6 +405,10 @@ function withFreshness(
   return { ...stripFreshness(health), checkedAt, freshness }
 }
 
+// Operator-contract: docs/topology.md "Freshness markers". The three
+// markers (`checked`, `cached`, `debounced`) and the missing-marker
+// case (no `checkedAt`) are documented verbatim. Bump the doc on any
+// marker addition, removal, or rename.
 function formatHealthFreshness(health: VaultHealthStatus, now: Date): string | undefined {
   if (!health.checkedAt) return undefined
   const age = formatCheckedAge(health.checkedAt, now)

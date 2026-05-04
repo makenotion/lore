@@ -85,7 +85,9 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
   project paths.
 - `upstreamVaults` and `promotionTargets` describe optional multi-vault
   topology. They are explicit, bounded status/read orchestration inputs; normal
-  memory/fact/decision/task writes still target only `vault.pageId`.
+  memory/fact/decision/task writes still target only `vault.pageId`. See
+  [`topology.md`](topology.md) for the `lore status` topology section, every
+  health state the surface emits, and the recovery workflow for each.
 
 ## Code Patterns
 

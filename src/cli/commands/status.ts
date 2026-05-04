@@ -48,7 +48,11 @@ const TRACKING_PREDICATE_PREFLIGHT_VALUES: string[] = [
 ]
 
 export const statusCommand = new Command("status")
-  .description("Show vault status and project list")
+  .description(
+    "Show vault status and project list. Renders a Vault topology section " +
+      "when upstreamVaults or promotionTargets are configured; see " +
+      "docs/topology.md for the full output contract."
+  )
   .option(
     "--project <name>",
     "Scope project-dependent status sections to a project"
