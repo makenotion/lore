@@ -1760,6 +1760,18 @@ export class FactService {
               "Confidence Score": { number: nextScore },
             },
           })
+          // Mirror the post-write state onto the caller's `Fact`
+          // reference (issue #495). `loadWakeUpData`'s wake-up cache
+          // hands the same `Fact[]` reference back on subsequent
+          // hits within the 30s TTL; without this mutation, the
+          // once-per-day gate above keys on the cached row's stale
+          // `lastReferencedAt` and `pages.update` re-fires for every
+          // Active Fact on every cache hit. Same posture as
+          // `MemoryService.touchOnRead` — the picked fields are
+          // mutable on `Fact` and `ReadonlyArray<Pick<...>>` only
+          // freezes the array shape, not element properties.
+          fact.lastReferencedAt = today
+          fact.confidenceScore = nextScore
         } catch (error) {
           opts?.onError?.(fact.id, error)
         }

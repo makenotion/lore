@@ -7,11 +7,76 @@ import type { Memory } from "../types.js"
 import type { MemoryService } from "../core/memory.js"
 import type { FactService } from "../core/fact.js"
 import type { Fact } from "../types.js"
+import type { WakeUpCache } from "../core/wakeup-cache.js"
 import { isRetryableError } from "../core/project-scope.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  /**
+   * Opt-out marker for `withWakeUpCacheBump` (issue #495). Set on
+   * write-action handlers whose code path provably did NOT mutate
+   * Notion — e.g. the assertive-reuse short-circuit in
+   * `lore-task action='create'` (returns an existing row without
+   * calling `services.tasks.create`) and the already-judged
+   * short-circuit in `lore-memory action='compare'` (returns when
+   * both sides already carry the audit entry). The MCP transport
+   * strips arbitrary fields it doesn't recognize, so this never
+   * leaks past the dispatcher seam where the wrapper consumes it.
+   *
+   * Defaults to absent; the wrapper bumps unless the field is
+   * explicitly `true`. Conservative — a forgotten marker on a
+   * genuine no-op causes a wasted fan-out next wake-up; a marker
+   * incorrectly applied to a path that DID mutate Notion would let
+   * the cache serve stale state. The first failure mode is the safe
+   * default.
+   */
+  noopWrite?: boolean
+}
+
+/**
+ * Run a write-action handler and bump the wake-up cache's write
+ * epoch (issue #495). Wraps each write-action `case` in the
+ * polymorphic dispatchers so a save / update / archive / create /
+ * close / supersede invalidates a cached wake-up snapshot from
+ * before the write.
+ *
+ * **Bumps for every parsed write action — even on `isError`
+ * results.** Several write handlers can land durable Notion writes
+ * and then return `toolError(...)` for a trailing partial-failure
+ * (e.g. `DecisionCreateFactPartialFailureError` surfaced from
+ * `decided_by` emission AFTER the decision row already persisted).
+ * Gating the bump on `!result.isError` would let the cache serve a
+ * pre-write snapshot for the full TTL after such a partial write —
+ * silently incorrect. The conservative bump trades one unnecessary
+ * fan-out (when an early validation failure rejects without
+ * touching Notion) for guaranteed staleness invalidation on every
+ * path that could have written. Handlers whose code path provably
+ * did NOT mutate Notion opt out by setting `noopWrite: true` on the
+ * result (the assertive-reuse and already-judged short-circuits do
+ * this).
+ *
+ * The wrapper is structurally tiny on purpose — it sits at the
+ * dispatcher seam, where the same write actions enumerated in issue
+ * #495 live as `case` arms. Centralizing the bump here keeps the
+ * cache's invalidation contract auditable: any handler not routed
+ * through this wrapper is, by construction, a read action.
+ *
+ * `cache` is typed as optional because dozens of unit-test fixtures
+ * across the MCP test suite construct partial `LoreServices` shapes
+ * via `as never` casts and intentionally omit fields they don't
+ * exercise. A required signature would force a coordinated update
+ * across every fixture for no test-side benefit. Production callers
+ * always supply the cache (`initServicesFromConfig` populates
+ * `LoreServices.wakeupCache` unconditionally).
+ */
+export async function withWakeUpCacheBump(
+  cache: WakeUpCache | undefined,
+  run: () => Promise<ToolResult>,
+): Promise<ToolResult> {
+  const result = await run()
+  if (!result.noopWrite) cache?.bumpEpoch()
+  return result
 }
 
 /**

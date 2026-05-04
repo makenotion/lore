@@ -33,6 +33,7 @@ import { DecisionService } from "./core/decision.js"
 import { TaskService } from "./core/task.js"
 import { EntityService } from "./core/entity.js"
 import { resolveProject } from "./core/context.js"
+import { WakeUpCache } from "./core/wakeup-cache.js"
 import {
   createAuthorIdentityResolver,
   type AuthorIdentityResolver,
@@ -131,6 +132,25 @@ export interface LoreServices {
    * defense against silent regressions of cross-cutting contracts.
    */
   authSource: AuthSource
+  /**
+   * Process-local wake-up aggregator cache (issue #495). The
+   * long-running MCP server threads this into `loadWakeUpData` so
+   * back-to-back wake-ups within one user turn skip the ~10-call
+   * fan-out. Every MCP write action calls `wakeupCache.bumpEpoch()`
+   * so a save followed by a wake-up re-fetches; the 30s TTL is the
+   * cross-process staleness ceiling.
+   *
+   * Hooks (`src/hooks/helpers.ts`) and CLI commands construct
+   * services per invocation and exit, so they never observe a cache
+   * hit. They still thread the cache for type uniformity. See
+   * `WakeUpCache`'s header docstring for the surface picture and the
+   * cross-process follow-up.
+   *
+   * Required (not optional) so a future refactor that forgets to
+   * populate it in a new init seam fails the typecheck rather than
+   * silently degrading caching to per-call fan-out.
+   */
+  wakeupCache: WakeUpCache
 }
 
 export const AUTH_REFRESH_UNAVAILABLE_CACHE_MS = 1_000
@@ -214,6 +234,7 @@ export async function initServicesFromConfig(
     sessionMemories: new SessionMemoryTracker(),
     identity,
     authSource: auth.source,
+    wakeupCache: new WakeUpCache(),
   }
 }
 

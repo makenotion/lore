@@ -37,6 +37,9 @@ import type {
 } from "../types.js"
 import { MS_PER_DAY, STALE_CONFIDENCE_LIMIT, STALE_TASK_DAYS } from "../types.js"
 import { taskDaysOverdue, taskDaysStale } from "./task.js"
+import { computeWakeUpCacheKey, WakeUpCache } from "./wakeup-cache.js"
+
+export { WakeUpCache, computeWakeUpCacheKey }
 // Re-exported so existing callers that import `MS_PER_DAY` from
 // `wakeup.ts` keep working — the canonical declaration moved to
 // `types.ts` (issue 0.8.0/#10 follow-up) so day-arithmetic across
@@ -457,6 +460,22 @@ export interface WakeUpOptions {
   todayDate?: string
   /** Override Date.now() for testing. */
   now?: number
+  /**
+   * Process-local result cache (issue #495). When supplied,
+   * `loadWakeUpData` consults it before fan-out and stores the
+   * computed result on the way out. Bumping `cache.bumpEpoch()` on
+   * every MCP write action invalidates stale entries so a save +
+   * wake-up sequence re-fetches; entries also expire on a 30s TTL
+   * as a hard staleness ceiling.
+   *
+   * The long-running MCP server is the only surface that lands
+   * repeated cache hits. One-shot processes (CLI, hooks) thread the
+   * cache through `loadWakeUpData` for shape uniformity but never
+   * see a hit because they exit before the next caller arrives —
+   * cross-process sharing is a follow-up. See `WakeUpCache`'s header
+   * docstring for the full surface picture.
+   */
+  cache?: WakeUpCache
 }
 
 export interface WakeUpData {
@@ -685,6 +704,44 @@ export async function loadWakeUpData(
   services: WakeUpServices,
   opts: WakeUpOptions = {},
 ): Promise<WakeUpData> {
+  const cache = opts.cache
+  if (cache) {
+    // `todayDate` must be defaulted into the cache key so a wake-up
+    // cached just before UTC midnight cannot serve a snapshot just
+    // after midnight under the same key — the data layer's effective
+    // `todayDate` would have advanced (driving stale-confidence
+    // cutoffs and `Nd ago` arithmetic) but a key built from raw
+    // `opts` would collide. `lore-context action='status'` and the
+    // hook wake-up path both omit `todayDate` and rely on this
+    // defaulting. Mirrors the same `now → todayDate` derivation
+    // applied below for the fan-out.
+    const now = opts.now ?? Date.now()
+    const effectiveTodayDate =
+      opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
+    const keyOpts: WakeUpOptions = { ...opts, todayDate: effectiveTodayDate }
+    const cacheKey = computeWakeUpCacheKey(keyOpts)
+    // Capture the start epoch BEFORE dispatch — see
+    // `WakeUpCache.currentEpoch`'s docstring for the sandwich
+    // contract. `getOrLoad` collapses concurrent cold-start callers
+    // onto a single fan-out so a SessionStart and UserPromptSubmit
+    // firing close together cost one wake-up, not two.
+    const startEpoch = cache.currentEpoch
+    return cache.getOrLoad(cacheKey, startEpoch, () =>
+      runWakeUpFanOut(services, opts, now, effectiveTodayDate),
+    )
+  }
+
+  const now = opts.now ?? Date.now()
+  const todayDate = opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
+  return runWakeUpFanOut(services, opts, now, todayDate)
+}
+
+async function runWakeUpFanOut(
+  services: WakeUpServices,
+  opts: WakeUpOptions,
+  now: number,
+  todayDate: string,
+): Promise<WakeUpData> {
   const projectId = opts.projectId
   const memoryLimit = opts.memoryLimit ?? DEFAULT_WAKEUP_MEMORY_LIMIT
   const memoryLimitWithDigest =
@@ -700,8 +757,6 @@ export async function loadWakeUpData(
   const includeProposedMemories = opts.includeProposedMemories ?? true
   const proposedMemoryLimit =
     opts.proposedMemoryLimit ?? DEFAULT_WAKEUP_PROPOSED_MEMORY_LIMIT
-  const now = opts.now ?? Date.now()
-  const todayDate = opts.todayDate ?? new Date(now).toISOString().slice(0, 10)
   const userQuery = sanitizeUserQuery(opts.userQuery)
 
   // Request one extra memory so we can drop a digest entry without running

@@ -879,6 +879,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       includeProposedMemories: false,
       includeCoverage: debug,
       userQuery,
+      cache: services.wakeupCache,
       ...rankedLimits,
     }))
   } catch (err) {

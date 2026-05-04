@@ -10812,6 +10812,57 @@ describe("MemoryService.touchOnRead", () => {
     const touchValue = migrationValue + (1 - migrationValue) * 0.05
     expect(writtenScore).toBeCloseTo(touchValue, 6)
   })
+
+  it("mutates the input row's lastReferencedAt and confidenceScore in place after a successful update (issue #495)", async () => {
+    // The wake-up cache (issue #495) hands the same `Memory[]`
+    // reference back on subsequent hits within TTL. Without this
+    // mutation, the once-per-day gate at the top of touchOnRead
+    // would key on the cached row's pre-touch `lastReferencedAt`
+    // and re-fire `pages.update` for every row on every cache hit.
+    const update = vi.fn(
+      async (_args: { page_id: string; properties: Record<string, unknown> }) => undefined
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const row = makeMemoryShape({
+      id: "m1",
+      confidence: "certain",
+      confidenceScore: null,
+      lastReferencedAt: null,
+      createdAt: `${TODAY}T00:00:00.000Z`,
+    })
+
+    await service.touchOnRead([row], { today: TODAY })
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(row.lastReferencedAt).toBe(TODAY)
+    expect(row.confidenceScore).toBeCloseTo(0.905, 6)
+
+    // A second call with the SAME reference must hit the
+    // once-per-day short-circuit (zero new updates).
+    await service.touchOnRead([row], { today: TODAY })
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not mutate the input row when the update throws", async () => {
+    const update = vi.fn(async () => {
+      throw new Error("notion 429")
+    })
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const row = makeMemoryShape({
+      id: "m1",
+      confidence: "certain",
+      confidenceScore: null,
+      lastReferencedAt: null,
+      createdAt: `${TODAY}T00:00:00.000Z`,
+    })
+
+    await service.touchOnRead([row], { today: TODAY })
+    expect(row.lastReferencedAt).toBeNull()
+    expect(row.confidenceScore).toBeNull()
+  })
 })
 
 describe("MemoryService.decrementConfidence", () => {

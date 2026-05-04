@@ -275,6 +275,59 @@ describe("FactService.touchOnRead", () => {
     expect(score).toBeLessThan(0.55)
   })
 
+  it("mutates the input row's lastReferencedAt and confidenceScore in place after a successful update (issue #495)", async () => {
+    const today = "2026-04-30"
+    const { client, updateSpy } = mkClient()
+    const service = new FactService(client, DB)
+    const fact: Pick<
+      Fact,
+      "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
+    > = {
+      id: "f1",
+      confidence: "certain",
+      confidenceScore: null,
+      lastReferencedAt: null,
+      createdAt: `${today}T00:00:00.000Z`,
+    }
+
+    await service.touchOnRead([fact], { today })
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(fact.lastReferencedAt).toBe(today)
+    expect(fact.confidenceScore).toBeCloseTo(0.905, 6)
+
+    // A second call with the SAME reference must hit the
+    // once-per-day short-circuit so cached wake-ups don't re-fire
+    // `pages.update` per Active Fact.
+    await service.touchOnRead([fact], { today })
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not mutate the input row when the update throws", async () => {
+    const today = "2026-04-30"
+    const updateSpy = vi.fn(async () => {
+      throw new Error("notion 429")
+    })
+    const client = {
+      pages: { update: updateSpy, retrieve: vi.fn(), create: vi.fn() },
+      dataSources: { query: vi.fn() },
+    } as unknown as Client
+    const service = new FactService(client, DB)
+    const fact: Pick<
+      Fact,
+      "id" | "confidence" | "confidenceScore" | "lastReferencedAt" | "createdAt"
+    > = {
+      id: "f1",
+      confidence: "certain",
+      confidenceScore: null,
+      lastReferencedAt: null,
+      createdAt: `${today}T00:00:00.000Z`,
+    }
+
+    await service.touchOnRead([fact], { today, onError: () => {} })
+    expect(fact.lastReferencedAt).toBeNull()
+    expect(fact.confidenceScore).toBeNull()
+  })
+
   it("isolates per-row failures via onError", async () => {
     const today = "2026-05-01"
     const updateSpy = vi.fn(async (args: { page_id: string }) => {

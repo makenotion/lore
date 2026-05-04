@@ -3275,6 +3275,21 @@ export class MemoryService {
               "Confidence Score": { number: nextScore },
             },
           })
+          // Mirror the post-write state onto the caller's
+          // `Memory` reference (issue #495). Without this, a cached
+          // `WakeUpData` whose memories were touched on the prior
+          // render still says `lastReferencedAt: <yesterday>` —
+          // every subsequent cache hit would re-fire `touchOnRead`
+          // because the once-per-day gate above keys on
+          // `memory.lastReferencedAt === today`. The mutation
+          // closes the gate without rewriting the touch contract:
+          // the in-memory shape now matches what Notion holds.
+          // Mutation is safe under `ReadonlyArray<Pick<...>>` — the
+          // array itself is read-only but element fields stay
+          // writable, and the picked properties are intentionally
+          // non-readonly on `Memory`.
+          memory.lastReferencedAt = today
+          memory.confidenceScore = nextScore
         } catch (error) {
           opts?.onError?.(memory.id, error)
         }

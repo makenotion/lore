@@ -7,6 +7,7 @@ import {
   toolError,
   debugLogPartialFailures,
   debugLogContradictionFailure,
+  withWakeUpCacheBump,
 } from "../helpers.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import {
@@ -1199,19 +1200,26 @@ export function registerDecisionTools(server: McpServer, services: LoreServices)
       if (!parsed.success) {
         return toolError(new Error(formatDispatchError("lore-decision", parsed.error)))
       }
-      switch (parsed.data.action) {
+      const data = parsed.data
+      switch (data.action) {
         case "create":
-          return handleCreate(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleCreate(services, data),
+          )
         case "list":
-          return handleList(services, parsed.data)
+          return handleList(services, data)
         case "get":
-          return handleGet(services, parsed.data)
+          return handleGet(services, data)
         case "context":
-          return handleContext(services, parsed.data, "lore-decision")
+          return handleContext(services, data, "lore-decision")
         case "supersede":
-          return handleSupersede(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleSupersede(services, data),
+          )
         case "review":
-          return handleReview(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleReview(services, data),
+          )
       }
     }
   )

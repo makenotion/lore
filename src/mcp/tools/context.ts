@@ -322,6 +322,7 @@ async function handleStatus(services: LoreServices): Promise<ToolResult> {
         projectId: project?.id,
         includeMemoryContent: false,
         includeCoverage: true,
+        cache: services.wakeupCache,
       }),
     ])
     lines.push(...formatTaskSummary(tasks))
@@ -467,6 +468,7 @@ async function handleWakeUp(
       includeMemoryContent: includeContent,
       includeCoverage: args.debug === true,
       todayDate: today,
+      cache: services.wakeupCache,
     })
 
     const sections: string[] = []

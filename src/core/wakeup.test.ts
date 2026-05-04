@@ -5,6 +5,7 @@ import {
   DEFAULT_WAKEUP_MEMORY_LIMIT_WITH_DIGEST,
   DEFAULT_WAKEUP_RELATED_MEMORY_LIMIT,
   DEFAULT_WAKEUP_TASK_MEMORY_LIMIT,
+  WakeUpCache,
   buildEmptyWakeUpCoverage,
   computeWakeUpCoverage,
   dateBucket,
@@ -2062,5 +2063,248 @@ describe("dateBucket", () => {
     expect(dateBucket("2026-04-20T10:00:00Z", NOW)).toBe("Today")
     expect(dateBucket("2026-04-19T23:59:00Z", NOW)).toBe("Yesterday")
     expect(dateBucket("2026-04-10T00:00:00Z", NOW)).toBe("Earlier")
+  })
+})
+
+describe("loadWakeUpData with WakeUpCache", () => {
+  // The acceptance contract from issue #495:
+  //   1. two back-to-back wake-ups within TTL: the second issues zero
+  //      Notion calls;
+  //   2. wake-up → save → wake-up: the second invocation re-fetches;
+  //   3. distinct userQuery values produce distinct cache keys.
+  // The stub `services` records every method call in dedicated
+  // arrays, so "zero Notion calls" is verifiable as "no new entries
+  // appended after the second invocation."
+
+  function callCounts(s: ReturnType<typeof stubServices>): Record<string, number> {
+    return {
+      memoriesList: s.memoriesCalls.length,
+      memoriesSearch: s.memoriesSearchCalls.length,
+      factsListRecent: s.factsListRecentCalls.length,
+      decisionsList: s.decisionsListCalls.length,
+      decisionsOverdue: s.decisionsOverdueCalls.length,
+      tasksList: s.tasksListCalls.length,
+      staleConfidence: s.staleConfidenceCalls.length,
+    }
+  }
+
+  it("serves two back-to-back wake-ups within TTL with zero new Notion calls", async () => {
+    const services = stubServices({
+      rawMemories: [
+        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
+      ],
+      digestMemories: [],
+      facts: [buildFact({ id: "f1" })],
+    })
+    const cache = new WakeUpCache()
+
+    const first = await loadWakeUpData(services, {
+      projectId: "p1",
+      now: NOW,
+      cache,
+    })
+    const before = callCounts(services)
+    const second = await loadWakeUpData(services, {
+      projectId: "p1",
+      now: NOW,
+      cache,
+    })
+    const after = callCounts(services)
+
+    expect(second).toEqual(first)
+    expect(after).toEqual(before)
+  })
+
+  it("re-fetches when an intervening write bumps the cache epoch", async () => {
+    const services = stubServices({
+      rawMemories: [
+        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
+      ],
+    })
+    const cache = new WakeUpCache()
+
+    await loadWakeUpData(services, { projectId: "p1", now: NOW, cache })
+    const before = callCounts(services)
+
+    // Simulate a save / fact-create / task-create / decision-create —
+    // any MCP write action that goes through `withWakeUpCacheBump`.
+    cache.bumpEpoch()
+
+    await loadWakeUpData(services, { projectId: "p1", now: NOW, cache })
+    const after = callCounts(services)
+
+    expect(after.memoriesList).toBeGreaterThan(before.memoriesList)
+  })
+
+  it("scopes cache hits to the userQuery dimension", async () => {
+    const services = stubServices({
+      rawMemories: [],
+      taskQuery: "fix bug",
+      taskMemories: [],
+    })
+    const cache = new WakeUpCache()
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      userQuery: "fix bug",
+      now: NOW,
+      cache,
+    })
+    const before = callCounts(services)
+
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      userQuery: "fix tests",
+      now: NOW,
+      cache,
+    })
+    const after = callCounts(services)
+
+    expect(after.memoriesList).toBeGreaterThan(before.memoriesList)
+  })
+
+  it("does not commit a snapshot whose epoch was bumped during fan-out", async () => {
+    const pendingMemoryListResolvers: Array<(v: { items: Memory[] }) => void> = []
+    const services: WakeUpServices = {
+      memories: {
+        list: () =>
+          new Promise<{ items: Memory[] }>((resolve) => {
+            pendingMemoryListResolvers.push(resolve)
+          }),
+        search: async () => [],
+        queryStaleConfidence: async () => [],
+        countProposed: async () => ({
+          total: 0,
+          bySource: {},
+          byAgent: {},
+        }),
+      },
+      facts: {
+        listRecent: async () => ({ items: [], hasMore: false }),
+      },
+      decisions: {
+        list: async () => ({ items: [] }),
+        queryOverdue: async () => [],
+      },
+      tasks: {
+        list: async () => ({ items: [] }),
+      },
+    }
+    const cache = new WakeUpCache()
+
+    const inFlight = loadWakeUpData(services, {
+      projectId: "p1",
+      now: NOW,
+      cache,
+    })
+    // Yield so the fan-out has dispatched both memory.list calls
+    // (raw memories + digest) before we bump.
+    await new Promise<void>((r) => setTimeout(r, 0))
+    // Bump while the fan-out is still pending — simulates a concurrent
+    // save landing during the in-flight wake-up.
+    cache.bumpEpoch()
+    for (const resolve of pendingMemoryListResolvers) resolve({ items: [] })
+    const result = await inFlight
+
+    // The in-flight subscriber still receives a usable snapshot —
+    // skip-on-stale-epoch only suppresses the cache COMMIT, not the
+    // value propagation to the original caller. Sandwich behavior.
+    expect(result.memories).toEqual([])
+    expect(result.coverage).toBeNull()
+    expect(cache.size).toBe(0)
+  })
+
+  it("re-fetches across a UTC-midnight crossover even when callers omit todayDate", async () => {
+    const services = stubServices({
+      rawMemories: [
+        buildMemory({ id: "m1", createdAt: "2026-04-19T00:00:00Z" }),
+      ],
+    })
+    const cache = new WakeUpCache()
+
+    // Pre-midnight wake-up — `todayDate` defaulted from `now` to
+    // 2026-04-20.
+    const preMidnightNow = new Date("2026-04-20T23:59:50Z").getTime()
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      now: preMidnightNow,
+      cache,
+    })
+    const before = callCounts(services)
+
+    // Post-midnight wake-up — `todayDate` defaults to 2026-04-21.
+    // The cache key derived from the EFFECTIVE todayDate must
+    // differ from the pre-midnight key, so the second call must
+    // miss the cache and re-fetch.
+    const postMidnightNow = new Date("2026-04-21T00:00:10Z").getTime()
+    await loadWakeUpData(services, {
+      projectId: "p1",
+      now: postMidnightNow,
+      cache,
+    })
+    const after = callCounts(services)
+
+    expect(after.memoriesList).toBeGreaterThan(before.memoriesList)
+  })
+
+  it("collapses concurrent cold-start wake-ups onto a single fan-out (stampede protection)", async () => {
+    // Baseline: one uncached wake-up — measures the call count for
+    // a single fan-out without depending on the exact internal
+    // shape (raw memories + digest + proposed memories + facts +
+    // decisions + tasks × 3 buckets + stale confidence).
+    const baseline = stubServices({})
+    await loadWakeUpData(baseline, { projectId: "p1", now: NOW })
+
+    // Two parallel cached callers with identical options. The
+    // second caller must subscribe to the first's in-flight loader
+    // rather than dispatching its own fan-out — combined call counts
+    // should match the baseline.
+    const services = stubServices({})
+    const cache = new WakeUpCache()
+    const [a, b] = await Promise.all([
+      loadWakeUpData(services, { projectId: "p1", now: NOW, cache }),
+      loadWakeUpData(services, { projectId: "p1", now: NOW, cache }),
+    ])
+
+    expect(a).toBe(b)
+    expect(services.memoriesCalls.length).toBe(baseline.memoriesCalls.length)
+    expect(services.factsListRecentCalls.length).toBe(
+      baseline.factsListRecentCalls.length,
+    )
+    expect(services.decisionsListCalls.length).toBe(
+      baseline.decisionsListCalls.length,
+    )
+    expect(services.tasksListCalls.length).toBe(baseline.tasksListCalls.length)
+  })
+
+  it("noopWrite-marked write actions do not invalidate the cache", async () => {
+    const { withWakeUpCacheBump } = await import("../mcp/helpers.js")
+    const cache = new WakeUpCache()
+
+    // A write handler whose code path provably did not mutate
+    // Notion (the assertive-reuse / already-judged short-circuits)
+    // returns `noopWrite: true` and the wrapper must skip the bump.
+    const before = cache.currentEpoch
+    await withWakeUpCacheBump(cache, async () => ({
+      content: [{ type: "text" as const, text: "Reused existing task: …" }],
+      noopWrite: true,
+    }))
+    expect(cache.currentEpoch).toBe(before)
+
+    // A genuine write — no marker — bumps as usual.
+    await withWakeUpCacheBump(cache, async () => ({
+      content: [{ type: "text" as const, text: "Saved memory" }],
+    }))
+    expect(cache.currentEpoch).toBe(before + 1)
+
+    // A write that returned `isError` but landed durable side
+    // effects (the partial-failure case) still bumps. Issue #495's
+    // conservative-bump posture catches the partial-write hazard
+    // even when the handler reports an error.
+    await withWakeUpCacheBump(cache, async () => ({
+      content: [{ type: "text" as const, text: "Error: partial failure …" }],
+      isError: true,
+    }))
+    expect(cache.currentEpoch).toBe(before + 2)
   })
 })

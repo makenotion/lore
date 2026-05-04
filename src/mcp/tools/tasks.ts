@@ -19,6 +19,7 @@ import {
   formatDispatchError,
   paginationFooter,
   toolError,
+  withWakeUpCacheBump,
 } from "../helpers.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
@@ -45,6 +46,8 @@ import { nonBlankString } from "./text-schema.js"
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  /** Issue #495 — see `withWakeUpCacheBump`'s docstring for the marker contract. */
+  noopWrite?: boolean
 }
 
 const TASK_STATES = ["open", "in-progress", "blocked", "done", "cancelled"] as const
@@ -363,6 +366,12 @@ async function handleCreate(
 
       return {
         content: [{ type: "text", text: reuseLines.join("\n") }],
+        // Issue #495: assertive reuse short-circuits before
+        // `services.tasks.create` runs — Notion was not mutated and
+        // the wake-up cache should NOT be invalidated for this path.
+        // See `withWakeUpCacheBump`'s docstring for the marker
+        // contract.
+        noopWrite: true,
       }
     }
 
@@ -1090,17 +1099,24 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
       if (!parsed.success) {
         return toolError(new Error(formatDispatchError("lore-task", parsed.error)))
       }
-      switch (parsed.data.action) {
+      const data = parsed.data
+      switch (data.action) {
         case "create":
-          return handleCreate(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleCreate(services, data),
+          )
         case "update":
-          return handleUpdate(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleUpdate(services, data),
+          )
         case "close":
-          return handleClose(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleClose(services, data),
+          )
         case "list":
-          return handleList(services, parsed.data)
+          return handleList(services, data)
         case "reconcile":
-          return handleReconcile(services, parsed.data)
+          return handleReconcile(services, data)
       }
     }
   )

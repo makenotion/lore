@@ -8,6 +8,7 @@ import {
   toolError,
   debugLogPartialFailures,
   fireTouchOnRead,
+  withWakeUpCacheBump,
 } from "../helpers.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
 import { settleAll } from "../../core/settle.js"
@@ -65,6 +66,8 @@ import { resolveAuthorForWrite } from "../../auth/identity.js"
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
   isError?: boolean
+  /** Issue #495 — see `withWakeUpCacheBump`'s docstring for the marker contract. */
+  noopWrite?: boolean
 }
 
 /**
@@ -1502,6 +1505,12 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
           ].join("\n"),
         },
       ],
+      // Issue #495: idempotency gate short-circuited before any
+      // `recordCompared` / dispatch path ran — Notion was not
+      // mutated and the wake-up cache should NOT be invalidated.
+      // See `withWakeUpCacheBump`'s docstring for the marker
+      // contract.
+      noopWrite: true,
     }
   }
 
@@ -2678,23 +2687,36 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
       if (!parsed.success) {
         return toolError(new Error(formatDispatchError("lore-memory", parsed.error)))
       }
-      switch (parsed.data.action) {
+      const data = parsed.data
+      switch (data.action) {
         case "save":
-          return handleSave(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleSave(services, data),
+          )
         case "update":
-          return handleUpdate(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleUpdate(services, data),
+          )
         case "archive":
-          return handleArchive(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleArchive(services, data),
+          )
         case "expand":
-          return handleExpand(services, parsed.data)
+          return handleExpand(services, data)
         case "suggest-topic-key":
-          return handleSuggestTopicKey(parsed.data)
+          return handleSuggestTopicKey(data)
         case "compare":
-          return handleCompare(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleCompare(services, data),
+          )
         case "approve":
-          return handleReview(services, parsed.data, "approve")
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleReview(services, data, "approve"),
+          )
         case "reject":
-          return handleReview(services, parsed.data, "reject")
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleReview(services, data, "reject"),
+          )
       }
     }
   )

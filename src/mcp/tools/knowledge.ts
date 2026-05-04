@@ -9,6 +9,7 @@ import {
   debugLogContradictionFailure,
   fireTouchOnRead,
   fireFactTouchOnRead,
+  withWakeUpCacheBump,
 } from "../helpers.js"
 import { confidenceFactor } from "../../core/decay.js"
 import { resolveProjectIds, resolveReadProjectScope } from "../resolve.js"
@@ -1310,13 +1311,20 @@ export function registerKnowledgeTools(server: McpServer, services: LoreServices
       if (!parsed.success) {
         return toolError(new Error(formatDispatchError("lore-fact", parsed.error)))
       }
-      switch (parsed.data.action) {
+      const data = parsed.data
+      switch (data.action) {
         case "create":
-          return handleLearn(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleLearn(services, data),
+          )
         case "invalidate":
-          return handleInvalidate(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleInvalidate(services, data),
+          )
         case "extend":
-          return handleExtendFact(services, parsed.data)
+          return withWakeUpCacheBump(services.wakeupCache, () =>
+            handleExtendFact(services, data),
+          )
       }
     }
   )
