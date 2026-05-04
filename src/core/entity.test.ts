@@ -70,6 +70,7 @@ function createMockClient() {
       retrieveMarkdown: vi.fn(),
       update: vi.fn(),
       updateMarkdown: vi.fn(),
+      properties: { retrieve: vi.fn() },
     },
   } as unknown as Client & {
     dataSources: { query: ReturnType<typeof vi.fn> }
@@ -79,8 +80,32 @@ function createMockClient() {
       retrieveMarkdown: ReturnType<typeof vi.fn>
       update: ReturnType<typeof vi.fn>
       updateMarkdown: ReturnType<typeof vi.fn>
+      properties: { retrieve: ReturnType<typeof vi.fn> }
     }
   }
+}
+
+/**
+ * Shape an entity page whose `Project` relation column is truncated
+ * (`has_more: true`) so `hydrateRelationProperties` would issue a
+ * `pages.properties.retrieve` call. Used to pin issue #487's pre-filter
+ * structural property — `pageToEntity` must NOT be called per
+ * candidate; otherwise a high-cardinality alias would burn an
+ * O(N) round-trip walk paced by the rate-limit token bucket.
+ */
+function truncatedProjectEntityPage(
+  overrides: EntityPageOverrides = {}
+): PageObjectResponse {
+  const page = entityPage(overrides)
+  page.properties = {
+    ...page.properties,
+    Project: {
+      ...page.properties["Project"],
+      id: "rel-project-id",
+      has_more: true,
+    } as unknown,
+  } as PageObjectResponse["properties"]
+  return page
 }
 
 describe("normalizeEntityKey", () => {
@@ -159,6 +184,82 @@ describe("EntityService.findByName", () => {
     expect(await service.findByName("   ")).toBeNull()
     expect(client.dataSources.query).not.toHaveBeenCalled()
   })
+
+  it("hydrates only the matching candidate at the documented worst case (issue #487)", async () => {
+    // Walk the full `NAME_LOOKUP_MAX_PAGES * NOTION_MAX_PAGE_SIZE`
+    // = 1000-candidate / 10-page substring fallback with the match
+    // pinned on the last candidate of the last page. Pre-filtering
+    // on the synchronously-available `Name` title before calling
+    // `pageToEntity` collapses the worst case from 1000 sequential
+    // `pages.properties.retrieve` round-trips down to one.
+    const client = createMockClient()
+    client.dataSources.query.mockResolvedValueOnce({
+      // First call: title.equals — case-sensitive miss.
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    for (let pageIdx = 0; pageIdx < 10; pageIdx++) {
+      const pageCandidates = Array.from({ length: 100 }, (_, i) => {
+        const flatIndex = pageIdx * 100 + i
+        const isMatch = flatIndex === 999
+        return truncatedProjectEntityPage({
+          id: `ent-${flatIndex}`,
+          name: isMatch ? "MemoryService" : `MemoryService.method${flatIndex}`,
+        })
+      })
+      client.dataSources.query.mockResolvedValueOnce({
+        results: pageCandidates,
+        has_more: pageIdx < 9,
+        next_cursor: pageIdx < 9 ? `cursor-${pageIdx + 1}` : null,
+      })
+    }
+    client.pages.properties.retrieve.mockResolvedValue({
+      object: "list",
+      results: [{ type: "relation", relation: { id: "proj-A" } }],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    const found = await service.findByName("memoryservice")
+    expect(found).not.toBeNull()
+    expect(found!.id).toBe("ent-999")
+    // 1 title.equals + 10 title.contains pages = 11 total queries.
+    expect(client.dataSources.query).toHaveBeenCalledTimes(11)
+    expect(client.pages.properties.retrieve).toHaveBeenCalledTimes(1)
+  })
+
+  it("hydrates zero candidates when no row matches the normalized key (issue #487)", async () => {
+    // Symmetric no-match case: 100 substring hits, none normalize to
+    // the requested key. Pre-fix this hydrated every candidate before
+    // returning null; post-fix the loop walks the candidates without
+    // a single `pages.properties.retrieve`.
+    const client = createMockClient()
+    const candidates = Array.from({ length: 100 }, (_, i) =>
+      truncatedProjectEntityPage({
+        id: `ent-${i}`,
+        // Every name carries the substring `User` so the
+        // title.contains pass surfaces them, but none normalize to
+        // the bare `user` key.
+        name: `UserSession${i}`,
+      }),
+    )
+    client.dataSources.query.mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    client.dataSources.query.mockResolvedValueOnce({
+      results: candidates,
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    expect(await service.findByName("user")).toBeNull()
+    expect(client.pages.properties.retrieve).not.toHaveBeenCalled()
+  })
 })
 
 describe("EntityService.findByAlias", () => {
@@ -179,6 +280,77 @@ describe("EntityService.findByAlias", () => {
 
     const service = new EntityService(client, DB)
     expect(await service.findByAlias("AuthSvc")).toEqual([])
+  })
+
+  it("hydrates only matching candidates at the documented worst case (issue #487)", async () => {
+    // Walk the full `NAME_LOOKUP_MAX_PAGES * NOTION_MAX_PAGE_SIZE`
+    // = 1000-candidate / 10-page substring pass with the only exact-
+    // key alias on the last candidate of the last page. Unlike
+    // `findByName`, `findByAlias` accumulates across pages rather
+    // than returning early, so the loop walks every page regardless
+    // of when the first match is observed. Pre-filtering on the
+    // synchronously-available `Aliases` rich_text cell before
+    // calling `pageToEntity` collapses the worst case from 1000
+    // sequential `pages.properties.retrieve` round-trips down to one.
+    const client = createMockClient()
+    for (let pageIdx = 0; pageIdx < 10; pageIdx++) {
+      const pageCandidates = Array.from({ length: 100 }, (_, i) => {
+        const flatIndex = pageIdx * 100 + i
+        const isMatch = flatIndex === 999
+        return truncatedProjectEntityPage({
+          id: `ent-${flatIndex}`,
+          name: `Entity${flatIndex}`,
+          // Substring match on `User` for every row, but only the
+          // last alias normalizes to the exact key.
+          aliases: isMatch ? "User" : `Username${flatIndex}`,
+        })
+      })
+      client.dataSources.query.mockResolvedValueOnce({
+        results: pageCandidates,
+        has_more: pageIdx < 9,
+        next_cursor: pageIdx < 9 ? `cursor-${pageIdx + 1}` : null,
+      })
+    }
+    client.pages.properties.retrieve.mockResolvedValue({
+      object: "list",
+      results: [{ type: "relation", relation: { id: "proj-A" } }],
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    const matches = await service.findByAlias("User")
+    expect(matches).toHaveLength(1)
+    expect(matches[0].id).toBe("ent-999")
+    expect(client.dataSources.query).toHaveBeenCalledTimes(10)
+    expect(client.pages.properties.retrieve).toHaveBeenCalledTimes(1)
+  })
+
+  it("hydrates zero candidates when no alias normalizes to the key (issue #487)", async () => {
+    // Symmetric no-match case: 100 substring hits, none normalize to
+    // the requested key. Pre-fix this hydrated every candidate before
+    // returning the empty array; post-fix the loop walks the
+    // candidates without a single `pages.properties.retrieve`.
+    const client = createMockClient()
+    const candidates = Array.from({ length: 100 }, (_, i) =>
+      truncatedProjectEntityPage({
+        id: `ent-${i}`,
+        name: `Entity${i}`,
+        // Every alias carries the substring `User` (so the
+        // rich_text.contains pass surfaces them) but none normalize
+        // to the bare `user` key.
+        aliases: `Username${i}`,
+      }),
+    )
+    client.dataSources.query.mockResolvedValueOnce({
+      results: candidates,
+      has_more: false,
+      next_cursor: null,
+    })
+
+    const service = new EntityService(client, DB)
+    expect(await service.findByAlias("User")).toEqual([])
+    expect(client.pages.properties.retrieve).not.toHaveBeenCalled()
   })
 })
 

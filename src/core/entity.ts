@@ -389,6 +389,13 @@ export class EntityService {
         // (cap = 1000 candidates) keeps the recall hole closed without
         // turning one resolve into a vault-wide scan. Caught by review
         // on PR #88.
+        //
+        // Pre-filter on the synchronously-available `Name` title before
+        // calling `pageToEntity` — `pageToEntity` hydrates the `Project`
+        // relation column and can issue `pages.properties.retrieve` per
+        // candidate. Hydrating every substring hit collapses the worst
+        // case (1000-row scan) into 1000 sequential rate-limited round
+        // trips. Issue #487.
         let cursor: string | undefined
         let pagesFetched = 0
         while (true) {
@@ -406,8 +413,9 @@ export class EntityService {
             isActiveEntityPage
           ) as PageObjectResponse[]
           for (const page of fallbackPages) {
-            const entity = await this.pageToEntity(page)
-            if (normalizeEntityKey(entity.name) === key) return entity
+            const rawName = extractTitle(page.properties["Name"])
+            if (normalizeEntityKey(rawName) !== key) continue
+            return await this.pageToEntity(page)
           }
           if (!fallback.has_more || pagesFetched >= NAME_LOOKUP_MAX_PAGES) {
             return null
@@ -441,6 +449,17 @@ export class EntityService {
     // the substring hits down to exact normalized-key matches so an
     // alias like `MemoryService.create` doesn't match a search for
     // `Service`.
+    //
+    // Pre-filter on the synchronously-available `Aliases` rich_text
+    // cell before calling `pageToEntity`. `pageToEntity` hydrates the
+    // `Project` relation and can issue `pages.properties.retrieve`
+    // per candidate; hydrating every substring hit collapses the
+    // worst case (1000-row scan) into 1000 sequential rate-limited
+    // round trips. Unlike `findByName`, this loop accumulates
+    // matches across pages rather than returning on the first hit,
+    // so the substring pre-filter is what bounds the hydration
+    // count to actual exact-key aliases rather than every substring
+    // hit on every page. Issue #487.
     const matches: Entity[] = []
     let cursor: string | undefined
     let pagesFetched = 0
@@ -457,10 +476,9 @@ export class EntityService {
       pagesFetched += 1
       const pages = response.results.filter(isActiveEntityPage) as PageObjectResponse[]
       for (const page of pages) {
-        const entity = await this.pageToEntity(page)
-        if (entity.aliases.some((a) => normalizeEntityKey(a) === key)) {
-          matches.push(entity)
-        }
+        const rawAliases = parseAliases(extractRichText(page.properties["Aliases"]))
+        if (!rawAliases.some((a) => normalizeEntityKey(a) === key)) continue
+        matches.push(await this.pageToEntity(page))
       }
       if (!response.has_more || pagesFetched >= NAME_LOOKUP_MAX_PAGES) break
       cursor = response.next_cursor ?? undefined
