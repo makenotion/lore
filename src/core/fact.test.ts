@@ -2392,6 +2392,48 @@ describe("FactService.queryByEntity — limit clamp and post-dedup slice (issue 
     expect(result[0].id).toBe("rel-1")
   })
 
+  it("unions migrated relation rows and unmigrated text rows on a mixed-migration fixture (issue #486)", async () => {
+    // Pins the queryByEntityId / queryByEntityTextOnUnmigrated union
+    // semantics that AGENTS.md spells out: "code that reads entity ids
+    // from facts must handle both rows with populated entity relations
+    // and rows that need the SubjectKey substring fallback." The contract
+    // is enforced by `queryByEntity` fanning out to both branches; this
+    // test guards against a future caller short-circuiting the relation
+    // branch and dropping every un-backfilled row.
+    //
+    // Fixture distinguishes the two row states structurally: the relation
+    // row carries a populated `subjectEntityId` (post `--build-entities`),
+    // the text-fallback row leaves both entity relations empty (pre-
+    // migration / transition window). The both-present overlap case (a
+    // row that surfaces in both branches with distinguishable payloads)
+    // is pinned by the next test in this block.
+    const migratedRow = factPage({
+      id: "migrated-1",
+      subject: "AuthService",
+      subjectEntityId: "ent-auth",
+    })
+    const unmigratedRow = factPage({
+      id: "unmigrated-1",
+      subject: "AuthService",
+      subjectEntityId: null,
+      objectEntityId: null,
+    })
+    const { client } = createClient([
+      { results: [migratedRow] }, // relation branch
+      { results: [unmigratedRow] }, // text-on-unmigrated branch
+    ])
+    const service = new FactService(client, db)
+
+    const result = await service.queryByEntity("AuthService", {
+      projectId: "p1",
+      entityId: "ent-auth",
+    })
+
+    expect(result.map((f) => f.id)).toEqual(["migrated-1", "unmigrated-1"])
+    expect(result[0].subjectEntityId).toBe("ent-auth")
+    expect(result[1].subjectEntityId).toBeNull()
+  })
+
   it("preserves dedup priority (relation-hit wins over text-fallback) when both branches contribute the same row", async () => {
     // Overlapping rows: the same fact id appears in both branches with
     // distinguishable payloads (different `reviewBy` dates per branch).

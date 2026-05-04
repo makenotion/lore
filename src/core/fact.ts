@@ -484,10 +484,14 @@ export class FactService {
    *
    * Returns `[]` on a vault that hasn't run the build-entities migration
    * yet — no rows reference the entity, so the result is empty by
-   * construction. Callers that want substring fallback should fan out
-   * to `queryByEntity(name)` after consulting the entity name.
+   * construction. Private by design — exposing it would invite a caller
+   * to skip the unbackfilled-text companion in `queryByEntity` and ship
+   * a silent recall regression on transition-window vaults. Symmetric
+   * with the also-private `queryByEntityTextOnUnmigrated`; both are
+   * union members, neither is a public read path. External consumers
+   * must go through `queryByEntity`, which unions the two branches.
    */
-  async queryByEntityId(
+  private async queryByEntityId(
     entityId: string,
     opts?: {
       projectId?: string
