@@ -9933,12 +9933,17 @@ describe("MemoryService.getTitleById — title cache", () => {
     //
     // The mixed id is *archived*, not a 404 — Notion returns a full
     // response with `archived: true`, which is the "known-absent"
-    // tombstone-cacheable case. Genuinely-missing ids (whose
-    // `pages.retrieve` throws) take the transient path and are NOT
-    // cached by design — that shape is covered by a separate test
-    // below. Keeping the two scenarios distinct prevents the earlier
-    // ambiguity where "missing-id" was named like a 404 but mocked like
-    // an archive.
+    // tombstone-cacheable case. Genuinely-missing ids (`pages.retrieve`
+    // throws `object_not_found` / `restricted_resource`) ALSO tombstone
+    // — that shape is covered by a separate test below (issue #478).
+    // Other thrown errors (`rate_limited` / 5xx / `unauthorized` /
+    // network) take the transient path and are NOT cached, covered by
+    // their own tests further below. Keeping the three scenarios
+    // distinct prevents the earlier ambiguity where "missing-id" was
+    // named like a 404 but mocked like an archive, and pins the
+    // selective-tombstoning contract introduced by #478 — only
+    // id-level absence cases tombstone; broad token-level / transport
+    // errors do not.
     const ids = Array.from(
       { length: 24 },
       (_, i) => `mem-${i.toString().padStart(2, "0")}`
@@ -10010,12 +10015,22 @@ describe("MemoryService.getTitleById — title cache", () => {
   })
 
   it("does not clobber the writer's post-update title when a reader was already in flight", async () => {
-    // The race the reviewer flagged: reader A's `pages.retrieve` resolves
-    // AFTER writer's `update()` has installed the authoritative new title
-    // via write-through. Without the epoch guard, reader A would overwrite
-    // the writer's value with the pre-update page. With the guard, reader
-    // A observes a bumped epoch at commit and refuses to write, leaving
-    // the writer's authoritative value in the cache.
+    // The dispatched-before-write race: reader A's `getTitleById` is
+    // dispatched BEFORE the writer's `update()` runs, so the loader
+    // installs a pending slot first. The writer then runs through its
+    // pre-write `titleCache.delete(id)` (which drops the reader's
+    // pending slot via `LruCache`'s delete-clears-pending discipline)
+    // and post-write `titleCache.set(id, "New title")` (which also
+    // drops any pending slot via the symmetric set-clears-pending
+    // discipline). When reader A's `pages.retrieve` finally resolves
+    // with the pre-update page, `getOrLoad`'s identity guard
+    // (`pending.get(id) === loaderPromise` → `undefined ===
+    // loaderPromise` → false) suppresses the stale commit, so the
+    // writer's authoritative value stays in the cache. Pre-PF1-09
+    // this protection lived on `MemoryService` as a `writeEpoch`
+    // counter checked at commit time; the migration folded that
+    // invariant into `LruCache.set`/`delete` themselves so the
+    // protection is now primitive-level.
     let releaseRead!: () => void
     const readGate = new Promise<void>((resolve) => {
       releaseRead = resolve
@@ -10060,94 +10075,105 @@ describe("MemoryService.getTitleById — title cache", () => {
     expect(readerAResult).toBe("Old title")
 
     // But the cache retains the writer's authoritative "New title" —
-    // reader A's stale value was NOT committed because the write epoch
-    // advanced during its retrieve.
+    // reader A's stale value was NOT committed because `LruCache`'s
+    // identity guard saw the pending slot had been dropped (by the
+    // writer's `titleCache.delete` and post-write `titleCache.set`)
+    // and refused to commit on resolution.
     expect(await service.getTitleById("mem-1")).toBe("New title")
     expect(updateSpy).toHaveBeenCalledTimes(1)
   })
 
   it("does not clobber when a reader dispatches DURING the writer's pages.update", async () => {
-    // Finding #5 from PR #54 round-2 review: the generation counter
-    // protects readers dispatched *before* the writer's pre-bump, but
-    // also needs to protect readers dispatched *during* the in-flight
-    // Notion write — after the pre-bump but before the post-bump.
-    // Without the post-write sandwich bump, such a reader's
-    // `writeEpoch === startEpoch` check would pass and it would commit
-    // a stale value, clobbering the writer's authoritative `set`.
+    // Finding #5 from PR #54 round-2 review (originally guarded by the
+    // bespoke `writeEpoch` sandwich; PF1-09 collapsed onto the shared
+    // `LruCache.getOrLoad` primitive whose identity guard, paired with
+    // `LruCache.set` clearing the pending slot, suppresses the same
+    // stale commit). The race: reader's loader's `pages.retrieve` is
+    // dispatched AFTER the writer's pre-write `titleCache.delete` but
+    // is still in flight when the writer's post-write
+    // `titleCache.set("Newest")` fires. Without the pending-clearing
+    // discipline on `set`, the reader's `getOrLoad` commit would
+    // clobber the writer's authoritative value.
     //
-    // The scenario:
-    //   t0: getTitleById("mem-1") → cache miss, captures startEpoch=1
-    //       (pre-bump has already fired from a prior update)
-    //   t1: dispatches pages.retrieve (gated)
-    //   t2: writer runs update() to completion: pre-bump (ep=2), delete,
-    //       pages.update, getById (→ "Newest"), set(id, "Newest"),
-    //       post-bump (ep=3)
-    //   t3: reader's retrieve resolves with the pre-"Newest" page
-    //       ("Pre-race"). Epoch check: writeEpoch=3 ≠ startEpoch=1 →
-    //       commit skipped. Cache keeps "Newest".
-    //
-    // If the post-bump were missing, at t3 writeEpoch=2 === startEpoch=1
-    // would still catch it (because the pre-bump fired). But if the
-    // reader's start was AFTER the pre-bump (startEpoch=2), only the
-    // post-bump catches it.
-    const service = new MemoryService(
-      {
-        pages: {
-          retrieve: vi.fn(),
-          update: vi.fn(),
-          retrieveMarkdown: vi.fn(),
-        },
-      } as unknown as Client,
-      db
-    )
+    // The scenario, using only the public API:
+    //   t0: writer.update("Newest") fires pre-write delete (sync),
+    //       awaits gated pages.update
+    //   t1: reader.getTitleById dispatches loader → pages.retrieve
+    //       (gated) → installs pending slot
+    //   t2: release writer's pages.update → writer continues:
+    //       getById (2nd retrieve → "Newest"), titleCache.set("Newest")
+    //       which clears the reader's pending slot
+    //   t3: release reader's pages.retrieve → loader resolves
+    //       "Pre-race". `getOrLoad`'s identity guard
+    //       (`pending.get(id) === loaderPromise`) sees `undefined ===
+    //       loaderPromise` → false → commit suppressed.
+    //   final: reader's caller observes "Pre-race" (one-shot stale
+    //          read; reads do not block on writes); cache retains
+    //          the writer's authoritative "Newest".
+    let releaseWriterUpdate!: () => void
+    const writerUpdateGate = new Promise<void>((resolve) => {
+      releaseWriterUpdate = resolve
+    })
+    let releaseReaderRetrieve!: () => void
+    const readerRetrieveGate = new Promise<void>((resolve) => {
+      releaseReaderRetrieve = resolve
+    })
 
-    // Simulate: reader dispatches at startEpoch=2, which is exactly
-    // the state between pre-bump and post-bump of a running writer.
-    // The simplest way to model that: manually bump once, then invoke
-    // the read path, then bump again, then simulate the retrieve
-    // resolving.
-    ;(service as unknown as { writeEpoch: number }).writeEpoch = 2
-    const startEpoch = (service as unknown as { writeEpoch: number }).writeEpoch
-    expect(startEpoch).toBe(2)
-
-    // Manually bump a second time — this is what `update()`'s post-write
-    // set+bump does. If the sandwich is correctly installed, a reader
-    // that captured startEpoch=2 must not commit when writeEpoch=3.
-    ;(service as unknown as { bumpWriteEpoch: () => void }).bumpWriteEpoch()
-    expect((service as unknown as { writeEpoch: number }).writeEpoch).toBe(3)
-
-    // Invoke the private commit-decision logic: manually set a value into
-    // the cache at epoch=3 (simulating the writer's write-through), then
-    // try to call fetchTitleAndCache with the stale startEpoch=2. The
-    // epoch check should skip the commit.
-    const titleCache = (
-      service as unknown as {
-        titleCache: { get(id: string): unknown; set(id: string, v: string | null): void }
+    let retrieveCount = 0
+    const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+      retrieveCount++
+      if (retrieveCount === 1) {
+        // Reader's retrieve — gated so it is still in flight when the
+        // writer's set fires.
+        await readerRetrieveGate
+        return titlePage(page_id, "Pre-race")
       }
-    ).titleCache
-    titleCache.set("mem-1", "Newest")
+      // Writer's getById after pages.update — returns "Newest".
+      return titlePage(page_id, "Newest")
+    })
+    const updateSpy = vi.fn(async () => {
+      await writerUpdateGate
+      return {}
+    })
+    const client = {
+      pages: {
+        retrieve: retrieveSpy,
+        update: updateSpy,
+        retrieveMarkdown: vi.fn(async () => ({ markdown: "" })),
+      },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
 
-    // Manually run a "reader that captured startEpoch=2" path via the
-    // private fetchTitleAndCache.
-    const page = buildPage(
-      { Title: { type: "title", title: [{ plain_text: "Pre-race" }] } },
-      { id: "mem-1" }
-    )
-    const client = (service as unknown as { client: Client }).client as Client & {
-      pages: { retrieve: ReturnType<typeof vi.fn> }
-    }
-    client.pages.retrieve = vi.fn(async () => page)
+    // Writer starts: pre-write `titleCache.delete` runs synchronously,
+    // then awaits gated `pages.update`.
+    const writerPromise = service.update("mem-1", { title: "Newest" })
+    // Yield so the writer reaches its gated await.
+    await Promise.resolve()
 
-    const result = await (
-      service as unknown as {
-        fetchTitleAndCache(id: string, startEpoch: number): Promise<string | null>
-      }
-    ).fetchTitleAndCache("mem-1", 2)
+    // Reader dispatches AFTER the writer's delete: cache empty,
+    // `getOrLoad` installs a fresh pending slot, loader awaits the
+    // gated retrieve. This is the dispatched-during-write window.
+    const readerPromise = service.getTitleById("mem-1")
+    await Promise.resolve()
 
-    // Reader returns the pre-race page's title — reads don't block on writes.
-    expect(result).toBe("Pre-race")
-    // But the cache still holds "Newest" — the stale commit was suppressed.
-    expect(titleCache.get("mem-1")).toBe("Newest")
+    // Release the writer. It runs to completion: getById's
+    // pages.retrieve (2nd call → "Newest"), then
+    // `titleCache.set("mem-1", "Newest")` — which clears the reader's
+    // pending slot via `LruCache.set`'s pending-clearing discipline.
+    releaseWriterUpdate()
+    await writerPromise
+
+    // Release the reader's retrieve. Loader resolves with the pre-race
+    // page, `getOrLoad`'s identity guard suppresses the commit, and
+    // the reader's caller still sees "Pre-race".
+    releaseReaderRetrieve()
+    expect(await readerPromise).toBe("Pre-race")
+
+    // The cache still holds the writer's authoritative "Newest". The
+    // next read short-circuits on it; no additional retrieve.
+    const beforeFinalReadCalls = retrieveSpy.mock.calls.length
+    expect(await service.getTitleById("mem-1")).toBe("Newest")
+    expect(retrieveSpy.mock.calls.length).toBe(beforeFinalReadCalls)
   })
 })
 

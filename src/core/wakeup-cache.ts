@@ -29,8 +29,11 @@
  * 'close'`, `lore-decision action='create' | 'supersede' | 'review'`.
  * `loadWakeUpData` captures the epoch at dispatch and only commits
  * its result to the cache if `writeEpoch === startEpoch` after
- * fan-out — the sandwich pattern that protects the title cache in
- * `MemoryService`. A read checks the stored epoch matches the current
+ * fan-out — a capture-then-check sandwich at the cache layer (not to
+ * be confused with the pre-PF1-09 title-cache sandwich on
+ * `MemoryService`, which is gone — the title cache now relies on
+ * `LruCache.set` / `delete` clearing pending slots and `getOrLoad`'s
+ * identity guard). A read checks the stored epoch matches the current
  * one; a mismatch is a miss, no different from a TTL expiry.
  *
  * **Bump conservatively, even on tool-error responses.** The MCP

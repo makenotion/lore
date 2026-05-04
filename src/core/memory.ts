@@ -1414,69 +1414,49 @@ export class MemoryService {
    * IDs that are archived, 404, or permission-scoped. Repeated wake-ups
    * over a stable ID set then stop hitting Notion for the missing ones
    * too, satisfying the "25-UUID wake-up twice → zero retrieve calls on
-   * the second run" acceptance criterion.
+   * the second run" acceptance criterion. Tombstones are committed via
+   * `LruCache.getOrLoad`'s `cacheNegatives: true` option, which
+   * distinguishes a known-absent loader return (`null`) from a transient
+   * error (loader throws). Errors clear the slot without caching, so a
+   * 429 / 5xx blip still re-dispatches on the next read.
    *
-   * Stampede-safe via the `pendingTitles` map — N concurrent cold-start
-   * misses on the same id share one `pages.retrieve`. `LruCache.getOrLoad`
-   * doesn't fit here because it refuses to cache null returns (see
-   * PF1-05 spec); we need to distinguish transient errors (don't cache)
-   * from known-absent (cache as tombstone). When PF1-05 grows a
-   * `cacheNegatives: true` option this class can collapse onto the shared
-   * primitive — TODO tracked in PF1-09.
+   * Stampede-safe via `LruCache.getOrLoad`: N concurrent cold-start
+   * misses on the same id share one `pages.retrieve` — the second and
+   * later callers await the first loader's promise.
    *
-   * **Read/write race handling via `writeEpoch`.** A single monotonic
-   * counter is bumped by `update` and `archive` both *before* the delete
-   * and *after* the post-write `set`. A reader captures `startEpoch` at
-   * dispatch and only commits its cache value if `writeEpoch ===
-   * startEpoch` at retrieve-resolution time. The sandwich bumps cover
-   * two symmetric races:
+   * **Read/write race handling.** Writers (`update`, `archive`) wrap
+   * their `pages.update` round-trip in `titleCache.delete(id)` (pre-write,
+   * to flush any in-flight loader's pending slot) and `titleCache.set(id,
+   * resolved)` (post-write, to install the authoritative new value).
+   * `LruCache.set` itself drops `pending[key]` so a stale loader's
+   * `getOrLoad` commit is suppressed by the identity guard at
+   * `cache.ts:` — closing both the dispatched-before-write and
+   * dispatched-during-write races without a per-service epoch counter.
+   * Pre-PF1-09 this race protection lived here as a `writeEpoch`
+   * monotonic counter with sandwich-bump discipline; folding the
+   * invariant into `LruCache.set` collapsed ~30 lines of bespoke code
+   * onto the shared primitive.
    *
-   * - Reader dispatched *before* the writer's first bump: retrieve
-   *   resolves after the writer's second bump → commit skipped.
-   * - Reader dispatched *during* the writer's in-flight `pages.update`
-   *   (after first bump, before second): retrieve resolves after
-   *   second bump → commit skipped.
-   *
-   * Using a single counter (rather than per-id) keeps memory bounded
-   * over process lifetime at the cost of over-conservative skips: a
-   * write to id Y invalidates any in-flight read for id X too. Acceptable
-   * because writes are rare relative to reads and a skipped commit
-   * just means the next caller re-fetches — never wrong, just
-   * occasionally redundant. Notion's own read-after-write eventual
-   * consistency creates a similar window that this guard cannot close
-   * (the retrieve could observe pre-write state even after both bumps
-   * resolve); TTL (60s) is the authoritative staleness bound there.
-   *
-   * **`pendingTitles` is epoch-agnostic by design.** Reader B that
-   * subscribes to Reader A's pending promise returns A's resolved value
-   * verbatim, even when the epoch advanced between A's dispatch and
-   * B's arrival. A's epoch check correctly skips the cache commit, so
-   * the authoritative post-write value stays in `titleCache` — but B's
-   * specific call sees A's stale return. One-shot staleness per caller
-   * (the *next* read on any id finds fresh in the cache), consistent
-   * with the over-conservative epoch tradeoff documented above.
+   * **One-shot staleness per concurrent reader.** A reader whose
+   * loader's `pages.retrieve` straddles the writer's `delete → update →
+   * set` window resolves with the pre-write page (reads do not block
+   * on writes). The reader's `getOrLoad` commit is suppressed by the
+   * identity guard, so the writer's post-write value stays cached.
+   * The reader's caller still sees the stale value once; the next
+   * read on any id finds fresh in the cache. This is the same
+   * tradeoff `LruCache.getOrLoad` applies to every consumer — readers
+   * never fail because of a concurrent write.
    */
   private readonly titleCache = new LruCache<string, string | null>(
     TITLE_CACHE_MAX,
-    TITLE_CACHE_TTL_MS
+    TITLE_CACHE_TTL_MS,
+    { cacheNegatives: true }
   )
-  private readonly pendingTitles = new Map<string, Promise<string | null>>()
-  /**
-   * Monotonic counter bumped on any title-affecting write. See the
-   * class docstring for the sandwich-bump discipline — this is the
-   * mechanism that closes both the dispatched-before-write and
-   * dispatched-during-write races.
-   */
-  private writeEpoch = 0
 
   constructor(
     private client: Client,
     private db: DatabaseRef
   ) {}
-
-  private bumpWriteEpoch(): void {
-    this.writeEpoch++
-  }
 
   private isMemoryPageParent(parent: PageObjectResponse["parent"]): boolean {
     if (parent.type === "database_id") {
@@ -1684,7 +1664,7 @@ export class MemoryService {
       } catch (bodyWriteError) {
         // Direct `pages.update` rather than `MemoryService.archive()`:
         // the page was just created in this same call, so the
-        // title-cache eviction + write-epoch sandwich `archive()`
+        // title-cache delete-then-tombstone-set discipline `archive()`
         // performs to protect concurrent readers cannot apply — no
         // consumer has had time to cache the title or dispatch a
         // racing read against this id. Inlining keeps the cleanup a
@@ -2209,7 +2189,6 @@ export class MemoryService {
       const repairedRevisionCount = upsertAnalysis.latestRevision!.revisionCount
       const titleChanged = decodedTitle !== existing.title
       if (titleChanged) {
-        this.bumpWriteEpoch()
         this.titleCache.delete(existing.id)
       }
       await this.client.pages.update({
@@ -2226,7 +2205,6 @@ export class MemoryService {
       })
       if (titleChanged) {
         this.titleCache.set(existing.id, decodedTitle || null)
-        this.bumpWriteEpoch()
       }
 
       const promotionAdvisory = computePromotionAdvisory({
@@ -2265,18 +2243,17 @@ export class MemoryService {
       }
     }
 
-    // Title-cache sandwich (mirrors `update()`). Upserts that reach
-    // the write branch always bump Title, so the same write-epoch +
-    // delete pattern that protects `update()` from concurrent
-    // `getTitleById` callers applies here. Without this, render-layer
-    // resolvers would keep returning the pre-upsert title from
-    // `titleCache` until the 60s TTL expired even though the new title
-    // has landed in Notion. The pre-write bump invalidates any
-    // in-flight reader's commit-time epoch check; the delete clears
-    // the stored value; the post-write `set` installs the authoritative
-    // new title; the post-write bump closes the dispatched-during-write
-    // window.
-    this.bumpWriteEpoch()
+    // Title-cache delete (mirrors `update()`). Upserts that reach
+    // the write branch always bump Title, so the same write-through
+    // pattern that protects `update()` from concurrent `getTitleById`
+    // callers applies here. Without this, render-layer resolvers
+    // would keep returning the pre-upsert title from `titleCache`
+    // until the 60s TTL expired even though the new title has landed
+    // in Notion. The pre-write delete clears the stored value AND drops
+    // any in-flight `getOrLoad` pending slot; the post-write `set`
+    // installs the authoritative new title and (via `LruCache.set`'s
+    // pending-clearing discipline) suppresses any stale loader's
+    // commit dispatched mid-flight.
     this.titleCache.delete(existing.id)
 
     // Append + write. Notion's v5 markdown API has no append mode;
@@ -2341,11 +2318,13 @@ export class MemoryService {
       }) as CreatePageParameters["properties"],
     })
 
-    // Write-through: install the post-upsert title + close the
-    // sandwich with a second epoch bump. Mirror of `update()`'s
-    // post-write `nameCache.set` + bump.
+    // Write-through: install the post-upsert title. `LruCache.set`
+    // also drops any in-flight `getOrLoad` pending slot, so a
+    // concurrent reader whose loader resolves with the pre-upsert
+    // page after this point has its commit suppressed by the
+    // identity guard. Mirror of `update()`'s post-write
+    // `nameCache.set`.
     this.titleCache.set(existing.id, decodedTitle || null)
-    this.bumpWriteEpoch()
 
     // Promotion advisory (0.9.0/#15). Fires only on the
     // append-revision branch (fresh-create returned earlier with a
@@ -2881,108 +2860,89 @@ export class MemoryService {
    * the Memories DB.
    *
    * **Caching discipline** — distinguishes two null-result regimes:
-   * - *Known absent* (partial-page response, `archived: true`): cached as
-   *   a null tombstone. Repeated wake-ups over the same id set stop
-   *   re-fetching the same missing ids within the TTL window.
-   * - *Transient failure* (network error, 429, 5xx): the exception is
-   *   swallowed and null is returned to the caller, but the value is
-   *   NOT cached. The next caller retries. Rate-limit / network blips
-   *   therefore degrade to a single `(?)` render, not a 60-second
-   *   stretch of `(?)` labels.
+   * - *Known absent* (archived full page, 404 `ObjectNotFound`,
+   *   `RestrictedResource`): `fetchTitle` returns `null` and `getOrLoad`
+   *   commits a null tombstone. Repeated wake-ups over the same id set
+   *   stop re-fetching the same missing ids within the TTL window.
+   * - *Transient failure* (401 / 429 / 5xx / network / unknown errors):
+   *   `fetchTitle` re-throws, `getOrLoad` rejects without caching, and
+   *   the try/catch below converts the rejection into `null` for the
+   *   caller. The slot is NOT cached, so the next caller retries.
+   *   Rate-limit / network blips therefore degrade to a single `(?)`
+   *   render, not a 60-second stretch of `(?)` labels. 401 is
+   *   deliberately not tombstoned — see `fetchTitle` for the auth-
+   *   refresh rationale.
    */
   async getTitleById(id: string): Promise<string | null> {
-    // Fast path: cache hit (including a cached null tombstone).
-    const cached = this.titleCache.get(id)
-    if (cached !== undefined) return cached
-
-    // Stampede dedup: N concurrent cold-start misses share one fetch.
-    const inflight = this.pendingTitles.get(id)
-    if (inflight) return inflight
-
-    // Capture the write epoch at dispatch so the loader's commit-time
-    // check can detect any concurrent `update` / `archive` (on this id
-    // or another) that sandwich-bumped around the retrieve.
-    const startEpoch = this.writeEpoch
-    const promise = this.fetchTitleAndCache(id, startEpoch)
-    this.pendingTitles.set(id, promise)
-    // Clear only if this is still the slot's in-flight promise. A
-    // subsequent call that arrives after resolution will find the value
-    // in `titleCache` and bypass the pending map entirely.
-    void promise.finally(() => {
-      if (this.pendingTitles.get(id) === promise) {
-        this.pendingTitles.delete(id)
-      }
-    })
-    return promise
+    // Stampede dedup, TTL, LRU, negative-tombstone caching, and the
+    // identity-guard that suppresses stale-loader commits during
+    // concurrent writes are all owned by `LruCache.getOrLoad` —
+    // see the class docstring for the race protection that replaced
+    // the pre-PF1-09 bespoke `writeEpoch` + `pendingTitles` machinery.
+    //
+    // The loader throws on transient errors so `getOrLoad` propagates
+    // the rejection without caching (no poisoned tombstone for a
+    // 429 / network blip). We catch here and return null to preserve
+    // `getTitleById`'s "never throws on read" public contract — the
+    // caller sees a single `(?)` render and the next call retries.
+    try {
+      return await this.titleCache.getOrLoad(id, () => this.fetchTitle(id))
+    } catch {
+      return null
+    }
   }
 
-  private async fetchTitleAndCache(
-    id: string,
-    startEpoch: number
-  ): Promise<string | null> {
+  private async fetchTitle(id: string): Promise<string | null> {
+    // Distinguishing "known absent" from "transient" is load-bearing
+    // under `cacheNegatives: true`:
+    //
+    // - Returning `null` commits a tombstone via `getOrLoad` so the
+    //   next read short-circuits without a Notion call.
+    // - Throwing routes through `getOrLoad`'s rejection path, which
+    //   clears the pending slot without caching anything; the next
+    //   read re-fetches.
+    //
+    // Tombstone the id-level absence cases (404 ObjectNotFound,
+    // RestrictedResource) and the archived-page case (Notion returns
+    // a full PageObjectResponse with `archived: true`). Every other
+    // error class re-throws and is treated as transient. Without
+    // this, every wake-up over a stable id-set would re-issue
+    // `pages.retrieve` for every dead id, paced by the 3 rps token
+    // bucket — silently violating the "25-UUID wake-up twice → zero
+    // retrieve calls on the second run" contract this class
+    // advertises.
+    //
+    // `Unauthorized` (401) is deliberately NOT tombstoned: the SDK
+    // wrapper at `src/notion/client.ts:isUnauthorizedError` already
+    // attempts one auth refresh on 401 and only surfaces the original
+    // error when refresh is unavailable or the retry still fails. By
+    // the time a 401 reaches us it's a broad token-level signal, not
+    // a per-page absence — caching it would poison every id resolved
+    // during a bad-auth window for up to 60s after recovery.
     let page: Awaited<ReturnType<typeof this.client.pages.retrieve>>
     try {
       page = await this.client.pages.retrieve({ page_id: id })
     } catch (err) {
-      // Tombstone the id-level absence cases (404, restricted-resource);
-      // every other error class falls through to transient and is NOT
-      // cached. Without this branch, every wake-up over a stable id-set
-      // re-issues `pages.retrieve` for every dead id, paced by the 3 rps
-      // token bucket — silently violating the "25-UUID wake-up twice →
-      // zero retrieve calls on the second run" contract this class
-      // advertises.
-      //
-      // `Unauthorized` (401) is deliberately NOT tombstoned: the SDK
-      // wrapper at `src/notion/client.ts:isUnauthorizedError` already
-      // attempts one auth refresh on 401 and only surfaces the original
-      // error when refresh is unavailable or the retry still fails. By
-      // the time a 401 reaches us it's a broad token-level signal, not
-      // a per-page absence — caching it would poison every id resolved
-      // during a bad-auth window for up to 60s after recovery.
       if (
         isNotionClientError(err) &&
         (err.code === APIErrorCode.ObjectNotFound ||
           err.code === APIErrorCode.RestrictedResource)
       ) {
-        // Epoch-guarded: don't clobber a concurrent writer's authoritative value.
-        if (this.writeEpoch === startEpoch) {
-          this.titleCache.set(id, null)
-        }
         return null
       }
-      // Transient (401 / 429 / 5xx / network / unknown). Don't cache —
-      // next caller retries.
-      return null
+      throw err
     }
-
-    const extractResolved = (): string | null => {
-      if (!isFullPage(page) || page.archived) return null
-      const title = extractTitle(page.properties[MEMORY_PROPS.TITLE])
-      return title || null
-    }
-    const resolved = extractResolved()
-
-    // Epoch check: if any `update` / `archive` sandwich-bumped the
-    // counter while this retrieve was in flight, a writer has already
-    // installed the authoritative post-write value (or tombstone).
-    // Refuse to commit our (now-stale) value. Return it to the caller
-    // anyway — reads should not fail just because a concurrent write
-    // happened. Using a single process-wide counter means a write to
-    // id Y also invalidates an in-flight read for id X; over-conservative
-    // by design (next read re-fetches), keeps memory bounded.
-    if (this.writeEpoch === startEpoch) {
-      this.titleCache.set(id, resolved)
-    }
-    return resolved
+    if (!isFullPage(page) || page.archived) return null
+    const title = extractTitle(page.properties[MEMORY_PROPS.TITLE])
+    return title || null
   }
 
   /** Drop the in-process title cache. Used by tests and by the
-   *  cross-service `clearServiceCaches()` helper. Also drops any
-   *  in-flight title fetches so test fixtures start clean. */
+   *  cross-service `clearServiceCaches()` helper. `LruCache.clear`
+   *  also drops any in-flight `getOrLoad` pending slots so test
+   *  fixtures start clean. */
   clearTitleCache(): void {
     this.titleCache.clear()
-    this.pendingTitles.clear()
-    this.writeEpoch = 0
   }
 
   async update(id: string, input: UpdateMemoryInput): Promise<Memory> {
@@ -2997,12 +2957,13 @@ export class MemoryService {
     const props: Record<string, unknown> = {}
 
     if (decoded.title !== undefined) {
-      // Pre-write epoch bump: any `fetchTitleAndCache` already in flight
-      // for ANY id will see an advanced epoch at commit time and skip
-      // its set. The paired post-write bump below closes the
-      // dispatched-during-write window. Then evict the current cache
-      // entry; the post-write `set` installs the authoritative value.
-      this.bumpWriteEpoch()
+      // Pre-write delete: clears the stored value AND drops any
+      // in-flight `getOrLoad` pending slot, so a reader whose loader
+      // is mid-`pages.retrieve` has its post-loader commit suppressed
+      // by `getOrLoad`'s identity guard. The post-write `set` below
+      // installs the authoritative value and (via `LruCache.set`'s
+      // pending-clearing discipline) closes the dispatched-during-
+      // write window for any reader that started after this delete.
       this.titleCache.delete(id)
       props[MEMORY_PROPS.TITLE] = { title: [{ text: { content: decoded.title } }] }
     }
@@ -3116,7 +3077,6 @@ export class MemoryService {
         }
         if (decoded.title !== undefined) {
           this.titleCache.set(id, decoded.title || null)
-          this.bumpWriteEpoch()
         }
         const cause =
           bodyWriteError instanceof Error
@@ -3133,20 +3093,15 @@ export class MemoryService {
     }
 
     const updated = await this.getById(id)
-    // Write-through: we just read the authoritative post-update state, so
-    // cache it. Closes the stale-read window a delete-only flow leaves
-    // open — a concurrent `getTitleById` between delete and update could
-    // have re-cached the pre-update title via the default 60s TTL.
-    // Mirror of `TopicService.getOrCreate`'s post-write `nameCache.set`.
-    //
-    // Post-write epoch bump pairs with the pre-write bump above (the
-    // "sandwich") so readers whose retrieve was dispatched *during* the
-    // in-flight `pages.update` — after the pre-bump but before the final
-    // set — also have their stale commits suppressed. Without this,
-    // only readers dispatched *before* the pre-bump would be guarded.
+    // Write-through: we just read the authoritative post-update state,
+    // so cache it. `LruCache.set` also drops any in-flight `getOrLoad`
+    // pending slot, so a reader whose `pages.retrieve` was dispatched
+    // *during* this `pages.update` — after the pre-write delete but
+    // before this set — has its post-loader commit suppressed by the
+    // identity guard. Mirror of `TopicService.getOrCreate`'s post-write
+    // `nameCache.set`.
     if (decoded.title !== undefined) {
       this.titleCache.set(id, updated.title || null)
-      this.bumpWriteEpoch()
     }
     return updated
   }
@@ -3187,21 +3142,21 @@ export class MemoryService {
   }
 
   async archive(id: string): Promise<void> {
-    // Sandwich bump: pre-write guards readers dispatched *before* the
-    // archive; post-write guards readers whose retrieve straddles the
-    // Notion round-trip. Evict first so a concurrent read during the
-    // round-trip doesn't serve the pre-archive title, install a null
-    // tombstone after so subsequent reads short-circuit, and bump
-    // again so any in-flight retrieve that resolves after the tombstone
-    // skips its commit.
-    this.bumpWriteEpoch()
+    // Pre-write delete: clear the stored value and drop any in-flight
+    // `getOrLoad` pending slot. Post-write `set(id, null)` installs a
+    // null tombstone (under `cacheNegatives: true`, subsequent reads
+    // short-circuit on the tombstone instead of re-fetching). The
+    // post-write `set` also drops the pending slot a second time, so a
+    // reader whose retrieve was dispatched after the pre-write delete
+    // and resolves with the pre-archive page (Notion returns archived
+    // pages with `archived: true` populated) has its commit suppressed
+    // by the identity guard.
     this.titleCache.delete(id)
     await this.client.pages.update({
       page_id: id,
       archived: true,
     })
     this.titleCache.set(id, null)
-    this.bumpWriteEpoch()
   }
 
   /**

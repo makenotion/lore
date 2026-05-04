@@ -31,6 +31,41 @@ interface Entry<V> {
   expiresAt: number
 }
 
+/**
+ * Options for `LruCache`. The shape is conditional on `V`:
+ *
+ * - When `V` does NOT include `null`, only `cacheNegatives: false` (or
+ *   omission) is permitted. Setting `cacheNegatives: true` on such a
+ *   cache is a **type error** — it would let `getOrLoad` commit `null`
+ *   into the store and `get()` would later return `null` to a caller
+ *   whose declared type is `V | undefined`. The conditional type
+ *   surfaces the constraint at construction so the consumer can either
+ *   widen `V` to include `null` or drop the option.
+ * - When `V` includes `null`, `cacheNegatives` is freely settable.
+ *
+ * Documented option:
+ *
+ * - `cacheNegatives` — when true, `getOrLoad` commits a `null` loader
+ *   return as a known-absent tombstone, so subsequent reads
+ *   short-circuit on the cached `null` instead of re-dispatching the
+ *   loader. Default false (negatives are not cached; the next caller
+ *   retries).
+ *
+ *   Use only when the caller can distinguish "known absent" (loader
+ *   returns null) from "transient error" (loader throws). The
+ *   distinction is load-bearing: a transient error must NOT install a
+ *   tombstone, or every affected caller would see stale "absent"
+ *   answers for the full TTL.
+ *
+ *   Direct `set(key, value)` writes are unaffected by this option —
+ *   `V` is what governs whether `null` is a structurally legal cached
+ *   value. The flag only changes `getOrLoad`'s commit behaviour on a
+ *   `null` resolution.
+ */
+export type LruCacheOptions<V> = null extends V
+  ? { cacheNegatives?: boolean }
+  : { cacheNegatives?: false }
+
 export class LruCache<K, V> {
   private readonly store: Map<K, Entry<V>>
   /**
@@ -40,10 +75,20 @@ export class LruCache<K, V> {
    * callers never observe pending promises via `get()`.
    */
   private readonly pending: Map<K, Promise<V | null>>
+  private readonly cacheNegatives: boolean
 
   constructor(
     private readonly max: number,
-    private readonly ttlMs: number
+    private readonly ttlMs: number,
+    // The `{} as LruCacheOptions<V>` default is the price of the
+    // conditional `LruCacheOptions<V>` shape: TS can't reduce the
+    // conditional against an unbound `V` here, but `{}` (with no
+    // `cacheNegatives` field) satisfies BOTH branches of the
+    // conditional, so the cast is sound. A future contributor
+    // tempted to widen `LruCacheOptions` to a plain non-conditional
+    // type would silently re-open the unsoundness the cache.test.ts
+    // `@ts-expect-error` test pins.
+    options: LruCacheOptions<V> = {} as LruCacheOptions<V>
   ) {
     if (max <= 0) {
       throw new Error(`LruCache max must be > 0 (got ${max})`)
@@ -55,6 +100,7 @@ export class LruCache<K, V> {
     // dead Map pinned against a half-constructed instance.
     this.store = new Map<K, Entry<V>>()
     this.pending = new Map<K, Promise<V | null>>()
+    this.cacheNegatives = options.cacheNegatives ?? false
   }
 
   /**
@@ -79,6 +125,15 @@ export class LruCache<K, V> {
    * Insert or replace `key`. If the cache is at capacity, the least
    * recently used entry is evicted — which is the first key in the
    * `Map`'s insertion order.
+   *
+   * Also drops any in-flight `getOrLoad` pending slot for `key`. An
+   * explicit `set` is the authoritative writer's value; a concurrent
+   * loader that resolves later carries a pre-write view and must NOT
+   * be allowed to commit back over the writer's value. The identity
+   * guard inside `getOrLoad` catches the suppressed commit
+   * (`this.pending.get(key) === promise` is now false). This is what
+   * lets writer-side code use `delete + set` (or just `set`) as a
+   * race-safe write-through pattern without epoch counters.
    */
   set(key: K, value: V): void {
     if (this.store.has(key)) {
@@ -88,6 +143,7 @@ export class LruCache<K, V> {
       if (oldest !== undefined) this.store.delete(oldest)
     }
     this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs })
+    this.pending.delete(key)
   }
 
   /**
@@ -97,9 +153,19 @@ export class LruCache<K, V> {
    * installs a pending promise in `this.pending` and every subsequent
    * caller that arrives before the loader resolves awaits the same promise.
    * When the loader resolves to a non-null/undefined value it is committed
-   * to the cache via `set()`; `null` propagates to waiters but is not
-   * cached (matches existing `set` semantics — nothing is stored for
-   * negatives, so a later caller retries).
+   * to the cache via `set()`. By default `null` propagates to waiters but
+   * is not cached, so a later caller retries — that matches the
+   * project / topic / decision name resolvers, where `null` means "not yet
+   * created" and locking it in for the TTL would block subsequent
+   * lookups after a sibling write.
+   *
+   * **`cacheNegatives: true`** flips the `null` policy: a `null` loader
+   * return is committed as a known-absent tombstone, and subsequent
+   * `getOrLoad` reads short-circuit on the tombstone instead of
+   * re-dispatching the loader. Callers must distinguish "known absent"
+   * (loader returns null) from "transient error" (loader throws) — the
+   * second still rejects waiters and clears the slot without caching, so
+   * a 429 / 5xx blip can't poison the key for the full TTL.
    *
    * Loader rejections reject every waiting caller and clear the pending
    * slot, so the next call retries rather than caching the rejection. This
@@ -108,16 +174,25 @@ export class LruCache<K, V> {
    *
    * **Invalidation-safe.** An identity guard compares the resolving
    * loader's promise against the current `pending` slot before committing
-   * or evicting. If `delete(key)` or `clear()` ran while the loader was
-   * in flight — or if a second `getOrLoad` installed a replacement slot —
-   * the stale loader's commit is skipped and its `.finally` only drops
-   * its own slot, never a reinstalled one. This is what makes the
+   * or evicting. If `delete(key)`, `clear()`, or an authoritative
+   * `set(key, …)` ran while the loader was in flight — or if a second
+   * `getOrLoad` installed a replacement slot — the stale loader's commit
+   * is skipped and its `.finally` only drops its own slot, never a
+   * reinstalled one. This is what makes the
    * `delete(key); getOrLoad(key, …)` write-then-read invalidation
    * pattern used by `TopicService.getOrCreate` and `DecisionService.supersede`
-   * safe under concurrent readers.
+   * safe under concurrent readers, and what closes the
+   * dispatched-during-write race for the title cache (a writer's
+   * `delete(id) → pages.update → set(id, "newest")` sequence drops the
+   * pending slot at both ends, so a reader's stale retrieve resolved in
+   * between cannot clobber the post-write value).
    */
   getOrLoad(key: K, loader: () => Promise<V | null>): Promise<V | null> {
     const hit = this.get(key)
+    // `get()` returns `undefined` for missing/expired entries; a cached
+    // null tombstone (only possible when V includes null AND
+    // cacheNegatives is set) returns `null`, which short-circuits here
+    // exactly like a value hit.
     if (hit !== undefined) return Promise.resolve(hit)
 
     const inFlight = this.pending.get(key)
@@ -131,7 +206,23 @@ export class LruCache<K, V> {
         // `getOrLoad` may have installed a fresher loader; either way we
         // must not overwrite the cache with our stale read.
         if (this.pending.get(key) === promise) {
-          if (value !== null && value !== undefined) this.set(key, value)
+          if (value === undefined) {
+            // `loader()`'s contract is `Promise<V | null>`, but guard
+            // anyway — a stray `undefined` is structurally a miss, not
+            // a tombstone, regardless of the cacheNegatives flag.
+          } else if (value === null) {
+            // The `value as V` cast is sound by construction:
+            // `cacheNegatives: true` is type-permitted only when
+            // `null extends V` (see `LruCacheOptions<V>`). A
+            // `cacheNegatives` cache therefore has `V` widened to
+            // include `null`, and committing the runtime `null` is
+            // structurally legal — no possibility of `get()` later
+            // returning `null` to a caller whose declared type
+            // excludes it.
+            if (this.cacheNegatives) this.set(key, value as V)
+          } else {
+            this.set(key, value)
+          }
         }
         return value
       })

@@ -757,10 +757,15 @@ export async function handleAsk(
     // if either callee threw. Neither does under normal Notion error
     // paths — `resolveCanonicalDecisionLinks` surfaces failures through
     // a structured `failures` array via `settleAll`, and
-    // `MemoryService.getTitleById` swallows fetch errors and returns
-    // `null` (see `src/core/memory.ts`'s `fetchTitleAndCache`). If a
-    // future change makes either callee throw, swap to
-    // `Promise.allSettled` here so the failures bucket is still drained.
+    // `MemoryService.getTitleById` catches `titleCache.getOrLoad(id, () =>
+    // fetchTitle(id))` rejections and returns `null` (see
+    // `src/core/memory.ts`). `fetchTitle` returns `null` for known-absent
+    // ids (404 / RestrictedResource / archived) so `getOrLoad` commits a
+    // tombstone, and throws for transient errors (429 / 5xx / network)
+    // so `getOrLoad` rejects without caching — `getTitleById`'s catch
+    // converts the rejection into a `null` render. If a future change
+    // makes either callee throw, swap to `Promise.allSettled` here so
+    // the failures bucket is still drained.
     const [{ links: decisionLinks, failures: decisionFailures }, titleMap] =
       await Promise.all([
         resolveCanonicalDecisionLinks(services, decidedByFacts, { projectId }),

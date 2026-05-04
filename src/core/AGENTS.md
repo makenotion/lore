@@ -188,15 +188,24 @@ benign — not justified.
   section.
 
 **Title-cache write-through is load-bearing**. The upsert always bumps
-Title, so the same write-epoch sandwich + post-write `set` discipline
-that protects `MemoryService.update` from concurrent `getTitleById`
-callers applies here. The pre-write epoch bump invalidates any
-in-flight reader's commit-time epoch check; the cache delete clears
-the stored value; the post-write `set` installs the authoritative new
-title; the post-write bump closes the dispatched-during-write
-window. Without this, render-layer resolvers would keep returning
-the pre-upsert title from `titleCache` until the 60s TTL expired
-even though the new title has landed in Notion.
+Title, so the same `delete → pages.update → set` write-through
+discipline that protects `MemoryService.update` from concurrent
+`getTitleById` callers applies here. The pre-write
+`titleCache.delete(existing.id)` clears the stored value AND drops
+any in-flight `getOrLoad` pending slot (via `LruCache.delete`'s
+pending-clearing discipline); the post-write
+`titleCache.set(existing.id, decodedTitle || null)` installs the
+authoritative new title AND drops any pending slot a second time
+(via `LruCache.set`'s symmetric pending-clearing discipline). A
+reader whose loader's `pages.retrieve` was in flight across either
+boundary has its post-loader commit suppressed by `getOrLoad`'s
+identity guard (`pending.get(id) === loaderPromise` → false on the
+cleared slot). Without this, render-layer resolvers would keep
+returning the pre-upsert title from `titleCache` until the 60s TTL
+expired even though the new title has landed in Notion. Pre-PF1-09
+this protection lived as a `writeEpoch` sandwich on `MemoryService`;
+folding the invariant into `LruCache.set` / `delete` themselves
+collapsed the bespoke counter onto the shared primitive.
 
 **`topicKey` is rejected at the MCP boundary when kind is `note`**.
 The MCP layer (`src/mcp/tools/memory.ts:handleSave`) throws before
@@ -1632,40 +1641,64 @@ scoped concurrent callers each issue their own query.
 ² Covers `Kind = decision` pages too — both live in the Memories DB and
 `render.ts:resolveTitles` resolves labels for either via this one pool.
 
-**Cached values are not cache hazards.** Negative lookups (null) are never
-cached, and throws are never cached — only successful resolutions. Writes
-invalidate:
+**Cached values are not cache hazards.** By default, negative lookups
+(loader returns null) are not cached — the project / topic / decision
+name resolvers rely on this so a null meaning "not yet created" doesn't
+lock in absence for the TTL. `MemoryService.getTitleById` is the
+exception: it opts into `cacheNegatives: true` so known-absent ids
+(archived / 404 / restricted-resource) commit a tombstone and the next
+read short-circuits. Throws are never cached on any resolver — a
+transient 429 / 5xx / network blip rejects waiters and clears the
+pending slot. Writes invalidate:
 
 **Stampede-safe via `LruCache.getOrLoad`.** `ProjectService.findByName`,
-`TopicService.findByName`, and `DecisionService.getById` route their
-Notion fetch through `cache.getOrLoad(key, loader)` rather than the
-classic `cache.get(key) ?? fetch()` pattern, so concurrent cold-start
-callers converging on the same key — `Promise.all` fan-outs in
+`TopicService.findByName`, `DecisionService.getById`, and
+`MemoryService.getTitleById` route their Notion fetch through
+`cache.getOrLoad(key, loader)` rather than the classic
+`cache.get(key) ?? fetch()` pattern, so concurrent cold-start callers
+converging on the same key — `Promise.all` fan-outs in
 `resolveCanonicalDecisionLinks`, parallel autosaves resolving the same
-`topicName`, BFS walks hitting a shared ancestor — collapse onto a
-single Notion call. `getOrLoad` keeps a `Map<K, Promise<V | null>>` of
-in-flight loads keyed by cache key; the second concurrent miss finds the
-pending promise and awaits the same underlying Notion call instead of
-racing on its own loader. Rejected loaders clear the pending slot so the
-next caller retries rather than observing a poisoned miss.
+`topicName`, BFS walks hitting a shared ancestor, render-layer batches
+resolving the same memory id — collapse onto a single Notion call.
+`getOrLoad` keeps a `Map<K, Promise<V | null>>` of in-flight loads
+keyed by cache key; the second concurrent miss finds the pending
+promise and awaits the same underlying Notion call instead of racing
+on its own loader. Rejected loaders clear the pending slot so the next
+caller retries rather than observing a poisoned miss.
 
-`MemoryService.getTitleById` is the one resolver that does **not** use
-`getOrLoad`. Its title cache stores `null` tombstones for not-found /
-permission-denied pages so the caller can skip the retry without
-pessimising the hot path — and `getOrLoad`'s contract explicitly refuses
-to commit `null` to the store. If `LruCache` ever grows a
-`cacheNegatives: true` option, fold `titleCache` onto the shared
-primitive as part of that work.
+`MemoryService.getTitleById` opts into `cacheNegatives: true` because
+not-found / archived / permission-scoped pages are known-absent (the
+loader returns `null`) and a tombstone on the next read is more
+valuable than a re-fetch. The other three resolvers leave the option
+default-off because their `null` means "not yet created" — a
+tombstone there would lock in the row's absence for the TTL window
+and block subsequent lookups after a sibling write. The loader
+distinguishes "known absent" (returns `null`) from "transient error"
+(throws) — the throw routes through `getOrLoad`'s rejection path,
+clears the pending slot, and never installs a tombstone for a 429 /
+network blip. `getTitleById` wraps the call in try/catch to preserve
+the "never throws on read" public contract.
 
-**Invalidation reaches the pending map.** `cache.delete(key)` and
-`cache.clear()` drop both the stored value AND any in-flight `getOrLoad`
-pending slot, and `getOrLoad`'s loader uses a promise-identity guard so
-a stale in-flight read cannot commit back to the cache after an
-intervening invalidation. This is what makes the
+**Invalidation reaches the pending map.** `cache.delete(key)`,
+`cache.clear()`, and `cache.set(key, value)` all drop any in-flight
+`getOrLoad` pending slot for the key, and `getOrLoad`'s loader uses a
+promise-identity guard so a stale in-flight read cannot commit back to
+the cache after an intervening invalidation. This is what makes the
 `delete(key); await getById(key)` write-then-read pattern in
 `TopicService.getOrCreate` and `DecisionService.supersede` safe under
 concurrent readers — a parallel `findByName` or `getById` in flight at
 the moment of invalidation no longer poisons the writer's merge base.
+
+`set(key, value)` clearing pending is what closes the
+dispatched-during-write race for `MemoryService.update` / `archive`
+without a per-service epoch counter (PF1-09). The writer's
+`titleCache.delete(id) → pages.update → titleCache.set(id, "newest")`
+sequence drops the pending slot at both ends, so a reader's stale
+retrieve resolved between delete and set has its commit suppressed by
+the identity guard. Pre-PF1-09 the same protection lived as a
+~30-line bespoke `writeEpoch` + `pendingTitles` machinery on
+`MemoryService`; folding the invariant into the shared `LruCache.set`
+collapsed the whole structure onto the primitive.
 
 - `ProjectService.create` invalidates by name; `archive` clears the whole
   name cache (archive flips `status` on cached objects and we don't track
