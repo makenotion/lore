@@ -64,6 +64,34 @@ const TASK_LIST_DEEP_WALK_MIN_LIMIT = 26
 const TASK_LIST_PAGE_SIZE = 100
 const MAX_TASK_LIST_PAGES = 10
 
+/**
+ * Cross-field guard for the `state: "blocked"` requirement: a blocked
+ * task must carry a meaningful `blockedBy` label, so absent / cleared /
+ * whitespace-only values all fail. Returns `true` when the value cannot
+ * support a `blocked` transition.
+ *
+ * The create path used `!args.blockedBy` (which lets `"   "` pass
+ * because `!"   "` is `false`) and the update path used
+ * `=== undefined || === ""` (which lets `"   "` pass because strict
+ * compare misses whitespace-only). Both guards now route through this
+ * helper so the trim discipline can't silently re-diverge across the
+ * two paths. This is the authoritative cross-field check; per-field
+ * Zod can't express a multi-field invariant, so `blockedBy` itself
+ * stays declared as `z.string().optional()` on the dispatch schema and
+ * the empty-string clear semantic on non-`blocked` updates is
+ * preserved.
+ *
+ * The `null` branch is defense-in-depth — `CreateArgs.blockedBy` and
+ * `UpdateArgs.blockedBy` are typed `string | undefined` and the Zod
+ * schemas are not `.nullable()`, so the documented MCP path can't
+ * produce `null` today. Accepting it costs nothing and survives a
+ * future schema flip without re-introducing the gap this helper
+ * exists to close.
+ */
+function isUnusableBlockerLabel(value: string | undefined | null): boolean {
+  return value === undefined || value === null || value.trim() === ""
+}
+
 const OVERDUE_SEVERE_DAYS = 14
 const OVERDUE_MILD_DAYS = 1
 
@@ -196,8 +224,9 @@ async function handleCreate(
     // row land. The migration path explicitly populates `Blocked By`
     // when porting `blocked_by` / `waiting_on` facts, so this guard
     // only fires on fresh agent calls; cross-field, so it can't live
-    // on the per-field Zod map.
-    if (args.state === "blocked" && !args.blockedBy) {
+    // on the per-field Zod map. `isUnusableBlockerLabel` traps the
+    // whitespace-only case (`"   "`) the bare truthiness check missed.
+    if (args.state === "blocked" && isUnusableBlockerLabel(args.blockedBy)) {
       throw new Error(
         'state: "blocked" requires a `blockedBy` label naming the dependency ' +
           "(PR number, person, external service). A blocked task with no blocker is " +
@@ -478,10 +507,10 @@ async function handleUpdate(
     // be needed to inspect the existing column. Setting an empty
     // string explicitly clears it; that's still a valid combination
     // with non-`blocked` states, just not with `state: "blocked"`.
-    if (
-      args.state === "blocked" &&
-      (args.blockedBy === undefined || args.blockedBy === "")
-    ) {
+    // Whitespace-only values (`"   "`) fail too — the strict
+    // empty-string compare missed them, so the guard funnels through
+    // the shared helper to keep create and update parity tight.
+    if (args.state === "blocked" && isUnusableBlockerLabel(args.blockedBy)) {
       throw new Error(
         'Transitioning to state: "blocked" requires a `blockedBy` label in the same call. ' +
           "A blocked task with no blocker is unactionable; restate the blocker explicitly even if " +

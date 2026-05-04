@@ -1080,6 +1080,30 @@ describe("lore-task-create blocked-state guard", () => {
       expect.objectContaining({ state: "blocked", blockedBy: "PR review" })
     )
   })
+
+  it("rejects state: 'blocked' when blockedBy is whitespace-only", async () => {
+    // The create path used `!args.blockedBy`, and `!"   "` is `false`
+    // — so a whitespace-only label slipped past as if it were a
+    // meaningful blocker name. Pin the rejection so a future
+    // regression to bare truthiness fails loudly here instead of
+    // landing an unactionable row in Notion.
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    const handler = mockServer.getHandler("lore-task")
+
+    const result = await handler({
+      action: "create",
+      subject: "Ship release",
+      state: "blocked",
+      blockedBy: "   ",
+    } as never)
+
+    expect(svc.tasks.create).not.toHaveBeenCalled()
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Error")
+    expect(text).toContain("blockedBy")
+  })
 })
 
 describe("lore-task-update blocked-state guard", () => {
@@ -1119,6 +1143,33 @@ describe("lore-task-update blocked-state guard", () => {
     expect(svc.tasks.update).not.toHaveBeenCalled()
     const text = (result as { content: Array<{ text: string }> }).content[0].text
     expect(text).toContain("Error")
+  })
+
+  it("rejects state: 'blocked' with whitespace-only blockedBy", async () => {
+    // The update path checked `=== undefined || === ""`, so a
+    // whitespace-only label like `"   "` passed the guard and let
+    // the row land in `blocked` with no meaningful blocker. Pin the
+    // rejection so a future regression to strict-empty comparison
+    // can't reopen the gap on the update path either, and pin the
+    // field-name token in the error so a future fuzz of the wording
+    // can't drop it (mirrors the create-side and omitted-blocker
+    // assertions above).
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+    const handler = mockServer.getHandler("lore-task")
+
+    const result = await handler({
+      action: "update",
+      taskId: "task-id",
+      state: "blocked",
+      blockedBy: "   ",
+    } as never)
+
+    expect(svc.tasks.update).not.toHaveBeenCalled()
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    expect(text).toContain("Error")
+    expect(text).toContain("blockedBy")
   })
 
   it("allows state transitions away from 'blocked' without requiring blockedBy", async () => {

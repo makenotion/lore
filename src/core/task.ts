@@ -58,11 +58,16 @@ import { validateRichTextMetadataFields } from "./rich-text-schema.js"
  * `entity`, `description`, and any future optional task field added
  * downstream.
  *
- * The Zod boundary (`mcp/tools/tasks.ts:optionalAbsenceString`)
- * rejects whitespace-only strings before they reach this layer, so
- * core code can lean on a tight contract: only `undefined` (leave
- * untouched) or `""` (clear) or a clean non-empty string ever lands
- * here.
+ * Whitespace-only inputs are not rejected at the Zod boundary —
+ * `blockedBy`, `entity`, and `description` are declared as plain
+ * `z.string().optional()` on the create / update schemas, so a
+ * caller passing `"   "` reaches this helper. `isCleared` therefore
+ * trims before comparing: a whitespace-only value is treated as
+ * cleared so service-layer writes don't land a row with a string of
+ * spaces masquerading as content. The cross-field guard for
+ * `state: "blocked"` (paired with `blockedBy`) is enforced separately
+ * at the MCP boundary by `mcp/tools/tasks.ts:isUnusableBlockerLabel`,
+ * since per-field Zod can't express a multi-field invariant.
  *
  * `isCleared` formalizes the empty-or-cleared check at one call site
  * so a future caller can't accidentally check `value === ""` in one
