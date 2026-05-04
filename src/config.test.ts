@@ -20,6 +20,7 @@ import {
 } from "vitest"
 import { parse as parseYaml } from "yaml"
 import {
+  _resetConfigAuthTokenWarningStateForTests,
   loadConfig,
   parseConfigAllowingInvalidHooks,
   resolveAuth,
@@ -335,6 +336,11 @@ describe("resolveAuth", () => {
     // clears, but starting clean defends against the very first test
     // in the file.
     for (const key of ENV_KEYS_TO_CLEAR) delete process.env[key]
+    // Reset the per-process `auth.token` warning gate so each test
+    // models a fresh process startup. Without this, the second
+    // resolveAuth-with-auth.token test in the suite would silently
+    // observe the gate having latched in a prior test (#484).
+    _resetConfigAuthTokenWarningStateForTests()
     vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
       stderrChunks.push(
         typeof chunk === "string"
@@ -574,6 +580,199 @@ describe("resolveAuth", () => {
     expect(stderrText()).toContain("lore auth --login")
     expect(stderrText()).toContain("remove the auth.token field")
     expect(stderrText()).not.toContain("lore auth --migrate")
+    // The config-auth-token warning copy must NOT advertise
+    // `LORE_SUPPRESS_DEPRECATIONS=1` as a silencer — the env var is
+    // explicitly NOT honored on this path (#484), so pointing
+    // operators at it would be misleading. Pin against accidental
+    // copy-paste from the env-var message body.
+    expect(stderrText()).not.toContain("Set LORE_SUPPRESS_DEPRECATIONS=1")
+    // The new copy tells operators the warning is unsilenceable by
+    // env var — the only remediation is removing the field.
+    expect(stderrText()).toContain("not silenceable")
+  })
+
+  it("config-auth-token: emits on first call, no marker written — issue #484", async () => {
+    // `auth.token` in `.lore.yaml` is committable repo state, not
+    // session state. Treating it on the same 24h debounce as
+    // `LORE_NOTION_TOKEN` hid the warning between sequential CI runs
+    // and across engineers in the same worktree, masking the
+    // committed-secret class of misconfiguration. Per #484, the
+    // warning bypasses the marker entirely.
+    setupNtnConfigHome()
+    setupHookStateDir()
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+
+    await resolveAuth(config, SCRATCH)
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+
+    // No marker is written for this source — the marker is the
+    // debounce primitive, and the config-auth-token warning is
+    // intentionally not debounced. A regression here (e.g. a refactor
+    // that re-routed config-auth-token through the env-var helper)
+    // would surface as the marker landing.
+    expect(() => statSync(deprecationMarkerPath(SCRATCH))).toThrow()
+  })
+
+  it("config-auth-token: per-process gate suppresses re-emission within one process — issue #484", async () => {
+    // Per-process gate (Suggestion 1, post-review): one emission per
+    // Node process startup, regardless of how many times resolveAuth
+    // is called. This bounds noise from `createNtnAuthRefresh` in
+    // `src/services.ts`, which re-resolves auth on every 401 retry —
+    // long-running MCP servers with token rotation could otherwise
+    // fan out per-401 stderr noise. The gate is NOT a 24h debounce;
+    // a fresh process re-emits (covered by the next test).
+    setupNtnConfigHome()
+    setupHookStateDir()
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+
+    await resolveAuth(config, SCRATCH)
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+
+    stderrChunks = []
+    await resolveAuth(config, SCRATCH)
+    // Second call in the same process — per-process gate hits, no
+    // re-emission. Without the gate, a 401-driven refresh inside a
+    // long-running MCP server would re-fire the warning on every
+    // retry; with the gate, one emission per process startup.
+    expect(stderrText()).toBe("")
+    // Marker still must not exist — the gate is in-memory, not a
+    // filesystem primitive.
+    expect(() => statSync(deprecationMarkerPath(SCRATCH))).toThrow()
+  })
+
+  it("config-auth-token: a fresh process re-emits — the per-process gate is process-scoped, not cross-call permanent — issue #484", async () => {
+    // The 24h marker that was removed for this source covered
+    // cross-process suppression; the per-process gate intentionally
+    // does not. Each process startup re-emits, which is what gives
+    // the warning visibility across CI runs and across engineers.
+    // Simulate a second process by resetting the in-memory gate.
+    setupNtnConfigHome()
+    setupHookStateDir()
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+
+    await resolveAuth(config, SCRATCH)
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+
+    stderrChunks = []
+    _resetConfigAuthTokenWarningStateForTests()
+    await resolveAuth(config, SCRATCH)
+    // Fresh process — must emit again. If a future refactor swapped
+    // the in-memory gate for a filesystem marker (treating the
+    // per-process gate as if it were the 24h debounce), this
+    // assertion would fail.
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+  })
+
+  it("config-auth-token: ntn-source wins but auth.token still warns once per process (the 401-refresh case) — issue #484", async () => {
+    // Masked-but-warned case for the ntn auth path. ntn-issued tokens
+    // win the priority chain, but `auth.token` is still in
+    // `.lore.yaml` (legacy migration window where the operator
+    // hasn't yet removed the field). The warning fires on the first
+    // `resolveAuth` call and is gated on subsequent calls within the
+    // same process — exactly the contract that bounds
+    // `createNtnAuthRefresh` 401-retry noise without weakening the
+    // committed-secret signal.
+    setupNtnConfigHome(JSON.stringify({ "ws-1": "tok-ntn" }))
+    setupHookStateDir()
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+    const result = await resolveAuth(config, SCRATCH)
+    expect(result.source).toBe("ntn-auth-json")
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+
+    // Simulate a 401-driven refresh: createNtnAuthRefresh re-resolves
+    // auth within the same process. The per-process gate prevents
+    // per-401 fan-out.
+    stderrChunks = []
+    await resolveAuth(config, SCRATCH)
+    expect(stderrText()).toBe("")
+  })
+
+  it("config-auth-token: pre-existing fresh marker does NOT suppress the warning — issue #484", async () => {
+    // Drop a fresh marker on disk before the call. The
+    // env-lore-notion-token path would treat this as "already warned
+    // in the last 24h, stay quiet"; the config-auth-token path must
+    // ignore the marker entirely, since `auth.token` is static repo
+    // state and the warning needs to track that, not session noise.
+    setupNtnConfigHome()
+    const stateDir = setupHookStateDir()
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(deprecationMarkerPath(SCRATCH), "", { mode: 0o600 })
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+    await resolveAuth(config, SCRATCH)
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+  })
+
+  it("config-auth-token: LORE_SUPPRESS_DEPRECATIONS=1 does NOT silence the warning — issue #484", async () => {
+    // `LORE_SUPPRESS_DEPRECATIONS=1` is a reasonable thing to set in
+    // CI to keep logs clean, and that's exactly why it must not
+    // silence the committed-secret signal. CI would otherwise be the
+    // single place an `auth.token` regression is most likely to
+    // appear (a developer pushed a branch with the field set) and
+    // the single place the warning was guaranteed to be hidden.
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["LORE_SUPPRESS_DEPRECATIONS"] = "1"
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+    const result = await resolveAuth(config, SCRATCH)
+    expect(result.source).toBe("config-auth-token")
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+    expect(stderrText()).toContain("remove the auth.token field")
+  })
+
+  it("LORE_SUPPRESS_DEPRECATIONS=1 silences the env-var warning but NOT the config-auth-token warning when both legacy sources are present — issue #484", async () => {
+    // REGRESSION-BAIT PIN — do not delete as "redundant with the
+    // single-source tests above." The whole point of #484 is that
+    // the two warnings have asymmetric contracts despite being
+    // generated by the same `resolveAuth` call site; this test is
+    // the only one that exercises BOTH legacy sources together
+    // under the suppression env, which is the failure mode a future
+    // refactor would most plausibly reintroduce (re-coupling both
+    // paths through one suppress check).
+    //
+    // Cross-source independence pin. With both legacy sources
+    // present and the suppression env set, the env-var warning is
+    // correctly silenced (its threat model is ephemeral session
+    // noise) but the committed-config warning still fires.
+    setupNtnConfigHome()
+    setupHookStateDir()
+    process.env["LORE_NOTION_TOKEN"] = "tok-legacy-env"
+    process.env["LORE_SUPPRESS_DEPRECATIONS"] = "1"
+
+    const config: LoreConfig = {
+      vault: { pageId: "abc" },
+      auth: { token: "tok-from-config" },
+    }
+    await resolveAuth(config, SCRATCH)
+
+    expect(stderrText()).not.toContain("LORE_NOTION_TOKEN is soft-deprecated")
+    expect(stderrText()).toContain("auth.token in .lore.yaml is soft-deprecated")
+    // No marker write under suppression for the env path, and no
+    // marker write at all for the config path.
+    expect(() => statSync(deprecationMarkerPath(SCRATCH))).toThrow()
   })
 
   it("priority: NOTION_API_TOKEN wins over ntn + LORE_NOTION_TOKEN + auth.token", async () => {
@@ -828,6 +1027,11 @@ describe("resolveToken", () => {
     // clears, but starting clean defends against the very first test
     // in the file.
     for (const key of ENV_KEYS_TO_CLEAR) delete process.env[key]
+    // Reset the per-process `auth.token` warning gate so each test
+    // models a fresh process startup. Without this, the second
+    // resolveAuth-with-auth.token test in the suite would silently
+    // observe the gate having latched in a prior test (#484).
+    _resetConfigAuthTokenWarningStateForTests()
     vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
       stderrChunks.push(
         typeof chunk === "string"

@@ -3326,17 +3326,25 @@ async function runPrintConfig(
   // what `--client claude` / `--client codex` would write to disk
   // (issue #451): under `ntn-auth-json`, suppress the auth-token
   // placeholders that produce host-validator warnings. Note that
-  // `resolveAuth` also has the side effect of emitting debounced
-  // deprecation warnings to stderr for the legacy paths
-  // (`config-auth-token`, `env-lore-notion-token`); print-config now
-  // surfaces those warnings where it didn't pre-#451, which keeps the
-  // messaging consistent with the file-write path's behavior. Print-
-  // config is intentionally non-interactive — auth resolution failure
-  // (no `.lore.yaml`, no token resolved) is silently treated as "no
-  // opinion" and the legacy unconditional-forward shape stands. The
-  // catch is narrow: print-config exists for unsupported hosts and a
-  // hard failure here would break the very escape hatch operators
-  // depend on.
+  // `resolveAuth` also has the side effect of emitting deprecation
+  // warnings to stderr for the legacy paths (`config-auth-token`,
+  // `env-lore-notion-token`); print-config now surfaces those warnings
+  // where it didn't pre-#451, which keeps the messaging consistent with
+  // the file-write path's behavior. The two cadences differ (#484):
+  // `env-lore-notion-token` warns once per 24h per config root and is
+  // silenceable via `LORE_SUPPRESS_DEPRECATIONS=1`; `config-auth-token`
+  // fires once per process and is NOT silenceable. Operators piping
+  // `lore install --print-config json` into `jq` see clean stdout
+  // (the snippet) on one stream and the warning on the other; standard
+  // shell redirection (`2>/dev/null`) suppresses the stderr noise for
+  // pipelines that don't want it, but the warning's whole point is to
+  // be visible until the operator removes `auth.token` from
+  // `.lore.yaml`. Print-config is intentionally non-interactive —
+  // auth resolution failure (no `.lore.yaml`, no token resolved) is
+  // silently treated as "no opinion" and the legacy unconditional-
+  // forward shape stands. The catch is narrow: print-config exists for
+  // unsupported hosts and a hard failure here would break the very
+  // escape hatch operators depend on.
   let printConfigAuthSource: AuthSource | undefined
   if (found) {
     try {

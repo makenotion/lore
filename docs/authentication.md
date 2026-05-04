@@ -72,10 +72,26 @@ Lore tests against `MIN_NTN_VERSION` in `src/auth/ntn.ts`, currently `0.12.0`.
 ## Legacy Sources
 
 `LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` remain soft-deprecated
-migration fallbacks in 0.10.x and emit a debounced warning. `LORE_NOTION_TOKEN`
-warns when it is the selected source. `auth.token` warns whenever the field is
-present in `.lore.yaml`, including migration-window setups where
-`NOTION_API_TOKEN`, ntn auth, or `LORE_NOTION_TOKEN` supplies the token.
+migration fallbacks in 0.10.x. The two warnings have asymmetric cadences
+because they map to different threat models:
+
+- `LORE_NOTION_TOKEN` warns when it is the selected source. Debounced once
+  per 24-hour window per config root and silenceable via
+  `LORE_SUPPRESS_DEPRECATIONS=1`. The env var is ephemeral session state
+  (it dies with the shell), so a session-scoped debounce + a silence
+  escape hatch is the right shape for log hygiene.
+- `auth.token` in `.lore.yaml` warns whenever the field is present in the
+  config, including migration-window setups where `NOTION_API_TOKEN`, ntn
+  auth, or `LORE_NOTION_TOKEN` supplies the runtime token. The warning
+  fires on every invocation and is **not silenceable** via
+  `LORE_SUPPRESS_DEPRECATIONS=1`. `.lore.yaml` is committable repo state;
+  a token pasted there propagates to every clone and lands in git
+  history, which is a different class of misconfiguration than an
+  ephemeral env var. Treating the two with the same noise budget would
+  hide the committed-secret signal across CI runs and across engineers
+  in the same worktree (issue #484). Removing the field is the only way
+  to clear the warning.
+
 Because `.lore.yaml` is committable, config load also rejects `auth.token`
 values that look like Notion bearer tokens (`ntn_...` or `secret_...`); move
 those tokens to `NOTION_API_TOKEN` or ntn auth. `lore auth --migrate` walks

@@ -716,6 +716,23 @@ The runtime path validates `dist/mcp.js` exists (otherwise the printed
 fail at agent startup); on missing build output the command exits 1 with
 the same `Run 'npm run build' first.` message the install paths use.
 
+Print-config also performs a best-effort `resolveAuth` call for the
+auth-source-driven placeholder suppression (#451), which means it
+inherits the deprecation-warning side effects:
+
+- `LORE_NOTION_TOKEN` set in the install-time env: the env-var warning
+  fires on stderr (debounced once per 24h per config root, silenceable
+  via `LORE_SUPPRESS_DEPRECATIONS=1`).
+- `auth.token` present in the resolved `.lore.yaml`: the config warning
+  fires on stderr (once per process, NOT silenceable per #484).
+
+The snippet itself flows to stdout, so `lore install --print-config json
+| jq …` parses cleanly. Operators piping into a JSON tool who also want
+the stderr noise gone use standard shell redirection (`2>/dev/null`),
+but the config-auth-token warning's whole point is to remain visible
+until the field is removed — silencing it via redirection only hides
+the symptom from one operator's session, not from the repo.
+
 Hooks are not part of this surface. Stop / UserPromptSubmit hooks are
 installed only by supported host-specific installers; operators of other hosts
 get the MCP tool surface only. `--print-config` does not pretend
