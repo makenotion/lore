@@ -667,6 +667,24 @@ export class FactService {
     return { ...input, subjectEntityId, objectEntityId }
   }
 
+  /**
+   * Probe an entity-relation id for liveness before a fact write.
+   *
+   * Returns `id` when the row exists and isn't archived; `undefined`
+   * when the entity is genuinely gone (404 / `object_not_found`).
+   * **Re-throws every other error** — transient transport failures
+   * (`isTransientNotionError`: 429 / 5xx / network blips), auth /
+   * permission errors, and schema-validation errors all propagate.
+   *
+   * The earlier bare `catch {}` collapsed all three classes onto
+   * "entity is archived" and let `dropArchivedEntityRelations` strip
+   * both sides of a fact whose relations the caller had correctly
+   * resolved upstream — silently violating the five-database integrity
+   * contract during a Notion incident or a sustained 429 backoff window.
+   * Failing loud is correct: surfacing a 503 to `createWithDedup` is
+   * worse than landing a relation-empty row that the next
+   * `lore migrate --build-entities` run would have to repair.
+   */
   private async liveEntityRelationId(
     id: string | undefined
   ): Promise<string | undefined> {
@@ -674,8 +692,10 @@ export class FactService {
     try {
       const page = await this.client.pages.retrieve({ page_id: id })
       return isFullPage(page) && !page.archived ? id : undefined
-    } catch {
-      return undefined
+    } catch (err) {
+      const { status, code } = err as { status?: unknown; code?: unknown }
+      if (status === 404 || code === "object_not_found") return undefined
+      throw err
     }
   }
 

@@ -1185,10 +1185,18 @@ describe("FactService.createWithDedup", () => {
     expect(client.pages.update).not.toHaveBeenCalled()
   })
 
-  it("drops both incoming entity relations when relation revalidation fails", async () => {
+  it("drops both incoming entity relations when one side is genuinely missing (404 / object_not_found)", async () => {
+    // Genuinely-missing entity rows are the ONE error class
+    // `liveEntityRelationId` swallows: same outcome as `archived: true`,
+    // because the entity is in fact gone. Symmetry guard in
+    // `dropArchivedEntityRelations` then drops the other side too so we
+    // don't write a half-canonical row.
     client.pages.retrieve.mockImplementation(async (args: { page_id: string }) => {
-      if (args.page_id === "ent-sub-transient") {
-        throw new Error("notion 503")
+      if (args.page_id === "ent-sub-missing") {
+        throw Object.assign(new Error("Could not find page"), {
+          status: 404,
+          code: "object_not_found",
+        })
       }
       return factPage({ id: args.page_id })
     })
@@ -1208,7 +1216,7 @@ describe("FactService.createWithDedup", () => {
       subject: "Sub",
       predicate: "uses",
       object: "Obj",
-      subjectEntityId: "ent-sub-transient",
+      subjectEntityId: "ent-sub-missing",
       objectEntityId: "ent-obj",
     })
 
@@ -1217,6 +1225,90 @@ describe("FactService.createWithDedup", () => {
     expect(result.fact.subjectEntityId).toBeNull()
     expect(result.fact.objectEntityId).toBeNull()
     expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("propagates transient probe failures (5xx) instead of silently stripping relations", async () => {
+    // A 503 on the entity-liveness probe used to be indistinguishable
+    // from "entity is archived" — both routed through the bare
+    // `catch {}` and returned undefined, dropping both
+    // `SubjectEntity` and `ObjectEntity` from a fact whose relations
+    // the caller had correctly resolved. That silently violated the
+    // five-database integrity contract during a Notion incident or a
+    // sustained 429 backoff window. The probe must now propagate the
+    // 5xx so the create either retries via the rate-limit middleware
+    // or surfaces the failure to the caller.
+    client.pages.retrieve.mockImplementation(async (args: { page_id: string }) => {
+      if (args.page_id === "ent-sub-transient") {
+        throw Object.assign(new Error("Service unavailable"), { status: 503 })
+      }
+      return factPage({ id: args.page_id })
+    })
+
+    await expect(
+      service.createWithDedup({
+        subject: "Sub",
+        predicate: "uses",
+        object: "Obj",
+        subjectEntityId: "ent-sub-transient",
+        objectEntityId: "ent-obj",
+      })
+    ).rejects.toMatchObject({ status: 503 })
+
+    expect(client.dataSources.query).not.toHaveBeenCalled()
+    expect(client.pages.create).not.toHaveBeenCalled()
+    expect(client.pages.update).not.toHaveBeenCalled()
+  })
+
+  it("propagates 429 probe failures (rate-limited) instead of silently stripping relations", async () => {
+    client.pages.retrieve.mockImplementation(async (args: { page_id: string }) => {
+      if (args.page_id === "ent-obj-rate-limited") {
+        throw Object.assign(new Error("Rate limited"), {
+          status: 429,
+          code: "rate_limited",
+        })
+      }
+      return factPage({ id: args.page_id })
+    })
+
+    await expect(
+      service.createWithDedup({
+        subject: "Sub",
+        predicate: "uses",
+        object: "Obj",
+        subjectEntityId: "ent-sub",
+        objectEntityId: "ent-obj-rate-limited",
+      })
+    ).rejects.toMatchObject({ status: 429 })
+
+    expect(client.pages.create).not.toHaveBeenCalled()
+  })
+
+  it("propagates auth / permission probe failures (401 / 403) instead of dropping relations", async () => {
+    // Auth and permission errors aren't "entity is gone" either — an
+    // operator who lost share access mid-flow should see the failure,
+    // not get a relation-stripped row that masquerades as "the entity
+    // was archived."
+    client.pages.retrieve.mockImplementation(async (args: { page_id: string }) => {
+      if (args.page_id === "ent-sub-restricted") {
+        throw Object.assign(new Error("Restricted"), {
+          status: 403,
+          code: "restricted_resource",
+        })
+      }
+      return factPage({ id: args.page_id })
+    })
+
+    await expect(
+      service.createWithDedup({
+        subject: "Sub",
+        predicate: "uses",
+        object: "Obj",
+        subjectEntityId: "ent-sub-restricted",
+        objectEntityId: "ent-obj",
+      })
+    ).rejects.toMatchObject({ status: 403 })
+
+    expect(client.pages.create).not.toHaveBeenCalled()
   })
 
   it("preserves existing entity relations (first-writer-wins, no clobber)", async () => {
