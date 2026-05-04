@@ -194,6 +194,31 @@ describe("path injection resistance", () => {
     expect(logPath(uuid)).toBe(`${stateDir}/${uuid}.log`)
   })
 
+  it("succeeds for a 300-char session id via the safeFilenameSegment hash path (#485)", () => {
+    // Issue #485 acceptance criterion: a session id near or above the
+    // per-FS NAME_MAX boundary must NOT throw `ENAMETOOLONG` out of the
+    // lock layer. The segment cap in `safeFilenameSegment` hashes the
+    // over-cap input into a 128-char filename, so the rendered `.lock`
+    // lands at ≤ 133 bytes — well under POSIX NAME_MAX = 255. With a
+    // reasonable test state-dir (temp dir), the full path is also well
+    // under PATH_MAX, so the call simply succeeds. Pathological
+    // state-dirs that exceed PATH_MAX are exercised via fs mocks in
+    // `lock-name-too-long.test.ts`; this test pins the structural cap
+    // for the common-case session-id boundary.
+    const longSession = `long-session-${"x".repeat(300)}`
+    const result = tryAcquireSessionLock(longSession, process.pid)
+    expect(result).not.toBeNull()
+    expect(existsSync(result!)).toBe(true)
+    // The on-disk filename must reflect the cap — the hashed form
+    // produced by `safeFilenameSegment` is bounded at 128 chars, plus
+    // the `.lock` suffix.
+    const stateDir = getStateDir()
+    const filename = result!.slice(stateDir.length + 1)
+    expect(filename.length).toBeLessThanOrEqual(128 + ".lock".length)
+    expect(filename).toMatch(/\.lock$/)
+    releaseSessionLock(result!)
+  })
+
   it("actually writes a lock file under getStateDir() for a hostile sessionId", () => {
     // End-to-end check: tryAcquireSessionLock with a path-traversing
     // sessionId must succeed, the write must land under getStateDir(),

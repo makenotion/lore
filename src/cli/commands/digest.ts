@@ -169,6 +169,16 @@ export const digestCommand = new Command("digest")
             )
             return
           }
+          if (result.kind === "lock-path-too-long") {
+            // Distinct from "Digest already in flight": there is no peer
+            // doing the work. Pointing the operator at LORE_HOOK_STATE_DIR
+            // is the actionable knob (see issue #485).
+            console.error(
+              `Failed to spawn digest synthesizer: lock path too long (${result.code}). ` +
+                `Shorten LORE_HOOK_STATE_DIR.`
+            )
+            process.exit(1)
+          }
           console.error("Failed to spawn digest synthesizer.")
           process.exit(1)
         }

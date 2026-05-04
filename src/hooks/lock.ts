@@ -135,9 +135,60 @@ export function activeSaveCount(): number {
 }
 
 /**
+ * Classified error thrown by `tryAcquireSessionLock` when the rendered lock
+ * path exceeds the host filesystem's syscall limit. Distinct from the
+ * benign-`null` race / capacity returns so `spawnBackgroundSave` can map it
+ * to a non-benign `SpawnResult` kind — there is no peer producing the work,
+ * so callers must roll back optimistic state (digest marker freshness) and
+ * record a background-failure marker rather than treating it as
+ * `race-lost`.
+ *
+ * The `safeFilenameSegment` cap in `marker-key.ts` keeps NAME_MAX safe for
+ * hostile session ids on its own, but an unusually long
+ * `LORE_HOOK_STATE_DIR` close to `PATH_MAX` (≈1024 bytes on darwin, 4096
+ * on Linux) can still push the full path over the syscall limit. Without
+ * this classified throw, the underlying `ENAMETOOLONG` propagates out of
+ * every Stop hook for the affected session and indefinitely skips autosave
+ * (issue #485).
+ */
+export class LockPathTooLongError extends Error {
+  readonly code: "ENAMETOOLONG" | "ENOENT"
+  readonly lockKey: string
+
+  constructor(lockKey: string, code: "ENAMETOOLONG" | "ENOENT") {
+    super(`lock path too long (${code}) for "${lockKey}"`)
+    this.name = "LockPathTooLongError"
+    this.code = code
+    this.lockKey = lockKey
+  }
+}
+
+/**
+ * Decide whether a syscall error code should be reclassified as
+ * `LockPathTooLongError`. `ENAMETOOLONG` is the canonical path-too-long
+ * code on every POSIX filesystem the hooks layer targets. `ENOENT` is the
+ * darwin-specific variant where the kernel can't resolve a path because
+ * one of its segments exceeds `NAME_MAX`; on Linux, ENOENT only ever
+ * means a missing directory (which would itself be a real bug after
+ * `ensureStateDirSync` has just created the parent), so the absorption is
+ * gated on `process.platform === "darwin"` to keep linux ENOENT on the
+ * genuine-failure path.
+ */
+function isAbsorbedPathError(
+  code: string | undefined
+): code is "ENAMETOOLONG" | "ENOENT" {
+  if (code === "ENAMETOOLONG") return true
+  if (code === "ENOENT" && process.platform === "darwin") return true
+  return false
+}
+
+/**
  * Attempt to acquire the session lock on behalf of a PID. Returns the lock
- * file path on success; null if a live save is already in flight for this
- * session or the global concurrency cap has been reached.
+ * file path on success; `null` when a live peer is already producing the
+ * same work or the global concurrency cap has been reached (the caller
+ * should treat both as benign races); throws `LockPathTooLongError` when
+ * the rendered path is too long for the host filesystem (the caller must
+ * treat that as a genuine failure — there is no peer).
  *
  * Callers should pass the child PID once `spawn` has returned, so the lock
  * names the detached process that will do the work. That removes the
@@ -148,12 +199,31 @@ export function activeSaveCount(): number {
  * same session, only one call returns a path. The loser should tear down
  * whatever state it was about to commit (e.g. kill the child it just
  * spawned).
+ *
+ * The classified throw, rather than a coalesced `null` return, is
+ * load-bearing: the path-too-long case is NOT a benign race, so mapping it
+ * to `null` would silently feed the digest scheduler's `isBenignRace`
+ * branch (leaving the marker fresh, suppressing auto-digest until the
+ * marker expired) and the CLI's "Digest already in flight" message,
+ * neither of which is true when no peer exists. See issue #485.
  */
 export function tryAcquireSessionLock(
   sessionId: string,
   ownerPid: number
 ): string | null {
-  ensureStateDirSync()
+  try {
+    ensureStateDirSync()
+  } catch (err) {
+    // `ensureStateDirSync` itself can trip ENAMETOOLONG when the operator
+    // configured a `LORE_HOOK_STATE_DIR` deeper than `PATH_MAX` minus
+    // intermediate `mkdirSync` segments. Reclassify as `LockPathTooLongError`
+    // so the caller can roll back marker state and record a failure marker.
+    const code = (err as NodeJS.ErrnoException).code
+    if (isAbsorbedPathError(code)) {
+      throw new LockPathTooLongError(sessionId, code)
+    }
+    throw err
+  }
   if (hasActiveSessionLock(sessionId)) return null
   if (activeSaveCount() >= MAX_CONCURRENT_SAVES) return null
   const path = lockPath(sessionId)
@@ -161,7 +231,11 @@ export function tryAcquireSessionLock(
     writeFileSync(path, ownerPid.toString(), { flag: "wx", mode: 0o600 })
     return path
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") return null
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === "EEXIST") return null
+    if (isAbsorbedPathError(code)) {
+      throw new LockPathTooLongError(sessionId, code)
+    }
     throw err
   }
 }

@@ -206,6 +206,22 @@ log is the canonical source for those.
 
 ### Fixed
 
+- **Long session ids no longer indefinitely skip autosave.**
+  `tryAcquireSessionLock` now classifies path-too-long syscall failures
+  as `LockPathTooLongError` instead of rethrowing into the Stop hook,
+  and `spawnBackgroundSave` maps that to a new `lock-path-too-long`
+  `SpawnResult` kind. The new kind is intentionally NOT in the
+  `isBenignRace` set, so the digest scheduler rolls back the optimistic
+  marker, the `lore digest` CLI surfaces a distinct error pointing at
+  `LORE_HOOK_STATE_DIR`, and the autosave path records a
+  background-failure marker visible to `lore status` rather than
+  silently masquerading as a peer-active race. The
+  `safeFilenameSegment` cap already covered hostile session ids
+  against `NAME_MAX`; this fix covers the residual case where a
+  `LORE_HOOK_STATE_DIR` configured close to `PATH_MAX` pushes the
+  rendered lock path over the syscall limit. `ENOENT` reclassification
+  is gated on darwin so Linux TOCTOU and missing-dir bugs stay on the
+  genuine-failure path. (#485)
 - **Author identity cache handles concurrent auth rotation.** Lazy
   `users.me` lookups now keep in-flight entries long enough for callers under
   the same auth snapshot to share one request, even when another token/base URL

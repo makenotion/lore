@@ -35,6 +35,7 @@ import { RUNTIME_FORWARDED_KEYS } from "../auth/forwarded-env.js"
 import {
   activeSaveCount,
   hasActiveSessionLock,
+  LockPathTooLongError,
   logPath,
   MAX_CONCURRENT_SAVES,
   releaseSessionLock,
@@ -143,10 +144,14 @@ export interface SpawnBackgroundSaveOptions {
  * MUST NOT advance their state on these kinds, since the peer's success
  * already accounts for the side effect.
  *
- * The three failure kinds (`binary-missing`, `tempfile-failed`,
- * `spawn-error`) signal genuine failure: no peer is doing the work, and
- * callers should roll back any optimistically-claimed state so the next
- * trigger retries.
+ * The four failure kinds (`lock-path-too-long`, `binary-missing`,
+ * `tempfile-failed`, `spawn-error`) signal genuine failure: no peer is
+ * doing the work, and callers should roll back any optimistically-claimed
+ * state so the next trigger retries. `lock-path-too-long` is structurally
+ * sticky — the next trigger hits the same ENAMETOOLONG until the operator
+ * shortens `LORE_HOOK_STATE_DIR` — but that's still the right posture: the
+ * caller surfaces the failure marker, and the next operator-visible
+ * surface (`lore status`) shows the structural cause.
  */
 export type SpawnResult =
   /** Child started and (when `lockKey` was passed) holds the session lock. */
@@ -157,6 +162,20 @@ export type SpawnResult =
   | { kind: "cap-hit" }
   /** Lost the post-spawn O_EXCL race; child was SIGTERMed. Peer has the lock. */
   | { kind: "race-lost" }
+  /**
+   * Lock path exceeded the host filesystem's syscall limit
+   * (`LORE_HOOK_STATE_DIR` close to `PATH_MAX`); child was SIGTERMed. NOT a
+   * benign race — there is no peer doing the work, so callers must roll
+   * back optimistically-claimed state (digest marker freshness) and record
+   * a background-failure marker. The next trigger will hit the same
+   * structural failure until the operator shortens the state dir, but the
+   * Stop hook still exits cleanly. (Issue #485.)
+   */
+  | {
+      kind: "lock-path-too-long"
+      code: "ENAMETOOLONG" | "ENOENT"
+      lockKey: string
+    }
   /** `claude` binary not on PATH or in known install locations — retry next trigger. */
   | { kind: "binary-missing" }
   /** Failed to create / write the temp prompt file — retry next trigger. */
@@ -180,6 +199,11 @@ export function isBenignRace(result: SpawnResult): boolean {
     result.kind === "cap-hit" ||
     result.kind === "race-lost"
   )
+  // `lock-path-too-long` is intentionally NOT here. There is no peer doing
+  // the work when the lock path exceeds the syscall limit; classifying it
+  // as benign would silently feed `digest-scheduler.ts`'s peer-active
+  // branch (leaving the digest marker fresh) and the `lore digest` CLI's
+  // "Digest already in flight" message. See issue #485.
 }
 
 /**
@@ -324,14 +348,19 @@ export function spawnBackgroundSave(
 
   let lockFile: string | null = null
   // `child` is hoisted out of the try so the catch can reach it. Without
-  // that, a throw between `spawn` and `tryAcquireSessionLock` (e.g. an
-  // unexpected `ENAMETOOLONG` / `ENOSPC` from `writeFileSync` on the lock
-  // file) leaves the detached `claude -p` running but untracked — the
-  // outer catch returns `spawn-error`, the lock file never lands, and the
-  // next Stop hook can't see the in-flight save so it spawns another. The
-  // segment-length cap in `safeFilenameSegment` removes the specific
-  // `ENAMETOOLONG` cause; this hoist is the symmetric fix that holds for
-  // any future post-spawn throw.
+  // that, an unexpected post-spawn throw (e.g. `ENOSPC` from `writeFileSync`
+  // on the lock file) leaves the detached `claude -p` running but untracked
+  // — the outer catch returns `spawn-error`, the lock file never lands, and
+  // the next Stop hook can't see the in-flight save so it spawns another.
+  // Two complementary defenses cover the `ENAMETOOLONG` shape specifically:
+  // the segment-length cap in `safeFilenameSegment` keeps NAME_MAX safe for
+  // hostile session ids, and `tryAcquireSessionLock` reclassifies the
+  // residual `ENAMETOOLONG` (and the darwin `ENOENT`-via-segment variant)
+  // as `LockPathTooLongError`, which the inline acquire block below
+  // catches and maps to a `lock-path-too-long` SpawnResult. This hoist is
+  // the symmetric fix that holds for any other post-spawn throw the lock
+  // layer doesn't classify (see issue #485 for the specific
+  // ENAMETOOLONG/ENOENT path the lock layer now classifies).
   let child: ChildProcess | undefined
   try {
     child = spawn(binary, args, {
@@ -355,7 +384,41 @@ export function spawnBackgroundSave(
         // genuine spawn failure, not a benign race: there is no peer here.
         return { kind: "spawn-error", error: new Error("spawn returned no pid") }
       }
-      lockFile = tryAcquireSessionLock(lockKey, child.pid)
+      try {
+        lockFile = tryAcquireSessionLock(lockKey, child.pid)
+      } catch (err) {
+        if (err instanceof LockPathTooLongError) {
+          try {
+            child.kill("SIGTERM")
+          } catch {
+            // Child already gone.
+          }
+          // logLabel-aware so the operator sees the right surface:
+          // autosave Stop hooks emit `[lore] background save: ...`,
+          // digest spawns emit `[lore] digest: ...`, etc. The hardcoded
+          // "autosave" framing the lock layer used pre-#485 was wrong on
+          // every non-autosave caller. Truncate the lockKey preview so a
+          // hostile multi-kilobyte payload can't itself swamp stderr.
+          const previewLen = 64
+          const preview =
+            err.lockKey.length > previewLen
+              ? `${err.lockKey.slice(0, previewLen)}...`
+              : err.lockKey
+          process.stderr.write(
+            `[lore] ${logLabel}: lock path too long (${err.code}) for "${preview}"; ` +
+              `skipping spawn. Check LORE_HOOK_STATE_DIR length.\n`
+          )
+          return {
+            kind: "lock-path-too-long",
+            code: err.code,
+            lockKey: err.lockKey,
+          }
+        }
+        // Other syscall errors (ENOSPC, EACCES, EROFS, etc.) still
+        // propagate to the outer `spawn-error` catch — the post-spawn
+        // child is killed there via the `child && !lockFile` branch.
+        throw err
+      }
       if (!lockFile) {
         try {
           child.kill("SIGTERM")

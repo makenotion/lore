@@ -285,6 +285,8 @@ function digestSpawnFailureMessage(
       return "failed to prepare digest prompt file"
     case "spawn-error":
       return `spawn failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
+    case "lock-path-too-long":
+      return `lock path too long (${result.code}); shorten LORE_HOOK_STATE_DIR`
     default:
       return `unexpected spawn result: ${result.kind}`
   }
