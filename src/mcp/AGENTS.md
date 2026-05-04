@@ -31,6 +31,7 @@ and came out in the same purge. See "Deprecation timeline" below.
 | `tools/decisions.ts`   | `lore-decision` polymorphic dispatcher (`create` / `list` / `get` / `context` / `supersede` / `review`)                               |
 | `tools/tasks.ts`       | `lore-task` polymorphic dispatcher (`create` / `update` / `close` / `list` / `reconcile`) (P3-02 + PF3-06)                            |
 | `tools/date-schema.ts` | Shared `YYYY-MM-DD` and clearable date Zod schemas for MCP tool boundaries                                                            |
+| `tools/text-schema.ts` | Shared `nonBlankString` Zod schema for create-required user-facing text fields (rejects empty / whitespace-only)                       |
 
 ## Polymorphic dispatch pattern (P3-01 + PF3-06)
 

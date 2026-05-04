@@ -20,6 +20,7 @@ import {
   resolveReferencedTitles,
 } from "../render.js"
 import { clearableYmdDateSchema } from "./date-schema.js"
+import { nonBlankString } from "./text-schema.js"
 
 import type { Decision, Fact, TaskSummary } from "../../types.js"
 import { taskDaysOverdue } from "../../core/task.js"
@@ -1183,17 +1184,18 @@ const factDispatchSchema = z
     z.object({
       action: z.literal("create"),
       // Reject empty / whitespace-only subject and object at the
-      // boundary (issue #481, write-path symmetry). Same trim+min(1)
-      // posture as `lore-query action='ask'`'s `entity` schema. An
-      // empty / whitespace-only triple lands in `createWithDedup`,
-      // hashes through `normalize("")` into `DedupKey`, and persists
-      // a structurally degenerate fact row that confuses downstream
+      // boundary (issues #467 + #481, write-path symmetry). An empty
+      // / whitespace-only triple would land in `createWithDedup`,
+      // hash through `normalize("")` into `DedupKey`, and persist a
+      // structurally degenerate fact row that confuses downstream
       // consumers: `queryBySubject` won't surface it, `repointEntity`
       // sees an empty key, and the dedup probe collides every empty-
-      // subject fact onto one slot.
-      subject: z.string().trim().min(1, "subject must be a non-empty string"),
+      // subject fact onto one slot. Shared `nonBlankString` matches
+      // the `.trim().min(1)` posture used by `lore-query action='ask'`'s
+      // `entity` schema.
+      subject: nonBlankString,
       predicate: z.enum(PREDICATE_VALUES),
-      object: z.string().trim().min(1, "object must be a non-empty string"),
+      object: nonBlankString,
       projectName: z.string().optional(),
       projectNames: z.array(z.string()).optional(),
       reviewBy: clearableYmdDateSchema.optional(),

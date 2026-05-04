@@ -1499,6 +1499,28 @@ describe("optional-string Zod boundary", () => {
       const { ok } = await run({ ...baseInput, dueDate: "" })
       expect(ok).toBe(false)
     })
+
+    // Issue #467: subject was previously `.min(1)`, which still admits
+    // a whitespace-only string. The shared `nonBlankString` schema
+    // rejects after trimming so a stray "  " can't become a blank task
+    // title in Notion.
+    it("rejects empty subject", async () => {
+      const { ok, message } = await run({ action: "create", subject: "" })
+      expect(ok).toBe(false)
+      expect(message).toContain("subject")
+    })
+
+    it("rejects whitespace-only subject", async () => {
+      const { ok, message } = await run({ action: "create", subject: "   " })
+      expect(ok).toBe(false)
+      expect(message).toContain("subject")
+      expect(message).toContain("blank")
+    })
+
+    it("accepts nonblank subject", async () => {
+      const { ok } = await run({ action: "create", subject: "Rotate keys" })
+      expect(ok).toBe(true)
+    })
   })
 
   describe("action='update'", () => {

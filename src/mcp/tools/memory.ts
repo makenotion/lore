@@ -26,6 +26,7 @@ import type {
 import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
+import { nonBlankBody, nonBlankString } from "./text-schema.js"
 import {
   RICH_TEXT_PROPERTY_MAX_LEN,
   richTextPropertySchema,
@@ -2269,8 +2270,11 @@ function formatScoreTrace(explain: SearchExplain[]): string {
 const memoryDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("save"),
-    title: z.string(),
-    content: z.string(),
+    title: nonBlankString,
+    // `content` is the markdown page body; nonBlankBody validates without
+    // transforming so a body that starts with an indented code block or
+    // intentional whitespace round-trips verbatim into Notion.
+    content: nonBlankBody,
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),
@@ -2341,7 +2345,10 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
     memoryIdB: z.string(),
     verdict: z.enum(COMPARE_VERDICTS),
     affectedMemoryId: z.string().optional(),
-    reason: z.string().max(200),
+    // Compare verdicts persist into the `Compare Notes` rich_text audit
+    // trail; a blank reason produces the same near-empty Notion content
+    // shape this PR is targeting elsewhere.
+    reason: nonBlankString.pipe(z.string().max(200)),
     judgeConfidence: z.number().min(0).max(1).optional(),
     promptVersion: z.string().optional(),
   }),

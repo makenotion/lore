@@ -18,6 +18,7 @@ import { ACTIVE_DECISION_STATUSES, SYNOPSIS_MAX } from "../../types.js"
 import type { Decision, DecisionSummary, DecisionStatus } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
+import { nonBlankBody, nonBlankString } from "./text-schema.js"
 import {
   RICH_TEXT_PROPERTY_MAX_LEN,
   richTextPropertySchema,
@@ -941,8 +942,11 @@ async function handleReview(
 const decisionDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
-    decision: z.string(),
-    rationale: z.string(),
+    decision: nonBlankString,
+    // `rationale` is the markdown page body; nonBlankBody validates
+    // without transforming so authored whitespace (indented code,
+    // intentional leading newlines) round-trips verbatim into Notion.
+    rationale: nonBlankBody,
     projectName: z.string().optional(),
     projectNames: z.array(z.string()).optional(),
     topicName: z.string().optional(),

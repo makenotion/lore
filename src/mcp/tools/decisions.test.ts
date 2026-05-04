@@ -2235,3 +2235,130 @@ describe("lore-decision action='create' — Author attribution (DEFERRED-ATTRIBU
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: undefined }))
   })
 })
+
+// ---------------------------------------------------------------------------
+// Issue #467: create-required text fields must be nonblank after trimming.
+// Empty / whitespace-only `decision` or `rationale` would create blank
+// decision rows in Notion; reject at the MCP boundary instead.
+// ---------------------------------------------------------------------------
+
+describe("lore-decision action='create' — nonblank decision/rationale (issue #467)", () => {
+  function harness() {
+    const mockServer = createMockServer()
+    const create = vi.fn().mockResolvedValue(makeDecision("dec-1", { projectIds: [] }))
+    const services = {
+      decisions: { create, getById: vi.fn(), supersede: vi.fn() },
+      facts: {
+        create: vi.fn().mockResolvedValue(makeFact("fact-id")),
+        queryBySourceMemory: vi.fn().mockResolvedValue([]),
+        invalidate: vi.fn(),
+      },
+      memories: {
+        decrementConfidence: vi.fn(),
+        list: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      topics: { getOrCreate: vi.fn() },
+      projects: { findByName: vi.fn() },
+      context: { project: null, isCatchAllFallback: false },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+    registerDecisionTools(mockServer.server, services as never)
+    return {
+      handler: mockServer.getActionHandler("lore-decision", "create"),
+      create,
+    }
+  }
+
+  async function run(args: Record<string, unknown>) {
+    const { handler, create } = harness()
+    const result = (await handler(args as never)) as {
+      isError?: boolean
+      content: Array<{ text: string }>
+    }
+    return {
+      ok: !result.isError,
+      message: result.content[0]?.text ?? "",
+      create,
+    }
+  }
+
+  it("rejects empty decision", async () => {
+    const { ok, message, create } = await run({
+      decision: "",
+      rationale: "Because",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("decision")
+    expect(message).toContain("blank")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("rejects whitespace-only decision", async () => {
+    const { ok, message, create } = await run({
+      decision: "   ",
+      rationale: "Because",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("decision")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("rejects empty rationale", async () => {
+    const { ok, message, create } = await run({
+      decision: "Use bcrypt",
+      rationale: "",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("rationale")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("rejects whitespace-only rationale", async () => {
+    const { ok, message, create } = await run({
+      decision: "Use bcrypt",
+      rationale: "\t\n ",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("rationale")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("accepts nonblank decision and rationale", async () => {
+    const { ok, create } = await run({
+      decision: "Use bcrypt",
+      rationale: "Fast enough",
+    })
+    expect(ok).toBe(true)
+    expect(create).toHaveBeenCalled()
+  })
+
+  it("preserves rationale whitespace verbatim — indented code block", async () => {
+    // `rationale` is the markdown page body; the schema validates
+    // without transforming so authored whitespace round-trips into
+    // Notion via `pages.updateMarkdown`. The four-space-indented
+    // Markdown code block is the canonical regression case from the
+    // PR review — trimming would rewrite the snippet as prose.
+    const rationale = "    bcrypt.hash(password, 12)\n    // 12 rounds\n"
+    const { ok, create } = await run({
+      decision: "Use bcrypt",
+      rationale,
+    })
+    expect(ok).toBe(true)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ rationale })
+    )
+  })
+
+  it("preserves rationale whitespace verbatim — leading/trailing spaces", async () => {
+    const rationale = "  rationale with surrounding whitespace  "
+    const { ok, create } = await run({
+      decision: "Use bcrypt",
+      rationale,
+    })
+    expect(ok).toBe(true)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ rationale })
+    )
+  })
+})

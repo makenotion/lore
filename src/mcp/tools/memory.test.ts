@@ -8915,3 +8915,131 @@ describe("lore-memory action='save' — Author attribution (DEFERRED-ATTRIBUTION
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ author: undefined }))
   })
 })
+
+// ---------------------------------------------------------------------------
+// Issue #467: create-required text fields must be nonblank after trimming.
+// Empty / whitespace-only `title` or `content` would create blank or
+// near-blank rows in Notion; reject at the MCP boundary instead.
+// ---------------------------------------------------------------------------
+
+describe("lore-memory action='save' — nonblank title/content (issue #467)", () => {
+  function setUpSaveHarness() {
+    const mockServer = createMockServer()
+    const create = vi.fn().mockResolvedValue(makeMemory("mem-1", { projectIds: [] }))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { create, list: vi.fn().mockResolvedValue({ items: [] }) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    return {
+      handler: mockServer.getActionHandler("lore-memory", "save"),
+      create,
+    }
+  }
+
+  async function run(args: Record<string, unknown>) {
+    const { handler, create } = setUpSaveHarness()
+    const result = (await handler(args as never)) as {
+      isError?: boolean
+      content: Array<{ text: string }>
+    }
+    return {
+      ok: !result.isError,
+      message: result.content[0]?.text ?? "",
+      create,
+    }
+  }
+
+  it("rejects empty title without calling memories.create", async () => {
+    const { ok, message, create } = await run({ title: "", content: "body" })
+    expect(ok).toBe(false)
+    expect(message).toContain("title")
+    expect(message).toContain("blank")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("rejects whitespace-only title", async () => {
+    const { ok, message, create } = await run({ title: "   \t\n", content: "body" })
+    expect(ok).toBe(false)
+    expect(message).toContain("title")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("rejects empty content", async () => {
+    const { ok, message, create } = await run({ title: "Saved", content: "" })
+    expect(ok).toBe(false)
+    expect(message).toContain("content")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("rejects whitespace-only content", async () => {
+    const { ok, message, create } = await run({ title: "Saved", content: "   " })
+    expect(ok).toBe(false)
+    expect(message).toContain("content")
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it("accepts nonblank title and content", async () => {
+    const { ok, create } = await run({ title: "Saved", content: "body" })
+    expect(ok).toBe(true)
+    expect(create).toHaveBeenCalled()
+  })
+
+  it("preserves body whitespace verbatim — leading/trailing spaces", async () => {
+    // `content` is the markdown page body; the schema validates
+    // without transforming so authored whitespace round-trips into
+    // Notion via `pages.updateMarkdown`. Pin both ends so a future
+    // refactor that swaps `nonBlankBody` for the trimming variant
+    // trips here.
+    const body = "  body with surrounding whitespace  "
+    const { ok, create } = await run({ title: "Saved", content: body })
+    expect(ok).toBe(true)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ content: body }))
+  })
+
+  it("preserves body whitespace verbatim — indented code block", async () => {
+    // The canonical regression case: a body starting with a
+    // four-space-indented Markdown code block. Trimming would silently
+    // rewrite the first block as ordinary prose, changing the
+    // authored output.
+    const body = "    const x = 1\n    return x\n"
+    const { ok, create } = await run({ title: "Snippet", content: body })
+    expect(ok).toBe(true)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ content: body }))
+  })
+})
+
+describe("lore-memory action='update' — empty string still clears (issue #467)", () => {
+  it("update path keeps existing string-clears semantic for title/content", async () => {
+    // Update intentionally uses plain `z.string().optional()` so that
+    // empty string can serve as the documented clear sentinel for text
+    // properties — the create-time nonblank guarantee must NOT extend
+    // to the update path.
+    const mockServer = createMockServer()
+    const update = vi.fn().mockResolvedValue(makeMemory("mem-1", { projectIds: [] }))
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, get: vi.fn().mockResolvedValue(makeMemory("mem-1")) },
+      tasks: { list: vi.fn().mockResolvedValue({ items: [] }) },
+      context: { project: null, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const handler = mockServer.getActionHandler("lore-memory", "update")
+    const result = (await handler({ memoryId: "mem-1", content: "" } as never)) as {
+      isError?: boolean
+    }
+    expect(result.isError).toBeFalsy()
+  })
+})

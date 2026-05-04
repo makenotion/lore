@@ -40,6 +40,7 @@ import { ACTIVE_TASK_STATES, SYNOPSIS_MAX } from "../../types.js"
 import type { ListTasksOpts, TaskState, TaskSummary } from "../../types.js"
 import { resolveAuthorForWrite } from "../../auth/identity.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
+import { nonBlankString } from "./text-schema.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -794,7 +795,7 @@ async function handleReconcile(
 const taskDispatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("create"),
-    subject: z.string().min(1),
+    subject: nonBlankString,
     description: z.string().optional(),
     entity: z.string().optional(),
     state: z.enum(TASK_STATES).optional(),

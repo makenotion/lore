@@ -3420,3 +3420,114 @@ describe("lore-query action='audit' Overdue Facts trust indicator (0.8.0/DEFERRE
     expect(text).not.toContain("confidence_")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Issue #467: create-required text fields must be nonblank after trimming.
+// Empty / whitespace-only `subject` or `object` would create blank facts;
+// reject at the MCP boundary instead.
+// ---------------------------------------------------------------------------
+
+describe("lore-fact action='create' — nonblank subject/object (issue #467)", () => {
+  function harness() {
+    const mockServer = createMockServer()
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: makeFact("fact-x"),
+      deduped: false,
+      enriched: [],
+    })
+    const services = {
+      projects: { findByName: vi.fn() },
+      memories: {
+        getPropertiesById: vi.fn().mockResolvedValue({
+          id: "mem-x",
+          projectIds: [],
+        }),
+      },
+      facts: { createWithDedup },
+      decisions: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      entities: makeEntityService(),
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+    registerKnowledgeTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    return {
+      handler: mockServer.getActionHandler("lore-fact", "create"),
+      createWithDedup,
+    }
+  }
+
+  async function run(args: Record<string, unknown>) {
+    const { handler, createWithDedup } = harness()
+    const result = (await handler(args as never)) as {
+      isError?: boolean
+      content: Array<{ text: string }>
+    }
+    return {
+      ok: !result.isError,
+      message: result.content[0]?.text ?? "",
+      createWithDedup,
+    }
+  }
+
+  const baseArgs = {
+    predicate: "uses",
+    sourceMemoryId: "mem-x",
+  }
+
+  it("rejects empty subject", async () => {
+    const { ok, message, createWithDedup } = await run({
+      ...baseArgs,
+      subject: "",
+      object: "JWT",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("subject")
+    expect(message).toContain("blank")
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("rejects whitespace-only subject", async () => {
+    const { ok, message, createWithDedup } = await run({
+      ...baseArgs,
+      subject: "  \t",
+      object: "JWT",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("subject")
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("rejects empty object", async () => {
+    const { ok, message, createWithDedup } = await run({
+      ...baseArgs,
+      subject: "AuthService",
+      object: "",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("object")
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("rejects whitespace-only object", async () => {
+    const { ok, message, createWithDedup } = await run({
+      ...baseArgs,
+      subject: "AuthService",
+      object: "   ",
+    })
+    expect(ok).toBe(false)
+    expect(message).toContain("object")
+    expect(createWithDedup).not.toHaveBeenCalled()
+  })
+
+  it("accepts nonblank subject and object", async () => {
+    const { ok, createWithDedup } = await run({
+      ...baseArgs,
+      subject: "AuthService",
+      object: "JWT",
+    })
+    expect(ok).toBe(true)
+    expect(createWithDedup).toHaveBeenCalled()
+  })
+})
