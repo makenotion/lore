@@ -1097,25 +1097,28 @@ async function handleUpdate(
       updated = await services.memories.getById(args.memoryId)
     }
 
-    // Add-only re-emission of `mentions` facts (DEFERRED-03). An
-    // update that surfaces a fresh entity in title / keywords /
-    // synopsis emits a new `mentions` fact for it; an update that
-    // REMOVES an entity leaves the corresponding fact in place.
-    // Silent drift on removes is the accepted cost — the alternative
-    // (diff-and-invalidate on every update) extends the auto-fact
-    // contract with invalidation behavior that today only
-    // `lore-correct` carries, which is a separate design decision
-    // worth its own review.
+    // Diff-driven re-emission of `mentions` facts (DEFERRED-03,
+    // issue #491). An update that surfaces a fresh entity in title
+    // / keywords / synopsis emits a new `mentions` fact for it; an
+    // update that REMOVES an entity invalidates the corresponding
+    // existing fact. Symmetric contract — without invalidate-on-
+    // remove, every entity rename (e.g. `MemoryService` →
+    // `MemoryService.create`) would ratchet up the orphan-fact
+    // count for the source memory, polluting `lore-query
+    // action='ask'` and the entity-graph wake-up surface with
+    // labels the memory no longer references.
     //
     // Pre-query existing `mentions` facts sourced from this memory
     // so per-entity `createWithDedup` only fires for entities the
-    // graph doesn't already cover. The "covered" check is by Object
-    // alone, deliberately: a title-only update that leaves the
-    // entity set untouched changes every existing fact's subject
-    // text but emits zero new rows. `createWithDedup`'s dedup-key
-    // probe is the second-line defense against a concurrent
-    // autosave landing the same triple between our pre-query and
-    // our writes.
+    // graph doesn't already cover (current − previous), and
+    // `services.facts.invalidate` only fires for facts whose Object
+    // is no longer surfaced (previous − current). The covered /
+    // stale check is by Object alone, deliberately: a title-only
+    // update that leaves the entity set untouched changes every
+    // existing fact's subject text but emits zero new rows AND
+    // zero invalidates. `createWithDedup`'s dedup-key probe is the
+    // second-line defense against a concurrent autosave landing
+    // the same triple between our pre-query and our writes.
     //
     // Gate the whole branch on at least one extraction-relevant arg
     // being defined: title, keywords, or synopsis. An update that
@@ -1123,13 +1126,20 @@ async function handleUpdate(
     // `decidedAt` / `tags` / `projectIds` / `topicId` /
     // `supersedesIds` / `affectsIds` / `alternatives` /
     // `consequences` cannot change the extraction surface, so the
-    // pre-query and per-entity `createWithDedup` calls would be
-    // pure waste — every candidate would resolve to "already
-    // covered" and the round-trips burn for no signal. The gate
-    // checks arg presence, not arg-vs-resolved-value diff, so an
-    // agent that re-supplies an unchanged title still pays the
-    // pre-query; that noise case is the agent's choice and bounded
-    // by the kill switch.
+    // pre-query and per-entity writes would be pure waste — every
+    // candidate would resolve to "already covered" and no fact
+    // would be stale. The gate checks arg presence, not
+    // arg-vs-resolved-value diff, so an agent that re-supplies an
+    // unchanged title still pays the pre-query; that noise case is
+    // the agent's choice and bounded by the kill switch.
+    //
+    // The query runs unconditionally inside the gate (no
+    // `mentionedEntities.length > 0` short-circuit), because an
+    // update that drops every entity from the extraction surface
+    // (e.g. retitling `Investigated PR #25750 latency regression`
+    // to `Generic refactor notes`) must still invalidate the now-
+    // stale facts, and we cannot know whether existing facts are
+    // present without querying.
     const autoMentionsDisabled = process.env["LORE_DISABLE_AUTO_MENTIONS"] === "1"
     const extractionInputsTouched =
       args.title !== undefined ||
@@ -1137,6 +1147,8 @@ async function handleUpdate(
       args.synopsis !== undefined
     let autoMentionsCount = 0
     let autoMentionsAttempted = 0
+    let staleInvalidatedCount = 0
+    let staleInvalidatedAttempted = 0
     if (!autoMentionsDisabled && extractionInputsTouched) {
       // Decode candidates to match `createWithDedup`'s internal
       // decode-at-write-boundary step. Without this, an entity
@@ -1149,55 +1161,124 @@ async function handleUpdate(
         updated.keywords,
         updated.synopsis
       ).map(decodeTextEntities)
-      if (mentionedEntities.length > 0) {
-        let existing: Fact[]
-        try {
-          existing = await services.facts.queryBySourceMemory(updated.id, {
-            predicates: ["mentions"],
-          })
-        } catch (err) {
-          // Probe failure must not block the update response.
-          // Degrade to "assume nothing covered" — `createWithDedup`'s
-          // own probe still absorbs same-triple duplicates downstream,
-          // so the worst case is one wasted round-trip per entity
-          // rather than a duplicated row.
-          debugLogPartialFailures("lore-memory", [
-            { rootId: `${updated.id}: existing-mentions-probe`, error: err },
-          ])
-          existing = []
-        }
-        const covered = new Set(existing.map((f) => f.object))
-        const newCandidates = mentionedEntities.filter((entity) => !covered.has(entity))
-        if (newCandidates.length > 0) {
-          autoMentionsAttempted = newCandidates.length
-          const autoProjectIds =
-            updated.projectIds.length > 0 ? updated.projectIds : undefined
-          // Per-entity `.then(success, failure)` — same shape as
-          // the save-time emission: convert every rejection into a
-          // resolved boolean BEFORE `Promise.all` ever sees it so a
-          // single per-entity 400 cannot sink the surviving creates.
-          // See `handleSave`'s comment for the full rationale.
-          const results = await Promise.all(
-            newCandidates.map((entity) =>
-              services.facts
-                .createWithDedup({
-                  subject: updated.title,
-                  predicate: "mentions",
-                  object: entity,
-                  sourceMemoryId: updated.id,
-                  projectIds: autoProjectIds,
-                  confidence: "speculative",
-                })
-                .then(
-                  () => true,
-                  (err: unknown) => {
-                    debugLogAutoFactFailure("update", updated.id, entity, err)
-                    return false
-                  }
-                )
+      let existing: Fact[]
+      try {
+        existing = await services.facts.queryBySourceMemory(updated.id, {
+          predicates: ["mentions"],
+        })
+      } catch (err) {
+        // Probe failure must not block the update response.
+        // Degrade to "assume nothing covered, nothing stale" —
+        // `createWithDedup`'s own probe still absorbs same-triple
+        // duplicates downstream so the worst case on the create
+        // side is one wasted round-trip per entity. The invalidate
+        // side silently drifts on this run (existing facts stay
+        // live); the next extraction-touching update on this memory
+        // re-runs the probe and re-derives the diff, or an operator
+        // can invalidate the orphan rows directly via
+        // `lore-fact action='invalidate'`.
+        debugLogPartialFailures("lore-memory", [
+          { rootId: `${updated.id}: existing-mentions-probe`, error: err },
+        ])
+        existing = []
+      }
+      // Decode each existing fact's Object exactly once into a
+      // tuple aligned with the source fact, then derive both sides
+      // of the diff from the decoded namespace. Pre-`lore migrate
+      // --fix-fact-encoding` vaults still carry rows whose `Object`
+      // is HTML-entity-encoded on disk (e.g. `Café &amp; Bar`); the
+      // post-update extraction is decoded by `mentionedEntities`'s
+      // trailing `.map(decodeTextEntities)` above. Without
+      // this normalization, an encoded existing row would be
+      // simultaneously absent from the (decoded) `covered` set AND
+      // from the (decoded) `currentSet`, so the same entity would
+      // be CREATED in decoded form AND INVALIDATED in encoded form
+      // — silent invalidate-and-replace churn on a memory that
+      // still mentions the same entity, decrementing the encoded
+      // row's `Confidence Score` for no operator-visible reason.
+      // Decoding here keeps the diff in one namespace and lets the
+      // create-side `createWithDedup` triple-hash absorb the
+      // post-migration row naturally rather than via destructive
+      // replacement. `decodeTextEntities` is idempotent so already-
+      // decoded rows pass through unchanged.
+      const decodedExisting = existing.map((fact) => ({
+        fact,
+        decodedObject: decodeTextEntities(fact.object),
+      }))
+      const covered = new Set(decodedExisting.map((e) => e.decodedObject))
+      const currentSet = new Set(mentionedEntities)
+      const newCandidates = mentionedEntities.filter((entity) => !covered.has(entity))
+      // Stale = existing facts whose decoded Object isn't surfaced
+      // by the post-update extraction. The set difference is
+      // structurally the inverse of the new-candidate filter; both
+      // are derived from the same `covered` / `currentSet` pair —
+      // both built in the decoded namespace — so a future refactor
+      // can't desync them OR re-introduce the encoding asymmetry
+      // across the two filters.
+      const staleFacts = decodedExisting
+        .filter((e) => !currentSet.has(e.decodedObject))
+        .map((e) => e.fact)
+      const autoProjectIds =
+        updated.projectIds.length > 0 ? updated.projectIds : undefined
+      // Per-entity `.then(success, failure)` — same shape as
+      // the save-time emission: convert every rejection into a
+      // resolved boolean BEFORE `Promise.all` ever sees it so a
+      // single per-entity 400 cannot sink the surviving creates
+      // or invalidates. See `handleSave`'s comment for the full
+      // rationale on the create side; the invalidate side adopts
+      // the same posture so a transient 5xx on one stale fact
+      // doesn't mask an otherwise-successful diff. Creates and
+      // invalidates fan out together via one `Promise.all` so
+      // the writes overlap on the wire — the shared Notion client
+      // wrapper's rate-limit middleware (`src/notion/rate-limit.ts`)
+      // bounds in-flight count to `notion.rateLimit.concurrency`
+      // (default 3) regardless of which branch the call came from.
+      // An aggressive rename (e.g. 5 stale facts + 3 fresh
+      // candidates = 8 simultaneous SDK calls) is paced by the
+      // middleware, not by handler-side throttling — a future
+      // contributor reusing this branch under a parallelism-
+      // uncapped client (e.g. a one-shot migration script) would
+      // need to add explicit pacing.
+      autoMentionsAttempted = newCandidates.length
+      staleInvalidatedAttempted = staleFacts.length
+      if (newCandidates.length > 0 || staleFacts.length > 0) {
+        const createPromises = newCandidates.map((entity) =>
+          services.facts
+            .createWithDedup({
+              subject: updated.title,
+              predicate: "mentions",
+              object: entity,
+              sourceMemoryId: updated.id,
+              projectIds: autoProjectIds,
+              confidence: "speculative",
+            })
+            .then(
+              () => ({ kind: "create" as const, ok: true }),
+              (err: unknown) => {
+                debugLogAutoFactFailure("update", updated.id, entity, err)
+                return { kind: "create" as const, ok: false }
+              }
             )
+        )
+        const invalidatePromises = staleFacts.map((fact) =>
+          services.facts.invalidate(fact.id).then(
+            () => ({ kind: "invalidate" as const, ok: true }),
+            (err: unknown) => {
+              debugLogAutoFactFailure(
+                "update",
+                updated.id,
+                fact.object,
+                err,
+                "invalidate"
+              )
+              return { kind: "invalidate" as const, ok: false }
+            }
           )
-          autoMentionsCount = results.filter(Boolean).length
+        )
+        const results = await Promise.all([...createPromises, ...invalidatePromises])
+        for (const r of results) {
+          if (r.kind === "create" && r.ok) autoMentionsCount += 1
+          if (r.kind === "invalidate" && r.ok) staleInvalidatedCount += 1
         }
       }
     }
@@ -1219,20 +1300,36 @@ async function handleUpdate(
     if (warnings.length > 0) {
       lines.push(`Warnings: ${warnings.join("; ")}`)
     }
-    // Footer fires only when at least one new fact was attempted —
-    // the add-only contract's steady state (every entity already
-    // covered) renders no footer, matching save's silent-on-no-
-    // tokenizer-output posture. The "new" suffix distinguishes
-    // update-time emission from save-time emission ("Auto-mentions:
-    // 2" on save vs. "Auto-mentions: 2 new" on update) so an
-    // operator triaging response output can tell which surface
-    // produced the count.
-    if (autoMentionsAttempted > 0) {
-      lines.push(
-        autoMentionsCount === autoMentionsAttempted
-          ? `Auto-mentions: ${autoMentionsCount} new`
-          : `Auto-mentions: ${autoMentionsCount}/${autoMentionsAttempted} new attempted`
-      )
+    // Footer fires only when the diff produced at least one
+    // create or one invalidate — the steady state (every entity
+    // already covered, no stale facts) renders no footer, matching
+    // save's silent-on-no-tokenizer-output posture. The "new" /
+    // "stale invalidated" suffixes distinguish update-time
+    // emission from save-time emission ("Auto-mentions: 2" on
+    // save vs. "Auto-mentions: 2 new" / "Auto-mentions: 1 stale
+    // invalidated" on update) so an operator triaging response
+    // output can tell which surface produced the count and which
+    // half of the diff drove the work. Both halves render in the
+    // same line when both fired (`Auto-mentions: 2 new, 1 stale
+    // invalidated`) so an agent can branch on the leading
+    // `Auto-mentions:` token without parsing two separate footers.
+    if (autoMentionsAttempted > 0 || staleInvalidatedAttempted > 0) {
+      const parts: string[] = []
+      if (autoMentionsAttempted > 0) {
+        parts.push(
+          autoMentionsCount === autoMentionsAttempted
+            ? `${autoMentionsCount} new`
+            : `${autoMentionsCount}/${autoMentionsAttempted} new attempted`
+        )
+      }
+      if (staleInvalidatedAttempted > 0) {
+        parts.push(
+          staleInvalidatedCount === staleInvalidatedAttempted
+            ? `${staleInvalidatedCount} stale invalidated`
+            : `${staleInvalidatedCount}/${staleInvalidatedAttempted} stale invalidated attempted`
+        )
+      }
+      lines.push(`Auto-mentions: ${parts.join(", ")}`)
     }
 
     return {

@@ -27,7 +27,7 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     }
   })
 
-  it("writes one stderr line under LORE_DEBUG=1 with source/memoryId/entity/error fields", () => {
+  it("writes one stderr line under LORE_DEBUG=1 with source/kind/memoryId/entity/error fields", () => {
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "1")
     try {
@@ -39,8 +39,12 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
       )
       expect(write).toHaveBeenCalledTimes(1)
       const line = write.mock.calls[0][0] as string
+      // `kind` defaults to `create` for the save-time call site; the
+      // field is always present so log parsers can rely on a stable
+      // key set across both save creates and update creates /
+      // invalidates (issue #491).
       expect(line).toBe(
-        "[lore] auto-fact-failure: source=save memoryId=mem-1 entity=PR #25750 error=notion 429\n",
+        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #25750 error=notion 429\n",
       )
     } finally {
       vi.unstubAllEnvs()
@@ -48,11 +52,40 @@ describe("debugLogAutoFactFailure (0.8.0/07)", () => {
     }
   })
 
-  it("carries source=update for the add-only re-emission landed via DEFERRED-03", () => {
+  it("emits kind=invalidate for the stale-fact invalidate path on update (issue #491)", () => {
+    // Diff-and-invalidate on update needs a separate failure
+    // discriminator from the per-entity create path so an operator
+    // grepping `auto-fact-failure: kind=invalidate` can isolate
+    // sustained issues with the invalidate write from transient
+    // dedup races on create.
+    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
+    vi.stubEnv("LORE_DEBUG", "1")
+    try {
+      debugLogAutoFactFailure(
+        "update",
+        "mem-1",
+        "PR #25750",
+        new Error("notion 503"),
+        "invalidate",
+      )
+      const line = write.mock.calls[0][0] as string
+      expect(line).toContain("source=update")
+      expect(line).toContain("kind=invalidate")
+      expect(line).toContain("memoryId=mem-1")
+      expect(line).toContain("entity=PR #25750")
+      expect(line).toContain("error=notion 503")
+    } finally {
+      vi.unstubAllEnvs()
+      write.mockRestore()
+    }
+  })
+
+  it("carries source=update for the diff-driven re-emission landed via DEFERRED-03 + #491", () => {
     // `update` is the call-site discriminator for the re-emission
-    // path landed via DEFERRED-03 — pin the value here so the
-    // helper's union doesn't drift if a future contributor renames
-    // the call site.
+    // path landed via DEFERRED-03 (and reshaped by issue #491 from
+    // add-only into symmetric diff-and-invalidate) — pin the value
+    // here so the helper's union doesn't drift if a future
+    // contributor renames the call site.
     const write = vi.spyOn(process.stderr, "write").mockReturnValue(true)
     vi.stubEnv("LORE_DEBUG", "1")
     try {

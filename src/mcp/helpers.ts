@@ -177,7 +177,7 @@ function oneLine(value: string): string {
  * failing entity surfaces enough detail to distinguish a transient
  * blip from a pathological loop.
  *
- * Format: `[lore] auto-fact-failure: source=<save|update> memoryId=<id> entity=<entity> error=<message>`
+ * Format: `[lore] auto-fact-failure: source=<save|update> kind=<create|invalidate> memoryId=<id> entity=<entity> error=<message>`
  *
  * Same narrowing as `debugLogPartialFailures`: only `error.message`
  * is logged. ASCII control characters in `memoryId` / `entity` /
@@ -186,21 +186,31 @@ function oneLine(value: string): string {
  * if a future entity tokenizer surfaces a multi-line input.
  *
  * `source` is the originating tool action (`save` for save-time
- * emission; `update` for the add-only re-emission landed via
+ * emission; `update` for the diff-driven re-emission landed via
  * DEFERRED-03). Carrying it on every line lets a future contributor
  * distinguish save-time vs. update-time emission failures without
- * grepping the calling stack.
+ * grepping the calling stack. `kind` distinguishes the per-entity
+ * fact create from the stale-fact invalidate path that landed when
+ * DEFERRED-03 grew diff-and-invalidate semantics; defaults to
+ * `"create"` so existing save-time call sites stay source-compatible
+ * (no parameter re-threading at the call boundary). The emitted log
+ * line itself is NOT byte-identical pre-#491 — `kind=create` joins
+ * the stable key set on every save-time line — but the key set is
+ * uniform across save-time creates, update-time creates, and
+ * update-time invalidates so log parsers grepping `[lore]
+ * auto-fact-failure:` see one contract, not three.
  */
 export function debugLogAutoFactFailure(
   source: "save" | "update",
   memoryId: string,
   entity: string,
   error: unknown,
+  kind: "create" | "invalidate" = "create",
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   const message = error instanceof Error ? error.message : String(error)
   process.stderr.write(
-    `[lore] auto-fact-failure: source=${source} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(message)}\n`,
+    `[lore] auto-fact-failure: source=${source} kind=${kind} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(message)}\n`,
   )
 }
 

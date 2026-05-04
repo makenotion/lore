@@ -2252,22 +2252,109 @@ deterministic substring near-dup probe and the active-task
 cross-reference. Set for bulk-import flows, fixture setup, or vaults
 where the tokenizer's noise floor is unacceptable.
 
-**Update-time re-emission (add-only, DEFERRED-03).**
-`lore-memory action='update'` runs the same extraction over the
-post-update title / keywords / synopsis, pre-queries existing
-`mentions` facts sourced from this memory via
-`FactService.queryBySourceMemory`, and emits `createWithDedup` only
-for entities the graph doesn't already cover. The "covered" check
-is by Object alone, deliberately: a title-only update changes
-every existing fact's subject text but emits zero new rows.
-**Stale facts (entities removed by the update) are NOT cleaned
-up** — diff-and-invalidate would extend the auto-fact contract
-with invalidation behavior owned by the explicit fact invalidation and
-memory-compare surfaces; that contract is its own design decision, not
-part of this follow-up. The advisory footer mirrors save
-(`Auto-mentions: N new` / `Auto-mentions: K/N new attempted`) with the
-`new` suffix distinguishing update-time emission from save-time. Same
-`LORE_DISABLE_AUTO_MENTIONS=1` kill switch.
+**Update-time re-emission (diff-and-invalidate, DEFERRED-03 +
+issue #491).** `lore-memory action='update'` runs the same
+extraction over the post-update title / keywords / synopsis,
+pre-queries existing `mentions` facts sourced from this memory via
+`FactService.queryBySourceMemory({ predicates: ["mentions"] })`, and
+produces a symmetric diff: `createWithDedup` fires for entities the
+graph doesn't already cover (`current − previous`), and
+`services.facts.invalidate` fires for facts whose Object is no
+longer surfaced (`previous − current`). The covered / stale check
+is by Object alone, deliberately: a title-only update that leaves
+the entity set untouched changes every existing fact's subject text
+but emits zero new rows AND zero invalidates.
+
+`FactService.invalidate` is a soft-delete (writes `Valid Until =
+today`, never `pages.update({ archived: true })`) per the
+"Fact Invalidation" rule above, so historical record is preserved
+even on the auto-mentions surface — the row is dropped from
+default-active queries via the `is_empty` filter, but
+`includeInvalidated: true` reads still surface it. Mirrors the
+explicit `lore-fact action='invalidate'` surface; auto-mentions and
+manual invalidation produce structurally identical row state.
+
+The pre-query runs unconditionally inside the
+`extractionInputsTouched` gate (no `mentionedEntities.length > 0`
+short-circuit) — without this, an update that strips every entity
+from the surface (e.g. retitling `Investigated PR #25750 latency
+regression` to `Generic refactor notes`) would silently leave the
+existing `mentions` facts orphaned, the exact dynamic issue #491
+exists to close.
+
+The `predicates: ["mentions"]` filter on the pre-query is
+load-bearing for the "auto-emit only invalidates auto-emitted
+facts" contract — manual `lore-fact action='create'` calls cannot
+land a `mentions` row (the predicate is excluded from
+`PREDICATE_VALUES` in `tools/knowledge.ts`), AND the pre-query
+filters by predicate at the service boundary so the diff branch
+never sees manual `uses` / `depends_on` / `causes` rows pointing at
+this source memory. A future refactor that loosens the filter
+(e.g. dropping the options arg on the `queryBySourceMemory` call)
+would silently start invalidating manual facts whose source memory
+is the one being updated; pinned at the call boundary by
+`pins the pre-query call boundary at predicates: ['mentions']` in
+`memory.test.ts`.
+
+> **Historical (pre-#491).** The branch was add-only and
+> deliberately accepted drift on removes — the alternative
+> (diff-and-invalidate on every update) was scoped out of
+> 0.8.0/#07 as "owned by the explicit fact invalidation surface."
+> Issue #491 closed that gap because every entity rename produced
+> a fresh fact AND left the old fact live, so a long-lived memory
+> accumulated orphans without bound across revisions. The
+> symmetric contract restores parity with the explicit
+> `lore-fact action='invalidate'` and `lore-correct` surfaces.
+
+The advisory footer surfaces both halves: `Auto-mentions: N new`
+when only creates fired, `Auto-mentions: N stale invalidated` when
+only invalidates fired, `Auto-mentions: N new, M stale invalidated`
+when both fired. Partial-failure ratios render independently per
+half (`Auto-mentions: 1/2 new attempted, 0/1 stale invalidated
+attempted`). The `new` / `stale invalidated` suffixes distinguish
+update-time emission from save-time emission so an operator
+triaging response output can tell which surface produced the count
+and which half of the diff drove the work. Same
+`LORE_DISABLE_AUTO_MENTIONS=1` kill switch — the env var disables
+both extraction AND the pre-query, so an operator distrusting the
+tokenizer disables every per-entity write the branch would
+otherwise emit. Per-entity invalidate failures route through
+`debugLogAutoFactFailure` with `kind=invalidate` so a sustained
+problem with the invalidate write is distinguishable from
+transient dedup races on the create side.
+
+**Concurrent invalidate against the same fact id.**
+`FactService.invalidate` is documented as advisory under
+concurrency: the `Valid Until` write is idempotent (two writes
+produce the same date), but the confidence-score decrement is a
+non-atomic read-compute-write — Notion has no compare-and-swap on
+property updates. Two parallel invalidators on the same fact can
+land either ONE or TWO decrements depending on interleaving: if
+both reads happen before either write, both compute `s → s/2`
+against the same pre-decrement snapshot and the final value is
+halved once; if the second read happens after the first write, the
+second decrement sees the post-first-write `s/2` and lands `s/4`.
+Same posture as `src/core/fact.ts`'s read/compute/write contract —
+this AGENTS.md prose is the cross-reference, not a contradicting
+spec. Pre-#491 the race was bounded to two surfaces: explicit
+`lore-fact action='invalidate'` and the compare-dispatch confidence
+path (which has the `compare_dispatch` ledger guard precisely for
+this reason). After #491, every `lore-memory action='update'` with
+extraction-relevant args becomes a potential second writer — e.g.
+an operator running `lore-fact action='invalidate'` on a stale
+auto-mention while a concurrent `lore-memory action='update'`
+retitles the same memory, or two parallel updates against the same
+memory each computing the same `staleFacts` list from the same
+`existing` snapshot. The blast radius for auto-mentions
+specifically is small (these facts ship at `confidence:
+speculative` with low seed scores, and the auto-mentions surface
+only halves the score on invalidate, never on read), so 0.12.x
+ships without a per-fact lock; if real-vault data shows the race
+materializing, the fix shape is the same as #265's task-reuse plan
+— lift the existing per-id lock primitive in
+`src/core/entity-relation-lock.ts` (the canonical filesystem-lock
+helper used by `mergeEntities` and `FactService.createWithDedup`)
+or open a per-fact-id lock for the invalidate write.
 
 **Out of scope: decision-side emission.** `lore-decision
 action='create'` already emits `decided_by` facts via its `affects`

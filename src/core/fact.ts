@@ -1568,16 +1568,35 @@ export class FactService {
    * **The read+compute+write trio is NOT atomic at the Notion API.**
    * Notion has no compare-and-swap or conditional-write primitive (same
    * posture as `createWithDedup`'s dedup race). Two concurrent
-   * invalidates of the same fact — cross-process autosaves, or a
+   * invalidates of the same fact — cross-process autosaves, a
    * `lore-correct` racing a `lore-fact action='invalidate'` in the
-   * same session — both read the same `confidenceScore`, both compute
-   * `s * 0.5`, and the second writer overwrites with the same halved
-   * value rather than a quarter (`s * 0.25`). The decrement is
-   * therefore advisory under concurrency: the invalidate contract
-   * (`Valid Until = today`) holds because the final `pages.update` is
-   * atomic, but the score may end up halved-once instead of
-   * halved-twice. Mirror of `MemoryService.decrementConfidence`'s
+   * same session, or (post-#491) a `lore-memory action='update'`
+   * computing the same `staleFacts` list as a parallel explicit
+   * invalidate — can land EITHER one OR two confidence decrements
+   * depending on interleaving:
+   *
+   * - **Both reads before either write** (A.read → B.read → A.write
+   *   → B.write): both readers see the same pre-decrement
+   *   `confidenceScore`, both compute `s * 0.5`, and the second
+   *   writer overwrites with the same halved value. Final state is
+   *   `s * 0.5` — halved exactly once.
+   * - **Read interleaved with write** (A.read → A.write → B.read →
+   *   B.write): the second reader sees the post-first-write
+   *   `s * 0.5`, computes `s * 0.25`, and the second writer lands
+   *   that quarter value. Final state is `s * 0.25` — halved twice.
+   *
+   * Which interleaving lands depends on Notion API latency, the
+   * shared rate-limit middleware queue position, and the mix of
+   * concurrent callers; the runtime can't choose between them. The
+   * decrement is therefore advisory under concurrency: the
+   * invalidate contract (`Valid Until = today`) holds because the
+   * final `pages.update` is atomic, but the score lands somewhere
+   * in `[s * 0.25, s * 0.5]` for two parallel invalidators on the
+   * same row. Mirror of `MemoryService.decrementConfidence`'s
    * concurrency posture; both ship under the same contract.
+   * `src/core/AGENTS.md`'s "Concurrent invalidate against the same
+   * fact id" block is the cross-reference; same description in two
+   * places.
    *
    * **Archived rows short-circuit (issue #497).** The helper retrieves
    * the row directly (rather than via `getById`, which collapses the

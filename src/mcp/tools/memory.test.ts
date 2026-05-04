@@ -12,6 +12,8 @@ import {
   RecordComparedPartialWriteError,
   RekeyAuditError,
 } from "../../core/memory.js"
+import { extractEntityCandidates } from "../../core/near-duplicate.js"
+import { decodeTextEntities } from "../../notion/html-entities.js"
 import type { Memory, Topic } from "../../types.js"
 
 function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
@@ -3498,12 +3500,22 @@ describe("lore-memory auto-mentions emission (issue 0.8.0/07)", () => {
 })
 
 describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => {
-  // Update-time re-emission of `mentions` facts uses the add-only
-  // contract: pre-query existing mentions sourced from this memory,
-  // emit `createWithDedup` only for entities not already covered.
-  // Stale facts (entities removed by the update) are deliberately NOT
-  // cleaned up — that requires extending the auto-fact contract with
-  // invalidation, which today only `lore-correct` carries.
+  // Update-time re-emission of `mentions` facts uses the symmetric
+  // diff-and-invalidate contract (issue #491). Pre-query
+  // source-scoped live `mentions` facts via
+  // `FactService.queryBySourceMemory({ predicates: ["mentions"] })`,
+  // emit `createWithDedup` for `current − previous` (entities the
+  // graph doesn't already cover), and invalidate `previous − current`
+  // (existing facts whose Object is no longer surfaced by the
+  // post-update extraction). The whole branch is gated behind
+  // `LORE_DISABLE_AUTO_MENTIONS=1`, which disables both extraction
+  // AND the pre-query so an operator distrusting the tokenizer
+  // skips every per-entity write the diff would otherwise emit.
+  //
+  // Pre-#491 the branch was add-only and deliberately accepted
+  // drift on removes; an entity rename produced a fresh fact AND
+  // left the old fact live, so a long-lived memory accumulated
+  // orphan `mentions` rows without bound across revisions.
 
   it("emits a `mentions` fact for an entity newly surfaced in the post-update title", async () => {
     const mockServer = createMockServer()
@@ -3572,6 +3584,67 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(text).toMatch(/^Auto-mentions: \d+ new$/m)
   })
 
+  it("pins the pre-query call boundary at `predicates: ['mentions']` (manual-fact preservation contract)", async () => {
+    // Dedicated contract test: the diff-and-invalidate branch only
+    // ever invalidates auto-emitted `mentions` facts. That contract
+    // rests on two things: (1) `mentions` is excluded from
+    // `PREDICATE_VALUES` in `tools/knowledge.ts`, so manual
+    // `lore-fact action='create'` calls cannot land a `mentions`
+    // row, and (2) the pre-query passes `predicates: ['mentions']`
+    // to `queryBySourceMemory`, so the response set never includes
+    // manual `uses` / `depends_on` / `causes` facts pointing at
+    // this source memory. (1) is enforced elsewhere; (2) is
+    // enforced here. A future refactor that drops the predicate
+    // filter (e.g. "let's reuse `queryBySourceMemory` without
+    // options") would silently start invalidating manual facts
+    // whose source memory is the one being updated — this test
+    // catches that drift at the call boundary.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-predicate-pin", {
+      title: "Reviewed PR #25750",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-x" },
+      deduped: false,
+      enriched: [],
+    })
+    const invalidate = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    await lore({
+      memoryId: "mem-predicate-pin",
+      title: "Reviewed PR #25750",
+    } as never)
+
+    // Exact-array assertion (not `expect.arrayContaining`) — a future
+    // refactor that widens the filter to `["mentions", "uses"]`
+    // would silently expand the invalidate surface.
+    expect(queryBySourceMemory).toHaveBeenCalledWith(
+      "mem-predicate-pin",
+      expect.objectContaining({ predicates: ["mentions"] })
+    )
+    const callOpts = queryBySourceMemory.mock.calls[0][1] as {
+      predicates: string[]
+    }
+    expect(callOpts.predicates).toEqual(["mentions"])
+  })
+
   it("does NOT re-emit a fact for an entity already covered by an existing mentions fact", async () => {
     // The covered-set check is the load-bearing dedup primitive: if
     // `queryBySourceMemory` returns a fact with `object: "PR #25750"`,
@@ -3622,13 +3695,15 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(text).not.toContain("Auto-mentions:")
   })
 
-  it("does NOT invalidate or touch facts for entities removed by the update (add-only contract)", async () => {
-    // Stale-fact silence is the contract we're pinning: the spec
-    // explicitly accepts drift on removes as the cost of avoiding
-    // the diff-and-invalidate path, which would extend the auto-fact
-    // contract with invalidation behavior. A future contributor
-    // tempted to "clean up stale mentions on update" would break
-    // this test rather than silently widening the contract.
+  it("invalidates facts for entities removed by the update (diff-and-invalidate, issue #491)", async () => {
+    // Symmetric contract: an entity rename (e.g. `MemoryService` →
+    // `MemoryService.create`) produces a fresh `mentions` fact for
+    // the new label AND invalidates the stale fact for the old
+    // label. Pre-#491 the stale fact stayed live as an orphan,
+    // ratcheting up the orphan count on every rename. Pinning the
+    // call is the load-bearing assertion — a future contributor
+    // tempted to "restore the add-only contract" would break this
+    // test rather than silently re-introducing the orphan dynamic.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-stale", {
       title: "Investigated PR #25750",
@@ -3636,18 +3711,18 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     })
     const update = vi.fn().mockResolvedValue(updated)
     // Existing facts include one for an entity NOT in the post-update
-    // text — the add-only contract leaves it alone. The current-text
-    // entities (`PR #25750` + `#25750`, surfaced by overlapping
-    // patterns in the extractor) are all covered so no fresh emission
-    // fires; the test isolates the stale-fact-handling assertion from
-    // any "fresh entity slipped through" noise.
+    // text. The current-text entities (`PR #25750` + `#25750`,
+    // surfaced by overlapping patterns in the extractor) are all
+    // covered so no fresh emission fires; the test isolates the
+    // stale-fact-handling assertion from any "fresh entity slipped
+    // through" noise.
     const queryBySourceMemory = vi.fn().mockResolvedValue([
       { id: "fact-stale", object: "SENTRY-9999" },
       { id: "fact-current-pr", object: "PR #25750" },
       { id: "fact-current-hash", object: "#25750" },
     ])
     const createWithDedup = vi.fn()
-    const invalidate = vi.fn()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
 
     const services = {
       projects: { findByName: vi.fn() },
@@ -3663,15 +3738,197 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     registerMemoryTools(mockServer.server, services as never)
     const lore = mockServer.getActionHandler("lore-memory", "update")
 
-    await lore({
+    const result = await lore({
       memoryId: "mem-update-stale",
       title: "Investigated PR #25750",
     } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    // No invalidate. No fresh creates either (PR #25750 already
-    // covered, SENTRY-9999 not in post-update text).
-    expect(invalidate).not.toHaveBeenCalled()
+    // Stale `SENTRY-9999` fact is invalidated by id; `PR #25750` /
+    // `#25750` stay live (still surfaced by the post-update text).
+    expect(invalidate).toHaveBeenCalledTimes(1)
+    expect(invalidate).toHaveBeenCalledWith("fact-stale")
+    // No fresh creates — every current-text entity is already
+    // covered.
     expect(createWithDedup).not.toHaveBeenCalled()
+    // Footer surfaces the invalidate count without a `new` half.
+    expect(text).toMatch(/^Auto-mentions: 1 stale invalidated$/m)
+  })
+
+  it("invalidates every existing fact when the update strips all entities from the extraction surface", async () => {
+    // The motivating regression test: an update that retitles a
+    // memory away from any entity-shaped tokens (e.g. `Investigated
+    // PR #25750 latency regression` → `Generic refactor notes`)
+    // must invalidate every existing `mentions` fact rather than
+    // silently leaving them as orphans. Pre-#491 the surrounding
+    // branch short-circuited on `mentionedEntities.length > 0` and
+    // skipped the pre-query entirely; pinning the invalidate fan-out
+    // guards against re-introducing that early exit.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-strip-all", {
+      title: "Generic refactor notes",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-old-1", object: "PR #25750" },
+      { id: "fact-old-2", object: "SENTRY-1234" },
+    ])
+    const createWithDedup = vi.fn()
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-strip-all",
+      title: "Generic refactor notes",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    const invalidatedIds = invalidate.mock.calls.map((c) => c[0])
+    expect(invalidatedIds).toEqual(expect.arrayContaining(["fact-old-1", "fact-old-2"]))
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(text).toMatch(/^Auto-mentions: 2 stale invalidated$/m)
+  })
+
+  it("emits both new facts and invalidates stale facts on a rename (diff-and-invalidate)", async () => {
+    // The canonical issue #491 scenario as a rename across two
+    // entity tokens reliably surfaced by the PR pattern: a memory
+    // retitled from one PR-bound investigation to another. Existing
+    // fact for `PR #25750` becomes stale; new fact for `PR #25800`
+    // is emitted. Pin both halves so a future contributor
+    // "optimizing the diff" can't drop one side without breaking
+    // the symmetric contract this test guards.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-rename", {
+      title: "Investigated PR #25800 follow-up regression",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    // Existing facts surface the OLD entity set (`PR #25750` and
+    // its `#25750` issue-hash sibling). Both are stale under the
+    // post-update title; both get invalidated.
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-old-pr", object: "PR #25750" },
+      { id: "fact-old-hash", object: "#25750" },
+    ])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-new" },
+      deduped: false,
+      enriched: [],
+    })
+    const invalidate = vi.fn().mockResolvedValue(undefined)
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-rename",
+      title: "Investigated PR #25800 follow-up regression",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Both stale facts invalidated by id.
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    const invalidatedIds = invalidate.mock.calls.map((c) => c[0])
+    expect(invalidatedIds).toEqual(expect.arrayContaining(["fact-old-pr", "fact-old-hash"]))
+    // Fresh `PR #25800` fact emitted (and the `#25800` issue-hash
+    // sibling, surfaced by the overlapping issue-hash pattern).
+    const objects = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object
+    )
+    expect(objects).toContain("PR #25800")
+    expect(objects).toContain("#25800")
+    // Combined-line footer with both halves comma-joined. The
+    // leading `Auto-mentions:` token is the contract agents grep
+    // for; the two halves are independent signals.
+    expect(text).toMatch(/^Auto-mentions: 2 new, 2 stale invalidated$/m)
+  })
+
+  it("invalidate failure does NOT block surviving invalidates or the create half", async () => {
+    // Failure-domain isolation, mirror of the create-side test:
+    // one stale-fact `invalidate` rejects, the other lands, the
+    // create-side fact emission still fires, and the update
+    // response is not an error. Footer surfaces the partial-failure
+    // ratios for both halves so an operator can triage a transient
+    // 5xx without re-running.
+    const mockServer = createMockServer()
+    const updated = makeMemory("mem-update-invalidate-partial", {
+      title: "Investigated SENTRY-1234",
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    const queryBySourceMemory = vi.fn().mockResolvedValue([
+      { id: "fact-stale-1", object: "PR #25750" },
+      { id: "fact-stale-2", object: "PR #25800" },
+    ])
+    const createWithDedup = vi.fn().mockResolvedValue({
+      fact: { id: "fact-new" },
+      deduped: false,
+      enriched: [],
+    })
+    const invalidate = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("notion 503"))
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-invalidate-partial",
+      title: "Investigated SENTRY-1234",
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(text).toContain("Updated memory:")
+    // Both invalidates were attempted; one rejected, one resolved.
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    // Fresh fact for `SENTRY-1234` still landed.
+    const objects = createWithDedup.mock.calls.map(
+      (c) => (c[0] as { object: string }).object
+    )
+    expect(objects).toContain("SENTRY-1234")
+    // Pin the partial-failure ratio explicitly — guards against an
+    // off-by-one in the `staleInvalidatedCount` accumulator or a
+    // future refactor that flips success/failure semantics.
+    expect(text).toContain("1/2 stale invalidated attempted")
   })
 
   it("emits only for the candidates not already covered (mixed add + already-covered)", async () => {
@@ -3957,11 +4214,16 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     expect(createWithDedup).toHaveBeenCalled()
   })
 
-  it("an update with no extractable entities skips the pre-query and emits no facts", async () => {
-    // The branch short-circuits before `queryBySourceMemory` when
-    // the extractor surfaces nothing, so a synopsis-only update on
-    // a low-token title pays zero round-trips for the auto-mentions
-    // path.
+  it("an update with no extractable entities runs the pre-query (to detect stale facts) but emits no facts when nothing is stale", async () => {
+    // Issue #491 widened the gate: the pre-query MUST run whenever
+    // an extraction-relevant arg is touched, because we can't know
+    // whether existing facts are stale without seeing them. A
+    // low-token retitle (`Investigated PR #25750 latency` → `ok`)
+    // strips every entity from the surface and must invalidate any
+    // existing `mentions` facts; the only way to know is to query.
+    // When the existing set is also empty (this fixture), the diff
+    // is a no-op and the footer stays absent — same posture as the
+    // pre-#491 short-circuit, just one round-trip later.
     const mockServer = createMockServer()
     const updated = makeMemory("mem-update-noentities", {
       title: "ok",
@@ -3969,14 +4231,15 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
       synopsis: "",
     })
     const update = vi.fn().mockResolvedValue(updated)
-    const queryBySourceMemory = vi.fn()
+    const queryBySourceMemory = vi.fn().mockResolvedValue([])
     const createWithDedup = vi.fn()
+    const invalidate = vi.fn()
 
     const services = {
       projects: { findByName: vi.fn() },
       topics: { getOrCreate: vi.fn() },
       memories: { update, getById: vi.fn() },
-      facts: { queryBySourceMemory, createWithDedup },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
       context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
       config: { projects: [] },
       sessionMemories: { record: vi.fn(), get: vi.fn() },
@@ -3992,8 +4255,14 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     } as never)
     const text = (result as { content: Array<{ text: string }> }).content[0].text
 
-    expect(queryBySourceMemory).not.toHaveBeenCalled()
+    // Pre-query runs unconditionally inside the
+    // `extractionInputsTouched` gate so stale-detection works even
+    // when current is empty.
+    expect(queryBySourceMemory).toHaveBeenCalledTimes(1)
+    // Empty current AND empty existing → no creates, no invalidates,
+    // no footer.
     expect(createWithDedup).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
     expect(text).not.toContain("Auto-mentions:")
   })
 
@@ -4146,6 +4415,101 @@ describe("lore-memory auto-mentions re-emission on update (DEFERRED-03)", () => 
     )
     expect(calls).not.toContain("Café &amp; Bar")
     expect(calls).not.toContain("Café & Bar")
+  })
+
+  it("decodes HTML entities on existing facts so the stale-set check matches the decoded extraction (no invalidate-and-replace churn on pre-migration vaults)", async () => {
+    // The inverse of the candidate-decode test above. Pre-`lore
+    // migrate --fix-fact-encoding` vaults still carry `mentions`
+    // facts whose `Object` is HTML-entity-encoded on disk; the
+    // post-update extraction always lives in the decoded namespace
+    // via `mentionedEntities = extractEntityCandidates(...).map(decodeTextEntities)`,
+    // so without symmetric decoding on the existing-fact side the
+    // diff would simultaneously classify the same logical entity as
+    // BOTH `new` (decoded form not in raw `covered`) AND `stale`
+    // (encoded form not in decoded `currentSet`) — a destructive
+    // invalidate-and-replace that decrements the encoded row's
+    // `Confidence Score` for no operator-visible reason on a memory
+    // that still mentions the same entity.
+    //
+    // The realistic shape is a URL with an encoded query-string
+    // separator: `extractEntityCandidates`'s URL regex
+    // (`https?:\/\/[a-zA-Z0-9][^\s]*`) consumes the whole URL
+    // including `&amp;`, post-processing strips trailing punct only,
+    // and `decodeTextEntities` then collapses `&amp;` → `&`. The
+    // capitalized-phrase patterns can't surface `&`-containing
+    // entities (the `&` breaks the word boundary and the surrounding
+    // single capitalized words fail `isMeaningfulCapitalizedMatch`'s
+    // identifier-shape check), so URLs are the load-bearing case.
+    //
+    // Pin the no-op shape: stored encoded URL fact + decoded
+    // post-update URL extraction → zero create calls, zero
+    // invalidate calls, no advisory footer.
+    const mockServer = createMockServer()
+    const encodedUrl = "https://example.com/foo?bar=1&amp;baz=2"
+    const decodedUrl = "https://example.com/foo?bar=1&baz=2"
+    const updated = makeMemory("mem-update-encoded-existing", {
+      title: `Reviewed ${encodedUrl}`,
+      projectIds: ["proj-a"],
+    })
+    const update = vi.fn().mockResolvedValue(updated)
+    // Stored fact's Object is encoded — the pre-`fix-fact-encoding`
+    // vault state. Same logical URL as the post-update title's
+    // extracted candidate.
+    const queryBySourceMemory = vi
+      .fn()
+      .mockResolvedValue([{ id: "fact-encoded", object: encodedUrl }])
+    const createWithDedup = vi.fn()
+    const invalidate = vi.fn()
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { getOrCreate: vi.fn() },
+      memories: { update, getById: vi.fn() },
+      facts: { queryBySourceMemory, createWithDedup, invalidate },
+      context: { project: { id: "proj-a", name: "a" }, isCatchAllFallback: false },
+      config: { projects: [] },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const lore = mockServer.getActionHandler("lore-memory", "update")
+
+    const result = await lore({
+      memoryId: "mem-update-encoded-existing",
+      title: `Reviewed ${encodedUrl}`,
+    } as never)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+
+    // Both halves are no-ops: the encoded existing fact's decoded
+    // form (`https://...&baz=2`) matches the decoded extraction.
+    // Pinned via NOT-toContain on each branch so a regression that
+    // re-introduces the asymmetry on either side fails loudly with
+    // a specific call-shape diff rather than via a vacuous "no
+    // calls" assertion.
+    expect(createWithDedup).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+    // No advisory footer when neither half fires — same posture as
+    // the steady-state "every entity already covered" case.
+    expect(text).not.toContain("Auto-mentions:")
+    // Sanity-check our fixture against the actual extractor: probe
+    // `extractEntityCandidates` directly with the same title the
+    // handler will see, then run the same `.map(decodeTextEntities)`
+    // the handler runs, and assert the decoded URL really is in the
+    // candidate set. Without this guard a future change to the URL
+    // regex (e.g., truncating at `?`) would empty `currentSet`,
+    // leave the encoded existing fact as `staleFacts`, and silently
+    // turn this test into a vacuous "no calls" pass for the wrong
+    // reason. The earlier
+    // `expect(decodedUrl).toMatch(/^https:\/\/example\.com/)` form
+    // was a tautology — it only verified the fixture string itself,
+    // not the extractor's behavior.
+    const candidates = extractEntityCandidates(
+      `Reviewed ${encodedUrl}`,
+      "",
+      ""
+    ).map(decodeTextEntities)
+    expect(candidates).toContain(decodedUrl)
   })
 })
 
