@@ -62,6 +62,7 @@ import {
   type BackfillReport,
 } from "./synopsis-backfill.js"
 import { LruCache } from "./cache.js"
+import { redactDebugMessage } from "../debug-redact.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 import {
   bumpConfidenceScore,
@@ -529,6 +530,16 @@ const HYBRID_LOG_CONTROL_CHARS = /[\x00-\x1F\x7F]/g
  * Error subclasses) but adds an explicit fallback for `null`/`undefined` so
  * the log line never reads `error=undefined`, which is parsable but not
  * diagnostic.
+ *
+ * Both branches route through `redactDebugMessage` (issue #488) before
+ * the control-char collapse: hybrid search's rejected reasons come from
+ * `dataSources.query` (contains lane) and `client.search` (semantic
+ * lane), which are exactly the SDK paths most likely to interpolate
+ * `InvalidPathParameterError`-style request-scoped detail and the
+ * forward-compatible `body=` / `headers=` shapes the helper defends
+ * against. Redaction runs first; the control-char collapse then
+ * preserves the one-event-per-line invariant on the already-scrubbed
+ * surface.
  */
 function rejectionToLogLine(reason: unknown): string {
   let raw: string
@@ -539,7 +550,7 @@ function rejectionToLogLine(reason: unknown): string {
   } else {
     raw = String(reason)
   }
-  return raw.replace(HYBRID_LOG_CONTROL_CHARS, " ")
+  return redactDebugMessage(raw).replace(HYBRID_LOG_CONTROL_CHARS, " ")
 }
 
 /**

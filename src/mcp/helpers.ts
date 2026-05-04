@@ -9,6 +9,7 @@ import type { FactService } from "../core/fact.js"
 import type { Fact } from "../types.js"
 import type { WakeUpCache } from "../core/wakeup-cache.js"
 import { isRetryableError } from "../core/project-scope.js"
+import { redactDebugError } from "../debug-redact.js"
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>
@@ -127,12 +128,12 @@ export function paginationFooter(
  * Format: `[lore] partial-failure: root=<rootId> error=<message> tool=<toolName>`
  *
  * Only `error.message` is logged — not `error.stack`, `.body`, `.headers`, or
- * the full error object. This narrowing reduces noise and keeps the bulk of
- * Notion SDK error metadata (response bodies, request IDs, status codes) out
- * of stderr; it does **not** fully scrub the message field itself. Some SDK
- * errors — e.g. `InvalidPathParameterError` — interpolate request-scoped
- * detail directly into `.message`, which will still appear here. Treat
- * `LORE_DEBUG=1` as operator-only instrumentation, not a redaction boundary.
+ * the full error object. The message is then routed through
+ * `redactDebugError` (`src/debug-redact.ts`) which bounds length, strips
+ * forward-compatible SDK leak shapes (`body=` / `headers=` / `payload=`),
+ * and replaces Notion page-id-shaped substrings with `<page-id>`. The
+ * explicit `root=<rootId>` field is NOT redacted — operators need it to
+ * triage which root failed.
  *
  * Interpolated fields (`rootId`, `message`) have ASCII control characters
  * — newlines, carriage returns, tabs, and the 0x00-0x1F / 0x7F range —
@@ -148,9 +149,8 @@ export function debugLogPartialFailures(
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
   for (const { rootId, error } of failures) {
-    const rawMessage = error instanceof Error ? error.message : String(error)
     process.stderr.write(
-      `[lore] partial-failure: root=${oneLine(rootId)} error=${oneLine(rawMessage)} tool=${toolName}\n`,
+      `[lore] partial-failure: root=${oneLine(rootId)} error=${oneLine(redactDebugError(error))} tool=${toolName}\n`,
     )
   }
 }
@@ -208,9 +208,8 @@ export function debugLogAutoFactFailure(
   kind: "create" | "invalidate" = "create",
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
-  const message = error instanceof Error ? error.message : String(error)
   process.stderr.write(
-    `[lore] auto-fact-failure: source=${source} kind=${kind} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(message)}\n`,
+    `[lore] auto-fact-failure: source=${source} kind=${kind} memoryId=${oneLine(memoryId)} entity=${oneLine(entity)} error=${oneLine(redactDebugError(error))}\n`,
   )
 }
 
@@ -248,9 +247,8 @@ export function debugLogContradictionFailure(
   error: unknown,
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
-  const message = error instanceof Error ? error.message : String(error)
   process.stderr.write(
-    `[lore] contradiction-failure: source=${oneLine(source)} memoryId=${oneLine(memoryId)} error=${oneLine(message)}\n`,
+    `[lore] contradiction-failure: source=${oneLine(source)} memoryId=${oneLine(memoryId)} error=${oneLine(redactDebugError(error))}\n`,
   )
 }
 
@@ -292,9 +290,8 @@ export function debugLogTouchFailure(
   error: unknown,
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
-  const rawMessage = error instanceof Error ? error.message : String(error)
   process.stderr.write(
-    `[lore] touch-failure: memory=${oneLine(memoryId)} error=${oneLine(rawMessage)} tool=${tool}\n`,
+    `[lore] touch-failure: memory=${oneLine(memoryId)} error=${oneLine(redactDebugError(error))} tool=${tool}\n`,
   )
 }
 
@@ -359,9 +356,8 @@ export function debugLogFactTouchFailure(
   error: unknown,
 ): void {
   if (process.env["LORE_DEBUG"] !== "1") return
-  const rawMessage = error instanceof Error ? error.message : String(error)
   process.stderr.write(
-    `[lore] fact-touch-failure: fact=${oneLine(factId)} error=${oneLine(rawMessage)} tool=${tool}\n`,
+    `[lore] fact-touch-failure: fact=${oneLine(factId)} error=${oneLine(redactDebugError(error))} tool=${tool}\n`,
   )
 }
 

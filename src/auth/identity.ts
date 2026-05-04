@@ -51,6 +51,7 @@
 
 import { createHash } from "node:crypto"
 import type { Client } from "@notionhq/client"
+import { redactDebugMessage } from "../debug-redact.js"
 
 export interface ResolvedIdentity {
   /**
@@ -228,7 +229,14 @@ function authorPresence(author: string | null): "present" | "missing" {
 }
 
 function logIdentityFailure(message: string | undefined): void {
-  const suffix = message ? `: ${message}` : ""
+  // Route the SDK-derived message through the shared `LORE_DEBUG`
+  // redactor (issue #488) before it lands in the operator's stderr.
+  // `users.me` failures are exactly the path where the Notion SDK is
+  // most likely to interpolate request-scoped detail (per-token
+  // base-URL, response shape) into `Error.message`; the redactor
+  // bounds length and scrubs page-id-shaped substrings before the
+  // line is written.
+  const suffix = message ? `: ${redactDebugMessage(message)}` : ""
   logIdentityDebug(`users.me failed${suffix}`)
 }
 

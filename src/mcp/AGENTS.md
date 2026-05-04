@@ -750,11 +750,73 @@ route its failures through the same helper so `grep "[lore] partial-failure:"`
 stays comprehensive.
 
 Only `error.message` is logged — not `.stack`, `.body`, `.headers`, or the
-full error object. This narrows the log surface and keeps the bulk of Notion
-SDK error metadata out of stderr. It is **not** a redaction boundary: some
-SDK errors (e.g. `InvalidPathParameterError`) interpolate request-scoped
-detail into `.message` itself, which will still appear. `LORE_DEBUG=1` is
-operator instrumentation, not a sensitive-data filter.
+full error object. The message then routes through `redactDebugError`
+(`src/debug-redact.ts`) before stderr (issue #488):
+
+- **Must-redact (token-leak class).** Bearer-token-shaped substrings
+  (`ntn_…` / `secret_…` followed by ≥20 url-safe chars) → `<redacted-token>`.
+  Today's Notion SDK does not interpolate tokens into `Error.message`;
+  the guard is forward-compatible against a regression in the same class
+  axios pre-1.x shipped (echoing `Authorization` headers in retry traces).
+- **Should-redact (recon class).** Notion page-id shapes
+  (`[a-f0-9]{32}` and the dashed UUID form) → `<page-id>`. Page IDs
+  are not bearer secrets per the root `AGENTS.md` Authentication section,
+  but they let an outsider enumerate vault structure; same threat the
+  PR is closing.
+- **SDK-field stripping (flat-string scrubber).** `body=` / `headers?=`
+  / `payload=` / `response=` / `request=` / `cause=` / `query=`
+  substrings, walked by a state-machine scanner that handles
+  arbitrary-depth balanced brace/bracket payloads (the depth counter
+  walks through any nesting level — quoted spans inside structured
+  payloads are skipped via the quoted-string handler so embedded `}`
+  inside `"…"` doesn't confuse the depth math), single- or
+  double-quoted strings with C-style escapes, or a bare token stopping
+  at hard delimiters (`,`, `;`, `}`, `)`, `]`) OR at whitespace where
+  the next non-space token is shaped like another `<name>=` field.
+  **Unbalanced or malformed structured input deliberately consumes
+  through end-of-string** — the conservative posture when the
+  boundary is ambiguous. Forward-compatible against a future SDK
+  regression that interpolates a JSON body into `Error.message`.
+- **Structured-payload key-aware redaction (extraInfo walker).** The
+  Notion SDK's `Logger` interface passes a structured `extraInfo`
+  object alongside the `message`. `redactDebugExtraInfo` walks the
+  object recursively but applies a **key-aware wholesale-redact rule**:
+  when a property's key is in `SENSITIVE_EXTRA_INFO_KEYS` (the same
+  eight names as the flat-string scrubber, derived from a single
+  `SDK_SENSITIVE_FIELD_NAMES` source) AND the value is not an `Error`,
+  the entire value is replaced with `<redacted>` regardless of nested
+  shape. This closes the structured-content leak class where leaf-only
+  scrubbing would walk into `{ body: { properties: { Name: { title:
+  [...] } } } }` and only catch substring-shaped leaks. The Error
+  escape-hatch preserves operator-actionable diagnostics — `request:
+  new Error("...")` walks through the Error special-case to extract
+  `name` + scrubbed `message`. Recursion still fires for
+  non-sensitive keys, so a nested sensitive key under a non-sensitive
+  parent (`{ outer: { body: ... } }`) is still wholesale-redacted at
+  the inner level. Walker depth is bounded at `MAX_EXTRA_INFO_DEPTH`
+  to keep pathological inputs from triggering a recursion-induced
+  `RangeError`.
+- **Length bound.** Truncated to `MAX_DEBUG_MESSAGE_LENGTH` chars with
+  a `…(truncated)` marker.
+
+Operators retain the diagnostic value (error category and first sentence
+of message) without leaking SDK-interpolated vault locators (e.g.
+`InvalidPathParameterError`'s page-id detail) into a centralized log
+aggregator. The explicit `root=<id>` / `memoryId=<id>` / `entity=<value>`
+interpolations are intentionally NOT redacted — operators need them to
+triage which root failed.
+
+The `eslint.config.js` `no-restricted-syntax` rule fires when a
+`process.stderr.write` template literal interpolates an error message
+directly (`${err.message}`, `${error.message}`, `${String(err)}`,
+`${errorMessage(err)}`, or a ternary thereof). New `LORE_DEBUG`-gated
+emitters land safely as `${redactDebugError(err)}` — the wrapped form
+sidesteps the rule because the immediate template expression is a call
+to the redactor. The lint rule is a backstop, not a complete defense:
+a contributor who routes the message through a custom helper that
+itself calls `process.stderr.write` could still bypass redaction. The
+contract is documented here and in the redactor's own docstring;
+review-side enforcement remains the load-bearing layer.
 
 Interpolated `rootId` and `message` fields have ASCII control characters
 (`0x00-0x1F`, `0x7F` — including `\n`, `\r`, `\t`) replaced with spaces

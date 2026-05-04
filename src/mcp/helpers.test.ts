@@ -1,9 +1,23 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   debugLogAutoFactFailure,
   debugLogContradictionFailure,
+  debugLogFactTouchFailure,
+  debugLogPartialFailures,
+  debugLogTouchFailure,
 } from "./helpers.js"
+
+// Wrapper around `vi.spyOn(process.stderr, "write")` that returns the
+// spy at the loose `MockInstance` shape vitest infers. The
+// `WriteStream.write(...)` overload set doesn't unify cleanly with
+// the `vi.spyOn<T, K>` generic, so a type-literal annotation on the
+// `let stderr` variable wouldn't compile; pulling the call into a
+// helper lets `ReturnType<typeof spyStderr>` resolve through TS's
+// inference path instead.
+function spyStderr() {
+  return vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+}
 
 describe("debugLogAutoFactFailure (0.8.0/07)", () => {
   it("is a no-op when LORE_DEBUG is unset (zero stderr writes)", () => {
@@ -237,5 +251,219 @@ describe("debugLogContradictionFailure", () => {
       delete process.env.LORE_DEBUG
       stderr.mockRestore()
     }
+  })
+})
+
+describe("LORE_DEBUG redaction routing (issue #488)", () => {
+  // Pins the contract that every LORE_DEBUG-gated stderr emitter in
+  // this module routes its error message through `redactDebugError`
+  // before writing. Page-id-shaped substrings and forward-compatible
+  // SDK leak shapes (`body=`, `headers=`) are scrubbed; the
+  // `root=<id>` / `memoryId=<id>` / `entity=<id>` explicit fields are
+  // intentionally NOT redacted because operators need them for
+  // triage. Coverage of one helper per shape is sufficient — the
+  // routing is the contract, not the per-helper plumbing.
+
+  it("debugLogPartialFailures redacts page-id substrings in error messages but keeps explicit root id intact", () => {
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      const id = "abcdef0123456789abcdef0123456789"
+      const rootId = "fedcba9876543210fedcba9876543210"
+      debugLogPartialFailures("lore-memory", [
+        { rootId, error: new Error(`Failed to load page ${id}`) },
+      ])
+      const line = String(stderr.mock.calls[0]![0])
+      // The 32-char hex inside the error message is redacted...
+      expect(line).toContain("error=Failed to load page <page-id>")
+      // ...but the explicit root field still carries the operator-actionable id.
+      expect(line).toContain(`root=${rootId}`)
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+
+  it("debugLogPartialFailures strips forward-compatible SDK body= leaks", () => {
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      debugLogPartialFailures("lore-memory", [
+        {
+          rootId: "root-id",
+          error: new Error('APIError body={"page":"secret"} status=500'),
+        },
+      ])
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toContain("body=<redacted>")
+      expect(line).not.toContain("\"secret\"")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+
+  it("debugLogAutoFactFailure routes through the redactor too (single-pass coverage)", () => {
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      const id = "abcdef0123456789abcdef0123456789"
+      debugLogAutoFactFailure(
+        "save",
+        "mem-1",
+        "PR #25750",
+        new Error(`unable to read ${id}`),
+      )
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toContain("error=unable to read <page-id>")
+      // Explicit field is still readable.
+      expect(line).toContain("memoryId=mem-1")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+
+  it("debugLogContradictionFailure routes through the redactor too", () => {
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      const id = "abcdef0123456789abcdef0123456789"
+      debugLogContradictionFailure(
+        "invalidate",
+        "mem-1",
+        new Error(`page ${id} access denied`),
+      )
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toContain("error=page <page-id> access denied")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+
+  it("debugLogTouchFailure routes through the redactor too", () => {
+    // Coverage parity with the other LORE_DEBUG emitters in this
+    // module — the touch path fires on every read citation, so an
+    // SDK error carrying a page id under load would otherwise rain
+    // recon-grade detail into stderr.
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      const id = "abcdef0123456789abcdef0123456789"
+      debugLogTouchFailure("lore-query", "mem-7", new Error(`page ${id} 429`))
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toContain("error=page <page-id> 429")
+      expect(line).toContain("memory=mem-7")
+      expect(line).toContain("tool=lore-query")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+
+  it("debugLogFactTouchFailure routes through the redactor too", () => {
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    process.env.LORE_DEBUG = "1"
+    try {
+      const id = "abcdef0123456789abcdef0123456789"
+      debugLogFactTouchFailure("lore-query", "fact-3", new Error(`fact ${id}`))
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toContain("error=fact <page-id>")
+      expect(line).toContain("fact=fact-3")
+    } finally {
+      delete process.env.LORE_DEBUG
+      stderr.mockRestore()
+    }
+  })
+
+  describe("clean messages pass through unchanged; explicit fields remain readable", () => {
+    // Negative coverage per routing site — a regression that
+    // accidentally over-redacts the explicit `root=` / `memoryId=` /
+    // `entity=` / `fact=` interpolations would silently break operator
+    // triage. Pin the safe-passthrough contract per emitter.
+    //
+    // Each test saves the prior `LORE_DEBUG` value and restores it in
+    // `finally` so a vitest run that already had the env var set
+    // (e.g. an outer harness, a watch-mode rerun, or a sibling test
+    // that leaked the gate state) doesn't see its value silently
+    // deleted out from under it. Mirrors the defensive shape used in
+    // `auth/identity.test.ts` and `notion/client.test.ts`.
+
+    let priorDebug: string | undefined
+    // Vitest's `MockInstance` generic doesn't unify with the
+    // overloaded `WriteStream.write(...)` signature, so the spy is
+    // typed via the helper's return shape rather than the
+    // narrower `vi.spyOn<...>` form.
+    let stderr: ReturnType<typeof spyStderr>
+
+    beforeEach(() => {
+      priorDebug = process.env["LORE_DEBUG"]
+      process.env["LORE_DEBUG"] = "1"
+      stderr = spyStderr()
+    })
+
+    afterEach(() => {
+      stderr.mockRestore()
+      if (priorDebug === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = priorDebug
+      }
+    })
+
+    it("debugLogPartialFailures with a clean message preserves rootId and tool", () => {
+      debugLogPartialFailures("lore-memory", [
+        { rootId: "root-id-1", error: new Error("notion 429") },
+      ])
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toBe(
+        "[lore] partial-failure: root=root-id-1 error=notion 429 tool=lore-memory\n",
+      )
+    })
+
+    it("debugLogAutoFactFailure with a clean message preserves memoryId and entity", () => {
+      debugLogAutoFactFailure("save", "mem-1", "PR #25750", new Error("notion 429"))
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toBe(
+        "[lore] auto-fact-failure: source=save kind=create memoryId=mem-1 entity=PR #25750 error=notion 429\n",
+      )
+    })
+
+    it("debugLogContradictionFailure with a clean message preserves source and memoryId", () => {
+      debugLogContradictionFailure("invalidate", "mem-1", new Error("notion 429"))
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toBe(
+        "[lore] contradiction-failure: source=invalidate memoryId=mem-1 error=notion 429\n",
+      )
+    })
+
+    it("debugLogTouchFailure with a clean message preserves memory id and tool", () => {
+      debugLogTouchFailure("lore-query", "mem-1", new Error("notion 429"))
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toBe(
+        "[lore] touch-failure: memory=mem-1 error=notion 429 tool=lore-query\n",
+      )
+    })
+
+    it("debugLogFactTouchFailure with a clean message preserves fact id and tool", () => {
+      debugLogFactTouchFailure("lore-query", "fact-1", new Error("notion 429"))
+      const line = String(stderr.mock.calls[0]![0])
+      expect(line).toBe(
+        "[lore] fact-touch-failure: fact=fact-1 error=notion 429 tool=lore-query\n",
+      )
+    })
   })
 })

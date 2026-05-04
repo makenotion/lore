@@ -31,6 +31,7 @@ import {
   resolveAuth,
   type AuthSource,
 } from "../config.js"
+import { redactDebugError } from "../debug-redact.js"
 import {
   formatTranscriptSessionContent,
   inspectTranscript,
@@ -282,7 +283,7 @@ async function loadHookState(): Promise<HookState> {
     }
   } catch (err) {
     process.stderr.write(
-      `[lore] Failed to load ${found.path}: ${err instanceof Error ? err.message : err}. Using hook defaults.\n`
+      `[lore] Failed to load ${found.path}: ${redactDebugError(err)}. Using hook defaults.\n`
     )
     return {
       hookConfig: mergeHookDefaults(undefined),
@@ -501,7 +502,7 @@ async function readTranscriptForSave(
     raw = await readFile(event.transcript_path, "utf-8")
   } catch (err) {
     process.stderr.write(
-      `[lore] ${label}: failed to read transcript: ${err instanceof Error ? err.message : err}\n`
+      `[lore] ${label}: failed to read transcript: ${redactDebugError(err)}\n`
     )
     return null
   }
@@ -663,7 +664,7 @@ export async function handleStop(
     // corruption, lock-state inconsistency, fs errors), and the marker
     // debounce will let the next clean Stop hook fire the digest anyway.
     process.stderr.write(
-      `[lore] Stop hook error: ${err instanceof Error ? err.message : err}\n`
+      `[lore] Stop hook error: ${redactDebugError(err)}\n`
     )
     process.stdout.write("{}\n")
   }
@@ -801,7 +802,7 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       marked = await tryMarkWakeupRun(eventMeta.sessionId)
     } catch (err) {
       process.stderr.write(
-        `[lore] wakeup: debounce mark failed — ${err instanceof Error ? err.message : err}.\n`,
+        `[lore] wakeup: debounce mark failed — ${redactDebugError(err)}.\n`,
       )
     }
     if (!marked) {
@@ -830,8 +831,12 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
       { driftCheck: "debounced" }
     )
   } catch (err) {
+    // Init failures may carry SDK-interpolated request-scoped detail
+    // (vault page id, base URL, partial query text). Route through the
+    // shared `LORE_DEBUG` redactor so the centralized stderr surface
+    // doesn't leak vault locators to a log aggregator (issue #488).
     process.stderr.write(
-      `[lore] wakeup: init failed — ${err instanceof Error ? err.message : err}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`
+      `[lore] wakeup: init failed — ${redactDebugError(err)}. Run \`lore status\` or \`lore migrate\` to diagnose.\n`
     )
     return
   }
@@ -892,8 +897,13 @@ export async function wakeup(opts: { event?: string } = {}): Promise<void> {
         )}\n`,
       )
     }
+    // Load failures are exactly the path the Notion SDK is most likely
+    // to interpolate request-scoped detail into `Error.message` (page
+    // ids, partial query fragments, sometimes echoed bodies). Route
+    // through the shared `LORE_DEBUG` redactor before the message lands
+    // on stderr (issue #488).
     process.stderr.write(
-      `[lore] wakeup: load failed — ${err instanceof Error ? err.message : err}. Skipping context injection.\n`
+      `[lore] wakeup: load failed — ${redactDebugError(err)}. Skipping context injection.\n`
     )
     return
   }
@@ -1128,7 +1138,7 @@ export async function handleAutoDigest(): Promise<void> {
       message: `unexpected failure: ${err instanceof Error ? err.message : String(err)}`,
     })
     process.stderr.write(
-      `[lore] digest scheduler: unexpected failure — ${err instanceof Error ? err.message : err}\n`
+      `[lore] digest scheduler: unexpected failure — ${redactDebugError(err)}\n`
     )
   }
 }
@@ -1164,7 +1174,7 @@ if (isEntryPoint()) {
   main().catch((err) => {
     const action = process.argv[2]
     process.stderr.write(
-      `[lore] Hook error [${action}]: ${err instanceof Error ? err.message : err}\n`
+      `[lore] Hook error [${action}]: ${redactDebugError(err)}\n`
     )
     if (action === "autosave") {
       process.stdout.write("{}\n")

@@ -37,6 +37,7 @@ import {
   type RuntimeForwardedKey,
 } from "../auth/forwarded-env.js"
 import type { AuthSource } from "../config.js"
+import { redactDebugError } from "../debug-redact.js"
 import {
   activeSaveCount,
   hasActiveSessionLock,
@@ -355,7 +356,7 @@ export function spawnBackgroundSave(
       }
     }
     process.stderr.write(
-      `[lore] ${logLabel}: failed to prepare prompt file: ${err instanceof Error ? err.message : err}\n`
+      `[lore] ${logLabel}: failed to prepare prompt file: ${redactDebugError(err)}\n`
     )
     return { kind: "tempfile-failed" }
   }
@@ -502,7 +503,7 @@ export function spawnBackgroundSave(
     return { kind: "spawned" }
   } catch (err) {
     process.stderr.write(
-      `[lore] ${logLabel}: spawn failed: ${err instanceof Error ? err.message : err}\n`
+      `[lore] ${logLabel}: spawn failed: ${redactDebugError(err)}\n`
     )
     // If we got past `spawn` but never claimed the lock, the child is
     // running but no debounce / accounting points at it. SIGTERM the

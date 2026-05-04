@@ -401,6 +401,54 @@ describe("resolveAuthorIdentity", () => {
     ])
   })
 
+  it("redacts page-id-shaped substrings in users.me failure messages (issue #488)", async () => {
+    // `users.me` is exactly the failure path the Notion SDK is most
+    // likely to interpolate request-scoped detail into. Pin that the
+    // identity debug logger routes the message through the shared
+    // redactor so a vault page id leaked into `Error.message` does
+    // not flow into the operator's centralized log surface.
+    const priorDebug = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    try {
+      const failingClient = {
+        users: {
+          me: vi.fn(async () => {
+            throw new Error(
+              "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found",
+            )
+          }),
+        },
+      } as unknown as Client
+      const resolver = createAuthorIdentityResolver(failingClient, () => ({
+        token: "failure-token",
+      }))
+      await expect(resolver.resolveAuthor()).resolves.toBeNull()
+    } finally {
+      stderrSpy.mockRestore()
+      if (priorDebug === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = priorDebug
+      }
+    }
+
+    expect(stderrChunks).toHaveLength(1)
+    expect(stderrChunks[0]).toContain("<page-id>")
+    expect(stderrChunks[0]).not.toContain("abcdef0123456789abcdef0123456789")
+  })
+
   it("keeps resetIdentityCache callable without arguments and clears every live resolver", async () => {
     const firstMe = vi
       .fn()

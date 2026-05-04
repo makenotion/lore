@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os"
 import { resolve, relative, basename, extname, join } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
+import { redactDebugError } from "../../debug-redact.js"
 import { dynamicCodeFence } from "../../core/markdown.js"
 import {
   resolveProjectScopeName,
@@ -457,14 +458,17 @@ export type MineLockReclaimResult = "reclaimed" | "active" | "gone"
 const MINE_LOCK_OWNER_FILE = "owner.json"
 const MINE_LOCK_REAPER_FILE = "reaper"
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
 function debugMineLockError(source: string, err: unknown): void {
   if (process.env["LORE_DEBUG"] !== "1") return
+  // Filesystem-error messages here (EACCES, ENOENT, ENAMETOOLONG, custom
+  // stack-laden errors) don't carry SDK-shape detail, but the
+  // `redactDebugMessage` length bound is the load-bearing defense for
+  // this caller — a long ENAMETOOLONG path or a stack-laden custom error
+  // shouldn't spill the per-line invariant log aggregators rely on.
+  // Routing through the shared helper also keeps the helper as the
+  // single chokepoint for every LORE_DEBUG-gated emitter (issue #488).
   process.stderr.write(
-    `[lore] mine-lock-${source}: error=${errorMessage(err)} source=mine-${source}\n`
+    `[lore] mine-lock-${source}: error=${redactDebugError(err)} source=mine-${source}\n`
   )
 }
 

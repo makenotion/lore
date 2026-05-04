@@ -77,14 +77,17 @@ describe("stderrSdkLogger", () => {
     expect(line.endsWith("\n")).toBe(true)
   })
 
-  it("falls back to [unserializable extraInfo] when JSON.stringify throws (e.g. circular references)", () => {
-    // The "retrying request" path passes a flat
-    // `{ method, path, attempt, delayMs }` and never trips this
-    // branch today. The guard exists so a future SDK extra-info
-    // shape carrying a circular reference (an error with a `cause`
+  it("breaks circular references in extraInfo via redactDebugExtraInfo's WeakSet", () => {
+    // Circular references in SDK extra-info (an error with a `cause`
     // chain pointing back at itself, a request object holding a
-    // reference to its own response) cannot turn the diagnostic
-    // logger into the source of a CLI crash.
+    // reference to its own response) used to fall back to a literal
+    // `[unserializable extraInfo]` sentinel. Issue #488's redaction
+    // pipeline walks `extraInfo` recursively and substitutes circular
+    // back-references with `<circular>`, so the diagnostic value
+    // survives even when the SDK passes a self-referencing payload.
+    // The try/catch around `JSON.stringify` is still load-bearing for
+    // non-circular failures (BigInt, symbol, function values) — see
+    // the `[unserializable extraInfo]` test below.
     const stderrChunks: string[] = []
     const stderrSpy = vi
       .spyOn(process.stderr, "write")
@@ -105,8 +108,180 @@ describe("stderrSdkLogger", () => {
     stderrSpy.mockRestore()
 
     expect(stderrChunks).toEqual([
-      "[lore] notion-sdk warn: circular extra [unserializable extraInfo]\n",
+      '[lore] notion-sdk warn: circular extra {"self":"<circular>"}\n',
     ])
+  })
+
+  it("falls back to [unserializable extraInfo] when JSON.stringify throws on a non-circular value", () => {
+    // The redactor walks circular refs cleanly, so the residual case
+    // for the try/catch is non-circular `JSON.stringify` failures —
+    // BigInt values, symbols, and other shapes the SDK could plausibly
+    // attach to a future extra-info payload. Pin the fallback so a
+    // refactor that drops the try/catch surfaces here.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    // BigInt is not JSON-serializable and `JSON.stringify` throws a
+    // TypeError. The redactor passes scalars through unchanged, so the
+    // post-redaction value still trips the same path.
+    const bigintExtra = { id: 9007199254740993n }
+
+    expect(() =>
+      stderrSdkLogger(LogLevel.WARN, "bigint extra", bigintExtra)
+    ).not.toThrow()
+
+    stderrSpy.mockRestore()
+
+    expect(stderrChunks).toEqual([
+      "[lore] notion-sdk warn: bigint extra [unserializable extraInfo]\n",
+    ])
+  })
+
+  it("redacts page-id substrings in SDK paths (issue #488 — primary leak vector)", () => {
+    // The SDK's INFO-level "Retrying request" trace passes
+    // `path: "/v1/pages/<32-hex>"` on every retry, which is the strictly
+    // worst page-id leak under LORE_DEBUG=1 — every retry attempt emits
+    // a structurally-guaranteed page id to stderr. Pin the redactor
+    // routing so the leak can't regress without this test failing.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    stderrSdkLogger(LogLevel.INFO, "Retrying request", {
+      method: "PATCH",
+      path: "/v1/pages/abcdef0123456789abcdef0123456789",
+      attempt: 2,
+      delayMs: 1000,
+    })
+
+    stderrSpy.mockRestore()
+
+    const line = stderrChunks[0]!
+    expect(line).toContain('"path":"/v1/pages/<page-id>"')
+    expect(line).not.toContain("abcdef0123456789abcdef0123456789")
+    // Operator-actionable scalars survive unchanged.
+    expect(line).toContain('"attempt":2')
+    expect(line).toContain('"delayMs":1000')
+  })
+
+  it("redacts page-id substrings in the SDK message itself", () => {
+    // Some SDK error paths interpolate a page id directly into
+    // `message` (e.g. InvalidPathParameterError) rather than carrying
+    // it on `extraInfo.path`. Both paths route through the redactor.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    stderrSdkLogger(
+      LogLevel.WARN,
+      "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found",
+      {},
+    )
+
+    stderrSpy.mockRestore()
+
+    expect(stderrChunks[0]).toContain("page <page-id> not found")
+    expect(stderrChunks[0]).not.toContain("abcdef0123456789abcdef0123456789")
+  })
+
+  it("wholesale-redacts the headers key in extraInfo, neutralizing bearer-token leaks at the source", () => {
+    // Today's SDK does not interpolate Authorization headers into the
+    // logger payload. The defense is forward-compatible — historical
+    // SDK regressions in adjacent ecosystems (axios pre-1.x echoing
+    // Authorization headers in retry traces) make the guard
+    // load-bearing. Under the issue-#488 review-4 key-aware extraInfo
+    // contract, `headers` is in `SENSITIVE_EXTRA_INFO_KEYS` and is
+    // wholesale-redacted before the bearer-token substring regex
+    // would run — so the protection is strictly stronger than
+    // substring-scrubbing alone (the entire structure under the key
+    // is replaced, not just the token-shaped leaf).
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    stderrSdkLogger(LogLevel.WARN, "auth retry", {
+      headers: { authorization: "Bearer ntn_aaaaaaaaaaaaaaaaaaaaaaaa" },
+    })
+
+    stderrSpy.mockRestore()
+
+    const line = stderrChunks[0]!
+    // The structured payload under `headers` collapses to `<redacted>`
+    // BEFORE the bearer-token regex sees the leaf — the token never
+    // appears in stderr at all.
+    expect(line).toContain('"headers":"<redacted>"')
+    expect(line).not.toContain("ntn_aaaaaaaaaaaaaaaaaaaaaaaa")
+    expect(line).not.toContain("Bearer")
+    expect(line).not.toContain("authorization")
+  })
+
+  it("wholesale-redacts a body= structured payload in extraInfo (issue #488 review-4 blocker)", () => {
+    // Concrete reproduction of review #6's blocker: an SDK shape
+    // like `{ body: { properties: { Name: { title: [...] } } } }`
+    // walked recursively under the leaf-only redactor and the title
+    // content survived. Key-aware redaction under
+    // `SENSITIVE_EXTRA_INFO_KEYS` collapses the entire structure
+    // before the substring regex runs.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    stderrSdkLogger(LogLevel.WARN, "request failed", {
+      body: {
+        properties: { Name: { title: [{ text: { content: "private workspace body" } }] } },
+        parent: { page_id: "abcdef0123456789abcdef0123456789" },
+      },
+    })
+
+    stderrSpy.mockRestore()
+
+    const line = stderrChunks[0]!
+    expect(line).toContain('"body":"<redacted>"')
+    expect(line).not.toContain("private workspace body")
+    expect(line).not.toContain("properties")
+    expect(line).not.toContain("title")
+    expect(line).not.toContain("abcdef0123456789abcdef0123456789")
   })
 
   it("omits the JSON suffix when extraInfo is empty so plain messages stay readable", () => {
@@ -419,5 +594,61 @@ describe("createAuthRefreshingClient", () => {
       "[lore] auth: 401 refresh skipped (token unchanged)\n",
       "[lore] auth: 401 refresh skipped (auth unavailable): auth resolver exploded\n",
     ])
+  })
+
+  it("routes 401 refresh-skipped suffix through redactDebugMessage (issue #488)", async () => {
+    // The auth-resolver's failure surface (auth.json read errors,
+    // users.me network blips) is the same SDK / network / config-walk
+    // path that produces the messages every other LORE_DEBUG emitter
+    // scrubs. Pin that the suffix routes through the shared redactor
+    // so a resolver error carrying a page-id substring cannot bypass
+    // the helper just because this emitter sits in src/notion/.
+    const stderrChunks: string[] = []
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(
+          typeof chunk === "string"
+            ? chunk
+            : Buffer.from(chunk as Uint8Array).toString("utf8")
+        )
+        return true
+      })
+
+    const priorDebug = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      const client = createAuthRefreshingClient(
+        { token: "same-token" },
+        async () => {
+          throw new Error("read failed for page abcdef0123456789abcdef0123456789")
+        },
+        {
+          createClient: () =>
+            ({
+              pages: {
+                retrieve: async () => {
+                  throw unauthorizedError()
+                },
+              },
+            }) as unknown as Client,
+        },
+      )
+      await expect(client.pages.retrieve({ page_id: "page" })).rejects.toThrow(
+        "unauthorized",
+      )
+    } finally {
+      if (priorDebug === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = priorDebug
+      }
+      stderrSpy.mockRestore()
+    }
+
+    const skippedLine = stderrChunks.find((line) => line.includes("auth unavailable"))
+    expect(skippedLine).toBeDefined()
+    expect(skippedLine).toContain("<page-id>")
+    expect(skippedLine).not.toContain("abcdef0123456789abcdef0123456789")
   })
 })

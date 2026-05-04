@@ -486,6 +486,52 @@ describe("hooks/wakeup — project framing block (issue 0.6.0/18)", () => {
     }
   })
 
+  it("redacts page-id substrings from wakeup load-failure stderr (issue #488)", async () => {
+    // Wake-up load failures are exactly the SDK path most likely to
+    // interpolate request-scoped detail (page ids, partial query
+    // fragments) into `Error.message`. Pin that the failure logger
+    // routes through the shared redactor before stderr.
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true)
+    setupMocks({
+      project: {
+        id: "proj-mail",
+        name: "Mail",
+        type: "project",
+        path: "apps/mail",
+        status: "active",
+        description: "",
+      },
+      isCatchAllFallback: false,
+      configProjects: [{ name: "Mail", path: "apps/mail" }],
+    })
+    loadWakeUpDataMock.mockRejectedValueOnce(
+      new Error(
+        "InvalidPathParameterError: page abcdef0123456789abcdef0123456789 not found",
+      ),
+    )
+
+    try {
+      await wakeup({
+        event: JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "redact-load-failed",
+          prompt: "Triage retrieval",
+        }),
+      })
+
+      const failureLine = stderr.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes("load failed"))
+      expect(failureLine).toBeDefined()
+      expect(failureLine).toContain("<page-id>")
+      expect(failureLine).not.toContain("abcdef0123456789abcdef0123456789")
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
   it("does not crash when coverage is unexpectedly null under debug logging", async () => {
     process.env["LORE_DEBUG"] = "1"
     const stderr = vi

@@ -5,6 +5,7 @@ import {
   isNotionClientError,
   type Logger,
 } from "@notionhq/client"
+import { redactDebugExtraInfo, redactDebugMessage } from "../debug-redact.js"
 
 const USER_AGENT = "lore/0.12.0"
 
@@ -48,28 +49,42 @@ export interface AuthRefreshingClientDeps {
  * shape used elsewhere in the codebase so existing log-aggregation
  * patterns keep working.
  *
+ * Both `message` and `extraInfo` are routed through the same
+ * `redactDebugMessage` / `redactDebugExtraInfo` defenses every other
+ * `LORE_DEBUG`-gated emitter uses (issue #488). This is the strictly-
+ * worst leak vector covered by #488 because the SDK's INFO-level
+ * "Retrying request" trace passes `path` like `/v1/pages/<32-hex>` on
+ * every retry — a structurally-guaranteed page-id leak that the per-
+ * call-site failure-message redaction would not catch on its own. The
+ * extra-info redaction walks the object recursively (string leaves
+ * scrubbed, scalars preserved) so per-retry diagnostics like
+ * `attempt: 2` / `delayMs: 1000` keep their operator-actionable value.
+ *
  * The `JSON.stringify` is wrapped in a try/catch so a future SDK
  * extra-info shape carrying a circular reference (an error with a
  * `cause` chain pointing back at itself, a request object holding a
  * reference to its own response) cannot turn the diagnostic logger
- * into the source of a CLI crash. Today's "retrying request" path
- * passes a flat `{ method, path, attempt, delayMs }` and never trips
- * this branch — the guard is for SDK evolution.
+ * into the source of a CLI crash. `redactDebugExtraInfo`'s WeakSet
+ * already breaks reference cycles before stringify runs, so the
+ * try/catch is now load-bearing only for non-circular `JSON.stringify`
+ * failures (functions, BigInts, symbols).
  *
  * Exported so `client.test.ts` can pin the format without instantiating
  * a real `Client`.
  */
 export const stderrSdkLogger: Logger = (level, message, extraInfo) => {
+  const redactedMessage = redactDebugMessage(message)
   const hasExtra = Object.keys(extraInfo).length > 0
   let suffix = ""
   if (hasExtra) {
     try {
-      suffix = ` ${JSON.stringify(extraInfo)}`
+      const redactedExtra = redactDebugExtraInfo(extraInfo)
+      suffix = ` ${JSON.stringify(redactedExtra)}`
     } catch {
       suffix = " [unserializable extraInfo]"
     }
   }
-  process.stderr.write(`[lore] notion-sdk ${level}: ${message}${suffix}\n`)
+  process.stderr.write(`[lore] notion-sdk ${level}: ${redactedMessage}${suffix}\n`)
 }
 
 /**
@@ -276,7 +291,13 @@ function defaultOnRefresh(event: AuthRefreshEvent): void {
   if (process.env["LORE_DEBUG"] !== "1") return
 
   const reason = event.reason === "unchanged" ? "token unchanged" : "auth unavailable"
-  const suffix = event.errorMessage ? `: ${event.errorMessage}` : ""
+  // The auth-resolver's failure surface is the same SDK / network /
+  // config-walk path that produces the messages every other LORE_DEBUG
+  // emitter scrubs (issue #488). Route the suffix through the shared
+  // redactor so an `auth.json` read failure that surfaces a path or a
+  // `users.me` error carrying a workspace id doesn't bypass the helper
+  // just because this emitter sits in src/notion/ rather than src/mcp/.
+  const suffix = event.errorMessage ? `: ${redactDebugMessage(event.errorMessage)}` : ""
   process.stderr.write(`[lore] auth: 401 refresh skipped (${reason})${suffix}\n`)
 }
 

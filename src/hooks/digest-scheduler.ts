@@ -28,6 +28,7 @@
 import { spawn as forkChildProcess } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { initServicesFromConfig } from "../services.js"
+import { redactDebugError } from "../debug-redact.js"
 import type { InitServicesOptions, LoreServices } from "../services.js"
 import { RUNTIME_FORWARDED_AUTH_TOKEN_KEYS } from "../auth/forwarded-env.js"
 import type { AuthSource } from "../config.js"
@@ -400,7 +401,7 @@ export function scheduleAutoDigestSpawn(
       message: `spawn failed: ${err instanceof Error ? err.message : String(err)}`,
     })
     process.stderr.write(
-      `[lore] auto-digest scheduler: spawn failed: ${err instanceof Error ? err.message : err}\n`
+      `[lore] auto-digest scheduler: spawn failed: ${redactDebugError(err)}\n`
     )
   }
 }
