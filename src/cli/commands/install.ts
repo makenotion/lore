@@ -592,13 +592,15 @@ export function shellQuotePortablePath(path: string): string {
  * `KEY=value` pairs prepended. Codex's TOML shape (`env_vars =
  * [...]`) carries name-only references to runtime env, so static
  * values like `LORE_CONFIG_ROOT` cannot live there; they go on the
- * shell command line instead. Values are POSIX single-quoted (see
- * `shellQuoteSingle`) so paths containing `$`, backticks, or `\` do
- * NOT trigger shell expansion when bash re-evaluates the line.
+ * shell command line instead. Values are quoted with the same
+ * home-aware helper used for legacy launch paths: normal absolute
+ * values remain POSIX single-quoted so `$`, backticks, or `\` do
+ * NOT trigger shell expansion, while committed `${HOME}/...` values
+ * keep the `${HOME}` prefix expandable for portability.
  */
 function codexLaunchCommand(staticEnv: Record<string, string>, command: string): string {
   const prefix = Object.entries(staticEnv)
-    .map(([key, value]) => `${key}=${shellQuoteSingle(value)}`)
+    .map(([key, value]) => `${key}=${shellQuotePortablePath(value)}`)
     .join(" ")
   return prefix ? `${prefix} ${command}` : command
 }

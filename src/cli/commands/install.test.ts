@@ -2459,6 +2459,13 @@ describe("buildCodexMcpSection — shell-safe path embedding", () => {
       `LORE_CONFIG_ROOT='/Users/foo'\\\\''s/project'`,
     )
   })
+
+  it("preserves ${HOME} expansion on committed portable configRoots", () => {
+    const section = buildCodexMcpSection("bare", "${HOME}/.lore", ENV_NONE)
+    expect(section).toContain(
+      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' lore mcp"]`,
+    )
+  })
 })
 
 describe("buildLegacyCodexMcpSection — shell-safe path embedding", () => {
@@ -2915,6 +2922,9 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
     // Mirrors the production-vault `.mcp.json` reproduction in #451:
     // operator's install-time shell carried both an API token and a
     // legacy LORE_NOTION_TOKEN, plus the ntn-native env selectors.
+    // Tests that assert env_vars for this fixture intentionally cover
+    // multi-workspace / dev-env local reinstalls, not the committed
+    // source-repo baseline below.
     NOTION_API_TOKEN: "api-tok",
     LORE_NOTION_TOKEN: "lore-tok",
     NOTION_ENV: "dev",
@@ -3008,6 +3018,21 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
     expect(section).toContain('"NOTION_ENV"')
   })
 
+  it("buildLegacyCodexMcpSection keeps the source-repo ${HOME}/.lore configRoot portable", () => {
+    const section = buildLegacyCodexMcpSection(
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      { ...ENV_NTN_LIKE, LORE_NOTION_BASE_URL: "https://api-dev.notion.com" },
+      "ntn-auth-json",
+    )
+    expect(section).toContain(
+      `LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' node \\"\${HOME}\\"'/.lore/dist/mcp.js'`,
+    )
+    expect(section).toContain('env_vars = ["LORE_NOTION_BASE_URL", "NOTION_WORKSPACE_ID", "NOTION_ENV"]')
+    expect(section).not.toContain('"NOTION_API_TOKEN"')
+    expect(section).not.toContain('"LORE_NOTION_TOKEN"')
+  })
+
   it("buildPrintConfigOutput (json) suppresses both auth-token placeholders under ntn-auth-json", () => {
     const output = buildPrintConfigOutput(
       "json",
@@ -3038,6 +3063,97 @@ describe("ntn-auth-json suppression threads through every host build helper (iss
     expect(output).not.toContain('"NOTION_API_TOKEN"')
     expect(output).not.toContain('"LORE_NOTION_TOKEN"')
     expect(output).toContain('"NOTION_ENV"')
+  })
+
+  it("buildPrintConfigOutput emits the source-repo committed ntn-source legacy shape", () => {
+    const env: NodeJS.ProcessEnv = {
+      NOTION_API_TOKEN: "api-tok",
+      LORE_NOTION_TOKEN: "legacy-tok",
+      LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
+    }
+    const json = buildPrintConfigOutput(
+      "json",
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      "${HOME}/.lore",
+      true,
+      "bare",
+      env,
+      "ntn-auth-json",
+    )
+    const parsed = JSON.parse(json) as {
+      mcpServers: {
+        lore: {
+          command: string
+          args: string[]
+          cwd: string
+          env: Record<string, string>
+        }
+      }
+    }
+    expect(parsed.mcpServers.lore.command).toBe("node")
+    expect(parsed.mcpServers.lore.args).toEqual(["${HOME}/.lore/dist/mcp.js"])
+    expect(parsed.mcpServers.lore.cwd).toBe("${HOME}/.lore")
+    expect(parsed.mcpServers.lore.env).toEqual({
+      LORE_NOTION_BASE_URL: "${LORE_NOTION_BASE_URL}",
+      LORE_CONFIG_ROOT: "${HOME}/.lore",
+      LORE_SUPPRESS_DEPRECATIONS: "1",
+    })
+
+    const toml = buildPrintConfigOutput(
+      "toml",
+      "${HOME}/.lore/dist/mcp.js",
+      "${HOME}/.lore",
+      "${HOME}/.lore",
+      true,
+      "bare",
+      env,
+      "ntn-auth-json",
+    )
+    expect(toml).toContain(
+      `args = ["-lc", "LORE_CONFIG_ROOT=\\"\${HOME}\\"'/.lore' LORE_SUPPRESS_DEPRECATIONS='1' node \\"\${HOME}\\"'/.lore/dist/mcp.js'"]`,
+    )
+    expect(toml).toContain('env_vars = ["LORE_NOTION_BASE_URL"]')
+    expect(toml).not.toContain("NOTION_API_TOKEN")
+    expect(toml).not.toContain("LORE_NOTION_TOKEN")
+  })
+
+  it("committed source-repo MCP configs match the documented ntn-source legacy shape", async () => {
+    const committedEnv: NodeJS.ProcessEnv = {
+      LORE_NOTION_BASE_URL: "https://api-dev.notion.com",
+    }
+    const expectedJson =
+      JSON.stringify(
+        {
+          mcpServers: {
+            lore: buildLegacyClaudeMcpEntry(
+              "${HOME}/.lore/dist/mcp.js",
+              "${HOME}/.lore",
+              "${HOME}/.lore",
+              committedEnv,
+              "ntn-auth-json",
+            ),
+          },
+        },
+        null,
+        2,
+      ) + "\n"
+    const expectedToml =
+      buildLegacyCodexMcpSection(
+        "${HOME}/.lore/dist/mcp.js",
+        "${HOME}/.lore",
+        committedEnv,
+        "ntn-auth-json",
+      ) + "\n"
+
+    await expect(readFile(".mcp.json", "utf8")).resolves.toBe(expectedJson)
+    await expect(readFile(".cursor/mcp.json", "utf8")).resolves.toBe(expectedJson)
+
+    const codexConfig = await readFile(".codex/config.toml", "utf8")
+    const sectionStart = codexConfig.indexOf("[mcp_servers.lore]")
+    expect(sectionStart).toBeGreaterThanOrEqual(0)
+    const mcpSection = codexConfig.slice(sectionStart)
+    expect(mcpSection).toBe(expectedToml)
   })
 
   it("legacy authSource (env-lore-notion-token) keeps LORE_NOTION_TOKEN forwarding through the Claude builder — no regression", () => {

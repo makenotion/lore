@@ -47,13 +47,20 @@ will rewrite these files to point at that checkout's path — do
 3. The committed `${HOME}/.lore/...` paths remain stable for
    every contributor.
 
-The committed env passthrough lists every key in
-`RUNTIME_FORWARDED_KEYS` (see `src/auth/forwarded-env.ts`) so any
-contributor's resolved auth — `NOTION_API_TOKEN` (canonical),
-ntn-issued (`auth.json`, no env forwarding needed),
-`LORE_NOTION_TOKEN` (legacy), workspace + environment selectors,
-`LORE_USER_NAME` attribution — reaches the spawned MCP server
-unchanged.
+The committed env passthrough assumes the recommended ntn-source
+path. The spawned MCP server reads `~/.config/notion/auth.json`
+directly, so the shared `.mcp.json`, `.cursor/mcp.json`, and
+`.codex/config.toml` intentionally avoid auth-token placeholders
+that produce `/doctor` warnings when an operator's shell does not
+define them. Legacy `LORE_NOTION_TOKEN` contributors can restore
+local token forwarding without committing the diff by running
+`cd ~/.lore && lore install --legacy-paths`; pass
+`--project <checkout>` from that clone when updating another local
+worktree. The same local reinstall path applies to contributors who
+depend on `NOTION_WORKSPACE_ID`, `NOTION_ENV`, `NOTION_BASE_URL`,
+`NOTION_API_BASE_URL`, or `LORE_USER_NAME`: the generated env
+passthrough reflects that operator's install-time shell and should
+remain a personal, uncommitted diff.
 
 ### 2. Create a Vault
 
