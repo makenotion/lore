@@ -25,7 +25,12 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve, relative } from "node:path"
 import { fileURLToPath } from "node:url"
-import { findConfigFile, loadConfigAllowingInvalidHooks } from "../config.js"
+import {
+  findConfigFile,
+  loadConfigAllowingInvalidHooks,
+  resolveAuth,
+  type AuthSource,
+} from "../config.js"
 import {
   formatTranscriptSessionContent,
   inspectTranscript,
@@ -388,7 +393,7 @@ interface TranscriptForSave {
   userMessageCount: number
 }
 
-interface StopFailureContext {
+export interface StopFailureContext {
   config: LoreConfig | null
   configRoot: string | null
 }
@@ -431,6 +436,53 @@ async function clearStopFailure(
     await clearBackgroundFailure(configRoot, "autosave", scope, { before })
   } catch {
     // Marker cleanup is diagnostic only; never block the Stop hot path.
+  }
+}
+
+/**
+ * Derive the foreground's resolved `AuthSource` for the autosave spawn
+ * + auto-digest helper-fork env partition (issue #475). Returns
+ * `undefined` when the Stop path has no loaded config (failure-context
+ * fallback in `loadHookState`) or when `resolveAuth` itself rejects —
+ * both branches preserve the pre-#475 every-key forward so the Stop
+ * hot path never gains a new failure mode. The detached children's
+ * own startup `resolveAuth` calls surface genuine auth problems
+ * through their stderr logs.
+ *
+ * Calls `resolveAuth` with `quiet: true` so the synthetic resolver
+ * call cannot emit a NEW deprecation warning on every Stop fire
+ * after the `DEPRECATION_DEBOUNCE_MS` window expires — the
+ * foreground host (Claude Code / Codex) has already paid the
+ * warning emission through its own primary `resolveAuth` (CLI
+ * preflight, MCP server init, etc.). Without `quiet`, a legacy
+ * operator would see a stderr nag at hook cadence rather than the
+ * intended once-per-warning-window cadence.
+ *
+ * Cost: one extra `auth.json` read on every Stop fire for ntn-source
+ * operators (the spawned child reads it again at its own startup).
+ * `loadNtnToken` is a single small-file `readFile` plus dynamic
+ * import (cached after first call); negligible for the Stop hot
+ * path's "in-the-millisecond" budget. Non-ntn sources don't pay the
+ * disk read — they short-circuit at priority 1 (`NOTION_API_TOKEN`)
+ * or fall through priority 3/4 with no I/O.
+ *
+ * Exported for unit-test coverage of the four-branch failure matrix
+ * (no failureContext, null config, resolveAuth rejection, success);
+ * not part of the module's public surface for production callers.
+ */
+export async function deriveStopAuthSource(
+  failureContext: StopFailureContext | undefined
+): Promise<AuthSource | undefined> {
+  if (!failureContext?.config || !failureContext.configRoot) return undefined
+  try {
+    const resolved = await resolveAuth(
+      failureContext.config,
+      failureContext.configRoot,
+      { quiet: true }
+    )
+    return resolved.source
+  } catch {
+    return undefined
   }
 }
 
@@ -489,6 +541,21 @@ export async function handleStop(
       projectName: projectNameForStopEvent(event, failureContext),
       sessionId: event.session_id,
     }
+    // Resolve the foreground's auth source once per Stop fire so
+    // BOTH the autosave spawn AND the auto-digest helper fork apply
+    // the ntn-source partition (issue #475). One disk read of
+    // `~/.config/notion/auth.json` covers both hops; the digest
+    // helper would otherwise inherit the parent's full env (Node
+    // default) and leak `LORE_NOTION_TOKEN` even when the foreground
+    // resolved via ntn. Derived BEFORE the no-transcript early
+    // return so that path's `scheduleAutoDigestSpawn` also gets the
+    // partition. Defensive: a `resolveAuth` failure (no token
+    // configured, transient `auth.json` read error) falls back to
+    // the legacy every-key forward so the Stop hot path itself
+    // never gains a new failure mode. The spawned children re-run
+    // `resolveAuth` themselves and surface genuine auth problems
+    // through their own stderr logs.
+    const authSource = await deriveStopAuthSource(failureContext)
     const read = await readTranscriptForSave(event, "Stop hook")
     if (!read) {
       process.stdout.write("{}\n")
@@ -496,6 +563,7 @@ export async function handleStop(
         configRoot: failureContext?.configRoot,
         projectName: failureScope.projectName,
         sessionId: failureScope.sessionId,
+        authSource,
       })
       return
     }
@@ -555,7 +623,7 @@ export async function handleStop(
           event.cwd ?? process.cwd(),
           prompt,
           event.session_id,
-          { agent: config.backgroundAgent }
+          { agent: config.backgroundAgent, authSource }
         )
         if (result.kind === "spawned") {
           await writeSaveCount(event.session_id, currentCount)
@@ -586,6 +654,7 @@ export async function handleStop(
       configRoot: failureContext?.configRoot,
       projectName: failureScope.projectName,
       sessionId: failureScope.sessionId,
+      authSource,
     })
   } catch (err) {
     // Fail open: let the AI stop. We intentionally do NOT schedule the

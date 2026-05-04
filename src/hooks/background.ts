@@ -31,7 +31,12 @@ import {
 } from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join, isAbsolute } from "node:path"
-import { RUNTIME_FORWARDED_KEYS } from "../auth/forwarded-env.js"
+import {
+  RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
+  RUNTIME_FORWARDED_KEYS,
+  type RuntimeForwardedKey,
+} from "../auth/forwarded-env.js"
+import type { AuthSource } from "../config.js"
 import {
   activeSaveCount,
   hasActiveSessionLock,
@@ -133,6 +138,51 @@ export interface SpawnBackgroundSaveOptions {
    * historical Claude-shaped default.
    */
   agent?: BackgroundAgentConfig
+  /**
+   * Auth source the foreground resolved through. Mirrors the
+   * `lore install` partition (`buildMcpEnv` in
+   * `cli/commands/install.ts`): under `ntn-auth-json` the spawned
+   * child's `resolveAuth` re-reads `~/.config/notion/auth.json`
+   * directly (priority 2), so forwarding bearer tokens via env is
+   * dead weight that increases blast radius without changing the
+   * child's auth contract.
+   *
+   * **The realistic pre-#475 leak surface** (issue #475 PR review,
+   * Suggestion 2). The four-priority chain in `resolveAuth` makes
+   * `NOTION_API_TOKEN` (priority 1) and `ntn-auth-json` (priority
+   * 2) mutually exclusive at resolution time — a foreground that
+   * landed on ntn-auth-json had `NOTION_API_TOKEN` unset, so the
+   * existing `if (length > 0)` filter in the safeEnv loop already
+   * dropped it on its own. The actual risk this partition closes
+   * is `LORE_NOTION_TOKEN`-when-ntn-wins: an operator with both
+   * `LORE_NOTION_TOKEN` set in shell rc (transition state, dual
+   * shell-rc setups, copy-pasted onboarding script) AND ntn login
+   * preferred (priority 2 wins over priority 3) would still see
+   * the unused `LORE_NOTION_TOKEN` forwarded into every detached
+   * autosave / digest / auto-digest-helper child via env. Anyone
+   * with the engineer's UID could read that bearer through
+   * `/proc/<pid>/environ` (Linux), `ps -wwwE` (macOS), or any
+   * debug log / crash dump the third-party agent CLI Lore does
+   * not control happens to emit. Under ntn-first the legacy
+   * `LORE_NOTION_TOKEN` resolves the same workspace token the
+   * child would land on via auth.json anyway, so suppressing the
+   * forward is functionally equivalent — and tightens the
+   * blast-radius envelope for the dual-shell-rc operator class.
+   *
+   * For non-ntn sources (`env-notion-api-token`,
+   * `env-lore-notion-token`, `config-auth-token`) the legacy
+   * forward stays — those callers explicitly accept token-in-env
+   * as part of their contract and the child has no other way to
+   * land on the same source.
+   *
+   * Omitted callers (the back-compat path; e.g. test fixtures, ad-hoc
+   * one-shot invocations without a resolved foreground auth) preserve
+   * pre-#475 behavior: every key in `RUNTIME_FORWARDED_KEYS` forwards
+   * conditionally regardless of source. The detached child still
+   * re-resolves auth at startup, so the worst case is the same
+   * pre-#475 surface — no regression, just no upgrade either.
+   */
+  authSource?: AuthSource
 }
 
 /**
@@ -321,6 +371,21 @@ export function spawnBackgroundSave(
   // skipped for parity with the `lore install` placeholder shape —
   // a declared-but-empty var would otherwise short-circuit
   // `resolveAuth`'s priority chain in the spawned child.
+  //
+  // Under `authSource: "ntn-auth-json"` the auth-token subset
+  // (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) is dropped from the
+  // forward — the spawned child re-reads `~/.config/notion/auth.json`
+  // directly via `loadNtnToken` (resolveAuth priority 2) and lands
+  // on the same token without ever crossing the fork boundary in env.
+  // Workspace + base-URL + attribution selectors still forward so
+  // multi-workspace `auth.json` resolution agrees with the foreground.
+  // See `SpawnBackgroundSaveOptions.authSource` for the threat model
+  // and `cli/commands/install.ts:buildMcpEnv`'s `skipAuthTokens`
+  // partition this mirrors. (Issue #475.)
+  const skipAuthTokens = options.authSource === "ntn-auth-json"
+  const authTokenKeys: ReadonlySet<RuntimeForwardedKey> = new Set(
+    RUNTIME_FORWARDED_AUTH_TOKEN_KEYS,
+  )
   const safeEnv: Record<string, string> = {
     PATH: process.env["PATH"] ?? "",
     HOME: process.env["HOME"] ?? "",
@@ -328,6 +393,7 @@ export function spawnBackgroundSave(
     LORE_BACKGROUND_AGENT: "true",
   }
   for (const key of RUNTIME_FORWARDED_KEYS) {
+    if (skipAuthTokens && authTokenKeys.has(key)) continue
     const value = process.env[key]
     if (typeof value === "string" && value.length > 0) {
       safeEnv[key] = value

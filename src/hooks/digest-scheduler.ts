@@ -29,6 +29,8 @@ import { spawn as forkChildProcess } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { initServicesFromConfig } from "../services.js"
 import type { InitServicesOptions, LoreServices } from "../services.js"
+import { RUNTIME_FORWARDED_AUTH_TOKEN_KEYS } from "../auth/forwarded-env.js"
+import type { AuthSource } from "../config.js"
 import type { LoreConfig } from "../types.js"
 import { resolveProjectPathFromCwd } from "../core/context.js"
 import {
@@ -246,6 +248,11 @@ export async function fireDigestIfStale(
     logLabel: "digest",
     allowedTools: DIGEST_ALLOWLIST,
     agent: state.backgroundAgent,
+    // Apply the ntn-source env partition (issue #475). `services` is
+    // the same in-process bundle whose `resolveAuth` produced
+    // `authSource`, so the digest synthesizer's spawn-time env
+    // matches the source the foreground digest gather already used.
+    authSource: services.authSource,
   })
 
   if (result.kind === "spawned") {
@@ -324,6 +331,25 @@ export interface ScheduleAutoDigestSpawnOptions {
   sessionId?: string | null
   recordFailure?: typeof recordBackgroundFailure
   clearFailure?: typeof clearBackgroundFailure
+  /**
+   * Foreground's resolved `AuthSource`. Mirrors
+   * `SpawnBackgroundSaveOptions.authSource` (issue #475) for the
+   * Stop → auto-digest-helper hop. When `"ntn-auth-json"`, the
+   * detached helper's inherited env drops
+   * `RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` so a stale
+   * `LORE_NOTION_TOKEN` (or any other auth-token key still set in
+   * the parent shell) doesn't land in `/proc/<pid>/environ` /
+   * `ps -wwwE` / the helper's third-party-agent debug logs before
+   * the inner synthesizer spawn's own partition runs. The helper
+   * re-resolves auth via `loadNtnToken` against the same
+   * `~/.config/notion/auth.json` and lands on the same token.
+   *
+   * Non-ntn sources keep the legacy full-env inheritance — those
+   * callers' `resolveAuth` priority chain reaches the bearer only
+   * through env. Omitted-`authSource` callers (test fixtures,
+   * legacy invocations) preserve pre-#475 behavior verbatim.
+   */
+  authSource?: AuthSource
 }
 
 export function scheduleAutoDigestSpawn(
@@ -342,10 +368,23 @@ export function scheduleAutoDigestSpawn(
   const recoveredAt = new Date()
   try {
     const helperPath = fileURLToPath(new URL("./helpers.js", import.meta.url))
+    // Default-inherited env minus the auth-token subset under
+    // `ntn-auth-json` (issue #475). Spread-then-delete preserves
+    // every other operator-controlled knob the helper expects in
+    // env (`LORE_HOOK_STATE_DIR`, `LORE_DEBUG`, `LORE_AUTO_DIGEST`,
+    // `LORE_AGENT_NAME`, etc.) — only the bearer-token keys are
+    // removed, so the helper's own `resolveAuth` falls through to
+    // `loadNtnToken` against `~/.config/notion/auth.json` and
+    // lands on the same source as the foreground. For non-ntn
+    // sources the spread is a no-op (`childEnv === process.env`
+    // semantically) and the legacy inheritance posture is
+    // preserved byte-for-byte.
+    const childEnv = buildAutoDigestHelperEnv(opts.authSource)
     const child = forkChildProcess(process.execPath, [helperPath, "auto-digest"], {
       cwd,
       detached: true,
       stdio: "ignore",
+      env: childEnv,
     })
     child.unref()
     void clearFailure(opts.configRoot, "auto-digest-helper-spawn", failureScope, {
@@ -364,4 +403,34 @@ export function scheduleAutoDigestSpawn(
       `[lore] auto-digest scheduler: spawn failed: ${err instanceof Error ? err.message : err}\n`
     )
   }
+}
+
+/**
+ * Build the env passed to the detached `helpers.js auto-digest`
+ * fork. Spreads the parent's `process.env` so the helper inherits
+ * every operator-controlled runtime knob it expects to see
+ * (`LORE_HOOK_STATE_DIR`, `LORE_DEBUG`, `LORE_AUTO_DIGEST`,
+ * `LORE_AGENT_NAME`, `TMPDIR`, etc.), then deletes the
+ * auth-token subset (`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS`) when the
+ * foreground resolved via `ntn-auth-json` so the bearer never
+ * lands in the helper child's env. The helper's own
+ * `initServicesFromConfig` re-runs `resolveAuth`, which falls
+ * through to `loadNtnToken` against the operator's `auth.json`
+ * and lands on the same workspace token as the foreground (issue
+ * #475).
+ *
+ * Non-ntn sources and omitted `authSource` callers receive the
+ * unmodified `process.env` shape — pre-#475 inheritance posture
+ * preserved byte-for-byte. Exported only for test coverage; the
+ * lone production caller is `scheduleAutoDigestSpawn`.
+ */
+export function buildAutoDigestHelperEnv(
+  authSource: AuthSource | undefined
+): NodeJS.ProcessEnv {
+  if (authSource !== "ntn-auth-json") return process.env
+  const childEnv: NodeJS.ProcessEnv = { ...process.env }
+  for (const key of RUNTIME_FORWARDED_AUTH_TOKEN_KEYS) {
+    delete childEnv[key]
+  }
+  return childEnv
 }

@@ -281,6 +281,42 @@ at startup. Empty-string values are skipped to mirror the install
 allowlist's posture — a declared-but-empty var would otherwise
 short-circuit `resolveAuth`'s priority chain in the spawned child.
 
+**ntn-source partition (issue #475).** This **tightens the
+existing posture rather than introducing a new one**: the
+preceding paragraph already established the ntn-source child
+re-reads `auth.json` directly because the file is on disk where
+the child can read it. The partition makes that the *only* path
+under `ntn-auth-json`, never a parallel one — no `auth.json`
+read AND env-forward of the same token, just the disk read.
+When the foreground's resolved `AuthSource` is `ntn-auth-json`,
+callers thread that source into `spawnBackgroundSave` via the
+`authSource` option and the auth-token subset
+(`RUNTIME_FORWARDED_AUTH_TOKEN_KEYS` — `NOTION_API_TOKEN`,
+`LORE_NOTION_TOKEN`) is dropped from `safeEnv`. The detached
+child's `resolveAuth` lands at priority 2 (`loadNtnToken`)
+without the bearer ever crossing the fork boundary in env. This
+mirrors the install-time partition `buildMcpEnv` already applies
+for `.mcp.json`. Workspace and base-URL selectors still forward
+— the ntn-source child needs them to pick the same workspace as
+the foreground. Non-ntn sources keep the legacy forward (their
+callers explicitly accept token-in-env as part of their
+contract). `helpers.handleStop` derives the source via
+`resolveAuth(config, configRoot, { quiet: true })` once per Stop
+fire and threads it through BOTH the autosave
+`spawnBackgroundSave` AND the auto-digest helper-fork
+`scheduleAutoDigestSpawn` (which spreads `process.env` and
+deletes the auth-token subset under `ntn-auth-json` so the
+detached `helpers.js auto-digest` child inherits everything
+EXCEPT bearer tokens). `quiet: true` suppresses the synthetic
+resolver call's deprecation warning emission; the foreground host
+already paid that emission via its primary `resolveAuth`. A
+`resolveAuth` failure (no token configured, transient `auth.json`
+read error) falls back to the legacy every-key forward so the
+Stop hot path itself never gains a new failure mode. The digest
+paths (`fireDigestIfStale`, `lore digest`) read the source from
+`services.authSource` so the foreground's already-resolved auth
+isn't re-read from disk.
+
 `LORE_USER_NAME` (DEFERRED-ATTRIBUTION) is forwarded so the spawned
 MCP child resolves engineer identity via the synchronous env path
 rather than paying a lazy `users.me` round-trip on its first

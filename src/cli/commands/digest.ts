@@ -167,6 +167,11 @@ export const digestCommand = new Command("digest")
           logLabel: "digest",
           allowedTools: DIGEST_ALLOWLIST,
           agent: hookConfig.backgroundAgent,
+          // Apply the ntn-source env partition (issue #475). `services`
+          // is the same in-process bundle whose `resolveAuth` produced
+          // `authSource`, so the synthesizer's env matches the source
+          // the foreground gather call already authenticated against.
+          authSource: services.authSource,
         })
         if (result.kind !== "spawned") {
           // Benign races (lock-held, cap-hit, race-lost) mean a peer is

@@ -9,7 +9,13 @@
 import { access } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { Client } from "@notionhq/client"
-import { findConfigFile, loadConfig, resolveAuth, type ResolvedAuth } from "./config.js"
+import {
+  findConfigFile,
+  loadConfig,
+  resolveAuth,
+  type AuthSource,
+  type ResolvedAuth,
+} from "./config.js"
 import {
   createAuthRefreshingClient,
   createClient,
@@ -108,6 +114,23 @@ export interface LoreServices {
    * silently no-opping attribution.
    */
   identity: AuthorIdentityResolver
+  /**
+   * Which 0.10.0 source produced the resolved token (issue #475).
+   * Surfaced here so downstream paths — notably the autosave / digest
+   * background spawns — can apply the auth-source-aware env partition
+   * (skip bearer-token forwarding when the child can re-resolve from
+   * `~/.config/notion/auth.json` directly) without re-running
+   * `resolveAuth`. Mirrors the install-path partition in
+   * `cli/commands/install.ts:buildMcpEnv`. See `AuthSource` in
+   * `src/config.ts`.
+   *
+   * Required (not optional) so a future refactor that forgets to
+   * populate it in a new init seam fails the typecheck rather than
+   * silently no-opping the partition. Same posture as the
+   * `identity` field above: the typecheck is the load-bearing
+   * defense against silent regressions of cross-cutting contracts.
+   */
+  authSource: AuthSource
 }
 
 export const AUTH_REFRESH_UNAVAILABLE_CACHE_MS = 1_000
@@ -190,6 +213,7 @@ export async function initServicesFromConfig(
     configRoot,
     sessionMemories: new SessionMemoryTracker(),
     identity,
+    authSource: auth.source,
   }
 }
 

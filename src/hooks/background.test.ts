@@ -320,6 +320,172 @@ describe("spawnBackgroundSave safeEnv (#188)", () => {
   })
 })
 
+describe("spawnBackgroundSave authSource partition (#475)", () => {
+  // Mirrors the install-path partition (`buildMcpEnv`'s
+  // `skipAuthTokens`): under `authSource: "ntn-auth-json"` the
+  // detached child re-reads `~/.config/notion/auth.json` directly
+  // and the bearer token does not need to cross the fork boundary.
+  // Other sources (`env-notion-api-token`, `env-lore-notion-token`,
+  // `config-auth-token`) keep the legacy forward — those callers
+  // explicitly accept token-in-env as part of their contract and
+  // the child has no other way to land on the same source.
+  let tmpDir: string
+  let savedEnv: Partial<
+    Record<(typeof RUNTIME_FORWARDED_KEYS)[number], string | undefined>
+  >
+
+  beforeEach(() => {
+    try {
+      rmSync(getStateDir(), { recursive: true, force: true })
+    } catch {
+      // Nothing to clean.
+    }
+    tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "lore-bg-authsource-")))
+
+    savedEnv = {}
+    for (const key of RUNTIME_FORWARDED_KEYS) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+
+    spawnMock.mockReset()
+    spawnMock.mockImplementation(() => fakeLiveChild())
+    execFileSyncMock.mockReset()
+    execFileSyncMock.mockImplementation(() => "/mock/bin/claude\n")
+  })
+
+  afterEach(() => {
+    for (const key of RUNTIME_FORWARDED_KEYS) {
+      const prior = savedEnv[key]
+      if (prior === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = prior
+      }
+    }
+    rmSync(tmpDir, { recursive: true, force: true })
+    try {
+      rmSync(getStateDir(), { recursive: true, force: true })
+    } catch {
+      // Nothing to clean.
+    }
+  })
+
+  it("under authSource=ntn-auth-json, drops NOTION_API_TOKEN and LORE_NOTION_TOKEN from safeEnv", () => {
+    // The 0.10.0 ntn-first invariant: a child whose own resolveAuth
+    // can re-read auth.json directly does not need bearer tokens
+    // forwarded via env — their presence increases blast radius
+    // (process env reads, debug logs of third-party agents) without
+    // changing the child's auth contract.
+    process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
+    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
+      authSource: "ntn-auth-json",
+    })
+    expect(result.kind).toBe("spawned")
+
+    const env = lastSpawnEnv()
+    expect("NOTION_API_TOKEN" in env).toBe(false)
+    expect("LORE_NOTION_TOKEN" in env).toBe(false)
+  })
+
+  it("under authSource=ntn-auth-json, still forwards workspace + base-URL + attribution selectors", () => {
+    // Only the auth-token subset is partitioned. Multi-workspace
+    // resolution and per-environment routing still need the
+    // operator-controlled selectors so the child's loadNtnToken
+    // picks the same workspace as the foreground.
+    process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
+    process.env["LORE_NOTION_BASE_URL"] = "https://api-dev.notion.com"
+    process.env["NOTION_WORKSPACE_ID"] = "ws_team_alpha"
+    process.env["NOTION_ENV"] = "dev"
+    process.env["NOTION_BASE_URL"] = "https://api-dev.notion.com"
+    process.env["NOTION_API_BASE_URL"] = "https://api-dev.notion.com"
+    process.env["LORE_USER_NAME"] = "Hesham Salman"
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
+      authSource: "ntn-auth-json",
+    })
+    expect(result.kind).toBe("spawned")
+
+    const env = lastSpawnEnv()
+    expect(env["LORE_NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
+    expect(env["NOTION_WORKSPACE_ID"]).toBe("ws_team_alpha")
+    expect(env["NOTION_ENV"]).toBe("dev")
+    expect(env["NOTION_BASE_URL"]).toBe("https://api-dev.notion.com")
+    expect(env["NOTION_API_BASE_URL"]).toBe("https://api-dev.notion.com")
+    expect(env["LORE_USER_NAME"]).toBe("Hesham Salman")
+  })
+
+  it("under authSource=env-notion-api-token, forwards NOTION_API_TOKEN as today", () => {
+    // The canonical-env operator's contract: the foreground's auth
+    // came from NOTION_API_TOKEN, so the child must see it too —
+    // there is no on-disk source for the child to re-read.
+    process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
+    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
+      authSource: "env-notion-api-token",
+    })
+    expect(result.kind).toBe("spawned")
+
+    const env = lastSpawnEnv()
+    expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
+    expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
+  })
+
+  it("under authSource=env-lore-notion-token, forwards LORE_NOTION_TOKEN as today", () => {
+    // Soft-deprecated path: legacy operators who haven't migrated to
+    // `lore auth --login` keep working. The child's resolveAuth
+    // priority chain reaches LORE_NOTION_TOKEN only through env.
+    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
+      authSource: "env-lore-notion-token",
+    })
+    expect(result.kind).toBe("spawned")
+
+    expect(lastSpawnEnv()["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
+  })
+
+  it("under authSource=config-auth-token, forwards NOTION_API_TOKEN and LORE_NOTION_TOKEN as today", () => {
+    // The deepest legacy path: token in `.lore.yaml`. The child
+    // reads its own config, so env-forward isn't strictly required
+    // for auth resolution — but the partition exists specifically
+    // for `ntn-auth-json` (where the security upgrade applies);
+    // every other source keeps the pre-#475 forward to avoid
+    // changing back-compat behavior on already-soft-deprecated paths.
+    process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
+    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined, {
+      authSource: "config-auth-token",
+    })
+    expect(result.kind).toBe("spawned")
+
+    const env = lastSpawnEnv()
+    expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
+    expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
+  })
+
+  it("with authSource omitted, preserves pre-#475 every-key forward (back-compat)", () => {
+    // The omitted-caller branch. Test fixtures, ad-hoc one-shot
+    // invocations, and any caller whose foreground hasn't resolved
+    // auth land here. Forwarding every set key matches pre-#475
+    // behavior verbatim — no observable regression for un-updated
+    // call sites.
+    process.env["NOTION_API_TOKEN"] = "secret_canonical_token"
+    process.env["LORE_NOTION_TOKEN"] = "secret_legacy_lore_token"
+
+    const result = spawnBackgroundSave(tmpDir, "prompt body", undefined)
+    expect(result.kind).toBe("spawned")
+
+    const env = lastSpawnEnv()
+    expect(env["NOTION_API_TOKEN"]).toBe("secret_canonical_token")
+    expect(env["LORE_NOTION_TOKEN"]).toBe("secret_legacy_lore_token")
+  })
+})
+
 interface PrepProbe {
   /** Per-call openSync arguments observed (path-only, both wx+ and r). */
   paths: string[]

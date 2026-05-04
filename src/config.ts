@@ -248,6 +248,43 @@ export interface ResolvedAuth {
 }
 
 /**
+ * Options for `resolveAuth`. `quiet: true` suppresses the
+ * deprecation-warning emission for both soft-deprecated paths
+ * (`config-auth-token` per-process gate and the
+ * `env-lore-notion-token` 24h debounced warning). Used by
+ * synthetic-resolution call sites (e.g. the Stop-hook auth-source
+ * derivation in `helpers.ts:deriveStopAuthSource`, issue #475)
+ * where the warning has already fired through the foreground
+ * host's primary `resolveAuth` call (MCP server init, CLI
+ * preflight) and the synthetic call is the SECOND emission for
+ * the same operator condition. Each `lore hooks autosave` is a
+ * fresh Node process — the per-process gate inside
+ * `emitConfigAuthTokenWarning` does NOT cover it, so without
+ * `quiet` the operator would see the warning emit on every Stop
+ * fire alongside the warning their primary `lore` process
+ * already produced.
+ *
+ * `quiet` is internal-only: every operator-facing surface (CLI,
+ * MCP boundary, primary hook init) must omit the option so the
+ * warning reaches them via at least one path. Token-resolution
+ * semantics are unaffected — the resolved `source` is identical
+ * with or without `quiet`.
+ *
+ * Note: per #484, `emitConfigAuthTokenWarning` is intentionally
+ * NOT silenceable via `LORE_SUPPRESS_DEPRECATIONS=1` because
+ * `.lore.yaml` is committable repo state and the warning is a
+ * second-line defense against committed tokens. `quiet` is a
+ * narrower mechanism — it suppresses ONE specific synthetic
+ * call site that has already paid the emission via the
+ * foreground, NOT a blanket operator-facing silencer. Adding
+ * other `quiet: true` call sites requires the same
+ * "foreground already emitted via the primary path" argument.
+ */
+export interface ResolveAuthOptions {
+  quiet?: boolean
+}
+
+/**
  * Resolution priority for 0.10.0:
  *
  * 1. **`NOTION_API_TOKEN` env** — canonical. Set by the operator
@@ -282,12 +319,18 @@ export interface ResolvedAuth {
  * the same vault share one 24-hour window. The `auth.token in .lore.yaml`
  * warning fires every invocation and never reads the marker (#484), so
  * `configRoot` is irrelevant on that path.
+ *
+ * `options.quiet` (issue #475) suppresses both deprecation-warning
+ * emissions for synthetic-resolution call sites; see
+ * `ResolveAuthOptions` above for the full rationale.
  */
 export async function resolveAuth(
   config: LoreConfig | undefined,
-  configRoot: string
+  configRoot: string,
+  options: ResolveAuthOptions = {}
 ): Promise<ResolvedAuth> {
-  if (config?.auth?.token) {
+  const quiet = options.quiet === true
+  if (config?.auth?.token && !quiet) {
     emitConfigAuthTokenWarning()
   }
 
@@ -353,7 +396,9 @@ export async function resolveAuth(
   // 3. LORE_NOTION_TOKEN env (soft-deprecated).
   const fromLoreEnv = process.env["LORE_NOTION_TOKEN"]
   if (fromLoreEnv) {
-    await emitLoreNotionTokenDeprecationWarningOnce(configRoot)
+    if (!quiet) {
+      await emitLoreNotionTokenDeprecationWarningOnce(configRoot)
+    }
     return {
       token: fromLoreEnv,
       baseUrl: legacyBaseUrlOverride,

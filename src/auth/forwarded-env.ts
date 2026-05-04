@@ -99,31 +99,45 @@ export type RuntimeForwardedKey = (typeof RUNTIME_FORWARDED_KEYS)[number]
 
 /**
  * Subset of `RUNTIME_FORWARDED_KEYS` that carry **auth tokens**
- * (`resolveAuth` paths 1 and 3). These are the placeholders an
- * ntn-source MCP install does not need to forward — under
- * `ntn-auth-json` the spawned MCP server's `resolveAuth` resolves
- * the token directly from `~/.config/notion/auth.json` at startup
- * (path 2), so a `${NOTION_API_TOKEN}` / `${LORE_NOTION_TOKEN}`
- * placeholder in the committed `.mcp.json` is dead weight that
- * fingerprints the operator's install-time shell. Hosts whose
- * config validators (e.g. Claude Code's `/doctor`) check for
- * referenced env vars at load time emit per-key warnings on every
- * startup once those vars unset, even though the MCP server itself
- * never needed them.
+ * (`resolveAuth` paths 1 and 3). These are the keys an ntn-source
+ * spawn does not need to forward — under `ntn-auth-json` the
+ * spawned child's `resolveAuth` resolves the token directly from
+ * `~/.config/notion/auth.json` at startup (path 2), so the bearer
+ * never needs to cross any fork or land in any committed config.
  *
  * Workspace / base-URL selectors and `LORE_USER_NAME` stay
  * conditionally forwarded regardless of auth source — they're
- * still operator-controlled inputs the MCP child needs visibility
- * into.
+ * still operator-controlled inputs the spawned child needs
+ * visibility into to land on the same workspace and environment.
  *
- * Two consumers read this:
- * - `buildMcpEnv` (when `authSource: "ntn-auth-json"`) skips these
- *   keys when assembling the MCP entry's `env` block.
- * - `spawnBackgroundSave` continues to forward every key
- *   conditionally regardless — the hook-spawn path inherits
- *   `process.env` directly via `safeEnv`, doesn't write a committed
- *   placeholder, and so cannot produce the host-validator warning
- *   class this partition exists to silence.
+ * **Three consumers read this**, with two distinct motivations:
+ *
+ * - `buildMcpEnv` (`cli/commands/install.ts`, when `authSource:
+ *   "ntn-auth-json"`) skips these keys when assembling the MCP
+ *   entry's `env` block. Motivation: a `${NOTION_API_TOKEN}` /
+ *   `${LORE_NOTION_TOKEN}` placeholder in a committed `.mcp.json`
+ *   is dead weight that fingerprints the operator's install-time
+ *   shell, and hosts whose config validators (e.g. Claude Code's
+ *   `/doctor`) check referenced env vars at load time emit
+ *   per-key warnings on every startup once those vars are unset,
+ *   even though the MCP server itself never needed them.
+ * - `spawnBackgroundSave` (`src/hooks/background.ts`, when its
+ *   caller passes `authSource: "ntn-auth-json"`) skips these keys
+ *   from the detached child's `safeEnv`. Motivation (issue #475):
+ *   bearer-token blast-radius reduction. The child inherits
+ *   `process.env` only through the explicit `safeEnv` allowlist,
+ *   so dropping the auth-token subset prevents the bearer from
+ *   landing in `/proc/<pid>/environ` (Linux) / `ps -wwwE` (macOS)
+ *   / debug logs of the third-party agent CLI Lore does not
+ *   control. The host-validator warning class doesn't apply here
+ *   because the hook-spawn path doesn't write committed config.
+ * - `scheduleAutoDigestSpawn` (`src/hooks/digest-scheduler.ts`,
+ *   when its caller passes `authSource: "ntn-auth-json"`) drops
+ *   these keys from the detached `helpers.js auto-digest` child's
+ *   inherited env. Same blast-radius motivation as
+ *   `spawnBackgroundSave`; closes the parent → auto-digest helper
+ *   hop that would otherwise leak the token before the inner
+ *   synthesizer spawn's partition runs.
  */
 export const RUNTIME_FORWARDED_AUTH_TOKEN_KEYS = [
   "NOTION_API_TOKEN",
