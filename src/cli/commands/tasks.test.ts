@@ -1,11 +1,16 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   parseReconcileCliOptions,
   runReconcile,
+  tasksCommand,
   type ReconcileCliOptions,
 } from "./tasks.js"
-import type { LoreServices } from "../../services.js"
+import { initServices, type LoreServices } from "../../services.js"
 import type { Memory, TaskSummary } from "../../types.js"
+
+vi.mock("../../services.js", () => ({
+  initServices: vi.fn(),
+}))
 
 function makeTask(overrides: Partial<TaskSummary> = {}): TaskSummary {
   return {
@@ -339,5 +344,105 @@ describe("runReconcile", () => {
       limit: 25,
     })
     expect(output).toBe("## 0 candidate closures (out of 0 active tasks scanned)")
+  })
+})
+
+/**
+ * Commander-level integration coverage for `lore tasks reconcile`. The
+ * helpers `parseReconcileCliOptions` and `runReconcile` above are exercised
+ * directly; this block drives `tasksCommand.parseAsync(["reconcile", ...])`
+ * so the `.action(...)` glue — `console.error("Reconcile failed: ...")`,
+ * `process.exit(1)`, and the `initServices` boundary — is verified end-to-end.
+ *
+ * Without this, a future refactor that swallowed `parsed.ok === false` (e.g.
+ * an early-return without `process.exit`) would silently succeed in
+ * production while every helper-level test still passed.
+ */
+describe("tasksCommand reconcile action", () => {
+  let errorSpy: ReturnType<typeof vi.fn>
+  let logSpy: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    vi.mocked(initServices).mockReset()
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__process_exit_${typeof code === "number" ? code : 0}__`)
+    }) as never)
+    errorSpy = vi.fn()
+    logSpy = vi.fn()
+    vi.spyOn(console, "error").mockImplementation(errorSpy)
+    vi.spyOn(console, "log").mockImplementation(logSpy)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("exits 1 with 'Reconcile failed:' prefix on malformed --min-score and skips initServices", async () => {
+    await expect(
+      tasksCommand.parseAsync(["reconcile", "--min-score", "abc"], { from: "user" })
+    ).rejects.toThrow("__process_exit_1__")
+
+    expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+    // Pin "fired exactly once" + "no sentinel leaked" so a future refactor
+    // that routes parse-failure back through the generic catch arm (which
+    // would re-fire console.error with the throw-mock's `__process_exit_1__`
+    // sentinel as the operator-facing message) regresses this test rather
+    // than passing under the loose .toContain check.
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain(
+      'Reconcile failed: --min-score must be a number in [0, 1], got "abc"'
+    )
+    expect(errorText).not.toContain("__process_exit_")
+  })
+
+  it.each([
+    ["3.7", 'Reconcile failed: --limit must be a positive decimal integer, got "3.7"'],
+    // Over-cap goes through the explicit MAX_RECONCILE_LIMIT branch in
+    // parseReconcileCliOptions rather than the regex branch — covering it at
+    // the action layer pins the contract against a future refactor that
+    // throws on over-cap (instead of returning ok: false).
+    ["9999", "Reconcile failed: --limit must be between 1 and 100, got 9999"],
+  ])(
+    "exits 1 with the structured prefix on rejected --limit %s and skips initServices",
+    async (limit, expectedMessage) => {
+      await expect(
+        tasksCommand.parseAsync(["reconcile", "--limit", limit], { from: "user" })
+      ).rejects.toThrow("__process_exit_1__")
+
+      expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+      const errorText = errorSpy.mock.calls.flat().join("\n")
+      expect(errorText).toContain(expectedMessage)
+      expect(errorText).not.toContain("__process_exit_")
+    }
+  )
+
+  it("exits 1 via the catch path with the wrapped message when initServices throws", async () => {
+    vi.mocked(initServices).mockRejectedValue(new Error("vault unreachable"))
+
+    await expect(
+      tasksCommand.parseAsync(["reconcile"], { from: "user" })
+    ).rejects.toThrow("__process_exit_1__")
+
+    expect(vi.mocked(initServices)).toHaveBeenCalledTimes(1)
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Reconcile failed:")
+    expect(errorText).toContain("vault unreachable")
+    expect(logSpy).not.toHaveBeenCalled()
+  })
+
+  it("calls initServices exactly once and prints runReconcile output to stdout on the happy path", async () => {
+    const services = makeServices({ contextProject: null })
+    vi.mocked(initServices).mockResolvedValue(services)
+
+    await tasksCommand.parseAsync(["reconcile"], { from: "user" })
+
+    expect(vi.mocked(initServices)).toHaveBeenCalledTimes(1)
+    expect(errorSpy).not.toHaveBeenCalled()
+    expect(logSpy).toHaveBeenCalledTimes(1)
+    expect(logSpy).toHaveBeenCalledWith(
+      "## 0 candidate closures (out of 0 active tasks scanned)"
+    )
   })
 })

@@ -98,7 +98,13 @@ try {
   `initServices()`. Parser helpers should return `CliParseResult<T>` from
   `src/cli/parse.ts`; on `ok: false`, log the command-specific failure prefix
   (for example, `Search failed: ...`) and exit with code 1 before any service
-  initialization.
+  initialization. **Exception**: lift the parse-validate block ABOVE the
+  surrounding `try` (with an explicit `return` after `process.exit(1)` for
+  TypeScript narrowing) when you want sentinel-clean operator output under
+  any harness that stubs `process.exit` to throw — leaving parse-validate
+  inside `try` lets the throw fall through to the generic catch arm and
+  re-fires `console.error` with the harness's sentinel as the operator-facing
+  message. `tasks.ts` reconcile is the canonical example.
 - Treat explicit project-scope misses as fatal. If a command accepts
   `--project <name>` and the name cannot be resolved, log an actionable
   error and exit with code 1 instead of falling back to auto-detected or
