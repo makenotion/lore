@@ -11,6 +11,7 @@ import {
   appendCompareDispatchLedgerEntry,
   buildCompareDispatchLedgerEntry,
   COMPARE_NOTES_MAX_CHARS,
+  RecordComparedPartialWriteError,
   RekeyAuditError,
   hasCompareDispatchLedgerEntry,
   hasMatchingCompareNote,
@@ -11036,6 +11037,181 @@ describe("MemoryService.recordCompared (0.9.0/05)", () => {
     // prior not_conflict; B writes its first entry.
     expect(result).toEqual({ wroteA: true, wroteB: true })
     expect(update).toHaveBeenCalledTimes(2)
+  })
+
+  it("partial-write: throws RecordComparedPartialWriteError when side B rejects but side A landed", async () => {
+    // Issue #471 — `Promise.all` rejected on first failure and discarded
+    // the concurrent success, leaving the caller unable to distinguish
+    // "both failed" from "A landed, B failed." `Promise.allSettled` plus
+    // the structured error preserves the partial-success signal so the
+    // MCP handler can self-heal on retry without duplicating A's audit
+    // line.
+    const update = vi.fn(
+      async (args: { page_id: string; properties: Record<string, unknown> }) => {
+        if (args.page_id === "page-b") {
+          throw new Error("notion 503 — page-b update rejected")
+        }
+        return undefined
+      }
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let thrown: unknown
+    try {
+      await service.recordCompared({
+        memoryA: makeMemoryShape({ id: "page-a" }),
+        memoryB: makeMemoryShape({ id: "page-b" }),
+        verdict: "scoped",
+        affected: null,
+        reason: "partial",
+        judgedAt: "2026-04-30T00:00:00.000Z",
+        promptVersion: "1",
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeInstanceOf(RecordComparedPartialWriteError)
+    const partial = thrown as RecordComparedPartialWriteError
+    expect(partial.failedSide).toBe("B")
+    // The result reflects what actually landed: A wrote, B did not.
+    expect(partial.result).toEqual({ wroteA: true, wroteB: false })
+    // The underlying SDK error is reachable via `cause` for diagnosis.
+    expect(partial.cause).toBeInstanceOf(Error)
+    expect((partial.cause as Error).message).toContain("page-b update rejected")
+    // BOTH writes were attempted — Promise.allSettled does not
+    // short-circuit. The successful one landed in Notion.
+    expect(update).toHaveBeenCalledTimes(2)
+    const aCall = update.mock.calls.find((c) => c[0]!.page_id === "page-a")
+    expect(aCall).toBeDefined()
+  })
+
+  it("partial-write (mirror): throws RecordComparedPartialWriteError with failedSide='A' when side A rejects but side B landed", async () => {
+    const update = vi.fn(
+      async (args: { page_id: string; properties: Record<string, unknown> }) => {
+        if (args.page_id === "page-a") {
+          throw new Error("notion 503 — page-a update rejected")
+        }
+        return undefined
+      }
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let thrown: unknown
+    try {
+      await service.recordCompared({
+        memoryA: makeMemoryShape({ id: "page-a" }),
+        memoryB: makeMemoryShape({ id: "page-b" }),
+        verdict: "scoped",
+        affected: null,
+        reason: "partial mirror",
+        judgedAt: "2026-04-30T00:00:00.000Z",
+        promptVersion: "1",
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeInstanceOf(RecordComparedPartialWriteError)
+    const partial = thrown as RecordComparedPartialWriteError
+    expect(partial.failedSide).toBe("A")
+    expect(partial.result).toEqual({ wroteA: false, wroteB: true })
+  })
+
+  it("both-writes-fail: throws the underlying rejection (NOT RecordComparedPartialWriteError) — retry safe via per-side idempotency", async () => {
+    // No partial-success state to surface, so no structured error is
+    // warranted. The thrown error is the first underlying rejection so
+    // the caller's existing retry posture (per-side idempotency on a
+    // fresh snapshot) handles it cleanly. A `RecordComparedPartialWriteError`
+    // here would imply a partial success that didn't happen.
+    const aRejection = new Error("notion 500 — page-a")
+    const bRejection = new Error("notion 500 — page-b")
+    const update = vi.fn(
+      async (args: { page_id: string; properties: Record<string, unknown> }) => {
+        if (args.page_id === "page-a") throw aRejection
+        if (args.page_id === "page-b") throw bRejection
+        return undefined
+      }
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let thrown: unknown
+    try {
+      await service.recordCompared({
+        memoryA: makeMemoryShape({ id: "page-a" }),
+        memoryB: makeMemoryShape({ id: "page-b" }),
+        verdict: "scoped",
+        affected: null,
+        reason: "both fail",
+        judgedAt: "2026-04-30T00:00:00.000Z",
+        promptVersion: "1",
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).not.toBeInstanceOf(RecordComparedPartialWriteError)
+    expect(thrown).toBe(aRejection)
+    // Both writes were attempted (Promise.allSettled).
+    expect(update).toHaveBeenCalledTimes(2)
+  })
+
+  it("partial-write where one side was idempotent-skipped: failedSide names the only side that was attempted, the survivor 'was already present'", async () => {
+    // Edge case: side A was skipped via per-side idempotency (already
+    // had matching entry from a prior call), and side B's solo write
+    // rejected. Result reports the skipped side as `wroteA: false` and
+    // names B as the failedSide — the survivor's audit entry is durable
+    // (it was already in Notion before this call), so the partial-write
+    // surface is structurally identical to the "A landed, B failed" case
+    // for retry purposes.
+    const partialEntryOnA = JSON.stringify({
+      verdict: "scoped",
+      target: "page-b",
+      affected: null,
+      reason: "prior",
+      judgedAt: "2026-04-29T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const update = vi.fn(
+      async (args: { page_id: string; properties: Record<string, unknown> }) => {
+        if (args.page_id === "page-b") {
+          throw new Error("notion 503 — page-b update rejected")
+        }
+        return undefined
+      }
+    )
+    const client = { pages: { update } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    let thrown: unknown
+    try {
+      await service.recordCompared({
+        memoryA: makeMemoryShape({
+          id: "page-a",
+          compareNotes: partialEntryOnA,
+          comparedWith: ["page-b"],
+        }),
+        memoryB: makeMemoryShape({ id: "page-b" }),
+        verdict: "scoped",
+        affected: null,
+        reason: "skip-A, fail-B",
+        judgedAt: "2026-04-30T00:00:00.000Z",
+        promptVersion: "1",
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeInstanceOf(RecordComparedPartialWriteError)
+    const partial = thrown as RecordComparedPartialWriteError
+    expect(partial.failedSide).toBe("B")
+    expect(partial.result).toEqual({ wroteA: false, wroteB: false })
+    // Only side B was attempted — A was skipped via per-side idempotency.
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0]![0]!.page_id).toBe("page-b")
   })
 })
 

@@ -751,6 +751,60 @@ export interface RecordComparedResult {
 }
 
 /**
+ * Structured partial-state error raised by `MemoryService.recordCompared`
+ * when exactly one of the symmetric `pages.update` writes rejected and
+ * the other landed (or was skipped via per-side idempotency). The
+ * caller — typically `handleCompare` — needs to know that ONE side's
+ * audit-marker update is in Notion so it can self-heal by reloading the
+ * survivor's now-updated `compareNotes` snapshot and retrying the missing
+ * side, rather than treating the call as an opaque failure that may have
+ * landed nothing.
+ *
+ * Distinct from `CompareDispatchPartialFailureError` (mid-dispatch fact
+ * + decrement step rejection in `recordContradiction` /
+ * `recordSupersedence`). This error fires strictly at the audit-marker
+ * write layer — fact emission and confidence decrement already
+ * succeeded before the call ever reached `recordCompared`.
+ *
+ * The `result` field carries the partial-success outcome so callers can
+ * surface "side X landed, side Y rejected — retrying" rather than
+ * silently swallowing the success. `failedSide` names the side whose
+ * `pages.update` rejected; `cause` carries the underlying SDK error.
+ *
+ * **Both-sides failure does NOT route here.** When both writes
+ * rejected, `recordCompared` throws the first rejection directly so the
+ * caller can rely on the existing per-side idempotency gate to retry
+ * safely against a fresh snapshot. Per-side idempotency makes the
+ * both-failed case structurally equivalent to a transient error: the
+ * retry sees neither audit line on either side and writes both. The
+ * structured-error surface is reserved for the genuine partial-success
+ * shape where one side already landed and the caller's retry MUST skip
+ * it to avoid duplicating the NDJSON audit line.
+ *
+ * Surfaces as a typed `instanceof RecordComparedPartialWriteError`
+ * check in `handleCompare`; the message string carries the partial-
+ * success diagnostic for any callers that flatten through `toolError`.
+ */
+export class RecordComparedPartialWriteError extends Error {
+  readonly result: RecordComparedResult
+  readonly failedSide: "A" | "B"
+  readonly cause: unknown
+
+  constructor(args: {
+    message: string
+    result: RecordComparedResult
+    failedSide: "A" | "B"
+    cause: unknown
+  }) {
+    super(args.message)
+    this.name = "RecordComparedPartialWriteError"
+    this.result = args.result
+    this.failedSide = args.failedSide
+    this.cause = args.cause
+  }
+}
+
+/**
  * Revision count at which the upsert response footer surfaces a
  * promotion advisory (0.9.0/#15). When `Revision Count` post-write
  * meets this threshold, the topic chain has revised five times —
@@ -2692,8 +2746,37 @@ export class MemoryService {
    * (with the counterpart's id added) AND the `Compare Notes`
    * rich_text (with a fresh NDJSON entry appended). Notion has no
    * multi-page atomic primitive, so the two writes share a
-   * `Promise.all`; failure of either is the documented partial-state
-   * risk.
+   * `Promise.allSettled`; partial-success is surfaced through the
+   * structured `RecordComparedPartialWriteError` so callers can
+   * self-heal.
+   *
+   * **Failure model.** Three settle outcomes:
+   *
+   * - **Both writes succeed.** Returns `{ wroteA, wroteB }` reflecting
+   *   which sides this call actually issued (versus which were skipped
+   *   via per-side idempotency).
+   * - **Both writes reject.** Throws the first underlying rejection
+   *   directly. Per-side idempotency makes a same-input retry safe — a
+   *   fresh snapshot will see neither audit entry and write both
+   *   sides cleanly. No structured error here because there is no
+   *   partial-success state to surface.
+   * - **Exactly one side rejects.** Throws
+   *   `RecordComparedPartialWriteError` carrying `result: {wroteA,
+   *   wroteB}` (the partial-success outcome), `failedSide` (the side
+   *   whose `pages.update` rejected), and `cause` (the underlying SDK
+   *   error). The MCP handler uses this to drive a single-shot
+   *   reload-and-retry path: the survivor's audit entry is now in
+   *   Notion, so a fresh `getById` snapshot lets the retry's per-side
+   *   idempotency check skip the survivor and write only the missing
+   *   side.
+   *
+   * Pre-issue-#471 the call used `Promise.all` and rejected on the
+   * first failure — discarding the concurrent success and leaving the
+   * caller unable to distinguish "nothing wrote" from "A wrote, B
+   * failed." A naive retry against a stale snapshot would then write
+   * the already-landed side a second time, duplicating the NDJSON
+   * audit line. The `Promise.allSettled` + structured-error contract
+   * preserves the partial-success signal so retries can be precise.
    *
    * **Per-side idempotency.** Each side's write is gated locally by
    * `hasMatchingCompareNote(side.compareNotes, {target, verdict,
@@ -2805,7 +2888,7 @@ export class MemoryService {
       affected,
     })
 
-    const writes: Promise<unknown>[] = []
+    const writes: Array<{ side: "A" | "B"; promise: Promise<unknown> }> = []
     const shouldWriteA = !aHasEntry || forceWriteA
     const shouldWriteB = !bHasEntry || forceWriteB
     if (shouldWriteA) {
@@ -2815,8 +2898,9 @@ export class MemoryService {
       const nextComparedWithA = memoryA.comparedWith.includes(memoryB.id)
         ? memoryA.comparedWith
         : [...memoryA.comparedWith, memoryB.id]
-      writes.push(
-        this.client.pages.update({
+      writes.push({
+        side: "A",
+        promise: this.client.pages.update({
           page_id: memoryA.id,
           properties: {
             "Compared With": {
@@ -2826,8 +2910,8 @@ export class MemoryService {
               rich_text: encodeCompareNotesRichText(nextNotesA),
             },
           },
-        })
-      )
+        }),
+      })
     }
     if (shouldWriteB) {
       const nextNotesB = bHasEntry
@@ -2836,8 +2920,9 @@ export class MemoryService {
       const nextComparedWithB = memoryB.comparedWith.includes(memoryA.id)
         ? memoryB.comparedWith
         : [...memoryB.comparedWith, memoryA.id]
-      writes.push(
-        this.client.pages.update({
+      writes.push({
+        side: "B",
+        promise: this.client.pages.update({
           page_id: memoryB.id,
           properties: {
             "Compared With": {
@@ -2847,15 +2932,99 @@ export class MemoryService {
               rich_text: encodeCompareNotesRichText(nextNotesB),
             },
           },
-        })
-      )
+        }),
+      })
     }
 
-    await Promise.all(writes)
-    return {
-      wroteA: shouldWriteA,
-      wroteB: shouldWriteB,
+    // Use `Promise.allSettled` rather than `Promise.all` so the caller
+    // can distinguish "both writes rejected" from "one write landed,
+    // one rejected." `Promise.all` rejects on the first failure and
+    // discards any concurrent success — which leaves the audit state
+    // half-written and the caller unable to tell which (if any) side's
+    // `pages.update` actually committed. The partial-success case is
+    // the structural hazard `recordCompared` exists to handle: per-side
+    // idempotency relies on a retry observing the side that already
+    // landed, and the MCP handler needs that signal to drive its
+    // self-healing reload-and-retry path.
+    //
+    // Per-side outcome flags follow the same semantics as the happy-
+    // path return: `wroteX = true` iff this call ISSUED AND succeeded
+    // a `pages.update` for that side. A skipped side (per-side
+    // idempotent — already had matching entry) reports `wroteX = false`,
+    // matching the "issues ZERO updates when both sides already carry
+    // the entry" contract pinned by the existing service tests.
+    const settled = await Promise.allSettled(writes.map((w) => w.promise))
+    // Track per-side outcomes via paired boolean + reason fields rather
+    // than a `failure: unknown = undefined` sentinel. `Promise.reject(undefined)`
+    // is legal — the Notion SDK never does this in practice, but a
+    // future contributor swapping the SDK or wrapping it in a layer that
+    // does would silently flip every "did this side fail?" branch if the
+    // sentinel-by-undefined pattern were retained. Boolean flags written
+    // in the same loop iteration as the failure capture remove the
+    // ambiguity at the type level.
+    let aFailed = false
+    let bFailed = false
+    let aFailure: unknown = undefined
+    let bFailure: unknown = undefined
+    let aWrote = false
+    let bWrote = false
+    for (let i = 0; i < settled.length; i++) {
+      const outcome = settled[i]!
+      const side = writes[i]!.side
+      if (outcome.status === "fulfilled") {
+        if (side === "A") aWrote = true
+        else bWrote = true
+      } else if (side === "A") {
+        aFailed = true
+        aFailure = outcome.reason
+      } else {
+        bFailed = true
+        bFailure = outcome.reason
+      }
     }
+
+    if (!aFailed && !bFailed) {
+      return { wroteA: aWrote, wroteB: bWrote }
+    }
+
+    // Both attempted writes failed. Throw the first underlying rejection
+    // directly — per-side idempotency makes a same-input retry safe (a
+    // fresh snapshot will see neither audit entry and write both sides
+    // cleanly). No structured partial-write error here because there's
+    // no partial success to surface.
+    if (aFailed && bFailed) {
+      throw aFailure
+    }
+
+    // Exactly one side rejected; the other landed (or was skipped via
+    // per-side idempotency). Surface a structured error carrying the
+    // partial-success result so the caller can self-heal: reload the
+    // survivor's now-updated snapshot, then retry the missing side
+    // through `recordCompared`'s per-side idempotent write.
+    //
+    // The partial-write surface is structurally identical for two
+    // distinct shapes: (a) the survivor's `pages.update` succeeded
+    // this call, and (b) the survivor was skipped because its audit
+    // entry was already present from a prior call. In both cases the
+    // survivor's audit line is durable in Notion; the caller's retry
+    // logic is the same.
+    const failedSide: "A" | "B" = aFailed ? "A" : "B"
+    const cause = aFailed ? aFailure : bFailure
+    const survivorWasSkipped =
+      failedSide === "A" ? !shouldWriteB : !shouldWriteA
+    const survivorState = survivorWasSkipped
+      ? "was already present (skipped via per-side idempotency)"
+      : "landed"
+    throw new RecordComparedPartialWriteError({
+      message:
+        `recordCompared partial write — side ${failedSide} rejected; ` +
+        `the other side ${survivorState}. ` +
+        `Retry with a reloaded snapshot will skip the side already audited ` +
+        `and write only the missing side.`,
+      result: { wroteA: aWrote, wroteB: bWrote },
+      failedSide,
+      cause,
+    })
   }
 
   /**

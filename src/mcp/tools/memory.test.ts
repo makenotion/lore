@@ -9,6 +9,7 @@ import {
   buildCompareDispatchLedgerEntry,
   COMPARE_NOTES_MAX_CHARS,
   MemoryUpdatePartialFailureError,
+  RecordComparedPartialWriteError,
   RekeyAuditError,
 } from "../../core/memory.js"
 import type { Memory, Topic } from "../../types.js"
@@ -8099,6 +8100,428 @@ describe("lore-memory action='compare' (issue 0.9.0/05)", () => {
     expect(recordCompared).toHaveBeenCalledTimes(1)
     const text = (result as { content: Array<{ text: string }> }).content[0]!.text
     expect(text).toContain("confidence already halved")
+  })
+
+  it("self-heals RecordComparedPartialWriteError on actionable verdict by reloading + retrying recordCompared in the same tool call (issue #471)", async () => {
+    // Issue #471 — `recordCompared` now surfaces partial-success via
+    // the structured `RecordComparedPartialWriteError`. The handler
+    // catches it, reloads both memories so the per-side idempotency
+    // check sees the survivor's now-landed audit entry, and retries
+    // recordCompared once. The retry skips the survivor and writes the
+    // missing side, yielding a clean success in a single tool call —
+    // no operator manual-retry needed.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const finalAuditEntryA = JSON.stringify({
+      verdict: "conflicts_with",
+      target: "page-b",
+      affected: "page-b",
+      reason: "x",
+      // judgedAt/promptVersion intentionally not pinned — the per-side
+      // idempotency match-key is (target, verdict, affected).
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+
+    // First getById call (step 3 of handleCompare): pre-write state on
+    // both sides. Second getById call (retry path): A has just-landed
+    // audit entry; B still missing. The reload is what lets per-side
+    // idempotency skip A on the retry.
+    const aFresh = makeMemory("page-a", {
+      title: "A",
+      projectIds: ["proj"],
+      compareNotes: finalAuditEntryA,
+      comparedWith: ["page-b"],
+    })
+    const bFresh = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+    })
+
+    const getById = vi.fn(async (id: string) => {
+      if (id === "page-a") {
+        // First call returns pre-write A; second call returns post-
+        // write A reflecting the survivor's landed audit entry.
+        return getById.mock.calls.filter((c) => c[0] === "page-a").length === 1
+          ? a
+          : aFresh
+      }
+      if (id === "page-b") {
+        return getById.mock.calls.filter((c) => c[0] === "page-b").length === 1
+          ? b
+          : bFresh
+      }
+      throw new Error(`unknown ${id}`)
+    })
+
+    // recordCompared rejects with partial-write on call 1 (A landed,
+    // B failed) and resolves cleanly on retry (skips A, writes B).
+    const recordCompared = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new RecordComparedPartialWriteError({
+          message: "side B rejected; the other side landed.",
+          result: { wroteA: true, wroteB: false },
+          failedSide: "B",
+          cause: new Error("notion 503 — page-b update rejected"),
+        })
+      )
+      .mockResolvedValueOnce({ wroteA: false, wroteB: true })
+
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-1" },
+      deduped: false,
+    }))
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById, decrementConfidence, recordCompared },
+      facts: { createWithDedup },
+      decisions: { supersede: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    // Single-tool-call success. NO inconsistent-state error surfaced.
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).not.toContain("inconsistentState: true")
+    expect(text).not.toContain("dispatch landed but recordCompared failed")
+    // Dispatch ran once (decrement and fact create are not retried).
+    expect(decrementConfidence).toHaveBeenCalledTimes(1)
+    expect(createWithDedup).toHaveBeenCalledTimes(1)
+    // recordCompared ran TWICE — once with the original snapshot,
+    // once with the reloaded snapshot.
+    expect(recordCompared).toHaveBeenCalledTimes(2)
+    // Retry call uses the reloaded snapshot (with A's landed audit).
+    const retryCall = recordCompared.mock.calls[1] as unknown as [
+      { memoryA: { compareNotes: string }; memoryB: { compareNotes: string } },
+    ]
+    expect(retryCall[0]!.memoryA.compareNotes).toBe(finalAuditEntryA)
+    // getById ran TWICE per side (once for initial hydration, once
+    // for the reload).
+    expect(getById.mock.calls.filter((c) => c[0] === "page-a")).toHaveLength(2)
+    expect(getById.mock.calls.filter((c) => c[0] === "page-b")).toHaveLength(2)
+    // Recovery surfaces in the response so the agent can tell the
+    // operator only one side was written this call.
+    expect(text).toMatch(/Audit recovery: only side B/)
+  })
+
+  it("self-heals RecordComparedPartialWriteError on symmetric verdict by reloading + retrying (issue #471)", async () => {
+    // Symmetric path: no destructive dispatch happened, so the only
+    // side effect of the failed first attempt is the survivor's
+    // audit-marker write. The handler still self-heals via the same
+    // reload + retry path — partial-state surfacing is verdict-agnostic.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+
+    const finalAuditEntryB = JSON.stringify({
+      verdict: "scoped",
+      target: "page-a",
+      affected: null,
+      reason: "x",
+      judgedAt: "2026-04-30T00:00:00.000Z",
+      promptVersion: "1",
+    })
+    const aFresh = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const bFresh = makeMemory("page-b", {
+      title: "B",
+      projectIds: ["proj"],
+      compareNotes: finalAuditEntryB,
+      comparedWith: ["page-a"],
+    })
+
+    const getById = vi.fn(async (id: string) => {
+      if (id === "page-a") {
+        return getById.mock.calls.filter((c) => c[0] === "page-a").length === 1
+          ? a
+          : aFresh
+      }
+      if (id === "page-b") {
+        return getById.mock.calls.filter((c) => c[0] === "page-b").length === 1
+          ? b
+          : bFresh
+      }
+      throw new Error(`unknown ${id}`)
+    })
+
+    const recordCompared = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new RecordComparedPartialWriteError({
+          message: "side A rejected; the other side landed.",
+          result: { wroteA: false, wroteB: true },
+          failedSide: "A",
+          cause: new Error("notion 503"),
+        })
+      )
+      .mockResolvedValueOnce({ wroteA: true, wroteB: false })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        getById,
+        decrementConfidence: vi.fn(),
+        recordCompared,
+      },
+      facts: { createWithDedup: vi.fn() },
+      decisions: { supersede: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "scoped",
+      reason: "different projects",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(recordCompared).toHaveBeenCalledTimes(2)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).toMatch(/Audit recovery: only side A/)
+  })
+
+  it("falls through to inconsistent-state error when the reload-and-retry recordCompared also rejects (issue #471)", async () => {
+    // Self-heal is best-effort — if the retry's `pages.update` also
+    // fails, the operator gets the structured inconsistent-state
+    // diagnostic so they can manually reconcile.
+    const mockServer = createMockServer()
+    const a = makeMemory("page-a", { title: "A", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "B", projectIds: ["proj"] })
+
+    const recordCompared = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new RecordComparedPartialWriteError({
+          message: "side B rejected; the other side landed.",
+          result: { wroteA: true, wroteB: false },
+          failedSide: "B",
+          cause: new Error("notion 503"),
+        })
+      )
+      .mockRejectedValueOnce(new Error("notion 500 — retry rejected too"))
+
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-99" },
+      deduped: false,
+    }))
+
+    const { services } = makeServicesForCompare(a, b, {
+      recordCompared,
+      decrementConfidence,
+      createWithDedup,
+    })
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    // Falls through to the structured inconsistent-state error.
+    expect(text).toContain("inconsistentState: true")
+    expect(text).toContain("dispatch landed but recordCompared failed")
+    expect(recordCompared).toHaveBeenCalledTimes(2)
+  })
+
+  it("self-heal retry against fresh snapshot calls pages.update exactly ONCE for the missing side and ZERO times for the survivor (issue #471 SDK-boundary contract)", async () => {
+    // Pins the no-double-write contract at the SDK boundary directly,
+    // not through `recordCompared`'s own per-side idempotency tests.
+    // Wires a real `MemoryService.recordCompared` so its
+    // `Promise.allSettled` + per-side idempotency runs end-to-end
+    // against a mocked `pages.update`. The first call sees both sides
+    // empty and writes both, with side B's `pages.update` rejected to
+    // simulate the partial-write surface. The retry sees a freshly
+    // reloaded snapshot where side A carries the audit entry; per-side
+    // idempotency must skip A and write only B.
+    const ledger = buildCompareDispatchLedgerEntry({
+      verdict: "conflicts_with",
+      sourceMemoryId: "page-a",
+      affectedMemoryId: "page-b",
+    })
+    const a = makeMemory("page-a", { title: "Winner", projectIds: ["proj"] })
+    const b = makeMemory("page-b", { title: "Loser", projectIds: ["proj"] })
+
+    // Pre-populate the post-write snapshot for side A (the audit entry
+    // that landed on the first attempt). The snapshot doesn't need to
+    // be byte-exact — `recordCompared`'s idempotency check matches on
+    // (target, verdict, affected) keys, so any NDJSON entry carrying
+    // those fields is equivalent for skip purposes.
+    const aPostWrite = makeMemory("page-a", {
+      title: "Winner",
+      projectIds: ["proj"],
+      comparedWith: ["page-b"],
+      compareNotes: JSON.stringify({
+        verdict: "conflicts_with",
+        target: "page-b",
+        affected: "page-b",
+        reason: "x",
+        judgedAt: "2026-04-30T00:00:00.000Z",
+        promptVersion: "1",
+      }),
+    })
+    // Side B's reload reflects the dispatch ledger written atomically
+    // with the score decrement (recordContradiction's compareNotes
+    // patch). The audit entry for B is NOT yet in the snapshot — that
+    // is what the retry will write.
+    const bPostDispatch = makeMemory("page-b", {
+      title: "Loser",
+      projectIds: ["proj"],
+      compareNotes: appendCompareDispatchLedgerEntry("", ledger),
+    })
+
+    // Track every pages.update call. The first call to `page-b`
+    // rejects (simulating the partial-write surface); the second
+    // succeeds. Calls to `page-a` always succeed.
+    const updates: Array<{ page_id: string; properties: Record<string, unknown> }> =
+      []
+    let bUpdateCount = 0
+    const mockClient = {
+      pages: {
+        update: vi.fn(
+          async (args: { page_id: string; properties: Record<string, unknown> }) => {
+            updates.push(args)
+            if (args.page_id === "page-b") {
+              bUpdateCount += 1
+              if (bUpdateCount === 1) {
+                throw new Error("notion 503 — page-b update rejected")
+              }
+            }
+            return undefined
+          }
+        ),
+      },
+    } as never
+    const { MemoryService } = await import("../../core/memory.js")
+    const realMemories = new MemoryService(mockClient, {
+      databaseId: "memories-db",
+      dataSourceId: "memories-ds",
+    })
+
+    // `vi.fn().mock.calls` is updated synchronously BEFORE the
+    // implementation body runs, so `mock.calls.filter(...).length`
+    // already includes the current invocation. The first call to
+    // page-a sees `length === 1`, the second sees `length === 2`.
+    const getById = vi.fn(async (id: string) => {
+      if (id === "page-a") {
+        const callNum = getById.mock.calls.filter((c) => c[0] === "page-a").length
+        return callNum === 1 ? a : aPostWrite
+      }
+      if (id === "page-b") {
+        const callNum = getById.mock.calls.filter((c) => c[0] === "page-b").length
+        return callNum === 1 ? b : bPostDispatch
+      }
+      throw new Error(`unknown id ${id}`)
+    })
+
+    const decrementConfidence = vi.fn(async (_m: unknown) => 0.45)
+    const createWithDedup = vi.fn(async () => ({
+      fact: { id: "fact-1" },
+      deduped: false,
+    }))
+
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: {
+        getById,
+        recordCompared: realMemories.recordCompared.bind(realMemories),
+        decrementConfidence,
+      },
+      facts: { createWithDedup },
+      decisions: { supersede: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    const compare = mockServer.getActionHandler("lore-memory", "compare")
+
+    const result = await compare({
+      memoryIdA: "page-a",
+      memoryIdB: "page-b",
+      verdict: "conflicts_with",
+      affectedMemoryId: "page-b",
+      reason: "x",
+    } as never)
+
+    // Single tool call, clean success, no inconsistent-state surface.
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text
+    expect(text).not.toContain("inconsistentState: true")
+
+    // SDK-boundary call counts — the contract this test exists to pin.
+    // First attempt: A succeeds, B rejects (2 calls, 1 on each page).
+    // Retry: A is skipped (per-side idempotent — fresh snapshot has
+    // the audit entry), B is written (1 call).
+    // Total: 3 pages.update calls — 1 for page-a, 2 for page-b
+    // (one rejected, one succeeded on retry).
+    const aUpdates = updates.filter((u) => u.page_id === "page-a")
+    const bUpdates = updates.filter((u) => u.page_id === "page-b")
+    expect(aUpdates).toHaveLength(1)
+    expect(bUpdates).toHaveLength(2)
+    expect(updates).toHaveLength(3)
+
+    // The retry's B write contains the audit entry — appended onto
+    // the dispatch-ledger NDJSON line.
+    const retryBNotes = (
+      bUpdates[1]!.properties["Compare Notes"] as {
+        rich_text: Array<{ text: { content: string } }>
+      }
+    ).rich_text
+      .map((r) => r.text.content)
+      .join("")
+    expect(retryBNotes).toContain('"verdict":"conflicts_with"')
+    expect(retryBNotes).toContain('"target":"page-a"')
+    expect(retryBNotes).toContain('"affected":"page-b"')
+    // The dispatch ledger from recordContradiction is preserved on
+    // the retry write — appendCompareNote concatenates onto existing
+    // NDJSON rather than overwriting.
+    expect(retryBNotes).toContain('"entryType":"compare_dispatch"')
+
+    // Reload happened — getById was called twice per side.
+    expect(getById.mock.calls.filter((c) => c[0] === "page-a")).toHaveLength(2)
+    expect(getById.mock.calls.filter((c) => c[0] === "page-b")).toHaveLength(2)
   })
 
   it("symmetric verdict failure rethrows the underlying error WITHOUT InconsistentCompareStateError wrapping", async () => {

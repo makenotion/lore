@@ -51,6 +51,7 @@ import {
   PartialUpdateError,
   recordContradiction,
   recordSupersedence,
+  RecordComparedPartialWriteError,
   RekeyAuditError,
   type MemoryCreateResult,
   type PromotionAdvisory,
@@ -1532,8 +1533,9 @@ function renderCompareResult(input: CompareResultInput): ToolResult {
   }
   if (recoveredSide) {
     const recoveredId = recoveredSide === "A" ? memoryA.id : memoryB.id
+    const survivorSide = recoveredSide === "A" ? "B" : "A"
     lines.push(
-      `Audit recovery: only side ${recoveredSide} (${recoveredId}) wrote this call — the other side already carried a matching entry from a prior partial-success. The pair's audit state is now consistent on both sides.`
+      `Audit recovery: only side ${recoveredSide} (${recoveredId}) wrote this call (the survivor — side ${survivorSide} — was already audited from a prior partial-success). The pair's audit state is now consistent on both sides.`
     )
   }
   return {
@@ -1806,7 +1808,81 @@ async function handleCompare(
         forceWriteB: forceRecordB,
       })
     } catch (err) {
-      if (isAsymmetric) {
+      // Single-shot self-heal for partial-success on the symmetric
+      // audit-marker write: one side's `pages.update` landed, the
+      // other rejected. `recordCompared` now surfaces this through
+      // `RecordComparedPartialWriteError` instead of swallowing the
+      // success behind an opaque `Promise.all` rejection. Reload both
+      // memories so the per-side idempotency check sees the survivor's
+      // newly-landed audit entry, then retry once. Per-side idempotent
+      // skip + the structurally-fresh snapshot guarantee the retry
+      // writes only the missing side without duplicating the audit
+      // line on the survivor.
+      //
+      // Skipped under `legacyPartialAuditWithoutLedger`: that branch
+      // appends the dispatch ledger to a side that already has the
+      // final audit entry (legacy state from before the ledger
+      // existed). The ledger append is composed locally and lives on
+      // the patched `preflightNotes`, NOT in Notion. A reload-then-
+      // retry without re-applying the local patch would write back
+      // the loser's compareNotes WITHOUT the ledger — silently
+      // dropping the ledger line. Re-deriving the patched notes from
+      // a fresh snapshot is doable but expands the surface; the
+      // legacy partial-audit path is rare enough that falling
+      // through to the structured inconsistent-state error is the
+      // right tradeoff for this fix.
+      if (
+        err instanceof RecordComparedPartialWriteError &&
+        !legacyPartialAuditWithoutLedger
+      ) {
+        try {
+          const [freshA, freshB] = await Promise.all([
+            services.memories.getById(args.memoryIdA),
+            services.memories.getById(args.memoryIdB),
+          ])
+          // Force-write flags are explicitly false on the retry path:
+          // `forceRecordA`/`forceRecordB` are only ever assigned inside
+          // the `legacyPartialAuditWithoutLedger` branch (steps 7's
+          // `!loserHasLedger` arm), and this retry is gated on that
+          // flag being false. Keeping the assignment textual rather
+          // than relying on closure scope across two distant code
+          // blocks defends against a future contributor moving a
+          // `forceRecord*` assignment outside the legacy branch.
+          recordResult = await services.memories.recordCompared({
+            memoryA: freshA,
+            memoryB: freshB,
+            verdict: args.verdict,
+            affected: affectedId,
+            reason: args.reason,
+            judgedAt,
+            promptVersion,
+            forceWriteA: false,
+            forceWriteB: false,
+          })
+        } catch (retryErr) {
+          // Reload or retry rejected. Fall through to the structured
+          // inconsistent-state error so the operator can manually
+          // reconcile. The original partial-success is referenced via
+          // `cause` for diagnostic forensics; the retry rejection is
+          // the proximate failure operators see in the message.
+          if (isAsymmetric) {
+            throw new Error(
+              inconsistentCompareStateMessage({
+                dispatchedFactId: dispatchResult.factId,
+                decrementedMemoryId: loser!.id,
+                compareNotesEntryToWriteA: JSON.stringify(entryA),
+                compareNotesEntryToWriteB: JSON.stringify(entryB),
+                comparedWithRelationToWrite: {
+                  memoryIdA: args.memoryIdA,
+                  memoryIdB: args.memoryIdB,
+                },
+              }),
+              { cause: retryErr }
+            )
+          }
+          throw retryErr
+        }
+      } else if (isAsymmetric) {
         throw new Error(
           inconsistentCompareStateMessage({
             dispatchedFactId: dispatchResult.factId,
@@ -1820,12 +1896,13 @@ async function handleCompare(
           }),
           { cause: err }
         )
+      } else {
+        // Symmetric verdict — no destructive dispatch happened. The
+        // per-side idempotent recordCompared + both-sides gate at
+        // step 6 make a retry safely repairing: the side that already
+        // landed is skipped on retry, only the missing side writes.
+        throw err
       }
-      // Symmetric verdict — no destructive dispatch happened. The
-      // per-side idempotent recordCompared + both-sides gate at
-      // step 6 make a retry safely repairing: the side that already
-      // landed is skipped on retry, only the missing side writes.
-      throw err
     }
 
     return renderCompareResult({
