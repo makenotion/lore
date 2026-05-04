@@ -7,6 +7,7 @@ import {
   clampNotionPageSize,
 } from "./fact.js"
 import { normalize, computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
+import * as relationProperties from "../notion/relation-properties.js"
 import { type DatabaseRef, type FactPredicate } from "../types.js"
 
 const DB: DatabaseRef = {
@@ -1799,6 +1800,92 @@ describe("FactService.pageToFact — historical tracking-predicate filter", () =
     const results = await service.queryByEntity("AuthService", { projectId: "p1" })
 
     expect(results.map((f) => f.id)).toEqual(["knowledge-fact"])
+  })
+})
+
+describe("FactService.pageToFacts — batched relation hydration (issue #498)", () => {
+  // Pins the issue's structural acceptance criterion: result-set
+  // callers must funnel through `hydrateRelationPropertiesForPages`
+  // exactly once instead of issuing N parallel `hydrateRelationProperties`
+  // calls inside a `Promise.all`. The wire-level call count to Notion
+  // is identical either way (the per-row helper short-circuits when
+  // `has_more: false`), so the assertion has to fire on the helper
+  // boundary, not on `pages.properties.retrieve`.
+  it("queryBySubject routes its result set through the batched helper", async () => {
+    const batchedSpy = vi.spyOn(
+      relationProperties,
+      "hydrateRelationPropertiesForPages"
+    )
+
+    const pages = Array.from({ length: 5 }, (_, i) =>
+      factPage({ id: `fact-${i}`, predicate: "uses" })
+    )
+    const { client } = createClient([{ results: pages, has_more: false }])
+    const service = new FactService(client, db)
+
+    const facts = await service.queryBySubject("Sub", { projectId: "p1" })
+
+    expect(facts.map((f) => f.id)).toEqual([
+      "fact-0",
+      "fact-1",
+      "fact-2",
+      "fact-3",
+      "fact-4",
+    ])
+    expect(batchedSpy).toHaveBeenCalledTimes(1)
+    const [, callPages, callPropertyNames] = batchedSpy.mock.calls[0]
+    expect(callPages).toHaveLength(5)
+    expect(callPropertyNames).toEqual(["Project"])
+
+    batchedSpy.mockRestore()
+  })
+
+  it("listRecent routes its single-page result through the batched helper", async () => {
+    // Covers the second result-set shape the refactor consolidates —
+    // `listRecent` returns `{ items, hasMore }` and previously inlined
+    // the same `Promise.all(pages.map(p => this.pageToFact(p)))`.
+    const batchedSpy = vi.spyOn(
+      relationProperties,
+      "hydrateRelationPropertiesForPages"
+    )
+
+    const pages = Array.from({ length: 3 }, (_, i) =>
+      factPage({ id: `recent-${i}`, predicate: "uses" })
+    )
+    const { client } = createClient([{ results: pages, has_more: false }])
+    const service = new FactService(client, db)
+
+    const { items } = await service.listRecent({ projectId: "p1", limit: 10 })
+
+    expect(items.map((f) => f.id)).toEqual(["recent-0", "recent-1", "recent-2"])
+    expect(batchedSpy).toHaveBeenCalledTimes(1)
+    expect(batchedSpy.mock.calls[0][1]).toHaveLength(3)
+
+    batchedSpy.mockRestore()
+  })
+
+  it("filters historical tracking-predicate rows on the batched path", async () => {
+    // Equivalence-preservation check: the `null`-drop that
+    // `pageToFactSync` performs must still happen when the result set
+    // is hydrated through the batched helper. Pre-refactor this was a
+    // `.filter(isFact)` after `Promise.all`; post-refactor it lives
+    // inside `pageToFacts`.
+    const trackingPage = factPage({ id: "tracking", predicate: "uses" })
+    ;(
+      trackingPage.properties.Predicate as unknown as {
+        select: { name: string }
+      }
+    ).select.name = "needs_action"
+    const knowledgePage = factPage({ id: "knowledge", predicate: "uses" })
+
+    const { client } = createClient([
+      { results: [trackingPage, knowledgePage], has_more: false },
+    ])
+    const service = new FactService(client, db)
+
+    const facts = await service.queryBySubject("Sub", { projectId: "p1" })
+
+    expect(facts.map((f) => f.id)).toEqual(["knowledge"])
   })
 })
 

@@ -46,7 +46,10 @@ import {
   extractDate,
   extractNumber,
 } from "../notion/extractors.js"
-import { hydrateRelationProperties } from "../notion/relation-properties.js"
+import {
+  hydrateRelationProperties,
+  hydrateRelationPropertiesForPages,
+} from "../notion/relation-properties.js"
 
 type QueryFactsOpts = {
   projectId?: string
@@ -528,8 +531,7 @@ export class FactService {
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    const facts = await Promise.all(results.map((p) => this.pageToFact(p)))
-    return facts.filter(isFact)
+    return await this.pageToFacts(results)
   }
 
   /**
@@ -942,8 +944,7 @@ export class FactService {
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    const facts = await Promise.all(results.map((p) => this.pageToFact(p)))
-    return facts.filter(isFact)
+    return await this.pageToFacts(results)
   }
 
   async queryByObject(object: string, opts?: QueryFactsOpts): Promise<Fact[]> {
@@ -1013,8 +1014,7 @@ export class FactService {
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    const facts = await Promise.all(results.map((p) => this.pageToFact(p)))
-    return facts.filter(isFact)
+    return await this.pageToFacts(results)
   }
 
   async queryBySourceMemory(
@@ -1077,8 +1077,7 @@ export class FactService {
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    const facts = await Promise.all(results.map((p) => this.pageToFact(p)))
-    return facts.filter(isFact)
+    return await this.pageToFacts(results)
   }
 
   /**
@@ -1126,7 +1125,7 @@ export class FactService {
 
     const pages = response.results.filter(isFullPage) as PageObjectResponse[]
     return {
-      items: (await Promise.all(pages.map((p) => this.pageToFact(p)))).filter(isFact),
+      items: await this.pageToFacts(pages),
       hasMore: response.has_more ?? false,
     }
   }
@@ -1285,8 +1284,7 @@ export class FactService {
         if (limit !== undefined && results.length >= limit) break
         cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
       } while (cursor)
-      const facts = await Promise.all(results.map((p) => this.pageToFact(p)))
-      return facts.filter(isFact)
+      return await this.pageToFacts(results)
     } catch (err) {
       // Narrow swallow: only the "relation column doesn't exist on the
       // schema yet" case (a legacy vault that hasn't run schema
@@ -1337,8 +1335,7 @@ export class FactService {
       cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined
     } while (cursor)
 
-    const facts = await Promise.all(results.map((p) => this.pageToFact(p)))
-    return facts.filter(isFact)
+    return await this.pageToFacts(results)
   }
 
   async queryOverdue(opts?: { projectId?: string; limit?: number }): Promise<Fact[]> {
@@ -1797,6 +1794,53 @@ export class FactService {
    */
   private async pageToFact(page: PageObjectResponse): Promise<Fact | null> {
     page = await hydrateRelationProperties(this.client, page, FACT_RELATION_PROPERTIES)
+    return this.pageToFactSync(page)
+  }
+
+  /**
+   * Batched sibling of `pageToFact`: hydrates relation overflow for the
+   * full result set in a single `p-limit(3)`-gated call (via
+   * `hydrateRelationPropertiesForPages`), then runs the synchronous
+   * deserialization over the already-hydrated pages and drops historical
+   * tracking-predicate `null` returns.
+   *
+   * Result-set callers (paginated `dataSources.query` consumers) must
+   * route through this method instead of `Promise.all(results.map(p =>
+   * this.pageToFact(p)))`. The shapes are observationally equivalent —
+   * both inherit the rate-limit Proxy's concurrency-3 gate — but
+   * routing through here consolidates relation-property semantics on
+   * the batched helper so a future change to retry policy, hydration
+   * scope, or column set has one chokepoint instead of one per call
+   * site.
+   *
+   * The single-row `pageToFact` callers (`getById`, `lookupByDedupKey`,
+   * and the inner-loop iterators in `queryOverdue` /
+   * `listAllForBackfill` that process one row per outer page) keep the
+   * per-page hydration path — there is no result set to batch.
+   */
+  private async pageToFacts(pages: readonly PageObjectResponse[]): Promise<Fact[]> {
+    if (pages.length === 0) return []
+    const hydrated = await hydrateRelationPropertiesForPages(
+      this.client,
+      pages,
+      FACT_RELATION_PROPERTIES
+    )
+    const facts: Fact[] = []
+    for (const page of hydrated) {
+      const fact = this.pageToFactSync(page)
+      if (fact !== null) facts.push(fact)
+    }
+    return facts
+  }
+
+  /**
+   * Synchronous deserialization of an already-hydrated fact page.
+   * `pageToFact` and `pageToFacts` both delegate here after their
+   * respective hydration step. Returns `null` for historical
+   * tracking-predicate rows so callers can filter them at the
+   * deserialization boundary.
+   */
+  private pageToFactSync(page: PageObjectResponse): Fact | null {
     const props = page.properties
     const rawPredicate = extractSelect(props["Predicate"], "related_to")
     if (HISTORICAL_TRACKING_PREDICATE_VALUES.has(rawPredicate)) {
@@ -1851,12 +1895,3 @@ const HISTORICAL_TRACKING_PREDICATE_VALUES: ReadonlySet<string> = new Set([
   "waiting_on",
   "blocked_by",
 ])
-
-/**
- * Type guard that narrows `Fact | null` to `Fact`. Used by `pageToFact`
- * call sites to drop historical tracking-predicate rows from the
- * result list while preserving TypeScript's narrowing.
- */
-function isFact(fact: Fact | null): fact is Fact {
-  return fact !== null
-}

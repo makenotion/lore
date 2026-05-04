@@ -1253,17 +1253,27 @@ into an Open Loops section; that surface is gone, the `FactPredicate` union
 no longer carries those values, and `pageToFact` filters historical rows
 in Notion so they cannot resurface as live `Fact` objects on read paths.
 
-### `pageToFact` filters historical tracking-predicate rows
+### `pageToFact` / `pageToFactSync` filter historical tracking-predicate rows
 
-`pageToFact` returns `Fact | null`. It returns `null` when the row's raw
-`Predicate` select value is one of the historical tracking strings
+`pageToFactSync` returns `Fact | null`. It returns `null` when the row's
+raw `Predicate` select value is one of the historical tracking strings
 (`needs_action` / `waiting_on` / `blocked_by`). Notion's schema is
 additive-only (`src/notion/setup.ts`), so those select options stay
 registered and historical rows still exist for vaults that skipped the
 `--migrate-tracking-to-tasks` migration before upgrading to 0.6.0.
 Filtering at the deserialization boundary keeps the pre-#23 read shape
 intact (`FactService.queryBySubject` etc. return `Fact[]`, not
-`Fact | null[]`) — every caller narrows via `.filter(isFact)`.
+`Fact | null[]`).
+
+`pageToFact` (single-row, async) and `pageToFacts` (result-set, async)
+both delegate to `pageToFactSync` after their hydration step. Result-set
+callers route through `pageToFacts` so relation-property hydration runs
+in one batched `p-limit(3)`-gated call (via
+`hydrateRelationPropertiesForPages`) and the historical-tracking
+`null`-drop happens once on the hydrated set. Single-row callers
+(`getById`, `lookupByDedupKey`) and outer-loop iterators that genuinely
+process one row per outer page (`queryOverdue`, `listAllForBackfill`)
+keep the per-page `pageToFact` path — there is no result set to batch.
 
 `FactService.countByPredicateRaw` deliberately bypasses this filter and
 walks `response.results.length` directly so the `lore status` preflight
