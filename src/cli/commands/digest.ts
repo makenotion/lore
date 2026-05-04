@@ -112,6 +112,16 @@ export const digestCommand = new Command("digest")
               "inside a configured project path."
           )
           process.exit(1)
+          // Defensive `return` after `process.exit` — same posture as
+          // `commands/mine.ts` and `commands/search.ts`. In production
+          // `process.exit(1)` actually terminates, so this line is
+          // unreachable. Under the shared no-throw `trapProcessExit`
+          // mock in `src/cli/test-helpers.ts`, execution continues
+          // after `process.exit(1)` records the code; without the
+          // explicit `return` here, `gatherDigestData(... projectLabel)`
+          // would run with a `null` projectLabel and corrupt the
+          // test bed.
+          return
         }
 
         const digest = await gatherDigestData(services, {
@@ -178,9 +188,26 @@ export const digestCommand = new Command("digest")
                 `Shorten LORE_HOOK_STATE_DIR.`
             )
             process.exit(1)
+            // Defensive `return` so the no-throw `trapProcessExit`
+            // mock in `src/cli/test-helpers.ts` doesn't fall through
+            // to the generic `Failed to spawn digest synthesizer.`
+            // line below and stack a misleading message on top of
+            // the actionable lock-path-too-long diagnostic.
+            // Production `process.exit(1)` actually terminates, so
+            // this line is unreachable there.
+            return
           }
           console.error("Failed to spawn digest synthesizer.")
           process.exit(1)
+          // Defensive `return` after `process.exit` — same posture as
+          // `commands/mine.ts` and `commands/search.ts`. In production
+          // `process.exit(1)` actually terminates, so this line is
+          // unreachable. Under the shared no-throw `trapProcessExit`
+          // mock, execution continues after `process.exit(1)` records
+          // the code; without the explicit `return` here, the
+          // marker-touch call below would run despite the failed
+          // spawn and corrupt the test bed.
+          return
         }
 
         // Touch the shared marker so the Stop-triggered auto-digest path

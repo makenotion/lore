@@ -98,13 +98,9 @@ try {
   `initServices()`. Parser helpers should return `CliParseResult<T>` from
   `src/cli/parse.ts`; on `ok: false`, log the command-specific failure prefix
   (for example, `Search failed: ...`) and exit with code 1 before any service
-  initialization. **Exception**: lift the parse-validate block ABOVE the
-  surrounding `try` (with an explicit `return` after `process.exit(1)` for
-  TypeScript narrowing) when you want sentinel-clean operator output under
-  any harness that stubs `process.exit` to throw — leaving parse-validate
-  inside `try` lets the throw fall through to the generic catch arm and
-  re-fires `console.error` with the harness's sentinel as the operator-facing
-  message. `tasks.ts` reconcile is the canonical example.
+  initialization. Pair every intentional `process.exit(1)` inside the action
+  body with a defensive `return` so production-vs-test behavior stays aligned
+  — see the "Testing exit paths" subsection below for the rationale.
 - Treat explicit project-scope misses as fatal. If a command accepts
   `--project <name>` and the name cannot be resolved, log an actionable
   error and exit with code 1 instead of falling back to auto-detected or
@@ -114,6 +110,99 @@ try {
 - Non-fatal warnings use `console.warn` and continue execution only when the
   requested operation can still proceed without changing the user's explicit
   scope.
+
+### Testing exit paths
+
+Every `process.exit(1)` call is a behavior contract that shell-script
+integrations rely on (`if ! lore <cmd>; then ...` works only when
+failure exits non-zero). A refactor that swaps `process.exit` for a
+thrown error — or vice versa — silently changes what those scripts
+see, so each exit call site must have a paired test.
+
+Use `trapProcessExit` from `src/cli/test-helpers.ts`:
+
+```typescript
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { trapProcessExit } from "../test-helpers.js"
+
+describe("fooCommand exit paths", () => {
+  let errorSpy: ReturnType<typeof vi.fn>
+  let exitTrap: ReturnType<typeof trapProcessExit>
+
+  beforeEach(() => {
+    exitTrap = trapProcessExit()
+    errorSpy = vi.fn()
+    vi.spyOn(console, "error").mockImplementation(errorSpy)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("exits 1 on initServices failure", async () => {
+    vi.mocked(initServices).mockRejectedValue(new Error("notion 503"))
+
+    await fooCommand.parseAsync([], { from: "user" })
+
+    expect(errorSpy.mock.calls.flat().join("\n")).toContain("Foo failed:")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+  })
+})
+```
+
+The spy RECORDS exit codes into `exitTrap.exitCodes` and returns
+`undefined` — it does NOT throw. Each command-action exit site is
+paired with a defensive `return` (the "standing pattern" in
+`commands/mine.ts` and `commands/search.ts`), so under the no-throw
+mock the action returns cleanly and the test asserts on the recorded
+codes. Pin three things:
+
+1. The user-visible `<Cmd> failed:` prefix — refactors can't silently
+   change shell-grep contracts.
+2. `exitTrap.exitCodes` via `toEqual([1])`, NOT `toContain(1)`. The
+   tight assertion catches doubled-emission bugs introduced when a
+   future refactor drops the defensive `return` after `process.exit(1)`
+   — execution would fall through to the outer try/catch, which would
+   call `console.error` and `process.exit(1)` again, leaving
+   `exitCodes === [1, 1]`. `toContain(1)` would silently accept the
+   runaway.
+3. `errorSpy` was called exactly once (`toHaveBeenCalledTimes(1)`) —
+   same regression class.
+
+The earlier throw-sentinel design (which `init.test.ts` and
+`auth.test.ts` still use locally) interacts badly with the
+project-wide outer try/catch in command actions: the spy's throw is
+caught by the outer catch, which then emits a SECOND `console.error`
+and calls `process.exit(1)` a SECOND time. The no-throw design avoids
+this entirely — production behavior (real `process.exit` actually
+terminates) and test behavior (mock records, defensive `return` exits
+the action) are now structurally aligned. See PR #512's review for
+the full trace.
+
+Spy cleanup is the project convention via `vi.restoreAllMocks()` in
+`afterEach`; the helper does NOT expose a `restore()` method.
+
+The defensive `return` after `process.exit(1)` is the standing pattern
+in this codebase — see `commands/mine.ts` and `commands/search.ts` for
+reference. New early-exit branches in command actions must follow it
+or the no-throw spy's `exitTrap.exitCodes` assertion will fail loudly.
+
+For malformed `--limit` / `--n` parse-failure tests, use the shared
+`INVALID_LIMIT_STRINGS` fuzz set from `test-helpers.ts` so changes to
+the parse helpers update every command's test bed in lockstep. The
+empty string `""` is intentionally NOT in that set (`parseInt("")`
+returns `NaN`, a structurally different parse path) — cover it as its
+own `it()` test.
+
+`init.test.ts` (~12 sites) and `auth.test.ts` (~16 sites) predate
+this helper and define their own local throw-sentinel versions with
+slightly different shapes (`init.test.ts`'s helper exposes
+`lastCode()` rather than an array; `auth.test.ts`'s exposes a manual
+`restore()`). They are NOT migrated in PR #512 — both files are
+well-covered today and a mass rewrite would balloon the diff.
+Migrate them as a focused follow-up so the CLI surface eventually
+shares one helper shape.
 
 ## Output Formatting
 

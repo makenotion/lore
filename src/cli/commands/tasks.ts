@@ -125,20 +125,24 @@ const reconcileCommand = new Command("reconcile")
     String(DEFAULT_RECONCILE_LIMIT)
   )
   .action(async (opts: { project?: string; minScore: string; limit: string }) => {
-    // Parse-validate runs OUTSIDE the try/catch so a parse failure surfaces
-    // exactly one operator-facing `Reconcile failed: <message>` line and
-    // exits 1 directly. Routing the parse-failure path through the generic
-    // catch would re-fire `console.error("Reconcile failed:", <wrapped>)`
-    // for any test or harness that stubs `process.exit` to throw, masking
-    // the structured parse message behind a generic wrapper. The `return`
-    // narrows `parsed` to `{ ok: true }` for the body below.
-    const parsed = parseReconcileCliOptions(opts)
-    if (!parsed.ok) {
-      console.error(`Reconcile failed: ${parsed.message}`)
-      process.exit(1)
-      return
-    }
     try {
+      const parsed = parseReconcileCliOptions(opts)
+      if (!parsed.ok) {
+        console.error(`Reconcile failed: ${parsed.message}`)
+        process.exit(1)
+        // Defensive `return` after `process.exit` — same posture as
+        // `commands/mine.ts` and `commands/search.ts`. In production
+        // `process.exit(1)` actually terminates, so this line is
+        // unreachable. Under the shared no-throw `trapProcessExit`
+        // mock in `src/cli/test-helpers.ts`, `process.exit(1)` records
+        // the code and returns; without the explicit `return` here,
+        // execution would fall through to `await initServices()` and
+        // the rest of the action body in tests. The `return` also
+        // narrows `parsed.ok` to `true` for the body below — TS's
+        // own narrowing through `process.exit`'s `never` return is
+        // fragile across tsconfig changes.
+        return
+      }
       const services = await initServices()
       const output = await runReconcile(services, parsed.value)
       console.log(output)

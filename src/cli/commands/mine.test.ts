@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { MemoryCreatePartialFailureError } from "../../core/memory.js"
+import { INVALID_LIMIT_STRINGS, trapProcessExit } from "../test-helpers.js"
 
 const { mineStateDir } = vi.hoisted(() => {
   const mineStateDir = `${process.env["TMPDIR"] ?? "/tmp"}/lore-mine-lock-test-${process.pid}-${Date.now()}`
@@ -29,6 +30,7 @@ import {
   formatMineSummary,
   globToRegExp,
   matchesGlob,
+  mineCommand,
   mineLockPath,
   parseMineCliOptions,
   resolveMineProject,
@@ -38,8 +40,12 @@ import {
   type MineCliOptions,
   type MineSummary,
 } from "./mine.js"
-import type { LoreServices } from "../../services.js"
+import { initServices, type LoreServices } from "../../services.js"
 import type { Memory } from "../../types.js"
+
+vi.mock("../../services.js", () => ({
+  initServices: vi.fn(),
+}))
 
 describe("parseMineCliOptions", () => {
   it("returns defaults when --limit and --pattern are omitted", () => {
@@ -1348,5 +1354,99 @@ describe("runMineUpsert (orchestration)", () => {
         expect(Math.max(...inFlight)).toBe(2)
       },
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Action-wrapper exit-path tests for the `lore mine` command.
+//
+// `parseMineCliOptions`, `runMineUpsert`, `resolveMineProject` are exercised
+// as pure functions above; this block covers the two `process.exit(1)` call
+// sites in the action wrapper itself (parse-failure inside the try, and the
+// catch-all). Both must surface `Mine failed:` so shell-script integrations
+// grepping that prefix get a stable signal regardless of where the failure
+// originated.
+//
+// We do NOT cover the post-create `process.exitCode = 1` path on
+// `summary.failed > 0` — that's a non-fatal exit-code set, not a
+// `process.exit()` trap; the existing per-file failure isolation tests above
+// own that contract.
+// ---------------------------------------------------------------------------
+
+describe("mineCommand exit paths", () => {
+  let errorSpy: ReturnType<typeof vi.fn>
+  let exitTrap: ReturnType<typeof trapProcessExit>
+
+  beforeEach(() => {
+    vi.mocked(initServices).mockReset()
+    exitTrap = trapProcessExit()
+    errorSpy = vi.fn()
+    vi.spyOn(console, "error").mockImplementation(errorSpy)
+    vi.spyOn(console, "log").mockImplementation(() => {})
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it.each(INVALID_LIMIT_STRINGS)(
+    "exits 1 once before initServices on invalid --limit %j",
+    async (raw) => {
+      await mineCommand.parseAsync(["--limit", raw], { from: "user" })
+
+      const errorText = errorSpy.mock.calls.flat().join("\n")
+      expect(errorText).toContain("Mine failed:")
+      expect(errorText).toContain("--limit")
+      // `toEqual([1])` — not `toContain(1)` — pins the exit-once
+      // contract. `mine.ts` includes the defensive `return` after
+      // `process.exit(1)` so this branch already exits cleanly; the
+      // strict assertion guards against a future refactor that drops
+      // the return and re-introduces the doubled-emission failure mode
+      // that motivated PR #512's review.
+      expect(exitTrap.exitCodes).toEqual([1])
+      expect(errorSpy).toHaveBeenCalledTimes(1)
+      // Pre-`initServices` short-circuit: a malformed CLI invocation must
+      // not pay a Notion round-trip before rejecting. Flipping the order
+      // would force every typo-fixed retry to wait on vault preflight
+      // before re-rejecting on the same input.
+      expect(vi.mocked(initServices)).not.toHaveBeenCalled()
+    }
+  )
+
+  it("exits 1 via the catch-all when initServices throws", async () => {
+    // Pin the bare "Notion call inside the action body raised" branch.
+    // Operators rely on a non-zero exit code so `if ! lore mine; then`
+    // shell integrations fail fast rather than treat an outage as
+    // "no indexable files."
+    vi.mocked(initServices).mockRejectedValue(new Error("notion 503: gateway"))
+
+    await mineCommand.parseAsync([], { from: "user" })
+
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Mine failed:")
+    expect(errorText).toContain("notion 503: gateway")
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("exits 1 via the catch-all when --project resolves to nothing", async () => {
+    // `resolveMineProject` throws on a name miss. The action body's
+    // try/catch must surface the throw as a clean exit, not a stack trace.
+    // Mine is per-file; an unscoped fallback would silently dispatch
+    // writes that could collide with the intended project's existing
+    // mined memories.
+    vi.mocked(initServices).mockResolvedValue({
+      projects: { findByName: vi.fn().mockResolvedValue(null) },
+      context: { project: null },
+    } as never)
+
+    await mineCommand.parseAsync(["--project", "Missing"], { from: "user" })
+
+    const errorText = errorSpy.mock.calls.flat().join("\n")
+    expect(errorText).toContain("Mine failed:")
+    expect(errorText).toContain('Project "Missing" could not be resolved')
+    expect(exitTrap.exitCodes).toEqual([1])
+    expect(errorSpy).toHaveBeenCalledTimes(1)
   })
 })
