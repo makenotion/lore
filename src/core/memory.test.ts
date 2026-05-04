@@ -597,10 +597,16 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     const updateMarkdownSpy = vi.fn(async () => {
       throw opts.bodyWriteError
     })
-    const updateSpy = vi.fn(async (_args: { page_id: string; archived?: boolean }) => {
-      if (opts.cleanupError) throw opts.cleanupError
-      return {}
-    })
+    const updateSpy = vi.fn(
+      async (_args: {
+        page_id: string
+        archived?: boolean
+        properties?: Record<string, unknown>
+      }) => {
+        if (opts.cleanupError) throw opts.cleanupError
+        return {}
+      }
+    )
     const client = {
       pages: {
         create: createSpy,
@@ -633,15 +639,37 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     expect(partial.cleanupError).toBeUndefined()
     expect(partial.message).toMatch(/Memories DB row was created/)
     expect(partial.message).toContain("mem-orphan")
-    expect(partial.message).toMatch(/archived to keep the vault consistent/)
-    expect(partial.message).toMatch(/retry the create/)
+    // Tightened message (issue #477): the orphan is soft-archived AND
+    // tagged with a sentinel keyword so a Notion-trash restore does
+    // not re-introduce it as a dedup target. The old wording
+    // ("archived to keep the vault consistent") falsely implied the
+    // row had been removed from the recovery surface. The polished
+    // wording closes with an outcome-shaped sentence the operator can
+    // act on — "your retry will land cleanly" — instead of leaving
+    // them to infer behavior from the implementation detail.
+    expect(partial.message).toMatch(/soft-archived to Notion's trash/)
+    expect(partial.message).toMatch(/__lore-cleanup-orphan/)
+    expect(partial.message).toMatch(/restored from trash/)
+    expect(partial.message).toMatch(/Your retry will land cleanly/)
 
-    // Body write was attempted; cleanup archive followed.
+    // Body write was attempted; cleanup archive followed. The cleanup
+    // call writes BOTH `archived: true` AND the sentinel keyword in
+    // a single atomic `pages.update` (issue #477) so an
+    // archive-success / sentinel-write-failure split state is not
+    // possible — Notion's API is per-request atomic. The fixture
+    // create call passed no `keywords`, so the cleanup write is the
+    // bare-sentinel branch; see the `preserves the caller's keywords`
+    // test below for the concatenated-keywords branch.
     expect(updateMarkdownSpy).toHaveBeenCalledTimes(1)
     expect(updateSpy).toHaveBeenCalledTimes(1)
     expect(updateSpy.mock.calls[0]![0]).toEqual({
       page_id: "mem-orphan",
       archived: true,
+      properties: {
+        Keywords: {
+          rich_text: [{ text: { content: "__lore-cleanup-orphan" } }],
+        },
+      },
     })
   })
 
@@ -672,7 +700,12 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     expect(partial.bodyWriteError).toBe(bodyWriteError)
     expect(partial.cleanupError).toBe(cleanupError)
     expect(partial.message).toMatch(/cleanup archive also failed/)
-    expect(partial.message).toMatch(/Archive it manually before retrying/)
+    // Tightened wording (issue #477) directs the operator either to
+    // archive manually OR to hard-delete from Notion's trash, since
+    // the soft-archive recovery surface is what made the orphan
+    // resurface vector exist in the first place.
+    expect(partial.message).toMatch(/Archive it manually/)
+    expect(partial.message).toMatch(/hard-delete from Notion's trash/)
     expect(partial.message).toContain("mem-orphan")
 
     // Cleanup archive was attempted exactly once even though it failed
@@ -828,6 +861,324 @@ describe("MemoryService.create — partial-failure on body write (issue #190)", 
     expect(createSpy).toHaveBeenCalledTimes(1)
     expect(updateMarkdownSpy).not.toHaveBeenCalled()
     expect(updateSpy).not.toHaveBeenCalled()
+  })
+
+  it("cleanup write tags the orphan with the cleanup-orphan sentinel in the same atomic update (issue #477)", async () => {
+    // Notion's `archived: true` is a soft delete — within ~30 days an
+    // operator restoring from the workspace trash reanimates the
+    // properties-only orphan as a live row that `isLiveFullPage` no
+    // longer excludes. The sentinel keyword survives archive/restore
+    // round-trips and is the load-bearing signal for `findByTopicKey`,
+    // `findNearDuplicates`, and `findAutosaveLearningDuplicate`
+    // ignoring the resurfaced empty-body shell. Pin the atomic shape
+    // so a future split-write refactor (archive in one call, sentinel
+    // in another) cannot silently re-open the gap between the two
+    // mutations.
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const { client, updateSpy } = makePartialFailureClient({ bodyWriteError })
+    const service = new MemoryService(client, db)
+
+    await service.create({ title: "x", content: "body prose" }).catch(() => {})
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const call = updateSpy.mock.calls[0]![0]
+    expect(call).toMatchObject({
+      page_id: "mem-orphan",
+      archived: true,
+      properties: {
+        Keywords: {
+          rich_text: [{ text: { content: "__lore-cleanup-orphan" } }],
+        },
+      },
+    })
+  })
+
+  it("cleanup write preserves the caller's keywords by writing two rich_text segments (issue #477 review-feedback)", async () => {
+    // Notion `rich_text` writes are full-replace, not append. Writing
+    // only the sentinel would clobber whatever the caller passed in
+    // `keywords`, leaving an operator inspecting Notion's trash with
+    // "your original keywords are gone — only the sentinel survives."
+    // Splitting into two segments — `[originalKeywords, " sentinel"]`
+    // — preserves both: the substring filter still matches the sentinel
+    // (Notion concatenates segments when evaluating `contains` /
+    // `does_not_contain`), and the operator's content stays visible
+    // if they restore to recover keywords. The two-segment form is
+    // unconditional when keywords are present so the at-cap edge
+    // (a 2000-char keyword string + the 22-char sentinel suffix would
+    // exceed the per-segment cap) is handled by the same code path as
+    // a short-keyword caller. Single-space separator keeps the
+    // sentinel word-tokenizable in any future tag-aware view.
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const { client, updateSpy } = makePartialFailureClient({ bodyWriteError })
+    const service = new MemoryService(client, db)
+
+    await service
+      .create({
+        title: "x",
+        content: "body prose",
+        keywords: "auth, middleware",
+      })
+      .catch(() => {})
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const call = updateSpy.mock.calls[0]![0]
+    expect(call.properties).toEqual({
+      Keywords: {
+        rich_text: [
+          { text: { content: "auth, middleware" } },
+          { text: { content: " __lore-cleanup-orphan" } },
+        ],
+      },
+    })
+  })
+
+  it("cleanup write does not regress to cleanedUp=false when caller's keywords are at the segment cap (issue #477 review-feedback)", async () => {
+    // The MCP boundary's `keywordsSchema` accepts keywords up to
+    // exactly `RICH_TEXT_PROPERTY_MAX_LEN` (2000 chars). A naive
+    // concatenated single-segment cleanup write
+    // (`${atCap} __lore-cleanup-orphan`) would produce a 2022-char
+    // segment that Notion rejects with a validation error — flipping
+    // `cleanedUp` to `false` and leaving the orphan live in the vault.
+    // This regresses exactly the partial-failure recovery path issue
+    // #477 is meant to protect: a create payload that was valid before
+    // the PR could no longer cleanly recover under the same body-write
+    // failure scenario. The two-segment write keeps each segment well
+    // under the cap.
+    const atCapKeywords = "x".repeat(RICH_TEXT_PROPERTY_MAX_LEN)
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const { client, updateSpy } = makePartialFailureClient({ bodyWriteError })
+    const service = new MemoryService(client, db)
+
+    let caught: unknown
+    try {
+      await service.create({
+        title: "x",
+        content: "body prose",
+        keywords: atCapKeywords,
+      })
+    } catch (err) {
+      caught = err
+    }
+
+    // The partial-failure error must report cleanedUp=true — the
+    // cleanup write succeeded.
+    expect(caught).toBeInstanceOf(MemoryCreatePartialFailureError)
+    const partial = caught as MemoryCreatePartialFailureError
+    expect(partial.cleanedUp).toBe(true)
+
+    // The cleanup write must include archived: true AND carry the
+    // sentinel via a second segment so each rich_text segment stays
+    // within the 2000-char cap.
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    const call = updateSpy.mock.calls[0]![0]
+    expect(call.archived).toBe(true)
+    const richText = (
+      call.properties as { Keywords: { rich_text: Array<{ text: { content: string } }> } }
+    ).Keywords.rich_text
+    expect(richText).toEqual([
+      { text: { content: atCapKeywords } },
+      { text: { content: " __lore-cleanup-orphan" } },
+    ])
+    // Each segment must be ≤ the per-segment cap.
+    for (const seg of richText) {
+      expect(seg.text.content.length).toBeLessThanOrEqual(RICH_TEXT_PROPERTY_MAX_LEN)
+    }
+    // Concatenated form (what `extractRichText` returns) carries the
+    // sentinel substring — the `does_not_contain` filter still excludes
+    // a resurfaced row.
+    const concat = richText.map((s) => s.text.content).join("")
+    expect(concat.includes("__lore-cleanup-orphan")).toBe(true)
+  })
+
+  it("cleanup write collapses to bare sentinel when the caller's keywords are whitespace-only (issue #477 review-feedback)", async () => {
+    // Whitespace-only `keywords` is structurally indistinguishable from
+    // empty for the purposes of the concatenated form — a bare-sentinel
+    // write is preferred to preserve the simplest filter contract.
+    // Without this guard, a stray space in the caller's input would
+    // produce a leading-space keyword (`" __lore-cleanup-orphan"`)
+    // that's still substring-matched but visually noisy.
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const { client, updateSpy } = makePartialFailureClient({ bodyWriteError })
+    const service = new MemoryService(client, db)
+
+    await service
+      .create({ title: "x", content: "body prose", keywords: "   " })
+      .catch(() => {})
+
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy.mock.calls[0]![0].properties).toEqual({
+      Keywords: {
+        rich_text: [{ text: { content: "__lore-cleanup-orphan" } }],
+      },
+    })
+  })
+
+  it("archive→restore round-trip: orphan is soft-archived with sentinel, restoring it from trash leaves the sentinel in place, and findByTopicKey filters it out (issue #477)", async () => {
+    // Bug repro from the original issue. Steps:
+    //   1. createFresh body-write fails → cleanup archive lands sentinel
+    //   2. Operator restores the orphan from Notion's workspace trash
+    //   3. The next lore-memory action='save' against the same topic key
+    //      runs findByTopicKey
+    //   4. WITHOUT the fix, the resurfaced row matches the topic-key
+    //      query and the upsert path appends a revision to an
+    //      empty-body shell; WITH the fix, the server-side
+    //      `Keywords does_not_contain` filter excludes the row before
+    //      it can reach the upsert path.
+    //
+    // The previous tests collapsed step 2 (restore) into the fixture by
+    // building a "live" row with the keyword preset — they confirm the
+    // probes filter the row but not that the property survives the
+    // archive/restore round-trip. This test wires steps 1→4 end-to-end
+    // through a single client mock so the keyword written in step 1 is
+    // the same keyword the query in step 4 has to filter on.
+
+    // Step 1: simulate the partial-failure cleanup write.
+    const bodyWriteError = new Error("Notion body update failed (502)")
+    const { client: createClient, updateSpy: createUpdateSpy } =
+      makePartialFailureClient({ bodyWriteError })
+    const createService = new MemoryService(createClient, db)
+    await createService
+      .create({
+        title: "Decision: replace auth middleware",
+        content: "body prose",
+        keywords: "auth",
+      })
+      .catch(() => {})
+    expect(createUpdateSpy).toHaveBeenCalledTimes(1)
+    const cleanupCall = createUpdateSpy.mock.calls[0]![0]
+    const cleanupKeywordsProp = (
+      cleanupCall.properties as { Keywords: { rich_text: Array<{ text: { content: string } }> } }
+    ).Keywords
+    // The cleanup write uses two rich_text segments when keywords are
+    // present (issue #477 review-feedback) so the at-cap edge cannot
+    // overflow the 2000-char Notion segment cap. Concatenating the
+    // segments mirrors `extractRichText` semantics — what Notion
+    // returns on read is the joined string, which is what the
+    // server-side `does_not_contain` filter and JS `keywords.includes`
+    // post-filter both see.
+    const archivedKeywords = cleanupKeywordsProp.rich_text
+      .map((seg) => seg.text.content)
+      .join("")
+    expect(archivedKeywords).toBe("auth __lore-cleanup-orphan")
+
+    // Steps 2–4: build a query client whose dataSources.query response
+    // ignores the does_not_contain filter (i.e. simulates a Notion API
+    // that returns the row regardless), confirms the filter is REQUESTED,
+    // AND confirms the test's understanding of Notion's filter semantics
+    // is what `findByTopicKey` relies on. The presence of the sentinel
+    // in the request filter is the contract — Notion enforces the
+    // exclusion server-side.
+    const restoredOrphan: PageObjectResponse = {
+      object: "page",
+      id: "mem-orphan-resurfaced",
+      created_time: "2026-04-01T00:00:00.000Z",
+      last_edited_time: "2026-05-04T00:00:00.000Z",
+      archived: false, // restored from trash
+      in_trash: false,
+      parent: { type: "database_id", database_id: db.databaseId },
+      properties: {
+        Title: {
+          id: "title",
+          type: "title",
+          title: [
+            {
+              type: "text",
+              text: { content: "Decision: replace auth middleware", link: null },
+              plain_text: "Decision: replace auth middleware",
+              annotations: {
+                bold: false,
+                italic: false,
+                strikethrough: false,
+                underline: false,
+                code: false,
+                color: "default",
+              },
+              href: null,
+            },
+          ],
+        },
+        Project: {
+          id: "project",
+          type: "relation",
+          relation: [{ id: "P1" }],
+          has_more: false,
+        },
+        "Topic Key": {
+          id: "topic-key",
+          type: "rich_text",
+          rich_text: [
+            {
+              type: "text",
+              text: { content: "decision/auth-middleware", link: null },
+              plain_text: "decision/auth-middleware",
+              annotations: {
+                bold: false,
+                italic: false,
+                strikethrough: false,
+                underline: false,
+                code: false,
+                color: "default",
+              },
+              href: null,
+            },
+          ],
+        },
+        Keywords: {
+          id: "keywords",
+          type: "rich_text",
+          rich_text: [
+            {
+              type: "text",
+              text: { content: archivedKeywords, link: null },
+              plain_text: archivedKeywords,
+              annotations: {
+                bold: false,
+                italic: false,
+                strikethrough: false,
+                underline: false,
+                code: false,
+                color: "default",
+              },
+              href: null,
+            },
+          ],
+        },
+      },
+      url: "",
+      public_url: null,
+      cover: null,
+      icon: null,
+    } as unknown as PageObjectResponse
+
+    // The mock does NOT filter — it returns the orphan. The contract
+    // we're pinning is that `findByTopicKey` REQUESTED the
+    // `does_not_contain` filter; the server-side Notion enforcement
+    // is what the integration relies on. (Real-vault behavior was
+    // verified by Iron-Ham; see the cleanupOrphanExclusionFilter
+    // docstring in memory.ts for the verification record.)
+    let capturedFilter: unknown
+    const querySpy = vi.fn(async (args: { filter?: unknown }) => {
+      capturedFilter = args.filter
+      return { results: [restoredOrphan], has_more: false, next_cursor: null }
+    })
+    const queryClient = {
+      dataSources: { query: querySpy },
+    } as unknown as Client
+    const queryService = new MemoryService(queryClient, db)
+
+    await queryService.findByTopicKey({
+      topicKey: "decision/auth-middleware",
+      projectIds: ["P1"],
+    })
+
+    // Pin: the request that reaches Notion includes the
+    // does_not_contain clause, so a Notion-side enforcement excludes
+    // the resurfaced orphan before it ever reaches the JS layer.
+    const filter = capturedFilter as { and: Array<Record<string, unknown>> }
+    expect(filter.and).toContainEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
   })
 })
 
@@ -1835,6 +2186,73 @@ describe("MemoryService.findByTopicKey (0.9.0/01)", () => {
     expect(querySpy).toHaveBeenCalledTimes(2)
     // Second call uses the cursor returned from the first.
     expect(querySpy.mock.calls[1]![0].start_cursor).toBe("cursor-1")
+  })
+
+  it("excludes resurfaced cleanup-orphans server-side via Keywords does_not_contain (issue #477)", async () => {
+    // The filter `Keywords does_not_contain '__lore-cleanup-orphan'` is
+    // pushed server-side so a restored-from-trash properties-only orphan
+    // never reaches the JS post-filter. Without this clause, an operator
+    // who restores an archived orphan from Notion's workspace trash
+    // would see the live row resurface as a topic-key match the next
+    // time `lore-memory action='save'` ran — silently routing into the
+    // upsert path against an empty-body shell.
+    const { client, querySpy } = makeQueryClient([{ results: [] }])
+    const service = new MemoryService(client, db)
+
+    await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    const filter = querySpy.mock.calls[0]![0].filter as {
+      and: Array<Record<string, unknown>>
+    }
+    expect(filter.and).toContainEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
+  })
+
+  it("does NOT exclude memories whose Keywords column is empty — does_not_contain semantics on empty rich_text (issue #477 review-feedback)", async () => {
+    // Notion's `rich_text.does_not_contain` filter excludes rows whose
+    // value contains the substring; an empty rich_text value contains
+    // no substring at all and is therefore included. Pin this behavior
+    // at the request-shape level so a future contributor cannot
+    // silently add an `is_not_empty` precondition that would flip the
+    // semantics — that flip would silently exclude every memory with
+    // no keywords from `findByTopicKey` queries, producing false
+    // negatives on the upsert path that re-create rows that should
+    // have been upserted.
+    //
+    // The bare filter clause is the contract; the test asserts the
+    // EXACT clause that lands in the Notion request, with no
+    // surrounding `is_not_empty` guard. Real-vault verification of
+    // Notion's empty-rich_text behavior is recorded in
+    // `cleanupOrphanExclusionFilter`'s docstring in memory.ts.
+    const { client, querySpy } = makeQueryClient([{ results: [] }])
+    const service = new MemoryService(client, db)
+
+    await service.findByTopicKey({
+      topicKey: "decision/foo",
+      projectIds: ["P1"],
+    })
+
+    expect(querySpy).toHaveBeenCalledTimes(1)
+    const filter = querySpy.mock.calls[0]![0].filter as {
+      and: Array<Record<string, unknown>>
+    }
+    const keywordClauses = filter.and.filter(
+      (c) => (c as { property?: string }).property === "Keywords"
+    )
+    expect(keywordClauses).toHaveLength(1)
+    // The clause must be EXACTLY the does_not_contain shape. NO
+    // `is_not_empty` AND-guard, NO `or` with an empty-check branch —
+    // those would silently exclude memories with no keywords.
+    expect(keywordClauses[0]).toEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
   })
 })
 
@@ -4938,17 +5356,26 @@ describe("MemoryService.search — contains mode", () => {
     const filter = querySpy.mock.calls[0][0]["filter"] as
       | { or?: Array<Record<string, unknown>>; and?: Array<Record<string, unknown>> }
       | undefined
-    // Only the text filter is set — no project/topic/tags/kind/status, so
-    // the wrapper isn't an `and`. The single filter is the OR of Title,
-    // Keywords, and Synopsis contains. Synopsis joins the precision lane as
-    // of issue 0.7.0/04 so an agent-curated short summary that doesn't
-    // appear verbatim in a title or keyword string still surfaces.
-    expect(filter?.or).toBeDefined()
-    expect(filter?.or).toEqual([
-      { property: "Title", title: { contains: "PR-25650" } },
-      { property: "Keywords", rich_text: { contains: "PR-25650" } },
-      { property: "Synopsis", rich_text: { contains: "PR-25650" } },
-    ])
+    // The OR of Title, Keywords, and Synopsis contains is the
+    // text-precision lane. Synopsis joined the lane as of issue
+    // 0.7.0/04 so an agent-curated short summary that doesn't appear
+    // verbatim in a title or keyword string still surfaces. The
+    // surrounding wrapper is `and` because the cleanup-orphan
+    // exclusion (issue #477) is always appended — a restored-from-trash
+    // orphan must not surface in the contains lane and saturate the
+    // hybrid threshold against real semantic hits.
+    expect(filter?.and).toBeDefined()
+    expect(filter?.and).toContainEqual({
+      or: [
+        { property: "Title", title: { contains: "PR-25650" } },
+        { property: "Keywords", rich_text: { contains: "PR-25650" } },
+        { property: "Synopsis", rich_text: { contains: "PR-25650" } },
+      ],
+    })
+    expect(filter?.and).toContainEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
   })
 
   it("composes server-side property filters: kind + status + tags", async () => {
@@ -5029,12 +5456,21 @@ describe("MemoryService.search — contains mode", () => {
     const filter = querySpy.mock.calls[0][0]["filter"] as
       | { and?: Array<Record<string, unknown>>; or?: Array<Record<string, unknown>> }
       | undefined
-    // Only the project filter — text clause omitted.
-    expect(filter?.or).toBeDefined()
-    expect(filter?.or).toEqual([
-      { property: "Project", relation: { contains: "proj-1" } },
-      { property: "Project", relation: { is_empty: true } },
-    ])
+    // Project filter present — text clause omitted. The surrounding
+    // wrapper is `and` because the cleanup-orphan exclusion (issue
+    // #477) is always appended; the project OR-clause is one of the
+    // top-level `and` members alongside it.
+    expect(filter?.and).toBeDefined()
+    expect(filter?.and).toContainEqual({
+      or: [
+        { property: "Project", relation: { contains: "proj-1" } },
+        { property: "Project", relation: { is_empty: true } },
+      ],
+    })
+    expect(filter?.and).toContainEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
   })
 
   it("sorts by last_edited_time desc and requests a full page for refill efficiency", async () => {
@@ -7595,9 +8031,17 @@ describe("MemoryService.list — pagination", () => {
       includeProposed: true,
     })
 
+    // The cleanup-orphan exclusion (issue #477) is always appended,
+    // so a single-property caller filter lands inside an `and` array
+    // rather than as the bare clause.
     expect(querySpy.mock.calls[0][0].filter).toEqual({
-      property: "Session",
-      rich_text: { equals: "session-1" },
+      and: [
+        { property: "Session", rich_text: { equals: "session-1" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 
@@ -7612,8 +8056,13 @@ describe("MemoryService.list — pagination", () => {
     })
 
     expect(querySpy.mock.calls[0][0].filter).toEqual({
-      property: "Confidence",
-      select: { equals: "likely" },
+      and: [
+        { property: "Confidence", select: { equals: "likely" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 })
@@ -7635,13 +8084,25 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
     await service.list({ includeContent: false })
 
     expect(query).toHaveBeenCalledTimes(1)
+    // The cleanup-orphan exclusion (issue #477) is always appended.
+    // The default Status != proposed clause was a single-property
+    // filter pre-#477; it is now wrapped in `and: [..., sentinel]`.
     expect(query.mock.calls[0]![0].filter).toEqual({
-      property: "Status",
-      select: { does_not_equal: "proposed" },
+      and: [
+        { property: "Status", select: { does_not_equal: "proposed" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 
-  it("suppresses the default exclusion when includeProposed is true", async () => {
+  it("suppresses the default Status exclusion when includeProposed is true (cleanup-orphan exclusion still applies)", async () => {
+    // Pre-issue-477 this was `filter: undefined`. The cleanup-orphan
+    // exclusion is independent of `includeProposed` — it filters
+    // resurfaced empty-body shells, not proposed-status memories — so
+    // it remains present even under the includeProposed opt-in.
     const query = vi
       .fn()
       .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
@@ -7650,14 +8111,19 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
 
     await service.list({ includeContent: false, includeProposed: true })
 
-    expect(query.mock.calls[0]![0].filter).toBeUndefined()
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
   })
 
   it("explicit status: 'proposed' wins over the default exclusion", async () => {
     // The inbox-review path passes `status: "proposed"` to surface the
     // very rows the default exclusion would otherwise hide. The
     // explicit equals filter must short-circuit the default
-    // does_not_equal clause — they cannot both be in the filter.
+    // does_not_equal clause — they cannot both be in the filter. The
+    // cleanup-orphan exclusion (issue #477) is independent and still
+    // applies.
     const query = vi
       .fn()
       .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
@@ -7667,8 +8133,13 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
     await service.list({ status: "proposed", includeContent: false })
 
     expect(query.mock.calls[0]![0].filter).toEqual({
-      property: "Status",
-      select: { equals: "proposed" },
+      and: [
+        { property: "Status", select: { equals: "proposed" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 
@@ -7681,6 +8152,8 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
 
     await service.list({ projectId: "p1", includeContent: false })
 
+    // Three-clause `and:`: project scope + Status != proposed
+    // (issue #281) + Keywords does_not_contain sentinel (issue #477).
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
         {
@@ -7690,6 +8163,10 @@ describe("MemoryService.list — default-excludes Status = proposed", () => {
           ],
         },
         { property: "Status", select: { does_not_equal: "proposed" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
       ],
     })
   })
@@ -7793,9 +8270,17 @@ describe("MemoryService.list — excludeKinds (issue #281)", () => {
     })
 
     expect(query).toHaveBeenCalledTimes(1)
+    // The cleanup-orphan exclusion (issue #477) is always appended,
+    // so a single excludeKinds clause lands inside `and:` alongside
+    // the sentinel exclusion.
     expect(query.mock.calls[0]![0].filter).toEqual({
-      property: "Kind",
-      select: { does_not_equal: "decision" },
+      and: [
+        { property: "Kind", select: { does_not_equal: "decision" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 
@@ -7817,15 +8302,21 @@ describe("MemoryService.list — excludeKinds (issue #281)", () => {
       excludeKinds: ["decision", "task"],
     })
 
+    // Three-clause `and:`: per-kind exclusions + cleanup-orphan
+    // exclusion (issue #477).
     expect(query.mock.calls[0]![0].filter).toEqual({
       and: [
         { property: "Kind", select: { does_not_equal: "decision" } },
         { property: "Kind", select: { does_not_equal: "task" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
       ],
     })
   })
 
-  it("treats an empty excludeKinds array as a no-op (omits the clause)", async () => {
+  it("treats an empty excludeKinds array as a no-op (cleanup-orphan exclusion still applies)", async () => {
     const query = vi
       .fn()
       .mockResolvedValueOnce({ results: [], has_more: false, next_cursor: null })
@@ -7838,9 +8329,13 @@ describe("MemoryService.list — excludeKinds (issue #281)", () => {
       excludeKinds: [],
     })
 
-    // No clauses survived (no `kind`, no `excludeKinds`, no
-    // `includeProposed: false` exclusion) — filter is undefined.
-    expect(query.mock.calls[0]![0].filter).toBeUndefined()
+    // Pre-issue-477 this was `filter: undefined`. The cleanup-orphan
+    // exclusion is always present so a vault-wide unscoped query
+    // doesn't surface empty-body shells from the partial-failure path.
+    expect(query.mock.calls[0]![0].filter).toEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
   })
 })
 
@@ -9753,7 +10248,11 @@ describe("MemoryService.listAllForBackfill", () => {
     expect(args.page_size).toBe(100)
   })
 
-  it("issues no filter when projectId is omitted (vault-wide scope)", async () => {
+  it("issues only the cleanup-orphan exclusion filter when projectId is omitted (vault-wide scope, issue #477)", async () => {
+    // Pre-issue-477 this was `filter: undefined` — vault-wide scope
+    // meant zero filtering. The cleanup-orphan exclusion is now the
+    // only filter on the unscoped path so the backfill doesn't seed a
+    // confidence score onto a resurfaced empty-body shell.
     const query = vi.fn().mockResolvedValueOnce({
       results: [],
       has_more: false,
@@ -9764,7 +10263,12 @@ describe("MemoryService.listAllForBackfill", () => {
 
     for await (const _m of service.listAllForBackfill()) void _m
     expect(query).toHaveBeenCalledTimes(1)
-    expect(query.mock.calls[0]![0]).toMatchObject({ filter: undefined })
+    expect(query.mock.calls[0]![0]).toMatchObject({
+      filter: {
+        property: "Keywords",
+        rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+      },
+    })
   })
 })
 
@@ -10225,6 +10729,98 @@ describe("MemoryService.countProposed", () => {
     // No project clause: the filter is the bare Status equality.
     const args = query.mock.calls[0]![0] as { filter: unknown }
     expect(JSON.stringify(args.filter)).not.toContain("Project")
+  })
+
+  it("includes the cleanup-orphan exclusion so the count matches the proposed-inbox slice (issue #477 review-feedback)", async () => {
+    // `loadWakeUpData` documents that the proposed-inbox slice
+    // (`MemoryService.list({ status: "proposed", excludeKinds:
+    // ["decision"] })`) and the proposed-inbox count
+    // (`MemoryService.countProposed`) must surface the same row set.
+    // After issue #477's broad sentinel-exclusion sweep, `list` drops
+    // resurfaced cleanup-orphans automatically — `countProposed` must
+    // do the same or the wake-up renderer prints a count that doesn't
+    // match its row list. Pin both halves of the contract: the
+    // request filter carries the does_not_contain clause, AND the
+    // resulting count excludes the sentinel-tagged row.
+    const sentinelRow = {
+      object: "page",
+      id: "mem-resurfaced-orphan",
+      created_time: "2026-04-01T00:00:00.000Z",
+      last_edited_time: "2026-05-04T00:00:00.000Z",
+      archived: false,
+      parent: { type: "data_source_id", data_source_id: db.dataSourceId },
+      properties: {
+        Status: { type: "select", select: { name: "proposed" } },
+        Kind: { type: "select", select: { name: "note" } },
+        Source: { type: "select", select: { name: "conversation" } },
+        Agent: { type: "rich_text", rich_text: [{ plain_text: "Claude Code" }] },
+        Keywords: {
+          type: "rich_text",
+          rich_text: [{ plain_text: "auth __lore-cleanup-orphan" }],
+        },
+      },
+    } as unknown as PageObjectResponse
+    // The mock simulates Notion's server-side filter enforcement: when
+    // the query carries `does_not_contain "__lore-cleanup-orphan"`,
+    // the row with the sentinel keyword is filtered out of the
+    // response. The test thereby covers BOTH the filter contract AND
+    // the count semantic.
+    const query = vi.fn().mockImplementation(async (args: { filter: unknown }) => {
+      const serialized = JSON.stringify(args.filter)
+      if (serialized.includes("__lore-cleanup-orphan")) {
+        return { results: [], has_more: false, next_cursor: null }
+      }
+      return { results: [sentinelRow], has_more: false, next_cursor: null }
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    const result = await service.countProposed()
+
+    // Filter shape: the cleanup-orphan exclusion is composed alongside
+    // the proposed-status / non-decision clauses as a flat sibling.
+    expect(query).toHaveBeenCalledTimes(1)
+    const args = query.mock.calls[0]![0] as {
+      filter: { and?: Array<Record<string, unknown>> }
+    }
+    expect(args.filter.and).toBeDefined()
+    expect(args.filter.and).toContainEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
+    // Count semantic: zero rows because the only candidate carries the
+    // sentinel and Notion's server-side filter excluded it.
+    expect(result.total).toBe(0)
+  })
+
+  it("composes the cleanup-orphan exclusion alongside project scope without breaking the flat shape (issue #477 review-feedback)", async () => {
+    // Project-scoped variant of the above. The flat-sibling contract
+    // pinned at line 10655 must continue to hold — the cleanup-orphan
+    // exclusion is appended as a sibling, not nested as a sub-`and`.
+    const query = vi.fn().mockResolvedValueOnce({
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const client = { dataSources: { query } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    await service.countProposed({ projectId: "proj-1" })
+
+    const args = query.mock.calls[0]![0] as {
+      filter: { and?: Array<Record<string, unknown>> }
+    }
+    expect(args.filter.and).toBeDefined()
+    // Four flat siblings: status, kind, project, sentinel.
+    expect(args.filter.and).toHaveLength(4)
+    expect(args.filter.and).toContainEqual({
+      property: "Keywords",
+      rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+    })
+    // No element of the outer `and:` is itself wrapped in `{ and: }`.
+    for (const clause of args.filter.and!) {
+      expect(clause).not.toHaveProperty("and")
+    }
   })
 })
 
@@ -12446,9 +13042,19 @@ describe("MemoryService.listForScan (0.9.0/09)", () => {
 
     expect(querySpy).toHaveBeenCalledTimes(1)
     expect(querySpy.mock.calls[0]![0].page_size).toBe(100)
+    // Strict-scoped project filter composed with the cleanup-orphan
+    // exclusion (issue #477). The filter must include the
+    // `relation contains` clause AND the sentinel does_not_contain
+    // clause so the conflict scanner's lexical pair-detector cannot
+    // pair a resurfaced empty-body orphan against legitimate rows.
     expect(querySpy.mock.calls[0]![0].filter).toEqual({
-      property: "Project",
-      relation: { contains: "P1" },
+      and: [
+        { property: "Project", relation: { contains: "P1" } },
+        {
+          property: "Keywords",
+          rich_text: { does_not_contain: "__lore-cleanup-orphan" },
+        },
+      ],
     })
   })
 

@@ -28,6 +28,48 @@ import { ACTIVE_TASK_STATES } from "../types.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { trigramJaccard, tagOverlap } from "./similarity.js"
 
+/**
+ * Sentinel keyword written into a memory's `Keywords` column at the same
+ * `pages.update` that archives a properties-only orphan after a partial
+ * `MemoryService.create` failure (issue #477). Notion's archive is soft —
+ * within ~30 days, an operator restoring from the workspace trash (or a
+ * UI-level bulk restore) re-introduces the orphan as a live properties-
+ * only row. The sentinel is the load-bearing signal that lets every
+ * read path that surfaces live memories (`findByTopicKey`,
+ * `findNearDuplicates`, `findAutosaveLearningDuplicate`,
+ * `MemoryService.list`, `fetchContainsPages`, `listForScan`,
+ * `listAllForBackfill`, `queryStaleConfidence`, and the
+ * `applySemanticPostFilters` post-filter for `client.search`) ignore the
+ * resurfaced row instead of surfacing it as a "live duplicate target"
+ * with an empty body.
+ *
+ * Living in `near-duplicate.ts` rather than `memory.ts` because two of
+ * the original three filters live here, and `memory.ts` already imports
+ * from this module — co-locating the constant with its primary
+ * consumers avoids a circular import.
+ *
+ * **Substring match, not tag equality.** Both the server-side filter
+ * (`Keywords rich_text does_not_contain ...`) and the client-side
+ * post-filters (`memory.keywords.includes(...)`) are substring matches
+ * on the literal sentinel string. The leading `__` mimics the
+ * system-managed-sentinel convention used elsewhere AND keeps the
+ * literal long enough that an agent or operator typing keyword content
+ * cannot accidentally collide with it. A user keyword like
+ * `path/to/__lore-cleanup-orphan-related-test.ts` would technically
+ * substring-match and trigger the filter, but typing such a value
+ * voluntarily is implausible enough that the cleaner write-path
+ * (`existing keywords + " " + sentinel`) is preferable to a more
+ * complex word-boundary scheme.
+ *
+ * **Original keywords are preserved on cleanup writes.** When the
+ * partial-failure path archives an orphan, `Keywords` lands as
+ * `${decoded.keywords} ${SENTINEL}` (or just the sentinel when the
+ * caller passed empty keywords) so an operator inspecting the row in
+ * Notion's trash still sees their original keyword content alongside
+ * the sentinel. The substring filter is unaffected by the prefix.
+ */
+export const MEMORY_CLEANUP_ORPHAN_SENTINEL = "__lore-cleanup-orphan"
+
 export interface NearDuplicateMatch {
   id: string
   title: string
@@ -209,6 +251,13 @@ export async function findNearDuplicates(
 
   const matches: NearDuplicateMatch[] = []
   for (const mem of items) {
+    // Exclude resurfaced cleanup-orphans (issue #477). A partial
+    // `MemoryService.create` whose body write fails leaves a properties-
+    // only row that gets soft-archived and tagged with this sentinel; an
+    // operator restoring from Notion's trash within ~30 days reanimates
+    // the row, but the sentinel keyword survives the archive/restore
+    // round-trip and steers dedup away from the empty-body shell.
+    if (mem.keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) continue
     if (excludeKinds?.has(mem.kind)) continue
     if (opts.statuses && !opts.statuses.includes(mem.status)) continue
     const sim = trigramJaccard(opts.title, mem.title)
@@ -461,6 +510,13 @@ export async function findAutosaveLearningDuplicate(
     ) {
       continue
     }
+    // Exclude resurfaced cleanup-orphans (issue #477). Even though the
+    // autosave-learning probe's blocking contract is stronger than the
+    // advisory near-dup probe, an empty-body orphan resurrected from
+    // Notion's trash must NOT be returned as the reuse target — the
+    // caller would write a fresh row's content as a duplicate of an
+    // empty shell.
+    if (mem.keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) continue
     // Project-scoped autosave dedup intentionally accepts legacy unscoped
     // learning rows. Once a row has explicit project relations, though, it
     // must match the full requested project set before it can block a write.

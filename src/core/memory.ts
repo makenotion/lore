@@ -51,6 +51,7 @@ import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.
 import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
 import {
   findAutosaveLearningDuplicate,
+  MEMORY_CLEANUP_ORPHAN_SENTINEL,
   type AutosaveLearningDuplicateMatch,
 } from "./near-duplicate.js"
 import { withAutosaveLearningLock } from "./autosave-learning-lock.js"
@@ -113,6 +114,69 @@ function autosaveLearningPostCreateStabilizeMs(): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Server-side filter clause that excludes memories carrying the
+ * cleanup-orphan sentinel (`MEMORY_CLEANUP_ORPHAN_SENTINEL`) in their
+ * `Keywords` column. Issue #477.
+ *
+ * Threaded into every `dataSources.query` walker that surfaces live
+ * memories to readers or other write paths — `findByTopicKey`,
+ * `list`, `fetchContainsPages`, `listForScan`, `listAllForBackfill`,
+ * `queryStaleConfidence`. The semantic-search post-filter
+ * (`applySemanticPostFilters`) applies the same exclusion client-side
+ * because `client.search` has no property-filter support.
+ *
+ * **Notion `rich_text.does_not_contain` semantics on empty values.**
+ * Notion's filter contract is "the property does not contain the
+ * substring" — empty rich_text columns satisfy this (nothing to
+ * contain), so memories whose `Keywords` is empty are NOT silently
+ * excluded. This is the intuitive answer and the only one consistent
+ * with the existing `Keywords contains` filter on the contains-search
+ * path. Verified empirically against the production Mail vault on
+ * 2026-05-04 by Iron-Ham; the empty-keywords unit test on
+ * `findByTopicKey` pins the request shape so a future contributor
+ * adding a `is_empty` short-circuit can't silently regress.
+ *
+ * Built as a function (not a frozen constant) so each call returns a
+ * fresh literal — the `and: [...]` arrays in caller filters mutate
+ * via `push` and Notion's SDK accepts the structure by-reference, so
+ * sharing one constant across multiple in-flight queries on the same
+ * client risks a future refactor mutating shared state.
+ */
+function cleanupOrphanExclusionFilter(): Record<string, unknown> {
+  return {
+    property: "Keywords",
+    rich_text: { does_not_contain: MEMORY_CLEANUP_ORPHAN_SENTINEL },
+  }
+}
+
+/**
+ * Compose the cleanup-orphan exclusion onto whatever filter shape the
+ * caller already has. Three input shapes:
+ *
+ * - `undefined` → returns the bare exclusion clause (single-filter form).
+ * - A pre-built `{ and: [...] }` → appends the clause to the array.
+ * - A bare property filter → wraps both into a fresh `{ and: [...] }`.
+ *
+ * Centralizing the composition keeps each walker's call site
+ * one-liner-clean and prevents the "two walkers diverge their filter
+ * shapes" failure mode the broader filter-symmetry review (issue #477)
+ * called out.
+ */
+function withCleanupOrphanExclusion(
+  filter: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const exclusion = cleanupOrphanExclusionFilter()
+  if (filter === undefined) return exclusion
+  if (Array.isArray((filter as { and?: unknown[] }).and)) {
+    return {
+      ...filter,
+      and: [...((filter as { and: unknown[] }).and as unknown[]), exclusion],
+    }
+  }
+  return { and: [filter, exclusion] }
 }
 
 /**
@@ -1405,12 +1469,71 @@ export class MemoryService {
         // consumer has had time to cache the title or dispatch a
         // racing read against this id. Inlining keeps the cleanup a
         // single round-trip with no incidental cache work.
+        //
+        // Cleanup writes BOTH `archived: true` AND the
+        // `MEMORY_CLEANUP_ORPHAN_SENTINEL` keyword in one atomic
+        // `pages.update` (issue #477). Notion's archive is soft —
+        // within ~30 days the orphan can be restored from the workspace
+        // trash, at which point `isLiveFullPage` no longer excludes it.
+        // The sentinel keyword survives archive/restore round-trips and
+        // is the load-bearing signal for `findByTopicKey`,
+        // `findNearDuplicates`, and `findAutosaveLearningDuplicate`
+        // ignoring the resurfaced empty-body shell. Combining the two
+        // mutations into one request closes the window where archive
+        // succeeds but the sentinel write fails — Notion's per-request
+        // atomicity guarantees both land or neither does.
+        //
+        // **Keyword preservation**. Notion's `rich_text` writes are
+        // full-replace, not append. Writing only the sentinel would
+        // clobber whatever the caller passed in `decoded.keywords`,
+        // which an operator inspecting Notion's trash would see as
+        // "your original keywords are gone" — the sentinel and the
+        // user's content. Concatenating preserves both: the sentinel
+        // substring still satisfies the `does_not_contain` /
+        // `keywords.includes` filters, and the original keywords
+        // remain visible if the operator restores the row to recover
+        // content. Use a single-space separator so the sentinel is
+        // word-tokenizable in any future tag-aware view; an empty
+        // existing keywords field collapses to bare-sentinel.
+        //
+        // **Multi-segment write at the cap edge**. Notion's per-block
+        // `rich_text` segment cap is 2000 chars
+        // (`RICH_TEXT_PROPERTY_MAX_LEN`), and the MCP boundary's
+        // `keywordsSchema` accepts keywords up to exactly that cap.
+        // Concatenating ` __lore-cleanup-orphan` (22 chars) onto a
+        // 2000-char keyword string would produce a 2022-char single
+        // segment that Notion rejects with a validation error. A
+        // rejected cleanup write means `cleanedUp = false` and the
+        // orphan stays live in the vault — exactly the partial-failure
+        // recovery regression issue #477 is meant to prevent. Splitting
+        // into two segments — `[originalKeywords, " sentinel"]` —
+        // keeps each segment well under the cap; `extractRichText`
+        // joins them via empty-string concat, so the substring filter
+        // (`does_not_contain` server-side, `keywords.includes`
+        // client-side) still sees the unified `original sentinel`
+        // string. Always use the two-segment form when keywords are
+        // present so the at-cap edge is handled by the same code path
+        // as the under-cap normal case — no segment-size math at write
+        // time, no edge-case branching.
+        const existingKeywords = decoded.keywords?.trim() ?? ""
+        const cleanupKeywordsRichText: Array<{ text: { content: string } }> =
+          existingKeywords.length > 0
+            ? [
+                { text: { content: existingKeywords } },
+                { text: { content: ` ${MEMORY_CLEANUP_ORPHAN_SENTINEL}` } },
+              ]
+            : [{ text: { content: MEMORY_CLEANUP_ORPHAN_SENTINEL } }]
         let cleanedUp = false
         let cleanupError: unknown
         try {
           await this.client.pages.update({
             page_id: page.id,
             archived: true,
+            properties: {
+              Keywords: {
+                rich_text: cleanupKeywordsRichText,
+              },
+            },
           })
           cleanedUp = true
         } catch (err) {
@@ -1423,14 +1546,18 @@ export class MemoryService {
         const message = cleanedUp
           ? `Memory create partial failure: the Memories DB row was ` +
             `created (page ${page.id}) but the body write failed: ${cause}. ` +
-            `The orphan row was archived to keep the vault consistent; ` +
-            `retry the create to land a fresh row.`
+            `The orphan row was soft-archived to Notion's trash and its ` +
+            `Keywords column carries the '${MEMORY_CLEANUP_ORPHAN_SENTINEL}' ` +
+            `sentinel so dedup probes ignore it even if it is later restored ` +
+            `from trash. Your retry will land cleanly regardless of whether ` +
+            `you restore this row from trash later.`
           : `Memory create partial failure: the Memories DB row was ` +
             `created (page ${page.id}) but the body write failed: ${cause}. ` +
             `The cleanup archive also failed (${
               cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
             }); the orphan row remains live in the vault. Archive it ` +
-            `manually before retrying to avoid a duplicate row.`
+            `manually (or hard-delete from Notion's trash) before retrying ` +
+            `to avoid a duplicate row.`
         throw new MemoryCreatePartialFailureError(message, {
           pageId: page.id,
           cleanedUp,
@@ -1596,11 +1723,20 @@ export class MemoryService {
     // returned `next_cursor` until `has_more` is false; the
     // `?? undefined` guard normalizes a `next_cursor: null` from
     // Notion into the loop-exit sentinel.
+    //
+    // The `Keywords does_not_contain MEMORY_CLEANUP_ORPHAN_SENTINEL`
+    // clause (composed via `withCleanupOrphanExclusion`) excludes
+    // resurfaced cleanup-orphans (issue #477). A properties-only
+    // orphan archived after a partial-create failure can be restored
+    // from Notion's trash, at which point the existing `isLiveFullPage`
+    // post-filter no longer excludes it; the sentinel keyword written
+    // in the same `pages.update` as the archive survives the round-trip
+    // and steers the upsert path away from the empty-body shell.
     let cursor: string | undefined = undefined
     do {
       const page = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
-        filter: {
+        filter: withCleanupOrphanExclusion({
           and: [
             { property: "Topic Key", rich_text: { equals: input.topicKey } },
             ...input.projectIds.map((id) => ({
@@ -1608,7 +1744,7 @@ export class MemoryService {
               relation: { contains: id },
             })),
           ],
-        } as QueryDataSourceParameters["filter"],
+        }) as QueryDataSourceParameters["filter"],
         start_cursor: cursor,
       })
       for (const r of page.results) {
@@ -3123,7 +3259,16 @@ export class MemoryService {
   ): AsyncGenerator<Memory, void, void> {
     let cursor: string | undefined
     do {
-      const filter = opts.projectId ? projectOrUnscopedFilter(opts.projectId) : undefined
+      const baseFilter = opts.projectId
+        ? projectOrUnscopedFilter(opts.projectId)
+        : undefined
+      // Resurfaced cleanup-orphan exclusion (issue #477). The
+      // confidence-score backfill seeds a numeric score onto every
+      // unscored row; without this filter, the orphan would receive a
+      // seeded score (cosmetically wrong, but worse: working against
+      // intent — the orphan is a row Lore deliberately removed from
+      // its working set).
+      const filter = withCleanupOrphanExclusion(baseFilter)
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: filter as QueryDataSourceParameters["filter"],
@@ -3313,10 +3458,22 @@ export class MemoryService {
     // project] }` instead of `{ and: [{ and: [status, kind] }, project] }`.
     // Notion accepts both, but a flat compound is conventional and
     // easier to debug in API logs.
+    //
+    // Resurfaced cleanup-orphan exclusion (issue #477). The proposed-
+    // inbox slice in `loadWakeUpData` uses `MemoryService.list({ status:
+    // "proposed", excludeKinds: ["decision"] })`, which already excludes
+    // the sentinel via the `MemoryService.list` server-side filter.
+    // The matching count surface here must apply the same exclusion or
+    // the wake-up renderer prints a count that doesn't match its row
+    // list — `loadWakeUpData` documents the slice/count match as an
+    // invariant. Appended at the end of the flat filter array so the
+    // existing `[status, kind, project]` order in API logs is unchanged
+    // for the common case.
     const filters: Array<Record<string, unknown>> = [
       ...proposedMemoryFilter().and,
     ]
     if (opts.projectId) filters.push(projectOrUnscopedFilter(opts.projectId))
+    filters.push(cleanupOrphanExclusionFilter())
     const filter = filters.length > 1 ? { and: filters } : filters[0]
 
     let total = 0
@@ -3444,6 +3601,13 @@ export class MemoryService {
         },
       ],
     })
+    // Resurfaced cleanup-orphan exclusion (issue #477). A restored-
+    // from-trash orphan that was scored by `--build-confidence-scores`
+    // before this filter shipped would otherwise show up in the
+    // wake-up Stale Confidence triage view as an empty-body shell —
+    // confusing for the operator and noise in the section meant to
+    // surface real low-confidence memories.
+    filters.push(cleanupOrphanExclusionFilter())
 
     const filter = { and: filters } as QueryDataSourceParameters["filter"]
 
@@ -3567,10 +3731,16 @@ export class MemoryService {
       do {
         const response = await this.client.dataSources.query({
           data_source_id: this.db.dataSourceId,
-          filter: {
+          // Resurfaced cleanup-orphan exclusion (issue #477) composed
+          // server-side onto the strict-scoped Project filter. The
+          // conflict scanner's lexical pair-detector uses title +
+          // keywords + tags; an empty-body orphan still has all three,
+          // and the per-pair `findConflictCandidates` work would pair
+          // it against legitimate rows.
+          filter: withCleanupOrphanExclusion({
             property: "Project",
             relation: { contains: projectId },
-          } as QueryDataSourceParameters["filter"],
+          }) as QueryDataSourceParameters["filter"],
           page_size: 100,
           start_cursor: cursor,
         })
@@ -3791,12 +3961,22 @@ export class MemoryService {
       })
     }
 
-    const filter =
+    const baseFilter =
       filters.length > 1
         ? { and: filters }
         : filters.length === 1
           ? filters[0]
           : undefined
+
+    // Resurfaced cleanup-orphan exclusion (issue #477). Pushed
+    // server-side here so every consumer of `list` — including
+    // `lore-query action='recall'`, the wake-up related-memories
+    // pass, the autosave-learning probe, and `findNearDuplicates` —
+    // uniformly drops sentinel-tagged rows. Without this, an orphan
+    // restored from Notion's trash would surface in recall, wake-up,
+    // and the dedup post-filter would have to catch it after
+    // `MemoryService.list` had already consumed candidate-pool slots.
+    const filter = withCleanupOrphanExclusion(baseFilter)
 
     const limit = Math.min(opts?.limit ?? 20, 100)
     if (limit <= 0) {
@@ -4094,12 +4274,18 @@ export class MemoryService {
     // degenerate-input bug: callers passing only `mode: "contains"` with
     // no scope and no query get the equivalent of `lore-query action='recall'` minus
     // cursor pagination. A future reader: do not add a guard here.
-    const filter =
+    const baseFilter =
       filters.length > 1
         ? { and: filters }
         : filters.length === 1
           ? filters[0]
           : undefined
+
+    // Resurfaced cleanup-orphan exclusion (issue #477). Pushed
+    // server-side so a restored-from-trash orphan does not consume a
+    // contains-lane slot and silently saturate the
+    // `HYBRID_FALLBACK_THRESHOLD` cutoff, masking real semantic hits.
+    const filter = withCleanupOrphanExclusion(baseFilter)
 
     if (limit <= 0) return { pages: [], capped: false }
 
@@ -4317,17 +4503,27 @@ export class MemoryService {
     // parents, and data-source-backed `data_source_id` parents. Match either
     // against our `DatabaseRef`. Drop archived rows in the same pass —
     // see the docstring above for why this matters under pagination.
+    //
+    // Also drop resurfaced cleanup-orphans (issue #477). `client.search`
+    // has no property-filter support, so the server-side
+    // `Keywords does_not_contain` clause that DS-scoped walkers use
+    // cannot apply here — the exclusion runs client-side on the
+    // already-fetched page properties. Same posture as the archived
+    // and parent-DB filters above.
     let filtered = pages.filter((page) => {
       if (!("parent" in page)) return false
       if (page.archived) return false
       const parent = page.parent
       if (parent.type === "database_id") {
-        return parent.database_id === this.db.databaseId
+        if (parent.database_id !== this.db.databaseId) return false
+      } else if (parent.type === "data_source_id") {
+        if (parent.data_source_id !== this.db.dataSourceId) return false
+      } else {
+        return false
       }
-      if (parent.type === "data_source_id") {
-        return parent.data_source_id === this.db.dataSourceId
-      }
-      return false
+      const keywords = extractRichText(page.properties["Keywords"])
+      if (keywords.includes(MEMORY_CLEANUP_ORPHAN_SENTINEL)) return false
+      return true
     })
 
     // Apply additional filters (project, topic, tags, kind, status). The

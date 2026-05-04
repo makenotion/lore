@@ -355,6 +355,36 @@ describe("findNearDuplicates", () => {
       expect.objectContaining({ topicId: "topic-z", kind: "decision" })
     )
   })
+
+  it("excludes resurfaced cleanup-orphans tagged with the sentinel keyword (issue #477)", async () => {
+    // Repro for issue #477. A `MemoryService.create` body-write failure
+    // archives the orphan AND tags its `Keywords` column with
+    // `__lore-cleanup-orphan` in one atomic update. Notion's archive
+    // is reversible — within ~30 days an operator can restore the row
+    // from workspace trash. Once restored the row is "live" again and
+    // `MemoryService.list`'s default filters surface it. The advisory
+    // probe must drop it post-list so it cannot be returned as a
+    // dedup target whose body is empty.
+    const lister = makeLister([
+      makeMemory({
+        id: "mem-orphan-resurfaced",
+        title: "Decision: replace auth middleware",
+        keywords: "__lore-cleanup-orphan",
+      }),
+      makeMemory({
+        id: "mem-real",
+        title: "Decision: replace auth middleware",
+        keywords: "auth, middleware",
+      }),
+    ])
+    const result = await findNearDuplicates(lister, {
+      title: "Decision: replace auth middleware",
+      tags: [],
+      projectId: "proj-a",
+      threshold: 0.7,
+    })
+    expect(result.map((m) => m.id)).toEqual(["mem-real"])
+  })
 })
 
 describe("findAutosaveLearningDuplicate", () => {
@@ -766,6 +796,77 @@ describe("findAutosaveLearningDuplicate", () => {
     ).rejects.toBeInstanceOf(AutosaveLearningDuplicateProbeError)
 
     expect(onError).toHaveBeenCalledWith(err)
+  })
+
+  it("excludes resurfaced cleanup-orphans tagged with the sentinel keyword (issue #477)", async () => {
+    // The autosave-learning probe is BLOCKING — when it returns a hit,
+    // the caller reuses that row instead of creating a new one. A
+    // resurfaced cleanup-orphan has the right shape (source=conversation,
+    // kind=note, confidence=likely once restored) AND an empty body, so
+    // a body-trigram comparison against an incoming learning would
+    // produce a misleading similarity score. The sentinel keyword
+    // exclusion ensures the orphan can never be returned as a reuse
+    // target — the surviving real row wins, and if no real row exists
+    // the probe returns null and the create proceeds as expected.
+    const lister = makeLister([
+      makeMemory({
+        id: "mem-orphan-resurfaced",
+        title: "Notion relation filters reject empty arrays",
+        content: "",
+        source: "conversation",
+        kind: "note",
+        confidence: "likely",
+        session: "session-1",
+        keywords: "__lore-cleanup-orphan",
+      }),
+      makeMemory({
+        id: "mem-real",
+        title: "Notion relation filters reject empty arrays",
+        content: "Notion relation filters reject empty arrays.",
+        source: "conversation",
+        kind: "note",
+        confidence: "likely",
+        session: "session-1",
+        keywords: "notion, dedup",
+      }),
+    ])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Notion relation filters reject empty arrays",
+      content: "Notion relation filters reject empty arrays.",
+      projectId: "proj-a",
+      session: "session-1",
+    })
+
+    expect(result?.id).toBe("mem-real")
+  })
+
+  it("returns null when the only candidate is a resurfaced cleanup-orphan (issue #477)", async () => {
+    // Mirror of the test above for the case where there is no real
+    // counterpart row. The probe must return null so the caller's
+    // create proceeds — under the bug, the orphan would be returned
+    // and the caller would attempt to "reuse" an empty-body shell.
+    const lister = makeLister([
+      makeMemory({
+        id: "mem-orphan-resurfaced",
+        title: "Notion relation filters reject empty arrays",
+        content: "",
+        source: "conversation",
+        kind: "note",
+        confidence: "likely",
+        session: "session-1",
+        keywords: "__lore-cleanup-orphan",
+      }),
+    ])
+
+    const result = await findAutosaveLearningDuplicate(lister, {
+      title: "Notion relation filters reject empty arrays",
+      content: "Notion relation filters reject empty arrays.",
+      projectId: "proj-a",
+      session: "session-1",
+    })
+
+    expect(result).toBeNull()
   })
 })
 

@@ -48,7 +48,7 @@ interface MemoryRow {
 
 type LeafFilter =
   | { property: "Title"; title: { contains: string } }
-  | { property: "Keywords"; rich_text: { contains: string } }
+  | { property: "Keywords"; rich_text: { contains: string } | { does_not_contain: string } }
   | { property: "Synopsis"; rich_text: { contains: string } }
   | { property: "Status"; select: { does_not_equal: string } }
 type CompoundFilter = { and?: Filter[] } | { or?: Filter[] }
@@ -92,9 +92,20 @@ class MemoriesFixtureVault {
         return row.title.toLowerCase().includes(filter.title.contains.toLowerCase())
       }
       if (filter.property === "Keywords" && "rich_text" in filter) {
-        return row.keywords
+        // `Keywords` carries two filter shapes: the `contains` lane on
+        // the precision text-match clause, and the `does_not_contain`
+        // lane that excludes resurfaced cleanup-orphans (issue #477).
+        // Model both faithfully — `does_not_contain` against an empty
+        // rich_text returns true (no value, no substring), matching
+        // Notion's intuitive semantics.
+        if ("contains" in filter.rich_text) {
+          return row.keywords
+            .toLowerCase()
+            .includes(filter.rich_text.contains.toLowerCase())
+        }
+        return !row.keywords
           .toLowerCase()
-          .includes(filter.rich_text.contains.toLowerCase())
+          .includes(filter.rich_text.does_not_contain.toLowerCase())
       }
       if (filter.property === "Synopsis" && "rich_text" in filter) {
         return row.synopsis
