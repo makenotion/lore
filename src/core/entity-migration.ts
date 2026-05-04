@@ -259,6 +259,11 @@ export async function buildEntities(
     projectId: options.projectId,
     // No limit — the migration is a one-shot, plan-then-apply pass and
     // needs the full graph to compute accurate alias coverage.
+
+    // Vault-wide enumeration is the explicit point here; opt into the
+    // `queryBySubject` empty-subject branch that the agent-facing
+    // surface no longer reaches (issue #481).
+    allowUnfiltered: true,
   })
 
   // 2. Snapshot existing entities so the plan distinguishes

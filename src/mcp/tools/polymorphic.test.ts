@@ -831,6 +831,33 @@ describe("lore-query polymorphic dispatcher", () => {
     expect(isError(result)).toBe(true)
   })
 
+  it("rejects action='ask' with empty entity (issue #481)", async () => {
+    // Pin the Zod boundary rejection so a future schema refactor
+    // can't silently regress to `z.string()` and let an empty entity
+    // reach `FactService.queryByEntity` (which now also short-circuits
+    // to `[]`, but the boundary rejection gives the agent a useful
+    // diagnostic instead of "no facts found").
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-query")({
+      action: "ask",
+      entity: "",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("entity")
+  })
+
+  it("rejects action='ask' with whitespace-only entity (issue #481)", async () => {
+    const mock = createMockServer()
+    registerQueryTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-query")({
+      action: "ask",
+      entity: "   ",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("entity")
+  })
+
   it("rejects unknown action", async () => {
     const mock = createMockServer()
     registerQueryTools(mock.server, makeServices() as never)
@@ -910,6 +937,38 @@ describe("lore-fact polymorphic dispatcher", () => {
     expect(factsCreateWithDedup).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMemoryId: "mem-source" })
     )
+  })
+
+  it("rejects action='create' with empty subject (issue #481)", async () => {
+    // Pin the write-path symmetry: an empty / whitespace-only triple
+    // would hash through `normalize("")` into `DedupKey` and persist
+    // a structurally degenerate row. The Zod boundary fails dispatch
+    // before `createWithDedup` runs.
+    const mock = createMockServer()
+    registerKnowledgeTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-fact")({
+      action: "create",
+      subject: "",
+      predicate: "uses",
+      object: "JWT",
+      sourceMemoryId: "mem-source",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("subject")
+  })
+
+  it("rejects action='create' with whitespace-only object (issue #481)", async () => {
+    const mock = createMockServer()
+    registerKnowledgeTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-fact")({
+      action: "create",
+      subject: "Auth",
+      predicate: "uses",
+      object: "   ",
+      sourceMemoryId: "mem-source",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("object")
   })
 })
 
@@ -1001,6 +1060,32 @@ describe("lore-decision polymorphic dispatcher", () => {
     registerDecisionTools(mock.server, makeServices() as never)
     const result = await mock.get("lore-decision")({ action: "supersede" } as never)
     expect(isError(result)).toBe(true)
+  })
+
+  it("rejects action='context' with empty entity (issue #481)", async () => {
+    // Mirrors the `lore-query action='ask'` rejection above. The
+    // handler funnels into `FactService.queryByEntity`, which short-
+    // circuits empty input to `[]`, but the dispatch should fail with
+    // a useful diagnostic instead of "No decisions found governing".
+    const mock = createMockServer()
+    registerDecisionTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-decision")({
+      action: "context",
+      entity: "",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("entity")
+  })
+
+  it("rejects action='context' with whitespace-only entity (issue #481)", async () => {
+    const mock = createMockServer()
+    registerDecisionTools(mock.server, makeServices() as never)
+    const result = await mock.get("lore-decision")({
+      action: "context",
+      entity: "\t",
+    } as never)
+    expect(isError(result)).toBe(true)
+    expect(extractText(result)).toContain("entity")
   })
 })
 

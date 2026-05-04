@@ -57,6 +57,19 @@ type QueryFactsOpts = {
    * Without a limit, all matching facts are fetched across pages.
    */
   limit?: number
+  /**
+   * Opt into the "list every fact in scope" branch when the subject /
+   * object argument is strict-empty (`""`). Without this flag the
+   * service short-circuits to `[]` so a typoed / blank caller cannot
+   * accidentally enumerate the entire vault. Internal callers that
+   * genuinely want vault-wide enumeration (the `--build-entities`
+   * migration scan) pass `true`. Agent-facing surfaces (MCP
+   * `lore-query action='ask'`, `lore-decision action='context'`,
+   * `lore-fact action='create'`) never set this — they're guarded at
+   * the Zod boundary instead, so the agent gets a validation error
+   * before any service call runs.
+   */
+  allowUnfiltered?: boolean
 }
 
 type ListRecentOpts = {
@@ -852,9 +865,29 @@ export class FactService {
   }
 
   async queryBySubject(subject: string, opts?: QueryFactsOpts): Promise<Fact[]> {
+    // Strict-empty subject (`""`) used to silently fall through to "list
+    // every fact in scope" — a quiet way for an MCP caller or a future
+    // internal caller to enumerate the entire vault. Gate that branch
+    // behind an explicit `allowUnfiltered: true` opt-in (issue #481).
+    // Internal callers that genuinely want vault-wide enumeration (the
+    // `--build-entities` migration scan) pass the flag.
+    //
+    // DO NOT tighten this to `subject.trim() === ""`. Whitespace-only
+    // inputs (`"   "`) intentionally still pass through to the literal-
+    // substring `Subject contains <raw>` fallback below — same posture
+    // as the punctuation-only case (`"."`, `"!!!"`) pinned by the
+    // `falls back to raw Subject when input normalizes to empty
+    // (punctuation/whitespace only)` test in `fact.test.ts`. The agent-
+    // facing surface guards empty / whitespace at the `queryByEntity`
+    // and MCP boundaries (which is where typoed /
+    // `expandEntityQueryVariants`-empty values reach the system) so
+    // this internal helper does not need a tighter trim check.
+    if (subject === "" && !opts?.allowUnfiltered) return []
+
     const filters: Array<Record<string, unknown>> = []
 
-    // Allow empty subject to list all facts in scope
+    // Allow empty subject to list all facts in scope (only reachable
+    // via `allowUnfiltered: true` per the guard above).
     if (subject) {
       // Case-insensitive match via the normalized SubjectKey column
       // (P3-03 Part A) so `MemoryService` and `memoryservice` resolve to
@@ -947,6 +980,13 @@ export class FactService {
   }
 
   async queryByObject(object: string, opts?: QueryFactsOpts): Promise<Fact[]> {
+    // Mirror `queryBySubject`'s strict-empty guard. `Object rich_text
+    // contains ""` matches every populated row in scope, so a strict-
+    // empty string would silently produce a vault-wide scan. Whitespace-
+    // only inputs still pass through to a literal-substring filter
+    // (same posture as `queryBySubject`).
+    if (object === "" && !opts?.allowUnfiltered) return []
+
     const filters: Array<Record<string, unknown>> = []
 
     if (object) {
@@ -1177,6 +1217,18 @@ export class FactService {
       limit?: number
     }
   ): Promise<Fact[]> {
+    // Empty / whitespace entity would otherwise reach `queryBySubject`
+    // and `queryByObject` — and the `queryByEntityTextOnUnmigrated`
+    // path below — all of which match every live fact in scope on a
+    // bare `contains: ""`. Short-circuit to `[]` so an MCP caller that
+    // lets an empty / trimmed-empty string through, or an
+    // `expandEntityQueryVariants` reduction that yields empty, cannot
+    // trigger a full-vault paginated scan. The relation branch via
+    // `entityId` is inherently filtered, but we guard at the top so
+    // the no-`entityId` fallback and the parallel substring branch
+    // share the same posture.
+    if (!entity.trim()) return []
+
     const limit = opts?.limit
     const sliceToLimit = (rows: Fact[]): Fact[] =>
       limit !== undefined ? rows.slice(0, limit) : rows
@@ -1230,7 +1282,11 @@ export class FactService {
     entity: string,
     opts?: { projectId?: string; predicates?: FactPredicate[]; limit?: number }
   ): Promise<Fact[]> {
-    if (!entity) return []
+    // Whitespace-only entity must short-circuit too. `Subject contains
+    // ""` and `Object contains ""` are vault-wide matches in Notion,
+    // so the OR group below would otherwise bypass every other
+    // narrowing clause and emit every un-backfilled live fact.
+    if (!entity.trim()) return []
 
     const baseFilters: Array<Record<string, unknown>> = [
       // The relation columns may not exist on a stale live schema yet

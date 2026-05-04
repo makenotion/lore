@@ -85,7 +85,16 @@ export const queryDispatchSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("ask"),
-    entity: z.string(),
+    // Reject empty / whitespace-only entity at the boundary. An
+    // unfiltered call would otherwise reach `FactService.queryByEntity`
+    // and trigger a vault-wide scan; the service layer also short-
+    // circuits to `[]` (issue #481), but failing here gives the agent
+    // a clear "entity is required" error instead of an empty result
+    // set masquerading as "no facts found".
+    entity: z
+      .string()
+      .trim()
+      .min(1, "entity must be a non-empty string"),
     projectName: z.string().optional(),
     limit: z.number().int().min(1).optional(),
     includeContext: z.boolean().optional(),

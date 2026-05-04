@@ -1658,14 +1658,16 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
     expect(findKey(cs1)).toBe(findKey(cs2))
   })
 
-  it("omits the OR clause entirely when subject is empty (list-all-in-scope)", async () => {
-    // Empty subject means "list every fact in scope" — adding a
-    // `SubjectKey contains ""` clause would constrain the result to rows
-    // with non-empty SubjectKey, silently hiding pre-migration rows.
+  it("omits the OR clause entirely when subject is empty (list-all-in-scope, allowUnfiltered)", async () => {
+    // Empty subject under `allowUnfiltered: true` means "list every fact
+    // in scope" — adding a `SubjectKey contains ""` clause would
+    // constrain the result to rows with non-empty SubjectKey, silently
+    // hiding pre-migration rows. Without `allowUnfiltered` the call
+    // short-circuits to `[]` (see the empty-input guard test below).
     const { client, calls } = createClient([{ results: [] }])
     const service = new FactService(client, db)
 
-    await service.queryBySubject("", { projectId: "p1" })
+    await service.queryBySubject("", { projectId: "p1", allowUnfiltered: true })
 
     const filter = calls[0].filter as Record<string, unknown>
     const clauses: Array<Record<string, unknown>> = Array.isArray(filter.and)
@@ -1727,6 +1729,77 @@ describe("FactService.queryBySubject — case-insensitive match", () => {
   })
 })
 
+describe("FactService — empty-input vault-scan guards (issue #481)", () => {
+  // Pre-fix, an empty / whitespace argument to `queryBySubject`,
+  // `queryByObject`, or `queryByEntity` skipped the corresponding
+  // text filter (or emitted `contains: ""` which Notion treats as
+  // matches-all) and silently paginated every live fact in scope.
+  // These tests pin the short-circuit to `[]` so an MCP caller that
+  // lets a blank string through, or an `expandEntityQueryVariants`
+  // reduction that yields empty, can't trigger an unscoped scan.
+
+  it("queryBySubject('') returns [] without issuing a Notion query (strict-empty gated)", async () => {
+    const { client, calls } = createClient([])
+    const service = new FactService(client, db)
+
+    const results = await service.queryBySubject("", { projectId: "p1" })
+
+    expect(results).toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+
+  it("queryBySubject('', { allowUnfiltered: true }) opts back into the list-all-in-scope branch", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryBySubject("", { projectId: "p1", allowUnfiltered: true })
+
+    expect(calls).toHaveLength(1)
+  })
+
+  it("queryByObject('') returns [] without issuing a Notion query (strict-empty gated)", async () => {
+    const { client, calls } = createClient([])
+    const service = new FactService(client, db)
+
+    const results = await service.queryByObject("", { projectId: "p1" })
+
+    expect(results).toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+
+  it("queryByObject('', { allowUnfiltered: true }) opts back into list-all-in-scope", async () => {
+    const { client, calls } = createClient([{ results: [] }])
+    const service = new FactService(client, db)
+
+    await service.queryByObject("", { projectId: "p1", allowUnfiltered: true })
+
+    expect(calls).toHaveLength(1)
+  })
+
+  it("queryByEntity('') returns [] without firing relation or substring branches", async () => {
+    const { client, calls } = createClient([])
+    const service = new FactService(client, db)
+
+    const results = await service.queryByEntity("", {
+      projectId: "p1",
+      entityId: "ent-1",
+    })
+
+    expect(results).toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+
+  it("queryByEntity('   ') returns [] without firing relation or substring branches (whitespace-only)", async () => {
+    const { client, calls } = createClient([])
+    const service = new FactService(client, db)
+
+    const results = await service.queryByEntity("   ", { projectId: "p1" })
+
+    expect(results).toEqual([])
+    expect(calls).toHaveLength(0)
+  })
+})
+
 describe("FactService.pageToFact — historical tracking-predicate filter", () => {
   // Helper: fact page with raw `Predicate` select set to one of the
   // historical tracking values. Bypasses the typed `FactPredicate`
@@ -1755,7 +1828,10 @@ describe("FactService.pageToFact — historical tracking-predicate filter", () =
     ])
     const service = new FactService(client, db)
 
-    const results = await service.queryBySubject("", { projectId: "p1" })
+    const results = await service.queryBySubject("", {
+      projectId: "p1",
+      allowUnfiltered: true,
+    })
 
     expect(results.map((f) => f.id)).toEqual(["knowledge-fact"])
   })

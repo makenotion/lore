@@ -1177,9 +1177,18 @@ const factDispatchSchema = z
   .discriminatedUnion("action", [
     z.object({
       action: z.literal("create"),
-      subject: z.string(),
+      // Reject empty / whitespace-only subject and object at the
+      // boundary (issue #481, write-path symmetry). Same trim+min(1)
+      // posture as `lore-query action='ask'`'s `entity` schema. An
+      // empty / whitespace-only triple lands in `createWithDedup`,
+      // hashes through `normalize("")` into `DedupKey`, and persists
+      // a structurally degenerate fact row that confuses downstream
+      // consumers: `queryBySubject` won't surface it, `repointEntity`
+      // sees an empty key, and the dedup probe collides every empty-
+      // subject fact onto one slot.
+      subject: z.string().trim().min(1, "subject must be a non-empty string"),
       predicate: z.enum(PREDICATE_VALUES),
-      object: z.string(),
+      object: z.string().trim().min(1, "object must be a non-empty string"),
       projectName: z.string().optional(),
       projectNames: z.array(z.string()).optional(),
       reviewBy: clearableYmdDateSchema.optional(),

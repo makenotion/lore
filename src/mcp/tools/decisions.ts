@@ -977,7 +977,15 @@ const decisionDispatchSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("context"),
-    entity: z.string(),
+    // Reject empty / whitespace-only entity at the boundary (issue
+    // #481). The handler routes through `FactService.queryByEntity`,
+    // which short-circuits an empty input to `[]`, but failing the
+    // dispatch with a clear error beats silently returning "no
+    // decisions found" when the agent passed a blank string by mistake.
+    entity: z
+      .string()
+      .trim()
+      .min(1, "entity must be a non-empty string"),
     projectName: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional(),
   }),
