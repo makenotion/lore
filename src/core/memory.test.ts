@@ -7409,6 +7409,430 @@ describe("MemoryService.search — hybrid single-branch resilience (PF3-03)", ()
   })
 })
 
+describe("MemoryService.search — hybrid abort on contains saturation (issue #490)", () => {
+  const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
+
+  function buildHybridPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+        Source: { type: "select", select: { name: "manual" } },
+        Tags: { type: "multi_select", multi_select: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>
+    )
+  }
+
+  // Build a PageObjectResponse whose parent is the test's Memories DS so
+  // `applySemanticPostFilters` keeps it. `client.search` returns
+  // workspace-wide results that Lore filters down — fixtures that don't
+  // set the parent correctly are silently dropped and confuse abort
+  // tests.
+  function buildSemanticPage(id: string, title: string): PageObjectResponse {
+    return buildPage(
+      {
+        Title: { type: "title", title: [{ plain_text: title }] },
+        Project: { type: "relation", relation: [] },
+        Topic: { type: "relation", relation: [] },
+      },
+      {
+        id,
+        parent: {
+          type: "data_source_id",
+          data_source_id: db.dataSourceId,
+        },
+      } as Partial<PageObjectResponse>
+    )
+  }
+
+  type SemanticPage = {
+    results: PageObjectResponse[]
+    has_more?: boolean
+    next_cursor?: string | null
+  }
+
+  type ContainsResponse =
+    | { kind: "fulfilled"; results: PageObjectResponse[] }
+    | { kind: "rejected"; reason: Error }
+
+  /**
+   * Build a `Client` mock for the abort/saturation tests. The four
+   * abort tests differ only in:
+   *
+   *   - the contains result shape (saturating vs under-shooting vs
+   *     rejected),
+   *   - the cursor → semantic-page map,
+   *   - whether the first semantic page yields to a macrotask before
+   *     resolving (the load-bearing pin for the "exactly one
+   *     `client.search` call" assertion in the synchronous-mock
+   *     setup; production gets the same residual-call bound from the
+   *     actual `client.search` HTTP latency).
+   *
+   * Without this helper, each test inlined ~30 lines of mock client
+   * construction with subtle differences that obscured the actual
+   * test contract. The helper surfaces the contract directly: WHAT
+   * contains returns, WHAT each semantic page returns, WHETHER page 1
+   * yields to a macrotask.
+   */
+  function buildHybridSearchMockClient(opts: {
+    contains: ContainsResponse
+    /**
+     * Map of `start_cursor` → page response. `undefined` is the first
+     * page; subsequent pages are keyed by the `next_cursor` returned
+     * by the previous page. A request whose cursor isn't in the map
+     * returns an empty exhaustion shape (`has_more: false`,
+     * `next_cursor: null`).
+     */
+    semanticPagesByCursor: Map<string | undefined, SemanticPage>
+    /**
+     * When true, semantic page 1's mock awaits `setTimeout(0)` before
+     * resolving — a macrotask boundary that lets every microtask
+     * queued before it run, so contains' saturation handler has time
+     * to call `controller.abort()` before the next iteration's
+     * pre-call signal check fires. Without this, the synchronous
+     * mock can produce 2 in-flight `client.search` calls in the
+     * worst microtask ordering even though production would only
+     * produce 1 (the network round-trip provides the same yield).
+     */
+    yieldOnFirstSemanticPage: boolean
+  }): { client: Client; querySpy: ReturnType<typeof vi.fn>; searchSpy: ReturnType<typeof vi.fn> } {
+    const querySpy =
+      opts.contains.kind === "fulfilled"
+        ? vi.fn(async () => ({
+            results: (opts.contains as { kind: "fulfilled"; results: PageObjectResponse[] })
+              .results,
+            has_more: false,
+            next_cursor: null,
+          }))
+        : vi.fn(async () => {
+            throw (opts.contains as { kind: "rejected"; reason: Error }).reason
+          })
+
+    let semanticCallCount = 0
+    const searchSpy = vi.fn(async (args: Record<string, unknown>) => {
+      const cursor = args["start_cursor"] as string | undefined
+      const page = opts.semanticPagesByCursor.get(cursor) ?? {
+        results: [],
+        has_more: false,
+        next_cursor: null,
+      }
+      const isFirstPage = ++semanticCallCount === 1
+      if (isFirstPage && opts.yieldOnFirstSemanticPage) {
+        await new Promise<void>((r) => setTimeout(r, 0))
+      }
+      return {
+        results: page.results,
+        has_more: page.has_more ?? false,
+        next_cursor: page.next_cursor ?? null,
+      }
+    })
+
+    const client = {
+      dataSources: { query: querySpy },
+      search: searchSpy,
+      pages: { retrieveMarkdown: vi.fn(async () => ({ markdown: "" })) },
+    } as unknown as Client
+
+    return { client, querySpy, searchSpy }
+  }
+
+  it("aborts the in-flight semantic pagination after contains saturates — second client.search never fires", async () => {
+    // Pre-fix: a saturating contains query still paid up to
+    // SEMANTIC_SEARCH_MAX_PAGES (5) sequential semantic round-trips
+    // before the discarded result resolved. Post-fix: the semantic
+    // loop terminates after the in-flight page lands, so subsequent
+    // pages never dispatch.
+    //
+    // Synchronization rationale: contains resolves immediately and
+    // the side-effect saturation handler attached in
+    // `searchByHybridPages` queues as a microtask. Semantic page 1
+    // awaits `setTimeout(0)` — a macrotask boundary that lets every
+    // microtask queued before it run before the macrotask continues
+    // — so by the time page 1 resolves, contains has settled, the
+    // saturation handler has called `controller.abort()`, and the
+    // post-filter signal check inside `applySemanticPostFilters`
+    // throws before page 2 dispatches. This pin reflects the
+    // production-typical bound (residual = 1) rather than the
+    // worst-case synchronous-mock bound (residual = 2 in the
+    // semantic-continuation-runs-first microtask ordering); see
+    // `fetchSemanticPages`'s docstring for the full residual-call
+    // analysis.
+    const { service, searchSpy } = buildHybridSearchTestRig({
+      contains: {
+        kind: "fulfilled",
+        results: [
+          buildHybridPage("c-1", "one"),
+          buildHybridPage("c-2", "two"),
+          buildHybridPage("c-3", "three"),
+        ],
+      },
+      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
+        [
+          undefined,
+          {
+            results: [
+              buildSemanticPage("s-1", "semantic 1"),
+              buildSemanticPage("s-2", "semantic 2"),
+            ],
+            has_more: true,
+            next_cursor: "cursor-1",
+          },
+        ],
+        [
+          "cursor-1",
+          {
+            results: [buildSemanticPage("s-3", "semantic 3")],
+            has_more: false,
+            next_cursor: null,
+          },
+        ],
+      ]),
+      yieldOnFirstSemanticPage: true,
+    })
+
+    const results = await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+      // limit > saturation threshold so semantic would NOT saturate on
+      // its own — only the abort can stop the second page.
+      limit: 10,
+    })
+
+    // Saturation cutoff: contains rows alone are the answer; semantic
+    // result is discarded.
+    expect(results.map((m) => m.id)).toEqual(["c-1", "c-2", "c-3"])
+    // The win: exactly one `client.search` call. Pre-fix this would
+    // have been 2 (or up to 5 on a pathological query).
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not abort when contains under-shoots the saturation threshold", async () => {
+    // Defensive contract: under-shoot means RRF runs and the semantic
+    // pagination must complete normally. An over-eager abort here
+    // would silently lose semantic rows that should fuse with contains
+    // under RRF.
+    const semanticPage1 = Array.from({ length: 100 }, (_, i) =>
+      buildSemanticPage(`s-page1-${i}`, `semantic page1 ${i}`)
+    )
+    const { service, searchSpy } = buildHybridSearchTestRig({
+      contains: {
+        kind: "fulfilled",
+        // Two contains hits — below HYBRID_FALLBACK_THRESHOLD (3).
+        results: [buildHybridPage("c-1", "one"), buildHybridPage("c-2", "two")],
+      },
+      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
+        [undefined, { results: semanticPage1, has_more: true, next_cursor: "cursor-1" }],
+        [
+          "cursor-1",
+          {
+            results: [buildSemanticPage("s-page2-1", "semantic page2 1")],
+            has_more: false,
+            next_cursor: null,
+          },
+        ],
+      ]),
+      yieldOnFirstSemanticPage: false,
+    })
+
+    // limit=200 forces semantic to keep paginating past page 1 because
+    // accumulated < limit. If abort fired incorrectly, only page 1
+    // would land.
+    await service.search({
+      query: "q",
+      mode: "hybrid",
+      includeContent: false,
+      limit: 200,
+    })
+
+    // No abort — semantic paginates through to exhaustion (2 pages).
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not abort when intent is set even if contains would saturate", async () => {
+    // Per #17, a non-empty intent disables the saturation cutoff so
+    // the intent-augmented semantic lane gets to influence ordering
+    // under RRF. Aborting here would silently nullify intent on every
+    // query whose contains branch produces 3+ hits — the common case
+    // intent exists to fix.
+    const semanticPage1 = Array.from({ length: 100 }, (_, i) =>
+      buildSemanticPage(`s-page1-${i}`, `semantic page1 ${i}`)
+    )
+    const { service, searchSpy } = buildHybridSearchTestRig({
+      contains: {
+        kind: "fulfilled",
+        results: [
+          buildHybridPage("c-1", "one"),
+          buildHybridPage("c-2", "two"),
+          buildHybridPage("c-3", "three"),
+        ],
+      },
+      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
+        [undefined, { results: semanticPage1, has_more: true, next_cursor: "cursor-1" }],
+        [
+          "cursor-1",
+          {
+            results: [buildSemanticPage("s-page2-1", "semantic page2 1")],
+            has_more: false,
+            next_cursor: null,
+          },
+        ],
+      ]),
+      yieldOnFirstSemanticPage: false,
+    })
+
+    await service.search({
+      query: "q",
+      mode: "hybrid",
+      intent: "disambiguator",
+      includeContent: false,
+      limit: 200,
+    })
+
+    // No abort under intent — semantic paginates through to exhaustion.
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("LORE_DEBUG=1 does NOT log the cooperative abort as a partial-failure", async () => {
+    // The abort signal we raise on contains saturation produces an
+    // AbortError-shaped rejection on the semantic Promise — but it's
+    // a cooperative discard, not a real branch failure. Logging it
+    // under LORE_DEBUG=1 would drown the legitimate transient blip
+    // signal in operator-issued cancellations on every saturating
+    // hybrid call.
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    const original = process.env["LORE_DEBUG"]
+    process.env["LORE_DEBUG"] = "1"
+    try {
+      const { service, searchSpy } = buildHybridSearchTestRig({
+        contains: {
+          kind: "fulfilled",
+          results: [
+            buildHybridPage("c-1", "one"),
+            buildHybridPage("c-2", "two"),
+            buildHybridPage("c-3", "three"),
+          ],
+        },
+        semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
+          [
+            undefined,
+            {
+              results: [buildSemanticPage("s-1", "semantic 1")],
+              has_more: true,
+              next_cursor: "cursor-1",
+            },
+          ],
+        ]),
+        yieldOnFirstSemanticPage: true,
+      })
+
+      await service.search({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+        limit: 10,
+      })
+
+      // Strong assertion: zero `[lore]`-prefixed lines landed at all.
+      // The earlier shape of this test asserted only the
+      // `source=hybrid-search` filter, which a refactor moving the
+      // log line to a different surface (structured logger, prefix
+      // change, alternate event marker) would have silently passed.
+      // The `[lore]` prefix is the broader greppable contract every
+      // hybrid-search log line shares — pinning it catches both the
+      // current path and any near-future variant. Two checks, one
+      // contract: the prefix-level pin is the strong invariant; the
+      // surface-specific pin remains as a localized regression
+      // signal.
+      const allLines = stderrSpy.mock.calls.map((c) => String(c[0]))
+      const loreLines = allLines.filter((l) => l.includes("[lore]"))
+      const hybridLines = allLines.filter((l) => l.includes("source=hybrid-search"))
+      expect(loreLines).toHaveLength(0)
+      expect(hybridLines).toHaveLength(0)
+      // Sanity: the abort actually fired (one client.search call).
+      expect(searchSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      stderrSpy.mockRestore()
+      if (original === undefined) {
+        delete process.env["LORE_DEBUG"]
+      } else {
+        process.env["LORE_DEBUG"] = original
+      }
+    }
+  })
+
+  it("a contains rejection does NOT abort the semantic branch — semantic completes pagination", async () => {
+    // The abort-on-saturation handler must observe contains FULFILLED
+    // with a saturating result. A contains rejection is a partial
+    // failure that surfaces as zero contains rows — and zero is NOT
+    // saturating. Aborting semantic here would convert a recoverable
+    // contains-down case into a both-down outage from the caller's
+    // perspective.
+    const semanticPage1 = Array.from({ length: 100 }, (_, i) =>
+      buildSemanticPage(`s-page1-${i}`, `semantic page1 ${i}`)
+    )
+    const { service, searchSpy } = buildHybridSearchTestRig({
+      contains: {
+        kind: "rejected",
+        reason: new Error("simulated 5xx from dataSources.query"),
+      },
+      semanticPagesByCursor: new Map<string | undefined, SemanticPage>([
+        [undefined, { results: semanticPage1, has_more: true, next_cursor: "cursor-1" }],
+        [
+          "cursor-1",
+          {
+            results: [buildSemanticPage("s-page2-1", "semantic page2 1")],
+            has_more: false,
+            next_cursor: null,
+          },
+        ],
+      ]),
+      yieldOnFirstSemanticPage: false,
+    })
+
+    // Stub stderr so the partial-failure log doesn't pollute test
+    // output (LORE_DEBUG is unset by default in this test, so nothing
+    // would write — but defensive against env leakage between tests).
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      await service.search({
+        query: "q",
+        mode: "hybrid",
+        includeContent: false,
+        limit: 200,
+      })
+    } finally {
+      stderrSpy.mockRestore()
+    }
+
+    // Contains failed; semantic ran to completion across both pages.
+    expect(searchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  // Helper: every test instantiates the same `MemoryService(client, db)`
+  // pair from the mock client. Pulling that construction into one
+  // closure avoids a per-test boilerplate line and keeps the test
+  // body focused on the contract.
+  function buildHybridSearchTestRig(
+    opts: Parameters<typeof buildHybridSearchMockClient>[0]
+  ): {
+    service: MemoryService
+    querySpy: ReturnType<typeof vi.fn>
+    searchSpy: ReturnType<typeof vi.fn>
+  } {
+    const { client, querySpy, searchSpy } = buildHybridSearchMockClient(opts)
+    return { service: new MemoryService(client, db), querySpy, searchSpy }
+  }
+})
+
 describe("MemoryService.search — kill switch", () => {
   const db: DatabaseRef = { databaseId: "memories-db", dataSourceId: "memories-ds" }
 

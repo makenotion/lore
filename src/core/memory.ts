@@ -127,6 +127,35 @@ function sleep(ms: number): Promise<void> {
 export const HYBRID_FALLBACK_THRESHOLD = 3
 
 /**
+ * Single-source predicate for "the hybrid saturation cutoff applies."
+ * Both `searchByHybridPages`'s consumer (the post-allSettled saturation
+ * branch that returns contains alone) and the abort-on-saturation
+ * `.then` handler attached to the contains promise (issue #490) read
+ * this predicate. Without a shared helper, a future contributor
+ * tightening the cutoff (say, adding a `containsCapped` precondition)
+ * has to remember to update both sites in lockstep — a drift hazard
+ * the helper closes.
+ *
+ * The two `intent === null` clauses are NOT redundant:
+ *
+ * - **Cutoff site**: `intent !== null` bypasses the cutoff so the
+ *   intent-augmented semantic lane gets to influence ordering under
+ *   RRF (#17).
+ * - **Abort site**: `intent !== null` skips the abort because aborting
+ *   the semantic branch would silently nullify the very thing #17
+ *   added — an agent passing intent on every saturating one-word
+ *   query would never see semantic pagination land.
+ *
+ * Same predicate, same rationale, one helper.
+ */
+function shouldUseSaturationCutoff(
+  intent: string | null,
+  containsPages: readonly PageObjectResponse[]
+): boolean {
+  return intent === null && containsPages.length >= HYBRID_FALLBACK_THRESHOLD
+}
+
+/**
  * Server-side filter clause defining the proposed-memory review inbox
  * (issue #281). Single source of truth so every consumer — the count
  * primitive (`MemoryService.countProposed`), the wake-up inbox section
@@ -386,6 +415,67 @@ function rejectionToLogLine(reason: unknown): string {
     raw = String(reason)
   }
   return raw.replace(HYBRID_LOG_CONTROL_CHARS, " ")
+}
+
+/**
+ * Predicate over a `Promise.allSettled` rejection reason that recognizes
+ * a cooperative-cancellation outcome from `fetchSemanticPages`'s
+ * abort-aware pagination loop. Two shapes are both legitimate:
+ *
+ * - `DOMException` with `name === "AbortError"` — what the loop itself
+ *   throws when it observes `signal.aborted`. `DOMException` is a
+ *   global on Node 18+, so the `instanceof` check is safe in this
+ *   codebase.
+ * - Any other thrown value whose `name` field is `"AbortError"` — a
+ *   defensive widening so a future refactor that swaps in `Error`-
+ *   subclassed abort errors (or a third-party `AbortError`) doesn't
+ *   silently start logging cooperative aborts as partial failures.
+ *
+ * `null` / `undefined` rejection reasons (`Promise.reject()`) are
+ * explicitly NOT abort errors — those are real bugs in a downstream
+ * helper and should surface through the partial-failure log so an
+ * operator under `LORE_DEBUG=1` sees them.
+ */
+function isAbortRejection(reason: unknown): boolean {
+  if (reason === null || reason === undefined) return false
+  if (typeof DOMException !== "undefined" && reason instanceof DOMException) {
+    return reason.name === "AbortError"
+  }
+  return (
+    typeof reason === "object" &&
+    "name" in reason &&
+    (reason as { name: unknown }).name === "AbortError"
+  )
+}
+
+/**
+ * Throw a fresh `AbortError`-shaped `DOMException` when no preset reason
+ * was attached to the controller. `AbortController.abort()` accepts an
+ * optional `reason` argument; when omitted, the spec defaults
+ * `signal.reason` to a fresh `DOMException("signal is aborted without
+ * reason", "AbortError")`. We carry that shape forward inside
+ * `fetchSemanticPages` so the rejection reason is meaningful for
+ * `isAbortRejection` and stable across Node versions where
+ * `signal.reason` semantics shifted.
+ *
+ * Return type is `Error` rather than `unknown` so the call site can
+ * `throw buildAbortError(signal)` without tripping linters that flag
+ * `throw <unknown>`. The asymmetry with `isAbortRejection`'s
+ * `unknown`-typed input is intentional: we KNOW the value we synthesize
+ * here is `Error`-shaped, and `isAbortRejection` widens because
+ * `Promise.allSettled` rejection reasons are typed `unknown` and could
+ * have originated outside this module.
+ *
+ * `signal.reason` is typed `any` by the DOM lib, so we narrow at the
+ * boundary: when it's already an `Error` we forward it; when it's
+ * anything else (an exotic value passed via `controller.abort(reason)`)
+ * or `undefined` (older Node releases where `signal.reason` was not
+ * spec-defaulted), we synthesize a fresh `DOMException` so the throw
+ * is always an `Error`.
+ */
+function buildAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  return new DOMException("Aborted", "AbortError")
 }
 
 /**
@@ -4061,10 +4151,62 @@ export class MemoryService {
    * accumulated filtered hits cover the requested `limit` OR Notion
    * signals `has_more: false`. See `SEMANTIC_SEARCH_MAX_PAGES` for the
    * cap rationale.
+   *
+   * **Cooperative cancellation (issue #490).** `searchByHybridPages`
+   * passes an `AbortSignal` so the saturating-contains branch can
+   * curtail the in-flight semantic pagination. The signal is checked
+   * at three points per iteration:
+   *
+   *   1. **Pre-loop**, once on entry — defensive against direct
+   *      callers passing an already-aborted signal.
+   *   2. **Pre-call**, before each `await this.client.search(...)` —
+   *      catches an abort that fired between the previous iteration's
+   *      post-page check and the current iteration's network call.
+   *   3. **Post-page**, after the page lands — catches an abort that
+   *      fired during the page's `await`.
+   *
+   * `applySemanticPostFilters` additionally re-checks the signal
+   * before its `hydrateRelationPropertiesForPages` call so a long
+   * relation-hydration tail does not run on a discarded page.
+   *
+   * The Notion SDK v5 does NOT expose a per-call `AbortSignal` on its
+   * public types (`SupportedRequestInit` carries no `signal` field;
+   * the `fetch` option on `ClientOptions` is set at construction, not
+   * per-call), so we cannot truly cancel an outstanding HTTP request
+   * from here. What we CAN do is keep the in-flight request from
+   * spawning further pages.
+   *
+   * **Residual-call bound.** In production, `client.search` is a
+   * network call whose `await` yields the event loop for tens to
+   * hundreds of milliseconds. By the time semantic page N's response
+   * lands and the continuation runs, contains' saturation handler
+   * has had ample microtask time to drain, the post-page check
+   * trips, and page N+1 never dispatches — residual is **1**: the
+   * page that was in flight when `controller.abort()` ran. The
+   * pre-fix worst case was up to `SEMANTIC_SEARCH_MAX_PAGES` (5)
+   * sequential calls.
+   *
+   * **Synchronous-mock degenerate case.** When both promises resolve
+   * in the same JS tick (test mocks that return synchronously,
+   * pathologically fast networks), the microtask ordering is
+   * `[semantic continuation, saturation handler]` — semantic's
+   * continuation runs first, processes page N, dispatches page N+1's
+   * `await client.search(...)`, and only THEN does the saturation
+   * handler fire. Page N+1 lands as the second residual. Tests in
+   * this codebase use `await new Promise(r => setTimeout(r, 0))`
+   * inside the mock to force a macrotask boundary that lets the
+   * saturation handler drain before the next page would dispatch,
+   * pinning the production-typical "residual = 1" behavior.
+   *
+   * On abort, the loop throws an `AbortError`-shaped rejection (via
+   * `buildAbortError`); `searchByHybridPages` recognizes that shape
+   * via `isAbortRejection` and treats it as a clean discard rather
+   * than a real branch failure.
    */
   private async fetchSemanticPages(
     input: SearchMemoriesInput,
-    intent: string | null
+    intent: string | null,
+    signal?: AbortSignal
   ): Promise<PageObjectResponse[]> {
     // Compose `client.search`'s `query` from the caller's `query` plus
     // any normalized intent. The `[query.trim(), intent].filter(Boolean)`
@@ -4122,7 +4264,35 @@ export class MemoryService {
     // `for...else` so the natural Python idiom is replaced with a
     // boolean reset on every break path.
     let cappedOut = true
+    // Pre-loop abort check is the defensive gate for direct callers
+    // passing an already-aborted signal — `searchByHybridPages`'s own
+    // dispatch path cannot reach here with `signal.aborted === true`
+    // because both branches dispatch synchronously in parallel before
+    // the contains `.then` saturation handler can fire. The defense
+    // matters for future direct callers (operator tooling, future MCP
+    // surfaces) that may construct a controller, abort it, then pass
+    // the signal — without this gate, we'd burn at least one
+    // `client.search` call in that case.
+    if (signal?.aborted) {
+      throw buildAbortError(signal)
+    }
     for (let pageIndex = 0; pageIndex < SEMANTIC_SEARCH_MAX_PAGES; pageIndex++) {
+      // Pre-call abort check catches an abort that fired between
+      // the previous iteration's post-page check and the current
+      // `await client.search(...)`. Both checks run in the same
+      // sync continuation when no microtask drained between them,
+      // so this is mainly defensive against (a) direct callers that
+      // mutate the signal between iterations and (b) future yields
+      // that may be added inside the loop body but outside an
+      // `await`. The dominant correctness lever for the residual-
+      // call bound is the post-filter signal check inside
+      // `applySemanticPostFilters`, which fires after `await
+      // client.search` (drains microtasks) and before the heavy
+      // hydration step. See `fetchSemanticPages`'s docstring for
+      // the full ordering analysis.
+      if (signal?.aborted) {
+        throw buildAbortError(signal)
+      }
       const response = await this.client.search({
         query: composedQuery,
         filter: { property: "object", value: "page" },
@@ -4130,9 +4300,20 @@ export class MemoryService {
         start_cursor: cursor,
       })
 
+      // Threading `signal` into post-filter so the synchronous early
+      // exit on abort short-circuits BEFORE `hydrateRelationPropertiesForPages`
+      // — that helper paginates relation-property fetches and is the
+      // dominant residual cost on a saturating-contains run when
+      // `client.search`'s response carries 100 hits. Skipping the
+      // hydration when we already know the result is destined for the
+      // discard pile keeps the saturation-path waste at "the in-flight
+      // page's headers landed" rather than "the in-flight page's
+      // headers AND every relation-hydration round-trip the page
+      // implies."
       for (const page of await this.applySemanticPostFilters(
         response.results as PageObjectResponse[],
-        input
+        input,
+        signal
       )) {
         if (seen.has(page.id)) continue
         seen.add(page.id)
@@ -4153,6 +4334,21 @@ export class MemoryService {
       if (!response.has_more || response.next_cursor == null) {
         cappedOut = false
         break
+      }
+      // Cooperative cancellation point — see the docstring above for
+      // why the check sits here, after the just-completed page lands
+      // its survivors. Throwing rather than `break`-ing matters: under
+      // hybrid the outer `Promise.allSettled` consumer needs a
+      // rejection to distinguish "aborted partway through pagination"
+      // from "loop ran to completion and returned a partial
+      // accumulator." A silent break would let a partial semantic
+      // result leak into the RRF merge on the saturation branch
+      // (where it's supposed to be discarded entirely). Paired with
+      // the pre-call check at the top of the next iteration, both
+      // microtask orderings (contains-handler-first or
+      // semantic-continuation-first) honor the residual-call bound.
+      if (signal?.aborted) {
+        throw buildAbortError(signal)
       }
       cursor = response.next_cursor
     }
@@ -4205,11 +4401,30 @@ export class MemoryService {
    * subsequent search pages. Mirror the client-side filter every other
    * paginating walker applies (`findByTopicKey`, `listAllForBackfill`,
    * `listForScan`, `fetchContainsPages`).
+   *
+   * **Cooperative cancellation (issue #490).** The optional `signal`
+   * parameter is checked before the synchronous parent-DB filter AND
+   * before `hydrateRelationPropertiesForPages` — the latter is the
+   * dominant residual cost on a saturating-contains run because
+   * hydration paginates relation-property fetches per surviving page.
+   * Skipping the hydration when the signal is already aborted bounds
+   * the saturation-path waste at "the in-flight `client.search`
+   * response landed" rather than "headers AND every relation-
+   * hydration round-trip the page implies." On abort we throw an
+   * `AbortError`-shaped value that propagates back through
+   * `fetchSemanticPages`'s `await` and out the loop's normal abort
+   * path — `searchByHybridPages` then maps it to fulfilled-empty via
+   * `isAbortRejection`, identical to the pre-call/post-page check
+   * paths in `fetchSemanticPages` itself.
    */
   private async applySemanticPostFilters(
     pages: PageObjectResponse[],
-    input: SearchMemoriesInput
+    input: SearchMemoriesInput,
+    signal?: AbortSignal
   ): Promise<PageObjectResponse[]> {
+    if (signal?.aborted) {
+      throw buildAbortError(signal)
+    }
     // Filter results to only pages in our Memories database. Notion SDK v5
     // returns two parent-type shapes depending on how the page was created /
     // what the workspace has since been upgraded to: classic `database_id`
@@ -4235,6 +4450,17 @@ export class MemoryService {
     if (input.projectId) filterRelationProperties.push("Project")
     if (input.topicId) filterRelationProperties.push("Topic")
     if (filterRelationProperties.length > 0) {
+      // Re-check the signal immediately before hydration. Hydration
+      // is the heavy step (one `pages.retrieve` per row that lacks
+      // resolved relation properties); skipping it on a signal that
+      // flipped during the synchronous parent-DB filter above is the
+      // tightest we can bound the per-page residual cost without
+      // threading the signal into `hydrateRelationPropertiesForPages`
+      // itself (which would require touching the shared notion-layer
+      // helper for a memory-search-specific need).
+      if (signal?.aborted) {
+        throw buildAbortError(signal)
+      }
       filtered = await hydrateRelationPropertiesForPages(
         this.client,
         filtered,
@@ -4360,6 +4586,33 @@ export class MemoryService {
    * remains the manual rollback for sustained problems; this guard is the
    * automatic one for transient ones.
    *
+   * **Cooperative cancellation when contains saturates (issue #490).**
+   * A side-effect `.then` handler on the contains promise calls
+   * `controller.abort()` as soon as it observes a saturating contains
+   * result (the predicate is encapsulated in `shouldUseSaturationCutoff`
+   * — the same helper the saturation-cutoff branch below reads, so
+   * the "should I abort?" gate cannot drift from the "should I take
+   * the cutoff?" gate). The signal is plumbed into
+   * `fetchSemanticPages`, which checks it pre-loop, pre-call, post-
+   * page, AND inside `applySemanticPostFilters` so the residual cost
+   * skips the heavy `hydrateRelationPropertiesForPages` step on
+   * pages destined for the discard pile. Pre-fix, a saturating
+   * contains query still paid up to `SEMANTIC_SEARCH_MAX_PAGES` (5)
+   * sequential semantic round-trips before the discarded result
+   * resolved; post-fix, the production-typical bound is **1
+   * residual `client.search` call** (the page in flight when abort
+   * fired), with the synchronous-mock degenerate case bounded at 2
+   * — see `fetchSemanticPages`'s docstring for the full residual-
+   * call bound analysis. The discarded-result rejection arrives as
+   * an `AbortError`-shaped value which `isAbortRejection` filters
+   * out of the partial-failure log path AND the both-failure
+   * detector — a cooperative abort is not a real branch failure and
+   * must not pollute `LORE_DEBUG=1` stderr or trip the both-down
+   * outage path. The Notion SDK v5 does not expose a per-call
+   * `signal` parameter, so the in-flight HTTP request is NOT
+   * cancelled at the network layer; the win is bounding the
+   * next-page burn, not zero-cost cancel.
+   *
    * **Empty-query note.** With no text filter, the contains leg returns a
    * recency listing under property filters; the semantic leg returns
    * `client.search({ query: "" })` (Notion's own empty-query behavior,
@@ -4385,12 +4638,76 @@ export class MemoryService {
     // below) — collapsing the documented `[CONFIDENCE_FACTOR_MIN, 1.0]`
     // floor to `[CONFIDENCE_FACTOR_MIN², 1.0]` for hybrid callers. See
     // `src/core/AGENTS.md` "Confidence dynamics" for the pipeline split.
+    //
+    // The controller drives the saturation-triggered cancellation of
+    // the in-flight semantic pagination loop (issue #490). Both
+    // branches still dispatch in parallel — abort is a side-effect of
+    // contains LANDING with a saturating result, not a precondition of
+    // semantic dispatching. The signal flows into `fetchSemanticPages`
+    // and is checked between `client.search` pages.
+    const controller = new AbortController()
+    const containsPromise = this.fetchContainsPages(input)
+    const semanticPromise = this.fetchSemanticPages(input, intent, controller.signal)
+
+    // Side-effect handler: as soon as contains lands fulfilled, decide
+    // whether to abort. The handler is attached BEFORE the
+    // `Promise.allSettled` await so the abort fires the moment
+    // contains resolves rather than only after `Promise.allSettled`
+    // itself settles (which would wait for semantic to finish on its
+    // own — defeating the cutoff).
+    //
+    // The `.then(...)` short-circuits on rejection by language
+    // semantics: contains rejection means we cannot make a saturation
+    // decision, semantic is the only surviving branch left, and
+    // aborting it would convert a recoverable contains-down case into
+    // a both-down outage. The `.catch(() => {})` is doing exactly ONE
+    // job — suppressing `UnhandledPromiseRejection` on the side-effect
+    // chain when contains rejects. It is NOT making the
+    // "don't abort on contains rejection" decision; that decision is
+    // owned by `.then`'s rejection short-circuit. The primary
+    // `Promise.allSettled` consumer below still observes the
+    // rejection via its `status === "rejected"` branch, so the empty
+    // catch here does not mask the failure.
+    //
+    // Intent gate: see `shouldUseSaturationCutoff`'s docstring for
+    // why aborting under intent (`intent !== null`) would silently
+    // nullify the very thing #17 added.
+    void containsPromise
+      .then((result) => {
+        if (shouldUseSaturationCutoff(intent, result.pages)) {
+          controller.abort()
+        }
+      })
+      .catch(() => {
+        /* unhandled-rejection suppression only — see comment block above */
+      })
+
     const [containsResult, semanticResult] = await Promise.allSettled([
-      this.fetchContainsPages(input),
-      this.fetchSemanticPages(input, intent),
+      containsPromise,
+      semanticPromise,
     ])
 
-    if (containsResult.status === "rejected" && semanticResult.status === "rejected") {
+    // Cooperative aborts on the semantic branch are NOT real failures.
+    // Map an `AbortError`-shaped rejection to a fulfilled-empty value
+    // here so:
+    //
+    //   1. The both-failure check below cannot trip on the
+    //      `(contains rejected) + (semantic aborted because we asked
+    //      for it)` combo. A semantic abort fires only after contains
+    //      settles fulfilled-saturating; a contains-rejected path
+    //      never aborts the semantic side. But the type system doesn't
+    //      enforce that ordering, and a future refactor that introduces
+    //      a different abort trigger should not silently break
+    //      both-failure detection.
+    //   2. The partial-failure log below stays quiet on the abort path
+    //      — a cooperative discard isn't transient noise to surface
+    //      under `LORE_DEBUG=1`.
+    const semanticEffective: PromiseSettledResult<PageObjectResponse[]> =
+      semanticResult.status === "rejected" && isAbortRejection(semanticResult.reason)
+        ? { status: "fulfilled", value: [] }
+        : semanticResult
+
+    if (containsResult.status === "rejected" && semanticEffective.status === "rejected") {
       // Both legs failed — log both messages on one stderr line
       // unconditionally (operators triaging a real outage need both
       // rejection reasons regardless of LORE_DEBUG), then surface one to
@@ -4406,7 +4723,7 @@ export class MemoryService {
       // catches a generic Error and surfaces `err.message`; the caller
       // contract is intentionally unchanged. The unconditional stderr
       // log is the operator-facing answer.
-      logHybridBothFailure(containsResult.reason, semanticResult.reason)
+      logHybridBothFailure(containsResult.reason, semanticEffective.reason)
       throw containsResult.reason
     }
 
@@ -4415,13 +4732,13 @@ export class MemoryService {
     const containsCapped =
       containsResult.status === "fulfilled" ? containsResult.value.capped : false
     const semanticPages =
-      semanticResult.status === "fulfilled" ? semanticResult.value : []
+      semanticEffective.status === "fulfilled" ? semanticEffective.value : []
 
     if (containsResult.status === "rejected") {
       debugLogHybridBranchFailure("contains", containsResult.reason)
     }
-    if (semanticResult.status === "rejected") {
-      debugLogHybridBranchFailure("semantic", semanticResult.reason)
+    if (semanticEffective.status === "rejected") {
+      debugLogHybridBranchFailure("semantic", semanticEffective.reason)
     }
 
     // Saturation cutoff: contains alone is the answer. Semantic ran in
@@ -4430,16 +4747,11 @@ export class MemoryService {
     // same id, because surfacing that rank would imply influence on
     // ordering that did not happen.
     //
-    // **Intent disables the cutoff.** When the caller passes a non-empty
-    // intent, the saturation gate is bypassed so the intent-augmented
-    // semantic lane gets to influence ordering — otherwise intent would
-    // be silently nullified in the common case (any non-trivial vault
-    // produces 3+ contains hits for a one-word query like `"auth"`).
-    // The cost is small (one Map walk + one sort) but observable: an
-    // agent passing intent on every call sees slightly different
-    // ordering on queries that today saturate. See #17 for the
-    // load-bearing tradeoff.
-    if (intent === null && containsPages.length >= HYBRID_FALLBACK_THRESHOLD) {
+    // The cutoff predicate is shared with the abort-on-saturation
+    // handler above via `shouldUseSaturationCutoff` so the two sites
+    // cannot drift. The intent gate (`intent === null`) lives in the
+    // helper; see its docstring for the #17 rationale.
+    if (shouldUseSaturationCutoff(intent, containsPages)) {
       const trace = new Map<string, HybridTraceEntry>()
       containsPages.forEach((page, rank) => {
         trace.set(page.id, {

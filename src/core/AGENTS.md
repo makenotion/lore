@@ -754,19 +754,55 @@ Once both settle:
 
 - **Saturating case** (`containsPages.length >= HYBRID_FALLBACK_THRESHOLD`,
   default 3): the contains rows alone become the result. The parallel
-  semantic call is discarded. `Promise.allSettled` does NOT short-circuit
-  when contains saturates, so wall-clock is still
-  `max(contains_latency, semantic_latency)`. **Post-#192**, the worst-
-  case `semantic_latency` is bounded by `SEMANTIC_SEARCH_MAX_PAGES` (5)
-  sequential `client.search` round-trips on a pathological query that
-  has no matches anywhere in the workspace; saturation cutoff still
-  pays that cost only to discard the result. In practice the semantic
-  branch saturates or exhausts after 1–2 pages on real queries, so
-  the wall-clock impact is bounded but not theoretically free. A
-  future `AbortController`-based cooperative cancellation would let
-  the saturating contains branch terminate the in-flight semantic
-  pagination; track in `DEFERRED.md` if real-vault metrics show the
-  cost matters.
+  semantic call is aborted via `AbortController` (issue #490). Both
+  branches still dispatch in parallel — the abort is a side-effect of
+  contains landing fulfilled-saturating, not a precondition of
+  semantic dispatching. The signal flows into `fetchSemanticPages`,
+  which checks it pre-loop, pre-call, post-page, and inside
+  `applySemanticPostFilters` (so the heavy
+  `hydrateRelationPropertiesForPages` step is skipped on pages
+  destined for the discard pile).
+
+  **Residual-call bound.** The Notion SDK v5 does NOT expose a per-
+  call `AbortSignal` (`SupportedRequestInit` has no `signal` field;
+  the `fetch` option on `ClientOptions` is set at construction, not
+  per-call), so the in-flight HTTP request itself is NOT cancelled
+  at the network layer — what we cancel is the dispatch of further
+  pages. In production, `client.search` is a network call whose
+  `await` yields the event loop for tens to hundreds of ms; by the
+  time semantic page N's response lands and the continuation runs,
+  contains' saturation handler has had ample microtask time to
+  drain, the post-filter signal check trips, and page N+1 never
+  dispatches — production-typical residual is **1**: the page in
+  flight when `controller.abort()` ran. The pre-fix worst case was
+  up to `SEMANTIC_SEARCH_MAX_PAGES` (5) sequential calls.
+
+  **Synchronous-mock degenerate case.** When both promises resolve
+  in the same JS tick (test mocks that return synchronously,
+  pathologically fast networks), the
+  `[semantic continuation, saturation handler]` microtask ordering
+  can dispatch page N+1 before the saturation handler aborts —
+  residual = 2. Tests in `memory.test.ts` use `setTimeout(0)` to
+  force a macrotask boundary that pins the production-typical
+  residual = 1 behavior.
+
+  **Cooperative-abort rejection is not a branch failure.** The
+  semantic branch's abort surfaces as an `AbortError`-shaped
+  rejection at `Promise.allSettled`. `searchByHybridPages` filters
+  it via `isAbortRejection` and maps it to fulfilled-empty BEFORE
+  the both-failure detector and the partial-failure log gate run.
+  A cooperative discard is silent under `LORE_DEBUG=1` and does
+  not trip the both-down outage path.
+
+  **Saturation/abort gate is single-source via `shouldUseSaturationCutoff`.**
+  The predicate `intent === null && containsPages.length >=
+  HYBRID_FALLBACK_THRESHOLD` is read by both the post-`allSettled`
+  saturation cutoff branch AND the abort-on-saturation `.then`
+  handler attached to the contains promise. The two sites cannot
+  drift; tightening the cutoff (adding a `containsCapped`
+  precondition, etc.) lands in one place. The `intent === null`
+  gate is shared with #17's saturation-bypass-under-intent rule
+  for the same reason.
 - **Under-shooting case (RRF)**: when contains under-shoots the
   threshold, the merge runs Reciprocal Rank Fusion over both branches
   rather than concat-with-dedup. Each row's score is
