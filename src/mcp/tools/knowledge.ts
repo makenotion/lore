@@ -528,9 +528,14 @@ export async function handleInvalidate(
     // `pageToFact`'s historical-tracking-predicate filter races against
     // `Valid Until` updates if the read happens after invalidation, and
     // `FactService.invalidate` returns `void`. A `null` from `getById`
-    // means the row is one of the historical tracking predicates that
-    // `pageToFact` filters out — invalidate still succeeds, but there's
-    // no provenance link to penalize.
+    // can mean three things: the page came back partial (Notion `is_full_page`
+    // guard fails), the row is archived (issue #497 — `getById` returns
+    // null for archived rows so callers stay symmetric across "row missing"
+    // and "row archived"), or the row is one of the historical tracking
+    // predicates that `pageToFact` filters out. In all three cases there is
+    // no provenance link to penalize. The archived case ALSO short-circuits
+    // inside `FactService.invalidate` itself — no `Valid Until` write lands
+    // on archived rows.
     const fact = await services.facts.getById(args.factId)
     await services.facts.invalidate(args.factId)
 

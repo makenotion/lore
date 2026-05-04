@@ -2930,6 +2930,33 @@ describe("lore-fact action='invalidate' — confidence decrement on source memor
     expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
   })
 
+  it("archived row: getById returns null, decrement is skipped, response stays clean (issue #497)", async () => {
+    // `FactService.getById` returns null for archived rows
+    // alongside the partial-page and historical-tracking-predicate
+    // null branches. At the handler boundary the contradiction-
+    // decrement path correctly skips because `sourceMemoryId` is
+    // unavailable. The service-level archived short-circuit (pinned
+    // in fact-confidence.test.ts) guarantees no `Valid Until` write
+    // lands on the archived row itself; this test pins the
+    // handler-level half — `services.memories.decrementConfidence`
+    // is NOT invoked, and the user still sees a clean
+    // `Invalidated fact <id>` response.
+    const mockServer = createMockServer()
+    const ctx = makeServices({ fact: null })
+    registerKnowledgeTools(mockServer.server, ctx.services as never)
+    const invalidate = mockServer.getActionHandler("lore-fact", "invalidate")
+
+    const result = await invalidate({ factId: "fact-archived" } as never)
+    const payload = result as { content: Array<{ text: string }>; isError?: boolean }
+
+    expect(payload.isError).toBeFalsy()
+    expect(payload.content[0].text).toBe("Invalidated fact fact-archived")
+    expect(ctx.factsGetById).toHaveBeenCalledWith("fact-archived")
+    expect(ctx.factsInvalidate).toHaveBeenCalledWith("fact-archived")
+    expect(ctx.memoriesGetPropertiesById).not.toHaveBeenCalled()
+    expect(ctx.memoriesDecrement).not.toHaveBeenCalled()
+  })
+
   it("decrement failure is advisory: invalidate response stays clean (no isError)", async () => {
     // Acceptance criterion: a transient 429 / archived target on the
     // decrement does NOT fail the surrounding lore-fact call. The

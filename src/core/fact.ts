@@ -39,6 +39,7 @@ import {
 import { todayUtc } from "./task.js"
 import {
   isFullPage,
+  isLiveFullPage,
   extractTitle,
   extractRichText,
   extractSelect,
@@ -1381,18 +1382,35 @@ export class FactService {
   }
 
   /**
-   * Read a single fact by page ID. Returns `null` for the same two reasons
-   * `pageToFact` does: the page is partial (Notion `is_full_page` guard
-   * fails) or the row's raw `Predicate` is one of the historical tracking
-   * strings filtered at the deserialization boundary. Used by
+   * Read a single fact by page ID. Returns `null` for three reasons: the
+   * page is partial (Notion `is_full_page` guard fails), the page is
+   * archived, or the row's raw `Predicate` is one of the historical
+   * tracking strings filtered at the deserialization boundary. Used by
    * `lore-fact action='invalidate'` to capture `sourceMemoryId` BEFORE the
    * invalidate write — invalidating first would leave the handler with no
    * fact shape to read the source from.
+   *
+   * **Archived-row guarantee (issue #497).** This gate prevents archived
+   * fact rows from deserializing as live `Fact` objects. The downstream
+   * effect is that `handleInvalidate` reads `sourceMemoryId` as `null`
+   * and skips the contradiction-decrement branch — no
+   * `decrementConfidence` call lands against the archived row's source
+   * memory. The mirror live-row gate in `MemoryService.requireLiveMemoryPage`
+   * and `DecisionService.getById` throws; this gate returns `null` to
+   * keep callers symmetric across the "row missing" and "row archived"
+   * cases without forcing every caller to grow a `try/catch`.
+   *
+   * **Out of scope here:** the no-`Valid Until`-write guarantee on
+   * archived rows is enforced separately by `FactService.invalidate`,
+   * which retrieves the page directly and short-circuits on
+   * `archived: true` before any `pages.update`. See its docblock for
+   * the no-write contract; this method only governs the deserialization
+   * boundary.
    */
   async getById(id: string): Promise<Fact | null> {
     const page = await this.client.pages.retrieve({ page_id: id })
-    if (!isFullPage(page)) return null
-    return await this.pageToFact(page as PageObjectResponse)
+    if (!isLiveFullPage(page)) return null
+    return await this.pageToFact(page)
   }
 
   async extendReview(id: string, reviewBy: string | null): Promise<void> {
@@ -1484,6 +1502,18 @@ export class FactService {
    * halved-twice. Mirror of `MemoryService.decrementConfidence`'s
    * concurrency posture; both ship under the same contract.
    *
+   * **Archived rows short-circuit (issue #497).** The helper retrieves
+   * the row directly (rather than via `getById`, which collapses the
+   * archived / partial / tracking-predicate cases into a single `null`)
+   * so it can distinguish archived from the other null reasons. Notion
+   * accepts `pages.update` against archived pages, so without this gate
+   * an invalidate against an already-archived row would write
+   * `Valid Until = today` onto a row that is already excluded from
+   * active queries — leaving an audit-visible contradictory
+   * `archived: true` plus `Valid Until: <date>` combination. The
+   * confidence-decrement branch is also skipped because `Confidence`
+   * on an archived row is no longer load-bearing for retrieval.
+   *
    * The historical-tracking-predicate filter in `pageToFact` returns
    * `null` for legacy rows whose Predicate is `needs_action` /
    * `waiting_on` / `blocked_by`. Those rows still need to be invalidated
@@ -1493,23 +1523,49 @@ export class FactService {
    * for those rows. The score column stays untouched.
    *
    * Failure modes:
-   * - `getById` 5xx / 404: the catch routes to a `Valid Until`-only
+   * - `pages.retrieve` 5xx / 404: the catch routes to a `Valid Until`-only
    *   write so an invalidate call never fails for a transient read
    *   problem. The decrement is advisory; the invalidate is the
-   *   contract.
+   *   contract. Archived short-circuit is conservative — a row that
+   *   reads as not-archived (or fails to read) still gets the write.
    * - `extractNumber` returns `null` for missing schema column: same
    *   path as a never-scored row, the decrement still runs against the
    *   seeded categorical.
    */
   async invalidate(id: string): Promise<void> {
     const today = todayUtc()
-    let fact: Fact | null
+    let page: PageObjectResponse | null = null
     try {
-      fact = await this.getById(id)
+      const retrieved = await this.client.pages.retrieve({ page_id: id })
+      if (isFullPage(retrieved)) {
+        page = retrieved
+      }
     } catch {
       // Fall through: the read failed but the invalidate write must
-      // still happen. The decrement is best-effort.
-      fact = null
+      // still happen. The decrement is best-effort. A read failure
+      // CANNOT trigger the archived short-circuit; the contract favors
+      // landing the invalidate over silently dropping a write because
+      // we couldn't confirm the row's state.
+    }
+
+    // Archived row: the page is already excluded from active queries.
+    // Writing `Valid Until = today` would leave a contradictory
+    // `archived: true` + `Valid Until: <date>` combination visible to
+    // any audit walking every fact row. Skip both the invalidate write
+    // and the confidence decrement.
+    if (page !== null && page.archived) {
+      return
+    }
+
+    let fact: Fact | null = null
+    if (page !== null) {
+      try {
+        fact = await this.pageToFact(page)
+      } catch {
+        // pageToFact failed (e.g. relation hydration 5xx); fall through
+        // to a `Valid Until`-only write.
+        fact = null
+      }
     }
 
     const properties: Record<string, unknown> = {

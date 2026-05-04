@@ -353,6 +353,33 @@ describe("FactService.invalidate", () => {
     expect(args.properties).not.toHaveProperty("Confidence Score")
   })
 
+  it("short-circuits without any pages.update when the row is archived (issue #497)", async () => {
+    // Notion accepts `pages.update` against archived pages, so
+    // without this gate an invalidate call against an already-
+    // archived row would write `Valid Until = today` onto a row
+    // already excluded from active queries — leaving an audit-
+    // visible contradictory `archived: true` plus
+    // `Valid Until: <date>` combination. Pin the no-write contract
+    // so a future refactor that drops the archived guard fails
+    // loudly rather than silently corrupting audits.
+    const archivedPage: PageObjectResponse = {
+      ...pageWithConfidence({
+        id: "f-archived",
+        confidenceScore: 0.8,
+        lastReferencedAt: "2026-04-01",
+        createdAt: "2026-04-01T00:00:00.000Z",
+      }),
+      archived: true,
+    }
+    const { client, updateSpy, retrieveSpy } = mkClient({ retrieve: archivedPage })
+    const service = new FactService(client, DB)
+
+    await service.invalidate("f-archived")
+
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+    expect(updateSpy).not.toHaveBeenCalled()
+  })
+
   it("retries with Valid Until-only write when the schema is missing the Confidence Score column", async () => {
     // Pre-DEFERRED-02 vault that hasn't run `lore migrate`: the
     // schema has no `Confidence Score` / `Last Referenced At`
@@ -482,18 +509,23 @@ describe("FactService internal createdAt invariant (DEFERRED-02)", () => {
 
     // Wrap the retrieve so the deserialized Fact's `createdAt` is
     // unset — bypassing pageToFact's normal population. Two-step:
-    // retrieve returns the malformed page (which produces a Fact
-    // with createdAt populated via pageToFact); then we use a
-    // service stub that intercepts and strips createdAt before
-    // invalidate's internal helper reads it.
+    // retrieve returns the malformed page; then we patch the
+    // service's `pageToFact` method (TypeScript-private but runtime-
+    // accessible) to strip createdAt before invalidate's internal
+    // helper reads it. `invalidate` calls `pageToFact` directly
+    // (issue #497 refactor; previously it routed through `getById`),
+    // so this is the right monkey-patch surface for the invariant.
     const { client } = mkClient({ retrieve: malformedPage })
     const service = new FactService(client, DB)
-    // Override `getById` via prototype patch to return a Fact
+    // Override `pageToFact` via prototype patch to return a Fact
     // missing createdAt — this directly exercises the helper's
     // throw rather than relying on pageToFact's contract.
-    const original = service.getById.bind(service)
-    service.getById = async (id: string) => {
-      const fact = await original(id)
+    const internal = service as unknown as {
+      pageToFact: (page: PageObjectResponse) => Promise<Fact | null>
+    }
+    const original = internal.pageToFact.bind(service)
+    internal.pageToFact = async (page) => {
+      const fact = await original(page)
       if (fact !== null) {
         // Strip createdAt to simulate a partial Fact reaching the
         // internal helper. This is the failure mode the helper

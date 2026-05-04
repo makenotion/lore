@@ -2605,4 +2605,33 @@ describe("FactService.getById (issue 0.8.0/06)", () => {
 
     expect(fact).toBeNull()
   })
+
+  it("returns null for archived rows (issue #497)", async () => {
+    // `pageToFact` does not gate on `archived`, so without the
+    // `getById`-level guard an archived row would deserialize as a
+    // live `Fact`. The downstream effect this gate prevents:
+    // `handleInvalidate` reads `sourceMemoryId` off the deserialized
+    // archived `Fact` and decrements the source memory's
+    // `Confidence Score` against a fact that's already excluded from
+    // the active dataset. Returning null here makes the read-side
+    // path symmetric with "row missing" without forcing the handler
+    // into a try/catch.
+    //
+    // The separate no-`Valid Until`-write guarantee for archived
+    // rows is enforced by `FactService.invalidate` (retrieves the
+    // page directly, short-circuits on `archived: true` before any
+    // `pages.update`), pinned in
+    // `fact-confidence.test.ts:short-circuits without any pages.update
+    // when the row is archived (issue #497)`.
+    const retrieve = vi
+      .fn()
+      .mockResolvedValue(factPage({ id: "archived-fact", archived: true }))
+    const client = { pages: { retrieve } } as unknown as Client
+    const service = new FactService(client, db)
+
+    const fact = await service.getById("archived-fact")
+
+    expect(retrieve).toHaveBeenCalledWith({ page_id: "archived-fact" })
+    expect(fact).toBeNull()
+  })
 })
