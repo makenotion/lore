@@ -12,6 +12,7 @@
 
 import { createHash } from "node:crypto"
 import type { Client } from "@notionhq/client"
+import { APIErrorCode, isNotionClientError } from "@notionhq/client"
 import type {
   PageObjectResponse,
   CreatePageParameters,
@@ -2272,8 +2273,35 @@ export class MemoryService {
     let page: Awaited<ReturnType<typeof this.client.pages.retrieve>>
     try {
       page = await this.client.pages.retrieve({ page_id: id })
-    } catch {
-      // Transient (network / 429 / 5xx). Don't cache — next caller retries.
+    } catch (err) {
+      // Tombstone the id-level absence cases (404, restricted-resource);
+      // every other error class falls through to transient and is NOT
+      // cached. Without this branch, every wake-up over a stable id-set
+      // re-issues `pages.retrieve` for every dead id, paced by the 3 rps
+      // token bucket — silently violating the "25-UUID wake-up twice →
+      // zero retrieve calls on the second run" contract this class
+      // advertises.
+      //
+      // `Unauthorized` (401) is deliberately NOT tombstoned: the SDK
+      // wrapper at `src/notion/client.ts:isUnauthorizedError` already
+      // attempts one auth refresh on 401 and only surfaces the original
+      // error when refresh is unavailable or the retry still fails. By
+      // the time a 401 reaches us it's a broad token-level signal, not
+      // a per-page absence — caching it would poison every id resolved
+      // during a bad-auth window for up to 60s after recovery.
+      if (
+        isNotionClientError(err) &&
+        (err.code === APIErrorCode.ObjectNotFound ||
+          err.code === APIErrorCode.RestrictedResource)
+      ) {
+        // Epoch-guarded: don't clobber a concurrent writer's authoritative value.
+        if (this.writeEpoch === startEpoch) {
+          this.titleCache.set(id, null)
+        }
+        return null
+      }
+      // Transient (401 / 429 / 5xx / network / unknown). Don't cache —
+      // next caller retries.
       return null
     }
 

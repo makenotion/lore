@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
+import { APIErrorCode, APIResponseError } from "@notionhq/client"
 import {
   MemoryService,
   MemoryCreatePartialFailureError,
@@ -8073,6 +8074,18 @@ describe("MemoryService.getTitleById — title cache", () => {
     )
   }
 
+  function buildApiError(code: APIErrorCode, status: number): APIResponseError {
+    return new APIResponseError({
+      code,
+      status,
+      message: code,
+      headers: new Headers(),
+      rawBodyText: `{"code":"${code}","message":"${code}"}`,
+      additional_data: undefined,
+      request_id: undefined,
+    })
+  }
+
   it("skips the Notion call on repeat reads within the TTL window", async () => {
     const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) =>
       titlePage(page_id, "Cached title")
@@ -8208,6 +8221,130 @@ describe("MemoryService.getTitleById — title cache", () => {
     expect(retrieveSpy).toHaveBeenCalledTimes(2)
   })
 
+  it("does not cache real 429 (rate_limited) — next caller retries", async () => {
+    // The SDK-shaped variant of the transient-errors guard: an
+    // `APIResponseError` with `code: rate_limited` must NOT tombstone.
+    // The bare-catch implementation collapsed every catch into the same
+    // uncached null; the discriminated catch must keep the rate-limit
+    // case in the transient bucket.
+    const retrieveSpy = vi
+      .fn<(args: { page_id: string }) => Promise<PageObjectResponse>>()
+      .mockImplementationOnce(async () => {
+        throw buildApiError(APIErrorCode.RateLimited, 429)
+      })
+      .mockImplementationOnce(async ({ page_id }) => titlePage(page_id, "Recovered"))
+    const client = {
+      pages: { retrieve: retrieveSpy },
+    } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-1")).toBeNull()
+    expect(await service.getTitleById("mem-1")).toBe("Recovered")
+    expect(retrieveSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("caches a null tombstone when retrieve throws object_not_found", async () => {
+    // The acceptance criterion for issue #478. A genuinely-deleted id
+    // (the SDK throws `APIResponseError` with `code: object_not_found`)
+    // must install a tombstone so the next wake-up over the same id
+    // set issues zero retrieves on the dead id.
+    //
+    // The pre-fix bare `catch` collapsed 404 / 401 / 403 / 429 / 5xx
+    // into a single uncached-null return; every wake-up then re-issued
+    // `pages.retrieve` for every dead id, paced by the 3 rps token
+    // bucket.
+    const retrieveSpy = vi.fn(async () => {
+      throw buildApiError(APIErrorCode.ObjectNotFound, 404)
+    })
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-gone")).toBeNull()
+    // Second call hits the tombstone — zero additional fetches.
+    expect(await service.getTitleById("mem-gone")).toBeNull()
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("caches a null tombstone when retrieve throws restricted_resource", async () => {
+    // 403 / restricted_resource: the page exists but the integration
+    // does not have access. From the caller's perspective this id is
+    // permanently absent until the operator changes the share grant —
+    // tombstoning is correct.
+    const retrieveSpy = vi.fn(async () => {
+      throw buildApiError(APIErrorCode.RestrictedResource, 403)
+    })
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-restricted")).toBeNull()
+    expect(await service.getTitleById("mem-restricted")).toBeNull()
+    expect(retrieveSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not cache unauthorized (401) — next caller retries after auth recovers", async () => {
+    // 401 / unauthorized is a broad token-level signal, not a per-page
+    // absence signal: the SDK wrapper at
+    // `src/notion/client.ts:isUnauthorizedError` already attempts one
+    // auth refresh on 401 and only surfaces the error when refresh is
+    // unavailable / unchanged or the retried request is still 401.
+    //
+    // If we tombstoned 401s, a temporary bad-token window would poison
+    // every id resolved during a wake-up render pass for up to 60s
+    // after the operator fixes auth. Stay on the transient path so the
+    // next call re-attempts and surfaces the now-recovered title.
+    const retrieveSpy = vi
+      .fn<(args: { page_id: string }) => Promise<PageObjectResponse>>()
+      .mockImplementationOnce(async () => {
+        throw buildApiError(APIErrorCode.Unauthorized, 401)
+      })
+      .mockImplementationOnce(async ({ page_id }) => titlePage(page_id, "Recovered"))
+    const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+    const service = new MemoryService(client, db)
+
+    expect(await service.getTitleById("mem-no-auth")).toBeNull()
+    expect(await service.getTitleById("mem-no-auth")).toBe("Recovered")
+    expect(retrieveSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("tombstones expire on TTL — restored ids re-fetch after 60s", async () => {
+    // Defense against a future drive-by that "optimizes" tombstones
+    // into a separate `Set<string>` of dead ids without TTL — that
+    // refactor would silently re-introduce a permanent-tombstone
+    // failure mode for ids that were genuinely 404 at first read but
+    // restored before the next render. The current `LruCache` shares
+    // `expiresAt` semantics across `null` and `string` values, so this
+    // test pins that the tombstone respects the same 60s TTL as a
+    // resolved title.
+    vi.useFakeTimers()
+    try {
+      let throwOnNextCall = true
+      const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
+        if (throwOnNextCall) {
+          throwOnNextCall = false
+          throw buildApiError(APIErrorCode.ObjectNotFound, 404)
+        }
+        return titlePage(page_id, "Restored")
+      })
+      const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
+      const service = new MemoryService(client, db)
+
+      // First read tombstones; second read inside the TTL window hits
+      // the cache and issues no fetch.
+      expect(await service.getTitleById("mem-1")).toBeNull()
+      expect(await service.getTitleById("mem-1")).toBeNull()
+      expect(retrieveSpy).toHaveBeenCalledTimes(1)
+
+      // Advance past the 60s TTL — the tombstone expires and the next
+      // read re-fetches, surfacing the restored title.
+      vi.advanceTimersByTime(61_000)
+
+      expect(await service.getTitleById("mem-1")).toBe("Restored")
+      expect(retrieveSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("re-fetches after TTL expiry", async () => {
     // Spec acceptance criterion: TTL expiry re-fetches. Pins that the
     // cache isn't accidentally holding values forever.
@@ -8282,16 +8419,18 @@ describe("MemoryService.getTitleById — title cache", () => {
     expect(retrieveSpy.mock.calls.length).toBe(firstRunCalls)
   })
 
-  it("genuinely-missing ids (404/throw) do NOT tombstone — next wake-up retries", async () => {
-    // Complements the archived-id integration test above: a 404 / network
-    // error takes the transient path, so the second call re-fetches rather
-    // than serving a stale tombstone. This was the reviewer's concern —
-    // previously the "missing-id" test conflated archived (tombstone) with
-    // missing (transient), which are different paths with different
-    // caching semantics.
+  it("genuinely-deleted ids (object_not_found) tombstone — second wake-up issues zero retrieves on the dead id", async () => {
+    // The render-layer acceptance criterion for issue #478: a wake-up
+    // where one id has been genuinely deleted (the SDK throws
+    // `APIResponseError` with `code: object_not_found`) tombstones on
+    // the first run, so the second run's `resolveTitles` issues zero
+    // retrieves on the dead id while still hitting the cache for the
+    // live ones.
     const ids = ["mem-01", "truly-gone"]
     const retrieveSpy = vi.fn(async ({ page_id }: { page_id: string }) => {
-      if (page_id === "truly-gone") throw new Error("404 not found")
+      if (page_id === "truly-gone") {
+        throw buildApiError(APIErrorCode.ObjectNotFound, 404)
+      }
       return titlePage(page_id, `Title of ${page_id}`)
     })
     const client = { pages: { retrieve: retrieveSpy } } as unknown as Client
@@ -8303,8 +8442,9 @@ describe("MemoryService.getTitleById — title cache", () => {
     await resolveTitles(ids, loader)
     await resolveTitles(ids, loader)
 
-    // mem-01 is cached after the first run (1 fetch total).
-    // truly-gone takes the transient path on both runs (2 fetches total).
+    // Both ids fetch exactly once. The deleted-id tombstone short-
+    // circuits the second wake-up — the contract violated by the
+    // pre-fix bare `catch`.
     const callsForPresent = retrieveSpy.mock.calls.filter(
       (c) => c[0].page_id === "mem-01"
     ).length
@@ -8312,7 +8452,7 @@ describe("MemoryService.getTitleById — title cache", () => {
       (c) => c[0].page_id === "truly-gone"
     ).length
     expect(callsForPresent).toBe(1)
-    expect(callsForMissing).toBe(2)
+    expect(callsForMissing).toBe(1)
   })
 
   it("does not clobber the writer's post-update title when a reader was already in flight", async () => {
