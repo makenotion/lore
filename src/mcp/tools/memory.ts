@@ -27,6 +27,7 @@ import { SYNOPSIS_MAX } from "../../types.js"
 import { tagsSchema, keywordsSchema } from "./tag-schema.js"
 import { clearableYmdDateSchema, ymdDateSchema } from "./date-schema.js"
 import { nonBlankBody, nonBlankString } from "./text-schema.js"
+import { notionPageIdSchema } from "./notion-id-schema.js"
 import {
   RICH_TEXT_PROPERTY_MAX_LEN,
   richTextPropertySchema,
@@ -2407,7 +2408,7 @@ const memoryDispatchSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("expand"),
-    ids: z.array(z.string().uuid()).min(1).max(EXPAND_MAX_IDS),
+    ids: z.array(notionPageIdSchema).min(1).max(EXPAND_MAX_IDS),
   }),
   z.object({
     action: z.literal("suggest-topic-key"),
@@ -2495,11 +2496,17 @@ export function registerMemoryTools(server: McpServer, services: LoreServices): 
           .describe(
             "Required for action='update'/'archive'/'approve'/'reject'. The Notion page ID of the memory."
           ),
+        // The advertised tool schema is intentionally permissive: the
+        // real validation (page-id shape, 1-20 cap, lowercase
+        // canonicalization) lives in the `expand` branch of
+        // `memoryDispatchSchema` below, so MCP-level introspection
+        // doesn't need to mirror every constraint. Keeps the agent-
+        // visible config string small.
         ids: z
-          .array(z.string().uuid())
+          .array(z.string())
           .optional()
           .describe(
-            `(action='expand') Memory IDs (1-${EXPAND_MAX_IDS}). UUIDs as returned by recall/search/wake-up.`
+            `(action='expand') Memory IDs (1-${EXPAND_MAX_IDS}). Accepts dashed UUIDs as returned by recall/search/wake-up, or undashed 32-character hex ids from Notion page URLs.`
           ),
         // shared (save | update)
         projectName: z

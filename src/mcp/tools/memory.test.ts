@@ -2444,10 +2444,10 @@ describe("lore-expand", () => {
 
   it("enforces the 20-ID cap at the dispatcher's discriminated union", async () => {
     // Validation lives in the polymorphic `lore-memory` dispatcher's
-    // discriminated union (`ids: array(uuid()).min(1).max(20)` on the
-    // `expand` branch). Drive the handler so the test follows the same
-    // path production callers do — schema-only `safeParse` would miss
-    // a refactor that moved the cap onto a runtime guard.
+    // discriminated union (`ids: array(notionPageIdSchema).min(1).max(20)`
+    // on the `expand` branch). Drive the handler so the test follows the
+    // same path production callers do — schema-only `safeParse` would
+    // miss a refactor that moved the cap onto a runtime guard.
     const mockServer = createMockServer()
     const services = {
       projects: { findByName: vi.fn() },
@@ -2462,12 +2462,15 @@ describe("lore-expand", () => {
     registerQueryTools(mockServer.server, services as never)
     const expand = mockServer.getActionHandler("lore-memory", "expand")
 
-    // Build 21 distinct valid v4 UUIDs to push past the cap. Format follows
-    // Zod's UUID regex: 8-4-4-4-12 with version 4 and variant 8–b.
+    // Build 21 distinct dashed-UUID-shaped ids to push past the cap.
+    // Notion page ids are 8-4-4-4-12 hex; any hex value satisfies the
+    // schema (no UUID-version constraint). The leading 8-char segment
+    // varies per id so test-failure output is eyeball-distinguishable
+    // — `cafe0001` vs `cafe0010` is easier to spot than 21 strings
+    // differing in a single trailing nibble.
     const tooMany = Array.from({ length: 21 }, (_, i) => {
-      const hex = i.toString(16).padStart(4, "0")
-      const tail3 = hex.slice(0, 3)
-      return `${hex}${hex}-${hex}-4${tail3}-8${tail3}-${hex}${hex}${hex}`
+      const lead = `cafe${i.toString(16).padStart(4, "0")}`
+      return `${lead}-1234-5678-9abc-def012345678`
     })
 
     const isErr = (r: unknown): boolean => (r as { isError?: boolean }).isError === true
@@ -2483,9 +2486,145 @@ describe("lore-expand", () => {
     const justRight = await expand({ ids: tooMany.slice(0, 20) })
     expect(isErr(justRight)).toBe(false)
 
-    // Non-UUID strings fail the per-element z.string().uuid() guard.
-    const badShape = await expand({ ids: ["not-a-uuid"] })
+    // Strings that are neither dashed UUIDs nor 32-char hex fail the
+    // per-element notionPageIdSchema guard.
+    const badShape = await expand({ ids: ["not-a-page-id"] })
     expect(isErr(badShape)).toBe(true)
+  })
+
+  it("accepts undashed 32-character hex page ids and normalizes to dashed form", async () => {
+    // Notion page URLs expose ids without dashes
+    // (`notion.so/<title>-1f1e2d3c4b5a69788796a5b4c3d2e1f0`). The
+    // dispatcher's `notionPageIdSchema` accepts that shape and rewrites
+    // it to the dashed form the rest of the system expects, so a
+    // pasted-from-URL id reaches `getById` in the same canonical shape
+    // a recall/search/wake-up id would.
+    const mockServer = createMockServer()
+    const captured: string[] = []
+    const getById = vi.fn(async (id: string) => {
+      captured.push(id)
+      return makeMemory(id, { title: "Pasted from URL", content: "Body" })
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    const undashed = "1f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    const dashed = "1f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+    const result = await expand({ ids: [undashed] } as never)
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(captured).toEqual([dashed])
+  })
+
+  it("lowercases mixed-case ids and collapses case-variants to one getById call", async () => {
+    // Pins the canonical-form invariant the schema's doc comment
+    // promises: two pastes of the same Notion page differing only in
+    // case (mixed-case dashed vs lowercase undashed) collapse to one
+    // string, so handleExpand's per-call dedup `Set<string>` issues
+    // exactly one Notion read and renders one section.
+    const mockServer = createMockServer()
+    const captured: string[] = []
+    const getById = vi.fn(async (id: string) => {
+      captured.push(id)
+      return makeMemory(id, { title: "Same page", content: "Body" })
+    })
+
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    const mixedDashed = "AaBbCcDd-1234-5678-9aBc-DeF012345678"
+    const lowerUndashed = "aabbccdd123456789abcdef012345678"
+    const canonical = "aabbccdd-1234-5678-9abc-def012345678"
+
+    const result = await expand({ ids: [mixedDashed, lowerUndashed] } as never)
+    expect((result as { isError?: boolean }).isError).not.toBe(true)
+    expect(captured).toEqual([canonical])
+    expect(getById).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects empty and whitespace-only ids at the schema boundary", async () => {
+    // Sibling memory id parameters historically used bare `z.string()`
+    // and would let `""` or `"   "` slip through to a Notion 404. The
+    // expand schema rejects both shapes at the dispatcher so the
+    // failure surfaces as a clear parsing error, not a downstream
+    // get-by-id error.
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    const isErr = (r: unknown): boolean => (r as { isError?: boolean }).isError === true
+
+    const empty = await expand({ ids: [""] } as never)
+    expect(isErr(empty)).toBe(true)
+
+    const whitespace = await expand({ ids: ["   "] } as never)
+    expect(isErr(whitespace)).toBe(true)
+
+    // Service was never called — rejection happens at the dispatcher.
+    expect(services.memories.getById).not.toHaveBeenCalled()
+  })
+
+  it("surfaces the per-element field path in the dispatcher error message", async () => {
+    // Guards against a future refactor that moves the constraint up to
+    // `array().nonempty()` and silently loses the per-element guard —
+    // an oversight the bare error flag wouldn't catch. The dispatch
+    // error must name the failing path (`ids[1]` here) so callers can
+    // tell which element of a mixed-validity batch was rejected.
+    const mockServer = createMockServer()
+    const services = {
+      projects: { findByName: vi.fn() },
+      topics: { findByName: vi.fn() },
+      memories: { getById: vi.fn() },
+      context: { project: null },
+      sessionMemories: { record: vi.fn(), get: vi.fn() },
+      identity: { resolveAuthor: vi.fn(async () => null), clearCache: vi.fn() },
+    }
+
+    registerMemoryTools(mockServer.server, services as never)
+    registerQueryTools(mockServer.server, services as never)
+    const expand = mockServer.getActionHandler("lore-memory", "expand")
+
+    const goodId = "11111111-1111-1111-1111-111111111111"
+    const result = await expand({ ids: [goodId, "not-a-page-id"] } as never)
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    // `formatDispatchError` joins the Zod issue path with `.`, so an
+    // array element is rendered as `ids.1` (NOT `ids[1]`). A future
+    // refactor that drops the per-element guard would lose the `.1`
+    // segment entirely.
+    expect(text).toContain("ids.1")
+    expect(text).toContain("must be a Notion page id")
   })
 
   it("parallel-dispatches getById — every fetch starts before any returns", async () => {
