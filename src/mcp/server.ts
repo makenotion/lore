@@ -93,7 +93,7 @@ export async function startServer(): Promise<void> {
   // warning-only provenance guidance to hard-error enforcement before
   // fact or Entity writes.
   const server = new McpServer(
-    { name: "lore", version: "0.11.0" },
+    { name: "lore", version: "0.12.0" },
     {
       capabilities: {
         tools: {},
