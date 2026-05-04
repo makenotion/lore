@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { DecisionCreatePartialFailureError, DecisionService } from "./decision.js"
@@ -121,6 +123,26 @@ const DB: DatabaseRef = {
   databaseId: "memories-db-id",
   dataSourceId: "memories-ds-id",
 }
+
+// Every `supersede()` callsite in this file now goes through
+// `withEntityRelationLocks`, which writes `.lock` files into
+// `$HOME/.lore/entity-relation-locks/`. Stub HOME to a per-test temp
+// directory so tests do not leave artifacts in the developer's real
+// home directory and so a crash-mid-test stale lock cannot pollute the
+// next run. Mirrors the pattern in `entity-relation-lock.test.ts`.
+let testHomeDir: string
+
+beforeEach(() => {
+  testHomeDir = mkdtempSync(
+    join(process.env["TMPDIR"] ?? "/tmp", "lore-decision-test-")
+  )
+  vi.stubEnv("HOME", testHomeDir)
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  rmSync(testHomeDir, { recursive: true, force: true })
+})
 
 describe("DecisionService.create", () => {
   type RichTextFieldCase = readonly [
@@ -750,6 +772,61 @@ describe("DecisionService.supersede — atomic, ordered", () => {
 
     const updateArgs = (local.pages.update as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(updateArgs.properties.Supersedes.relation).toEqual([{ id: "old-dec" }])
+  })
+})
+
+describe("DecisionService.supersede — concurrent fan-out preserves both supersessions", () => {
+  it("preserves both losers when two supersedes against the same successor run concurrently", async () => {
+    // Reproduces the issue: two `supersede(target, loser_*)` calls fanned
+    // out from `recordSupersedence` in `memory.ts` — without per-id
+    // serialization, both observe the pre-merge `[]` and the second
+    // `pages.update` clobbers the first writer's entry.
+    let supersedesIds: string[] = []
+    const targetPage = (): PageObjectResponse =>
+      decisionPage("target-dec", { supersedesIds })
+    const losers: Record<string, PageObjectResponse> = {
+      "loser-a": decisionPage("loser-a"),
+      "loser-b": decisionPage("loser-b"),
+    }
+
+    const client = createMockClient()
+    const retrieve = client.pages.retrieve as ReturnType<typeof vi.fn>
+    retrieve.mockImplementation(({ page_id }: { page_id: string }) => {
+      if (page_id === "target-dec") return Promise.resolve(targetPage())
+      const loser = losers[page_id]
+      if (!loser) return Promise.reject(new Error(`Mock: no page for ${page_id}`))
+      return Promise.resolve(loser)
+    })
+
+    const update = client.pages.update as ReturnType<typeof vi.fn>
+    update.mockImplementation(
+      ({
+        page_id,
+        properties,
+      }: {
+        page_id: string
+        properties: Record<string, unknown>
+      }) => {
+        if (page_id === "target-dec") {
+          const supersedes = properties["Supersedes"] as
+            | { relation: Array<{ id: string }> }
+            | undefined
+          if (supersedes) {
+            supersedesIds = supersedes.relation.map((r) => r.id)
+          }
+        }
+        return Promise.resolve({})
+      }
+    )
+
+    const service = new DecisionService(client, DB)
+
+    await Promise.all([
+      service.supersede("target-dec", "loser-a"),
+      service.supersede("target-dec", "loser-b"),
+    ])
+
+    expect(supersedesIds.sort()).toEqual(["loser-a", "loser-b"])
   })
 })
 

@@ -4792,7 +4792,11 @@ export async function recordContradiction(
  *    `DecisionService.supersede`'s docstring; safe to retry. Retries
  *    still pay this round-trip because gating on loaded `Status` would
  *    drop the repair path where the relation landed but later steps did
- *    not.
+ *    not. Concurrent `recordSupersedence` calls against the same
+ *    `supersedingMemory.id` are serialized by `withEntityRelationLocks`
+ *    inside `DecisionService.supersede` (see its docstring), so two
+ *    parallel compare-dispatch fan-outs no longer race on the
+ *    `Supersedes` relation.
  * 2. `createWithDedup` — idempotent on the triple hash. If this fails
  *    after step 1 landed, the helper raises a
  *    `CompareDispatchPartialFailureError(step: "supersede")`.

@@ -37,6 +37,7 @@ import {
 import { isFullPage, isLiveFullPage } from "../notion/extractors.js"
 import { hydrateMemoryRelationProperties, pageToMemory } from "./memory.js"
 import { LruCache } from "./cache.js"
+import { withEntityRelationLocks } from "./entity-relation-lock.js"
 import { validateRichTextMetadataFields } from "./rich-text-schema.js"
 
 /** Days to push `Review By` forward when `reviewCompleted` is called with no explicit date. */
@@ -353,38 +354,61 @@ export class DecisionService {
    * still accepted" state — visible, re-runnable, and safe. The reverse order
    * (mark old superseded first) would leave the old decision orphaned as
    * superseded with no successor recorded — worse.
+   *
+   * The full read-modify-write of `Supersedes` runs under
+   * `withEntityRelationLocks([newId, oldId])` so concurrent supersedes against
+   * the same successor (compare-dispatch fan-out from
+   * `recordSupersedence`) cannot clobber each other's relation entries.
+   * Without the lock, two callers both observe the pre-merge list and the
+   * second `pages.update` drops the first's addition. The helper sorts ids
+   * before acquisition, so two callers entering with `[target, loser_a]` and
+   * `[target, loser_b]` cannot deadlock.
+   *
+   * Lock scope: filesystem-backed under `$HOME/.lore/entity-relation-locks/`,
+   * so it serializes any lore CLI / MCP / hook process running as the same
+   * user against the same vault on a single machine. Same posture as
+   * `entity-merge` and `FactService.createWithDedup` — see the "Concurrency"
+   * notes in `src/core/AGENTS.md`'s Fact Write-Side Dedup section. Writes
+   * coming from a remote actor (a different user's CLI against the same
+   * Notion vault, or the Notion UI itself) are NOT serialized; that
+   * boundary is unchanged from pre-issue-#474 behavior.
    */
   async supersede(newId: string, oldId: string): Promise<void> {
-    // Step 1: add oldId to the new decision's Supersedes relation.
-    // Preserve any existing supersedesIds so we don't clobber prior
-    // entries.
-    //
-    // Pre-read eviction: `merged` is the writeback base, and a stale
-    // cached `supersedesIds` would let us clobber supersessions added
-    // elsewhere inside the TTL window.
-    this.idCache.delete(newId)
-    const newDecision = await this.getById(newId)
-    const existing = newDecision.supersedesIds
-    const merged = existing.includes(oldId) ? existing : [...existing, oldId]
+    await withEntityRelationLocks([newId, oldId], async () => {
+      // Step 1: add oldId to the new decision's Supersedes relation.
+      // Preserve any existing supersedesIds so we don't clobber prior
+      // entries.
+      //
+      // Pre-read eviction: `merged` is the writeback base, and a stale
+      // cached `supersedesIds` would let us clobber supersessions added
+      // elsewhere inside the TTL window. The lock above serializes other
+      // lore-process writers against this same id; this delete protects
+      // against an in-process getById cache hit returning a pre-write
+      // value.
+      this.idCache.delete(newId)
+      const newDecision = await this.getById(newId)
+      const existing = newDecision.supersedesIds
+      const merged = existing.includes(oldId) ? existing : [...existing, oldId]
 
-    await this.client.pages.update({
-      page_id: newId,
-      properties: {
-        Supersedes: { relation: merged.map((id) => ({ id })) },
-      } as CreatePageParameters["properties"],
-    })
-    // Post-write eviction: the Supersedes relation just changed on
-    // Notion's side, so any future getById must refetch.
-    this.idCache.delete(newId)
+      await this.client.pages.update({
+        page_id: newId,
+        properties: {
+          Supersedes: { relation: merged.map((id) => ({ id })) },
+        } as CreatePageParameters["properties"],
+      })
+      // Post-write eviction: the Supersedes relation just changed on
+      // Notion's side, so any future getById must refetch.
+      this.idCache.delete(newId)
 
-    // Step 2: mark the old decision as superseded.
-    await this.client.pages.update({
-      page_id: oldId,
-      properties: {
-        Status: { select: { name: "superseded" } },
-      } as CreatePageParameters["properties"],
+      // Step 2: mark the old decision as superseded.
+      await this.client.pages.update({
+        page_id: oldId,
+        properties: {
+          Status: { select: { name: "superseded" } },
+        } as CreatePageParameters["properties"],
+      })
+      this.idCache.delete(oldId)
     })
-    this.idCache.delete(oldId)
   }
 
   /**
