@@ -11,6 +11,149 @@ log is the canonical source for those.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-04
+
+### Added
+
+- **Memory scope and lifetime are first-class schema.** Memories and Facts
+  now carry `Scope Kind`, `Scope Key`, `Audience`, `Lifetime`, and
+  `Expires At` columns. `Scope Kind` accepts `team` / `project` / `user` /
+  `agent` / `role` / `session` / `run` / `environment` / `global`; broadcast
+  scopes (`team` / `project` / `global`) surface in default reads regardless
+  of reader identity, while narrow scopes require a `Scope Key` match
+  against the reader's resolved `MemoryScopeContext`. `Lifetime` accepts
+  `persistent` / `expires` / `session-only` / `until-task-closed` /
+  `until-decision-superseded`; the `expires` lifetime pairs with `Expires At`
+  for explicit TTL, and the declarative variants ride existing
+  closed-task / superseded-decision filters. Every default read on
+  memories, tasks, decisions, and facts applies a scope inclusion filter
+  that ORs broadcast scopes, narrow-scope-and-key matches, and an
+  expiry-not-passed clause; audit / migration paths opt out via
+  `includeOutOfScope: true`. Fact dedup is scope-aware — same triple
+  under different scope kind/key produces two rows so a session-scoped
+  fact does not silently absorb into an existing team row, and vice
+  versa. MCP write tools (`lore-memory action='save' | 'update'`,
+  `lore-task action='create' | 'update'`, `lore-fact action='create'`,
+  `lore-decision action='create'`) accept an optional `scope` bundle
+  mirroring `MemoryScopeInput`. Scope context resolves from
+  `LORE_USER_NAME` / `LORE_AGENT_NAME` / `LORE_ROLE` /
+  `LORE_SESSION_ID` / `LORE_RUN_ID` / `LORE_ENVIRONMENT` env vars;
+  empty/whitespace values normalize to undefined. `lore status` and
+  `lore-context action='status'` surface three triage lines when
+  non-zero: `Expired scoped rows`, `Expiring soon (≤7d)`, and
+  `Narrow-scope rows outside this context`. **BREAKING (vault schema):**
+  run `lore migrate` after upgrade. The migration adds the five columns
+  to Memories and Facts; pre-existing rows have all five columns null
+  and are treated as broadcast-scoped persistent rows by the retrieval
+  filter, preserving legacy behavior byte-for-byte. On vaults that have
+  not yet migrated, `probeScopeColumnsPresent` runs once at services
+  init via a `dataSources.retrieve` fan-out; if either database lacks
+  the new columns, scope filtering is left disabled and a one-line
+  stderr warning surfaces the upgrade path. Recall on legacy vaults
+  stays byte-identical to pre-migration until the operator runs
+  `lore migrate`. (#283)
+- **Task management CLI commands.** `lore tasks list` reports
+  Overdue / Active sections with `--project`, `--entity`, `--state`,
+  `--due-before`, `-n` / `--limit`, and `--json` flags; `--state done`
+  or `cancelled` inspects closed work. The list cursor-walks Notion
+  across up to 5 pages × 100 rows; over-cap results render as
+  `≥N tasks (lower-bound total)` with a "narrow filters" footer.
+  `lore tasks create <subject>` creates a task with `--description`,
+  `--entity`, `--state`, `--blocked-by`, `--due-date`, `--project`,
+  `--topic`, `--tags` (closed vocabulary; use `--keywords` for
+  free-form), `--keywords`, `--synopsis`, and `--json`; idempotent on
+  exact `(subject, entity, projectIds)` match per the same reuse
+  contract MCP `lore-task action='create'` uses, short-circuiting to
+  `Reused existing task: ...` instead of cloning.
+  `lore tasks update <task-id>` updates `--state`, `--blocked-by` (empty string clears),
+  `--entity`, `--due-date` (empty string clears), `--subject`,
+  `--description`, `--tags`, `--keywords`, and `--synopsis`; omitted
+  fields stay untouched. `lore tasks close <task-id>` marks a task
+  `done` (default) or `cancelled` via `--state done|cancelled` and
+  echoes the post-close `Done At` stamp on vaults that have the
+  column. `--json` is supported on every subcommand. (#523)
+
+### Fixed
+
+- **Hook spawns under ntn auth drop bearer tokens from the child env.**
+  When the foreground resolved auth via `ntn-auth-json`, the
+  background hook child no longer inherits `NOTION_API_TOKEN` or
+  `LORE_NOTION_TOKEN` — it re-reads `~/.config/notion/auth.json`
+  directly and lands on the same token without it crossing the fork
+  boundary. Workspace and base-URL selectors still forward so
+  multi-workspace ntn setups pick the same workspace as the
+  foreground. Mirrors the install-path partition `buildMcpEnv`
+  already applies for `.mcp.json`. Other auth sources keep the legacy
+  every-key forward. (#475)
+- **Auto-mentions facts are invalidated on memory update when the
+  entity disappears.** `lore-memory action='update'` now runs a
+  symmetric diff: `createWithDedup` fires for entities the graph
+  doesn't already cover (`current − previous`), and
+  `services.facts.invalidate` fires for facts whose Object is no
+  longer surfaced (`previous − current`). Invalidate is a soft-delete
+  (writes `Valid Until = today`, never `archived: true`), matching the
+  explicit `lore-fact action='invalidate'` posture; historical record
+  is preserved and `includeInvalidated: true` reads still surface the
+  row. The pre-query filter `predicates: ["mentions"]` keeps the
+  branch from touching manually-created facts that share the source
+  memory. The advisory footer distinguishes the two halves —
+  `Auto-mentions: N new`, `Auto-mentions: N stale invalidated`, or
+  `Auto-mentions: N new, M stale invalidated` — and partial-failure
+  ratios render independently per half. The
+  `LORE_DISABLE_AUTO_MENTIONS=1` kill switch disables both extraction
+  and the pre-query. Closes the orphan-fact accumulation that issue
+  #491 documented: pre-fix, an entity rename produced a fresh fact
+  AND left the old fact live, so a long-lived memory accumulated
+  orphans without bound across revisions. (#491)
+- **`lore-memory action='expand'` accepts undashed Notion page ids.**
+  The MCP `expand` action now accepts both dashed UUIDs (as returned
+  by `recall` / `search` / `wake-up`) and the undashed 32-character
+  hex form Notion page URLs use. Validation, the 1–20 cap, and
+  lowercase canonicalization moved into a shared
+  `notionPageIdSchema`; the advertised tool schema stays permissive
+  to keep the agent-visible config string small. (#526)
+- **`LORE_DEBUG=1` stderr lines no longer leak SDK request detail.**
+  `users.me` failure logs and the `lore mine` lock-error debug
+  emitter route through the shared `redactDebugMessage` /
+  `redactDebugError` helpers. `users.me` is the path most likely to
+  spill request-scoped detail (per-token base URL, response shape)
+  into `Error.message`; the redactor bounds line length and scrubs
+  page-id-shaped substrings before the line is written, keeping the
+  per-line invariant log aggregators rely on. Mine-lock filesystem
+  errors don't carry SDK shape but still hit the length bound for
+  long `ENAMETOOLONG` paths and stack-laden custom errors. (#488)
+- **Wake-up `touchOnRead` no longer re-fires Notion writes on every
+  cached hit.** `MemoryService.touchOnRead` and the equivalent
+  `FactService.touchOnRead` path mirror the post-write
+  `lastReferencedAt` and `confidenceScore` onto the caller's
+  in-memory reference. Without this, a `loadWakeUpData` cache hit
+  within the 30s TTL re-saw the stale pre-write `lastReferencedAt`
+  and re-fired `pages.update` for every Active row on every cache
+  hit, against Notion's per-token rate limit. (#495)
+- **`lore install` shows the resolved Notion environment with source
+  attribution.** The prerequisites block always prints a
+  `Notion environment:` line on the auth-resolved branch. The line
+  is driven by `ResolvedAuth.baseUrl` (the runtime value
+  `createClient` consumes), not raw `.lore.yaml` `auth.baseUrl` —
+  matching the security contract that canonical auth sources
+  (`ntn-auth-json`, `env-notion-api-token`) intentionally ignore
+  repo config to keep a malicious checked-in `.lore.yaml` from
+  redirecting a bearer token. Each line annotates where the value
+  came from: `(from shell <VAR>)` for shell base-URL overrides,
+  `(from shell NOTION_ENV=<value>)` for recognized `NOTION_ENV`
+  values, `(from ntn config.json)` or `(ntn default; no shell or
+ntn config.json override)` for ntn auth, `(default; no shell
+base-URL override)` for `NOTION_API_TOKEN`, `(from .lore.yaml
+auth.baseUrl)` or `(default; no shell or .lore.yaml override)`
+  for legacy paths, and a `, non-canonical` suffix for URLs that
+  don't map to a known env name. A new mismatch warning surfaces
+  when `.lore.yaml auth.baseUrl` declares a deployment that
+  canonical auth resolved to a different one — the silent footgun
+  where pinning `auth.baseUrl: <dev URL>` plus an `ntn login`
+  without `NOTION_ENV=dev` quietly routes every call to prod.
+  Display-only — `.mcp.json` shape and the spawned MCP child are
+  unchanged. (#529)
+
 ## [0.12.0] - 2026-05-03
 
 ### Added
@@ -38,7 +181,7 @@ log is the canonical source for those.
   still report `memoryHarm > 0` against the same suite — that gap is
   the temporal-recall work tracked under #284. (#450)
 - **End-to-end task-eval runner.** New `lore eval run --runner task
-  <task-suite>` exercises an agent (`codex exec` first) against a
+<task-suite>` exercises an agent (`codex exec` first) against a
   synthetic workspace and scores the result with deterministic
   verifiers. Task-eval suites live under `evals/task-suites/` and use
   a separate YAML schema from retrieval suites: each task names a
@@ -58,7 +201,7 @@ log is the canonical source for those.
   ships five tasks across the same scenario types as the retrieval
   suite. (#450)
 - **Notion-backed eval runner.** `lore eval run --runner notion --project
-  <SandboxProject>` exercises the real retrieval stack — Notion's rate
+<SandboxProject>` exercises the real retrieval stack — Notion's rate
   limiter, hybrid search composition, contains/semantic fusion, and
   ranking — against an operator-maintained sandbox vault. The runner
   collapses each task to one synthetic `live-vault` scenario keyed on
@@ -74,7 +217,7 @@ log is the canonical source for those.
   rate-limited; appropriate for nightly CI or PRs that touch
   retrieval composition, not every push. (#450)
 - **Committed eval baselines and CI drift gate.** New `lore eval baseline
-  <suite> --out <path>` writes a comparison-stable baseline snapshot
+<suite> --out <path>` writes a comparison-stable baseline snapshot
   (per-result success / recall / precision plus aggregate retrieval
   metrics). `lore eval run --baseline <path>` compares against a
   committed snapshot and exits non-zero on regression — a previously-
@@ -820,7 +963,8 @@ move atomically per the release-coordinator pattern (#13).
   `lore migrate --migrate-tracking-to-tasks` still works; on 0.6.0
   the prose updates to reflect the migration command's removal.
 
-[Unreleased]: https://github.com/makenotion/lore/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/makenotion/lore/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/makenotion/lore/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/makenotion/lore/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/makenotion/lore/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/makenotion/lore/compare/v0.9.0...v0.10.0
