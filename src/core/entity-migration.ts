@@ -23,6 +23,10 @@
 
 import type { Entity, Fact } from "../types.js"
 import { computeSubjectKey } from "../notion/normalize.js"
+import {
+  extractFirstRelationId,
+  type SqlSubjectGroupCount,
+} from "../notion/runtool/query.js"
 import type { FactService } from "./fact.js"
 import type { EntityService } from "./entity.js"
 
@@ -412,4 +416,145 @@ export async function buildEntities(
     errors,
     planOnly: false,
   }
+}
+
+/**
+ * PF3-01 orphan-rate metric (issue #542).
+ *
+ * The PF3-01 spec's flagship acceptance criterion is "post-migration,
+ * the orphan-rate metric (`subjects appearing in exactly 1 fact`)
+ * drops from 79.6% to <50% on the Mail vault." The methodology lives
+ * in `src/core/AGENTS.md` ("Measuring whether `--build-entities`
+ * collapsed the orphan graph"); this report is the wired computation
+ * site.
+ *
+ * @field orphanRate The metric itself: `1 - (groupsWithPeer / totalGroups)`.
+ *   Zero when every subject has at least one peer fact (no orphans).
+ *   One when every subject is uniquely referenced (fully orphaned).
+ * @field totalGroups Distinct canonical entity / SubjectKey groups
+ *   surfaced in scope.
+ * @field groupsWithPeer Subset of `totalGroups` where the row count
+ *   is ≥ 2.
+ * @field totalFacts Sum of group counts. Equal to the number of live
+ *   in-scope facts inspected.
+ */
+export interface OrphanRateReport {
+  orphanRate: number
+  totalGroups: number
+  groupsWithPeer: number
+  totalFacts: number
+}
+
+/**
+ * Canonical metric key per the PF3-01 spec: prefer the populated
+ * `SubjectEntity` relation id; fall back to `computeSubjectKey(subject)`
+ * for rows the migration hasn't re-pointed yet. The empty key (no
+ * entity AND `computeSubjectKey` produced empty) falls out — those
+ * are degenerate punctuation-only / whitespace-only Subjects that
+ * the migration also drops via `groupObservationsByKey`.
+ *
+ * Exported for tests and for cross-call-site consistency. The
+ * RunTool aggregate path and the JS enumeration path MUST resolve
+ * the same key for the same `(subjectEntityId, subject)` pair —
+ * otherwise the two paths produce different orphan counts on the
+ * same fact corpus.
+ */
+export function orphanMetricKey(
+  subjectEntityId: string | null,
+  subject: string,
+): string {
+  if (subjectEntityId) return `entity:${subjectEntityId}`
+  const key = computeSubjectKey(subject)
+  return key ? `key:${key}` : ""
+}
+
+/**
+ * Fold a list of `(subjectEntityId, subject, count)` aggregate
+ * rows into the PF3-01 orphan-rate report.
+ *
+ * Two pre-migration rows whose Subject text differs only in case
+ * (`MemoryService` and `memoryservice`) arrive as two separate
+ * input rows from the SQL aggregate — `GROUP BY` keys on the raw
+ * Subject text, and SQLite's `LOWER()` cannot reproduce
+ * `computeSubjectKey`'s NFC + whitespace-collapse + trailing-punct
+ * pipeline. The fold collapses them onto the same canonical key,
+ * matching the JS enumeration path's semantics.
+ *
+ * Empty / whitespace-only Subjects that produce no canonical key
+ * AND have no `subjectEntityId` are dropped — they would otherwise
+ * collapse onto the degenerate empty key, the same posture
+ * `groupObservationsByKey` in the migration takes.
+ *
+ * Pure — no Notion calls.
+ */
+export function foldOrphanRateGroups(
+  rows: ReadonlyArray<{
+    subjectEntityId: string | null
+    subject: string
+    count: number
+  }>,
+): OrphanRateReport {
+  const counts = new Map<string, number>()
+  let totalFacts = 0
+  for (const row of rows) {
+    const key = orphanMetricKey(row.subjectEntityId, row.subject)
+    if (!key) continue
+    counts.set(key, (counts.get(key) ?? 0) + row.count)
+    totalFacts += row.count
+  }
+  let groupsWithPeer = 0
+  for (const value of counts.values()) {
+    if (value >= 2) groupsWithPeer += 1
+  }
+  const totalGroups = counts.size
+  const orphanRate = totalGroups === 0 ? 0 : 1 - groupsWithPeer / totalGroups
+  return { orphanRate, totalGroups, groupsWithPeer, totalFacts }
+}
+
+/**
+ * Compute the orphan rate from a `Fact[]` snapshot — the JS
+ * enumeration path. Used as the canonical fallback when the
+ * RunTool aggregate flag is off OR a per-call RunTool failure
+ * routes through to REST.
+ *
+ * Each fact contributes ONE row to the underlying group counter,
+ * matching the spec's "count rows by `SubjectEntity[0]?.id ??
+ * computeSubjectKey(Subject)`" wording. Object-side relations are
+ * NOT counted — the metric is subject-cardinality, not edge
+ * cardinality.
+ */
+export function computeOrphanRateFromFacts(
+  facts: ReadonlyArray<Fact>,
+): OrphanRateReport {
+  const rows = facts.map((fact) => ({
+    subjectEntityId: fact.subjectEntityId ?? null,
+    subject: fact.subject,
+    count: 1,
+  }))
+  return foldOrphanRateGroups(rows)
+}
+
+/**
+ * Compute the orphan rate from RunTool aggregate response rows —
+ * the SQL pushdown path. The caller has already invoked
+ * `querySubjectGroupCountsViaRunTool` and is folding its rows.
+ *
+ * `subjectEntityRaw` arrives as the raw SQL gateway value (a
+ * JSON-stringified array of full URLs containing the undashed page
+ * id form, or empty / null). `extractFirstRelationId` rehydrates
+ * the canonical dashed id so the metric key matches what
+ * `computeOrphanRateFromFacts` produces — both paths key entity-
+ * present rows on `entity:<dashed-uuid>` and entity-absent rows on
+ * `key:<computeSubjectKey(subject)>`. Equivalence is
+ * fixture-pinned in `entity-migration.test.ts`.
+ */
+export function computeOrphanRateFromAggregateRows(
+  rows: ReadonlyArray<SqlSubjectGroupCount>,
+): OrphanRateReport {
+  const folded = rows.map((row) => ({
+    subjectEntityId: extractFirstRelationId(row.subjectEntityRaw),
+    subject: row.subject ?? "",
+    count: row.count,
+  }))
+  return foldOrphanRateGroups(folded)
 }

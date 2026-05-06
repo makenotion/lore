@@ -8,6 +8,9 @@
  *   edits via `update_page` / `update_content`. Inherits from parent.
  * - `LORE_USE_RUNTOOL_FILTER_SQL` (#535) — gates `query_data_sources`
  *   SQL filter helpers. Inherits from parent.
+ * - `LORE_USE_RUNTOOL_AGGREGATE` (#542) — gates `query_data_sources`
+ *   SQL-mode aggregate helpers (server-side `GROUP BY` / `COUNT(*)`).
+ *   Inherits from parent.
  *
  * Default state is off for every flag.
  *
@@ -94,6 +97,34 @@ export function isRunToolFilterSqlEnabled(
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_FILTER_SQL")
+  if (explicit !== null) return explicit
+  return isRunToolEnabled(env)
+}
+
+/**
+ * True when the issue #542 SQL aggregate sub-flag is on. An explicit
+ * `LORE_USE_RUNTOOL_AGGREGATE` setting wins; otherwise the value
+ * inherits from `LORE_USE_RUNTOOL`. Off by default.
+ *
+ * Gates the `query_data_sources` SQL aggregate helpers — currently
+ * the build-entities orphan-rate metric (`querySubjectGroupCountsViaRunTool`).
+ * Same inheritance posture as the block-edit and filter-SQL sub-flags.
+ *
+ * **Why a separate sub-flag** even though it composes through the
+ * same dispatcher as filter-SQL: aggregate queries traverse the
+ * server-side `hasAdvancedTools` capability gate (Enterprise + AI
+ * workspaces only) AND lack any cursor / offset / page-size knob,
+ * so a degraded vault that successfully runs filter-SQL can still
+ * see this flag silently fall back per-call. Operators rolling out
+ * RunTool need to be able to flip filter-SQL on while leaving
+ * aggregate off (and vice-versa) until both paths are independently
+ * verified on their target workspace tier. See `README.md`'s
+ * "Capability gate is the bigger risk" subsection.
+ */
+export function isRunToolAggregateEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const explicit = readFlag(env, "LORE_USE_RUNTOOL_AGGREGATE")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)
 }

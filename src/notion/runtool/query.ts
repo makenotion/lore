@@ -642,12 +642,264 @@ export async function fetchNearDuplicateCandidatePageIds(
 }
 
 /**
+ * Server-side aggregate over the Facts data source for the PF3-01
+ * orphan-rate metric (issue #542).
+ *
+ * **What it does.** Issues a single `query_data_sources` SQL query
+ * that groups every fact by its raw `SubjectEntity` relation value
+ * AND its raw `Subject` title, then counts rows per group. The
+ * caller (`computeOrphanRateFromAggregateRows` in
+ * `src/core/entity-migration.ts`) folds the rows into the
+ * canonical metric key — `subjectEntityId ?? computeSubjectKey(subject)`
+ * — and computes the orphan rate per the PF3-01 methodology in
+ * `src/core/AGENTS.md`.
+ *
+ * **Why group by both columns.** The metric key is a JS expression
+ * that depends on `computeSubjectKey`'s Unicode NFC + lowercase +
+ * whitespace-collapse + trailing-punct-strip pipeline. SQLite's
+ * `LOWER()` is ASCII-only and the SQL gateway carries no
+ * `computeSubjectKey` UDF, so the helper deliberately under-narrows
+ * server-side: GROUP BY emits one row per `(SubjectEntity, raw
+ * Subject)` distinct pair, and the JS folder applies
+ * `computeSubjectKey` over the raw Subject before merging groups
+ * that share a canonical key. Two pre-migration rows whose raw
+ * Subjects differ only in case (`MemoryService` and `memoryservice`)
+ * therefore arrive as two SQL rows; the JS fold collapses them onto
+ * the same canonical key. This is the same posture as
+ * `fetchEntityByNormalizedName`'s "narrow-then-rematch" rule —
+ * SQL is the candidate-pool narrower, JS is the authoritative
+ * canonicalizer.
+ *
+ * **Counts both live AND invalidated facts.** Notion's SQL gateway
+ * does not expose date columns: production-vault verification on
+ * 2026-05-06 against the dogfood vault confirmed `"Valid Until"`,
+ * `validUntil`, `valid_until`, and `ValidUntil` all fail with
+ * `no such column`. Same shape as the README's pre-existing
+ * `last_edited_time` / `lastEditedTime` finding. With no way to
+ * filter invalidated facts server-side, the SQL aggregate counts
+ * EVERY fact in scope. The migrate-time call site
+ * (`runOrphanRateReport` in `src/cli/commands/migrate.ts`) keeps
+ * the two paths semantically equivalent by passing
+ * `includeInvalidated: true` to the JS enumeration fallback —
+ * both paths produce the same metric on the same fact corpus.
+ *
+ * The semantic shift from "live facts only" to "all facts" is
+ * documented in `src/core/AGENTS.md` ("Measuring whether
+ * `--build-entities` collapsed the orphan graph"); operationally
+ * the orphan-rate question (does case-folding canonicalization
+ * collapse the graph below 50%?) is unchanged because invalidated
+ * facts contributed subjects to the canonical grouping just like
+ * live ones did. Invalidated facts on the dogfood vault are a
+ * single-digit percentage of the corpus.
+ *
+ * **Filters applied server-side.**
+ *
+ * - Optional `Project LIKE %<undashed-projectId>%` when `projectId`
+ *   is provided. Matches the relation-column substring posture
+ *   `fetchNearDuplicateCandidatePageIds` uses (production-verified
+ *   2026-05-05: relations store JSON arrays of full URLs containing
+ *   the **undashed** id form). Project-set semantics for
+ *   the orphan-rate metric mirror the existing migration's
+ *   `queryBySubject("", { projectId })` — the migration scopes
+ *   strictly when `projectId` is set.
+ *
+ * **No `LIMIT` clamp** other than the gateway's implicit cap.
+ * Production-vault verification on 2026-05-06 found that the
+ * gateway's implicit cap is small enough that **most non-trivial
+ * vaults trip `has_more: true` on this aggregate** — the dogfood
+ * vault's 269 distinct `(SubjectEntity, Subject)` groups across 924
+ * facts saturated the response. The helper throws
+ * `SqlPartialResultError` and the caller falls back to JS
+ * enumeration, which is the expected production posture for the
+ * aggregate path on non-trivial vaults. The aggregate path's
+ * practical speedup is therefore limited to small vaults / narrow
+ * project scopes where the distinct-group count fits under the
+ * gateway cap. A future server-side pagination knob on
+ * `query_data_sources` would lift this limitation.
+ *
+ * **Returns.** Each row carries:
+ *
+ * - `subjectEntityRaw`: the raw `SubjectEntity` cell value as
+ *   stored in the SQL gateway (JSON-stringified array of full URLs
+ *   on populated rows, or `null` / empty string on rows the
+ *   migration hasn't re-pointed yet). The caller normalizes via
+ *   `extractFirstRelationId(raw)` to recover the canonical Notion
+ *   page id; passing the raw form through preserves the gateway's
+ *   shape for callers that want to debug / log.
+ * - `subject`: the raw Subject title text. The caller passes this
+ *   through `computeSubjectKey` for the metric key fallback.
+ * - `count`: row count for this `(SubjectEntity, Subject)` group.
+ *
+ * **Capability gate.** `query_data_sources` is gated behind
+ * `hasAdvancedTools` (Enterprise + AI workspace tier). On a
+ * workspace below that tier, the call returns 403
+ * `RestrictedResource` and the call site falls back to JS — see
+ * `error-helpers.ts:logRunToolFallback` and the parent
+ * `LORE_USE_RUNTOOL_AGGREGATE` flag's docstring.
+ */
+export interface SqlSubjectGroupCount {
+  subjectEntityRaw: string | null
+  subject: string | null
+  count: number
+}
+
+export async function querySubjectGroupCountsViaRunTool(
+  client: Client,
+  opts: {
+    factsDataSourceId: string
+    subjectProperty: string
+    subjectEntityProperty: string
+    projectProperty: string
+    projectId?: string
+  },
+): Promise<SqlSubjectGroupCount[]> {
+  const url = dataSourceUrl(opts.factsDataSourceId)
+  const subjectColumn = quoteIdent(opts.subjectProperty)
+  const subjectEntityColumn = quoteIdent(opts.subjectEntityProperty)
+  const projectColumn = quoteIdent(opts.projectProperty)
+
+  const params: Array<string | number | null> = []
+  const predicates: string[] = []
+
+  if (opts.projectId) {
+    predicates.push(`${projectColumn} LIKE ?`)
+    params.push(`%${undash(opts.projectId)}%`)
+  }
+
+  const whereClause = predicates.length > 0 ? `WHERE ${predicates.join(" AND ")} ` : ""
+  const query =
+    `SELECT ${subjectEntityColumn} AS subjectEntity, ` +
+    `${subjectColumn} AS subject, ` +
+    `COUNT(*) AS cnt ` +
+    `FROM ${quoteTable(url)} ` +
+    whereClause +
+    `GROUP BY ${subjectEntityColumn}, ${subjectColumn}`
+
+  const response = await runTool(client, "query_data_sources", {
+    data: {
+      mode: "sql",
+      data_source_urls: [url],
+      query,
+      params,
+    },
+  })
+
+  // F6 saturation handling — same contract as the filter helpers
+  // above. The gateway exposes no cursor / offset / page-size, so
+  // a `has_more: true` aggregate response is structurally a partial
+  // metric. Throwing routes the caller through the JS enumeration
+  // fallback rather than letting a clamped GROUP BY masquerade as
+  // an authoritative count.
+  if (response.has_more) {
+    throw new SqlPartialResultError("orphan-rate-aggregate")
+  }
+
+  const rows: SqlSubjectGroupCount[] = []
+  for (const row of response.results) {
+    const subjectEntityRaw = sqlString(row["subjectEntity"])
+    const subject = sqlString(row["subject"])
+    const count = sqlNumber(row["cnt"])
+    if (count === null) continue
+    rows.push({ subjectEntityRaw, subject, count })
+  }
+  return rows
+}
+
+/**
+ * Extract the first Notion page id embedded in a relation column's
+ * raw SQL gateway value. Production-vault verification (2026-05-05)
+ * confirmed relation columns store JSON arrays of full URLs
+ * containing **undashed** uuids (`["https://dev.notion.so/<undashed-uuid>"]`);
+ * empty-relation forms observed: `null`, empty string, `'[]'`.
+ *
+ * **Returns.** The first matched page id rehydrated to the dashed
+ * canonical form (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) so the
+ * caller can compare against `Fact.subjectEntityId` (always dashed
+ * by `pageToFact`). Returns `null` when the input is empty / null /
+ * `'[]'` or contains no recognizable Notion id in URL form.
+ *
+ * **URL-anchored.** The regex requires the id to follow `://<host>/`
+ * — i.e. it must appear in the documented JSON-array-of-URLs shape,
+ * not as a free-floating 32-hex run anywhere in the cell. PR #547
+ * principal-engineer review surfaced the looser shape: a cell whose
+ * Subject value happened to contain `garbage 11111111111111111111111111111111
+ * trailing` (32 contiguous hex chars from any source) would have
+ * been silently treated as a populated `SubjectEntity` and the
+ * orphan-rate metric would key the row on `entity:11111111-...`
+ * instead of `key:<computeSubjectKey(subject)>`. The URL anchor is
+ * what closes that hole.
+ *
+ * The regex accepts BOTH forms Notion's gateway might surface:
+ * undashed (32 hex) and dashed (8-4-4-4-12). Today only the undashed
+ * form is verified live; the dashed alternation is defense in depth
+ * against a future schema-pin refresh.
+ *
+ * Why "first" rather than "all": `SubjectEntity` is a single-relation
+ * column on the Facts schema (`relation: { single_property: {} }`),
+ * so the JSON array always carries 0 or 1 entries in the wild.
+ * Picking the first is structurally sound; if a future schema bump
+ * promotes the column to multi-relation, the orphan-rate metric's
+ * keying on `subjectEntityId ?? computeSubjectKey(subject)` already
+ * accepts a single canonical id, so this stays the right shape.
+ */
+const NOTION_RELATION_URL_ID_RE =
+  /https?:\/\/[^\s"'/]+\/([a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i
+
+export function extractFirstRelationId(raw: string | null): string | null {
+  if (!raw) return null
+  const trimmed = raw.trim()
+  if (trimmed === "" || trimmed === "[]") return null
+  const match = NOTION_RELATION_URL_ID_RE.exec(trimmed)
+  if (!match) return null
+  return redash(match[1])
+}
+
+/**
+ * Rehydrate a Notion id (dashed or undashed) into the canonical
+ * 8-4-4-4-12 dashed form used throughout the rest of the codebase
+ * (`Fact.subjectEntityId`, `EntityService` ids).
+ *
+ * Idempotent — already-dashed input returns lowercased dashed form.
+ */
+function redash(id: string): string {
+  const stripped = id.replace(/-/g, "").toLowerCase()
+  if (stripped.length !== 32) return id.toLowerCase()
+  return (
+    stripped.slice(0, 8) +
+    "-" +
+    stripped.slice(8, 12) +
+    "-" +
+    stripped.slice(12, 16) +
+    "-" +
+    stripped.slice(16, 20) +
+    "-" +
+    stripped.slice(20)
+  )
+}
+
+/**
  * Coerce a {@link SqlCellValue} that is expected to be a string.
  * `null` and non-string values return `null` so callers can branch
  * cleanly on "row had no value" vs "value was the empty string."
  */
 export function sqlString(value: SqlCellValue | undefined): string | null {
   if (typeof value === "string") return value
+  return null
+}
+
+/**
+ * Coerce a {@link SqlCellValue} that is expected to be a number.
+ * SQLite `COUNT(*)` lands as a JS number through the gateway, but
+ * defensively also accept a numeric string ("12") in case the
+ * gateway widens its representation. `null` / non-numeric values
+ * return `null` so the caller can drop malformed aggregate rows.
+ */
+function sqlNumber(value: SqlCellValue | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string") {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
   return null
 }
 

@@ -21,6 +21,7 @@ import {
   runBuildEntitiesMigration,
   runFactEncodingFix,
   runMemoryEncodingFix,
+  runOrphanRateReport,
   runSynopsisBackfill,
   summarizeConfidenceScorePlan,
 } from "./migrate.js"
@@ -94,6 +95,12 @@ describe("migrateCommand help", () => {
     expect(help).toContain("--include-archived")
     expect(help).toContain("--allow-unscoped")
     expect(help).toContain("docs/memory-workflows.md#migrating-from-unscoped-writes")
+  })
+
+  it("documents --report-orphan-rate alongside --build-entities", () => {
+    const help = migrateCommand.helpInformation()
+    expect(help).toContain("--report-orphan-rate")
+    expect(help).toContain("LORE_USE_RUNTOOL_AGGREGATE")
   })
 })
 
@@ -1451,6 +1458,108 @@ describe("runBuildEntitiesMigration", () => {
       (services as { facts: { queryBySubject: ReturnType<typeof vi.fn> } }).facts
         .queryBySubject
     ).toHaveBeenCalled()
+  })
+})
+
+describe("runOrphanRateReport — issue #542 pre/post-pass label contract", () => {
+  let logs: string[]
+  let logSpy: ReturnType<typeof vi.spyOn>
+  let savedFlag: string | undefined
+
+  beforeEach(() => {
+    logs = []
+    logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "))
+    })
+    // Force the JS enumeration path for these tests — exercising the
+    // label contract should not depend on the RunTool aggregate flag
+    // an operator may have set in their shell.
+    savedFlag = process.env["LORE_USE_RUNTOOL_AGGREGATE"]
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "0"
+  })
+
+  afterEach(() => {
+    logSpy.mockRestore()
+    if (savedFlag === undefined) {
+      delete process.env["LORE_USE_RUNTOOL_AGGREGATE"]
+    } else {
+      process.env["LORE_USE_RUNTOOL_AGGREGATE"] = savedFlag
+    }
+  })
+
+  function buildServices(facts: Fact[]): Parameters<typeof runOrphanRateReport>[0] {
+    return {
+      facts: {
+        queryBySubject: vi.fn().mockResolvedValue(facts),
+      },
+      vault: {
+        databases: {
+          facts: { databaseId: "facts-db", dataSourceId: "facts-ds" },
+        },
+      },
+      client: {} as never,
+    } as unknown as Parameters<typeof runOrphanRateReport>[0]
+  }
+
+  it("emits 'pre-pass' when apply is false (plan-only / --dry-run)", async () => {
+    const services = buildServices([
+      makeFact("f1", { subject: "MemoryService" }),
+      makeFact("f2", { subject: "MemoryService" }),
+      makeFact("f3", { subject: "Solo" }),
+    ])
+    await runOrphanRateReport(services, { apply: false })
+    const out = logs.join("\n")
+    expect(out).toMatch(/Orphan rate \(pre-pass, vault-wide, via js-enumeration\)/)
+    expect(out).not.toMatch(/post-pass/)
+  })
+
+  it("emits 'post-pass' when apply is true (--yes apply)", async () => {
+    const services = buildServices([
+      makeFact("f1", { subject: "MemoryService" }),
+      makeFact("f2", { subject: "MemoryService" }),
+    ])
+    await runOrphanRateReport(services, { apply: true })
+    const out = logs.join("\n")
+    expect(out).toMatch(/Orphan rate \(post-pass, vault-wide, via js-enumeration\)/)
+    expect(out).not.toMatch(/pre-pass/)
+  })
+
+  it("uses the resolved project name in the scope label when present", async () => {
+    const services = buildServices([makeFact("f1", { subject: "Foo" })])
+    await runOrphanRateReport(services, {
+      apply: false,
+      projectId: "project-mail",
+      projectName: "Mail",
+    })
+    expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project "Mail", via js-enumeration\)/)
+  })
+
+  it("falls back to 'project-scoped' when projectId is set but projectName is not", async () => {
+    const services = buildServices([makeFact("f1", { subject: "Foo" })])
+    await runOrphanRateReport(services, {
+      apply: false,
+      projectId: "project-mail",
+    })
+    expect(logs.join("\n")).toMatch(/Orphan rate \(pre-pass, project-scoped, via js-enumeration\)/)
+  })
+
+  it("threads includeInvalidated:true into the JS enumeration walk", async () => {
+    // Equivalence pin: the SQL aggregate path counts every fact
+    // (Notion's SQL gateway can't filter date columns), so the JS
+    // fallback MUST also count invalidated facts. Without this opt-in,
+    // the two paths would diverge on real vaults.
+    const services = buildServices([])
+    await runOrphanRateReport(services, { apply: false })
+    const queryBySubject = (services as unknown as {
+      facts: { queryBySubject: ReturnType<typeof vi.fn> }
+    }).facts.queryBySubject
+    expect(queryBySubject).toHaveBeenCalledWith(
+      "",
+      expect.objectContaining({
+        allowUnfiltered: true,
+        includeInvalidated: true,
+      }),
+    )
   })
 })
 

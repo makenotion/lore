@@ -1400,14 +1400,44 @@ metric without re-deriving the methodology.
    total distinct entities/keys. Pre-PF3-01 baseline on the Mail vault
    was 79.6% (560 facts → ~445 distinct subjects → ~89 had a peer).
 
-The measurement script lives in spirit in
-`src/cli/commands/migrate.ts:runBuildEntitiesMigration` — the
-`factCount` field on each `EntityGroupPlan` is the raw input. A
-follow-up that wires the metric into `lore status` (or a dedicated
-`lore migrate --build-entities --report-orphan-rate`) would close the
-measurability gap; until then operators run the numbers manually
-against the `groupCount` / `factsRepointed` output of a `--dry-run`
-pass.
+The metric is wired through
+`lore migrate --build-entities --report-orphan-rate` (issue #542).
+Two execution paths share one fold:
+
+- `src/core/entity-migration.ts:foldOrphanRateGroups` — the shared
+  spec implementation (`subjectEntityId ?? computeSubjectKey(subject)`
+  keying; `1 - groups_with_count >= 2 / total_groups`).
+- `computeOrphanRateFromFacts` (default JS enumeration path —
+  walks every fact via `FactService.queryBySubject`).
+- `computeOrphanRateFromAggregateRows` consumes the rows
+  `src/notion/runtool/query.ts:querySubjectGroupCountsViaRunTool`
+  emits when `LORE_USE_RUNTOOL_AGGREGATE=1` is set. The flagged-on
+  path falls back per-call to the JS path on capability gate
+  (403), saturated `has_more: true` aggregate windows, malformed
+  responses, or transient transport-class failures. A 400 /
+  `validation_error` re-throws so query-shape drift surfaces
+  loudly. Read-only — does not affect the migration's plan/apply
+  behavior.
+
+The wired metric counts every fact in scope, NOT just live ones.
+Notion's SQL gateway does not expose date columns
+(verified 2026-05-06: `Valid Until` / `validUntil` / `valid_until`
+all fail with `no such column`), so the SQL aggregate path can't
+filter invalidated facts server-side. The migrate-time call site
+keeps the JS fallback semantically equivalent by passing
+`includeInvalidated: true` to `queryBySubject`. Operationally the
+question (does case-folding canonicalization collapse the graph
+below 50%?) is unchanged — invalidated facts contributed subjects
+to the canonical grouping just like live ones did. Operators
+running the metric manually against the spec's "live only" wording
+can read off the JS output (still emits the count of facts inspected
+including invalidated) and adjust if precise live-only numbers are
+ever required.
+
+The `factCount` field on each `EntityGroupPlan` is still available
+as a planning-time sanity check; the report adds the post-pass
+metric so operators can confirm the <50% threshold has landed
+without re-running the numbers manually.
 
 If the metric stays above 50% on a real vault after `--yes`, the case-
 folding pass alone wasn't enough — the richer-vs-bare clusterer becomes

@@ -22,7 +22,21 @@ import type {
 } from "../../core/topic-merge.js"
 import type { Fact, Memory } from "../../types.js"
 import type { NormalizableAgentRow } from "../../core/agent-normalization.js"
-import { buildEntities, type EntityMigrationResult } from "../../core/entity-migration.js"
+import {
+  buildEntities,
+  computeOrphanRateFromAggregateRows,
+  computeOrphanRateFromFacts,
+  type EntityMigrationResult,
+  type OrphanRateReport,
+} from "../../core/entity-migration.js"
+import {
+  isRunToolAggregateEnabled,
+  querySubjectGroupCountsViaRunTool,
+} from "../../notion/runtool/index.js"
+import {
+  isSqlValidationError,
+  logRunToolFallback,
+} from "../../notion/runtool/error-helpers.js"
 import type { BackfillReport, SynopsisBackend } from "../../core/synopsis-backfill.js"
 import { DEFAULT_SYNOPSIS_BATCH_SIZE } from "../../core/synopsis-backfill.js"
 import {
@@ -40,7 +54,7 @@ import {
   tryAcquireMigrationLock,
   type MigrationLock,
 } from "../migration-lock.js"
-import { MEMORY_PROPS } from "../../notion/schema.js"
+import { FACT_PROPS, MEMORY_PROPS } from "../../notion/schema.js"
 
 export const migrateCommand = new Command("migrate")
   .description(
@@ -105,6 +119,10 @@ export const migrateCommand = new Command("migrate")
     "Group every fact's Subject and Object strings by their normalized key, propose one canonical Entity row per group with the remaining raw forms as aliases, and re-point each fact's SubjectEntity/ObjectEntity relation. Plan-only by default — re-run with --yes to apply. Apply mode takes a vault-scoped lock and still expects a quiet vault with no concurrent autosaves writing facts. PF3-01."
   )
   .option(
+    "--report-orphan-rate",
+    "Pair with `--build-entities` to print the PF3-01 orphan-rate metric (`subjects appearing in exactly 1 fact`). On `--build-entities --yes` (apply) the report measures the post-pass fact graph; on bare `--build-entities` (plan-only) or `--dry-run` it measures the pre-pass graph and labels the output `pre-pass` accordingly so the operator can read the canonicalization baseline before committing. Routes through RunTool's server-side `GROUP BY` aggregate when `LORE_USE_RUNTOOL_AGGREGATE=1` is set; otherwise enumerates facts in JS. Falls back per-call to the JS path on capability gate (403), saturated `has_more: true` aggregate windows, malformed responses, or transient transport-class failures. Read-only — does not affect plan/apply behavior."
+  )
+  .option(
     "--normalize-agents",
     "Collapse free-form `Agent` strings on every memory onto their canonical form. The seven Claude variants observed in the PF3-02 Mail-vault audit (`Claude Code`, `claude-code`, `Claude Opus 4.7 (1M context)`, `Claude Code (Opus 4.7)`, `claude-opus-4.7`, `claude-opus-4-7`, `claude-code-opus-4-7`) plus the bare-version cousin (`Claude Opus 4.7`) all rewrite to `Claude Code`; explicit third-party names (`Codex`, `Cline`, `Cursor`) pass through unchanged. Plan-only by default — re-run with `--yes` to apply. Idempotent."
   )
@@ -164,6 +182,7 @@ export const migrateCommand = new Command("migrate")
       yes?: boolean
       normalizeAgents?: boolean
       buildEntities?: boolean
+      reportOrphanRate?: boolean
       backfillSynopses?: boolean
       synopsisBackend?: string
       synopsisBatchSize?: string
@@ -214,6 +233,22 @@ export const migrateCommand = new Command("migrate")
         }
         if (opts.allowUnscoped && opts.project !== undefined) {
           console.error("--allow-unscoped cannot be combined with --project.")
+          process.exit(1)
+        }
+        if (opts.reportOrphanRate && !opts.buildEntities) {
+          // The metric is only meaningful alongside `--build-entities`:
+          // a bare `--report-orphan-rate` would need to share
+          // scope-resolution and project-validation gates with the
+          // migration anyway, and on plan-only / `--dry-run` the
+          // report's `pre-pass` label is the baseline an operator
+          // reads BEFORE deciding to apply, while on `--yes` the
+          // `post-pass` label confirms the migration's effect.
+          // Either context requires the pair; require it explicitly.
+          console.error(
+            "--report-orphan-rate must be combined with --build-entities. " +
+              "The metric only makes sense in the context of that migration's " +
+              "fact-graph snapshot."
+          )
           process.exit(1)
         }
         if (scopedMigration && opts.project === undefined && !opts.allowUnscoped) {
@@ -505,9 +540,25 @@ export const migrateCommand = new Command("migrate")
             lock: buildEntitiesLock ?? undefined,
             projectId: migrationScope.projectId,
           })
+          // Release the migration lock BEFORE running the read-only
+          // orphan-rate report. The lock exists to serialize the
+          // apply window against concurrent autosaves writing facts;
+          // it must not also serialize a report that walks every
+          // fact via `queryBySubject` (or, on the SQL aggregate path,
+          // a single `query_data_sources` call). The catch handler
+          // below covers double-release safely via the
+          // `if (buildEntitiesLock)` guard paired with the `null`
+          // assignment.
           if (buildEntitiesLock) {
             releaseMigrationLock(buildEntitiesLock)
             buildEntitiesLock = null
+          }
+          if (opts.reportOrphanRate) {
+            await runOrphanRateReport(services, {
+              apply: Boolean(opts.yes) && !opts.dryRun,
+              projectId: migrationScope.projectId,
+              projectName: migrationScope.projectName,
+            })
           }
         }
 
@@ -1655,6 +1706,124 @@ function acquireBuildEntitiesMigrationLock(
       `longer running or this lock is clearly stale, clear it with ` +
       `\`rm ${result.path}\`.`
   )
+}
+
+/**
+ * Issue #542 — drive the orphan-rate report after `--build-entities`.
+ *
+ * Two execution paths, gated by `LORE_USE_RUNTOOL_AGGREGATE` (defaults
+ * to the parent `LORE_USE_RUNTOOL`):
+ *
+ * 1. **RunTool aggregate path.** Issues a single
+ *    `query_data_sources` SQL query that groups facts by
+ *    `(SubjectEntity, Subject)` and counts per group, then folds the
+ *    rows through `computeOrphanRateFromAggregateRows`. Runs only
+ *    when the flag is on.
+ * 2. **JS enumeration path.** Walks every fact via
+ *    `FactService.queryBySubject("", { allowUnfiltered: true,
+ *    includeInvalidated: true })`, folds through
+ *    `computeOrphanRateFromFacts`. Default; serves every workspace
+ *    tier including those below `hasAdvancedTools`.
+ *
+ * The flagged-on path falls back to the JS path **per call** on a
+ * non-`validation_error` SDK error (403 / 429 / 5xx / network blip /
+ * `SqlPartialResultError` / malformed response). A 400 /
+ * `validation_error` re-throws so query-shape drift surfaces as an
+ * operator-actionable failure rather than silently masking. The
+ * fallback emits a one-line `[lore] partial-failure` notice under
+ * `LORE_DEBUG=1`.
+ *
+ * **Pre/post-pass labeling**. `apply` is the canonical signal for
+ * which graph the metric measured. On `apply === true` (i.e.
+ * `--yes` and not `--dry-run`) the helper labels the output
+ * `post-pass` because `runBuildEntitiesMigration` re-pointed Fact
+ * relations in place before this report ran. On `apply === false`
+ * (plan-only, including `--dry-run`) the helper labels `pre-pass`
+ * because the migration printed the plan without rewriting any
+ * rows. Without this distinction an operator running the
+ * operator-friendly preview (`--build-entities --report-orphan-rate
+ * --dry-run`) would read the metric as if the migration had landed;
+ * the silent mislabel was the principal-engineer blocker on PR
+ * #547.
+ *
+ * Read-only and best-effort — a failed report does NOT abort the
+ * migration, since the migration's apply path has already landed by
+ * the time this runs.
+ */
+export async function runOrphanRateReport(
+  services: LoreServices,
+  options: { apply: boolean; projectId?: string; projectName?: string }
+): Promise<void> {
+  const aggregateEnabled = isRunToolAggregateEnabled()
+  let report: OrphanRateReport | null = null
+  let path: "runtool-aggregate" | "js-enumeration" = "js-enumeration"
+
+  if (aggregateEnabled) {
+    try {
+      const rows = await querySubjectGroupCountsViaRunTool(services.client, {
+        factsDataSourceId: services.vault.databases.facts.dataSourceId,
+        subjectProperty: FACT_PROPS.SUBJECT,
+        subjectEntityProperty: FACT_PROPS.SUBJECT_ENTITY,
+        projectProperty: FACT_PROPS.PROJECT,
+        projectId: options.projectId,
+      })
+      report = computeOrphanRateFromAggregateRows(rows)
+      path = "runtool-aggregate"
+    } catch (err) {
+      if (isSqlValidationError(err)) {
+        // Query-shape drift — surface to the operator instead of
+        // silently masking with the JS path.
+        throw err
+      }
+      logRunToolFallback("orphan-rate-aggregate", err)
+      // Fall through to the JS path below.
+    }
+  }
+
+  if (report === null) {
+    // `includeInvalidated: true` keeps both paths semantically
+    // equivalent — Notion's SQL gateway does not expose date columns
+    // (`Valid Until`, `validUntil`, `valid_until` all return
+    // `no such column`), so the SQL aggregate path counts every
+    // fact regardless of invalidation. Without the matching opt-in
+    // here, the JS fallback would silently report a different (lower)
+    // count than the SQL path on the same vault. See
+    // `querySubjectGroupCountsViaRunTool`'s docstring for the
+    // tradeoff rationale.
+    const facts = await services.facts.queryBySubject("", {
+      projectId: options.projectId,
+      allowUnfiltered: true,
+      includeInvalidated: true,
+    })
+    report = computeOrphanRateFromFacts(facts)
+    path = "js-enumeration"
+  }
+
+  const pct = (report.orphanRate * 100).toFixed(1)
+  // Scope label: prefer the resolved project name when present so the
+  // operator sees the same label they passed via `--project`. Mirrors
+  // `--build-confidence-scores`'s plan-output posture.
+  const scopeLabel = options.projectName
+    ? `project ${JSON.stringify(options.projectName)}`
+    : options.projectId
+      ? "project-scoped"
+      : "vault-wide"
+  const passLabel = options.apply ? "post-pass" : "pre-pass"
+  console.log(
+    `Orphan rate (${passLabel}, ${scopeLabel}, via ${path}): ${pct}% — ` +
+      `${report.totalGroups - report.groupsWithPeer}/${report.totalGroups} ` +
+      `entit${report.totalGroups - report.groupsWithPeer === 1 ? "y" : "ies"} ` +
+      `appear in exactly 1 fact (${report.totalFacts} fact${report.totalFacts === 1 ? "" : "s"} inspected, including invalidated).`
+  )
+  if (report.totalGroups > 0 && report.orphanRate < 0.5) {
+    console.log(
+      "  Below the PF3-01 50% acceptance threshold — case-folding canonicalization was sufficient."
+    )
+  } else if (report.totalGroups > 0) {
+    console.log(
+      "  At or above the PF3-01 50% threshold — the deferred richer-clusterer follow-up may be needed; see `src/core/AGENTS.md`."
+    )
+  }
 }
 
 /**

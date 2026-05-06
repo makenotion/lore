@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 import type { Client } from "@notionhq/client"
 import {
+  extractFirstRelationId,
   fetchAlreadyComparedPairKeys,
   fetchEntitiesByAliasSubstring,
   fetchEntityByNormalizedName,
   fetchNearDuplicateCandidatePageIds,
+  querySubjectGroupCountsViaRunTool,
 } from "./query.js"
+import { isRunToolAggregateEnabled, isRunToolEnabled } from "./flag.js"
 import { SqlPartialResultError } from "./error-helpers.js"
 
 function makeStubClient(
@@ -180,6 +183,202 @@ describe("fetchEntitiesByAliasSubstring", () => {
         normalizedAlias: "authsvc",
       }),
     ).rejects.toBeInstanceOf(SqlPartialResultError)
+  })
+})
+
+describe("isRunToolAggregateEnabled", () => {
+  it("inherits from LORE_USE_RUNTOOL when the sub-flag is unset", () => {
+    expect(isRunToolAggregateEnabled({ LORE_USE_RUNTOOL: "1" })).toBe(true)
+    expect(isRunToolAggregateEnabled({ LORE_USE_RUNTOOL: "0" })).toBe(false)
+  })
+
+  it("lets LORE_USE_RUNTOOL_AGGREGATE override the parent flag", () => {
+    expect(
+      isRunToolAggregateEnabled({
+        LORE_USE_RUNTOOL: "1",
+        LORE_USE_RUNTOOL_AGGREGATE: "0",
+      }),
+    ).toBe(false)
+    expect(
+      isRunToolAggregateEnabled({
+        LORE_USE_RUNTOOL: "0",
+        LORE_USE_RUNTOOL_AGGREGATE: "1",
+      }),
+    ).toBe(true)
+  })
+
+  it("defaults off with no env vars set", () => {
+    expect(isRunToolAggregateEnabled({})).toBe(false)
+    expect(isRunToolEnabled({})).toBe(false)
+  })
+
+  it("ignores unrecognized values rather than crashing", () => {
+    expect(isRunToolAggregateEnabled({ LORE_USE_RUNTOOL_AGGREGATE: "maybe" })).toBe(false)
+  })
+})
+
+describe("querySubjectGroupCountsViaRunTool — issue #542 aggregate", () => {
+  const AGG_OPTS = {
+    factsDataSourceId: "ds-facts",
+    subjectProperty: "Subject",
+    subjectEntityProperty: "SubjectEntity",
+    projectProperty: "Project",
+  }
+
+  it("emits a GROUP BY query and folds rows into the typed shape", async () => {
+    let observedBody: Record<string, unknown> | undefined
+    const client = makeStubClient((args) => {
+      observedBody = args.body
+      return {
+        results: [
+          {
+            subjectEntity: `["https://www.notion.so/11111111111111111111111111111111"]`,
+            subject: "MemoryService.create",
+            cnt: 3,
+          },
+          { subjectEntity: null, subject: "DataSourceQuery", cnt: 1 },
+        ],
+        has_more: false,
+      }
+    })
+    const rows = await querySubjectGroupCountsViaRunTool(client, AGG_OPTS)
+    expect(rows).toEqual([
+      {
+        subjectEntityRaw: `["https://www.notion.so/11111111111111111111111111111111"]`,
+        subject: "MemoryService.create",
+        count: 3,
+      },
+      { subjectEntityRaw: null, subject: "DataSourceQuery", count: 1 },
+    ])
+    const data = (
+      observedBody?.["query_data_sources"] as { data: { query: string; params?: string[] } }
+    ).data
+    // GROUP BY composition pinned — the canonical key fold relies
+    // on both columns being grouped. Dropping `Subject` would
+    // collapse case-variants server-side, breaking the
+    // narrow-then-rematch invariant the aggregate helper documents.
+    expect(data.query).toContain("GROUP BY")
+    expect(data.query).toMatch(/GROUP BY\s+"SubjectEntity",\s*"Subject"/)
+    // No `Valid Until` filter — verified 2026-05-06 against the
+    // dogfood vault that the SQL gateway returns `no such column`
+    // for every spelling of the date column. Counts all facts
+    // including invalidated; equivalence with the JS fallback is
+    // preserved by the call site passing `includeInvalidated: true`.
+    expect(data.query).not.toMatch(/Valid Until/)
+    expect(data.params).toEqual([])
+  })
+
+  it("scopes to a project via undashed-id LIKE when projectId is provided", async () => {
+    let observedBody: Record<string, unknown> | undefined
+    const client = makeStubClient((args) => {
+      observedBody = args.body
+      return { results: [], has_more: false }
+    })
+    await querySubjectGroupCountsViaRunTool(client, {
+      ...AGG_OPTS,
+      projectId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    })
+    const data = (
+      observedBody?.["query_data_sources"] as { data: { query: string; params?: string[] } }
+    ).data
+    expect(data.query).toMatch(/"Project" LIKE \?/)
+    // Production-vault verification (2026-05-05) found relation
+    // columns store the **undashed** id form. The pin makes a
+    // future "let's pass the dashed form through" refactor fail
+    // loudly.
+    expect(data.params).toEqual(["%aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa%"])
+  })
+
+  it("omits the WHERE clause entirely when no projectId is provided", async () => {
+    let observedBody: Record<string, unknown> | undefined
+    const client = makeStubClient((args) => {
+      observedBody = args.body
+      return { results: [], has_more: false }
+    })
+    await querySubjectGroupCountsViaRunTool(client, AGG_OPTS)
+    const data = (
+      observedBody?.["query_data_sources"] as { data: { query: string; params?: string[] } }
+    ).data
+    // No predicates → no WHERE. The previous implementation always
+    // emitted a WHERE on `Valid Until`; without the date column
+    // available, an empty predicate set must produce a syntactically
+    // clean `SELECT … FROM … GROUP BY …` rather than a dangling
+    // `WHERE GROUP BY …`.
+    expect(data.query).not.toMatch(/WHERE/i)
+    expect(data.query).toMatch(/FROM "collection:\/\/[^"]+" GROUP BY/)
+  })
+
+  it("throws SqlPartialResultError on has_more: true", async () => {
+    const client = makeStubClient(() => ({
+      results: [{ subjectEntity: null, subject: "Foo", cnt: 1 }],
+      has_more: true,
+    }))
+    await expect(
+      querySubjectGroupCountsViaRunTool(client, AGG_OPTS),
+    ).rejects.toBeInstanceOf(SqlPartialResultError)
+  })
+
+  it("drops aggregate rows whose count cannot be coerced to a number", async () => {
+    const client = makeStubClient(() => ({
+      results: [
+        { subjectEntity: null, subject: "Foo", cnt: 5 },
+        { subjectEntity: null, subject: "Bar", cnt: null },
+        { subjectEntity: null, subject: "Baz", cnt: "not-a-number" },
+      ],
+      has_more: false,
+    }))
+    const rows = await querySubjectGroupCountsViaRunTool(client, AGG_OPTS)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ subject: "Foo", count: 5 })
+  })
+})
+
+describe("extractFirstRelationId", () => {
+  it("rehydrates the dashed canonical form from a JSON-array URL value", () => {
+    const raw = `["https://dev.notion.so/11111111111111111111111111111111"]`
+    expect(extractFirstRelationId(raw)).toBe("11111111-1111-1111-1111-111111111111")
+  })
+
+  it("returns null for empty / null / '[]' values", () => {
+    expect(extractFirstRelationId(null)).toBe(null)
+    expect(extractFirstRelationId("")).toBe(null)
+    expect(extractFirstRelationId("[]")).toBe(null)
+    expect(extractFirstRelationId("   ")).toBe(null)
+  })
+
+  it("returns null when no Notion id matches", () => {
+    expect(extractFirstRelationId("not-a-uuid-at-all")).toBe(null)
+  })
+
+  it("rejects free-floating 32-hex runs that aren't in URL form (PR #547 review)", () => {
+    // Anchor pin: a cell that contains 32 contiguous hex chars but
+    // NOT in the documented JSON-array-of-URLs shape must NOT be
+    // mistaken for a populated SubjectEntity. Without this anchor,
+    // a row whose `subject` happened to contain "garbage 11111111111111111111111111111111
+    // trailing" would silently key on `entity:11111111-...` instead
+    // of falling through to `key:<computeSubjectKey(subject)>`.
+    expect(
+      extractFirstRelationId("garbage 11111111111111111111111111111111 trailing"),
+    ).toBe(null)
+    expect(
+      extractFirstRelationId("11111111-1111-1111-1111-111111111111"),
+    ).toBe(null)
+    expect(
+      extractFirstRelationId("11111111111111111111111111111111"),
+    ).toBe(null)
+  })
+
+  it("accepts both undashed and dashed ids in URL form", () => {
+    // Production today: undashed form. Dashed-alternation is defense
+    // in depth against a future schema-pin refresh.
+    const undashed = `["https://www.notion.so/22222222222222222222222222222222"]`
+    expect(extractFirstRelationId(undashed)).toBe(
+      "22222222-2222-2222-2222-222222222222",
+    )
+    const dashed = `["https://www.notion.so/22222222-2222-2222-2222-222222222222"]`
+    expect(extractFirstRelationId(dashed)).toBe(
+      "22222222-2222-2222-2222-222222222222",
+    )
   })
 })
 

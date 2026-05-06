@@ -17,6 +17,7 @@
  */
 
 export {
+  isRunToolAggregateEnabled,
   isRunToolBlockEditEnabled,
   isRunToolEnabled,
   isRunToolFilterSqlEnabled,
@@ -46,6 +47,13 @@ export type {
   SqlEntityAliasMatch,
   SqlEntityNameMatch,
 } from "./query.js"
+
+// Issue #542 — SQL aggregate helpers
+export {
+  extractFirstRelationId,
+  querySubjectGroupCountsViaRunTool,
+} from "./query.js"
+export type { SqlSubjectGroupCount } from "./query.js"
 
 export {
   dataSourceUrl,

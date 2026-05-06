@@ -1,16 +1,20 @@
 # `src/notion/runtool/` — Quarantined RunTool Integration
 
 > **Status: Phase 0 README + three runtime consumers (`create_pages`,
-> `update_page`, `query_data_sources`).** PR #538 (issue #533) landed
-> the shared `runTool<T>(client, tool, params)` dispatcher plus the
+> `update_page`, `query_data_sources`) + one aggregate consumer.**
+> PR #538 (issue #533) landed the shared
+> `runTool<T>(client, tool, params)` dispatcher plus the
 > `create_pages` slice (live-verified against the production Mail
 > vault); PR #537 (issue #534) extends the surface with `update_page`
 > / `update_content` for anchored markdown edits in `MemoryService`
 > and `memory-encoding.ts`; PR #539 (issue #535) extends with
 > `query_data_sources` SQL filter helpers wired into
 > `EntityService.findByName` / `findByAlias`, `findNearDuplicates`,
-> and the conflict scanner. All three consumers compose with the
-> existing rate-limit + auth-refresh proxies via the shared
+> and the conflict scanner; issue #542 extends `query_data_sources`
+> with the SQL-mode aggregate path consumed by
+> `lore migrate --build-entities --report-orphan-rate` (the PF3-01
+> orphan-rate metric). All consumers compose with the existing
+> rate-limit + auth-refresh proxies via the shared
 > `client.request()` dispatch path. The remaining read-path Phase 1+
 > work (`search`, `LORE_USE_RUNTOOL_SEARCH`) is tracked under
 > [issue #532](https://github.com/makenotion/lore/issues/532) and is
@@ -733,9 +737,9 @@ existing rate-limit + auth-refresh Proxies via the shared
 | `types.ts` | #533 + #534 + #535 | Pinned subset of `RunToolParams`. Today: `create_pages` (#533), `update_page` (#534), and `query_data_sources` (#535) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. |
 | `flag.ts` | #534 + #535 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535) with parent-inherit. Default off. |
 | `update-page.ts` | #534 | High-level `updatePageContentViaRunTool` consumer wrapper with pre-call validation (page-id shape, empty / duplicate `oldStr`). |
-| `query.ts` | #535 | SQL filter helpers consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST fallback. |
+| `query.ts` | #535 + #542 | SQL filter helpers (#535) consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`; SQL aggregate helper `querySubjectGroupCountsViaRunTool` (#542) consumed by `lore migrate --build-entities --report-orphan-rate`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback. |
 | `error-helpers.ts` | #535 | `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (F5 once-per-process integration-secret warning). |
-| `index.ts` | #534 + #535 | Public surface — re-exports `runTool`, the `update_page` consumer, and the #535 SQL filter helpers + sub-flag accessor. |
+| `index.ts` | #534 + #535 + #542 | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, the #542 SQL aggregate helper, and every per-consumer flag accessor. |
 | `update-page.test.ts` | #534 | Mocked HTTP coverage for the `update_page` wrapper: success / no-match / multiple-matches / deletion-warning / restricted-resource (× 2: happy + once-per-process) / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation, plus a real-`Client` integration test asserting the SDK builds the canonical URL `https://api.notion.com/v1/tools/run`. |
 | `create-pages.ts` | #533 | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1` (default off, **does NOT inherit from the parent `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the write-path opt-in must be loud because of the partial-commit failure mode). Server cap pinned at 100 pages per call (Notion MCP `notion-create-pages` tool's `pages.maxItems`); chunk size clamps to that ceiling. Partial-commit handling is first-class via `BatchCreateError.committedIds`. Tail fallback re-probes via `createWithDedup` on transport-class / 5xx failures per `classifyTailFallback`. |
 | `runtool.test.ts` | #533 | Mocked HTTP success / 401 / 403 / 429 / 5xx / malformed / unsupported-tool-name cases for the shared dispatcher with `create_pages`-shaped fixtures. |
@@ -851,6 +855,13 @@ Verified directly against `~/Developer/Notion/Mail` via
   `createdTime` is. The near-duplicate probe's candidate pool is
   JS-scored by trigram similarity afterwards, so omitting `ORDER BY`
   is the safe shape — gateway-default order is acceptable.
+- **`Valid Until` (and every spelling: `validUntil` / `valid_until` /
+  `ValidUntil`) is NOT a valid SQL column** on the Facts data
+  source either. Verified 2026-05-06 against the dogfood vault.
+  Same gateway-side restriction as `last_edited_time`. Issue #542's
+  aggregate helper consequently can't filter invalidated facts
+  server-side; the migrate-time call site preserves equivalence by
+  passing `includeInvalidated: true` to its JS fallback.
 
 ### Null / missing-property semantics
 
@@ -898,3 +909,179 @@ default), every byte of REST behavior is preserved. The
 `compat.test.ts` "flag-off invariant" test pins this against an
 identical fixture corpus, and the existing 4500+ tests cover the
 REST path itself.
+
+## Issue #542 Slice — `query_data_sources` SQL Aggregate Helper
+
+Issue #542 extends the `query_data_sources` consumer surface with a
+server-side aggregate helper (`querySubjectGroupCountsViaRunTool` in
+`query.ts`) consumed by `lore migrate --build-entities
+--report-orphan-rate` to compute the PF3-01 orphan-rate metric. The
+helper routes through the same shared
+`runTool<T>(client, "query_data_sources", params)` dispatcher PR
+#538 landed; no separate fetch path, no parallel rate-limit gate,
+no `RunToolError` class.
+
+### Surface
+
+| File              | Purpose |
+| ----------------- | ------- |
+| `query.ts`        | Aggregate adapter: `querySubjectGroupCountsViaRunTool` issues a single SQL query that groups facts by `(SubjectEntity, Subject)` and counts per group. Throws `SqlPartialResultError` on `has_more: true`. Plus `extractFirstRelationId` — relation column rehydration helper that converts the JSON-array-of-URLs SQL gateway value into the canonical dashed Notion id form so the aggregate fold's metric key matches the JS enumeration path's. |
+| `flag.ts`         | `isRunToolAggregateEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, off by default. Distinct from the filter-SQL flag because aggregate queries traverse the `hasAdvancedTools` capability gate (Enterprise + AI workspaces only); operators rolling out RunTool need to flip filter-SQL and aggregate independently per workspace tier. |
+| `index.ts`        | Re-exports `querySubjectGroupCountsViaRunTool`, `extractFirstRelationId`, `SqlSubjectGroupCount`, and `isRunToolAggregateEnabled`. |
+
+### Wired call site
+
+`lore migrate --build-entities --report-orphan-rate` is the
+canonical first consumer (see
+[issue #542](https://github.com/makenotion/lore/issues/542)). The
+methodology is documented at the spec level in
+`src/core/AGENTS.md` ("Measuring whether `--build-entities`
+collapsed the orphan graph"); the wired implementation pair lives in:
+
+- `src/notion/runtool/query.ts:querySubjectGroupCountsViaRunTool` —
+  SQL aggregate path.
+- `src/core/entity-migration.ts:computeOrphanRateFromAggregateRows`
+  / `computeOrphanRateFromFacts` — both paths funnel through
+  `foldOrphanRateGroups`, which keys each fact on
+  `subjectEntityId ?? computeSubjectKey(subject)` exactly per the
+  PF3-01 spec.
+- `src/cli/commands/migrate.ts:runOrphanRateReport` — driver that
+  branches on `isRunToolAggregateEnabled()` and falls back per-call
+  to the JS enumeration path on every non-`validation_error`
+  failure (capability gate / rate-limit / network / saturated
+  `has_more: true` / malformed response).
+
+### SQL shape
+
+The query template below is **schematic**: the actual emitted SQL
+substitutes the live data-source URL via `dataSourceUrl(id)` from
+`types.ts` and the `quoteTable(url)` helper at the call site. The
+`<facts-data-source-id>` placeholder reads as a literal in this
+README; pin the wire shape via `query.test.ts` regex assertions
+rather than copy-pasting:
+
+```sql
+SELECT
+  "SubjectEntity" AS subjectEntity,
+  "Subject"       AS subject,
+  COUNT(*)        AS cnt
+FROM "collection://<facts-data-source-id>"
+-- Optional, when `projectId` is provided:
+WHERE "Project" LIKE ?  -- bound: '%<undashed-projectId>%'
+GROUP BY "SubjectEntity", "Subject"
+```
+
+**Why group by both columns.** The metric key is a JS expression
+`subjectEntityId ?? computeSubjectKey(subject)`. SQLite's `LOWER()`
+is ASCII-only and the SQL gateway carries no `computeSubjectKey`
+UDF; the helper deliberately under-narrows server-side. `GROUP BY`
+emits one row per `(SubjectEntity, raw Subject)` distinct pair; the
+JS folder applies `computeSubjectKey` over the raw Subject and
+collapses case-variant rows that share a canonical key. Same
+narrow-then-rematch posture as `fetchEntityByNormalizedName` (#535).
+
+**No `LIMIT` clamp** other than the gateway's implicit cap. The
+metric is structurally bounded by `(SubjectEntity, Subject)`
+distinct-pair cardinality (~445 distinct subjects on the pre-PF3-01
+Mail vault baseline; 263 canonical groups across 916 facts on the
+dogfood vault as of 2026-05-06). If the gateway clamps via
+`has_more: true`, the helper throws `SqlPartialResultError` and the
+caller falls through to JS enumeration rather than consume a
+partial aggregate.
+
+### Date / project / `Valid Until` column semantics
+
+- **No `Valid Until` filter.** Notion's SQL gateway does not expose
+  date columns. Production-vault verification on 2026-05-06 against
+  the dogfood vault confirmed `"Valid Until"`, `validUntil`,
+  `valid_until`, and `ValidUntil` all fail with `no such column`.
+  Same gateway-side restriction as the README's pre-existing
+  `last_edited_time` / `lastEditedTime` finding. The aggregate query
+  consequently counts EVERY fact in scope, including invalidated
+  rows. The migrate-time call site keeps the JS fallback semantically
+  equivalent by passing `includeInvalidated: true` to
+  `services.facts.queryBySubject`. The PF3-01 spec wording ("snapshot
+  every live fact") shifts to "snapshot every fact" for the wired
+  metric — operationally unchanged because invalidated facts
+  contributed subjects to the canonical grouping just like live ones
+  did.
+- **`Project`** is a Notion `relation` column. Production-vault
+  verification (PR #538 / 2026-05-05) confirmed relation columns
+  store JSON arrays of full URLs containing the **undashed** id
+  form. The helper passes `%<undashed-projectId>%` into the LIKE
+  pattern via the same `undash()` posture
+  `fetchNearDuplicateCandidatePageIds` adopted.
+- **`SubjectEntity`** (selected, not filtered) is a single-relation
+  Notion `relation` column with the same JSON-array-of-URLs
+  representation. The fold extracts the first id via
+  `extractFirstRelationId` and rehydrates to the canonical dashed
+  form so the metric key matches `Fact.subjectEntityId` (always
+  dashed by `pageToFact`).
+
+### Per-call fallback
+
+The migrate command site wraps the SQL call in a
+`try { … } catch (err) { … }` that branches on the SDK error
+fields, same vocabulary as the filter-SQL helpers:
+
+- `err.status === 400` / `err.code === "validation_error"` →
+  re-throw. Indicates query-shape drift (column rename, gateway
+  syntax change). Silent fallback would mask a permanent
+  SQL-rollout failure as "JS path always ran." The error message
+  carries the gateway's specifics.
+- All other errors (network, 5xx, 401, 403, 429,
+  `SqlPartialResultError`) → fall through to the JS enumeration
+  path via `services.facts.queryBySubject("", { allowUnfiltered:
+  true })`. Logs one `[lore] partial-failure: source=
+  orphan-rate-aggregate runtool-fallback=1` line under
+  `LORE_DEBUG=1`.
+
+The JS enumeration path is the canonical fallback and is the
+default execution path when `LORE_USE_RUNTOOL_AGGREGATE=0`. It is
+the path tested under `npm test`'s existing assertions; the SQL
+path is opt-in behind `LORE_USE_RUNTOOL_AGGREGATE=1` (defaults to
+the parent `LORE_USE_RUNTOOL` value).
+
+### Default-off invariant
+
+With `LORE_USE_RUNTOOL=0` and `LORE_USE_RUNTOOL_AGGREGATE=0` (the
+default), every byte of `--report-orphan-rate` behavior is
+deterministic JS enumeration. The aggregate code path runs only
+when the operator opts in.
+
+### Runtime verification (2026-05-06, dogfood vault)
+
+- **End-to-end aggregate**: `lore migrate --build-entities
+  --report-orphan-rate --dry-run --allow-unscoped` with
+  `LORE_USE_RUNTOOL_AGGREGATE=1` issues exactly one `tools/run`
+  call on the wire (observed via `LORE_DEBUG=1`). The default JS
+  enumeration path on the same vault inspects 924 facts across
+  269 canonical groups → 14.5% orphan rate (counts including
+  invalidated; the live-only count is ~916 facts / 263 groups /
+  12.9%).
+- **`Valid Until` filter rejected**: every spelling
+  (`"Valid Until"`, `validUntil`, `valid_until`, `ValidUntil`)
+  fails with `Failed to execute query: no such column`. Documented
+  above; the helper drops the WHERE clause on the date column.
+- **`has_more: true` is structural for non-trivial vaults.**
+  Verified 2026-05-06 against the dogfood vault: the GROUP BY over
+  924 facts produces 269 distinct rows, and the SQL gateway clamps
+  the response with `has_more: true`. The aggregate helper throws
+  `SqlPartialResultError` per its documented contract; the
+  migrate-time call site falls through to JS enumeration. This is
+  the **expected production posture** for any vault with more than
+  approximately 100 distinct `(SubjectEntity, Subject)` pairs —
+  which means most non-trivial Lore vaults. The aggregate path's
+  practical value is therefore limited to small vaults / narrow
+  project scopes where the distinct-group count fits under the
+  gateway cap. Operators on large vaults will see the
+  `LORE_DEBUG=1` stderr line on every flagged-on run and the metric
+  will be JS-computed regardless. A future server-side pagination
+  knob on `query_data_sources` would lift this limitation; tracked
+  upstream.
+- **`hasAdvancedTools` capability gate** is the second residual
+  risk for this slice (per "Capability gate is the bigger risk"
+  above). The fallback path is the operator's structural escape
+  hatch — a workspace below the gate sees zero aggregate traffic,
+  every flagged-on call falls through to JS, and the
+  `LORE_DEBUG=1`-gated stderr line surfaces the silent degrade.
