@@ -48,7 +48,10 @@
 
 import type { Client } from "@notionhq/client"
 import { APIErrorCode, isNotionClientError } from "@notionhq/client"
-import { redactDebugMessage } from "../../debug-redact.js"
+import {
+  __resetWarnRunToolRestrictedResourceOnceForTest,
+  warnRunToolRestrictedResourceOnce,
+} from "./error-helpers.js"
 import type {
   RunToolName,
   RunToolRequestMap,
@@ -232,7 +235,7 @@ export async function runUpdatePageContent(
     // "silently degrade … but loud enough" rule; the once-per-process
     // warning is what makes the degrade observable.
     if (isRestrictedResourceError(err)) {
-      warnRestrictedResourceOnce(err)
+      warnRunToolRestrictedResourceOnce("update_page", err)
       throw new RunToolBlockEditError(
         "restricted_resource",
         "RunTool rejected this token (RestrictedResource). Falling back " +
@@ -324,31 +327,14 @@ function isRestrictedResourceError(err: unknown): boolean {
   return isNotionClientError(err) && err.code === APIErrorCode.RestrictedResource
 }
 
-let warnedRestrictedResource = false
-function warnRestrictedResourceOnce(err: unknown): void {
-  if (warnedRestrictedResource) return
-  warnedRestrictedResource = true
-  const message = err instanceof Error ? err.message : ""
-  // Route through the shared redactor — auth-shaped error messages can
-  // surface workspace ids / paths under uncommon scenarios, and the
-  // existing emitters in src/notion/client.ts and src/notion/rate-limit.ts
-  // route through this same helper. Defense-in-depth.
-  const detail = message ? `: ${redactDebugMessage(message)}` : ""
-  process.stderr.write(
-    "[lore] runtool: 403 RestrictedResource on token; falling back to " +
-      "REST/SDK path. RunTool requires an ntn-issued user-actor token; " +
-      "see src/notion/runtool/README.md" +
-      detail +
-      "\n"
-  )
-}
-
 /** Test seam — reset the once-per-process warning latch so individual
  *  test cases can independently exercise the warning path. NOT for
  *  production use; production callers want the once-per-process
- *  semantics so a sustained 403 doesn't spam stderr. */
+ *  semantics so a sustained 403 doesn't spam stderr. The latch itself
+ *  lives in `error-helpers.ts` so every RunTool consumer shares a
+ *  single warning per process. */
 export function __resetRunToolWarningsForTest(): void {
-  warnedRestrictedResource = false
+  __resetWarnRunToolRestrictedResourceOnceForTest()
 }
 
 function hasDeletionWarning(response: RunToolUpdatePageResponse): boolean {

@@ -357,6 +357,42 @@ describe("createLimitedClient — token bucket pacing", () => {
     expect(callCount()).toBe(10)
   })
 
+  it("paces a burst of pages.retrieve calls (RunTool search hydration fan-out — issue #541)", async () => {
+    // The `MemoryService.fetchSemanticPagesViaRunTool` helper
+    // hydrates up to RUNTOOL_SEARCH_MAX_PAGE_SIZE (25) hits via
+    // `pages.retrieve`. Per CLAUDE.md's "When the new path lands
+    // in a hot fan-out" doctrine, the hot fan-out shape needs its
+    // own pacing test — a future SDK refactor that flipped
+    // `pages.retrieve` out of the recursive Proxy wrap would
+    // silently blow the per-token rps ceiling for every search
+    // dispatch. The hydration loop is sequential under the
+    // implementation, but a concurrent caller (or a future
+    // parallelization) would also see the gate applied.
+    const { client, callCount } = makeObservableClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 25,
+      requestsPerSecond: 10,
+      burstSize: 3,
+    })
+
+    const promises = Array.from({ length: 10 }, () =>
+      limited.pages.retrieve({} as never),
+    )
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callCount()).toBe(3)
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(callCount()).toBe(4)
+
+    await vi.advanceTimersByTimeAsync(200)
+    expect(callCount()).toBe(6)
+
+    await vi.advanceTimersByTimeAsync(700)
+    await Promise.all(promises)
+    expect(callCount()).toBe(10)
+  })
+
   it("preserves burst-instant behavior when call count fits the bucket", async () => {
     // 3 calls, burst=3 — every call fires within the same tick. The
     // token bucket does NOT add latency to short fan-outs that fit

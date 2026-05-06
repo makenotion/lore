@@ -26,7 +26,46 @@
  * each is only a few lines.
  */
 
-import { redactDebugError } from "../../debug-redact.js"
+import { redactDebugError, redactDebugMessage } from "../../debug-redact.js"
+
+/**
+ * Notion page ids come in two wire forms: 32-character lowercase
+ * hex (no separators) and dashed UUID (8-4-4-4-12). Either is
+ * acceptable to the server.
+ *
+ * **Single source of truth across RunTool consumers.** Two
+ * consumers exist today; future consumers (`fetch`, `move_pages`,
+ * etc.) MUST import this regex rather than re-declaring it:
+ *
+ * - **`update_page`** (`update-page.ts`) — validates the caller's
+ *   `pageId` parameter at the wrapper boundary so a malformed id
+ *   surfaces as a clear local error rather than a generic Notion
+ *   400 from the wire.
+ * - **`search`** (`search.ts:isNotionInternalHit`) — validates
+ *   `result.url` against the regex to distinguish Notion-internal
+ *   hits (where the schema puts the page id in `url`) from
+ *   external connector hits (Slack / Linear / Drive — where `url`
+ *   is a full external URL). The wrapper drops external hits so
+ *   the consumer can pass `hit.url` straight to `pages.retrieve`
+ *   without further validation.
+ *
+ * The `i` flag tolerates upstream casing drift defensively;
+ * Notion's canonical form is lowercase but matching is case-
+ * insensitive at the wire level.
+ */
+export const NOTION_PAGE_ID_RE =
+  /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+
+/**
+ * `true` when `pageId` looks like a Notion page id (32-hex or
+ * dashed UUID after trim). Fast-fail diagnostic for caller bugs;
+ * Notion still validates ids server-side, so a perfectly-shaped
+ * id that doesn't exist propagates as a 404 from the server
+ * unchanged. See {@link NOTION_PAGE_ID_RE} for the consumer list.
+ */
+export function isLikelyNotionPageId(pageId: string): boolean {
+  return NOTION_PAGE_ID_RE.test(pageId.trim())
+}
 
 /**
  * `true` when `err` looks like a Notion `validation_error` —
@@ -122,6 +161,44 @@ const KNOWN_INTEGRATION_SECRET_AUTH_SOURCES = new Set([
  */
 export function isKnownIntegrationSecretAuthSource(source: string): boolean {
   return KNOWN_INTEGRATION_SECRET_AUTH_SOURCES.has(source)
+}
+
+let warnedRestrictedResourceFallback = false
+
+/**
+ * Emit a single once-per-process stderr warning when ANY RunTool
+ * consumer falls back from a 403 RestrictedResource. Lifted out of
+ * the per-consumer modules (`client.ts`'s `update_page` latch,
+ * `search.ts`'s search latch) so an integration-secret operator
+ * dogfooding multiple flagged-on surfaces sees one warning instead
+ * of N. The README's "silently degrade … but loud enough" mandate
+ * is a per-process posture, not per-tool.
+ *
+ * Routes through the shared redactor for defense-in-depth — auth-
+ * shaped error messages can surface workspace ids / paths under
+ * uncommon scenarios. Reset-for-test seam exposed below.
+ */
+export function warnRunToolRestrictedResourceOnce(
+  source: "update_page" | "search",
+  err: unknown
+): void {
+  if (warnedRestrictedResourceFallback) return
+  warnedRestrictedResourceFallback = true
+  const message = err instanceof Error ? err.message : ""
+  const detail = message ? `: ${redactDebugMessage(message)}` : ""
+  process.stderr.write(
+    `[lore] runtool: 403 RestrictedResource on ${source}; falling back to ` +
+      `REST/SDK path. RunTool requires an ntn-issued user-actor token; ` +
+      `see src/notion/runtool/README.md` +
+      detail +
+      `\n`
+  )
+}
+
+/** Test seam — reset the once-per-process latch so individual test
+ *  cases can independently exercise the warning path. */
+export function __resetWarnRunToolRestrictedResourceOnceForTest(): void {
+  warnedRestrictedResourceFallback = false
 }
 
 let warnedRunToolIntegrationSecret = false

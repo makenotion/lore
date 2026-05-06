@@ -25,6 +25,7 @@
 
 import type { Client } from "@notionhq/client"
 import { RunToolBlockEditError, runUpdatePageContent } from "./client.js"
+import { isLikelyNotionPageId } from "./error-helpers.js"
 import type { RunToolUpdateContentEdit } from "./types.js"
 
 export interface UpdatePageContentEdit {
@@ -134,17 +135,6 @@ function hasDeletionWarning(response: { deletion_warning?: unknown }): boolean {
   if (!warning) return false
   if (Array.isArray(warning)) return warning.length > 0
   return true
-}
-
-/** Notion page ids come in two wire forms: 32-character lowercase hex
- *  (no separators) and dashed-UUID (8-4-4-4-12). Either is acceptable
- *  to the server. The check is a fast-fail diagnostic for caller bugs
- *  — Notion still validates ids server-side, so a perfectly-shaped
- *  id that doesn't exist propagates as a 404 from the server unchanged. */
-const NOTION_PAGE_ID_RE = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
-
-function isLikelyNotionPageId(pageId: string): boolean {
-  return NOTION_PAGE_ID_RE.test(pageId.trim())
 }
 
 export { RunToolBlockEditError }

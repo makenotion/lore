@@ -8,6 +8,9 @@
  *   edits via `update_page` / `update_content`. Inherits from parent.
  * - `LORE_USE_RUNTOOL_FILTER_SQL` (#535) — gates `query_data_sources`
  *   SQL filter helpers. Inherits from parent.
+ * - `LORE_USE_RUNTOOL_SEARCH` (#541) — gates the semantic-lane
+ *   `search` consumer in `MemoryService.search` /
+ *   `searchWithMeta` / `searchWithExplain`. Inherits from parent.
  * - `LORE_USE_RUNTOOL_AGGREGATE` (#542) — gates `query_data_sources`
  *   SQL-mode aggregate helpers (server-side `GROUP BY` / `COUNT(*)`).
  *   Inherits from parent.
@@ -97,6 +100,27 @@ export function isRunToolFilterSqlEnabled(
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_FILTER_SQL")
+  if (explicit !== null) return explicit
+  return isRunToolEnabled(env)
+}
+
+/**
+ * True when the issue #541 search sub-flag is on. An explicit
+ * `LORE_USE_RUNTOOL_SEARCH` setting wins; otherwise the value
+ * inherits from `LORE_USE_RUNTOOL`. Off by default.
+ *
+ * Gates the RunTool `search` consumer in
+ * `MemoryService.fetchSemanticPages`'s flag-on branch. The branch
+ * structurally cannot serve every request shape `MemoryService`
+ * accepts (empty composed query, `limit > 25`, raw-response
+ * saturation under the 25-row no-cursor cap), so the flag-on path
+ * falls back to REST per-call on those windows. Same parent-inherit
+ * posture as the block-edit and filter-sql sub-flags.
+ */
+export function isRunToolSearchEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const explicit = readFlag(env, "LORE_USE_RUNTOOL_SEARCH")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)
 }

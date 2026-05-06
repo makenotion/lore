@@ -1,7 +1,7 @@
 # `src/notion/runtool/` — Quarantined RunTool Integration
 
-> **Status: Phase 0 README + three runtime consumers (`create_pages`,
-> `update_page`, `query_data_sources`) + one aggregate consumer.**
+> **Status: Phase 0 README + four runtime consumers (`create_pages`,
+> `update_page`, `query_data_sources` filter + aggregate, `search`).**
 > PR #538 (issue #533) landed the shared
 > `runTool<T>(client, tool, params)` dispatcher plus the
 > `create_pages` slice (live-verified against the production Mail
@@ -10,15 +10,15 @@
 > and `memory-encoding.ts`; PR #539 (issue #535) extends with
 > `query_data_sources` SQL filter helpers wired into
 > `EntityService.findByName` / `findByAlias`, `findNearDuplicates`,
-> and the conflict scanner; issue #542 extends `query_data_sources`
-> with the SQL-mode aggregate path consumed by
-> `lore migrate --build-entities --report-orphan-rate` (the PF3-01
-> orphan-rate metric). All consumers compose with the existing
-> rate-limit + auth-refresh proxies via the shared
-> `client.request()` dispatch path. The remaining read-path Phase 1+
-> work (`search`, `LORE_USE_RUNTOOL_SEARCH`) is tracked under
-> [issue #532](https://github.com/makenotion/lore/issues/532) and is
-> NOT shipped here.
+> and the conflict scanner. Issue #541 wires `search` into
+> `MemoryService`'s semantic lane behind `LORE_USE_RUNTOOL_SEARCH`,
+> closing the last read-path Phase 1+ deliverable from
+> [issue #532](https://github.com/makenotion/lore/issues/532). Issue
+> #542 extends `query_data_sources` with the SQL-mode aggregate path
+> consumed by `lore migrate --build-entities --report-orphan-rate`
+> (the PF3-01 orphan-rate metric). All consumers compose with the
+> existing rate-limit + auth-refresh proxies via the shared
+> `client.request()` dispatch path.
 >
 > Every contract assertion below is sourced from the pinned upstream
 > commit named in "Pinned Schema Source"; runtime behavior on Lore's
@@ -168,8 +168,8 @@ schema drift in either layer surfaces as a type error.
 The wrapper surface lands incrementally. PR #538 (`create_pages`)
 and PR #537 (`update_page`) shipped the write-path slices ahead of
 the read-path plan; PR #539 (issue #535) wired
-`query_data_sources` for SQL filter pushdown. `search` remains the
-last unshipped Phase 1+ entry and is tracked under issue #532:
+`query_data_sources` for SQL filter pushdown; issue #541 wires the
+final `search` consumer into `MemoryService`'s semantic lane.
 
 ```ts
 // Shipped in PR #538 (issue #533):
@@ -181,7 +181,7 @@ runTool("update_page", params)
 // Shipped in PR #539 (issue #535):
 runTool("query_data_sources", params)
 
-// Planned for issue #532 Phase 1+ (NOT yet implemented):
+// Shipped in issue #541:
 runTool("search", params)
 ```
 
@@ -724,26 +724,30 @@ and audit the Phase 2/3 wrappers.
 
 ## Module State
 
-Two runtime consumers landed: `create_pages` (PR #538 / issue #533)
-and `update_page` (PR #537 / issue #534). Both compose with the
-existing rate-limit + auth-refresh Proxies via the shared
+Four runtime consumers landed: `create_pages` (PR #538 / issue
+#533), `update_page` (PR #537 / issue #534), `query_data_sources`
+(PR #539 / issue #535), and `search` (issue #541). All four compose
+with the existing rate-limit + auth-refresh Proxies via the shared
 `client.request()` dispatch path.
 
 ### Landed runtime surface
 
 | File | Issue | Purpose |
 | ---- | ----- | ------- |
-| `client.ts` | #533 + #534 | Shared `runTool<T>(client, tool, params)` dispatcher (PR #538). PR #537 extended it with the `update_page` consumer surface (`runUpdatePageContent`, `RunToolBlockEditError`, validation-error classifier, once-per-process `restricted_resource` stderr warning). |
-| `types.ts` | #533 + #534 + #535 | Pinned subset of `RunToolParams`. Today: `create_pages` (#533), `update_page` (#534), and `query_data_sources` (#535) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. |
-| `flag.ts` | #534 + #535 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535) with parent-inherit. Default off. |
+| `client.ts` | #533 + #534 | Shared `runTool<T>(client, tool, params)` dispatcher (PR #538). PR #537 extended it with the `update_page` consumer surface (`runUpdatePageContent`, `RunToolBlockEditError`, validation-error classifier). |
+| `types.ts` | #533 + #534 + #535 + #541 | Pinned subset of `RunToolParams`. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535), and `search` (#541) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. |
+| `flag.ts` | #534 + #535 + #541 + #542 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535, `LORE_USE_RUNTOOL_SEARCH` for #541, `LORE_USE_RUNTOOL_AGGREGATE` for #542) with parent-inherit. Default off. |
 | `update-page.ts` | #534 | High-level `updatePageContentViaRunTool` consumer wrapper with pre-call validation (page-id shape, empty / duplicate `oldStr`). |
-| `query.ts` | #535 + #542 | SQL filter helpers (#535) consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`; SQL aggregate helper `querySubjectGroupCountsViaRunTool` (#542) consumed by `lore migrate --build-entities --report-orphan-rate`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback. |
-| `error-helpers.ts` | #535 | `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (F5 once-per-process integration-secret warning). |
-| `index.ts` | #534 + #535 + #542 | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, the #542 SQL aggregate helper, and every per-consumer flag accessor. |
+| `query.ts` | #535 + #542 | SQL filter helpers (#535) — `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, plus `comparedPairKey` — consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`. SQL aggregate helper `querySubjectGroupCountsViaRunTool` (#542) plus `extractFirstRelationId` for relation-column id rehydration, consumed by `lore migrate --build-entities --report-orphan-rate`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback. |
+| `search.ts` | #541 | High-level `searchViaRunTool(client, { query, dataSourceId, pageSize? })` consumer wrapper used by `MemoryService.fetchSemanticPages`'s flag-on branch. Builds the canonical `collection://<id>` URL, clamps `page_size <= RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25), narrows hits to Notion-internal page ids (drops external connector results), reports `saturated`, sets `max_highlight_length: 0`. Throws `RunToolSearchRestrictedError` on 403 — same `restricted_resource` vocabulary the `update_page` wrapper pins. |
+| `error-helpers.ts` | #535 + #541 | `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (F5 once-per-process integration-secret warning), `warnRunToolRestrictedResourceOnce` (lifted from per-consumer modules so all RunTool consumers share one warning per process), `NOTION_PAGE_ID_RE` + `isLikelyNotionPageId` (single source of truth for page-id validation, consumed by `update-page.ts` and `search.ts`). |
+| `index.ts` | #534 + #535 + #541 + #542 | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, the #541 `searchViaRunTool` consumer, the #542 SQL aggregate helper, and every per-consumer flag accessor. |
 | `update-page.test.ts` | #534 | Mocked HTTP coverage for the `update_page` wrapper: success / no-match / multiple-matches / deletion-warning / restricted-resource (× 2: happy + once-per-process) / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation, plus a real-`Client` integration test asserting the SDK builds the canonical URL `https://api.notion.com/v1/tools/run`. |
+| `search.test.ts` | #541 | Mocked HTTP coverage for the `search` wrapper: wire envelope, `page_size` clamping (upper / lower bounds), absence of `query_type` / `content_search_mode` (workflow-bot compat), pre-call validation, error classification (403 → `RunToolSearchRestrictedError` once-per-process; 401 / 429 / 5xx / 400 / malformed / `user_search` discriminator → propagate), result narrowing (external connector hits dropped, `is_archived` preserved, `saturated` flag), discriminated-union `searchType` round-trip. |
 | `create-pages.ts` | #533 | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1` (default off, **does NOT inherit from the parent `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the write-path opt-in must be loud because of the partial-commit failure mode). Server cap pinned at 100 pages per call (Notion MCP `notion-create-pages` tool's `pages.maxItems`); chunk size clamps to that ceiling. Partial-commit handling is first-class via `BatchCreateError.committedIds`. Tail fallback re-probes via `createWithDedup` on transport-class / 5xx failures per `classifyTailFallback`. |
 | `runtool.test.ts` | #533 | Mocked HTTP success / 401 / 403 / 429 / 5xx / malformed / unsupported-tool-name cases for the shared dispatcher with `create_pages`-shaped fixtures. |
 | `sqlite-properties.ts` / `sqlite-properties.test.ts` | #533 | Notion-REST → SQLite-flat property converter for `create_pages` payloads. |
+| `compat.test.ts` | #535 + #541 | A/B harness comparing RunTool vs REST/SDK paths. #535 covers `findNearDuplicates`'s SQL vs lister branch with status / kind / tag / unscoped fixtures; #541 covers `MemoryService.search`'s flag-on vs flag-off semantic lane with page-id-set equivalence at limit, empty-query / oversize-window / saturation-under-recall fallbacks, hit.url-not-hit.id hydration regression, abort-mid-hydration, and per-id 404 tolerance. |
 
 The `restricted_resource` 403 fall-back posture introduced by #534
 (auth-refresh cannot repair it; integration-secret operators
@@ -755,19 +759,15 @@ canonical reference for future RunTool consumers — see
 
 Issue #532 tracks the broader rollout. Pending deliverables:
 
-- `search` consumer under a `LORE_USE_RUNTOOL_SEARCH` sub-flag. When
-  it lands, the `RunToolRequestMap` / `RunToolResponseMap` in
-  `types.ts` extend with the `search` shape in a follow-up PR without
-  touching the shared dispatcher.
-- `search.ts` — request/response mapper between the RunTool `search`
-  shape and Lore's domain `MemorySearchResult[]`.
 - Phase 4 default-on rollout — gated by the criteria in "Default-On
   Criteria" of issue #532.
 
 Default flag state stays OFF for every consumer until those criteria
 are met. (`query_data_sources` shipped in PR #539 — see `query.ts`,
 `compat.test.ts`, and `LORE_USE_RUNTOOL_FILTER_SQL` in `flag.ts` —
-and is no longer pending.)
+and is no longer pending. `search` shipped in issue #541 — see
+`search.ts`, the search slice in `compat.test.ts`, and
+`LORE_USE_RUNTOOL_SEARCH` in `flag.ts`.)
 
 ## Canonical Error-Classification Vocabulary
 
@@ -796,6 +796,37 @@ The `RunToolBlockEditError` class carries this `kind` discriminator
 plus the original SDK error as `cause` (ES2022 native channel) so
 call sites branch deterministically on the kind without inspecting
 strings.
+
+### Typed-class shape vs `kind`-multiplexed shape
+
+Two structural shapes coexist in shipped consumers:
+
+- **Multi-kind consumers use `RunToolBlockEditError` with a `kind`
+  discriminator.** `update_page` is the canonical example:
+  `no_match`, `multiple_matches`, `deletion_warning`, and
+  `restricted_resource` are all fall-back-able classes the consumer
+  must distinguish. One typed class with a discriminator keeps
+  pattern-matching ergonomic on a small, closed set of kinds.
+
+- **Single-fall-back-able-kind consumers may use a typed class
+  named after the kind.** `search` is the canonical example:
+  `RunToolSearchRestrictedError` is the only fall-back-able class
+  that wrapper produces (every other failure class — 400, 401, 429,
+  5xx, malformed — propagates verbatim). Introducing a `kind`
+  discriminator on a single-arm class is over-engineering; `err
+  instanceof RunToolSearchRestrictedError` reads cleanly at the
+  call site.
+
+**The string `restricted_resource` remains the canonical vocabulary
+across both shapes** — the once-per-process stderr warning emitted by
+`error-helpers.ts:warnRunToolRestrictedResourceOnce` keys on this
+exact string regardless of which consumer triggered it. Operators
+reading `[lore] runtool: 403 RestrictedResource on <source>` lines
+across mixed surfaces grep one phrase, never two. Future RunTool
+consumers pick the shape that fits their fall-back-able cardinality:
+single-kind → typed class, multi-kind → discriminator. The shared
+dispatcher landing in #532 Phase 4 keys error-classification on the
+**string**, not the class identity, so both shapes interoperate.
 
 ## Issue #535 Slice — `query_data_sources` SQL Filter Helpers
 
@@ -1085,3 +1116,147 @@ when the operator opts in.
   hatch — a workspace below the gate sees zero aggregate traffic,
   every flagged-on call falls through to JS, and the
   `LORE_DEBUG=1`-gated stderr line surfaces the silent degrade.
+
+## Issue #541 Slice — `search` Consumer For The Semantic Lane
+
+Issue #541 wires the fourth (and final read-path) RunTool consumer:
+the `search` tool feeding `MemoryService`'s semantic lane in
+`fetchSemanticPages`. Routes through the same shared
+`runTool<T>(client, "search", params)` dispatcher PR #538 landed; no
+separate fetch path, no parallel rate-limit gate, no `RunToolError`
+class.
+
+### Surface
+
+| File | Purpose |
+| ---- | ------- |
+| `search.ts` | `searchViaRunTool(client, { query, dataSourceId, pageSize })` — high-level wrapper. Builds the canonical `collection://<id>` URL, sets `max_highlight_length: 0` (Lore never surfaces highlights), clamps `page_size` to `[1, RUNTOOL_SEARCH_MAX_PAGE_SIZE]`, narrows hits to Notion-internal page ids (drops external connector results), reports `saturated` so the caller can decide whether to fall back. Throws `RunToolSearchRestrictedError` on 403 with a once-per-process stderr warning; propagates 401 / 429 / 5xx / 400 / malformed verbatim. |
+| `types.ts` | `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (= 25); `RunToolSearchParams`, `RunToolInternalSearchResponse`, `RunToolInternalSearchResult` shapes; `isInternalSearchResponse` structural guard. Pinned subset of `SearchToolParams` + `InternalSearchResource`. |
+| `flag.ts` | `isRunToolSearchEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, off by default. |
+| `core/memory.ts` | `MemoryService.fetchSemanticPagesViaRunTool` — flag-gated branch that hydrates RunTool hits via `pages.retrieve` and feeds the existing `applySemanticPostFilters` pipeline. Returns `null` to signal "fall back to REST" on 403 or saturation (raw response hit the 25-row cap). Cooperative abort throws `AbortError` rather than returning `null` so `searchByHybridPages`'s `Promise.allSettled` discard path works unchanged. |
+
+### Pagination decision (acceptance criterion #2)
+
+REST `client.search` paginates with `start_cursor` / `next_cursor`
+and supports `page_size: 100`; `fetchSemanticPages` walks up to
+`SEMANTIC_SEARCH_MAX_PAGES = 5` × 100 = 500 raw rows.
+
+RunTool `search` exposes neither input cursor nor output
+`next_cursor`, AND caps `page_size` at 25. There is no schema-
+respecting way to fetch a sixth row beyond what fits in a single 25-
+row response. **The wrapper does not pretend to paginate.** Three
+windows route through REST:
+
+1. **Empty composed query.** RunTool requires `query.length >= 1`;
+   REST accepts `""` for unscoped relevance / list-like callers.
+2. **`limit > 25`.** The caller's requested window cannot be
+   represented in one RunTool call; falling back keeps recall
+   intact.
+3. **Saturation (raw response = 25 hits).** When the raw response
+   saturates at the cap, the no-cursor schema cannot surface
+   matches beyond that window — and those hidden matches affect
+   ranking even when the visible 25 already produced `>= limit`
+   post-filter survivors. Specifically: `rerankByConfidence`
+   (semantic-only) can promote a high-confidence row at REST
+   semantic-rank 11 (within REST's 100-row first page) into the
+   final top-`limit`, and hybrid RRF consumes the semantic
+   accumulator beyond the display limit. Therefore the safe
+   condition is `outcome.saturated === false`; saturation forces
+   REST fallback **regardless of post-filter survivor count**.
+
+This three-condition routing is acceptance criterion #2 from #541
+("flag-on tests prove the page_size <= 25 / no-cursor constraint
+cannot under-recall silently"). Pinned by `compat.test.ts`'s
+`flag-on with empty composed query falls back to REST`,
+`flag-on with limit > RUNTOOL_SEARCH_MAX_PAGE_SIZE falls back`,
+`flag-on saturated raw window falls back to REST regardless of
+post-filter survivor count (ranking-parity rule)`, and
+`flag-on saturated raw window with under-recalling post-filter
+still falls back to REST`.
+
+### Practical operating envelope
+
+Because the wrapper always asks for `page_size: 25` and
+`outcome.saturated = (response.results.length >= 25)`, **any query
+whose underlying corpus has 25 or more matches saturates and routes
+through REST.** The RunTool fast path is therefore a low-recall
+optimization: it services queries on small vaults, narrow project
+scopes, or specific-term queries where the matching corpus fits
+under the cap. High-recall queries (broad term, large vault) fall
+back to REST on every flagged-on call.
+
+This is a deliberate consequence of the ranking-parity rule, not a
+bug. Operators dogfooding `LORE_USE_RUNTOOL_SEARCH=1` should expect:
+
+- A `LORE_DEBUG=1` stderr line on every saturated call; no
+  user-visible degradation because REST serves the request
+  identically to the flag-off path.
+- Wall-clock parity with REST on saturated queries (one extra
+  `tools/run` round-trip + the existing REST search). The
+  flag-off path remains the canonical execution path until a
+  future Phase that lifts the no-cursor constraint upstream.
+- Real wall-clock improvement only on the under-saturation slice:
+  queries where the candidate corpus naturally fits under 25
+  matches.
+
+A future server-side cursor / pagination knob on RunTool `search`
+would lift this limitation; tracked in issue #532 Phase 4 (the
+default-on rollout).
+
+### Post-filter parity
+
+`data_source_url: collection://<memories-data-source-id>` narrows
+server-side, so the post-filter pipeline's parent-DB filter is
+structurally a no-op on the RunTool path (every hit is already in
+the Memories DS). The pipeline still runs because it carries every
+other narrowing — project inheritance, topic, tags, kind, status,
+scope, archived, cleanup-orphan. Cheaper to keep one filter shape
+than to build a divergent post-filter; pinned by `compat.test.ts`'s
+A/B harness which asserts page-id set equivalence at the same final
+`limit` between flag-on and flag-off paths.
+
+### Ranking metadata
+
+RunTool's `InternalSearchResource` carries `id`, `title`, `url`,
+`type`, `highlight`, `timestamp`, optional `is_archived` — no
+score field. REST `client.search` doesn't return scores either, so
+this is not a regression. The `SearchExplain` trace in
+`runSearch` uses the **resolved branch's positional rank** as
+`semanticRank`; under the RunTool path, hits arrive in Notion's
+ranking order and are post-filtered without re-sort, so the rank
+the trace records is the same shape REST produces. Cross-branch
+score-scale comparisons (e.g. RRF) are not affected because the
+semantic branch contributes a rank, not a raw score.
+
+The discriminated-response `type` field reports which backend the
+server actually ran: `ai_search` (full vector search), `workspace_search`
+(lexical / connector fallback), or `none`. **`none` is normal**, not
+a bug indicator: it surfaces when the workspace has no search backend
+configured (e.g. AI search disabled at the plan tier and no workspace-
+search index built) or when the query produces no relevance signal.
+The wrapper passes the value through verbatim on `RunToolSearchOutcome.searchType`
+for observability under `LORE_DEBUG=1`; consumers do not branch on it
+because the `results` array is the authoritative signal.
+
+### Per-call fallback
+
+Every RunTool dispatch is wrapped in a `try { … } catch (err) { … }`:
+
+- `RunToolSearchRestrictedError` (403) → return `null` so caller
+  falls back. Wrapper already emitted the once-per-process stderr
+  warning.
+- 401, 429, 5xx, 400 / `validation_error`, malformed → propagate
+  verbatim. The rate-limit and auth-refresh proxies need to see 401
+  and 429 for their backoff and refresh hooks. 400 surfaces query-
+  shape drift; silent fallback would mask it.
+- Cooperative-abort throws (`AbortError`-shaped) propagate so
+  `searchByHybridPages`'s `Promise.allSettled` discard works
+  unchanged — same posture as the REST path.
+
+### Default-off invariant
+
+With `LORE_USE_RUNTOOL=0` and `LORE_USE_RUNTOOL_SEARCH=0` (the
+default), every byte of REST semantic behavior is preserved. The
+`compat.test.ts` A/B harness pins this against an identical fixture
+corpus, and the 500+ existing `memory.test.ts` semantic-search
+assertions cover the REST path itself.

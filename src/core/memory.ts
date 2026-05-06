@@ -54,7 +54,11 @@ import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filte
 import { decodeTextEntities } from "../notion/html-entities.js"
 import {
   isRunToolBlockEditEnabled,
+  isRunToolSearchEnabled,
   RunToolBlockEditError,
+  RunToolSearchRestrictedError,
+  RUNTOOL_SEARCH_MAX_PAGE_SIZE,
+  searchViaRunTool,
   updatePageContentViaRunTool,
 } from "../notion/runtool/index.js"
 import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
@@ -5528,6 +5532,53 @@ export class MemoryService {
         : input.query
     const limit = input.limit ?? 10
 
+    // Issue #541 — flag-gated RunTool `search` branch. The pinned schema
+    // has structural divergences from REST `client.search` that the
+    // wrapper cannot mask:
+    //
+    // - **Empty query.** RunTool requires `query.length >= 1`; REST
+    //   accepts `""` for unscoped relevance / list-like callers. We
+    //   route empty composed queries through REST.
+    // - **Window cap.** RunTool's `page_size <= 25` and no documented
+    //   cursor; REST paginates 100/page up to
+    //   `SEMANTIC_SEARCH_MAX_PAGES`. When the caller asks for `limit`
+    //   greater than the RunTool cap, the wrapper cannot represent
+    //   the requested window in one call so we route through REST.
+    // - **Saturation under post-filter.** Even within the cap, Lore's
+    //   `applySemanticPostFilters` may discard most of a 25-row
+    //   response (project / kind / status / scope / archive / cleanup-
+    //   orphan client-side narrowing). When the post-filter survivors
+    //   come up short AND the raw response saturated at the cap, the
+    //   RunTool path's recall is provably under-served and we fall
+    //   back to REST per call.
+    //
+    // 403 `RestrictedResource` is fall-back-able via
+    // `RunToolSearchRestrictedError` (auth-refresh proxy can't repair;
+    // once-per-process stderr warning fires). All other classes (400
+    // validation, 401, 429, 5xx, malformed) propagate verbatim — the
+    // canonical error vocabulary pinned by the `update_page` wrapper.
+    if (
+      isRunToolSearchEnabled() &&
+      composedQuery.trim().length > 0 &&
+      limit <= RUNTOOL_SEARCH_MAX_PAGE_SIZE
+    ) {
+      const runToolPages = await this.fetchSemanticPagesViaRunTool(
+        input,
+        composedQuery,
+        limit,
+        signal
+      )
+      if (runToolPages !== null) return runToolPages
+      // `null` sentinel ⇒ the RunTool branch couldn't serve this
+      // call. Two paths produce it: 403 RestrictedResource on the
+      // search dispatch, and saturation (raw response hit the
+      // 25-row cap, signaling REST may have additional matches
+      // beyond the no-cursor window that could change ranking
+      // under confidence-rerank or RRF). Cooperative abort throws
+      // an `AbortError`-shaped value rather than returning `null`,
+      // so abort propagates through this `await`.
+    }
+
     const accumulated: PageObjectResponse[] = []
     // Dedup across paginated pages. Within a single `client.search` page
     // Notion guarantees unique ids; the cross-page collision case the
@@ -5690,6 +5741,199 @@ export class MemoryService {
     // 100 trimmed to limit), so this is not a fix-for-regression but a
     // recall improvement on the same axis pagination opened up.
     return accumulated
+  }
+
+  /**
+   * Issue #541 — RunTool `search` consumer for the semantic lane.
+   *
+   * Returns `PageObjectResponse[]` shaped exactly like
+   * `fetchSemanticPages`'s legacy REST output so the rest of
+   * `runSearch` (post-filter, sort, materialize, explain) consumes
+   * either path identically. Returns `null` to signal "couldn't
+   * serve this call; caller falls back to REST" — used for 403
+   * RestrictedResource and saturation. Cooperative abort throws an
+   * `AbortError`-shaped value rather than returning `null`, so
+   * `searchByHybridPages`'s `Promise.allSettled` discard works
+   * unchanged.
+   *
+   * **Scoping.** `data_source_url: collection://<memories-data-
+   * source-id>` narrows server-side, so the post-filter pipeline's
+   * parent-DB filter is structurally a no-op on the RunTool path
+   * (every hit is already in the Memories DS). The pipeline still
+   * runs because it carries every other narrowing — project
+   * inheritance, topic, tags, kind, status, scope, archived,
+   * cleanup-orphan — and it's cheaper to keep one filter shape than
+   * to build a divergent post-filter.
+   *
+   * **Hydration.** RunTool's `search` returns `{id, title, url, ...}`
+   * per hit — Lore's post-filter and `materializeMemories` need full
+   * `PageObjectResponse` shapes (parent, properties, archived flag).
+   * The wrapper hydrates each hit through `pages.retrieve`, which is
+   * proxied by `createLimitedClient` so the per-token rate-limit
+   * gate paces the fan-out. The wrapper requests
+   * `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25) regardless of caller
+   * `limit` so `applySemanticPostFilters` has the most headroom;
+   * production callers omit `pageSize` to get this default. 25
+   * retrieves is therefore both the cap and the typical case.
+   *
+   * **Saturation handling — ranking-parity rule.** When the raw
+   * response carries 25 hits, the no-cursor schema cannot surface
+   * matches beyond that window. Those hidden matches affect ranking
+   * even when the visible 25 already produced `>= limit` survivors:
+   * `rerankByConfidence` (semantic-only) can promote a high-
+   * confidence row at REST rank 11 into the final top-`limit`, and
+   * hybrid RRF consumes the semantic accumulator beyond the
+   * display limit. So the only safe condition for returning RunTool
+   * results is `outcome.saturated === false`. When saturated, the
+   * helper returns `null` and the caller drops through to REST,
+   * which paginates up to `SEMANTIC_SEARCH_MAX_PAGES` × 100 = 500
+   * raw rows.
+   *
+   * **Error classification.** 403 → `null` (silent fall-back,
+   * once-per-process stderr warning fires inside the wrapper). 401 /
+   * 429 / 5xx / 400 / malformed propagate verbatim — the canonical
+   * vocabulary pinned by the `update_page` wrapper.
+   */
+  private async fetchSemanticPagesViaRunTool(
+    input: SearchMemoriesInput,
+    composedQuery: string,
+    limit: number,
+    signal?: AbortSignal
+  ): Promise<PageObjectResponse[] | null> {
+    if (signal?.aborted) {
+      throw buildAbortError(signal)
+    }
+
+    let outcome
+    try {
+      outcome = await searchViaRunTool(this.client, {
+        query: composedQuery,
+        dataSourceId: this.db.dataSourceId,
+        // `pageSize` is omitted so the wrapper applies its default
+        // (`RUNTOOL_SEARCH_MAX_PAGE_SIZE`). We always want the
+        // server cap regardless of caller `limit`:
+        // `applySemanticPostFilters` is the authoritative cap and
+        // the post-filter narrows aggressively (project / kind /
+        // status / scope / archived / cleanup-orphan). Maxing out
+        // the raw window minimizes saturation-induced REST fallback
+        // for typical small-`limit` callers without changing the
+        // final shape of the result.
+      })
+    } catch (err) {
+      if (err instanceof RunToolSearchRestrictedError) {
+        // 403 — auth-refresh proxy can't repair, REST/SDK path can.
+        // Wrapper already emitted the once-per-process warning.
+        return null
+      }
+      throw err
+    }
+
+    // Cooperative abort check between the network call and the
+    // hydration loop — same posture as `applySemanticPostFilters`,
+    // which checks before its `hydrateRelationPropertiesForPages`
+    // call so a discarded response doesn't pay the heavy hydration
+    // tail.
+    if (signal?.aborted) {
+      throw buildAbortError(signal)
+    }
+
+    if (outcome.hits.length === 0) {
+      return outcome.saturated ? null : []
+    }
+
+    // Hydrate hits to full `PageObjectResponse` shapes. We iterate
+    // sequentially with a per-hit signal check at the top of each
+    // iteration. `Promise.all`'s parallel dispatch would queue all
+    // 25 retrieves through `createLimitedClient`'s 3-rps gate
+    // before observing a mid-flight abort, defeating the point of
+    // cooperative cancellation. Sequential trades a small wall-
+    // clock cost (the rate-limit proxy already serializes to ~3
+    // concurrent anyway) for proper bounded residual cost.
+    //
+    // **N+1 cost.** Each hit spawns one `pages.retrieve` round-
+    // trip, vs REST `client.search` which returns full
+    // `PageObjectResponse[]` from one call. Worst case is 25
+    // retrieves at ~3 rps ≈ 8s, vs REST's single round-trip. This
+    // is the cost of opting in to the RunTool search path; tests
+    // pin it but operators reading the rollout runbook should know.
+    //
+    // **Hydrate via `hit.url`, not `hit.id`.** The pinned RunTool
+    // schema (`README.md` `search Tool` section, "url is page id
+    // for Notion results") puts the Notion page id in the `url`
+    // field; `id` is the search index's internal resource id and
+    // is NOT guaranteed to match the page id. The wrapper's
+    // `isNotionInternalHit` already validates `url` is a Notion
+    // page id (regex matches 32-hex or dashed UUID), so by
+    // construction `hit.url` is the right value to pass to
+    // `pages.retrieve`.
+    //
+    // Per-id retrieval failures: 404 / RestrictedResource drop
+    // silently — Notion's search index lags delete / archive /
+    // permission-revocation, so a stale hit is expected. Every
+    // other class (401, 429, 5xx, network) propagates so the
+    // rate-limit and auth-refresh proxies engage on their canonical
+    // surface.
+    const pages: PageObjectResponse[] = []
+    for (const hit of outcome.hits) {
+      if (signal?.aborted) {
+        throw buildAbortError(signal)
+      }
+      let page: Awaited<ReturnType<typeof this.client.pages.retrieve>>
+      try {
+        page = await this.client.pages.retrieve({ page_id: hit.url })
+      } catch (err) {
+        if (
+          isNotionClientError(err) &&
+          (err.code === APIErrorCode.ObjectNotFound ||
+            err.code === APIErrorCode.RestrictedResource)
+        ) {
+          continue
+        }
+        throw err
+      }
+      if (!isFullPage(page as Parameters<typeof isFullPage>[0])) continue
+      pages.push(page as PageObjectResponse)
+    }
+
+    const filtered = await this.applySemanticPostFilters(pages, input, signal)
+
+    // Saturation forces REST fallback **regardless of post-filter
+    // survivor count**. When the raw window saturated at 25, the
+    // server has more matches that the no-cursor schema cannot
+    // surface — and those hidden matches affect ranking even when
+    // the visible 25 already produced `>= limit` survivors:
+    //
+    // - **Semantic-only (`mode: "semantic"`)** runs
+    //   `rerankByConfidence` AFTER `fetchSemanticPages` returns
+    //   (`runSearch` → public `searchBySemanticPages` path). A
+    //   high-confidence row at REST semantic survivor rank 11
+    //   (within REST's 100-row first page) can be promoted into
+    //   the final top-`limit` by the confidence factor. The
+    //   RunTool path never sees that row if it sits beyond raw
+    //   hit 25 — even though we have `limit` survivors visibly
+    //   available.
+    //
+    // - **Hybrid (`mode: "hybrid"`, the default)** consumes the
+    //   semantic accumulator beyond the display limit when
+    //   computing RRF. A row outside the first `limit` survivors
+    //   can still win after cross-branch fusion if it also
+    //   appears in contains. Truncating to 25 silently shrinks
+    //   the RRF pool relative to REST's up-to-500 raw-row pool
+    //   (`SEMANTIC_SEARCH_MAX_PAGES × page_size`).
+    //
+    // Therefore: `filtered.length >= limit` is NOT a proof of
+    // ranking parity with REST. The only safe condition for
+    // returning RunTool results without fallback is
+    // `outcome.saturated === false` — i.e. "the server has shown
+    // its hand at the requested page_size" — at which point REST
+    // would not surface additional matches either. When saturated,
+    // route through REST so `rerankByConfidence` and RRF see the
+    // full candidate pool.
+    if (outcome.saturated) {
+      return null
+    }
+
+    return filtered
   }
 
   /**

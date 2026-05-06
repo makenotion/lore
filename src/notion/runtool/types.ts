@@ -304,19 +304,135 @@ export function dataSourceUrl(dataSourceId: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #541 — `search` request and response shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-side hard cap on `search.page_size` per the pinned
+ * `SearchToolParams` schema. The REST `client.search` allows up to 100
+ * per page; RunTool `search` allows up to 25 and exposes no cursor.
+ * Lore's wrapper clamps to this ceiling and falls back to REST when
+ * the caller's window cannot be served from a single 25-row request.
+ */
+export const RUNTOOL_SEARCH_MAX_PAGE_SIZE = 25
+
+/**
+ * One result in the `InternalSearchResource` arm of the bare
+ * `SearchResource` response. For `query_type: "internal"`, `url` is
+ * the page id for Notion-hosted results; external connector results
+ * (Slack, Linear, Drive) carry a full URL and are discarded by
+ * `MemoryService`'s consumer because they are not Lore page
+ * candidates.
+ */
+export interface RunToolInternalSearchResult {
+  id: string
+  title: string
+  /** Page id for Notion results; full URL for connector results. */
+  url: string
+  /** Resource type discriminator (`page`, `database`, etc.). */
+  type: string
+  /** Empty when `max_highlight_length: 0`. */
+  highlight: string
+  timestamp: string
+  is_archived?: boolean
+}
+
+/**
+ * Bare response of `runTool("search", ...)` for `query_type:
+ * "internal"`. The pinned `SearchResource.Value` is a discriminated
+ * union of `InternalSearchResource | UserSearchResource`; Lore only
+ * issues `internal` queries so this is the only arm the wrapper
+ * narrows to. The wrapper rejects (programming error) any response
+ * carrying the `user_search` discriminator.
+ */
+export interface RunToolInternalSearchResponse {
+  type: "ai_search" | "workspace_search" | "none"
+  results: RunToolInternalSearchResult[]
+}
+
+/**
+ * Request body for `runTool("search", params)`. The full wire envelope
+ * is `{ type: "search", search: <this shape> }`; `runTool` adds the
+ * outer discriminator.
+ *
+ * `query` is required and (server-side) must have `length >= 1` —
+ * Lore's `MemoryService.fetchSemanticPages` accepts an empty composed
+ * query for unscoped relevance, so the consumer falls back to REST
+ * when the composed query is empty rather than sending an invalid
+ * RunTool request.
+ *
+ * `data_source_url` scopes the search to one collection
+ * (`collection://<data_source_id>`). The wrapper ALWAYS sets this for
+ * Memory searches so the workspace-wide post-filter to the Memories
+ * data source is unnecessary on the RunTool path.
+ *
+ * `page_size <= 25` — see `RUNTOOL_SEARCH_MAX_PAGE_SIZE`.
+ *
+ * `max_highlight_length: 0` is the wrapper's default — Lore never
+ * surfaces RunTool's highlight string and the savings on response
+ * size aren't worth a non-zero default.
+ */
+export interface RunToolSearchParams {
+  query: string
+  query_type?: "internal"
+  content_search_mode?: "ai_search" | "workspace_search"
+  data_source_url?: string
+  page_url?: string
+  teamspace_id?: string
+  page_size?: number
+  max_highlight_length?: number
+}
+
+/**
+ * `true` when `value` matches the structural contract of
+ * {@link RunToolInternalSearchResponse}. Defensive guard for the
+ * malformed-response path: a successful (200) HTTP response whose
+ * body lacks `type` ∈ `{ai_search, workspace_search, none}` or
+ * `results` array indicates the upstream schema drifted underneath
+ * the pin and the wrapper must fall back to REST rather than feed
+ * garbage to its callers. Per-result field typing is checked
+ * structurally on the entries the wrapper actually consumes
+ * (`id`, `url`).
+ */
+export function isInternalSearchResponse(
+  value: unknown,
+): value is RunToolInternalSearchResponse {
+  if (!value || typeof value !== "object") return false
+  const v = value as Record<string, unknown>
+  if (
+    v["type"] !== "ai_search" &&
+    v["type"] !== "workspace_search" &&
+    v["type"] !== "none"
+  ) {
+    return false
+  }
+  if (!Array.isArray(v["results"])) return false
+  for (const result of v["results"]) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      return false
+    }
+    const r = result as Record<string, unknown>
+    if (typeof r["id"] !== "string" || r["id"].length === 0) return false
+    if (typeof r["url"] !== "string") return false
+  }
+  return true
+}
+
+// ---------------------------------------------------------------------------
 // Tool-name maps
 // ---------------------------------------------------------------------------
 
 /**
  * Map from RunTool API tool name → request params shape.
  * Issue #533 wired `create_pages`; issue #534 extends with
- * `update_page`; issue #535 extends with `query_data_sources`.
- * Phase 1+ of issue #532 will add `search`.
+ * `update_page`; issue #535 extends with `query_data_sources`;
+ * issue #541 extends with `search`.
  */
 export interface RunToolRequestMap {
   create_pages: RunToolCreatePagesParams
   update_page: RunToolUpdatePageContentParams
   query_data_sources: RunToolQueryDataSourcesParams
+  search: RunToolSearchParams
 }
 
 /**
@@ -327,6 +443,7 @@ export interface RunToolResponseMap {
   create_pages: RunToolCreatePagesResponse
   update_page: RunToolUpdatePageResponse
   query_data_sources: RunToolQueryDataSourcesResponse
+  search: RunToolInternalSearchResponse
 }
 
 export type RunToolName = keyof RunToolRequestMap
