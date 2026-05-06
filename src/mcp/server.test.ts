@@ -166,13 +166,21 @@ describe("startServer", () => {
       expect(memoryResult.isError).toBe(true)
       expect(text).toContain("Lore MCP server started in diagnostic mode")
       expect(text).toContain("No .lore.yaml found")
-      expect(text).toContain("````\nNo .lore.yaml found")
+      // Fenced block now opens on the canonical stack header
+      // (`<Name>: <message>\n    at ...`) emitted by V8 — the rich
+      // formatter routes through `error.stack` so a future generic
+      // failure carries a frame line an operator can grep on.
+      expect(text).toContain("````\nError: No .lore.yaml found")
+      expect(text).toMatch(/\n {4}at .+:\d+:\d+/)
       expect(text).toContain("```shell\nlore init\n```")
       expect(text).toContain("lore init")
       expect(text).toContain("lore auth --login")
       expect(text).toContain("restart or reconnect the MCP client")
       expect(stderr).toHaveBeenCalledWith(
         expect.stringContaining("starting diagnostic MCP server")
+      )
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringMatching(/\n {4}at .+:\d+:\d+/)
       )
       expect(stdoutLog).not.toHaveBeenCalled()
       expect(stdoutWrite).not.toHaveBeenCalled()
@@ -253,6 +261,95 @@ describe("startServer", () => {
     } finally {
       stdoutWrite.mockRestore()
       stdoutLog.mockRestore()
+      stderr.mockRestore()
+    }
+  })
+
+  it("preserves error name, stack frames, and cause chain in startup diagnostics", async () => {
+    // Simulates the historical "Invalid URL" failure where the bare
+    // message carried no actionable trail. The diagnostic must surface
+    // the error name, stack, and any wrapping `cause` so the next time
+    // a generic message slips through, an operator (or agent) has a
+    // frame to act on.
+    const root = new TypeError("Invalid URL")
+    const wrapped = new Error("failed to construct Notion client", { cause: root })
+    mocks.initServices.mockRejectedValue(wrapped)
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+    try {
+      await startServer()
+
+      const text =
+        (
+          await mocks.servers[0]!.tools.get("lore-context")!.handler({
+            action: "status",
+          })
+        ).content[0]?.text ?? ""
+      expect(text).toContain("Error: failed to construct Notion client")
+      expect(text).toMatch(/\n {4}at .+:\d+:\d+/)
+      expect(text).toContain("Caused by: TypeError: Invalid URL")
+      // Both error stacks must appear — at least two frame lines after
+      // chaining (one per Error in the chain). A single-frame match is
+      // too weak; a regex that asserts the trail has at least the root
+      // cause's frames closes the window where a future formatter
+      // refactor accidentally drops the cause's stack.
+      const frameMatches = text.match(/\n {4}at .+:\d+:\d+/g) ?? []
+      expect(frameMatches.length).toBeGreaterThanOrEqual(2)
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringContaining("Caused by: TypeError: Invalid URL")
+      )
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("formats non-Error throwables and breaks cause cycles in startup diagnostics", async () => {
+    // Two edge cases on the same path: a plain-string throw must not
+    // crash the formatter, and a self-referential `cause` chain must
+    // not loop. Both fall on the same `formatInitErrorDetails` code
+    // path so one test exercises both.
+    const cyclic = new Error("outer") as Error & { cause?: unknown }
+    cyclic.cause = cyclic
+    mocks.initServices.mockRejectedValue(cyclic)
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+    try {
+      await startServer()
+
+      const text =
+        (
+          await mocks.servers[0]!.tools.get("lore-context")!.handler({
+            action: "status",
+          })
+        ).content[0]?.text ?? ""
+      expect(text).toContain("Error: outer")
+      // Cycle protection — the outer error appears once, not twice or
+      // more, despite `cause` pointing back at itself.
+      const outerOccurrences = text.match(/Error: outer/g) ?? []
+      expect(outerOccurrences.length).toBe(1)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it("formats string throwables without crashing the diagnostic formatter", async () => {
+    mocks.initServices.mockRejectedValue("plain string failure")
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+    try {
+      await startServer()
+
+      const text =
+        (
+          await mocks.servers[0]!.tools.get("lore-context")!.handler({
+            action: "status",
+          })
+        ).content[0]?.text ?? ""
+      expect(text).toContain("plain string failure")
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringContaining("plain string failure")
+      )
+    } finally {
       stderr.mockRestore()
     }
   })

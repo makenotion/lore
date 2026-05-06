@@ -118,12 +118,15 @@ export async function startServer(): Promise<void> {
 
     // If service initialization fails, still start the server with a minimal
     // diagnostic surface so MCP clients can display setup guidance instead
-    // of collapsing the failure into a generic connection error.
-    const initErrorMessage = formatInitErrorMessage(err)
+    // of collapsing the failure into a generic connection error. The
+    // formatted details preserve the error name, stack, and `cause` chain
+    // so a one-line `Invalid URL` failure has a frame-level trail an
+    // operator (or agent) can act on.
+    const initErrorDetails = formatInitErrorDetails(err)
     console.error(
-      `[lore] Failed to initialize; starting diagnostic MCP server: ${initErrorMessage}`
+      `[lore] Failed to initialize; starting diagnostic MCP server:\n${initErrorDetails}`
     )
-    registerStartupDiagnosticTools(server, formatStartupDiagnostic(err, initErrorMessage))
+    registerStartupDiagnosticTools(server, formatStartupDiagnostic(err, initErrorDetails))
   }
 
   if (services) {
@@ -178,7 +181,7 @@ function registerStartupDiagnosticTool(
 
 function formatStartupDiagnostic(
   error: unknown,
-  message = formatInitErrorMessage(error)
+  details = formatInitErrorDetails(error)
 ): string {
   const configRoot = process.env["LORE_CONFIG_ROOT"]?.trim()
   const recoverySteps = [
@@ -196,7 +199,7 @@ function formatStartupDiagnostic(
     "",
     "## Initialization Error",
     "",
-    fencedMarkdown(message),
+    fencedMarkdown(details),
     "",
     "## Environment",
     "",
@@ -209,8 +212,39 @@ function formatStartupDiagnostic(
   ].join("\n")
 }
 
-function formatInitErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+/**
+ * Format a thrown error for the startup-diagnostic surface. Includes
+ * `error.name`, `error.message`, the full stack, and any `cause` chain
+ * so generic messages like `Invalid URL` carry a stack frame the
+ * operator (or agent reading the diagnostic) can act on.
+ *
+ * Falls back to `String(error)` for non-Error throwables. A `cause`
+ * cycle is broken via a visited set so a self-referential chain
+ * cannot loop forever.
+ */
+function formatInitErrorDetails(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const blocks: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  let prefix = ""
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current)
+    // V8's `error.stack` already starts with `Name: message\n    at ...`,
+    // so embedding the stack also embeds the name and message in their
+    // canonical positions. Some throwers strip the stack — fall back to
+    // the bare `Name: message` shape so the fenced block is never empty.
+    const block = current.stack ?? `${current.name}: ${current.message}`
+    blocks.push(prefix ? `${prefix}${block}` : block)
+    prefix = "Caused by: "
+    current = (current as { cause?: unknown }).cause
+  }
+  // A non-Error `cause` (string, number, plain object) terminates the
+  // chain — render it once so the trail is preserved.
+  if (current !== undefined && !(current instanceof Error)) {
+    blocks.push(`Caused by: ${String(current)}`)
+  }
+  return blocks.join("\n")
 }
 
 function fencedMarkdown(value: string): string {
