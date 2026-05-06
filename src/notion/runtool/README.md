@@ -13,7 +13,7 @@
 > and the conflict scanner. Issue #541 wires `search` into
 > `MemoryService`'s semantic lane behind `LORE_USE_RUNTOOL_SEARCH`,
 > closing the last read-path Phase 1+ deliverable from
-> [issue #532](https://github.com/makenotion/lore/issues/532). Issue
+> [umbrella issue #532](https://github.com/makenotion/lore/issues/532). Issue
 > #542 extends `query_data_sources` with the SQL-mode aggregate path
 > consumed by `lore migrate --build-entities --report-orphan-rate`
 > (the PF3-01 orphan-rate metric). All consumers compose with the
@@ -198,7 +198,7 @@ Concretely:
   `CreatePagesResource.Value` directly — `{ pages: Array<{ id }> }`
   per the pinned schema and verified live against the production
   Mail vault.
-- `search` (planned for issue #532) returns a `SearchResource.Value`
+- `search` (shipped in issue #541) returns a `SearchResource.Value`
   — itself a discriminated union of
   `InternalSearchResource.Value | UserSearchResource.Value`,
   discriminated by the inner `type` field (see "`search` Tool" below).
@@ -220,9 +220,9 @@ as the per-tool resource directly.
 `limited_configurations` tools — visible only in `local` /
 `development` configurations and not on the public path Lore uses;
 the README's table at the top of this section therefore lists only
-the four issue-#532 names.) Every tool except `search` and
-`query_data_sources` is **out of scope for issue #532**; a future
-issue must explicitly add any others.
+the four names called out in umbrella issue #532.) Every tool except
+`search` and `query_data_sources` is **out of scope for umbrella
+issue #532**; a future issue must explicitly add any others.
 
 ## Auth And Capability Requirements For ntn-Resolved Tokens
 
@@ -431,7 +431,7 @@ same client-side outbound rps gate as the SDK calls — i.e. the
 `createLimitedClient` token bucket. A second parallel gate
 (a fresh `pLimit(3)` inside `runtool/client.ts`, or a separate token
 bucket) would silently double the effective rps and is forbidden by
-issue #532's "composition" non-goal: "RunTool calls must compose with
+umbrella issue #532's "composition" non-goal: "RunTool calls must compose with
 the same configured request pacing/backoff used by the Notion client
 wrapper." How that sharing is achieved (proxy reuse, bucket injection,
 or shared limit handle) is a Phase 1 architecture decision; this
@@ -445,13 +445,13 @@ two RunTool-specific cases against the top-level `client.request`
 dispatch path (one concurrency-cap assertion, one token-bucket
 pacing assertion in `src/notion/rate-limit.test.ts`) plus a
 companion auth-refresh test for `client.request` in
-`src/notion/client.test.ts`. The shared dispatcher landing in
-#532's Phase 1 must keep this coverage alive — when `runTool` folds
-in as a separate top-level method, add an analogous
-concurrency-cap + pacing case for it (and an auth-refresh case if
-the dispatcher exposes a new top-level shape). Without that, a
-future SDK refactor could silently drop the shared dispatcher out
-of the wrap.
+`src/notion/client.test.ts`. The shared dispatcher (PR #538, under
+umbrella issue #532) must keep this coverage alive as new RunTool
+consumers wire in — when `runTool` folds in as a separate top-level
+method, add an analogous concurrency-cap + pacing case for it (and
+an auth-refresh case if the dispatcher exposes a new top-level
+shape). Without that, a future SDK refactor could silently drop the
+shared dispatcher out of the wrap.
 
 **Multi-process pacing.** `src/notion/AGENTS.md` already documents
 that Notion enforces rate limits per access token, so a Lore process
@@ -628,7 +628,7 @@ The body wraps `data` in an outer envelope:
 
 Lore's aggregate use case (orphan-rate computation in
 `entity-migration.ts`) is **SQL mode only**. View mode is documented for
-completeness but is not part of the issue-#532 scope.
+completeness but is not part of umbrella issue #532's scope.
 
 ### Output (`QueryDataSourcesResource.Value`)
 
@@ -699,16 +699,16 @@ to request the next page. Three takeaways for Phase 1+:
 `query_data_sources` requires `hasAdvancedTools` (Enterprise + AI),
 gated server-side. Phase 3 wiring must therefore plan for a 403
 response shape on workspaces below that plan tier: the fallback
-contract from issue #532 ("If a RunTool call fails while the flag is
-on, fall back per call to the existing REST/SDK path and
-increment/log a fallback counter") covers this case. The specific
-fallback policy — when, how loudly, and whether to mute repeat 403s
-within a process — is a Phase 3 design decision, not a Phase 0
-contract.
+contract from umbrella issue #532 ("If a RunTool call fails while
+the flag is on, fall back per call to the existing REST/SDK path
+and increment/log a fallback counter") covers this case. The
+specific fallback policy — when, how loudly, and whether to mute
+repeat 403s within a process — is a Phase 3 design decision, not a
+Phase 0 contract.
 
 ## Phase 0 Acceptance Re-Check
 
-| Phase 0 deliverable (issue #532) | Status |
+| Phase 0 deliverable (umbrella issue #532) | Status |
 | -------------------------------- | ------ |
 | Endpoint and method | Confirmed: `POST /v1/tools/run` |
 | Request envelope shape and exact tool names | Confirmed; tool names use API form (`search`, `query_data_sources`) |
@@ -757,25 +757,32 @@ canonical reference for future RunTool consumers — see
 
 ### Phase 1+ pending (still out of scope)
 
-Issue #532 tracks the broader rollout. Pending deliverables:
+Umbrella issue #532 tracks the broader rollout. Pending deliverable:
 
-- Phase 4 default-on rollout — gated by the criteria in "Default-On
-  Criteria" of issue #532.
+- Phase 4 A/B harness + default-on ramp (issue #543) — extends
+  `compat.test.ts` with the search and aggregate consumers, collects
+  dated evidence in this README, and gates any default-on flip on the
+  "Default-On Criteria" of umbrella issue #532.
 
 Default flag state stays OFF for every consumer until those criteria
-are met. (`query_data_sources` shipped in PR #539 — see `query.ts`,
-`compat.test.ts`, and `LORE_USE_RUNTOOL_FILTER_SQL` in `flag.ts` —
-and is no longer pending. `search` shipped in issue #541 — see
-`search.ts`, the search slice in `compat.test.ts`, and
-`LORE_USE_RUNTOOL_SEARCH` in `flag.ts`.)
+are met. Shipped Phase 1+ deliverables (no longer pending):
+
+- `query_data_sources` SQL filter (issue #535, PR #539) — see
+  `query.ts`, `compat.test.ts`, and `LORE_USE_RUNTOOL_FILTER_SQL` in
+  `flag.ts`.
+- `search` consumer (issue #541) — see `search.ts`, the search slice
+  in `compat.test.ts`, and `LORE_USE_RUNTOOL_SEARCH` in `flag.ts`.
+- `query_data_sources` SQL aggregate (issue #542) — see
+  `querySubjectGroupCountsViaRunTool` in `query.ts`,
+  `compat.test.ts`, and `LORE_USE_RUNTOOL_AGGREGATE` in `flag.ts`.
 
 ## Canonical Error-Classification Vocabulary
 
 The `update_page` wrapper landed in issue #534 introduces the
 fall-back-able-error vocabulary that future RunTool consumers must
-share. The shared dispatcher landing in #532's Phase 1 will key
-error-classification on these exact strings; a sibling PR using a
-different spelling has a normalization debt that must be resolved
+share. The shared dispatcher (PR #538, under umbrella issue #532)
+keys error-classification on these exact strings; a sibling PR using
+a different spelling has a normalization debt that must be resolved
 IN that PR before it merges.
 
 | Kind | Trigger | Recovery |
@@ -825,8 +832,8 @@ reading `[lore] runtool: 403 RestrictedResource on <source>` lines
 across mixed surfaces grep one phrase, never two. Future RunTool
 consumers pick the shape that fits their fall-back-able cardinality:
 single-kind → typed class, multi-kind → discriminator. The shared
-dispatcher landing in #532 Phase 4 keys error-classification on the
-**string**, not the class identity, so both shapes interoperate.
+dispatcher (PR #538) keys error-classification on the **string**,
+not the class identity, so both shapes interoperate.
 
 ## Issue #535 Slice — `query_data_sources` SQL Filter Helpers
 
@@ -1200,8 +1207,8 @@ bug. Operators dogfooding `LORE_USE_RUNTOOL_SEARCH=1` should expect:
   matches.
 
 A future server-side cursor / pagination knob on RunTool `search`
-would lift this limitation; tracked in issue #532 Phase 4 (the
-default-on rollout).
+would lift this limitation; tracked in issue #543 (the Phase 4
+A/B harness + default-on rollout under umbrella issue #532).
 
 ### Post-filter parity
 
