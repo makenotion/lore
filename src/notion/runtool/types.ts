@@ -12,11 +12,12 @@
  * | File   | `src/server-publicApi/apis/ai_tools/params/RunToolParams.ts`   |
  *
  * Issue #533 wired the first runtime tool (`create_pages`); issue
- * #534 extends the surface with `update_page` for anchored markdown
- * edits. Other tools on `RunToolParams.ALL_TOOLS` (`search`,
- * `query_data_sources`, `move_pages`, etc.) are deliberately out of
- * scope until an explicit issue extends this file with their request
- * and response shapes.
+ * #534 extends with `update_page` for anchored markdown edits;
+ * issue #535 extends with `query_data_sources` for SQL-mode filter
+ * pushdowns. Other tools on `RunToolParams.ALL_TOOLS` (`search`,
+ * `move_pages`, etc.) are deliberately out of scope until an
+ * explicit issue extends this file with their request and response
+ * shapes.
  *
  * Two structural facts the README pins that this file encodes:
  *
@@ -190,18 +191,132 @@ export interface RunToolUpdatePageResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #535 — `query_data_sources` SQL-mode request and response shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Cell value shape returned by `query_data_sources` SQL queries.
+ *
+ * Rows in `QueryDataSourcesResource.results` are flat
+ * `Record<string, SqlCellValue>` keyed by the SQL output column name.
+ * Source: `SQLiteDatabasePropertyValue`, exposed via `unionResource`
+ * plus `nullableResource` (see
+ * `resources/query_data_sources/QueryDataSourcesResource.ts` at the
+ * pinned blob SHA).
+ */
+export type SqlCellValue = string | number | boolean | string[] | null
+
+/**
+ * Row shape returned by `query_data_sources` in SQL mode. Keys are
+ * SQL output column names; values are scalar `SqlCellValue`s.
+ */
+export type SqlResultRow = Record<string, SqlCellValue>
+
+/**
+ * SQL-mode parameters for `query_data_sources`.
+ *
+ * `mode` defaults to `"sql"` server-side; we set it explicitly so the
+ * wire payload is unambiguous on a future schema bump that adds a new
+ * default mode. `data_source_urls` carries one or more
+ * `collection://<data_source_id>` URLs — the same strings that double
+ * as fully-quoted SQL table names inside `query`.
+ *
+ * `params` are positional `?`-placeholder values. **Boolean values
+ * MUST use the literal sentinels `"__YES__"` / `"__NO__"`** — neither
+ * `0` / `1` nor `"true"` / `"false"` are recognized by the SQLite
+ * gateway for checkbox columns. Strings, numbers, and `null` flow
+ * through as-is for non-checkbox columns.
+ */
+export interface QueryDataSourcesSqlData {
+  mode?: "sql"
+  data_source_urls: string[]
+  query: string
+  params?: ReadonlyArray<string | number | null>
+}
+
+/**
+ * Request body of `runTool("query_data_sources", params)`. The
+ * full wire envelope is `{ type: "query_data_sources",
+ * query_data_sources: { data: <SQL data> } }`; `runTool` adds the
+ * outer discriminator and the inner `query_data_sources` key.
+ */
+export interface RunToolQueryDataSourcesParams {
+  data: QueryDataSourcesSqlData
+}
+
+/**
+ * Bare response shape for `query_data_sources`. **Asymmetric with
+ * the request** — there is NO outer `{ type, [tool]: ... }`
+ * wrapping; the response is `QueryDataSourcesResource.Value`
+ * directly, per the pinned `RunToolResource.Value` definition.
+ *
+ * `data_source_ids` is documented as "only present for SQL queries"
+ * (per the resource description); typed `?` accordingly.
+ */
+export interface RunToolQueryDataSourcesResponse {
+  results: SqlResultRow[]
+  has_more: boolean
+  data_source_ids?: string[]
+}
+
+/**
+ * `true` when `value` matches the structural contract of
+ * {@link RunToolQueryDataSourcesResponse}. Defensive guard for the
+ * malformed-response path: a successful (200) HTTP response whose
+ * body lacks `results: Array<Record<string, ...>>` or `has_more:
+ * boolean` indicates the upstream schema drifted underneath the
+ * pin and the wrapper must fall back to REST rather than feed
+ * garbage to its callers. Per-row cell typing is NOT validated
+ * here — the SQL caller knows which columns it asked for and
+ * narrows defensively at use sites.
+ */
+export function isQueryDataSourcesResponse(
+  value: unknown,
+): value is RunToolQueryDataSourcesResponse {
+  if (!value || typeof value !== "object") return false
+  const v = value as Record<string, unknown>
+  if (typeof v["has_more"] !== "boolean") return false
+  if (!Array.isArray(v["results"])) return false
+  for (const row of v["results"]) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false
+  }
+  if (
+    v["data_source_ids"] !== undefined &&
+    !(
+      Array.isArray(v["data_source_ids"]) &&
+      v["data_source_ids"].every((s: unknown) => typeof s === "string")
+    )
+  ) {
+    return false
+  }
+  return true
+}
+
+/**
+ * Build the `collection://<data_source_id>` URL used by
+ * `query_data_sources` as both the `data_source_urls` entry AND
+ * the SQL table name (fully quoted in the query). Documented as
+ * the public contract in `README.md`'s
+ * `query_data_sources Tool — Input/Output Shape` section.
+ */
+export function dataSourceUrl(dataSourceId: string): string {
+  return `collection://${dataSourceId}`
+}
+
+// ---------------------------------------------------------------------------
 // Tool-name maps
 // ---------------------------------------------------------------------------
 
 /**
  * Map from RunTool API tool name → request params shape.
  * Issue #533 wired `create_pages`; issue #534 extends with
- * `update_page`. Phase 1+ of issue #532 will add `search` and
- * `query_data_sources`.
+ * `update_page`; issue #535 extends with `query_data_sources`.
+ * Phase 1+ of issue #532 will add `search`.
  */
 export interface RunToolRequestMap {
   create_pages: RunToolCreatePagesParams
   update_page: RunToolUpdatePageContentParams
+  query_data_sources: RunToolQueryDataSourcesParams
 }
 
 /**
@@ -211,6 +326,7 @@ export interface RunToolRequestMap {
 export interface RunToolResponseMap {
   create_pages: RunToolCreatePagesResponse
   update_page: RunToolUpdatePageResponse
+  query_data_sources: RunToolQueryDataSourcesResponse
 }
 
 export type RunToolName = keyof RunToolRequestMap

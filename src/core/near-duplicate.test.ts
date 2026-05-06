@@ -387,6 +387,148 @@ describe("findNearDuplicates", () => {
   })
 })
 
+describe("findNearDuplicates — listForNearDuplicates branch (issue #535)", () => {
+  // Explicit parameter type so vitest infers a non-empty `mock.calls`
+  // tuple. `vi.fn(async () => [])` would otherwise infer `[]` for
+  // params and `mock.calls[0]![0]` becomes a type error.
+  type SqlListerOpts = NonNullable<MemoryLister["listForNearDuplicates"]> extends (
+    o: infer O,
+  ) => Promise<unknown>
+    ? O
+    : never
+
+  it("routes through listForNearDuplicates when the lister exposes it", async () => {
+    const listSpy = vi.fn().mockResolvedValue({ items: [] })
+    const sqlSpy = vi.fn(async (_opts: SqlListerOpts) => [
+      makeMemory({ id: "mem-1", title: "MemoryService refactor", status: "accepted" }),
+    ])
+    const result = await findNearDuplicates(
+      { list: listSpy, listForNearDuplicates: sqlSpy },
+      {
+        title: "MemoryService refactor",
+        tags: ["refactor"],
+        projectId: "proj-a",
+        threshold: 0.5,
+        excludeKinds: ["decision"],
+        statuses: ["accepted", "proposed"],
+        limit: 25,
+      },
+    )
+
+    expect(result.map((m) => m.id)).toEqual(["mem-1"])
+    expect(sqlSpy).toHaveBeenCalledTimes(1)
+    expect(listSpy).not.toHaveBeenCalled()
+    const opts = sqlSpy.mock.calls[0]![0]!
+    expect(opts.projectId).toBe("proj-a")
+    expect(opts.excludeKinds).toEqual(["decision"])
+    expect(opts.statuses).toEqual(["accepted", "proposed"])
+    expect(opts.limit).toBe(25)
+    expect(opts.tags).toEqual(["refactor"])
+  })
+
+  it("falls through to list() when the lister has no listForNearDuplicates method", async () => {
+    const listSpy = vi.fn().mockResolvedValue({
+      items: [makeMemory({ id: "mem-1", title: "MemoryService refactor" })],
+    })
+    const result = await findNearDuplicates(
+      { list: listSpy },
+      {
+        title: "MemoryService refactor",
+        tags: [],
+        projectId: "proj-a",
+        threshold: 0.5,
+      },
+    )
+    expect(result.map((m) => m.id)).toEqual(["mem-1"])
+    expect(listSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it("opts the lister into proposed rows when statuses contains 'proposed'", async () => {
+    const sqlSpy = vi.fn(async (_opts: SqlListerOpts) => [] as Memory[])
+    await findNearDuplicates(
+      { list: vi.fn(), listForNearDuplicates: sqlSpy },
+      {
+        title: "x",
+        tags: [],
+        projectId: "proj-a",
+        threshold: 0.5,
+        statuses: ["accepted", "proposed"],
+      },
+    )
+    expect(sqlSpy.mock.calls[0]![0]!.includeProposed).toBe(true)
+  })
+
+  it("does NOT opt into proposed rows when statuses does not include 'proposed'", async () => {
+    const sqlSpy = vi.fn(async (_opts: SqlListerOpts) => [] as Memory[])
+    await findNearDuplicates(
+      { list: vi.fn(), listForNearDuplicates: sqlSpy },
+      {
+        title: "x",
+        tags: [],
+        projectId: "proj-a",
+        threshold: 0.5,
+        statuses: ["accepted"],
+      },
+    )
+    expect(sqlSpy.mock.calls[0]![0]!.includeProposed).toBeUndefined()
+  })
+
+  it("returns [] on listForNearDuplicates failure (advisory contract preserved)", async () => {
+    const onError = vi.fn()
+    const sqlSpy = vi.fn(async (_opts: SqlListerOpts): Promise<Memory[]> => {
+      throw new Error("boom")
+    })
+    const result = await findNearDuplicates(
+      { list: vi.fn(), listForNearDuplicates: sqlSpy },
+      {
+        title: "x",
+        tags: [],
+        projectId: "proj-a",
+        threshold: 0.5,
+        onError,
+      },
+    )
+    expect(result).toEqual([])
+    expect(onError).toHaveBeenCalledTimes(1)
+  })
+
+  it("forwards limit BEFORE truncation — the candidate pool is SQL-filtered (acceptance criterion #3)", async () => {
+    // Pre-#535: the JS post-filter would receive 50 candidates and
+    // throw away the decision-kind ones, leaving an under-sized
+    // non-decision pool. Under #535, the lister sees `excludeKinds`
+    // and `statuses` ahead of the limit, so 50 candidates means
+    // 50 already-server-side-filtered candidates.
+    const sqlSpy = vi.fn(
+      async (_opts: SqlListerOpts): Promise<Memory[]> =>
+        // 5 candidate rows, all post-filter — 0 of them are `decision`.
+        Array.from({ length: 5 }, (_, i) =>
+          makeMemory({
+            id: `mem-${i}`,
+            title: `MemoryService refactor v${i}`,
+            kind: "note",
+          }),
+        ),
+    )
+    const result = await findNearDuplicates(
+      { list: vi.fn(), listForNearDuplicates: sqlSpy },
+      {
+        title: "MemoryService refactor v0",
+        tags: [],
+        projectId: "proj-a",
+        threshold: 0.3,
+        excludeKinds: ["decision"],
+        limit: 50,
+      },
+    )
+    // Limit is forwarded to the lister; trigram match still runs.
+    expect(sqlSpy.mock.calls[0]![0]!.limit).toBe(50)
+    expect(sqlSpy.mock.calls[0]![0]!.excludeKinds).toEqual(["decision"])
+    // Result is non-empty because the SQL-filtered pool already
+    // excludes decisions.
+    expect(result.length).toBeGreaterThan(0)
+  })
+})
+
 describe("findAutosaveLearningDuplicate", () => {
   it("short-circuits when LORE_DISABLE_AUTOSAVE_LEARNING_DEDUP=1", async () => {
     const listSpy = vi.fn()

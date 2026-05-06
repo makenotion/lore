@@ -123,6 +123,30 @@ export interface MemoryLister {
     // pass plain objects without constructing the full service;
     // every probe-used field MUST be enumerated here.
   }): Promise<{ items: Memory[]; nextCursor?: string }>
+  /**
+   * Issue #535 candidate-pool fetcher. When the `MemoryLister` is a
+   * real `MemoryService`, this routes through the SQL filter path
+   * if `LORE_USE_RUNTOOL_FILTER_SQL=1` and a RunTool client is
+   * wired; otherwise it forwards to `list({ excludeKinds, ... })`
+   * so the REST path's existing `Kind != X` server-side filter is
+   * still applied (a one-line REST improvement that lands
+   * alongside the SQL path).
+   *
+   * Optional on the interface so test fixtures that pass a plain
+   * `{ list }` object still satisfy the type — `findNearDuplicates`
+   * checks for the method's presence at runtime and falls back to
+   * `list({ excludeKinds, ... })` when absent.
+   */
+  listForNearDuplicates?(opts: {
+    projectId: string
+    topicId?: string
+    kind?: MemoryKind
+    excludeKinds?: readonly MemoryKind[]
+    statuses?: readonly MemoryStatus[]
+    tags?: readonly string[]
+    includeProposed?: boolean
+    limit: number
+  }): Promise<Memory[]>
 }
 
 export interface FindNearDuplicatesOpts {
@@ -154,15 +178,20 @@ export interface FindNearDuplicatesOpts {
    * `["decision"]` so a freshly-saved note doesn't light up every
    * governing decision record — decisions are the
    * `lore-decision action='create'` probe's domain.
+   *
+   * Accepts `readonly` arrays so call sites can pass `as const`
+   * tuples without an explicit cast — the helper never mutates.
    */
-  excludeKinds?: MemoryKind[]
+  excludeKinds?: readonly MemoryKind[]
   /**
    * Status whitelist applied client-side after the query. Notion's
    * `dataSources.query` accepts exactly one `Status select equals` clause,
    * so the decision path — which needs `accepted OR proposed` — post-filters
    * here instead of issuing two server queries for one probe.
+   *
+   * Accepts `readonly` arrays for the same reason as `excludeKinds`.
    */
-  statuses?: MemoryStatus[]
+  statuses?: readonly MemoryStatus[]
   /** Trigram Jaccard threshold to qualify as a match. */
   threshold: number
   /** Max rows to scan in the candidate pool (default 50). */
@@ -208,37 +237,68 @@ export async function findNearDuplicates(
   // zero tags means no tag filter (project scope alone).
   const topTags = opts.tags.slice(0, 2)
 
-  // The probe's `statuses` filter is post-fetch and lets the decision
-  // path keep one server query for an `accepted | proposed` candidate
-  // pool. Since Phase 2 of issue #281 added a default-exclude filter
-  // for `Status = proposed` to `MemoryService.list`, the
-  // post-fetch `statuses` whitelist runs against an already-narrowed
-  // set whenever `proposed` is in the requested set. Opt in to
-  // proposed rows on the way down so the post-filter sees the
-  // intended candidate pool. Memory near-dup probes (no `statuses`
-  // passed) keep the default-recall posture — proposed inbox rows
-  // do not surface as memory-side near-duplicate candidates.
+  // The probe's `statuses` filter is post-fetch on the REST fallback
+  // path and lets the decision path keep one server query for an
+  // `accepted | proposed` candidate pool. Since Phase 2 of issue
+  // #281 added a default-exclude filter for `Status = proposed` to
+  // `MemoryService.list`, the post-fetch `statuses` whitelist runs
+  // against an already-narrowed set whenever `proposed` is in the
+  // requested set. Opt in to proposed rows on the way down so the
+  // post-filter sees the intended candidate pool. Memory near-dup
+  // probes (no `statuses` passed) keep the default-recall posture —
+  // proposed inbox rows do not surface as memory-side near-duplicate
+  // candidates.
+  //
+  // Issue #535 SQL path: when `memories.listForNearDuplicates` is
+  // available (real `MemoryService`, not a test fixture
+  // implementing only `list`), it routes through the SQL filter
+  // helper if `LORE_USE_RUNTOOL_FILTER_SQL=1` and falls back to
+  // `list({ excludeKinds })` otherwise. Either way, the
+  // server-side `Kind NOT IN (...)` filter applies BEFORE the
+  // limit truncation — closing the JS-post-filter recall hole the
+  // pre-#535 code paid every time the candidate pool was
+  // decision-heavy.
   const includeProposed = opts.statuses?.includes("proposed") ?? false
   let items: Memory[]
   try {
-    const result = await memories.list({
-      projectId: opts.projectId,
-      topicId: opts.topicId,
-      tags: topTags.length > 0 ? topTags : undefined,
-      kind: opts.kind,
-      limit: opts.limit ?? 50,
-      includeContent: false,
-      // `|| undefined` (not just `includeProposed`) keeps the lister
-      // payload byte-identical to the pre-#281 shape on the
-      // memory-path probe (no `statuses`) — `false` and `undefined`
-      // route through different code paths in some `MemoryService.list`
-      // mocks, and the `near-duplicate.test.ts` no-opt-in assertion
-      // pins `includeProposed` to be undefined on the lister call.
-      // Do not simplify to `includeProposed`; the literal `false`
-      // would visibly change the lister payload shape.
-      includeProposed: includeProposed || undefined,
-    })
-    items = result.items
+    if (memories.listForNearDuplicates) {
+      items = await memories.listForNearDuplicates({
+        projectId: opts.projectId,
+        ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
+        ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+        ...(opts.excludeKinds && opts.excludeKinds.length > 0
+          ? { excludeKinds: opts.excludeKinds }
+          : {}),
+        ...(opts.statuses && opts.statuses.length > 0
+          ? { statuses: opts.statuses }
+          : {}),
+        ...(topTags.length > 0 ? { tags: topTags } : {}),
+        limit: opts.limit ?? 50,
+        // Same `|| undefined` shape as the pre-#535 lister payload —
+        // see the comment below for the rationale that pin tests
+        // (`near-duplicate.test.ts:no-opt-in assertion`) cement.
+        includeProposed: includeProposed || undefined,
+      })
+    } else {
+      const result = await memories.list({
+        projectId: opts.projectId,
+        topicId: opts.topicId,
+        tags: topTags.length > 0 ? topTags : undefined,
+        kind: opts.kind,
+        limit: opts.limit ?? 50,
+        includeContent: false,
+        // `|| undefined` (not just `includeProposed`) keeps the lister
+        // payload byte-identical to the pre-#281 shape on the
+        // memory-path probe (no `statuses`) — `false` and `undefined`
+        // route through different code paths in some `MemoryService.list`
+        // mocks, and the `near-duplicate.test.ts` no-opt-in assertion
+        // pins `includeProposed` to be undefined on the lister call.
+        // Do not simplify to `includeProposed`; the literal `false`
+        // would visibly change the lister payload shape.
+        includeProposed: includeProposed || undefined,
+      })
+      items = result.items
+    }
   } catch (err) {
     opts.onError?.(err)
     return []

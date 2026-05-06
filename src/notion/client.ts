@@ -1,5 +1,6 @@
 import {
   APIErrorCode,
+  APIResponseError,
   Client,
   LogLevel,
   isNotionClientError,
@@ -123,7 +124,7 @@ export function createClient(token: string, baseUrl?: string): Client {
   const resolvedBaseUrl = baseUrl ?? process.env["LORE_NOTION_BASE_URL"] ?? undefined
   const debugOptions = resolveSdkDebugOptions()
 
-  return new Client({
+  const sdkClient = new Client({
     auth: token,
     ...(resolvedBaseUrl ? { baseUrl: resolvedBaseUrl } : {}),
     timeoutMs: 30_000,
@@ -137,6 +138,102 @@ export function createClient(token: string, baseUrl?: string): Client {
         },
       })
     },
+  })
+  return wrapWithRunToolEnvelopeNormalizer(sdkClient)
+}
+
+/**
+ * Notion's `tools/run` gateway can resolve with a `200 OK` body shaped
+ * like `{ object: "error", status, code, message, request_id }` instead
+ * of throwing through the SDK's normal non-2xx path. Without
+ * normalization, downstream proxies see a successful resolution and
+ * never engage:
+ *
+ * - `createLimitedClient`'s 429 backoff fires only inside its `catch`
+ *   around the underlying SDK method (`src/notion/rate-limit.ts`).
+ *   A 200-wrapped `{ status: 429 }` envelope skips the bucket pause,
+ *   so flagged-on RunTool callers under throttling can keep sending
+ *   traffic at normal pace while each call falls back to REST.
+ * - `createAuthRefreshingClient`'s 401 retry fires only inside its
+ *   `catch` around the underlying SDK method
+ *   (`src/notion/client.ts:235`). A 200-wrapped `{ status: 401 }`
+ *   envelope skips the one-shot ntn refresh.
+ *
+ * The fix is to throw at the innermost `client.request` layer — same
+ * place a non-2xx HTTP response would surface — so the rate-limit and
+ * auth-refresh proxies catch the throw exactly as they would a native
+ * SDK error. We re-shape the envelope as an `APIResponseError` so
+ * `isNotionClientError(err)` (the auth-refresh wrapper's predicate)
+ * returns true, and so `isRateLimitError(err)` (the rate-limit
+ * wrapper's predicate, which checks `status === 429 || code ===
+ * "rate_limited"`) catches the 429 case.
+ *
+ * Wrapping happens at `createClient` so every consumer (the
+ * authoritative one being the auth-refreshing + rate-limited stack
+ * built in `services.ts`) inherits the protection without
+ * call-site work. Surfaced by the issue #535 vault-validation harness
+ * on 2026-05-06.
+ */
+export function wrapWithRunToolEnvelopeNormalizer(client: Client): Client {
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (prop !== "request" || typeof value !== "function") {
+        return value
+      }
+      const originalRequest = value as (this: Client, args: unknown) => Promise<unknown>
+      return async function (this: unknown, args: unknown): Promise<unknown> {
+        const result = await originalRequest.call(target, args)
+        if (
+          result &&
+          typeof result === "object" &&
+          (result as Record<string, unknown>)["object"] === "error"
+        ) {
+          throw runToolEnvelopeToError(result as RunToolErrorEnvelope)
+        }
+        return result
+      }
+    },
+  })
+}
+
+interface RunToolErrorEnvelope {
+  object: "error"
+  status?: number
+  code?: string
+  message?: string
+  request_id?: string
+}
+
+/**
+ * Coerce a `{ object: "error" }` body into the SDK's
+ * `APIResponseError` so it satisfies `isNotionClientError` (the
+ * auth-refresh wrapper's 401 predicate) and carries the `status` /
+ * `code` fields the rate-limit wrapper's `isRateLimitError` reads.
+ *
+ * The envelope's `code` is normalized into `APIErrorCode` when it
+ * matches a known SDK constant; unknown codes are surfaced verbatim
+ * via the `APIResponseError` constructor (the SDK accepts any
+ * string-ish `code` at runtime, even though the type is the enum —
+ * gateway-emitted codes that the SDK doesn't recognize otherwise
+ * collapse into `unknown`). Status defaults to `500` when absent so
+ * downstream classifiers don't mis-route a missing-status envelope as
+ * a 200.
+ */
+function runToolEnvelopeToError(envelope: RunToolErrorEnvelope): APIResponseError {
+  const status = envelope.status ?? 500
+  const code = (envelope.code ?? "unknown") as APIErrorCode
+  const message =
+    envelope.message ??
+    `Notion tools/run returned error envelope (code=${envelope.code ?? "unknown"})`
+  return new APIResponseError({
+    code,
+    status,
+    message,
+    headers: new Headers(),
+    rawBodyText: JSON.stringify(envelope),
+    additional_data: undefined,
+    request_id: envelope.request_id,
   })
 }
 

@@ -2,20 +2,40 @@
  * Env-var resolution for the RunTool feature flags.
  *
  * `LORE_USE_RUNTOOL` is the parent kill-switch / opt-in. Sub-flags
- * inherit from it unless the operator sets them explicitly. The
- * block-edit sub-flag (`LORE_USE_RUNTOOL_BLOCK_EDIT`) gates issue
- * #534's anchored markdown edits via `update_page` /
- * `update_content`. Default state is off.
+ * inherit from it unless the operator sets them explicitly:
  *
- * Flagged-on consumers fall back to the existing REST/SDK path
- * **only on the structured `RunToolBlockEditError` kinds**:
- * `no_match` / `multiple_matches` / `deletion_warning` /
- * `restricted_resource`. Transient transport errors — 401, 429,
- * 5xx, malformed responses — propagate verbatim so the
- * auth-refresh proxy gets its retry attempt and
- * `createLimitedClient`'s shared 429 backoff stays authoritative.
- * See `src/notion/runtool/client.ts` and the
- * "Canonical Error-Classification Vocabulary" section in
+ * - `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534) — gates anchored markdown
+ *   edits via `update_page` / `update_content`. Inherits from parent.
+ * - `LORE_USE_RUNTOOL_FILTER_SQL` (#535) — gates `query_data_sources`
+ *   SQL filter helpers. Inherits from parent.
+ *
+ * Default state is off for every flag.
+ *
+ * Each consumer has its own fall-back-shape contract:
+ *
+ * - **Block-edit (#534)** — flagged-on consumers fall back to the
+ *   existing REST/SDK path on the structured `RunToolBlockEditError`
+ *   kinds (`no_match` / `multiple_matches` / `deletion_warning` /
+ *   `restricted_resource`). Transient transport errors propagate.
+ * - **Filter-SQL (#535)** — flagged-on consumers fall back per-call
+ *   on `SqlPartialResultError` (saturated `has_more: true` window)
+ *   and on every non-`isSqlValidationError(err)` SDK error (401,
+ *   429, 5xx, network blip, malformed body). Validation errors
+ *   (400 / `validation_error`) escalate to the operator so query-
+ *   shape drift surfaces instead of silently masking. Transient
+ *   transport errors propagate up through the proxy chain so
+ *   `createLimitedClient`'s 429 backoff and
+ *   `createAuthRefreshingClient`'s 401 retry stay authoritative.
+ *
+ * 200-wrapped `{ object: "error" }` envelopes from the `tools/run`
+ * gateway are normalized into thrown `APIResponseError`s at the
+ * SDK-`request` layer (`wrapWithRunToolEnvelopeNormalizer` in
+ * `src/notion/client.ts`) so the proxy chain catches the throw
+ * exactly as it would a native non-2xx error. Without that
+ * normalization, the rate-limit and auth-refresh hooks would never
+ * engage on gateway-shaped errors. See
+ * `src/notion/runtool/client.ts` and the "Canonical
+ * Error-Classification Vocabulary" section in
  * `src/notion/runtool/README.md` for the full contract.
  *
  * Same posture as the existing `LORE_DISABLE_*` switches in
@@ -55,6 +75,25 @@ export function isRunToolBlockEditEnabled(
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
   const explicit = readFlag(env, "LORE_USE_RUNTOOL_BLOCK_EDIT")
+  if (explicit !== null) return explicit
+  return isRunToolEnabled(env)
+}
+
+/**
+ * True when the issue #535 SQL filter sub-flag is on. An explicit
+ * `LORE_USE_RUNTOOL_FILTER_SQL` setting wins; otherwise the value
+ * inherits from `LORE_USE_RUNTOOL`. Off by default.
+ *
+ * Gates the `query_data_sources` SQL filter helpers in
+ * `EntityService.findByName` / `findByAlias`,
+ * `MemoryService.listForNearDuplicates`, and
+ * `lore conflicts scan`'s already-judged pre-filter. Same
+ * inheritance posture as the block-edit sub-flag.
+ */
+export function isRunToolFilterSqlEnabled(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const explicit = readFlag(env, "LORE_USE_RUNTOOL_FILTER_SQL")
   if (explicit !== null) return explicit
   return isRunToolEnabled(env)
 }

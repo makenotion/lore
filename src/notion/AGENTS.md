@@ -19,26 +19,36 @@ No domain logic lives here -- that belongs in `src/core/`.
 | `extractors.ts`          | Type-safe property value extractors for `PageObjectResponse`              |
 | `relation-properties.ts` | Paginates relation property values when page responses are truncated      |
 | `setup.ts`               | Creates and verifies the five-database vault structure                    |
-| `runtool/`               | Quarantined RunTool integration (issue #532 Phase 0 README; issue #534 narrow `update_page` wrapper) |
+| `runtool/`               | Quarantined RunTool integration (issue #532 Phase 0 README; #533 `create_pages`, #534 `update_page`, #535 `query_data_sources` consumers) |
 
-## RunTool quarantine (issue #532 / #534)
+## RunTool quarantine (issues #532 / #533 / #534 / #535)
 
 `runtool/` is the home for Lore's opt-in integration with Notion's
 internal `POST /v1/tools/run` API. Phase 0 (PR #536) shipped the
-contract reconnaissance README; issue #534 extends the directory with
-the first runtime consumer — a narrow `update_page` / `update_content`
-wrapper used by anchored markdown edits in `MemoryService`.
+contract reconnaissance README; #533 (PR #538) added batched
+`create_pages` for auto-`mentions` fact emission; #534 (PR #537)
+added the narrow `update_page` / `update_content` wrapper used by
+anchored markdown edits in `MemoryService`; #535 (PR #539) added
+`query_data_sources` SQL filter helpers used by
+`EntityService.findByName` / `findByAlias`,
+`MemoryService.listForNearDuplicates`, and
+`lore conflicts scan`'s already-judged pre-filter. The remaining
+read-path entry (`search`) is tracked under issue #532.
 
 Files:
 
 | File              | Responsibility |
 | ----------------- | -------------- |
-| `README.md`       | Pinned upstream contract (commit + blob SHAs); auth / rate-limit / response-shape facts. |
-| `flag.ts`         | `LORE_USE_RUNTOOL` parent kill-switch + `LORE_USE_RUNTOOL_BLOCK_EDIT` sub-flag with parent-inherit. Default off. |
-| `client.ts`       | `runUpdatePageContent` low-level dispatcher over `client.request`. Maps RunTool `ApiValidationError` shapes to fall-back-able `RunToolBlockEditError` (`no_match` / `multiple_matches` / `deletion_warning` / `restricted_resource`). |
+| `README.md`       | Pinned upstream contract (commit + blob SHAs); auth / rate-limit / response-shape facts; per-consumer status table. |
+| `flag.ts`         | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags: `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534), `LORE_USE_RUNTOOL_FILTER_SQL` (#535), `LORE_USE_RUNTOOL_BATCH_CREATES` (#533, does NOT inherit from parent — see file). Each sub-flag (other than the batch-creates security-review carve-out) defaults to the value of `LORE_USE_RUNTOOL`. Default off. |
+| `client.ts`       | Shared `runTool<T>(client, tool, params)` dispatcher over `client.request`. Hosts `runUpdatePageContent` and the `RunToolBlockEditError` (`no_match` / `multiple_matches` / `deletion_warning` / `restricted_resource`) shape consumed by #534 callers. |
+| `types.ts`        | Pinned subset of `RunToolParams` plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535). |
 | `update-page.ts`  | `updatePageContentViaRunTool` high-level wrapper used by domain code. Pre-call validation rejects empty / duplicate `oldStr` and malformed `pageId`; deletion warnings without an explicit opt-in raise `RunToolBlockEditError`. |
-| `index.ts`        | Public surface — only what `update_page` callers need. Search / aggregate Phase 1+ deliverables from #532 are still pending. |
-| `*.test.ts`       | Mocked HTTP success / no-match / multiple-matches / deletion-warning / restricted-resource / 401 / 429 / 5xx / malformed coverage. |
+| `create-pages.ts` | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission (#533). |
+| `query.ts`        | SQL filter helpers (#535) — `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, plus `comparedPairKey`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST fallback. |
+| `error-helpers.ts`| `isSqlValidationError` (400 / `validation_error` classifier), `logRunToolFallback` (LORE_DEBUG=1 stderr line), `SqlPartialResultError`, `warnRunToolIntegrationSecretOnce` (#535 F5 once-per-process integration-secret warning). |
+| `index.ts`        | Public surface — re-exports `runTool`, the `update_page` consumer, the #535 SQL filter helpers, and the per-consumer flag accessors. |
+| `*.test.ts`       | Mocked HTTP success / no-match / multiple-matches / deletion-warning / restricted-resource / 401 / 429 / 5xx / malformed coverage; #535 query helpers' SQL-shape, has_more, kebab-case validation, F5/F6 + envelope-rejection contracts. |
 
 Why dispatch through `client.request`: the Notion v5 SDK's public
 `request<T>({ path, method, body })` API inherits the SDK's auth header,

@@ -24,6 +24,12 @@ import {
   type RefreshClientAuth,
 } from "./notion/client.js"
 import { createLimitedClient } from "./notion/rate-limit.js"
+import {
+  isRunToolBlockEditEnabled,
+  isRunToolEnabled,
+  isRunToolFilterSqlEnabled,
+} from "./notion/runtool/index.js"
+import { warnRunToolIntegrationSecretOnce } from "./notion/runtool/error-helpers.js"
 import { VaultManager } from "./core/vault.js"
 import { ProjectService } from "./core/project.js"
 import { TopicService } from "./core/topic.js"
@@ -366,7 +372,9 @@ export async function initServicesFromConfig(
   // stays under Notion's per-token rps ceiling without per-call-site work.
   // The wrapper governs concurrency (fan-out memory), request rate (token
   // bucket), and 429 shared backoff; defaults match Notion's ~3 rps
-  // public guidance.
+  // public guidance. The RunTool wrapper (`src/notion/runtool/client.ts`)
+  // dispatches through `client.request()`, which IS proxied here, so
+  // RunTool calls automatically share this gate.
   const client = authRefresh
     ? createAuthRefreshingClient(authSnapshotRef.current, authRefresh, {
         createClient: (token, baseUrl) =>
@@ -377,6 +385,20 @@ export async function initServicesFromConfig(
         },
       })
     : createLimitedClient(createClient(auth.token, auth.baseUrl), rateLimitOptions)
+
+  // Issue #535 F5: warn-once if a RunTool feature flag is on AND
+  // the resolved auth source is a known integration-secret path
+  // that RunTool will reject with 403. Without this, every
+  // flagged-on call silently falls back to REST and the operator
+  // sees zero RunTool traffic.
+  if (
+    isRunToolEnabled() ||
+    isRunToolBlockEditEnabled() ||
+    isRunToolFilterSqlEnabled()
+  ) {
+    warnRunToolIntegrationSecretOnce(auth.source)
+  }
+
   // When authRefresh is absent, the auth snapshot is intentionally static:
   // env/config token sources do not rotate within one process. Any future
   // non-refreshing token-rotation path must update authSnapshotRef and clear
@@ -426,6 +448,12 @@ export async function initServicesFromConfig(
     )
   }
   const effectiveScopeCtx = scopeColumnsReady ? scopeCtx : undefined
+  // Issue #535: MemoryService and EntityService route through
+  // `runTool(client, "query_data_sources", params)` — the same shared
+  // SDK client they already hold, dispatched via `client.request()`
+  // which is proxied by `createLimitedClient` and (when applicable)
+  // `createAuthRefreshingClient`. No separate runtool object,
+  // no parallel rate-limit gate.
   const memories = new MemoryService(client, db.memories, effectiveScopeCtx)
   const facts = new FactService(client, db.facts, effectiveScopeCtx, {
     useRunToolBatchCreates: resolveRunToolBatchCreatesFlag(),

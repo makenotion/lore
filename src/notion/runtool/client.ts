@@ -21,7 +21,7 @@
  * `axios` / `node:https` directly would silently double the effective
  * outbound rps and is forbidden.
  *
- * The wrapper is intentionally narrow. Two consumers are wired today:
+ * The wrapper is intentionally narrow. Three consumers are wired today:
  *
  * - `create_pages` (issue #533, PR #538) — `runTool(client,
  *   "create_pages", params)` consumed by `FactService.createBatchWithDedup`
@@ -34,10 +34,16 @@
  *   (with `RunToolBlockEditError` and the once-per-process
  *   `restricted_resource` warning); high-level wrapper in
  *   `update-page.ts`.
+ * - `query_data_sources` (issue #535, PR #539) — `runTool(client,
+ *   "query_data_sources", params)` consumed by `EntityService.findByName`
+ *   / `findByAlias`, `MemoryService.listForNearDuplicates`, and
+ *   `lore conflicts scan`'s already-judged pre-filter. Implementation in
+ *   `query.ts` (with `SqlPartialResultError` for saturated `has_more`
+ *   windows and `isSqlValidationError` to escalate query-shape drift).
  *
- * Phase 1 of issue #532 will extend `RunToolRequestMap` /
- * `RunToolResponseMap` with `search` and `query_data_sources`; this
- * module is the one diff point.
+ * Phase 1 of issue #532 still has `search` outstanding; that consumer
+ * will extend `RunToolRequestMap` / `RunToolResponseMap` in a follow-up
+ * PR without touching this dispatcher.
  */
 
 import type { Client } from "@notionhq/client"
@@ -123,6 +129,16 @@ export async function runTool<T extends RunToolName>(
     [tool]: params,
   } as Record<string, unknown>
 
+  // 200-wrapped `{ object: "error" }` bodies surfaced by the `tools/run`
+  // gateway are normalized into a thrown `APIResponseError` inside
+  // `wrapWithRunToolEnvelopeNormalizer` (`src/notion/client.ts`), which
+  // sits BELOW the rate-limit and auth-refresh proxies. Throwing at the
+  // SDK-`request` layer is what lets `createLimitedClient`'s 429 catch
+  // pause the shared bucket and `createAuthRefreshingClient`'s 401 catch
+  // run its one-shot retry. A guard at this seam (after the proxy
+  // chain has already resolved) would skip both. Tests pin the layering
+  // in `runtool.test.ts` (envelope-rejection contract) and
+  // `client.test.ts` (proxy composition under envelope errors).
   return await client.request<RunToolResponseMap[T] & object>({
     method: "post",
     path: RUNTOOL_PATH,

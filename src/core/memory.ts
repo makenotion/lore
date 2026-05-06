@@ -97,6 +97,11 @@ import {
   hydrateRelationProperties,
   hydrateRelationPropertiesForPages,
 } from "../notion/relation-properties.js"
+import {
+  fetchNearDuplicateCandidatePageIds,
+  isRunToolFilterSqlEnabled,
+} from "../notion/runtool/index.js"
+import { isSqlValidationError, logRunToolFallback } from "../notion/runtool/error-helpers.js"
 
 /** Cap matches `DecisionService.idCache` (500); TTL is 60s (vs Decision's
  *  30s) because title text is cheaper-to-be-stale than decision lifecycle
@@ -1642,6 +1647,7 @@ export function computePromotionAdvisory(input: {
         "and starting a fresh chain with a more specific topicKey."
   return { reasons, suggestion }
 }
+
 
 export class MemoryService {
   /**
@@ -4663,6 +4669,167 @@ export class MemoryService {
     }
 
     return result
+  }
+
+  /**
+   * Candidate-pool fetcher for the near-duplicate probe. Issue #535
+   * pulls `Status IN (...)` and `Kind NOT IN (...)` ahead of the row
+   * limit when the operator opts into the RunTool SQL path:
+   *
+   * - **Flag on (`LORE_USE_RUNTOOL_FILTER_SQL=1`) AND a RunTool
+   *   client is wired:** issue one parameterized SQL query through
+   *   `query_data_sources` with both predicates pushed
+   *   server-side and `LIMIT N` applied AFTER. The SQL query
+   *   returns page ids; each id hydrates through
+   *   `getPropertiesById` so the returned `Memory[]` matches the
+   *   REST path's content-off shape (`content: ""`).
+   * - **Flag off OR no RunTool client OR SQL throws:** falls back
+   *   to {@link MemoryService.list}. `excludeKinds` is forwarded
+   *   so the REST path also pushes `Kind != X` server-side via the
+   *   existing `does_not_equal` clauses (a one-line REST
+   *   improvement that lands alongside the SQL path); `statuses`
+   *   on the REST path stays as the caller's JS post-filter
+   *   responsibility because Notion's `dataSources.query` only
+   *   accepts a single `select.equals` clause for `Status`.
+   *
+   * Acceptance criterion #3 of #535: "Near-duplicate status and
+   * kind filters move before candidate-pool truncation, so `limit`
+   * means SQL-filtered candidates rather than candidates later
+   * pruned in JS." The contract holds on the SQL branch and
+   * partially on the REST fallback (`excludeKinds` is
+   * server-side; `statuses` remains a JS post-filter on REST).
+   *
+   * Acceptance criterion #4 (null/missing-property semantics): the
+   * SQL `Kind NOT IN (...)` predicate explicitly OR's `Kind IS
+   * NULL` so a row with no Kind passes the filter, mirroring
+   * Notion's `does_not_equal`'s null-permissive posture.
+   * `Status IN (...)` is null-restrictive on the SQL side and
+   * matches the REST path's `select.equals` whitelist (a null
+   * Status row also fails REST). Documented inline in
+   * `src/notion/runtool/query.ts:fetchNearDuplicateCandidatePageIds`.
+   */
+  async listForNearDuplicates(opts: {
+    projectId: string
+    topicId?: string
+    kind?: MemoryKind
+    excludeKinds?: readonly MemoryKind[]
+    statuses?: readonly MemoryStatus[]
+    tags?: readonly string[]
+    includeProposed?: boolean
+    limit: number
+  }): Promise<Memory[]> {
+    if (isRunToolFilterSqlEnabled()) {
+      try {
+        // Mirror `MemoryService.list`'s issue #281 default: when the
+        // caller has not opted into proposed rows AND has not
+        // narrowed via an explicit `statuses` whitelist, exclude
+        // `Status = proposed` server-side. Without this, the SQL
+        // path would surface inbox/proposed rows that the REST
+        // path's default-exclude filter drops, breaking
+        // acceptance criterion #6 ("Existing behavior remains
+        // unchanged with all RunTool flags off") under A/B
+        // testing.
+        const excludeStatuses =
+          opts.statuses === undefined && !opts.includeProposed
+            ? (["proposed"] as const)
+            : undefined
+        // **Tag filtering is pushed server-side via the verified
+        // exact-token SQL predicate** (issue #539 review iteration
+        // 4: previous overfetch heuristic was rejected because
+        // wrong-tag rows could fill the `limit * 4` window before
+        // tag-matching candidates).
+        // `fetchNearDuplicateCandidatePageIds` composes
+        // `(Tags LIKE %"tag1"% OR Tags LIKE %"tag2"%)` ahead of
+        // the LIMIT, so SQL `LIMIT N` truthfully bounds N
+        // tag-matching candidates — identical to REST
+        // `multi_select.contains` semantics.
+        const pageIds = await fetchNearDuplicateCandidatePageIds(this.client, {
+          dataSourceId: this.db.dataSourceId,
+          projectProperty: MEMORY_PROPS.PROJECT,
+          topicProperty: MEMORY_PROPS.TOPIC,
+          kindProperty: MEMORY_PROPS.KIND,
+          statusProperty: MEMORY_PROPS.STATUS,
+          keywordsProperty: MEMORY_PROPS.KEYWORDS,
+          tagsProperty: MEMORY_PROPS.TAGS,
+          projectId: opts.projectId,
+          // Default `includeUnscoped: true` mirrors
+          // `MemoryService.list`'s default `projectOrUnscopedFilter`
+          // — without this, project-scoped near-dup probes would
+          // miss vault-wide memories that REST surfaces (issue
+          // #539 review blocker #3).
+          ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
+          ...(opts.tags && opts.tags.length > 0 ? { tags: opts.tags } : {}),
+          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+          ...(opts.excludeKinds && opts.excludeKinds.length > 0
+            ? { excludeKinds: opts.excludeKinds }
+            : {}),
+          ...(opts.statuses && opts.statuses.length > 0
+            ? { statuses: opts.statuses }
+            : {}),
+          ...(excludeStatuses ? { excludeStatuses } : {}),
+          cleanupOrphanSentinel: MEMORY_CLEANUP_ORPHAN_SENTINEL,
+          limit: opts.limit,
+        })
+        // One `pages.retrieve` per id, gated by the shared rate-
+        // limit gate. Hydrate via `getPropertiesById` (no body
+        // fetch) so the returned shape matches the REST path's
+        // `includeContent: false` — `content: ""`.
+        const memories = await Promise.all(
+          pageIds.map((id) =>
+            this.getPropertiesById(id).catch((err: unknown) => {
+              // A single failed id should not collapse the SQL
+              // branch — drop it and continue. Hydration failures
+              // are typically archived-after-query races; the row
+              // would have been filtered out by the REST path's
+              // `is_full_page` + `archived` filter anyway.
+              if (process.env["LORE_DEBUG"] === "1") {
+                process.stderr.write(
+                  `[lore] partial-failure: source=near-duplicate-hydrate ` +
+                    `pageId=${id} error=${err instanceof Error ? err.message : "unknown"}\n`,
+                )
+              }
+              return null
+            }),
+          ),
+        )
+        // SQL applies exact tag filter before LIMIT (see SQL
+        // composition above), so the hydrated list is already
+        // tag-filtered and truncated to `opts.limit`. No JS
+        // post-filter needed for tags.
+        return memories.filter((m): m is Memory => m !== null)
+      } catch (err) {
+        if (isSqlValidationError(err)) {
+          // Surface to the operator (issue #539 review blocker #5):
+          // a 400 / validation_error indicates query-shape drift —
+          // column rename, gateway syntax change, parameter
+          // binding shape change. Silent fallback would mask a
+          // permanent SQL-rollout failure as "REST path always
+          // ran." The error message carries the gateway's
+          // specifics. Transient (network / 5xx / 429 /
+          // restricted / unauthorized / malformed) failures still
+          // fall back per call.
+          throw err
+        }
+        logRunToolFallback("near-duplicate-candidates", err)
+        // fall through to REST path
+      }
+    }
+
+    const { items } = await this.list({
+      projectId: opts.projectId,
+      ...(opts.topicId !== undefined ? { topicId: opts.topicId } : {}),
+      ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+      ...(opts.excludeKinds && opts.excludeKinds.length > 0
+        ? { excludeKinds: [...opts.excludeKinds] }
+        : {}),
+      ...(opts.tags && opts.tags.length > 0 ? { tags: [...opts.tags] } : {}),
+      limit: opts.limit,
+      includeContent: false,
+      ...(opts.includeProposed !== undefined
+        ? { includeProposed: opts.includeProposed }
+        : {}),
+    })
+    return items
   }
 
   async list(opts?: {

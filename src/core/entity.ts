@@ -47,6 +47,12 @@ import {
 } from "../notion/extractors.js"
 import { hydrateRelationProperties } from "../notion/relation-properties.js"
 import { LruCache } from "./cache.js"
+import {
+  fetchEntitiesByAliasSubstring,
+  fetchEntityByNormalizedName,
+  isRunToolFilterSqlEnabled,
+} from "../notion/runtool/index.js"
+import { isSqlValidationError, logRunToolFallback } from "../notion/runtool/error-helpers.js"
 
 /**
  * Cache TTL is short on purpose. Aliases are mutable (a `merge` or
@@ -365,6 +371,80 @@ export class EntityService {
     if (cached) return cached
 
     return this.nameCache.getOrLoad(key, async () => {
+      // Issue #535: when `LORE_USE_RUNTOOL_FILTER_SQL` is on and a
+      // RunTool wrapper is wired, ask SQL to widen the candidate
+      // pool to every row whose lowercased name contains the
+      // normalized key as a substring (one round-trip, no
+      // pagination). The JS post-filter then narrows to exact
+      // `normalizeEntityKey(rawName) === key` matches — same
+      // contract as the REST path's `title.contains` + post-
+      // filter pipeline. `LOWER()` is ASCII-only so the SQL
+      // alone cannot authoritatively decide a negative match; the
+      // post-filter side normalizes the stored name with the same
+      // helper Lore uses everywhere (NFC + whitespace collapse +
+      // trailing-punct strip + lowercase). Without the post-
+      // filter, a stored `"Memory Service. "` would silently
+      // miss `findByName("memoryservice")` (issue #539 review
+      // blocker #2).
+      //
+      // Archived-row safety: the SQL pool is NOT filtered server-
+      // side because the gateway's `archived` column shape is a
+      // Phase 0 open question. Each candidate is gated by
+      // `pages.retrieve` + `isActiveEntityPage` so an archived
+      // row at substring-rank 1 cannot mask a live row at
+      // substring-rank 2.
+      //
+      // Validation errors (`RunToolError.kind === "validation"`)
+      // are NOT swallowed — they indicate query-shape drift
+      // (column rename, gateway syntax change) and would silently
+      // turn the SQL rollout into a permanent REST fallback. The
+      // ambient `RunToolError` catch lets transient (network,
+      // 5xx, restricted, rate_limited, unauthorized, malformed)
+      // failures fall back per call; validation propagates to the
+      // operator.
+      if (isRunToolFilterSqlEnabled()) {
+        try {
+          const candidates = await fetchEntityByNormalizedName(this.client, {
+            dataSourceId: this.db.dataSourceId,
+            nameProperty: ENTITY_PROPS.NAME,
+            normalizedName: key,
+          })
+          for (const candidate of candidates) {
+            if (normalizeEntityKey(candidate.rawName) !== key) continue
+            const page = await this.client.pages.retrieve({
+              page_id: candidate.pageId,
+            })
+            if (!isActiveEntityPage(page)) continue
+            return await this.pageToEntity(page as PageObjectResponse)
+          }
+          // SQL ran cleanly to completion (the helper threw
+          // `SqlPartialResultError` if `has_more: true`, so reaching
+          // here means the gateway returned the full filtered
+          // candidate pool) and surfaced no live exact-key match
+          // among the substring candidates. The negative is
+          // authoritative — same outcome the REST paginated walk
+          // would produce on the same vault state.
+          return null
+        } catch (err) {
+          if (isSqlValidationError(err)) {
+            // Surface to the operator. A 400 / validation_error
+            // means the SQL query is malformed (column rename,
+            // gateway syntax change, parameter binding shape
+            // drift); silently falling back masks an issue worth
+            // alerting on. The error message already carries
+            // the gateway's specifics.
+            throw err
+          }
+          // Every other failure mode (network / 5xx / 401 / 403 /
+          // 429 / `SqlPartialResultError` from a saturated SQL
+          // window) falls through to the REST path. The REST
+          // paginated walk handles up to `NAME_LOOKUP_MAX_PAGES`
+          // pages of substring matches, which is the authoritative
+          // worst case.
+          logRunToolFallback("entity-find-by-name", err)
+        }
+      }
+
       const response = await this.client.dataSources.query({
         data_source_id: this.db.dataSourceId,
         filter: {
@@ -441,6 +521,72 @@ export class EntityService {
   async findByAlias(alias: string): Promise<Entity[]> {
     const key = normalizeEntityKey(alias)
     if (!key) return []
+
+    // Issue #535: when `LORE_USE_RUNTOOL_FILTER_SQL` is on and a
+    // RunTool wrapper is wired, ask SQL to widen the candidate
+    // pool to every row whose lowercased Aliases column contains
+    // the normalized key as a substring (one round-trip, no
+    // pagination). The JS post-filter then narrows to exact
+    // alias-token matches via `parseAliases` +
+    // `normalizeEntityKey` — same contract as the REST path's
+    // `rich_text contains` + post-filter pipeline.
+    //
+    // `LOWER()` is ASCII-only and Notion's `rich_text contains`
+    // is also case-insensitive substring; both surface the same
+    // false-positive class (`"User"` matching `"UserService"`),
+    // and both rely on the JS post-filter for correctness.
+    //
+    // SQL pool saturation (cap=100, no JS-confirmed exact match)
+    // falls through to REST. A high-cardinality alias like
+    // `"User"` stored on >100 entities walks past the cap; the
+    // REST paginated path then handles up to the 1000-row
+    // budget.
+    //
+    // Validation errors propagate to the operator (same posture
+    // as `findByName`).
+    if (isRunToolFilterSqlEnabled()) {
+      try {
+        const candidates = await fetchEntitiesByAliasSubstring(this.client, {
+          dataSourceId: this.db.dataSourceId,
+          aliasesProperty: ENTITY_PROPS.ALIASES,
+          normalizedAlias: key,
+        })
+        // SQL ran cleanly to completion (the helper threw
+        // `SqlPartialResultError` if `has_more: true`, so reaching
+        // here means the gateway returned the full substring pool).
+        // The JS post-filter narrows to exact alias-token matches
+        // — same shape as the REST `rich_text contains` +
+        // post-filter pipeline. Aliases are deliberately
+        // non-unique, so a complete pool may surface multiple
+        // matches; return them all.
+        const matches: Entity[] = []
+        const seen = new Set<string>()
+        for (const candidate of candidates) {
+          const aliases = parseAliases(candidate.rawAliases)
+          if (!aliases.some((a) => normalizeEntityKey(a) === key)) continue
+          if (seen.has(candidate.pageId)) continue
+          seen.add(candidate.pageId)
+          const page = await this.client.pages.retrieve({
+            page_id: candidate.pageId,
+          })
+          if (!isActiveEntityPage(page)) continue
+          matches.push(await this.pageToEntity(page as PageObjectResponse))
+        }
+        return matches
+      } catch (err) {
+        if (isSqlValidationError(err)) throw err
+        // Every other failure mode (network / 5xx / 401 / 403 /
+        // 429 / `SqlPartialResultError` from a saturated SQL
+        // window) falls through to the REST paginated walk.
+        // Saturation specifically: aliases are non-unique, so a
+        // 100-row SQL window with 3 exact matches may have 5+
+        // more on later REST pages — `SqlPartialResultError`
+        // routes through here so the REST path's
+        // `NAME_LOOKUP_MAX_PAGES` pagination becomes
+        // authoritative.
+        logRunToolFallback("entity-find-by-alias", err)
+      }
+    }
 
     // Paginate up to `NAME_LOOKUP_MAX_PAGES` so a high-cardinality
     // alias like "User" stored on many entities (the very ambiguity

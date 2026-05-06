@@ -387,6 +387,12 @@ function validatePositiveNumber(name: string, value: number): void {
  * The third `deps` parameter is a unit-test seam for clock injection
  * and is NOT part of the public production contract; production
  * callers pass exactly two arguments.
+ *
+ * **RunTool sharing (issue #535):** the RunTool wrapper
+ * (`src/notion/runtool/client.ts`) routes through the SDK's
+ * `client.request()` method, which IS proxied here, so RunTool
+ * calls automatically share this gate. No separate gate factory
+ * is needed.
  */
 export function createLimitedClient(
   client: Client,

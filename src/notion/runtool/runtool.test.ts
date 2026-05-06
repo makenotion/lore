@@ -150,6 +150,16 @@ describe("runTool client envelope", () => {
       expect(calls).toBe(1)
     }
   )
+
+  // Envelope normalization (200-wrapped `{ object: "error" }` bodies)
+  // belongs at the SDK-`request` layer where the rate-limit and
+  // auth-refresh proxies can observe the throw — not here, where it
+  // would land AFTER the proxies have already resolved successfully
+  // and miss the bucket pause + ntn-refresh hooks. Tests that pin the
+  // wrapper layering live in `client.test.ts` under
+  // `wrapWithRunToolEnvelopeNormalizer`. The runTool dispatcher
+  // propagates whatever the underlying `client.request` returns or
+  // throws — verbatim.
 })
 
 describe("createPagesViaRunTool — empty + single chunk", () => {

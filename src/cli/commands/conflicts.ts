@@ -33,6 +33,16 @@ import {
   validateExplicitProjectScopeName,
 } from "../../core/project-scope.js"
 import { CONFLICT_JUDGE_PROMPT_VERSION } from "../../core/prompts/conflict-judge.js"
+import { MEMORY_PROPS } from "../../notion/schema.js"
+import {
+  comparedPairKey,
+  fetchAlreadyComparedPairKeys,
+  isRunToolFilterSqlEnabled,
+} from "../../notion/runtool/index.js"
+import {
+  isSqlValidationError,
+  logRunToolFallback,
+} from "../../notion/runtool/error-helpers.js"
 import type { Memory } from "../../types.js"
 import { parsePositiveDecimalInteger } from "../parse.js"
 
@@ -297,7 +307,58 @@ export async function runScan(
   //    names the other in `comparedWith`. The candidate generator at
   //    `conflict.ts` deliberately does NOT filter here — state-aware
   //    filtering belongs to the caller (this CLI).
+  //
+  //    Issue #535 SQL path: when `LORE_USE_RUNTOOL_FILTER_SQL=1` and a
+  //    RunTool wrapper is wired, pre-build the set of already-compared
+  //    pair-keys via one targeted SQL query per project that
+  //    server-side narrows to rows whose `Compared With` is non-empty
+  //    (typically a small subset of the project's memories), then
+  //    O(1) Set lookup in JS. The structural win is the SQL query
+  //    pulls only judged rows instead of inheriting `comparedWith`
+  //    data via the broader `listForScan` walk; on a vault where
+  //    most memories have never been compared, this drops the judged-
+  //    pair fetch from O(N) to O(K) where K is the count of judged
+  //    rows. Pair-key membership uses unordered keys
+  //    (`<lo>::<hi>`) so it agrees with the JS `comparedWith.includes`
+  //    check on both sides.
+  //
+  //    Failure model is identical to the entity / near-dup paths:
+  //    validation errors propagate to the operator (query-shape
+  //    drift); transient kinds fall back to JS comparedWith-includes
+  //    silently. `Compared With` data is loaded eagerly by
+  //    `pageToMemory` via `listForScan` regardless, so the JS
+  //    fallback always has the data it needs.
+  const sqlPairs = isRunToolFilterSqlEnabled() ? new Set<string>() : null
+  if (sqlPairs) {
+    for (const project of projects) {
+      try {
+        const projectPairs = await fetchAlreadyComparedPairKeys(services.client, {
+          dataSourceId: services.vault.databases.memories.dataSourceId,
+          projectProperty: MEMORY_PROPS.PROJECT,
+          comparedWithProperty: MEMORY_PROPS.COMPARED_WITH,
+          projectId: project.id,
+        })
+        for (const key of projectPairs) sqlPairs.add(key)
+      } catch (err) {
+        if (isSqlValidationError(err)) throw err
+        logRunToolFallback("conflict-already-compared", err)
+        // SQL pre-fetch failed for this project; rely on the JS
+        // fallback below for every pair under any project.
+        sqlPairs.clear()
+        // Mark sqlPairs as invalid so the JS fallback runs uniformly
+        // across projects (mixing SQL-backed and JS-backed lookups
+        // within a single scan would be inconsistent under a
+        // partial 5xx).
+        break
+      }
+    }
+  }
+
   const filteredCandidates = dedupedCandidates.filter(({ candidate }) => {
+    if (sqlPairs && sqlPairs.size > 0) {
+      const key = comparedPairKey(candidate.memoryA.id, candidate.memoryB.id)
+      if (sqlPairs.has(key)) return false
+    }
     return (
       !candidate.memoryA.comparedWith.includes(candidate.memoryB.id) &&
       !candidate.memoryB.comparedWith.includes(candidate.memoryA.id)

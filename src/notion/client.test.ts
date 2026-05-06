@@ -5,7 +5,9 @@ import {
   createAuthRefreshingClient,
   resolveSdkDebugOptions,
   stderrSdkLogger,
+  wrapWithRunToolEnvelopeNormalizer,
 } from "./client.js"
+import { createLimitedClient } from "./rate-limit.js"
 
 describe("resolveSdkDebugOptions", () => {
   it("returns null when LORE_DEBUG is unset so the SDK keeps its default LogLevel.WARN", () => {
@@ -691,5 +693,162 @@ describe("createAuthRefreshingClient", () => {
     expect(createClient).toHaveBeenCalledTimes(2)
     expect(oldRequest).toHaveBeenCalledTimes(1)
     expect(newRequest).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Surfaced by the issue #535 vault-validation harness on 2026-05-06:
+// Notion's `tools/run` gateway can resolve with a `200 OK` body shaped
+// like `{ object: "error", status: 429, code: "rate_limited" }`
+// instead of throwing. Without normalization at the SDK-`request`
+// layer, the rate-limit and auth-refresh proxies miss the throw and
+// their bucket-pause / 401-retry hooks never engage. The wrapper
+// re-shapes the envelope as `APIResponseError` so the proxies catch
+// it exactly as they would a native SDK error.
+describe("wrapWithRunToolEnvelopeNormalizer", () => {
+  function stubRequestClient(
+    impl: () => Promise<unknown> | unknown,
+  ): { client: Client; calls: { count: number } } {
+    const calls = { count: 0 }
+    const client = {
+      request: vi.fn(async () => {
+        calls.count += 1
+        return await impl()
+      }),
+    } as unknown as Client
+    return { client, calls }
+  }
+
+  it("returns a successful body unchanged", async () => {
+    const { client } = stubRequestClient(() => ({ ok: true, page_id: "p" }))
+    const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
+    await expect(
+      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+    ).resolves.toEqual({ ok: true, page_id: "p" })
+  })
+
+  it("throws APIResponseError on a 200-wrapped error envelope", async () => {
+    const { client } = stubRequestClient(() => ({
+      object: "error",
+      status: 429,
+      code: "rate_limited",
+      message: "You have been rate limited.",
+      request_id: "req-1",
+    }))
+    const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
+    await expect(
+      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+    ).rejects.toBeInstanceOf(APIResponseError)
+    await expect(
+      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      message: "You have been rate limited.",
+      request_id: "req-1",
+    })
+  })
+
+  it("preserves non-`request` methods unchanged so namespace methods like `pages.create` still work", async () => {
+    const create = vi.fn(async () => ({ id: "page-x" }))
+    const client = {
+      pages: { create },
+      request: vi.fn(),
+    } as unknown as Client
+    const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
+    await expect(wrapped.pages.create({} as never)).resolves.toEqual({ id: "page-x" })
+    expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it("composes with createLimitedClient: a 200-wrapped 429 envelope pauses the shared bucket", async () => {
+    // Composition order mirrors `services.ts` — the normalizer wraps
+    // the bare client first, then the rate-limit proxy wraps the
+    // normalized client. The bucket pause fires inside the proxy's
+    // `catch` only if the underlying call throws; the normalizer is
+    // what turns the 200 envelope into a thrown error.
+    let calls = 0
+    const responses: unknown[] = [
+      {
+        object: "error",
+        status: 429,
+        code: "rate_limited",
+        message: "rate limited",
+      },
+      { ok: true, page_id: "second" },
+    ]
+    const client = {
+      request: vi.fn(async () => {
+        const r = responses[calls]
+        calls += 1
+        return r
+      }),
+    } as unknown as Client
+    const normalized = wrapWithRunToolEnvelopeNormalizer(client)
+    const onBackoff = vi.fn()
+    const limited = createLimitedClient(
+      normalized,
+      { concurrency: 1, requestsPerSecond: 100, burstSize: 5 },
+      { onBackoff },
+    )
+
+    await expect(
+      limited.request({ path: "tools/run", method: "post", body: {} }),
+    ).rejects.toBeInstanceOf(APIResponseError)
+    // Bucket pause emitted via the rate-limit `catch` — proves the
+    // normalizer's throw reaches the proxy layer where the
+    // shared-bucket backoff fires. Without the normalizer, a 200-
+    // wrapped 429 would skip this hook entirely.
+    expect(onBackoff).toHaveBeenCalledTimes(1)
+    const [, source] = onBackoff.mock.calls[0]!
+    expect(source).toBe("default")
+  })
+
+  it("composes with createAuthRefreshingClient: a 200-wrapped 401 envelope triggers the one-shot refresh + retry", async () => {
+    // `createAuthRefreshingClient` rebuilds the inner client through
+    // its `createClient` dep on every refresh. Layering: the
+    // normalizer wraps each rebuild so a 200-wrapped 401 envelope
+    // surfaces as `APIResponseError(code: unauthorized)` and the
+    // wrapper's 401 catch engages.
+    const oldRequest = vi.fn(async () => ({
+      object: "error",
+      status: 401,
+      code: "unauthorized",
+      message: "unauthorized",
+    }))
+    const newRequest = vi.fn(async () => ({ ok: true, page_id: "post-refresh" }))
+    const createClient = vi.fn((token: string) => {
+      const request = token === "old-token" ? oldRequest : newRequest
+      return wrapWithRunToolEnvelopeNormalizer({ request } as unknown as Client)
+    })
+    const refreshAuth = vi.fn(async () => ({
+      kind: "refreshed" as const,
+      auth: { token: "new-token" },
+      source: "ntn-auth-json",
+    }))
+
+    const client = createAuthRefreshingClient({ token: "old-token" }, refreshAuth, {
+      createClient,
+      onRefresh: () => {},
+    })
+
+    await expect(
+      client.request({ path: "tools/run", method: "post", body: {} }),
+    ).resolves.toEqual({ ok: true, page_id: "post-refresh" })
+    expect(refreshAuth).toHaveBeenCalledTimes(1)
+    expect(oldRequest).toHaveBeenCalledTimes(1)
+    expect(newRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it("defaults status to 500 when the envelope omits it so downstream classifiers don't mis-route as 2xx", async () => {
+    const { client } = stubRequestClient(() => ({
+      object: "error",
+      code: "internal_server_error",
+    }))
+    const wrapped = wrapWithRunToolEnvelopeNormalizer(client)
+    await expect(
+      wrapped.request({ path: "tools/run", method: "post", body: {} }),
+    ).rejects.toMatchObject({
+      status: 500,
+      code: "internal_server_error",
+    })
   })
 })
