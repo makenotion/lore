@@ -1,7 +1,23 @@
 # `src/notion/runtool/` — Quarantined RunTool Integration
 
 > **Status: Phase 0 README + four runtime consumers (`create_pages`,
-> `update_page`, `query_data_sources` filter + aggregate, `search`).**
+> `update_page`, `query_data_sources` filter + aggregate, `search`).
+> Default-on as of issue #543 Phase 4 (2026-05-06).**
+>
+> The parent `LORE_USE_RUNTOOL` kill-switch and every inheriting
+> sub-flag (`LORE_USE_RUNTOOL_BLOCK_EDIT`, `LORE_USE_RUNTOOL_FILTER_SQL`,
+> `LORE_USE_RUNTOOL_SEARCH`, `LORE_USE_RUNTOOL_AGGREGATE`) ship
+> default-on. `LORE_USE_RUNTOOL_BATCH_CREATES` (#533) does NOT inherit
+> and stays default-off per its security review carve-out (partial-
+> commit failure mode). Operators disable any consumer by setting
+> the corresponding env var to `=0`; every flagged-on consumer falls
+> back to the REST/SDK path on a per-call basis when the RunTool
+> dispatch rejects, so a degraded vault sees correctness preserved at
+> the cost of the RunTool-only optimizations. See "Issue #543 Phase 4
+> evidence log" below for the recorded decision and
+> harness-coverage status.
+>
+> **Original status banner (preserved):**
 > PR #538 (issue #533) landed the shared
 > `runTool<T>(client, tool, params)` dispatcher plus the
 > `create_pages` slice (live-verified against the production Mail
@@ -736,7 +752,7 @@ with the existing rate-limit + auth-refresh Proxies via the shared
 | ---- | ----- | ------- |
 | `client.ts` | #533 + #534 | Shared `runTool<T>(client, tool, params)` dispatcher (PR #538). PR #537 extended it with the `update_page` consumer surface (`runUpdatePageContent`, `RunToolBlockEditError`, validation-error classifier). |
 | `types.ts` | #533 + #534 + #535 + #541 | Pinned subset of `RunToolParams`. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535), and `search` (#541) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. |
-| `flag.ts` | #534 + #535 + #541 + #542 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535, `LORE_USE_RUNTOOL_SEARCH` for #541, `LORE_USE_RUNTOOL_AGGREGATE` for #542) with parent-inherit. Default off. |
+| `flag.ts` | #534 + #535 + #541 + #542 + #543 | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags (`LORE_USE_RUNTOOL_BLOCK_EDIT` for #534, `LORE_USE_RUNTOOL_FILTER_SQL` for #535, `LORE_USE_RUNTOOL_SEARCH` for #541, `LORE_USE_RUNTOOL_AGGREGATE` for #542) with parent-inherit. **Default ON** as of #543 Phase 4 (2026-05-06); explicit `=0` disables. |
 | `update-page.ts` | #534 | High-level `updatePageContentViaRunTool` consumer wrapper with pre-call validation (page-id shape, empty / duplicate `oldStr`). |
 | `query.ts` | #535 + #542 | SQL filter helpers (#535) — `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, plus `comparedPairKey` — consumed by `EntityService.findByName` / `findByAlias`, `MemoryService.listForNearDuplicates`, and `lore conflicts scan`. SQL aggregate helper `querySubjectGroupCountsViaRunTool` (#542) plus `extractFirstRelationId` for relation-column id rehydration, consumed by `lore migrate --build-entities --report-orphan-rate`. Throws `SqlPartialResultError` on `has_more: true` to route saturated windows through the per-call REST/JS fallback. |
 | `search.ts` | #541 | High-level `searchViaRunTool(client, { query, dataSourceId, pageSize? })` consumer wrapper used by `MemoryService.fetchSemanticPages`'s flag-on branch. Builds the canonical `collection://<id>` URL, clamps `page_size <= RUNTOOL_SEARCH_MAX_PAGE_SIZE` (25), narrows hits to Notion-internal page ids (drops external connector results), reports `saturated`, sets `max_highlight_length: 0`. Throws `RunToolSearchRestrictedError` on 403 — same `restricted_resource` vocabulary the `update_page` wrapper pins. |
@@ -759,13 +775,13 @@ canonical reference for future RunTool consumers — see
 
 Umbrella issue #532 tracks the broader rollout. Pending deliverable:
 
-- Phase 4 A/B harness + default-on ramp (issue #543) — extends
-  `compat.test.ts` with the search and aggregate consumers, collects
-  dated evidence in this README, and gates any default-on flip on the
-  "Default-On Criteria" of umbrella issue #532.
+- Phase 4 default-on rollout — **landed in PR #549 (issue #543) on
+  2026-05-06**, overriding the original "Default-On Criteria" 4-week
+  / 3-dogfood gate per the human lead's directive. See "Issue #543
+  Phase 4 evidence log" below for the recorded decision.
 
-Default flag state stays OFF for every consumer until those criteria
-are met. Shipped Phase 1+ deliverables (no longer pending):
+Default flag state is now **ON** for every inheriting consumer.
+Shipped Phase 1+ deliverables (no longer pending):
 
 - `query_data_sources` SQL filter (issue #535, PR #539) — see
   `query.ts`, `compat.test.ts`, and `LORE_USE_RUNTOOL_FILTER_SQL` in
@@ -775,6 +791,10 @@ are met. Shipped Phase 1+ deliverables (no longer pending):
 - `query_data_sources` SQL aggregate (issue #542) — see
   `querySubjectGroupCountsViaRunTool` in `query.ts`,
   `compat.test.ts`, and `LORE_USE_RUNTOOL_AGGREGATE` in `flag.ts`.
+
+`LORE_USE_RUNTOOL_BATCH_CREATES` for `create_pages` (#533) is the
+explicit carve-out and stays default-OFF — it does NOT inherit from
+the parent kill-switch.
 
 ## Canonical Error-Classification Vocabulary
 
@@ -850,7 +870,7 @@ parallel rate-limit gate, no `RunToolError` class.
 | ---- | ------- |
 | `query.ts` | Domain adapters: `fetchEntityByNormalizedName`, `fetchEntitiesByAliasSubstring`, `fetchNearDuplicateCandidatePageIds`, `fetchAlreadyComparedPairKeys`, `comparedPairKey`. Arbitrary SQL stays out of `src/core/`. Each helper takes a `Client` and dispatches via `runTool(client, "query_data_sources", params)`. |
 | `types.ts` | Pinned subset of `QueryDataSourcesToolParams` + `QueryDataSourcesResource` — `QueryDataSourcesSqlData`, `RunToolQueryDataSourcesParams`, `RunToolQueryDataSourcesResponse`, `SqlCellValue`, `SqlResultRow`. Plus `dataSourceUrl(id)` helper and `isQueryDataSourcesResponse` structural guard. |
-| `flag.ts` | `isRunToolFilterSqlEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, off by default. |
+| `flag.ts` | `isRunToolFilterSqlEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). |
 
 ### Scope of the SQL slice
 
@@ -936,16 +956,17 @@ that branches on the SDK error fields (the same vocabulary the
   `LORE_DEBUG=1`.
 
 The existing REST path is the one tested under `npm test`'s 4500+
-assertions; the SQL path is opt-in behind
-`LORE_USE_RUNTOOL_FILTER_SQL=1` (defaults to the parent
-`LORE_USE_RUNTOOL` value).
+assertions; the SQL path is the **default** post-#543 (Phase 4
+flip, 2026-05-06). `LORE_USE_RUNTOOL_FILTER_SQL` defaults to the
+parent `LORE_USE_RUNTOOL` value, which itself defaults ON.
 
-### Default-off invariant
+### Explicit-disable invariant
 
-With `LORE_USE_RUNTOOL=0` and `LORE_USE_RUNTOOL_FILTER_SQL=0` (the
-default), every byte of REST behavior is preserved. The
-`compat.test.ts` "flag-off invariant" test pins this against an
-identical fixture corpus, and the existing 4500+ tests cover the
+With `LORE_USE_RUNTOOL=0` or `LORE_USE_RUNTOOL_FILTER_SQL=0` set
+explicitly (recoverable post-#543 via either env var), every byte
+of REST behavior is preserved. The `compat.test.ts` "flag-off
+invariant" test pins this against an identical fixture corpus, and
+the existing 4500+ tests cover the
 REST path itself.
 
 ## Issue #542 Slice — `query_data_sources` SQL Aggregate Helper
@@ -964,7 +985,7 @@ no `RunToolError` class.
 | File              | Purpose |
 | ----------------- | ------- |
 | `query.ts`        | Aggregate adapter: `querySubjectGroupCountsViaRunTool` issues a single SQL query that groups facts by `(SubjectEntity, Subject)` and counts per group. Throws `SqlPartialResultError` on `has_more: true`. Plus `extractFirstRelationId` — relation column rehydration helper that converts the JSON-array-of-URLs SQL gateway value into the canonical dashed Notion id form so the aggregate fold's metric key matches the JS enumeration path's. |
-| `flag.ts`         | `isRunToolAggregateEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, off by default. Distinct from the filter-SQL flag because aggregate queries traverse the `hasAdvancedTools` capability gate (Enterprise + AI workspaces only); operators rolling out RunTool need to flip filter-SQL and aggregate independently per workspace tier. |
+| `flag.ts`         | `isRunToolAggregateEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). Distinct from the filter-SQL flag because aggregate queries traverse the `hasAdvancedTools` capability gate (Enterprise + AI workspaces only); operators rolling out RunTool need to flip filter-SQL and aggregate independently per workspace tier. |
 | `index.ts`        | Re-exports `querySubjectGroupCountsViaRunTool`, `extractFirstRelationId`, `SqlSubjectGroupCount`, and `isRunToolAggregateEnabled`. |
 
 ### Wired call site
@@ -1074,18 +1095,21 @@ fields, same vocabulary as the filter-SQL helpers:
   orphan-rate-aggregate runtool-fallback=1` line under
   `LORE_DEBUG=1`.
 
-The JS enumeration path is the canonical fallback and is the
-default execution path when `LORE_USE_RUNTOOL_AGGREGATE=0`. It is
-the path tested under `npm test`'s existing assertions; the SQL
-path is opt-in behind `LORE_USE_RUNTOOL_AGGREGATE=1` (defaults to
-the parent `LORE_USE_RUNTOOL` value).
+The JS enumeration path is the canonical fallback. Post-#543
+(Phase 4 flip, 2026-05-06), the SQL aggregate path is the
+**default** — `LORE_USE_RUNTOOL_AGGREGATE` defaults to the parent
+`LORE_USE_RUNTOOL` value, which itself defaults ON. The JS
+enumeration path runs when either flag is explicitly disabled
+(`=0`), or when the SQL path falls back per-call on capability
+gate / saturation / transient transport / malformed response.
 
-### Default-off invariant
+### Explicit-disable invariant
 
-With `LORE_USE_RUNTOOL=0` and `LORE_USE_RUNTOOL_AGGREGATE=0` (the
-default), every byte of `--report-orphan-rate` behavior is
-deterministic JS enumeration. The aggregate code path runs only
-when the operator opts in.
+With `LORE_USE_RUNTOOL=0` or `LORE_USE_RUNTOOL_AGGREGATE=0` set
+explicitly (recoverable post-#543 via either env var), every byte
+of `--report-orphan-rate` behavior is deterministic JS enumeration.
+The legacy 4500+ test corpus pins this path under `npm test` via
+the test-environment hermetic guard (`tests/setup-runtool-flag.ts`).
 
 ### Runtime verification (2026-05-06, dogfood vault)
 
@@ -1139,7 +1163,7 @@ class.
 | ---- | ------- |
 | `search.ts` | `searchViaRunTool(client, { query, dataSourceId, pageSize })` — high-level wrapper. Builds the canonical `collection://<id>` URL, sets `max_highlight_length: 0` (Lore never surfaces highlights), clamps `page_size` to `[1, RUNTOOL_SEARCH_MAX_PAGE_SIZE]`, narrows hits to Notion-internal page ids (drops external connector results), reports `saturated` so the caller can decide whether to fall back. Throws `RunToolSearchRestrictedError` on 403 with a once-per-process stderr warning; propagates 401 / 429 / 5xx / 400 / malformed verbatim. |
 | `types.ts` | `RUNTOOL_SEARCH_MAX_PAGE_SIZE` (= 25); `RunToolSearchParams`, `RunToolInternalSearchResponse`, `RunToolInternalSearchResult` shapes; `isInternalSearchResponse` structural guard. Pinned subset of `SearchToolParams` + `InternalSearchResource`. |
-| `flag.ts` | `isRunToolSearchEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, off by default. |
+| `flag.ts` | `isRunToolSearchEnabled(env)` — defaults to the parent `LORE_USE_RUNTOOL` value, **on by default** as of #543 Phase 4 (2026-05-06). |
 | `core/memory.ts` | `MemoryService.fetchSemanticPagesViaRunTool` — flag-gated branch that hydrates RunTool hits via `pages.retrieve` and feeds the existing `applySemanticPostFilters` pipeline. Returns `null` to signal "fall back to REST" on 403 or saturation (raw response hit the 25-row cap). Cooperative abort throws `AbortError` rather than returning `null` so `searchByHybridPages`'s `Promise.allSettled` discard path works unchanged. |
 
 ### Pagination decision (acceptance criterion #2)
@@ -1260,10 +1284,249 @@ Every RunTool dispatch is wrapped in a `try { … } catch (err) { … }`:
   `searchByHybridPages`'s `Promise.allSettled` discard works
   unchanged — same posture as the REST path.
 
-### Default-off invariant
+### Explicit-disable invariant
 
-With `LORE_USE_RUNTOOL=0` and `LORE_USE_RUNTOOL_SEARCH=0` (the
-default), every byte of REST semantic behavior is preserved. The
-`compat.test.ts` A/B harness pins this against an identical fixture
-corpus, and the 500+ existing `memory.test.ts` semantic-search
-assertions cover the REST path itself.
+With `LORE_USE_RUNTOOL=0` or `LORE_USE_RUNTOOL_SEARCH=0` set
+explicitly (recoverable post-#543 via either env var), every byte
+of REST semantic behavior is preserved. The `compat.test.ts` A/B
+harness pins this against an identical fixture corpus, and the
+500+ existing `memory.test.ts` semantic-search assertions cover
+the REST path itself under the test-environment hermetic guard
+(`tests/setup-runtool-flag.ts`).
+
+## Issue #543 Phase 4 evidence log
+
+This section is the canonical record for issue #543's Phase 4
+deliverables:
+
+- A/B harness coverage status across all read-path consumers
+  (filter-SQL #535, search #541, aggregate #542).
+- Operational source of truth for "harness runs N calendar weeks
+  without divergence regressions" — defined as main-branch CI runs
+  that include the `compat.test.ts` suite on every push/PR. Live-
+  token coverage is not introduced; fixture coverage is the
+  authoritative source for divergence detection.
+- Default-on decision (recorded; cross-link in
+  [#532 Phase 4 acceptance criterion 6](https://github.com/makenotion/lore/issues/532)).
+- Dated evidence entries (evidence accumulates as PRs land and
+  operators run the metric / search against live vaults).
+
+### Default-on decision (2026-05-06)
+
+The original #532 "Default-On Criteria" gated a default flip on
+four conditions (4-week harness, 3 dogfood operators × 1 week,
+Public API stability promise, fallback counter zero). The human
+lead (Hesham Salman, hsalman@makenotion.com) explicitly waived
+those gates on issue #543 (comment dated 2026-05-06: "Fuck it
+we ball, default it to ON") and authorized flipping the parent
+kill-switch and inheriting sub-flags to default-on without waiting
+on the harness clock or dogfood window.
+
+Specifically flipped to default-ON:
+
+- `LORE_USE_RUNTOOL` (parent kill-switch).
+- `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534) — inherits from parent.
+- `LORE_USE_RUNTOOL_FILTER_SQL` (#535) — inherits from parent.
+- `LORE_USE_RUNTOOL_SEARCH` (#541) — inherits from parent.
+- `LORE_USE_RUNTOOL_AGGREGATE` (#542) — inherits from parent.
+
+Stayed default-OFF (does NOT inherit from parent):
+
+- `LORE_USE_RUNTOOL_BATCH_CREATES` (#533) — security-review
+  carve-out for the partial-commit failure mode. Write-path
+  opt-in must be loud.
+
+The flip is implemented at the parser level — `isRunToolEnabled`
+in `flag.ts` returns `readFlag(env, "LORE_USE_RUNTOOL") !== false`
+rather than `=== true`, so an explicit `=0` still disables the
+parent and all inheriting sub-flags. Test infrastructure pins the
+parent off by default (`tests/setup-runtool-flag.ts` sets
+`LORE_USE_RUNTOOL=0` in `beforeEach`) so the legacy REST-path
+test corpus continues to exercise its intended path; tests that
+exercise RunTool consumers explicitly opt back in by setting
+`LORE_USE_RUNTOOL_*=1`.
+
+### Operational source of truth
+
+The "harness runs N calendar weeks without divergence regressions"
+acceptance criterion is satisfied by **main-branch CI runs that
+include the `compat.test.ts` suite on every push / PR**. The
+`npm test` script in `package.json` runs the entire vitest suite
+(including the harness) without flag-gating, so any push to a PR
+branch and any merge to main exercises the harness against a fresh
+fixture corpus.
+
+**What CI catches — and what it doesn't.** The fixture-driven
+harness detects **modeled divergence only** — cases that the
+fixture corpus encodes (populated/empty SubjectEntity, case-variant
+Subject collapse, saturation fallback, 403 RestrictedResource
+fallback, etc.). It does NOT catch:
+
+- Upstream schema-pin drift (`makenotion/notion-next` changes the
+  request envelope, response shape, or capability gating outside
+  the corners the fixture models).
+- Workspace capability-tier drift (a workspace gaining or losing
+  `hasAdvancedTools` would shift which fallback paths fire on real
+  vaults).
+- Relation-column representation changes (the SQL gateway returning
+  dashed UUIDs or a different JSON shape than the production-vault
+  verification recorded on 2026-05-05 captured).
+- Regressions in RunTool consumers that aren't in the documented
+  Phase 4 set (a future fifth consumer would not be in the harness
+  until a sibling A/B test lands).
+
+**Test-environment caveat.** Per the global hermetic guard in
+`tests/setup-runtool-flag.ts`, the legacy REST/SDK-path test corpus
+(`memory.test.ts`, `memory-encoding.test.ts`, etc.) runs with
+`LORE_USE_RUNTOOL=0` pinned in CI. The default-on production
+contract is exercised at the parser level by the `is*Enabled({})`
+unit tests in `flag.ts`'s sibling test files and by the
+`compat.test.ts` "default-on inherit-from-parent" assertion. CI
+green therefore proves: (a) the production default-on contract
+holds at the parser, (b) the documented Phase 4 consumers pass
+their A/B harness against fixtures, and (c) the legacy REST/SDK
+path still works when explicitly disabled. CI does NOT prove the
+production default-on path runs cleanly across every consumer's
+existing test corpus — that integration-level coverage is a known
+follow-up, called out under "Decision review cadence" below.
+
+Live-token coverage is intentionally NOT introduced for this
+issue. Operators running manual / dev-vault metric runs feed
+evidence into the Manual runs subsection below — that is the
+live-coverage substitute for the divergence classes CI fixtures
+cannot model. A schema-pin refresh PR (when the upstream
+`notion-next` commit changes) is the canonical surface for re-
+running the harness against an updated fixture model.
+
+### Harness coverage status (2026-05-06)
+
+| Consumer | A/B harness file | Status |
+| -------- | ---------------- | ------ |
+| `query_data_sources` SQL filter (#535) | `compat.test.ts` "RunTool SQL vs REST/SDK A/B harness" | Pinned via PR #539; covers near-dup probe (excludeKinds), decision probe (statuses whitelist), `limit`-bounds-post-filter, flag-off invariant, project-or-unscoped parity, exact-token tag predicate, deterministic ordering after JS scoring (7 tests). |
+| `search` (#541) | `compat.test.ts` "RunTool search vs REST/SDK semantic A/B harness" | Pinned via PR #546; covers page-id-set equivalence at limit ≤ 25, empty-query fall-through, mixed-hit fixture, RUNTOOL_SEARCH_MAX_PAGE_SIZE boundary, hydrate-via-`hit.url` regression, abort-mid-hydration, per-id 404 / RestrictedResource tolerance, saturated-raw / under-recalling / all-external-connector ranking-parity rule (10 tests). |
+| `query_data_sources` SQL aggregate (#542) | `compat.test.ts` "RunTool aggregate vs JS enumeration A/B harness (issue #542)" | Pinned via this PR (#543 Phase 4); covers metric equivalence on populated/empty SubjectEntity / case-variant Subject / invalidated facts, `has_more: true` saturation fallback, 403 RestrictedResource fallback, 400 validation_error re-throw (no silent fallback), default-on inherit-from-parent (5 tests). |
+| `update_page` (#534) | `update-page.test.ts` (mocked HTTP) | Block-edit consumer's coverage is pinned at the consumer level (success / no-match / multiple-matches / deletion-warning / restricted-resource × 2 / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation / SDK-canonical-URL integration test). The block-edit path doesn't have a separate REST/SDK equivalent to A/B — fall-back is to skip the body rewrite. |
+
+### Manual runs
+
+| Date | Operator | Vault | Path exercised | Outcome |
+| ---- | -------- | ----- | -------------- | ------- |
+| 2026-05-05 | Hesham Salman | Production Mail | `create_pages` (#533) | 2 test rows created + invalidated; auth chain, wire format, round-trip verified (see "PR #538 live-verification" banner above). |
+| 2026-05-05 | Hesham Salman | Production Mail | `query_data_sources` filter (#535) | SQL gateway findings recorded — relation columns store JSON-array-of-undashed-URLs; `Tags` exact-token predicate verified; archived/`last_edited_time` columns absent (see "Production-vault SQL gateway findings"). |
+| 2026-05-06 | Hesham Salman | Dogfood vault | `query_data_sources` aggregate (#542) | 269 distinct `(SubjectEntity, Subject)` groups across 924 facts saturated the gateway → `SqlPartialResultError` → JS fallback (see "Runtime verification (2026-05-06, dogfood vault)"). |
+
+Operators running the orphan-rate report or RunTool-flagged
+search against live vaults append rows here when the run
+surfaces non-obvious behavior (a fall-back cause, a metric
+discrepancy, a new gateway error mode). Routine successes are
+not logged; the table is for evidence that informs the
+default-on decision and any future schema-pin refresh.
+
+### Divergence fix log
+
+| Date | Issue | Fix | PR |
+| ---- | ----- | --- | -- |
+| 2026-05-05 | `compat.test.ts` couldn't catch SQL/REST divergence on unscoped (vault-wide) rows under `projectOrUnscopedFilter` | Added `mem-8` (unscoped) to fixture; SQL path mirrors REST's project-or-unscoped semantics | #539 review iteration (issue #539 blocker #3) |
+| 2026-05-05 | SQL substring `Tags LIKE %tag%` over-matched across token boundaries (`refactor` matched `refactor-old`) | Push `Tags LIKE '%"<tag>"%'` exact-token predicate ahead of LIMIT; `mem-9` fixture asserts | #539 review iteration 4 |
+| 2026-05-06 | Aggregate path's `extractFirstRelationId` accepted any 32-hex run anywhere in a Subject cell, including non-relation false-matches | URL-anchored regex (`://<host>/<id>`) requires the documented JSON-array-of-URLs shape | PR #547 principal-engineer review |
+| 2026-05-06 | SQL aggregate path counted live facts; JS enumeration path counted live facts only — silent metric mismatch on real vaults | JS call site passes `includeInvalidated: true` to `queryBySubject`; both paths now count every fact | PR #547 |
+
+When a future schema-pin refresh or a new RunTool consumer surfaces
+a divergence, append a row here with the date, summary, and PR
+link. The table is the audit trail for the harness's "without
+divergence regressions" stability claim.
+
+### Rolling back
+
+If a RunTool regression surfaces in production, operators have
+two granularities of disable:
+
+```sh
+# Option 1: parent kill-switch — disables every inheriting
+# sub-flag (block-edit, filter-sql, search, aggregate). Operators
+# rolling back to pre-#543 default-off semantics globally.
+export LORE_USE_RUNTOOL=0
+
+# Option 2: per-consumer disable — keep the others on, narrow
+# the rollback to the misbehaving path:
+export LORE_USE_RUNTOOL_BLOCK_EDIT=0   # disable anchored markdown edits (#534)
+export LORE_USE_RUNTOOL_FILTER_SQL=0   # disable SQL filter pushdowns (#535)
+export LORE_USE_RUNTOOL_SEARCH=0       # disable RunTool semantic search (#541)
+export LORE_USE_RUNTOOL_AGGREGATE=0    # disable orphan-rate SQL aggregate (#542)
+```
+
+A per-consumer disable is the recommended first action when an
+incident surfaces — it preserves the other consumers' rollouts
+while limiting blast radius. The parent kill-switch is the global
+escape hatch.
+
+**Typo / unrecognized-value contract.** Any non-`{0, 1, true,
+false, yes, no, on, off}` value resolves to the **default**, which
+post-#543 means `LORE_USE_RUNTOOL=fasle` (typo) → ON. Operators
+re-running their disable command should grep stderr for the
+`[lore] notion-runtool warn: ignoring unrecognized
+LORE_USE_RUNTOOL{...} value` line emitted on first read of a typo'd
+value (see `flag.ts:warnRunToolUnrecognizedValueOnce`). For
+incident-time rollback, the safe values are exactly `0` or `false`
+or `off` (case-insensitive).
+
+A rollback that requires more than a config change — i.e. the flag
+default itself needs to flip back — is the "decision flips back"
+path under "Decision review cadence" below.
+
+### Decision review cadence
+
+This section will be revisited:
+
+- **Two weeks after default-on flip (2026-05-20):** harness
+  divergence regressions, if any, count against the rollout. If
+  none, the default-on decision is reaffirmed in this section
+  with a dated entry.
+- **Four weeks after default-on flip (2026-06-03):** original
+  #532 4-week-harness gate's natural expiration. If no divergence
+  regressions accumulated, the original gate is satisfied
+  retroactively and recorded here.
+- **On any harness divergence regression:** the decision flips
+  back (default-off via a follow-up PR that sets the flag default
+  back to off and records the rollback rationale here).
+- **Integration-level CI coverage of the production default-on
+  path:** known follow-up. Today's CI runs the legacy test corpus
+  with `LORE_USE_RUNTOOL=0` pinned (hermetic guard); a follow-up
+  issue should add a parallel CI run with the parent flag pinned
+  ON to cover the production contract end-to-end. Tracked as a
+  Lore task (see "Cadence enforcement" below) so the commitment
+  survives turnover.
+
+### Cadence enforcement
+
+Three Lore tasks MUST be opened against the Lore vault
+**immediately on merge** so the dated commitments above don't
+quietly disappear into a paragraph nobody re-reads. Each is a
+distinct work item with a distinct trigger; the merger
+(Hesham Salman) opens them as part of the merge ritual.
+
+1. `lore-task` titled "Reaffirm #543 default-on rollout — 2-week
+   review (2026-05-20)" — confirms no harness divergence
+   regressions accumulated, appends a dated entry to "Manual
+   runs" if the dogfood fleet has run the orphan-rate or
+   RunTool-flagged search against live vaults.
+2. `lore-task` titled "Reaffirm #543 default-on rollout — 4-week
+   review (2026-06-03)" — original #532 4-week-harness gate's
+   natural expiration; if no regressions accumulated, the
+   original gate is satisfied retroactively.
+3. `lore-task` titled "Add integration-level CI coverage of the
+   production default-on path" — today's CI runs the legacy test
+   corpus with `LORE_USE_RUNTOOL=0` pinned (hermetic guard); the
+   follow-up adds a parallel CI run with the parent flag pinned
+   ON. Closes the gap called out under "What CI catches — and
+   what it doesn't" above.
+
+These tasks are the audit trail; the README's prose alone is
+not a sufficient enforcement mechanism. If the merger does NOT
+open them, this rollout's safety story has a documented hole and
+the `lore-task` follow-up itself becomes the first regression.
+
+> **Status (2026-05-06, pre-merge):** Tasks not yet opened — the
+> PR is in draft. The merger appends the three task ids to this
+> section before un-drafting OR opens them as part of the merge
+> ritual; either ordering closes the commitment.

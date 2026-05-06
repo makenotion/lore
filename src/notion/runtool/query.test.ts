@@ -207,13 +207,13 @@ describe("isRunToolAggregateEnabled", () => {
     ).toBe(true)
   })
 
-  it("defaults off with no env vars set", () => {
-    expect(isRunToolAggregateEnabled({})).toBe(false)
-    expect(isRunToolEnabled({})).toBe(false)
+  it("defaults on with no env vars set (issue #543 Phase 4 flip)", () => {
+    expect(isRunToolAggregateEnabled({})).toBe(true)
+    expect(isRunToolEnabled({})).toBe(true)
   })
 
-  it("ignores unrecognized values rather than crashing", () => {
-    expect(isRunToolAggregateEnabled({ LORE_USE_RUNTOOL_AGGREGATE: "maybe" })).toBe(false)
+  it("ignores unrecognized values, falling through to the default-on parent", () => {
+    expect(isRunToolAggregateEnabled({ LORE_USE_RUNTOOL_AGGREGATE: "maybe" })).toBe(true)
   })
 })
 

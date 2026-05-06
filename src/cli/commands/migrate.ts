@@ -120,7 +120,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--report-orphan-rate",
-    "Pair with `--build-entities` to print the PF3-01 orphan-rate metric (`subjects appearing in exactly 1 fact`). On `--build-entities --yes` (apply) the report measures the post-pass fact graph; on bare `--build-entities` (plan-only) or `--dry-run` it measures the pre-pass graph and labels the output `pre-pass` accordingly so the operator can read the canonicalization baseline before committing. Routes through RunTool's server-side `GROUP BY` aggregate when `LORE_USE_RUNTOOL_AGGREGATE=1` is set; otherwise enumerates facts in JS. Falls back per-call to the JS path on capability gate (403), saturated `has_more: true` aggregate windows, malformed responses, or transient transport-class failures. Read-only — does not affect plan/apply behavior."
+    "Pair with `--build-entities` to print the PF3-01 orphan-rate metric (`subjects appearing in exactly 1 fact`). On `--build-entities --yes` (apply) the report measures the post-pass fact graph; on bare `--build-entities` (plan-only) or `--dry-run` it measures the pre-pass graph and labels the output `pre-pass` accordingly so the operator can read the canonicalization baseline before committing. Routes through RunTool's server-side `GROUP BY` aggregate by default (#543 Phase 4: `LORE_USE_RUNTOOL_AGGREGATE` defaults ON, inheriting from the parent `LORE_USE_RUNTOOL` kill-switch); set either env var to `0` to force JS enumeration. Falls back per-call to the JS path on capability gate (403), saturated `has_more: true` aggregate windows, malformed responses, or transient transport-class failures. Read-only — does not affect plan/apply behavior."
   )
   .option(
     "--normalize-agents",
@@ -1712,18 +1712,21 @@ function acquireBuildEntitiesMigrationLock(
  * Issue #542 — drive the orphan-rate report after `--build-entities`.
  *
  * Two execution paths, gated by `LORE_USE_RUNTOOL_AGGREGATE` (defaults
- * to the parent `LORE_USE_RUNTOOL`):
+ * to the parent `LORE_USE_RUNTOOL`, which itself defaults ON post-#543):
  *
  * 1. **RunTool aggregate path.** Issues a single
  *    `query_data_sources` SQL query that groups facts by
  *    `(SubjectEntity, Subject)` and counts per group, then folds the
- *    rows through `computeOrphanRateFromAggregateRows`. Runs only
- *    when the flag is on.
+ *    rows through `computeOrphanRateFromAggregateRows`. **Default
+ *    path** when neither flag is explicitly disabled.
  * 2. **JS enumeration path.** Walks every fact via
  *    `FactService.queryBySubject("", { allowUnfiltered: true,
  *    includeInvalidated: true })`, folds through
- *    `computeOrphanRateFromFacts`. Default; serves every workspace
- *    tier including those below `hasAdvancedTools`.
+ *    `computeOrphanRateFromFacts`. Runs when either flag is set to
+ *    `=0`, or when the RunTool path falls back per-call (capability
+ *    gate / saturation / transient transport / malformed response).
+ *    Serves every workspace tier including those below
+ *    `hasAdvancedTools`.
  *
  * The flagged-on path falls back to the JS path **per call** on a
  * non-`validation_error` SDK error (403 / 429 / 5xx / network blip /

@@ -53,13 +53,67 @@ describe("isRunToolBlockEditEnabled", () => {
     ).toBe(true)
   })
 
-  it("defaults off with no env vars set", () => {
-    expect(isRunToolBlockEditEnabled({})).toBe(false)
-    expect(isRunToolEnabled({})).toBe(false)
+  it("defaults on with no env vars set (issue #543 Phase 4 flip)", () => {
+    expect(isRunToolBlockEditEnabled({})).toBe(true)
+    expect(isRunToolEnabled({})).toBe(true)
   })
 
-  it("ignores unrecognized values rather than crashing", () => {
-    expect(isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: "maybe" })).toBe(false)
+  it("ignores unrecognized values, falling through to the default-on parent", () => {
+    expect(isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: "maybe" })).toBe(true)
+  })
+
+  // The global `tests/setup-runtool-flag.ts` `beforeEach` resets the
+  // warning latch via `__resetRunToolFlagWarningsForTest()` before
+  // every test runs. The tests below deliberately do NOT call the
+  // reset themselves — the contract under test is "the latch survives
+  // and suppresses within a single test body," not "the test
+  // bootstraps the latch." Per PR #549 review iteration 2 blocker.
+  // The `__resetRunToolFlagWarningsForTest` import remains as a
+  // structural-test seam so the global setup file can call it.
+
+  it("emits a one-shot stderr warning when an unrecognized value is encountered (issue #543 PR #549 review nit)", () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      // First read: warning fires.
+      expect(isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: "fasle" })).toBe(true)
+      expect(stderrSpy).toHaveBeenCalledTimes(1)
+      const firstLine = stderrSpy.mock.calls[0]![0] as string
+      expect(firstLine).toContain("[lore] notion-runtool warn:")
+      expect(firstLine).toContain("LORE_USE_RUNTOOL")
+      expect(firstLine).toContain('"fasle"')
+      // Per PR #549 review iteration 2 nit: warning names the
+      // documented default so an incident operator doesn't need to
+      // chase the README to know which way the typo resolved.
+      expect(firstLine).toContain("default ON post-#543")
+      expect(firstLine).toContain("use =0 to disable")
+
+      // Second read of the same `(name, value)` pair: latch
+      // suppresses — once-per-process posture, mirroring
+      // `warnRunToolIntegrationSecretOnce`. Pinned IMMEDIATELY after
+      // the first read so a future Vitest hook-ordering refactor
+      // can't make this assertion vacuous.
+      expect(isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: "fasle" })).toBe(true)
+      expect(stderrSpy).toHaveBeenCalledTimes(1)
+
+      // A different unrecognized value on the same name fires
+      // independently — different operator typo, independent surfacing.
+      expect(isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: "disabled" })).toBe(true)
+      expect(stderrSpy).toHaveBeenCalledTimes(2)
+    } finally {
+      stderrSpy.mockRestore()
+    }
+  })
+
+  it("does NOT warn on recognized values (1, 0, true, false, on, off, yes, no, empty)", () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      for (const v of ["1", "0", "true", "false", "on", "off", "yes", "no", ""]) {
+        isRunToolBlockEditEnabled({ LORE_USE_RUNTOOL: v })
+      }
+      expect(stderrSpy).not.toHaveBeenCalled()
+    } finally {
+      stderrSpy.mockRestore()
+    }
   })
 })
 

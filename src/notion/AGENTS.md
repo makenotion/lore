@@ -44,7 +44,7 @@ Files:
 | File              | Responsibility |
 | ----------------- | -------------- |
 | `README.md`       | Pinned upstream contract (commit + blob SHAs); auth / rate-limit / response-shape facts; per-consumer status table. |
-| `flag.ts`         | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags: `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534), `LORE_USE_RUNTOOL_FILTER_SQL` (#535), `LORE_USE_RUNTOOL_SEARCH` (#541), `LORE_USE_RUNTOOL_AGGREGATE` (#542), `LORE_USE_RUNTOOL_BATCH_CREATES` (#533, does NOT inherit from parent — see file). Each sub-flag (other than the batch-creates security-review carve-out) defaults to the value of `LORE_USE_RUNTOOL`. Default off. |
+| `flag.ts`         | `LORE_USE_RUNTOOL` parent kill-switch + per-consumer sub-flags: `LORE_USE_RUNTOOL_BLOCK_EDIT` (#534), `LORE_USE_RUNTOOL_FILTER_SQL` (#535), `LORE_USE_RUNTOOL_SEARCH` (#541), `LORE_USE_RUNTOOL_AGGREGATE` (#542), `LORE_USE_RUNTOOL_BATCH_CREATES` (#533, does NOT inherit from parent — see file). Each sub-flag (other than the batch-creates security-review carve-out) defaults to the value of `LORE_USE_RUNTOOL`. **Default ON** as of #543 Phase 4 (2026-05-06); see `src/notion/runtool/README.md` "Issue #543 Phase 4 evidence log". |
 | `client.ts`       | Shared `runTool<T>(client, tool, params)` dispatcher over `client.request`. Hosts `runUpdatePageContent` and the `RunToolBlockEditError` (`no_match` / `multiple_matches` / `deletion_warning` / `restricted_resource`) shape consumed by #534 callers. |
 | `types.ts`        | Pinned subset of `RunToolParams` plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. Today: `create_pages` (#533), `update_page` (#534), `query_data_sources` (#535), `search` (#541). |
 | `update-page.ts`  | `updatePageContentViaRunTool` high-level wrapper used by domain code. Pre-call validation rejects empty / duplicate `oldStr` and malformed `pageId`; deletion warnings without an explicit opt-in raise `RunToolBlockEditError`. |
@@ -64,11 +64,20 @@ parallel `fetch` path would require re-implementing all of those —
 issue #532's "compose with the existing request pacing/backoff"
 non-goal pins this.
 
-Default-off contract for the block-edit path:
+Default-on contract for the block-edit path (#543 Phase 4 flip,
+2026-05-06):
 
 - `LORE_USE_RUNTOOL_BLOCK_EDIT` defaults to the value of
-  `LORE_USE_RUNTOOL`. If neither is set, every consumer falls through
-  the existing REST/SDK path.
+  `LORE_USE_RUNTOOL`, which itself defaults ON. If neither is set,
+  every flagged-on consumer attempts the RunTool block-edit path
+  first and falls back per-call to the existing REST/SDK path on
+  any classified `RunToolBlockEditError` (`no_match` /
+  `multiple_matches` / `deletion_warning` / `restricted_resource`).
+  Pre-#543 default-off semantics are recoverable via
+  `LORE_USE_RUNTOOL=0` (parent disable, cascades to every inheriting
+  sub-flag) or `LORE_USE_RUNTOOL_BLOCK_EDIT=0` (per-consumer
+  disable). See `src/notion/runtool/README.md` "Issue #543 Phase 4
+  evidence log" for the recorded decision and rollback recipe.
 - A flagged-on consumer that hits `RunToolBlockEditError` falls back
   to the REST/SDK path **per call**, not per process — a stale anchor
   in one save has no effect on the next.

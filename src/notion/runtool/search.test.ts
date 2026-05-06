@@ -115,16 +115,16 @@ describe("isRunToolSearchEnabled", () => {
     ).toBe(true)
   })
 
-  it("defaults off with no env vars set", () => {
-    expect(isRunToolSearchEnabled({})).toBe(false)
-    expect(isRunToolEnabled({})).toBe(false)
+  it("defaults on with no env vars set (issue #543 Phase 4 flip)", () => {
+    expect(isRunToolSearchEnabled({})).toBe(true)
+    expect(isRunToolEnabled({})).toBe(true)
   })
 
-  it("ignores unrecognized values rather than crashing", () => {
-    expect(isRunToolSearchEnabled({ LORE_USE_RUNTOOL: "maybe" })).toBe(false)
+  it("ignores unrecognized values, falling through to the default-on parent", () => {
+    expect(isRunToolSearchEnabled({ LORE_USE_RUNTOOL: "maybe" })).toBe(true)
     expect(
       isRunToolSearchEnabled({ LORE_USE_RUNTOOL_SEARCH: "garbage" })
-    ).toBe(false)
+    ).toBe(true)
   })
 })
 

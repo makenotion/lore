@@ -4305,12 +4305,14 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
       })
       expect(requestSpyOn).toHaveBeenCalledTimes(1) // Pins the fixture is wired.
 
-      // Phase 2: same fixture, flag OFF. The path-selection logic
-      // must skip RunTool and go through `pages.updateMarkdown`. A
-      // regression that lost the flag check in `memory.ts` would
-      // make this test fail.
-      delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
-      delete process.env.LORE_USE_RUNTOOL
+      // Phase 2: same fixture, flag explicitly OFF. The
+      // path-selection logic must skip RunTool and go through
+      // `pages.updateMarkdown`. A regression that lost the flag
+      // check in `memory.ts` would make this test fail.
+      // Issue #543 flipped the default to ON, so flag-off must be
+      // set explicitly here rather than relying on env-unset.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "0"
+      process.env.LORE_USE_RUNTOOL = "0"
       const baseOff = makeUpsertClient({
         findResults: [existing],
         existingBody: body,
@@ -5375,9 +5377,12 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
       })
       expect(requestSpyOn).toHaveBeenCalledTimes(1) // Pins the fixture is wired.
 
-      // Phase 2: flag OFF — must skip RunTool and use the canonical path.
-      delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
-      delete process.env.LORE_USE_RUNTOOL
+      // Phase 2: flag explicitly OFF — must skip RunTool and use the
+      // canonical path. Issue #543 flipped the default to ON, so
+      // flag-off must be set explicitly here rather than relying on
+      // env-unset.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "0"
+      process.env.LORE_USE_RUNTOOL = "0"
       const baseOff = makeRekeyClient({
         targetMemory: target,
         targetMarkdown,

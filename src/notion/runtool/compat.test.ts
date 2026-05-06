@@ -568,6 +568,9 @@ function buildSemanticStubClient(): { client: Client; counters: SemanticStubCoun
 describe("RunTool search vs REST/SDK semantic A/B harness", () => {
   beforeEach(() => {
     __resetRunToolSearchWarningsForTest()
+    // Default state is ON post-#543. Tests that need the flag-off
+    // branch must explicitly set `=0` below; tests that need flag-on
+    // can set `=1` for clarity (or rely on the inherited default).
     delete process.env["LORE_USE_RUNTOOL_SEARCH"]
     delete process.env["LORE_USE_RUNTOOL"]
   })
@@ -578,6 +581,7 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
   })
 
   it("flag-off and flag-on agree on the page-id set at limit ≤ 25", async () => {
+    process.env["LORE_USE_RUNTOOL_SEARCH"] = "0"
     const restStub = buildSemanticStubClient()
     const restService = new MemoryService(restStub.client, SEMANTIC_DB)
     const restResult = await restService.search({
@@ -742,7 +746,7 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
       }
     }
 
-    delete process.env["LORE_USE_RUNTOOL_SEARCH"]
+    process.env["LORE_USE_RUNTOOL_SEARCH"] = "0"
     const restService = new MemoryService(buildRichStub().client, SEMANTIC_DB)
     const restResult = await restService.search({
       query: "Memory",
@@ -1253,5 +1257,494 @@ describe("RunTool search vs REST/SDK semantic A/B harness", () => {
 
     expect(counters.requestCalls).toBe(1)
     expect(counters.searchCalls).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Issue #542 — `query_data_sources` aggregate consumer A/B harness
+// ---------------------------------------------------------------------------
+
+/**
+ * Acceptance criterion (issue #543 Phase 4): "Aggregate A/B coverage
+ * asserts orphan-rate metric equivalence between RunTool and JS
+ * fallback paths over fixtures and at least one representative
+ * dev/manual run."
+ *
+ * The harness drives `runOrphanRateReport` (the integration site
+ * consumed by `lore migrate --build-entities --report-orphan-rate`)
+ * twice over a shared fact corpus — once with
+ * `LORE_USE_RUNTOOL_AGGREGATE=0` (forces the JS enumeration path)
+ * and once with `LORE_USE_RUNTOOL_AGGREGATE=1` (forces the RunTool
+ * SQL aggregate path) — and asserts the emitted orphan-rate metric
+ * matches byte-for-byte.
+ *
+ * Shape mirrors the search consumer's A/B harness above: one shared
+ * fixture, one stub services factory per path, log-line scraping
+ * for the metric, set/numeric equivalence asserted across paths.
+ *
+ * The dev/manual-run leg of the AC is recorded in
+ * `src/notion/runtool/README.md`'s "Issue #543 Phase 4 evidence
+ * log" — fixture coverage is pinned here; live-vault evidence
+ * accumulates in the README as operators run the report against
+ * real data.
+ */
+
+import { runOrphanRateReport } from "../../cli/commands/migrate.js"
+import type { Fact } from "../../types.js"
+
+type RunOrphanRateReportFn = typeof runOrphanRateReport
+
+interface AggregateFixtureRow {
+  factId: string
+  subject: string
+  subjectEntityId: string | null
+  projectIds?: string[]
+  validUntil?: string | null
+}
+
+const ENT_LIVE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+const ENT_LIVE_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+/**
+ * Aggregate fixture exercises the cross-section of cases the
+ * `entity-migration.ts` parity tests pinned at the unit level —
+ * populated SubjectEntity (peer + orphan), case-variant Subject text
+ * with empty SubjectEntity, lone empty SubjectEntity, and
+ * invalidated facts (which the SQL gateway can't filter and the JS
+ * path counts via `includeInvalidated: true`).
+ */
+const AGGREGATE_FIXTURE: ReadonlyArray<AggregateFixtureRow> = [
+  // Populated SubjectEntity, peer (3 facts → groupsWithPeer)
+  { factId: "fa-1", subject: "MemoryService.create", subjectEntityId: ENT_LIVE_A },
+  { factId: "fa-2", subject: "MemoryService.create", subjectEntityId: ENT_LIVE_A },
+  { factId: "fa-3", subject: "MemoryService.create", subjectEntityId: ENT_LIVE_A },
+  // Populated SubjectEntity, orphan (1 fact → orphan)
+  { factId: "fa-4", subject: "Foo", subjectEntityId: ENT_LIVE_B },
+  // Empty SubjectEntity, case-variant Subject collapses to one canonical key
+  { factId: "fa-5", subject: "DataSourceQuery", subjectEntityId: null },
+  { factId: "fa-6", subject: "datasourcequery", subjectEntityId: null },
+  // Empty SubjectEntity, orphan
+  { factId: "fa-7", subject: "Solo", subjectEntityId: null },
+  // Invalidated fact — must contribute to BOTH paths' counts (the
+  // gateway has no `Valid Until` column, and the JS call site
+  // passes `includeInvalidated: true` for parity).
+  { factId: "fa-8", subject: "MemoryService.create", subjectEntityId: ENT_LIVE_A, validUntil: "2026-04-30" },
+]
+
+function fixtureToFacts(fixture: ReadonlyArray<AggregateFixtureRow>): Fact[] {
+  return fixture.map((row) => ({
+    id: row.factId,
+    subject: row.subject,
+    predicate: "mentions",
+    object: "",
+    projectIds: row.projectIds ?? [],
+    validFrom: "2026-04-20",
+    validUntil: row.validUntil ?? null,
+    reviewBy: null,
+    sourceMemoryId: null,
+    confidence: "speculative",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    subjectEntityId: row.subjectEntityId,
+    objectEntityId: null,
+  }))
+}
+
+/**
+ * Express the fixture as the `(SubjectEntity, Subject)` group rows
+ * the SQL gateway would return for `SELECT SubjectEntity, Subject,
+ * COUNT(*) FROM facts GROUP BY SubjectEntity, Subject`. Relations
+ * are JSON-stringified arrays of full URLs containing the undashed
+ * id form (verified live 2026-05-05 against the production Mail
+ * vault). Empty-relation rows take the `null` form so
+ * `extractFirstRelationId` returns `null` for them.
+ */
+function fixtureToAggregateRows(
+  fixture: ReadonlyArray<AggregateFixtureRow>,
+): Array<{ subjectEntity: string | null; subject: string; cnt: number }> {
+  const groups = new Map<string, { subjectEntity: string | null; subject: string; cnt: number }>()
+  for (const row of fixture) {
+    // Group key is exactly what the SQL gateway groups by:
+    // raw SubjectEntity cell || raw Subject cell. Case-variant
+    // subjects do NOT pre-collapse server-side (SQLite's `LOWER`
+    // can't reproduce `computeSubjectKey`); the fold runs in JS
+    // afterwards via `computeOrphanRateFromAggregateRows`.
+    const subjectEntityRaw =
+      row.subjectEntityId === null
+        ? null
+        : `["https://www.notion.so/${row.subjectEntityId.replace(/-/g, "")}"]`
+    const key = `${subjectEntityRaw ?? ""}|${row.subject}`
+    const existing = groups.get(key)
+    if (existing) {
+      existing.cnt += 1
+    } else {
+      groups.set(key, { subjectEntity: subjectEntityRaw, subject: row.subject, cnt: 1 })
+    }
+  }
+  return Array.from(groups.values())
+}
+
+interface OrphanRateStubCounters {
+  requestCalls: number
+  queryBySubjectCalls: number
+}
+
+interface OrphanRateStubOptions {
+  /**
+   * When set, the stubbed `client.request` throws this error
+   * instead of returning the aggregate rows. Drives the per-call
+   * fallback path (capability-gate / transient-error / saturated
+   * `has_more: true`).
+   */
+  requestError?: unknown
+  /**
+   * When true, the stubbed `client.request` returns the aggregate
+   * rows but with `has_more: true`, simulating gateway saturation
+   * on a non-trivial vault. The wrapper throws
+   * `SqlPartialResultError` and the consumer falls back per-call
+   * to the JS path.
+   */
+  saturated?: boolean
+}
+
+function buildOrphanRateServicesStub(
+  fixture: ReadonlyArray<AggregateFixtureRow>,
+  opts: OrphanRateStubOptions = {},
+): {
+  services: Parameters<RunOrphanRateReportFn>[0]
+  counters: OrphanRateStubCounters
+} {
+  const counters: OrphanRateStubCounters = { requestCalls: 0, queryBySubjectCalls: 0 }
+  const aggregateRows = fixtureToAggregateRows(fixture)
+  const facts = fixtureToFacts(fixture)
+  const stub = {
+    client: {
+      request: async (init: { body?: unknown }) => {
+        counters.requestCalls += 1
+        if (opts.requestError !== undefined) throw opts.requestError
+        // Return the aggregate rows in the QueryDataSourcesResource
+        // shape: `{ results, has_more, data_source_ids }`.
+        const body = init.body as { type: string }
+        if (body?.type !== "query_data_sources") {
+          throw new Error(`unexpected RunTool dispatch: type=${String(body?.type)}`)
+        }
+        return {
+          results: aggregateRows.map((row) => ({
+            subjectEntity: row.subjectEntity,
+            subject: row.subject,
+            cnt: row.cnt,
+          })),
+          has_more: opts.saturated === true,
+        }
+      },
+    },
+    facts: {
+      queryBySubject: async (
+        _subject: string,
+        _opts?: { allowUnfiltered?: boolean; includeInvalidated?: boolean; projectId?: string },
+      ): Promise<Fact[]> => {
+        counters.queryBySubjectCalls += 1
+        return facts
+      },
+    },
+    vault: {
+      databases: {
+        facts: { databaseId: "facts-db", dataSourceId: "facts-ds-1" },
+      },
+    },
+  } as unknown as Parameters<RunOrphanRateReportFn>[0]
+  return { services: stub, counters }
+}
+
+function captureOrphanRateLogs<T>(fn: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const lines: string[] = []
+  const spy = vi
+    .spyOn(console, "log")
+    .mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(" "))
+    })
+  return fn()
+    .then((result) => ({ result, lines }))
+    .finally(() => spy.mockRestore())
+}
+
+const ORPHAN_RATE_LINE = /^Orphan rate \(([^,]+), ([^,]+), via ([a-z-]+)\): (\d+\.\d)% — (\d+)\/(\d+) entit[a-z]+ appear in exactly 1 fact \((\d+) fact[s]? inspected, including invalidated\)\.$/
+
+function parseOrphanRateLine(lines: string[]): {
+  pass: string
+  scope: string
+  path: string
+  pct: string
+  orphans: number
+  totalGroups: number
+  totalFacts: number
+} {
+  const line = lines.find((l) => ORPHAN_RATE_LINE.test(l))
+  if (!line) throw new Error(`no orphan-rate line in:\n${lines.join("\n")}`)
+  const m = ORPHAN_RATE_LINE.exec(line)!
+  return {
+    pass: m[1]!,
+    scope: m[2]!,
+    path: m[3]!,
+    pct: m[4]!,
+    orphans: Number(m[5]!),
+    totalGroups: Number(m[6]!),
+    totalFacts: Number(m[7]!),
+  }
+}
+
+describe("RunTool aggregate vs JS enumeration A/B harness (issue #542)", () => {
+  let savedAggregateFlag: string | undefined
+  let savedParentFlag: string | undefined
+
+  beforeEach(() => {
+    savedAggregateFlag = process.env["LORE_USE_RUNTOOL_AGGREGATE"]
+    savedParentFlag = process.env["LORE_USE_RUNTOOL"]
+    delete process.env["LORE_USE_RUNTOOL_AGGREGATE"]
+    delete process.env["LORE_USE_RUNTOOL"]
+  })
+
+  afterEach(() => {
+    if (savedAggregateFlag === undefined) {
+      delete process.env["LORE_USE_RUNTOOL_AGGREGATE"]
+    } else {
+      process.env["LORE_USE_RUNTOOL_AGGREGATE"] = savedAggregateFlag
+    }
+    if (savedParentFlag === undefined) {
+      delete process.env["LORE_USE_RUNTOOL"]
+    } else {
+      process.env["LORE_USE_RUNTOOL"] = savedParentFlag
+    }
+  })
+
+  it("flag-off (JS enumeration) and flag-on (RunTool aggregate) emit identical orphan-rate metrics", async () => {
+    // Flag-off: force JS enumeration. Stub's `request` must NOT be
+    // called; `queryBySubject` runs once over the full corpus.
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "0"
+    const off = buildOrphanRateServicesStub(AGGREGATE_FIXTURE)
+    const offResult = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(off.services, { apply: false })
+    )
+
+    // Flag-on: force RunTool aggregate. Stub's `request` runs once
+    // with the `query_data_sources` envelope; `queryBySubject` is NOT
+    // called because the SQL path serves the metric end-to-end.
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "1"
+    const on = buildOrphanRateServicesStub(AGGREGATE_FIXTURE)
+    const onResult = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(on.services, { apply: false })
+    )
+
+    const offMetric = parseOrphanRateLine(offResult.lines)
+    const onMetric = parseOrphanRateLine(onResult.lines)
+
+    // Path labels distinguish which branch ran — proves the test
+    // exercised the toggle, not just both rounds of a single path.
+    expect(offMetric.path).toBe("js-enumeration")
+    expect(onMetric.path).toBe("runtool-aggregate")
+
+    // Pass + scope labels are flag-independent (issue #547 contract).
+    expect(offMetric.pass).toBe("pre-pass")
+    expect(onMetric.pass).toBe("pre-pass")
+    expect(offMetric.scope).toBe("vault-wide")
+    expect(onMetric.scope).toBe("vault-wide")
+
+    // The load-bearing equivalence: orphan-rate percentage and the
+    // group / fact counts must be byte-identical across paths.
+    expect(onMetric.pct).toBe(offMetric.pct)
+    expect(onMetric.orphans).toBe(offMetric.orphans)
+    expect(onMetric.totalGroups).toBe(offMetric.totalGroups)
+    expect(onMetric.totalFacts).toBe(offMetric.totalFacts)
+
+    // Sanity-check the absolute numbers so the test catches a
+    // shared-bug case where both paths drift in lockstep:
+    //   Groups: ent-A (4 facts incl. invalidated), ent-B (1),
+    //           key:datasourcequery (2), key:solo (1) = 4 groups.
+    //   Peers: ent-A (4) and key:datasourcequery (2) = 2 with peers.
+    //   Orphans: ent-B and key:solo = 2 orphans.
+    //   Rate: 1 - 2/4 = 0.5 → "50.0%".
+    //   Facts inspected: 8 (incl. the one invalidated).
+    expect(offMetric.pct).toBe("50.0")
+    expect(offMetric.orphans).toBe(2)
+    expect(offMetric.totalGroups).toBe(4)
+    expect(offMetric.totalFacts).toBe(8)
+
+    // Dispatch isolation: each path takes one and only one route.
+    expect(off.counters.requestCalls).toBe(0)
+    expect(off.counters.queryBySubjectCalls).toBe(1)
+    expect(on.counters.requestCalls).toBe(1)
+    expect(on.counters.queryBySubjectCalls).toBe(0)
+  })
+
+  it("flag-on with saturated aggregate (`has_more: true`) falls back to JS path with identical metric", async () => {
+    // Per-call fallback contract: when the aggregate response
+    // carries `has_more: true`, the wrapper throws
+    // `SqlPartialResultError` and the call site falls through to
+    // JS enumeration. The metric must still match the flag-off
+    // path because the underlying corpus is identical.
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "0"
+    const off = buildOrphanRateServicesStub(AGGREGATE_FIXTURE)
+    const offResult = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(off.services, { apply: false })
+    )
+
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "1"
+    // Wrap the JS-path stub with a spy that records the args
+    // `runOrphanRateReport` passed to `queryBySubject`. Per PR
+    // #549 review iteration 1 should-fix #5: explicit assertion
+    // that the JS fallback walked the same fact corpus as the
+    // failed SQL probe was meant to aggregate over.
+    const onSaturated = buildOrphanRateServicesStub(AGGREGATE_FIXTURE, { saturated: true })
+    const factsAccessor = onSaturated.services.facts as unknown as {
+      queryBySubject: (...args: unknown[]) => Promise<unknown>
+    }
+    const originalQueryBySubject = factsAccessor.queryBySubject.bind(onSaturated.services.facts)
+    const queryBySubjectSpy = vi.fn(originalQueryBySubject)
+    factsAccessor.queryBySubject = queryBySubjectSpy
+    const onSaturatedResult = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(onSaturated.services, { apply: false })
+    )
+
+    const offMetric = parseOrphanRateLine(offResult.lines)
+    const saturatedMetric = parseOrphanRateLine(onSaturatedResult.lines)
+
+    // Saturation routed through the JS path — the path label
+    // proves the fallback fired.
+    expect(saturatedMetric.path).toBe("js-enumeration")
+    // Metric still equivalent — the fallback preserves correctness.
+    expect(saturatedMetric.pct).toBe(offMetric.pct)
+    expect(saturatedMetric.orphans).toBe(offMetric.orphans)
+    expect(saturatedMetric.totalGroups).toBe(offMetric.totalGroups)
+    expect(saturatedMetric.totalFacts).toBe(offMetric.totalFacts)
+
+    // The fixture has 8 facts (incl. one invalidated). Pin the
+    // absolute count so a future refactor that swaps the JS-path
+    // service shape doesn't silently change which corpus the JS
+    // fallback inspected.
+    expect(saturatedMetric.totalFacts).toBe(8)
+
+    // Both dispatchers fired: the SQL probe (which threw) and the
+    // JS fallback (which produced the answer).
+    expect(onSaturated.counters.requestCalls).toBe(1)
+    expect(onSaturated.counters.queryBySubjectCalls).toBe(1)
+
+    // Pin the JS path's call args so a future refactor of
+    // `runOrphanRateReport`'s JS fallback that drops
+    // `includeInvalidated: true` would surface here as a
+    // visible test failure rather than silent metric drift.
+    expect(queryBySubjectSpy).toHaveBeenCalledWith(
+      "",
+      expect.objectContaining({
+        allowUnfiltered: true,
+        includeInvalidated: true,
+      })
+    )
+  })
+
+  it("flag-on with 403 RestrictedResource (capability gate) falls back to JS path with identical metric", async () => {
+    // `query_data_sources` is gated server-side on
+    // `hasAdvancedTools` (Enterprise + AI). Operators on lower-tier
+    // workspaces see 403 RestrictedResource; the wrapper classifies
+    // this as fall-back-able (the auth-refresh proxy can't repair
+    // it — it refreshes only on 401), and the call site falls
+    // through to JS enumeration.
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "0"
+    const off = buildOrphanRateServicesStub(AGGREGATE_FIXTURE)
+    const offResult = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(off.services, { apply: false })
+    )
+
+    const { APIResponseError, APIErrorCode } = await import("@notionhq/client")
+    const restrictedError = new APIResponseError({
+      code: APIErrorCode.RestrictedResource,
+      status: 403,
+      message: "Only public integrations can access this API.",
+      headers: new Headers(),
+      rawBodyText: "",
+      additional_data: undefined,
+      request_id: undefined,
+    })
+
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "1"
+    const onDegraded = buildOrphanRateServicesStub(AGGREGATE_FIXTURE, {
+      requestError: restrictedError,
+    })
+    const onDegradedResult = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(onDegraded.services, { apply: false })
+    )
+
+    const offMetric = parseOrphanRateLine(offResult.lines)
+    const degradedMetric = parseOrphanRateLine(onDegradedResult.lines)
+
+    expect(degradedMetric.path).toBe("js-enumeration")
+    expect(degradedMetric.pct).toBe(offMetric.pct)
+    expect(degradedMetric.orphans).toBe(offMetric.orphans)
+    expect(degradedMetric.totalGroups).toBe(offMetric.totalGroups)
+    expect(degradedMetric.totalFacts).toBe(offMetric.totalFacts)
+
+    expect(onDegraded.counters.requestCalls).toBe(1)
+    expect(onDegraded.counters.queryBySubjectCalls).toBe(1)
+  })
+
+  it("flag-on with 400 validation_error re-throws (query-shape drift surfaces, no silent fallback)", async () => {
+    // Validation errors signal query-shape drift — a column rename,
+    // gateway syntax change, or parameter binding shape change.
+    // Silent fallback would mask a permanent SQL-rollout failure
+    // as "REST/JS path always ran"; the load-bearing rule is to
+    // surface them to the operator.
+    process.env["LORE_USE_RUNTOOL_AGGREGATE"] = "1"
+
+    const { APIResponseError, APIErrorCode } = await import("@notionhq/client")
+    const validationError = new APIResponseError({
+      code: APIErrorCode.ValidationError,
+      status: 400,
+      message: "no such column: SubjectEntity",
+      headers: new Headers(),
+      rawBodyText: "",
+      additional_data: undefined,
+      request_id: undefined,
+    })
+
+    const stub = buildOrphanRateServicesStub(AGGREGATE_FIXTURE, {
+      requestError: validationError,
+    })
+    await expect(
+      runOrphanRateReport(stub.services, { apply: false })
+    ).rejects.toBeInstanceOf(APIResponseError)
+
+    // The JS fallback was NOT invoked — re-throw on validation_error
+    // is the load-bearing rule.
+    expect(stub.counters.requestCalls).toBe(1)
+    expect(stub.counters.queryBySubjectCalls).toBe(0)
+  })
+
+  it("flag-on (no env set) inherits from the default-on parent and routes through the aggregate path", async () => {
+    // Issue #543 default flip: with no env vars set, the parent
+    // `LORE_USE_RUNTOOL` defaults ON and `LORE_USE_RUNTOOL_AGGREGATE`
+    // inherits — so the aggregate path runs without any operator
+    // opt-in. Pin this behavior here so a future "back to default
+    // off" change fails loudly across both the unit test suite and
+    // the integration A/B harness.
+    delete process.env["LORE_USE_RUNTOOL_AGGREGATE"]
+    delete process.env["LORE_USE_RUNTOOL"]
+
+    // Per PR #549 review iteration 1 should-fix #6: assert env is
+    // genuinely unset at the moment the harness runs, instead of
+    // implicitly trusting the hook ordering. A future setupFile
+    // change (or vitest version change) that runs the global
+    // `tests/setup-runtool-flag.ts` `beforeEach` AFTER the
+    // describe-block's `beforeEach` would silently re-pin the
+    // parent to `=0` and make this test report
+    // `path: "js-enumeration"`, defeating the assertion.
+    expect(process.env["LORE_USE_RUNTOOL"]).toBeUndefined()
+    expect(process.env["LORE_USE_RUNTOOL_AGGREGATE"]).toBeUndefined()
+
+    const stub = buildOrphanRateServicesStub(AGGREGATE_FIXTURE)
+    const result = await captureOrphanRateLogs(() =>
+      runOrphanRateReport(stub.services, { apply: false })
+    )
+    const metric = parseOrphanRateLine(result.lines)
+    expect(metric.path).toBe("runtool-aggregate")
+    expect(stub.counters.requestCalls).toBe(1)
+    expect(stub.counters.queryBySubjectCalls).toBe(0)
   })
 })

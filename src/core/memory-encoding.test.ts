@@ -710,10 +710,12 @@ describe("fixMemoryEncoding — anchored RunTool path (issue #534 AC #5)", () =>
     expect(onReport.fixes).toHaveLength(1)
     expect(onReport.oversizedSkipped).toEqual([])
 
-    // Phase 2: flag OFF — oversized must skip and `client.request`
-    // must NOT be called.
-    delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
-    delete process.env.LORE_USE_RUNTOOL
+    // Phase 2: flag explicitly OFF — oversized must skip and
+    // `client.request` must NOT be called. Issue #543 flipped the
+    // default to ON, so flag-off must be set explicitly here rather
+    // than relying on env-unset.
+    process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "0"
+    process.env.LORE_USE_RUNTOOL = "0"
     const offClient = createMockClient({
       queryResponses: [
         { results: [memoryPage({ id: ID, title: "clean title" })] },
