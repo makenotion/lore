@@ -1,14 +1,48 @@
-# `src/notion/runtool/` — Phase 0 Reconnaissance
+# `src/notion/runtool/` — Quarantined RunTool Surface
 
-> **Status: Reconnaissance only.** This directory documents the RunTool
-> public-API surface that Lore plans to use for two read-path cleanup wins
-> (memory search and aggregate queries). No client code or production wiring
-> lives here yet — those land in Phase 1+ per
-> [issue #532](https://github.com/makenotion/lore/issues/532). Until that
-> happens, every assertion in this file is sourced from the pinned upstream
-> commit named below; runtime behavior on Lore's actual auth path is
-> annotated as "needs runtime verification" wherever the code path could not
-> be fully resolved by reading source.
+> **Status: Phase 0 reconnaissance + Phase 1 partial (issue #533
+> `create_pages` only, live-verified).** PR #538 lands the narrow
+> `create_pages` slice of the RunTool client (`client.ts`,
+> `types.ts`, `create-pages.ts`, `sqlite-properties.ts`,
+> `runtool.test.ts`, `sqlite-properties.test.ts`) wired to
+> `FactService.createBatchWithDedup` for auto-`mentions` emission
+> behind the explicit `LORE_USE_RUNTOOL_BATCH_CREATES=1` flag.
+> Default-off behavior on the auto-mention path is byte-equivalent
+> to pre-#533 emission. The read-path Phase 1+ work
+> (`search` / `query_data_sources`, `LORE_USE_RUNTOOL_SEARCH` /
+> `LORE_USE_RUNTOOL_AGGREGATE`) is tracked separately under
+> [issue #532](https://github.com/makenotion/lore/issues/532) and is
+> NOT shipped here.
+>
+> **PR #538 live-verification (May 5 2026, prod Mail vault).**
+> Two test fact rows were created via RunTool's `create_pages`
+> endpoint against the production Mail vault Facts DB
+> (`collection://5abdc6b6-...`) using the wrapper's exact wire
+> format, then read back via `query_data_sources` to confirm the
+> shape, then invalidated (`Valid Until = today`) per lore's
+> "facts are never deleted" rule. Verified outcomes:
+>
+> 1. **Auth chain** — ntn-resolved user-actor token landed both
+>    rows successfully against `api-dev.notion.com`.
+> 2. **Wire format**:
+>    - title / rich_text / select / number → flat primitives ✅
+>    - date → 3-key expansion (`date:<col>:start`/`:end`/`:is_datetime`) ✅
+>    - relation → JSON-stringified array of user-facing URLs ✅
+>    - **Host coupling** (load-bearing): `https://www.notion.so/<id>`
+>      is REJECTED on a dev workspace with `400 validation_error:
+>      Invalid page URL ... for property X`. Bare ids and
+>      `notion.com` URLs are likewise rejected. The relation URL
+>      base must be derived from the API host —
+>      `services.ts:deriveRelationUrlBase` is the single source
+>      and PR #538's golden tests pin the mapping (`api-dev.notion.com`
+>      → `dev.notion.so`, default → `www.notion.so`).
+> 3. **Round-trip** — both rows queryable via SQL and visible in
+>    the empirical schema with the converter's exact property keys.
+>
+> Verification rows (now invalidated, will not surface in default
+> queries):
+> - `358b35e6-e67f-817c-b6d8-cab40486a780` — primitive-only fact
+> - `358b35e6-e67f-8146-9f4c-cbf3da3ab086` — fact with `Project` relation
 
 ## Why This Module Is Quarantined
 
@@ -115,9 +149,17 @@ Use the **RunTool API tool names** in Lore code and docs:
 are a separate aliasing layer; the wrapper must speak the API names so
 schema drift in either layer surfaces as a type error.
 
-The wrapper surface in Phase 1 is intentionally narrow:
+The wrapper surface in Phase 1 is intentionally narrow. PR #538
+ships the write-path slice (`create_pages`) ahead of the read-path
+plan; the read-path entries (`search`, `query_data_sources`) are
+the planned Phase 1+ surface tracked under issue #532 and are NOT
+yet implemented in this directory:
 
 ```ts
+// Shipped in PR #538 (issue #533):
+runTool("create_pages", params)
+
+// Planned for issue #532 Phase 1+ (NOT yet implemented):
 runTool("search", params)
 runTool("query_data_sources", params)
 ```
@@ -131,11 +173,17 @@ outer `{ type, [tool_name]: {...} }` wrapping mirroring the request.
 type is a `unionResource` over the per-tool resources directly.
 Concretely:
 
-- `search` returns a `SearchResource.Value` — itself a discriminated
-  union of `InternalSearchResource.Value | UserSearchResource.Value`,
+- `create_pages` (shipped in PR #538) returns a
+  `CreatePagesResource.Value` directly — `{ pages: Array<{ id }> }`
+  per the pinned schema and verified live against the production
+  Mail vault.
+- `search` (planned for issue #532) returns a `SearchResource.Value`
+  — itself a discriminated union of
+  `InternalSearchResource.Value | UserSearchResource.Value`,
   discriminated by the inner `type` field (see "`search` Tool" below).
-- `query_data_sources` returns a `QueryDataSourcesResource.Value`
-  directly (`{ results, has_more, data_source_ids? }`).
+- `query_data_sources` (planned for issue #532) returns a
+  `QueryDataSourcesResource.Value` directly
+  (`{ results, has_more, data_source_ids? }`).
 
 A Phase 1 wrapper that types its response as `{ type, [tool]: ... }`
 (mirroring the request) will trip on the first call. Type the response
@@ -631,20 +679,46 @@ Phase 1+ deliverables — see issue #532 for full criteria:
 
 - `client.ts` — `runTool("search" | "query_data_sources", params)` with
   shared rate-limit composition, 401-refresh hook, fallback counter, and
-  no second base-URL knob.
+  no second base-URL knob. **Issue #533 lands the `client.ts` skeleton
+  early, narrowed to `create_pages` only.** Composition with the existing
+  rate-limit + auth-refresh Proxy is preserved by routing through
+  `client.request()`; `search` / `query_data_sources` extend the
+  `RunToolRequestMap` / `RunToolResponseMap` types in a follow-up PR
+  without touching the dispatch helper.
 - `types.ts` — pinned subset of `RunToolParams` (search + query) re-typed
   to match Lore's existing import boundary; no `notion-next` runtime or
-  build dependency.
+  build dependency. **Issue #533 lands the `create_pages` request /
+  response subset.** The pin table above is the single update point for
+  the next surface refresh.
 - `search.ts` / `query.ts` — request/response mappers between RunTool
   shapes and Lore's domain types.
+- `create-pages.ts` — chunked batch-create wrapper (issue #533),
+  consumed by `FactService.createBatchWithDedup` for auto-`mentions`
+  fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1`
+  (default off, **does NOT inherit from the parent
+  `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the
+  write-path opt-in must be loud because of the partial-commit
+  failure mode). Server cap pinned at 100 pages per call (Notion MCP
+  `notion-create-pages` tool's `pages.maxItems`); chunk size clamps
+  to that ceiling. Partial-commit handling is first-class via
+  `BatchCreateError.committedIds` so a caller can fall back
+  idempotently before retrying. Tail fallback re-probes via
+  `createWithDedup` on transport-class / 5xx failures (full-failure
+  AND partial-commit-tail) per `classifyTailFallback`, so a network
+  drop that orphaned a server-side commit is absorbed by the
+  per-input dedup match instead of producing a duplicate.
 - `runtool.test.ts` — mocked HTTP success / 401 / 403 / 429 / 5xx /
-  malformed / unsupported-tool-name cases.
+  malformed / unsupported-tool-name cases. **Issue #533 lands this
+  with `create_pages`-shaped fixtures.**
 - `compat.test.ts` — A/B harness asserting page-id-set equivalence
   between REST and RunTool paths at equal `limit`, AND aggregate-row
   equivalence between JS `GROUP BY` and SQL `GROUP BY`.
 - `LORE_USE_RUNTOOL` / `LORE_USE_RUNTOOL_SEARCH` /
-  `LORE_USE_RUNTOOL_AGGREGATE` flag plumbing in `config.ts` and
-  `services.ts`.
+  `LORE_USE_RUNTOOL_AGGREGATE` / `LORE_USE_RUNTOOL_BATCH_CREATES`
+  flag plumbing in `config.ts` and `services.ts`. **Issue #533 lands
+  `LORE_USE_RUNTOOL_BATCH_CREATES`** — read once at services init via
+  `resolveRunToolBatchCreatesFlag` and threaded into
+  `FactService` as `useRunToolBatchCreates: boolean`.
 
 Default flag state stays OFF until the criteria in
 "Default-On Criteria" of issue #532 are met.

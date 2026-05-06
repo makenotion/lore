@@ -707,28 +707,41 @@ async function handleSave(services: LoreServices, args: SaveArgs): Promise<ToolR
         // from `Memory.scope` (read shape) to `MemoryScopeInput`
         // (write shape) lives in `types.ts:memoryScopeToInput`.
         const factScope = memoryScopeToInput(memory.scope)
-        const results = await Promise.all(
-          mentionedEntities.map((entity) =>
-            services.facts
-              .createWithDedup({
-                subject: memory.title,
-                predicate: "mentions",
-                object: entity,
-                sourceMemoryId: memory.id,
-                projectIds,
-                confidence: "speculative",
-                scope: factScope,
-              })
-              .then(
-                () => true,
-                (err: unknown) => {
-                  debugLogAutoFactFailure("save", memory.id, entity, err)
-                  return false
-                }
-              )
-          )
+        // Issue #533 — route the per-entity fan-out through
+        // `createBatchWithDedup` so the auto-mention emission can opt
+        // into RunTool's `create_pages` batch primitive when
+        // `LORE_USE_RUNTOOL_BATCH_CREATES=1`. Flag-off, the method
+        // is byte-equivalent to the pre-#533 `Promise.all(map(...))`
+        // shape via `Promise.allSettled(inputs.map(createWithDedup))`.
+        // The per-entity failure-isolation (a 400 on one mentions
+        // fact must not sink the surviving creates) is preserved by
+        // mapping the settled-result kind back into the boolean
+        // counter the response footer already consumes.
+        const settled = await services.facts.createBatchWithDedup(
+          mentionedEntities.map((entity) => ({
+            subject: memory.title,
+            predicate: "mentions",
+            object: entity,
+            sourceMemoryId: memory.id,
+            projectIds,
+            confidence: "speculative",
+            scope: factScope,
+          }))
         )
-        autoMentionsCount = results.filter(Boolean).length
+        autoMentionsCount = 0
+        for (let i = 0; i < settled.length; i += 1) {
+          const r = settled[i]!
+          if (r.status === "fulfilled") {
+            autoMentionsCount += 1
+          } else {
+            debugLogAutoFactFailure(
+              "save",
+              memory.id,
+              mentionedEntities[i]!,
+              r.reason
+            )
+          }
+        }
       }
     }
 
@@ -1326,9 +1339,20 @@ async function handleUpdate(
         // makes this work without an explicit "re-scope existing
         // facts" pass.
         const updatedFactScope = memoryScopeToInput(updated.scope)
-        const createPromises = newCandidates.map((entity) =>
-          services.facts
-            .createWithDedup({
+        // Issue #533 — split the create branch onto
+        // `createBatchWithDedup` so flag-on saves issue one
+        // `create_pages` call instead of N. Run the batched creates
+        // and the per-fact invalidates in parallel (`Promise.all` of
+        // a tagged tuple) so the wall-clock parity with the pre-#533
+        // shape is preserved when the flag is off — the rate-limit
+        // middleware paces the union without the handler choosing
+        // ordering. Failure isolation per entity is preserved: the
+        // batch wrapper returns `PromiseSettledResult[]` and the
+        // invalidate side still wraps each call in `.then(success,
+        // failure)`.
+        const createBatchPromise = services.facts
+          .createBatchWithDedup(
+            newCandidates.map((entity) => ({
               subject: updated.title,
               predicate: "mentions",
               object: entity,
@@ -1336,15 +1360,22 @@ async function handleUpdate(
               projectIds: autoProjectIds,
               confidence: "speculative",
               scope: updatedFactScope,
-            })
-            .then(
-              () => ({ kind: "create" as const, ok: true }),
-              (err: unknown) => {
-                debugLogAutoFactFailure("update", updated.id, entity, err)
+            }))
+          )
+          .then((settled) =>
+            settled.map((r, idx) => {
+              if (r.status === "rejected") {
+                debugLogAutoFactFailure(
+                  "update",
+                  updated.id,
+                  newCandidates[idx]!,
+                  r.reason
+                )
                 return { kind: "create" as const, ok: false }
               }
-            )
-        )
+              return { kind: "create" as const, ok: true }
+            })
+          )
         const invalidatePromises = staleFacts.map((fact) =>
           services.facts.invalidate(fact.id).then(
             () => ({ kind: "invalidate" as const, ok: true }),
@@ -1360,7 +1391,11 @@ async function handleUpdate(
             }
           )
         )
-        const results = await Promise.all([...createPromises, ...invalidatePromises])
+        const [createResults, ...invalidateResults] = await Promise.all([
+          createBatchPromise,
+          ...invalidatePromises,
+        ])
+        const results = [...createResults, ...invalidateResults]
         for (const r of results) {
           if (r.kind === "create" && r.ok) autoMentionsCount += 1
           if (r.kind === "invalidate" && r.ok) staleInvalidatedCount += 1

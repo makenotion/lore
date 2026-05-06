@@ -53,8 +53,10 @@ vi.mock("./core/context.js", async () => {
 import {
   AUTH_REFRESH_UNAVAILABLE_CACHE_MS,
   createNtnAuthRefresh,
+  deriveRelationUrlBase,
   initServicesFromConfig,
   resolveDriftCheck,
+  resolveRunToolBatchCreatesFlag,
 } from "./services.js"
 import { findConfigFile, loadConfig, resolveAuth } from "./config.js"
 import { resolveProject } from "./core/context.js"
@@ -75,6 +77,95 @@ function uniqueRoot(label: string): string {
 
 afterAll(async () => {
   await Promise.all(TEST_ROOTS.map((root) => rm(driftMarkerPath(root), { force: true })))
+})
+
+describe("deriveRelationUrlBase (PR #538 live-verification host-coupling)", () => {
+  // Empirical findings from PR #538 live verification: the server
+  // validates the relation URL host against the workspace's
+  // user-facing domain and rejects mismatches with
+  // `400 validation_error: Invalid page URL`. Each test below
+  // captures one of the live-verified cases so a future
+  // contributor cannot hardcode a default that silently breaks
+  // either environment.
+  it("api-dev.notion.com → dev.notion.so (verified live against Mail vault)", () => {
+    expect(deriveRelationUrlBase("https://api-dev.notion.com")).toBe(
+      "https://dev.notion.so/"
+    )
+  })
+
+  it("default API host (undefined) → www.notion.so (production default)", () => {
+    expect(deriveRelationUrlBase(undefined)).toBe("https://www.notion.so/")
+  })
+
+  it("api.notion.com → www.notion.so", () => {
+    expect(deriveRelationUrlBase("https://api.notion.com")).toBe(
+      "https://www.notion.so/"
+    )
+  })
+
+  it("unknown / custom hosts fall back to www.notion.so", () => {
+    // Operators on bespoke configurations who need a different
+    // mapping must override `auth.baseUrl` to a recognized host.
+    expect(deriveRelationUrlBase("https://api-staging.notion.com")).toBe(
+      "https://www.notion.so/"
+    )
+  })
+
+  it("case-insensitive host matching (defends against shell-rc capitalization)", () => {
+    expect(deriveRelationUrlBase("https://API-DEV.NOTION.COM")).toBe(
+      "https://dev.notion.so/"
+    )
+  })
+})
+
+describe("resolveRunToolBatchCreatesFlag", () => {
+  // Issue #533, hardened by PR #538 review (security S2 + principal
+  // strong rec #2): the write-path sub-flag does NOT inherit from
+  // the parent `LORE_USE_RUNTOOL` quarantine knob. Operators must
+  // opt in explicitly with `LORE_USE_RUNTOOL_BATCH_CREATES=1`.
+  // Read-path sub-flags (search / aggregate, parked under #532)
+  // can keep inheriting; write-path ones must be loud because of
+  // the partial-commit failure mode.
+  it("defaults to false when no env vars are set", () => {
+    expect(resolveRunToolBatchCreatesFlag({})).toBe(false)
+  })
+
+  it("returns true ONLY when LORE_USE_RUNTOOL_BATCH_CREATES=1", () => {
+    expect(
+      resolveRunToolBatchCreatesFlag({ LORE_USE_RUNTOOL_BATCH_CREATES: "1" })
+    ).toBe(true)
+  })
+
+  it("does NOT inherit from LORE_USE_RUNTOOL even when the parent flag is on (S2)", () => {
+    // The parent flag is a read-path quarantine knob; an operator
+    // dogfooding Phase-2 search must not silently enable write-path
+    // batch creates as a side-effect.
+    expect(
+      resolveRunToolBatchCreatesFlag({ LORE_USE_RUNTOOL: "1" })
+    ).toBe(false)
+  })
+
+  it("returns false when LORE_USE_RUNTOOL_BATCH_CREATES=0 (explicit disable)", () => {
+    expect(
+      resolveRunToolBatchCreatesFlag({
+        LORE_USE_RUNTOOL_BATCH_CREATES: "0",
+        LORE_USE_RUNTOOL: "1",
+      })
+    ).toBe(false)
+  })
+
+  it("rejects malformed sub-flag strings (fail-loud on typos)", () => {
+    // Strict-equality on `"1"`: anything else (`"true"`, `"yes"`,
+    // `"on"`, leading/trailing whitespace) is treated as "off" so
+    // a typo in a shell-rc never silently flips the write path.
+    for (const malformed of ["true", "yes", "on", " 1", "1 ", "TRUE"]) {
+      expect(
+        resolveRunToolBatchCreatesFlag({
+          LORE_USE_RUNTOOL_BATCH_CREATES: malformed,
+        })
+      ).toBe(false)
+    }
+  })
 })
 
 describe("resolveDriftCheck", () => {

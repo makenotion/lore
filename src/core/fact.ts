@@ -36,6 +36,11 @@ import { computeFactDedupKey, computeSubjectKey } from "../notion/normalize.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
 import { withEntityRelationLocks } from "./entity-relation-lock.js"
 import {
+  createPagesViaRunTool,
+  isBatchCreateError,
+} from "../notion/runtool/create-pages.js"
+import type { RunToolCreatePagesInputPage } from "../notion/runtool/types.js"
+import {
   runFactDedupBackfill,
   type FactDedupBackfillResult,
   type FactDedupOptions,
@@ -306,6 +311,126 @@ export function __resetProbeFailureLogForTests(): void {
 }
 
 /**
+ * Decide whether the tail fallback after a failed batch-create
+ * call must re-probe the dedup path. Two distinct branches:
+ *
+ * - `"reprobe"` — the underlying error MAY have produced a
+ *   server-side commit we missed. This applies to transport-class
+ *   failures (no HTTP status — `ECONNRESET`, read timeout) and 5xx
+ *   server errors (the request reached the server, which then
+ *   either committed or didn't, but we can't tell). Falling back
+ *   via `freshCreateAfterDedupMiss` (which skips the probe) would
+ *   create duplicates of any pages the server processed before we
+ *   lost the response. Re-probe via `createWithDedupLocked`
+ *   instead — the per-input dedup probe absorbs a server-side
+ *   orphan commit.
+ *
+ * - `"fresh-create"` — the underlying error CANNOT have produced a
+ *   commit. 4xx pre-commit validation errors (Notion's standard
+ *   `validation_error` body shape), auth-class denials (401/403),
+ *   and capability gates all reject before any write. Skip the
+ *   probe and use `freshCreateAfterDedupMiss` to avoid wasted
+ *   round-trips per fallback input.
+ *
+ * The `BatchCreateError` from the wrapper's mid-batch failure
+ * carries the underlying SDK error on `cause`; the full-failure
+ * path passes the SDK error directly. Both routes through this
+ * helper.
+ *
+ * Conservative default: when `status` is undefined we treat it as
+ * transport-class. The caller's failure recovery cost is one extra
+ * probe per input — much cheaper than a duplicate row.
+ */
+export type TailFallback = "reprobe" | "fresh-create"
+
+export function classifyTailFallback(err: unknown): TailFallback {
+  if (!err || typeof err !== "object") return "reprobe"
+  const errObj = err as { status?: unknown }
+  const status = typeof errObj.status === "number" ? errObj.status : undefined
+
+  // Transport-class: no HTTP status reached us. Network drop, read
+  // timeout, DNS failure. The server may or may not have processed
+  // the request — re-probe to be safe.
+  if (status === undefined) return "reprobe"
+
+  // 5xx server errors: the request reached the server, but the
+  // response is opaque. Server might have committed before
+  // failing. Re-probe.
+  if (status >= 500) return "reprobe"
+
+  // 4xx pre-commit failures: validation errors, restricted
+  // resource, unauthorized, rate_limited, etc. The server rejected
+  // before writing. Safe to skip the probe.
+  //
+  // Notion's standard error codes here are `validation_error`,
+  // `unauthorized`, `restricted_resource`, `object_not_found`,
+  // `conflict_error`, `rate_limited`. None of these can produce a
+  // committed row.
+  if (status >= 400 && status < 500) return "fresh-create"
+
+  // 1xx-3xx: shouldn't happen on Notion's API surface (no normal
+  // success path produces those statuses on a `request()` rejection).
+  // Be conservative — re-probe on the unknown.
+  return "reprobe"
+}
+
+/**
+ * Once-per-process stderr nudge when a flag-on RunTool batch-create
+ * call surfaces a 403 RestrictedResource (or any auth-class denial),
+ * implementing the README's "loud enough" mandate (issue #533 +
+ * security review S2 follow-up). The runtool README explicitly
+ * pins:
+ *
+ * > silently degrading every legacy-auth caller to "RunTool
+ * > unavailable" is the correct behavior, but it must be loud
+ * > enough that an operator on `LORE_NOTION_TOKEN` knows why their
+ * > flagged-on calls never use the new path.
+ *
+ * The wrapper falls back per-input via `pages.create` regardless,
+ * so the operator's writes still land — but without this warning
+ * an operator running on integration-secret auth and having flipped
+ * `LORE_USE_RUNTOOL_BATCH_CREATES=1` would burn a wasted RunTool
+ * round-trip per save and never learn why the new path silently
+ * doesn't apply. One warning per process keeps stderr quiet on
+ * happy-path callers; once-per-process matches the existing
+ * `logProbeFailureOnce` posture above.
+ */
+let runtoolBatchCreatesAuthFallbackLogged = false
+function logRunToolBatchCreatesAuthFallbackOnce(err: unknown): void {
+  if (runtoolBatchCreatesAuthFallbackLogged) return
+  // Detect 403 / RestrictedResource via the SDK's standard
+  // `status` + `code` discriminants. A 401 also surfaces here on
+  // first call before the SDK's auth-refresh hook gets a chance
+  // to retry; lump both into the same loud-enough warning since
+  // the operator action ("check your auth source") is the same.
+  const status =
+    typeof (err as { status?: unknown }).status === "number"
+      ? ((err as { status: number }).status)
+      : undefined
+  const code =
+    typeof (err as { code?: unknown }).code === "string"
+      ? ((err as { code: string }).code)
+      : undefined
+  if (status !== 401 && status !== 403 && code !== "restricted_resource") {
+    return
+  }
+  runtoolBatchCreatesAuthFallbackLogged = true
+  process.stderr.write(
+    "[lore] runtool batch_create: " +
+      `${status ?? "?"} ${code ?? "auth"} on token; falling back ` +
+      "to per-input pages.create. RunTool requires an ntn-issued " +
+      "user-actor token. See src/notion/runtool/README.md for the " +
+      "auth-source matrix. Set LORE_USE_RUNTOOL_BATCH_CREATES=0 to " +
+      "silence this and skip the wasted RunTool round-trip per save.\n"
+  )
+}
+
+/** Reset between tests. Not exported on the public API surface. */
+export function __resetRunToolBatchCreatesAuthFallbackLogForTests(): void {
+  runtoolBatchCreatesAuthFallbackLogged = false
+}
+
+/**
  * Read `Fact.createdAt` with an explicit invariant check (DEFERRED-02).
  *
  * `Fact.createdAt` is typed as optional on the public boundary so
@@ -356,15 +481,53 @@ export class FactService {
    */
   private scopeFilterEnabled = false
 
+  /**
+   * Issue #533: opt-in to batching auto-`mentions` fact creates via
+   * RunTool's `create_pages` tool. When false (default),
+   * `createBatchWithDedup` reproduces the pre-#533 fan-out shape
+   * exactly — `Promise.allSettled(map(createWithDedup))` — so the
+   * flag-off behavior is byte-equivalent to today's emission. When
+   * true, the batch path probes dedup, accumulates fresh-create
+   * candidates, and flushes via one `runTool("create_pages", ...)` call
+   * per chunk; on failure it falls back to the per-input `createWithDedup`
+   * path so default-off semantics protect data integrity.
+   */
+  private useRunToolBatchCreates = false
+
+  /**
+   * User-facing host root for relation URLs in `create_pages`
+   * payloads. Threaded from `services.ts:deriveRelationUrlBase` —
+   * dev workspaces need `https://dev.notion.so/`, production needs
+   * `https://www.notion.so/`. Live verification at PR #538 review
+   * time confirmed the server rejects host-mismatched URLs.
+   */
+  private relationUrlBase: string | undefined
+
   constructor(
     private client: Client,
     private db: DatabaseRef,
-    scopeCtx?: MemoryScopeContext
+    scopeCtx?: MemoryScopeContext,
+    options?: { useRunToolBatchCreates?: boolean; relationUrlBase?: string }
   ) {
     if (scopeCtx) {
       this.scopeCtx = scopeCtx
       this.scopeFilterEnabled = true
     }
+    if (options?.useRunToolBatchCreates === true) {
+      this.useRunToolBatchCreates = true
+    }
+    this.relationUrlBase = options?.relationUrlBase
+  }
+
+  /**
+   * Issue #533 — toggle the batch-create path at runtime. Mirrors
+   * the constructor option so a test can flip the flag without
+   * re-instantiating, and `setScopeContext`-style mid-process
+   * reconfiguration stays consistent with how other flags are
+   * threaded through this service.
+   */
+  setUseRunToolBatchCreates(enabled: boolean): void {
+    this.useRunToolBatchCreates = enabled
   }
 
   setScopeContext(ctx: MemoryScopeContext): void {
@@ -789,6 +952,29 @@ export class FactService {
       return { fact: compatibleExisting, deduped: true, enriched }
     }
 
+    return await this.freshCreateAfterDedupMiss({
+      relationSafeInput,
+      dedupKey,
+      subjectKey,
+      reviewBy,
+    })
+  }
+
+  /**
+   * Tail half of `createWithDedupLocked`: blind `pages.create` after
+   * the dedup probe missed. Extracted so `createBatchWithDedup` can
+   * reuse it on the per-input fallback path (issue #533) without
+   * re-running the probe — a fallback after a failed batch already
+   * has the probe result in hand and re-issuing the probe would
+   * waste a round-trip per fallback.
+   */
+  private async freshCreateAfterDedupMiss(args: {
+    relationSafeInput: CreateFactInput
+    dedupKey: string
+    subjectKey: string
+    reviewBy: string | undefined
+  }): Promise<CreateFactResult> {
+    const { relationSafeInput, dedupKey, subjectKey, reviewBy } = args
     const page = await this.client.pages.create({
       parent: { type: "database_id", database_id: this.db.databaseId },
       properties: buildFactProps({
@@ -821,6 +1007,341 @@ export class FactService {
       deduped: false,
       enriched: [],
     }
+  }
+
+  /**
+   * Batch sibling of `createWithDedup` — same dedup + provenance
+   * semantics applied across many inputs (issue #533).
+   *
+   * Two execution paths:
+   *
+   * 1. **Flag off** (default): byte-equivalent to today's auto-mention
+   *    emission shape — `Promise.allSettled(inputs.map(createWithDedup))`.
+   *    The acceptance criterion's "behavioral equivalence under the
+   *    flag-off path" is satisfied by construction: this branch is the
+   *    same fan-out the MCP layer used to issue inline.
+   *
+   * 2. **Flag on**: probes dedup for every input in parallel, runs
+   *    the merge inline for hits, batches fresh-create candidates
+   *    via `createPagesViaRunTool`, and falls back to per-input
+   *    create on failure. The fallback selects between two paths
+   *    based on whether the failure could have produced a
+   *    server-side commit we lost the response for:
+   *
+   *    - **Pre-commit failures** (4xx validation, etc., where the
+   *      server rejected before writing): use
+   *      `freshCreateAfterDedupMiss` — the dedup probe was already
+   *      done, no need to re-issue.
+   *    - **Maybe-committed failures** (transport drops with no
+   *      HTTP status, 5xx server errors, full-failure paths): use
+   *      `createWithDedupLocked` so the per-input dedup probe
+   *      catches a server-side commit whose response we lost.
+   *      This applies to both full-failure and partial-commit-tail
+   *      branches: a transport drop AFTER chunk 1 succeeded can
+   *      still leave chunk 2 partially landed on the server, so
+   *      the partial-commit tail must re-probe too. Pinned by the
+   *      `mid-batch transport drop on chunk 2 → tail re-probes
+   *      via createWithDedup` test in `fact-batch.test.ts`.
+   *
+   * Returns `PromiseSettledResult<CreateFactResult>[]` so per-input
+   * failures stay isolated — the same shape `Promise.allSettled` gives
+   * the auto-mention caller today, just routed through one method.
+   *
+   * Empty `inputs` returns `[]` without any Notion call. Single-input
+   * `inputs` short-circuits to `createWithDedup` to keep the
+   * single-call path on its existing locking discipline.
+   *
+   * **Concurrency caveat (PR #538 strong rec #4).** The flag-on
+   * path runs N dedup probes in parallel for the same `inputs`
+   * batch, expanding the cross-process dedup race window from
+   * `createWithDedup`'s 1× to N× — between any pair of
+   * `(probe, fresh-create)` operations on the same triple, an
+   * out-of-process writer could land a matching row that this
+   * batch's probes did not see. The result on a race is at most
+   * one extra duplicate row per racing input, collapsed by the
+   * authoritative `lore migrate --dedup-keys --merge` pass per
+   * the existing dedup contract documentation in
+   * `src/core/AGENTS.md`. The blast radius is acceptable for
+   * auto-mention emission (the documented caller, where mentions
+   * facts ship at `confidence: speculative` and the migration
+   * sweeps regularly); a higher-stakes future caller adopting
+   * this surface should consider whether the wider race window
+   * matters and either accept it or fall back to the single-input
+   * path.
+   */
+  async createBatchWithDedup(
+    inputs: CreateFactInput[]
+  ): Promise<PromiseSettledResult<CreateFactResult>[]> {
+    if (inputs.length === 0) return []
+
+    if (!this.useRunToolBatchCreates || inputs.length === 1) {
+      // Flag-off and single-input paths route through the existing
+      // per-call dedup+create path. `Promise.allSettled` preserves
+      // the per-input failure isolation the auto-mention caller
+      // historically achieved via `Promise.all` with inline
+      // `.then(success, failure)` — same shape, fewer call-site
+      // boilerplate per emitter.
+      return await Promise.allSettled(
+        inputs.map((input) => this.createWithDedup(input))
+      )
+    }
+
+    // Flag-on path: batch fresh creates via RunTool. Acquire every
+    // input's entity-relation locks at once via the shared helper,
+    // which sorts and dedups so concurrent batch calls cannot
+    // deadlock on overlapping lock sets. Auto-mention emission
+    // (the canonical caller) typically passes inputs without
+    // entity ids, so the lock helper short-circuits to a no-op for
+    // the common case.
+    const allEntityIds = inputs.flatMap((input) => [
+      input.subjectEntityId,
+      input.objectEntityId,
+    ])
+    return await withEntityRelationLocks(allEntityIds, () =>
+      this.createBatchWithDedupRunToolLocked(inputs)
+    )
+  }
+
+  /**
+   * Flag-on body of `createBatchWithDedup`. Probes dedup per input,
+   * batches fresh creates, hydrates synthesized Facts on success,
+   * and falls back per-input on batch failure.
+   */
+  private async createBatchWithDedupRunToolLocked(
+    inputs: CreateFactInput[]
+  ): Promise<PromiseSettledResult<CreateFactResult>[]> {
+    const results: PromiseSettledResult<CreateFactResult>[] = new Array(
+      inputs.length
+    )
+
+    type ReadyMiss = {
+      idx: number
+      relationSafeInput: CreateFactInput
+      dedupKey: string
+      subjectKey: string
+      reviewBy: string | undefined
+    }
+
+    // Phase 1: probe dedup for every input in parallel. Any failure
+    // here (decode / archive-relation drop / probe error path that
+    // throws unexpectedly) becomes a per-input rejection rather
+    // than collapsing the whole batch — preserves the per-call
+    // isolation the auto-mention emitter relies on.
+    const misses: ReadyMiss[] = []
+    await Promise.all(
+      inputs.map(async (input, idx) => {
+        try {
+          const decodedInput: CreateFactInput = {
+            ...input,
+            subject: decodeTextEntities(input.subject),
+            object: decodeTextEntities(input.object),
+          }
+          const relationSafeInput =
+            await this.dropArchivedEntityRelations(decodedInput)
+          const reviewBy = relationSafeInput.reviewBy
+          const dedupKey = computeFactDedupKey({
+            subject: relationSafeInput.subject,
+            predicate: relationSafeInput.predicate,
+            object: relationSafeInput.object,
+          })
+          const subjectKey = computeSubjectKey(relationSafeInput.subject)
+          const compatibleExisting = await this.findScopeMatchingLiveByDedupKey(
+            dedupKey,
+            relationSafeInput.scope
+          ).catch((err) => {
+            logProbeFailureOnce(err)
+            return null
+          })
+          if (compatibleExisting) {
+            const enriched = await this.mergeOntoExisting(
+              compatibleExisting,
+              relationSafeInput,
+              reviewBy
+            )
+            results[idx] = {
+              status: "fulfilled",
+              value: { fact: compatibleExisting, deduped: true, enriched },
+            }
+            return
+          }
+          misses.push({
+            idx,
+            relationSafeInput,
+            dedupKey,
+            subjectKey,
+            reviewBy,
+          })
+        } catch (err) {
+          results[idx] = { status: "rejected", reason: err }
+        }
+      })
+    )
+
+    if (misses.length === 0) return results
+
+    // Phase 2: build the page payloads and dispatch one
+    // `create_pages` call. The wrapper chunks defensively — see
+    // `RUNTOOL_CREATE_PAGES_MAX_CHUNK` — so callers can pass any
+    // number of misses without thinking about the server cap.
+    const validFromDefault = new Date().toISOString().split("T")[0]
+    const pagePayloads: RunToolCreatePagesInputPage[] = misses.map((m) => ({
+      properties: buildFactProps({
+        subject: m.relationSafeInput.subject,
+        predicate: m.relationSafeInput.predicate,
+        object: m.relationSafeInput.object,
+        projectIds: m.relationSafeInput.projectIds,
+        validFrom: m.relationSafeInput.validFrom ?? validFromDefault,
+        reviewBy: m.reviewBy,
+        sourceMemoryId: m.relationSafeInput.sourceMemoryId,
+        confidence: m.relationSafeInput.confidence ?? "certain",
+        dedupKey: m.dedupKey,
+        subjectKey: m.subjectKey,
+        subjectEntityId: m.relationSafeInput.subjectEntityId,
+        objectEntityId: m.relationSafeInput.objectEntityId,
+        ...factScopeInputToBuilderProps(m.relationSafeInput.scope),
+      }) as Record<string, unknown>,
+    }))
+
+    // PR #538 review (optional refactor + Round 2 transport-drop fix):
+    // discriminated union over the three terminal states of the batch
+    // dispatch. Each terminal state carries a `tailFallback` mode that
+    // determines whether per-input fallback re-probes the dedup path:
+    //
+    // - "fresh-create" → use `freshCreateAfterDedupMiss` (probe
+    //   already done; pre-commit failures cannot have produced a
+    //   server-side commit we missed).
+    // - "reprobe" → use `createWithDedupLocked` so the per-input
+    //   probe catches a server-side commit whose response we lost.
+    //   Transport-class and 5xx failures fall here on BOTH the
+    //   full-failure path AND the partial-commit-tail path,
+    //   because chunk-order ALONE doesn't prove the failing chunk
+    //   had no server-side effects (Round 2 review).
+    type BatchOutcome =
+      | { kind: "full-success"; ids: string[] }
+      | { kind: "partial-commit"; ids: string[]; tailFallback: TailFallback }
+      | { kind: "full-failure"; tailFallback: TailFallback }
+
+    let outcome: BatchOutcome
+    try {
+      const batchResult = await createPagesViaRunTool({
+        client: this.client,
+        parentDataSourceId: this.db.dataSourceId,
+        pages: pagePayloads,
+        relationUrlBase: this.relationUrlBase,
+      })
+      outcome = { kind: "full-success", ids: batchResult.createdPageIds }
+    } catch (err) {
+      // Security review S1 (PR #538) + Round 2: classify the
+      // underlying cause to decide whether the tail fallback
+      // must re-probe. Transport-class failures (no HTTP
+      // status — network drop, read timeout) and 5xx server
+      // errors might have committed before we lost the
+      // response, so the tail must re-probe via
+      // `createWithDedup` to absorb the orphan commit.
+      // Pre-commit 4xx validation errors cannot have committed,
+      // so the tail safely uses `freshCreateAfterDedupMiss`
+      // and skips a wasted probe per input.
+      if (isBatchCreateError(err)) {
+        // Partial-commit failures expose the underlying SDK error
+        // on `cause`; surface auth-class causes (401/403) once
+        // per process so operators see the actionable reason for
+        // the per-input fallback.
+        logRunToolBatchCreatesAuthFallbackOnce(err.cause)
+        outcome = {
+          kind: "partial-commit",
+          ids: err.committedIds,
+          tailFallback: classifyTailFallback(err.cause),
+        }
+      } else {
+        // Full failures: the SDK error itself carries the status.
+        // 401/403/RestrictedResource → loud-enough warning; other
+        // failures stay silent (the surviving fallback creates
+        // are the operator-visible signal).
+        logRunToolBatchCreatesAuthFallbackOnce(err)
+        outcome = {
+          kind: "full-failure",
+          tailFallback: classifyTailFallback(err),
+        }
+      }
+    }
+
+    // Phase 3a: credit the committed prefix (full success or
+    // partial-commit prefix) by synthesizing Fact objects from the
+    // input + new id. Skipping `pages.retrieve` for each created row
+    // is the load-bearing batching win — re-fetching N pages would
+    // give back the round-trips the batch saved.
+    const committedIds: string[] =
+      outcome.kind === "full-success" || outcome.kind === "partial-commit"
+        ? outcome.ids
+        : []
+    for (let j = 0; j < committedIds.length; j += 1) {
+      const m = misses[j]
+      if (!m) break
+      results[m.idx] = {
+        status: "fulfilled",
+        value: {
+          fact: synthesizeFactFromCreateInput(
+            committedIds[j]!,
+            m.relationSafeInput,
+            validFromDefault
+          ),
+          deduped: false,
+          enriched: [],
+        },
+      }
+    }
+
+    // Phase 3b: fall back per-input for misses the batch did not
+    // commit (partial-commit tail or full failure). The fallback
+    // mode is set by `classifyTailFallback` based on whether the
+    // underlying error class could have produced a server-side
+    // commit we missed:
+    //
+    // - `"reprobe"` (transport-class, 5xx, unknown) → re-probe
+    //   via `createWithDedupLocked` so a server-side orphan
+    //   commit is absorbed by the per-input dedup match.
+    // - `"fresh-create"` (4xx validation, auth, capability) →
+    //   skip the probe via `freshCreateAfterDedupMiss` because
+    //   the failure class cannot have produced a commit.
+    //
+    // Both partial-commit tails AND full failures go through this
+    // selector now (Round 2 review): a transport drop on chunk 2
+    // after chunk 1 succeeded can still leave chunk 2 partially
+    // landed on the server, so the tail must re-probe.
+    const tail = misses.slice(committedIds.length)
+    if (tail.length === 0) return results
+
+    const tailFallback: TailFallback =
+      outcome.kind === "full-success" ? "fresh-create" : outcome.tailFallback
+    await Promise.all(
+      tail.map(async (m) => {
+        try {
+          if (tailFallback === "reprobe") {
+            // Re-probe path: an extra `dataSources.query` per input
+            // catches a server-side commit the wrapper lost the
+            // response for. Cost: N probes per failed batch.
+            // Benefit: idempotent recovery from network drops on
+            // an undelivered RunTool response.
+            const result = await this.createWithDedupLocked(
+              m.relationSafeInput
+            )
+            results[m.idx] = { status: "fulfilled", value: result }
+          } else {
+            const result = await this.freshCreateAfterDedupMiss({
+              relationSafeInput: m.relationSafeInput,
+              dedupKey: m.dedupKey,
+              subjectKey: m.subjectKey,
+              reviewBy: m.reviewBy,
+            })
+            results[m.idx] = { status: "fulfilled", value: result }
+          }
+        } catch (createErr) {
+          results[m.idx] = { status: "rejected", reason: createErr }
+        }
+      })
+    )
+
+    return results
   }
 
   private async dropArchivedEntityRelations(
@@ -2660,4 +3181,76 @@ function factScopeInputToBuilderProps(
   if (scope.lifetime !== undefined) out.lifetime = scope.lifetime
   if (scope.expiresAt !== undefined) out.expiresAt = scope.expiresAt
   return out
+}
+
+/**
+ * Synthesize a `Fact` shape from a freshly-created page id + the
+ * `CreateFactInput` that produced it (issue #533, batch path).
+ *
+ * The batch `create_pages` response carries only `{ id }` per page,
+ * so the caller cannot route through `pageToFact`'s
+ * `PageObjectResponse` extractor. Re-fetching every created row
+ * via `pages.retrieve` would give back the N round-trips the batch
+ * call just saved (see `FactService.createBatchWithDedupRunToolLocked`'s
+ * "load-bearing batching win" note). Synthesizing from the input
+ * preserves the wall-clock win at the cost of leaving the
+ * system-managed read-side fields (`confidenceScore`,
+ * `lastReferencedAt`) at their fresh-row default of `null`, which
+ * is exactly what `pageToFact` would return for a never-touched
+ * post-create row anyway.
+ *
+ * `createdAt` defaults to "now" because Notion's `created_time` is
+ * server-side and not in the response. The Fact carries this as
+ * an optional field per the `Fact.createdAt` doc comment.
+ *
+ * Auto-mention emission — the canonical caller — only checks
+ * fulfilled / rejected on each result and never reads back the
+ * synthesized fields, so the "approximate fields" cost is entirely
+ * paid by hypothetical future consumers, which the type's optional
+ * markers permit.
+ *
+ * **Invariant — keep aligned with `pageToFact`.** This synthesizer
+ * deliberately bypasses `pageToFact`'s historical-tracking-predicate
+ * filter (the `pageToFactSync` null-return for legacy
+ * `needs_action` / `waiting_on` / `blocked_by` rows). The bypass is
+ * safe today because the batch path validates `predicate` upstream
+ * via the `FactPredicate` type — historical strings cannot reach
+ * here. A future contributor who tightens `pageToFact`'s filter
+ * (e.g. adding a new historical-only predicate to the null-return
+ * set) MUST mirror that change here, otherwise the batch path
+ * would silently surface filtered rows that the single-input path
+ * would drop. Audited at PR-#538 review time; pinned only by
+ * documentation, not test scaffolding.
+ */
+function synthesizeFactFromCreateInput(
+  id: string,
+  input: CreateFactInput,
+  validFromDefault: string
+): Fact {
+  return {
+    id,
+    subject: input.subject,
+    predicate: input.predicate,
+    object: input.object,
+    projectIds: input.projectIds ? [...input.projectIds] : [],
+    validFrom: input.validFrom ?? validFromDefault,
+    validUntil: null,
+    reviewBy: input.reviewBy ?? null,
+    sourceMemoryId: input.sourceMemoryId ?? null,
+    confidence: input.confidence ?? "certain",
+    confidenceScore: null,
+    lastReferencedAt: null,
+    createdAt: new Date().toISOString(),
+    subjectEntityId: input.subjectEntityId ?? null,
+    objectEntityId: input.objectEntityId ?? null,
+    scope: input.scope
+      ? {
+          kind: input.scope.kind ?? null,
+          key: input.scope.key ?? "",
+          audience: input.scope.audience ?? "",
+          lifetime: input.scope.lifetime ?? null,
+          expiresAt: input.scope.expiresAt ?? null,
+        }
+      : null,
+  }
 }

@@ -52,6 +52,12 @@ function makeObservableClient(callDurationMs = 20): {
       query: () => track(),
     },
     search: () => track(),
+    // Issue #533 — `client.request` is the SDK seam the RunTool
+    // wrapper dispatches through. The recursive Proxy already
+    // wraps it because `request` is a top-level method, but the
+    // invariant is easy to silently regress (see this module's
+    // CLAUDE.md "When adding a new SDK call site" rule).
+    request: () => track(),
   } as unknown as Client
 
   return {
@@ -103,6 +109,37 @@ describe("createLimitedClient — concurrency gate", () => {
 
     await Promise.all(
       Array.from({ length: 6 }, () => limited.search({} as never)),
+    )
+
+    expect(callCount()).toBe(6)
+    expect(maxInFlight()).toBe(2)
+  })
+
+  it("caps concurrency on client.request (RunTool seam, issue #533)", async () => {
+    // The RunTool wrapper (`src/notion/runtool/client.ts`) routes
+    // every `runTool(...)` call through `client.request<T>({...})`.
+    // The recursive Proxy already wraps top-level methods, but
+    // CLAUDE.md's rate-limit module section explicitly asks for a
+    // pacing/cap test per new SDK call site so a future SDK
+    // refactor that flipped `request` into a different shape
+    // (a function returning a function, a getter, etc.) cannot
+    // silently bypass the wrap. Without this case, RunTool calls
+    // could blow the per-token rps ceiling without any type-level
+    // signal.
+    const { client, maxInFlight, callCount } = makeObservableClient()
+    const limited = createLimitedClient(client, {
+      concurrency: 2,
+      ...RATE_GATE_DISABLED,
+    })
+
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        (
+          limited as unknown as {
+            request: (args: Record<string, unknown>) => Promise<unknown>
+          }
+        ).request({ method: "post", path: "/v1/tools/run", body: {} })
+      )
     )
 
     expect(callCount()).toBe(6)

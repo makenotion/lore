@@ -125,6 +125,90 @@ export async function probeScopeColumnsPresent(
   )
 }
 
+/**
+ * Resolve the issue #533 batch-creates feature flag from the
+ * environment.
+ *
+ * **The write-path flag does NOT inherit from the parent
+ * `LORE_USE_RUNTOOL` quarantine knob.** Parity with the read-path
+ * sub-flags (search / aggregate, parked under issue #532) was the
+ * original sketch in #533's "Approach," but the security review on
+ * PR #538 (S2) flagged that as a footgun: an operator setting
+ * `LORE_USE_RUNTOOL=1` to dogfood a future Phase-2 read path would
+ * silently enable a write-path experiment with a partial-commit
+ * failure mode. The runtool README's quarantine framing also paints
+ * the parent flag as a read-path knob ("two read-path cleanup
+ * wins"), which is at odds with implicit write-path enablement.
+ * Write-path sub-flags should be loud — operators must opt in
+ * explicitly with `LORE_USE_RUNTOOL_BATCH_CREATES=1`.
+ *
+ * Resolution table:
+ *
+ * | `LORE_USE_RUNTOOL_BATCH_CREATES` | `LORE_USE_RUNTOOL` | Result |
+ * | -------------------------------- | ------------------ | ------ |
+ * | `"1"`                            | (any)              | true   |
+ * | (anything else)                  | (any)              | false  |
+ *
+ * Default-off is the safety contract: an operator running 0.13.x
+ * with no env vars set sees byte-identical pre-#533 behavior on the
+ * auto-mention emission path, and `lore migrate --dedup-keys --merge`
+ * is the authoritative collapse path for any duplicates a future
+ * flag-on rollout might leak (same posture as the existing dedup
+ * race documentation in `src/core/AGENTS.md`).
+ *
+ * The fail-loud-on-typo posture matters here because malformed
+ * sub-flag strings (`"true"`, `"yes"`, `"on"`) used to silently
+ * fall through to the parent flag — pinned by the principal review
+ * on PR #538 (Strong rec #2). The sub-flag now reads strictly:
+ * any value other than `"1"` is treated as "off."
+ *
+ * Read the env once at services-init time so the flag does not flip
+ * mid-process. Tests that need to flip should call
+ * `services.facts.setUseRunToolBatchCreates(true)` directly rather
+ * than mutating `process.env`.
+ */
+export function resolveRunToolBatchCreatesFlag(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return env["LORE_USE_RUNTOOL_BATCH_CREATES"] === "1"
+}
+
+/**
+ * Derive the user-facing host root that RunTool's `create_pages`
+ * relation property values must use, given the resolved API host.
+ *
+ * **Empirical findings (PR #538 live verification, May 2026):**
+ * the server validates the relation URL host against the
+ * workspace's user-facing domain and rejects mismatches with
+ * `400 validation_error: Invalid page URL ... for property X`.
+ * Bare ids and the wrong host (`www.notion.so` against a dev
+ * workspace, `notion.com` anywhere) all produce that error.
+ * The mapping below was verified live:
+ *
+ * | API host (`auth.baseUrl`)            | User-facing relation URL base |
+ * | ------------------------------------ | ----------------------------- |
+ * | `https://api-dev.notion.com`         | `https://dev.notion.so/`      |
+ * | `https://api.notion.com` (default)   | `https://www.notion.so/`      |
+ * | undefined / unknown                  | `https://www.notion.so/`      |
+ *
+ * The unknown-host fallback to `www.notion.so` matches the
+ * production default — operators on bespoke configurations who
+ * need a different mapping should override `auth.baseUrl` to
+ * something this helper recognizes (or fall back to the per-input
+ * REST `pages.create` path, which accepts plain page ids
+ * regardless of host).
+ */
+export function deriveRelationUrlBase(apiBaseUrl: string | undefined): string {
+  if (apiBaseUrl === undefined || apiBaseUrl === null) {
+    return "https://www.notion.so/"
+  }
+  const lower = apiBaseUrl.toLowerCase()
+  if (lower.includes("api-dev.notion.com") || lower.includes("api.dev.notion")) {
+    return "https://dev.notion.so/"
+  }
+  return "https://www.notion.so/"
+}
+
 export function resolveMemoryScopeContext(): MemoryScopeContext {
   const ctx: MemoryScopeContext = {}
   const slot = (env: string): string | undefined => {
@@ -343,7 +427,10 @@ export async function initServicesFromConfig(
   }
   const effectiveScopeCtx = scopeColumnsReady ? scopeCtx : undefined
   const memories = new MemoryService(client, db.memories, effectiveScopeCtx)
-  const facts = new FactService(client, db.facts, effectiveScopeCtx)
+  const facts = new FactService(client, db.facts, effectiveScopeCtx, {
+    useRunToolBatchCreates: resolveRunToolBatchCreatesFlag(),
+    relationUrlBase: deriveRelationUrlBase(auth.baseUrl),
+  })
   // Decisions are backed by the Memories DB — same DatabaseRef, different
   // business logic (Kind = decision discriminator, supersession chains,
   // index-tier listings without body fetch). Scope context threads
