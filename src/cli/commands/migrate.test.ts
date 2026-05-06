@@ -623,6 +623,7 @@ describe("runMemoryEncodingFix", () => {
         fixEncoding: vi.fn().mockResolvedValue({
           encoded,
           oversizedSkipped: [],
+          oversizedAnchoredPlanned: [],
           contentFetchFailures: [],
           fixes: [],
         }),
@@ -647,6 +648,7 @@ describe("runMemoryEncodingFix", () => {
         fixEncoding: vi.fn().mockResolvedValue({
           encoded: [],
           oversizedSkipped: [],
+          oversizedAnchoredPlanned: [],
           contentFetchFailures: [],
           fixes: [],
         }),
@@ -670,6 +672,7 @@ describe("runMemoryEncodingFix", () => {
         fixEncoding: vi.fn().mockResolvedValue({
           encoded: [],
           oversizedSkipped: [],
+          oversizedAnchoredPlanned: [],
           contentFetchFailures: [],
           fixes: [],
         }),
@@ -735,6 +738,7 @@ describe("runMemoryEncodingFix", () => {
         fixEncoding: vi.fn().mockResolvedValue({
           encoded,
           oversizedSkipped: [],
+          oversizedAnchoredPlanned: [],
           contentFetchFailures: [],
           fixes,
         }),
@@ -751,6 +755,129 @@ describe("runMemoryEncodingFix", () => {
     expect(
       logs.some((l) => l.includes("Title fixes: 1") && l.includes("body fixes: 2"))
     ).toBe(true)
+  })
+
+  it("plan mode labels oversized rows as 'will fix via anchored RunTool patterns' when LORE_USE_RUNTOOL_BLOCK_EDIT predicts the path applies (issue #534 AC #5 review)", async () => {
+    // Pre-review the plan output labeled every oversized row as
+    // 'skipped', then `--yes` rewrote the body anyway under
+    // `LORE_USE_RUNTOOL_BLOCK_EDIT=1`. That broke the
+    // plan-then-execute contract on bodies > 100KB. Now the
+    // service routes apply-path-eligible oversized rows into a
+    // separate `oversizedAnchoredPlanned` bucket; the CLI surfaces
+    // it as its own preview section, AND the body-fixes counter
+    // includes those rows so `Would decode 1` is truthful.
+    const encoded = [
+      {
+        id: "11111111111111111111111111111111",
+        rawTitle: "Big & Chunky",
+        decodedTitle: "Big & Chunky",
+        titleNeedsFix: false,
+        contentNeedsFix: true,
+        contentBytes: 250_000,
+        contentTooLargeToFix: true,
+        rawContent: "…big body with &amp;…",
+        decodedContent: "…big body with &…",
+        contentFetchFailed: false,
+        anchoredPathPlanned: true,
+      },
+    ]
+    const services = {
+      memories: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          oversizedSkipped: [],
+          oversizedAnchoredPlanned: [encoded[0]],
+          contentFetchFailures: [],
+          fixes: [],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: false })
+    log.mockRestore()
+
+    // Body counter includes the oversized-anchored row.
+    expect(
+      logs.some((l) => l.includes("Title fixes: 0") && l.includes("body fixes: 1"))
+    ).toBe(true)
+    // Per-row preview labels the body shape correctly. NOT "skipped".
+    expect(
+      logs.some(
+        (l) =>
+          l.includes("body via anchored RunTool patterns") && l.includes("244.1 KB")
+      )
+    ).toBe(true)
+    expect(
+      logs.every((l) => !l.includes("Skipped body rewrite"))
+    ).toBe(true)
+    // Dedicated section surfaces the count.
+    expect(
+      logs.some(
+        (l) =>
+          l.includes("Will fix oversized body via anchored RunTool patterns on 1 memory")
+      )
+    ).toBe(true)
+    // Re-run footer still fires (planOnly + fixableRows > 0).
+    expect(logs.some((l) => l.includes("Re-run with `--yes`"))).toBe(true)
+  })
+
+  it("plan mode keeps oversized multi-pass / no-substitutions rows in the skipped bucket (anchored path can't help)", async () => {
+    // Counterpart to the previous test: when `anchoredPathPlanned`
+    // is false (multi-pass entity body, empty substitutions list,
+    // body fetch failed), the oversized row stays in
+    // `oversizedSkipped` and the CLI labels it as such — apply
+    // mode would also skip it, so plan and apply agree.
+    const encoded = [
+      {
+        id: "22222222222222222222222222222222",
+        rawTitle: "Multi-encoded",
+        decodedTitle: "Multi-encoded",
+        titleNeedsFix: false,
+        contentNeedsFix: true,
+        contentBytes: 250_000,
+        contentTooLargeToFix: true,
+        rawContent: "…body with &amp;amp;…",
+        decodedContent: "…body with &…",
+        contentFetchFailed: false,
+        anchoredPathPlanned: false,
+      },
+    ]
+    const services = {
+      memories: {
+        fixEncoding: vi.fn().mockResolvedValue({
+          encoded,
+          oversizedSkipped: [encoded[0]],
+          oversizedAnchoredPlanned: [],
+          contentFetchFailures: [],
+          fixes: [],
+        }),
+      },
+    }
+
+    const logs: string[] = []
+    const log = vi.spyOn(console, "log").mockImplementation((msg) => {
+      logs.push(String(msg))
+    })
+    await runMemoryEncodingFix(services as never, { apply: false })
+    log.mockRestore()
+
+    // Body counter does NOT include the oversized-non-anchored row.
+    expect(
+      logs.some((l) => l.includes("Title fixes: 0") && l.includes("body fixes: 0"))
+    ).toBe(true)
+    // Per-row preview correctly labels as 'skipped'.
+    expect(
+      logs.some((l) => l.includes("body skipped") && l.includes("244.1 KB"))
+    ).toBe(true)
+    expect(
+      logs.every((l) => !l.includes("body via anchored RunTool patterns"))
+    ).toBe(true)
+    // Dedicated 'Skipped' section fires.
+    expect(logs.some((l) => l.includes("Skipped body rewrite on 1 memory"))).toBe(true)
   })
 
   it("surfaces oversized-body rows in a dedicated bucket", async () => {
@@ -781,6 +908,7 @@ describe("runMemoryEncodingFix", () => {
         fixEncoding: vi.fn().mockResolvedValue({
           encoded,
           oversizedSkipped: [encoded[0]],
+          oversizedAnchoredPlanned: [],
           contentFetchFailures: [],
           fixes,
         }),
@@ -828,6 +956,7 @@ describe("runMemoryEncodingFix", () => {
           return {
             encoded: [],
             oversizedSkipped: [],
+            oversizedAnchoredPlanned: [],
             contentFetchFailures: [],
             fixes: [],
           }

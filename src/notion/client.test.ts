@@ -651,4 +651,45 @@ describe("createAuthRefreshingClient", () => {
     expect(skippedLine).toContain("<page-id>")
     expect(skippedLine).not.toContain("abcdef0123456789abcdef0123456789")
   })
+
+  it("retries top-level client.request after refreshed auth — RunTool dispatch path (issue #534)", async () => {
+    // RunTool calls dispatch through `client.request({ path: "tools/run",
+    // method: "post", body })`. (The path is SDK-relative — the Notion v5
+    // SDK's `Client.request()` builds `${prefixUrl}${path}` where
+    // `prefixUrl = ${baseUrl}/v1/`, so the wire URL is
+    // `https://api.notion.com/v1/tools/run`.) The auth-refreshing Proxy's
+    // recursive wrap memoizes wrapped methods at every namespace depth,
+    // including top-level callables — but a regression that
+    // special-cased the typed namespaces (`pages`, `dataSources`, etc.)
+    // without including `request` would silently let RunTool call sites
+    // bypass the 401 refresh. Pin the contract explicitly so the wrap
+    // can't drift off the dispatch path used by every issue-#534
+    // anchored block edit.
+    const oldRequest = vi.fn(async () => {
+      throw unauthorizedError()
+    })
+    const newRequest = vi.fn(async () => ({ ok: true, page_id: "post-refresh" }))
+    const createClient = vi.fn((token: string) => {
+      const request = token === "old-token" ? oldRequest : newRequest
+      return { request } as unknown as Client
+    })
+    const refreshAuth = vi.fn(async () => ({
+      kind: "refreshed" as const,
+      auth: { token: "new-token" },
+      source: "ntn-auth-json",
+    }))
+
+    const client = createAuthRefreshingClient({ token: "old-token" }, refreshAuth, {
+      createClient,
+      onRefresh: () => {},
+    })
+
+    await expect(
+      client.request({ path: "tools/run", method: "post", body: {} }),
+    ).resolves.toEqual({ ok: true, page_id: "post-refresh" })
+    expect(refreshAuth).toHaveBeenCalledTimes(1)
+    expect(createClient).toHaveBeenCalledTimes(2)
+    expect(oldRequest).toHaveBeenCalledTimes(1)
+    expect(newRequest).toHaveBeenCalledTimes(1)
+  })
 })

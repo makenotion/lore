@@ -1,26 +1,34 @@
-# `src/notion/runtool/` — Quarantined RunTool Surface
+# `src/notion/runtool/` — Quarantined RunTool Integration
 
-> **Status: Phase 0 reconnaissance + Phase 1 partial (issue #533
-> `create_pages` only, live-verified).** PR #538 lands the narrow
-> `create_pages` slice of the RunTool client (`client.ts`,
-> `types.ts`, `create-pages.ts`, `sqlite-properties.ts`,
-> `runtool.test.ts`, `sqlite-properties.test.ts`) wired to
-> `FactService.createBatchWithDedup` for auto-`mentions` emission
-> behind the explicit `LORE_USE_RUNTOOL_BATCH_CREATES=1` flag.
-> Default-off behavior on the auto-mention path is byte-equivalent
-> to pre-#533 emission. The read-path Phase 1+ work
+> **Status: Phase 0 README + two runtime consumers (`create_pages`
+> and `update_page`).** PR #538 (issue #533) landed the shared
+> `runTool<T>(client, tool, params)` dispatcher plus the
+> `create_pages` slice (live-verified against the production Mail
+> vault); PR #537 (issue #534) extends the surface with `update_page`
+> / `update_content` for anchored markdown edits in `MemoryService`
+> and `memory-encoding.ts`. Both consumers compose with the existing
+> rate-limit + auth-refresh proxies via the shared
+> `client.request()` dispatch path. The read-path Phase 1+ work
 > (`search` / `query_data_sources`, `LORE_USE_RUNTOOL_SEARCH` /
-> `LORE_USE_RUNTOOL_AGGREGATE`) is tracked separately under
+> `LORE_USE_RUNTOOL_AGGREGATE`) is tracked under
 > [issue #532](https://github.com/makenotion/lore/issues/532) and is
 > NOT shipped here.
+>
+> Every contract assertion below is sourced from the pinned upstream
+> commit named in "Pinned Schema Source"; runtime behavior on Lore's
+> actual auth path is annotated as "needs runtime verification"
+> wherever the code path could not be fully resolved by reading
+> source. Issue #534's wrapper added runtime verification of the
+> `update_page` error model — see "Canonical Error-Classification
+> Vocabulary" below.
 >
 > **PR #538 live-verification (May 5 2026, prod Mail vault).**
 > Two test fact rows were created via RunTool's `create_pages`
 > endpoint against the production Mail vault Facts DB
 > (`collection://5abdc6b6-...`) using the wrapper's exact wire
 > format, then read back via `query_data_sources` to confirm the
-> shape, then invalidated (`Valid Until = today`) per lore's
-> "facts are never deleted" rule. Verified outcomes:
+> shape, then invalidated (`Valid Until = today`) per lore's "facts
+> are never deleted" rule. Verified outcomes:
 >
 > 1. **Auth chain** — ntn-resolved user-actor token landed both
 >    rows successfully against `api-dev.notion.com`.
@@ -419,11 +427,18 @@ README pins only the contract, not the mechanism.
 **Test invariant.** `src/notion/AGENTS.md`'s rate-limiting section
 already requires a `rate-limit.test.ts` case for every new SDK call
 site, because the recursive Proxy can silently bypass a
-function-shape change with no type-level signal. Phase 1 must add a
-RunTool case to that suite — both a concurrency-cap assertion and a
-pacing assertion — alongside the existing top-level / two-level /
-three-level coverage. Without that case, a future SDK refactor can
-silently drop RunTool out of the wrap.
+function-shape change with no type-level signal. Issue #534 landed
+two RunTool-specific cases against the top-level `client.request`
+dispatch path (one concurrency-cap assertion, one token-bucket
+pacing assertion in `src/notion/rate-limit.test.ts`) plus a
+companion auth-refresh test for `client.request` in
+`src/notion/client.test.ts`. The shared dispatcher landing in
+#532's Phase 1 must keep this coverage alive — when `runTool` folds
+in as a separate top-level method, add an analogous
+concurrency-cap + pacing case for it (and an auth-refresh case if
+the dispatcher exposes a new top-level shape). Without that, a
+future SDK refactor could silently drop the shared dispatcher out
+of the wrap.
 
 **Multi-process pacing.** `src/notion/AGENTS.md` already documents
 that Notion enforces rate limits per access token, so a Lore process
@@ -441,15 +456,36 @@ mechanism for this; it inherits `createLimitedClient`'s posture.
 Confirmed shapes (from `@notionhq/server/helpers/publicApiError`):
 
 - `ApiValidationError` — 400 family. Body shape matches Notion's standard
-  `{ object: "error", code: "validation_error", message: "..." }`.
+  `{ object: "error", code: "validation_error", message: "..." }`. The
+  `update_page` wrapper landed in #534 classifies the
+  `update_content`-specific shapes (`old_str did not match`, `old_str
+  was not found`, `old_str matches more than once`) as fall-back-able
+  `RunToolBlockEditError` of kind `no_match` / `multiple_matches`;
+  unrecognized 400s propagate verbatim so the caller sees the actual
+  server complaint.
 - `ApiRestrictedResourceError` — 403. Used for unsupported actor types,
   workflow-bot capability denials, and workspace MCP-client allowlist
-  rejection.
+  rejection. The auth-refresh proxy CANNOT repair this (it refreshes
+  only on 401); the `update_page` wrapper classifies it as
+  fall-back-able (`restricted_resource`) with a once-per-process
+  stderr warning so integration-secret operators see why a flagged-on
+  call silently degrades. See "Canonical Error-Classification
+  Vocabulary" below for the full kind table.
 - Rate-limit failure — 429 with `Retry-After`. The body code Lore should
   expect is the same `rate_limited` family the v5 SDK already parses;
-  the wrapper should NOT add a second 429 detection path.
-- 5xx — opaque server error; Lore must per-call fall back to the
-  REST/SDK path (per issue #532's fallback contract).
+  the wrapper should NOT add a second 429 detection path. Per #534's
+  shipped policy 429 propagates verbatim from the wrapper so
+  `createLimitedClient`'s `extractRetryAfterMs` parser stays the
+  single-source 429 path.
+- 5xx — opaque server error; the wrapper propagates verbatim (NOT
+  classifies as fall-back-able). The original Phase 0 reconnaissance
+  drafted a "per-call fall back to REST/SDK" posture, but #534's
+  implementation reversed that decision after considering the
+  composition with `createLimitedClient`'s shared backoff: silently
+  swallowing 5xx into a fallback would let the wrapper bypass the
+  shared 429 backoff window that the SDK's own 429-shaped retries
+  rely on. The consumer's outer try/catch decides whether a 5xx
+  warrants escalation.
 
 ### Open questions — runtime verification needed
 
@@ -673,52 +709,77 @@ A reviewer without `notion-next` repo access can read this file alone and
 understand the RunTool contract well enough to design the Phase 1 client
 and audit the Phase 2/3 wrappers.
 
-## What Lands Next (Out Of Scope For Phase 0)
+## Module State
 
-Phase 1+ deliverables — see issue #532 for full criteria:
+Two runtime consumers landed: `create_pages` (PR #538 / issue #533)
+and `update_page` (PR #537 / issue #534). Both compose with the
+existing rate-limit + auth-refresh Proxies via the shared
+`client.request()` dispatch path.
 
-- `client.ts` — `runTool("search" | "query_data_sources", params)` with
-  shared rate-limit composition, 401-refresh hook, fallback counter, and
-  no second base-URL knob. **Issue #533 lands the `client.ts` skeleton
-  early, narrowed to `create_pages` only.** Composition with the existing
-  rate-limit + auth-refresh Proxy is preserved by routing through
-  `client.request()`; `search` / `query_data_sources` extend the
-  `RunToolRequestMap` / `RunToolResponseMap` types in a follow-up PR
-  without touching the dispatch helper.
-- `types.ts` — pinned subset of `RunToolParams` (search + query) re-typed
-  to match Lore's existing import boundary; no `notion-next` runtime or
-  build dependency. **Issue #533 lands the `create_pages` request /
-  response subset.** The pin table above is the single update point for
-  the next surface refresh.
+### Landed runtime surface
+
+| File | Issue | Purpose |
+| ---- | ----- | ------- |
+| `client.ts` | #533 + #534 | Shared `runTool<T>(client, tool, params)` dispatcher (PR #538). PR #537 extended it with the `update_page` consumer surface (`runUpdatePageContent`, `RunToolBlockEditError`, validation-error classifier, once-per-process `restricted_resource` stderr warning). |
+| `types.ts` | #533 + #534 | Pinned subset of `RunToolParams`. Today: `create_pages` (#533) and `update_page` (#534) request / response shapes plus the `RunToolRequestMap` / `RunToolResponseMap` tool-name maps. |
+| `flag.ts` | #534 | `LORE_USE_RUNTOOL` parent kill-switch + `LORE_USE_RUNTOOL_BLOCK_EDIT` sub-flag with parent-inherit. Default off. |
+| `update-page.ts` | #534 | High-level `updatePageContentViaRunTool` consumer wrapper with pre-call validation (page-id shape, empty / duplicate `oldStr`). |
+| `index.ts` | #534 | Public surface — only what `update_page` callers need. |
+| `update-page.test.ts` | #534 | Mocked HTTP coverage for the `update_page` wrapper: success / no-match / multiple-matches / deletion-warning / restricted-resource (× 2: happy + once-per-process) / 401 / 429 / 5xx / malformed / generic-400 rejection / pageId shape validation, plus a real-`Client` integration test asserting the SDK builds the canonical URL `https://api.notion.com/v1/tools/run`. |
+| `create-pages.ts` | #533 | Chunked batch-create wrapper consumed by `FactService.createBatchWithDedup` for auto-`mentions` fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1` (default off, **does NOT inherit from the parent `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the write-path opt-in must be loud because of the partial-commit failure mode). Server cap pinned at 100 pages per call (Notion MCP `notion-create-pages` tool's `pages.maxItems`); chunk size clamps to that ceiling. Partial-commit handling is first-class via `BatchCreateError.committedIds`. Tail fallback re-probes via `createWithDedup` on transport-class / 5xx failures per `classifyTailFallback`. |
+| `runtool.test.ts` | #533 | Mocked HTTP success / 401 / 403 / 429 / 5xx / malformed / unsupported-tool-name cases for the shared dispatcher with `create_pages`-shaped fixtures. |
+| `sqlite-properties.ts` / `sqlite-properties.test.ts` | #533 | Notion-REST → SQLite-flat property converter for `create_pages` payloads. |
+
+The `restricted_resource` 403 fall-back posture introduced by #534
+(auth-refresh cannot repair it; integration-secret operators
+silently degrade with a once-per-process stderr warning) is the
+canonical reference for future RunTool consumers — see
+"Canonical Error-Classification Vocabulary" below.
+
+### Phase 1+ pending (still out of scope)
+
+Issue #532 tracks the broader rollout. Pending deliverables:
+
+- `search` / `query_data_sources` consumers under
+  `LORE_USE_RUNTOOL_SEARCH` / `LORE_USE_RUNTOOL_AGGREGATE` sub-flags.
+  When these land, the `RunToolRequestMap` / `RunToolResponseMap`
+  in `types.ts` extend with `search` and `query_data_sources` shapes
+  in a follow-up PR without touching the shared dispatcher.
 - `search.ts` / `query.ts` — request/response mappers between RunTool
-  shapes and Lore's domain types.
-- `create-pages.ts` — chunked batch-create wrapper (issue #533),
-  consumed by `FactService.createBatchWithDedup` for auto-`mentions`
-  fact emission. Exposed via `LORE_USE_RUNTOOL_BATCH_CREATES=1`
-  (default off, **does NOT inherit from the parent
-  `LORE_USE_RUNTOOL` quarantine knob** per security review S2 — the
-  write-path opt-in must be loud because of the partial-commit
-  failure mode). Server cap pinned at 100 pages per call (Notion MCP
-  `notion-create-pages` tool's `pages.maxItems`); chunk size clamps
-  to that ceiling. Partial-commit handling is first-class via
-  `BatchCreateError.committedIds` so a caller can fall back
-  idempotently before retrying. Tail fallback re-probes via
-  `createWithDedup` on transport-class / 5xx failures (full-failure
-  AND partial-commit-tail) per `classifyTailFallback`, so a network
-  drop that orphaned a server-side commit is absorbed by the
-  per-input dedup match instead of producing a duplicate.
-- `runtool.test.ts` — mocked HTTP success / 401 / 403 / 429 / 5xx /
-  malformed / unsupported-tool-name cases. **Issue #533 lands this
-  with `create_pages`-shaped fixtures.**
+  shapes and Lore's domain `MemorySearchResult[]` / aggregate types.
 - `compat.test.ts` — A/B harness asserting page-id-set equivalence
   between REST and RunTool paths at equal `limit`, AND aggregate-row
   equivalence between JS `GROUP BY` and SQL `GROUP BY`.
-- `LORE_USE_RUNTOOL` / `LORE_USE_RUNTOOL_SEARCH` /
-  `LORE_USE_RUNTOOL_AGGREGATE` / `LORE_USE_RUNTOOL_BATCH_CREATES`
-  flag plumbing in `config.ts` and `services.ts`. **Issue #533 lands
-  `LORE_USE_RUNTOOL_BATCH_CREATES`** — read once at services init via
-  `resolveRunToolBatchCreatesFlag` and threaded into
-  `FactService` as `useRunToolBatchCreates: boolean`.
+- Phase 4 default-on rollout — gated by the criteria in "Default-On
+  Criteria" of issue #532.
 
-Default flag state stays OFF until the criteria in
-"Default-On Criteria" of issue #532 are met.
+Default flag state stays OFF for every consumer until those criteria
+are met.
+
+## Canonical Error-Classification Vocabulary
+
+The `update_page` wrapper landed in issue #534 introduces the
+fall-back-able-error vocabulary that future RunTool consumers must
+share. The shared dispatcher landing in #532's Phase 1 will key
+error-classification on these exact strings; a sibling PR using a
+different spelling has a normalization debt that must be resolved
+IN that PR before it merges.
+
+| Kind | Trigger | Recovery |
+| ---- | ------- | -------- |
+| `no_match` | `update_content`'s `old_str` was absent from the page body | Caller falls back to existing REST/SDK path |
+| `multiple_matches` | `old_str` matched more than once and `replace_all_matches` was unset | Caller falls back; picking one implicitly is forbidden |
+| `deletion_warning` | The edit would remove child pages or databases and `allow_deleting_content` was not opted in | Caller falls back to preserve children |
+| `restricted_resource` | 403 RestrictedResource — the actor-type / MCP-client allowlist / workflow-bot capability gate rejected the call | Caller falls back; auth-refresh CANNOT repair (refresh only fires on 401). Wrapper emits a once-per-process stderr warning |
+
+**Naming**: `restricted_resource` mirrors `APIErrorCode.RestrictedResource`
+exactly; the underscored snake_case matches the SDK's public enum
+spelling. A bare `"restricted"` on a sibling PR (e.g. an in-flight
+`#539`) is a vocabulary debt that must be aligned before the shared
+dispatcher lands. Operators reading mixed logs need one canonical name
+to grep for.
+
+The `RunToolBlockEditError` class carries this `kind` discriminator
+plus the original SDK error as `cause` (ES2022 native channel) so
+call sites branch deterministically on the kind without inspecting
+strings.

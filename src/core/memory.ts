@@ -52,6 +52,11 @@ import {
 import { isMissingPropertyError } from "../notion/errors.js"
 import { projectOrUnscopedFilter, withDefaultScopeFilter } from "../notion/filters.js"
 import { decodeTextEntities } from "../notion/html-entities.js"
+import {
+  isRunToolBlockEditEnabled,
+  RunToolBlockEditError,
+  updatePageContentViaRunTool,
+} from "../notion/runtool/index.js"
 import { fixMemoryEncoding, type MemoryEncodingReport } from "./memory-encoding.js"
 import { normalizeAgents, type AgentNormalizationReport } from "./agent-normalization.js"
 import {
@@ -1420,6 +1425,137 @@ function extractLatestTopicRevision(
   return extractAppendedTopicRevisionByCount(markdown, storedRevisionCount)
 }
 
+/**
+ * Pick a unique anchor string for the upsert revision-append RunTool
+ * branch. Returns `null` when no safe anchor exists — caller falls back
+ * to the canonical full-body `replace_content_range` path.
+ *
+ * The anchor is the latest fingerprinted revision's fingerprint comment
+ * line plus everything that follows it through the end of the body. Two
+ * load-bearing properties:
+ *
+ * 1. **Uniqueness.** The fingerprint hashes (kind, title, content,
+ *    synopsis, keywords, source, confidence, author) — content-derived,
+ *    so two revisions with byte-identical effective inputs would have
+ *    short-circuited through the no-op branch above instead of
+ *    appending. A non-unique fingerprint line would therefore be a
+ *    structural impossibility for the path that reaches here, but the
+ *    occurrence-count guard below makes the contract explicit and fails
+ *    closed if a hand-edited body somehow contains the line twice.
+ *
+ * 2. **Tail coverage.** The fingerprint line lives inside the latest
+ *    revision block, and the latest revision is, by definition, the
+ *    last block in the body. Anchoring on `<fp line> + <rest-to-end>`
+ *    means substituting the anchor for `anchor + revisionBlock`
+ *    semantically appends — the new revision lands strictly after the
+ *    previous one, preserving the document's structural ordering.
+ *
+ * Falls back to `null` when:
+ * - no latest revision exists (first append on a body with no prior
+ *   revision blocks) — the legacy / un-fingerprinted shape gives no
+ *   safe anchor;
+ * - the latest revision lacks a fingerprint (legacy un-fingerprinted
+ *   revision blocks predate the audit fingerprint and could collide
+ *   with other content);
+ * - the fingerprint line does not occur exactly once in the body
+ *   (defensive: structural impossibility today, but the explicit guard
+ *   keeps a future hand-edited body from silently routing into the
+ *   wrong replacement).
+ */
+function pickRevisionAppendAnchor(
+  markdown: string,
+  latestRevision: LatestTopicRevision | null
+): string | null {
+  if (!latestRevision || latestRevision.fingerprint === null) return null
+  const fpLine = `${TOPIC_UPSERT_FINGERPRINT_PREFIX}${latestRevision.fingerprint} -->`
+  const idx = markdown.lastIndexOf(fpLine)
+  if (idx < 0) return null
+  const occurrences = markdown.split(fpLine).length - 1
+  if (occurrences !== 1) return null
+  return markdown.slice(idx)
+}
+
+/**
+ * Pick a unique tail anchor for the rekey audit-block append branch.
+ * Returns `null` when no anchor with exactly one occurrence in the body
+ * is available — caller falls back to the canonical
+ * `replace_content` full-body path while preserving the
+ * `RekeyAuditError` partial-state contract.
+ *
+ * Strategy: take the trailing slice of the body (capped at
+ * `REKEY_TAIL_ANCHOR_BYTES`) and verify it occurs exactly once. The
+ * tail must be unique by virtue of the body terminating there — any
+ * substring that happens to repeat earlier defeats the uniqueness
+ * guarantee, so the count-occurrences guard is load-bearing.
+ *
+ * Unlike the revision-append branch, there is no structural fingerprint
+ * to anchor on: re-keys do not carry content-derived hashes (the audit
+ * block names the old/new keys, not a fingerprint over them). The
+ * tail-with-uniqueness check is the strongest invariant available
+ * without changing the body schema.
+ */
+const REKEY_TAIL_ANCHOR_BYTES = 256
+
+function pickRekeyAuditAnchor(content: string): string | null {
+  if (content.length === 0) return null
+  const tail = content.slice(Math.max(0, content.length - REKEY_TAIL_ANCHOR_BYTES))
+  const occurrences = content.split(tail).length - 1
+  if (occurrences !== 1) return null
+  return tail
+}
+
+/** Construct the canonical `RekeyAuditError` for a partial-state
+ *  failure. The `cause`'s message is routed through the shared
+ *  `redactDebugMessage` so a Notion error carrying a workspace id /
+ *  page-id substring (rare but possible on auth-shaped errors) does
+ *  not bypass the redactor. The original `err` is still attached as
+ *  `cause` on the structured error so callers branching via
+ *  `instanceof RekeyAuditError` retain access to the underlying SDK
+ *  shape — only the rendered `message` is scrubbed.
+ *
+ *  Keeping a single helper for both the RunTool and REST audit
+ *  failure surfaces ensures the error shape and redaction posture
+ *  cannot drift between the two transports. */
+function buildRekeyAuditError(
+  memoryId: string,
+  oldTopicKey: string,
+  newTopicKey: string,
+  err: unknown
+): RekeyAuditError {
+  const rawMessage = err instanceof Error ? err.message : String(err)
+  const cause = redactDebugMessage(rawMessage)
+  return new RekeyAuditError(
+    `Re-key persisted ('${oldTopicKey || "(unset)"}' → '${newTopicKey}') ` +
+      `but audit-block append failed: ${cause}. The Topic Key column is ` +
+      `updated; the body audit trail is missing. A retry will short-circuit ` +
+      `as a no-op — the audit block cannot be recovered automatically. ` +
+      `Inspect memory ${memoryId} on Notion to confirm and append the audit ` +
+      `manually if needed.`,
+    { memoryId, oldTopicKey, newTopicKey, cause: err }
+  )
+}
+
+/** Emit one stderr line under `LORE_DEBUG=1` when `rekeyTopicKey`'s
+ *  RunTool branch is enabled but the body's tail anchor is not unique
+ *  (typically because the body has accumulated repetitive structures
+ *  like multiple `## Re-keyed (...)` audit blocks).
+ *
+ *  Same posture as the existing `[lore] semantic-search-cap-fired`
+ *  emission — silent under default logging, observable when the
+ *  operator is debugging. Without this signal an operator running
+ *  flag-on against a corpus with repetitive tails would see RunTool
+ *  engaged for some calls and not others with no diagnostic.
+ *
+ *  Bodies for which the anchor IS unique (the common case) emit
+ *  nothing; this is strictly the no-anchor diagnostic surface. */
+function debugLogRekeyAnchorMiss(memoryId: string, bodyLength: number): void {
+  if (process.env["LORE_DEBUG"] !== "1") return
+  process.stderr.write(
+    `[lore] rekey-anchor-miss: memory=${memoryId} body-length=${bodyLength} ` +
+      `source=pickRekeyAuditAnchor\n`
+  )
+}
+
 function analyzeLatestTopicUpsert(
   input: TopicUpsertSnapshot,
   existing: Memory,
@@ -2426,7 +2562,18 @@ export class MemoryService {
 
     // Append + write. Notion's v5 markdown API has no append mode;
     // replace_content_range with allow_deleting_content is the
-    // canonical edit-existing-body path.
+    // canonical edit-existing-body path. When `LORE_USE_RUNTOOL_BLOCK_EDIT`
+    // is on AND the previous revision carries a fingerprint we can
+    // anchor on, a RunTool `update_content` call substitutes only the
+    // tail of the body (issue #534) — the server splices the new
+    // revision in-place instead of rewriting the whole page. The
+    // wrapper raises a `RunToolBlockEditError` for the four
+    // structured fall-back kinds (`no_match` / `multiple_matches` /
+    // `deletion_warning` / `restricted_resource`), and we fall back
+    // to the canonical full-body path on those so the save always
+    // lands. Transient transport errors (401 / 429 / 5xx /
+    // malformed) propagate verbatim so the auth-refresh proxy and
+    // shared 429 backoff stay authoritative.
     const baseRevisionCount =
       upsertAnalysis.latestRevision &&
       upsertAnalysis.latestRevision.revisionCount > existing.revisionCount
@@ -2446,16 +2593,49 @@ export class MemoryService {
       "",
       decodedContent,
     ].join("\n")
-    const assembledBody = existingBody.markdown + revisionBlock
-    await this.client.pages.updateMarkdown({
-      page_id: existing.id,
-      type: "replace_content_range",
-      replace_content_range: {
-        content: assembledBody,
-        content_range: "full_page",
-        allow_deleting_content: true,
-      },
-    })
+
+    const anchor = pickRevisionAppendAnchor(
+      existingBody.markdown,
+      upsertAnalysis.latestRevision
+    )
+    const useRunToolAnchor = isRunToolBlockEditEnabled() && anchor !== null
+    let bodyEditApplied = false
+    if (useRunToolAnchor && anchor) {
+      try {
+        await updatePageContentViaRunTool(this.client, {
+          pageId: existing.id,
+          updates: [{ oldStr: anchor, newStr: anchor + revisionBlock }],
+        })
+        bodyEditApplied = true
+      } catch (err) {
+        if (!(err instanceof RunToolBlockEditError)) throw err
+        // Fall through to the full-body path on every structured
+        // fall-back signal: `no_match` / `multiple_matches` /
+        // `deletion_warning` (validation-class) AND
+        // `restricted_resource` (403 capability rejection — the
+        // auth-refresh proxy cannot repair this, but the existing
+        // REST/SDK path can; pinned in `runtool/client.ts` and the
+        // `runtool/README.md` "Canonical Error-Classification
+        // Vocabulary" section). A future contributor narrowing the
+        // catch (e.g. on `kind === "no_match"` only) would silently
+        // re-introduce the integration-secret outage; the
+        // `restricted_resource` integration test in
+        // `memory.test.ts` would fail loudly.
+      }
+    }
+    const assembledBodyLength = existingBody.markdown.length + revisionBlock.length
+    if (!bodyEditApplied) {
+      const assembledBody = existingBody.markdown + revisionBlock
+      await this.client.pages.updateMarkdown({
+        page_id: existing.id,
+        type: "replace_content_range",
+        replace_content_range: {
+          content: assembledBody,
+          content_range: "full_page",
+          allow_deleting_content: true,
+        },
+      })
+    }
 
     // Property update: Title bumps, Revision Count increments,
     // synopsis / keywords / source replace if provided, confidence
@@ -2497,11 +2677,14 @@ export class MemoryService {
     // Promotion advisory (0.9.0/#15). Fires only on the
     // append-revision branch (fresh-create returned earlier with a
     // null advisory). Reads post-write state already in memory:
-    // `nextRevision` is the value just written, `assembledBody.length`
-    // is the markdown body about to be persisted. No extra Notion
-    // calls. The MCP layer renders this in the save response footer
-    // when non-null; agents reading the response decide whether to
-    // promote — the system never auto-promotes.
+    // `nextRevision` is the value just written, `assembledBodyLength`
+    // is the markdown body's post-write character count. No extra
+    // Notion calls. The body length is identical whether the write went
+    // through the anchored RunTool path or the full-body fallback —
+    // both produce `existingBody.markdown + revisionBlock` as the
+    // resulting body. The MCP layer renders this in the save response
+    // footer when non-null; agents reading the response decide whether
+    // to promote — the system never auto-promotes.
     //
     // `kind` is forwarded to `computePromotionAdvisory` because the
     // suggestion wording is kind-aware: only `kind: 'decision'`
@@ -2512,7 +2695,7 @@ export class MemoryService {
     // two values agree here; either is correct.
     const promotionAdvisory = computePromotionAdvisory({
       revisionCount: nextRevision,
-      bodyLength: assembledBody.length,
+      bodyLength: assembledBodyLength,
       kind: input.kind,
     })
 
@@ -2748,31 +2931,60 @@ export class MemoryService {
     ].join("\n")
     const newBody = memory.content + auditBlock
 
-    try {
-      await this.client.pages.updateMarkdown({
-        page_id: input.memoryId,
-        type: "replace_content",
-        replace_content: {
-          new_str: newBody,
-          allow_deleting_content: true,
-        },
-      })
-    } catch (err) {
-      const cause = err instanceof Error ? err.message : String(err)
-      throw new RekeyAuditError(
-        `Re-key persisted ('${oldTopicKey || "(unset)"}' → ` +
-          `'${input.newTopicKey}') but audit-block append failed: ${cause}. ` +
-          `The Topic Key column is updated; the body audit trail is missing. ` +
-          `A retry will short-circuit as a no-op — the audit block cannot ` +
-          `be recovered automatically. Inspect memory ${input.memoryId} on ` +
-          `Notion to confirm and append the audit manually if needed.`,
-        {
-          memoryId: input.memoryId,
-          oldTopicKey,
-          newTopicKey: input.newTopicKey,
-          cause: err,
+    // Anchored append via RunTool when the flag is on and the body has a
+    // unique tail substring (issue #534). The wire payload is the tail
+    // anchor + the small audit block rather than the full body — a
+    // proportional reduction for large memory bodies. The
+    // `RekeyAuditError` partial-state contract is preserved across both
+    // paths: a property write that lands followed by an audit-append
+    // failure (RunTool or REST) raises `RekeyAuditError` so callers can
+    // distinguish "re-key didn't happen" from "re-key happened but
+    // audit is missing." The fall-back-able RunTool signals
+    // (`no_match` / `multiple_matches` / `deletion_warning` /
+    // `restricted_resource`) drop through to the existing
+    // `replace_content` path so a stale anchor never leaves the audit
+    // block stranded. `restricted_resource` is load-bearing for
+    // integration-secret operators: the auth-refresh proxy cannot
+    // repair the 403, but the REST/SDK path can — silently widening
+    // the catch back to validation-only would re-introduce the
+    // outage path the security review B1/B2 fixed.
+    const rekeyFlagOn = isRunToolBlockEditEnabled()
+    const rekeyAnchor = rekeyFlagOn ? pickRekeyAuditAnchor(memory.content) : null
+    if (rekeyFlagOn && rekeyAnchor === null) {
+      debugLogRekeyAnchorMiss(input.memoryId, memory.content.length)
+    }
+    let auditApplied = false
+    if (rekeyAnchor !== null) {
+      try {
+        await updatePageContentViaRunTool(this.client, {
+          pageId: input.memoryId,
+          updates: [{ oldStr: rekeyAnchor, newStr: rekeyAnchor + auditBlock }],
+        })
+        auditApplied = true
+      } catch (err) {
+        if (!(err instanceof RunToolBlockEditError)) {
+          throw buildRekeyAuditError(input.memoryId, oldTopicKey, input.newTopicKey, err)
         }
-      )
+        // Structured fall-back signal (no_match / multiple_matches /
+        // deletion_warning / restricted_resource): drop through to the
+        // REST path. RunTool's own deferral counter would go here when
+        // #532's Phase 4 A/B harness lands.
+      }
+    }
+
+    if (!auditApplied) {
+      try {
+        await this.client.pages.updateMarkdown({
+          page_id: input.memoryId,
+          type: "replace_content",
+          replace_content: {
+            new_str: newBody,
+            allow_deleting_content: true,
+          },
+        })
+      } catch (err) {
+        throw buildRekeyAuditError(input.memoryId, oldTopicKey, input.newTopicKey, err)
+      }
     }
 
     return {

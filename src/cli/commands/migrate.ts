@@ -12,7 +12,10 @@ import {
 import { mergeHookDefaults, type BackgroundAgentConfig } from "../../hooks/config.js"
 import type { MemoryTagPlan } from "../../core/tag-migration.js"
 import { classifyTags, planMemoryMigration } from "../../core/tag-migration.js"
-import { BODY_SIZE_CAP_BYTES } from "../../core/memory-encoding.js"
+import {
+  BODY_SIZE_CAP_BYTES,
+  type EncodedMemoryRow,
+} from "../../core/memory-encoding.js"
 import type {
   TopicAliasMergePlan,
   TopicAliasMergeResult,
@@ -71,7 +74,7 @@ export const migrateCommand = new Command("migrate")
   )
   .option(
     "--fix-memory-encoding",
-    "Decode HTML entities in memory Title and body markdown for every non-archived memory. Body rewrite is skipped for pages larger than 100 KB — Title is always fixed, because Title is the value driver for downstream near-duplicate / embedding surfaces. Plan-only by default — re-run with `--yes` to apply. Combine with `--dry-run` for a plan preview."
+    "Decode HTML entities in memory Title and body markdown for every non-archived memory. Body rewrite is skipped by default for pages larger than 100 KB; under LORE_USE_RUNTOOL_BLOCK_EDIT=1 those bodies route through RunTool's anchored `update_content` per-entity substitutions when the row's local guards predict success (single-pass entity body with non-empty substitutions — issue #534 AC #5). Multi-pass entity bodies fall back to the canonical path. Title is always fixed, because Title is the value driver for downstream near-duplicate / embedding surfaces. Plan-only by default — re-run with `--yes` to apply. Combine with `--dry-run` for a plan preview."
   )
   .option(
     "--merge-topics <file>",
@@ -1158,10 +1161,25 @@ export async function runFactEncodingFix(
 }
 
 /**
- * Scan the Memories DB for non-archived rows whose Title or body markdown
- * carry HTML entities, print a plan-then-apply report, and — when not a
- * dry run — rewrite Title via `pages.update` and body (if ≤100 KB) via
- * `pages.updateMarkdown`.
+ * Scan the Memories DB for non-archived rows whose Title or body
+ * markdown carry HTML entities, print a plan-then-apply report, and
+ * — when not a dry run — rewrite Title via `pages.update` and body
+ * via one of two paths:
+ *
+ * - **Default-off / flag-on within 100 KB cap**:
+ *   `pages.updateMarkdown` full-body `replace_content`.
+ * - **Flag-on (`LORE_USE_RUNTOOL_BLOCK_EDIT=1`) above the cap, row
+ *   eligible**: RunTool `update_content` with deterministic
+ *   per-entity substitutions (issue #534 AC #5). Multi-pass /
+ *   no-substitutions oversized rows still surface in
+ *   `oversizedSkipped`.
+ *
+ * Plan-mode preview reads `EncodedMemoryRow.anchoredPathPlanned`
+ * (computed during scan with the same local guards as the apply
+ * path) so per-row labels and the bucket counters reflect what
+ * apply mode will do — see `src/core/memory-encoding.ts`'s
+ * `fixMemoryEncoding` docstring for the predict/apply parity
+ * contract.
  */
 export async function runMemoryEncodingFix(
   services: LoreServices,
@@ -1182,16 +1200,25 @@ export async function runMemoryEncodingFix(
   }
 
   const verb = planOnly ? "Would decode" : "Decoded"
+  // Plan-mode counters now route oversized rows through
+  // `anchoredPathPlanned`: a row labeled `contentTooLargeToFix` is
+  // still fixable when the RunTool flag is on AND the local guards
+  // predict the anchored path will land. Without this gate, plan
+  // output would say "body fixes: 0 (1 skipped)" while apply mode
+  // would actually fix the row — breaking the plan-then-execute
+  // contract under `LORE_USE_RUNTOOL_BLOCK_EDIT` (issue #534 review).
+  const isBodyFixablePlanned = (r: EncodedMemoryRow): boolean =>
+    r.contentNeedsFix && (!r.contentTooLargeToFix || r.anchoredPathPlanned)
   const fixableRows = planOnly
     ? report.encoded.filter(
-        (r) => r.titleNeedsFix || (r.contentNeedsFix && !r.contentTooLargeToFix)
+        (r) => r.titleNeedsFix || isBodyFixablePlanned(r)
       ).length
     : report.fixes.length
   const titlePlanned = planOnly
     ? report.encoded.filter((r) => r.titleNeedsFix).length
     : report.fixes.filter((f) => f.titleFixed).length
   const bodyPlanned = planOnly
-    ? report.encoded.filter((r) => r.contentNeedsFix && !r.contentTooLargeToFix).length
+    ? report.encoded.filter(isBodyFixablePlanned).length
     : report.fixes.filter((f) => f.contentFixed).length
 
   console.log(
@@ -1211,8 +1238,23 @@ export async function runMemoryEncodingFix(
     for (const row of report.encoded.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
       const parts: string[] = []
       if (row.titleNeedsFix) parts.push("title")
-      if (row.contentNeedsFix && !row.contentTooLargeToFix) parts.push("body")
-      else if (row.contentTooLargeToFix) {
+      // Three body-state shapes for the per-row preview:
+      //   - non-oversized AND content needs fix → "body" (canonical path)
+      //   - oversized AND anchored path planned → "body via anchored
+      //     RunTool patterns" (issue #534 AC #5)
+      //   - oversized AND anchored path NOT planned → "body skipped"
+      // The middle case is what was missing pre-review: plan output
+      // labeled every oversized row as "skipped" regardless of whether
+      // apply mode would actually fix it. The `anchoredPathPlanned`
+      // flag is the apply-path guard fingerprint, so plan and apply
+      // cannot drift.
+      if (row.contentNeedsFix && !row.contentTooLargeToFix) {
+        parts.push("body")
+      } else if (row.contentTooLargeToFix && row.anchoredPathPlanned) {
+        parts.push(
+          `body via anchored RunTool patterns (${formatBytes(row.contentBytes)} > ${formatBytes(BODY_SIZE_CAP_BYTES)})`
+        )
+      } else if (row.contentTooLargeToFix) {
         parts.push(
           `body skipped (${formatBytes(row.contentBytes)} > ${formatBytes(BODY_SIZE_CAP_BYTES)})`
         )
@@ -1233,6 +1275,34 @@ export async function runMemoryEncodingFix(
   }
   if (previewLength > ENCODING_FIX_PREVIEW_LIMIT) {
     console.log(`  … and ${previewLength - ENCODING_FIX_PREVIEW_LIMIT} more rows.`)
+  }
+
+  if (report.oversizedAnchoredPlanned.length > 0) {
+    // New section under `LORE_USE_RUNTOOL_BLOCK_EDIT` (issue #534
+    // AC #5): oversized rows that DO get fixed via RunTool's
+    // anchored `update_content` path. Distinguishing them from
+    // `oversizedSkipped` is what keeps plan output truthful — the
+    // pre-review version conflated both into a single "skipped"
+    // bucket and silently understated what apply mode would do.
+    const noun =
+      report.oversizedAnchoredPlanned.length === 1 ? "memory" : "memories"
+    const verbPhrase = planOnly
+      ? "Will fix oversized body via anchored RunTool patterns on"
+      : "Fixed oversized body via anchored RunTool patterns on"
+    console.log(
+      `\n${verbPhrase} ${report.oversizedAnchoredPlanned.length} ${noun} ` +
+        `(body > ${formatBytes(BODY_SIZE_CAP_BYTES)}):`
+    )
+    for (const row of report.oversizedAnchoredPlanned.slice(0, ENCODING_FIX_PREVIEW_LIMIT)) {
+      console.log(
+        `  ${row.id} — "${row.decodedTitle}" (${formatBytes(row.contentBytes)})`
+      )
+    }
+    if (report.oversizedAnchoredPlanned.length > ENCODING_FIX_PREVIEW_LIMIT) {
+      console.log(
+        `  … and ${report.oversizedAnchoredPlanned.length - ENCODING_FIX_PREVIEW_LIMIT} more rows.`
+      )
+    }
   }
 
   if (report.oversizedSkipped.length > 0) {

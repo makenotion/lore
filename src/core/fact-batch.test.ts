@@ -297,7 +297,14 @@ describe("FactService.createBatchWithDedup — flag on (RunTool batch)", () => {
 
     const requestArgs = mock.request.mock.calls[0]![0]
     expect(requestArgs.method).toBe("post")
-    expect(requestArgs.path).toBe("/v1/tools/run")
+    // SDK-relative path: the Notion v5 SDK's `Client.request()` builds
+    // the wire URL as `${prefixUrl}${path}` where
+    // `prefixUrl = ${baseUrl}/v1/`. Passing `"/v1/tools/run"` here
+    // would produce `https://api.notion.com/v1//v1/tools/run` (double
+    // `/v1/`) and miss the endpoint entirely. The wrapper sends the
+    // SDK-relative form `tools/run`; a real-Client integration test in
+    // `src/notion/runtool/update-page.test.ts` pins the wire URL.
+    expect(requestArgs.path).toBe("tools/run")
     expect(requestArgs.body.type).toBe("create_pages")
     expect(requestArgs.body.create_pages.parent).toEqual({
       type: "data_source_id",

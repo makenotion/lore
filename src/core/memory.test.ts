@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Client, PageObjectResponse } from "@notionhq/client"
 import { APIErrorCode, APIResponseError } from "@notionhq/client"
 import {
@@ -3881,6 +3881,453 @@ describe("MemoryService.upsertByTopicKey (0.9.0/06)", () => {
     expect(result.revisionCount).toBe(1)
     expect(result.promotionAdvisory).toBeNull()
   })
+
+  describe("LORE_USE_RUNTOOL_BLOCK_EDIT (issue #534)", () => {
+    /** Build a body containing a fingerprinted revision-1 block whose
+     *  fingerprint matches the existing memory's effective snapshot.
+     *  The `pickRevisionAppendAnchor` helper requires a fingerprint
+     *  line that occurs exactly once; this helper constructs the
+     *  canonical revision-1 shape that `upsertByTopicKey` produces. */
+    function fingerprintedRevisionBody(opts: {
+      title: string
+      content: string
+      synopsis?: string
+      keywords?: string
+      source?: string
+      confidence?: string
+      author?: string
+      preface?: string
+    }): { body: string; fingerprint: string } {
+      const fp = testTopicUpsertFingerprint({
+        kind: "decision",
+        title: opts.title,
+        content: opts.content,
+        synopsis: opts.synopsis ?? "",
+        keywords: opts.keywords ?? "",
+        source: opts.source ?? "manual",
+        confidence: opts.confidence ?? "likely",
+        author: opts.author ?? "",
+      })
+      // The revision block's prefix must start with `\n---\n` for
+      // `extractLatestTopicRevision`'s regex; preface content gives
+      // us a body that already has prior content above the latest
+      // fingerprinted revision.
+      const preface = opts.preface ?? "Initial body content"
+      const block = [
+        "",
+        "---",
+        "",
+        "## Revision 1 (2026-04-01)",
+        "",
+        `<!-- lore-topic-upsert-sha256: ${fp} -->`,
+        "",
+        `**Title at this revision:** ${opts.title}`,
+        "",
+        opts.content,
+      ].join("\n")
+      return { body: preface + block, fingerprint: fp }
+    }
+
+    /** Make a client where `client.request` (the RunTool transport)
+     *  is captured alongside the standard upsert spies. */
+    function makeRunToolClient(
+      base: ReturnType<typeof makeUpsertClient>,
+      runToolBehavior: (body: unknown) => unknown = () => ({ page_id: "ok" })
+    ) {
+      const requestSpy = vi.fn(async (args: { path: string; body: unknown }) => {
+        if (args.path === "tools/run") return runToolBehavior(args.body)
+        throw new Error(`unexpected request path: ${args.path}`)
+      })
+      const wrapped = {
+        ...base.client,
+        request: requestSpy,
+      } as unknown as Client
+      return { client: wrapped, requestSpy }
+    }
+
+    afterEach(() => {
+      delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
+      delete process.env.LORE_USE_RUNTOOL
+    })
+
+    it("uses update_content via RunTool when the flag is on and a fingerprinted anchor exists", async () => {
+      // Fingerprinted revision-1 in the existing body gives the
+      // `pickRevisionAppendAnchor` helper a unique anchor. With the
+      // flag on the body write goes through `client.request` (RunTool)
+      // and `pages.updateMarkdown` is NOT called — the issue #534
+      // round-trip-reduction acceptance criterion.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "decision",
+        title: "JWT auth",
+        source: "manual",
+        confidence: "likely",
+      })
+      const { body } = fingerprintedRevisionBody({
+        title: "JWT auth",
+        content: "v1 content",
+      })
+      const base = makeUpsertClient({
+        findResults: [existing],
+        existingBody: body,
+      })
+      const { client, requestSpy } = makeRunToolClient(base)
+      const service = new MemoryService(client, db)
+
+      const result = await service.upsertByTopicKey({
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        title: "JWT auth",
+        content: "v2 content",
+        kind: "decision",
+        today: "2026-05-01",
+      })
+
+      expect(result.upserted).toBe(true)
+      expect(result.revisionCount).toBe(2)
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      const call = requestSpy.mock.calls[0]![0] as {
+        path: string
+        body: { update_page: { command: string; content_updates: Array<unknown> } }
+      }
+      expect(call.path).toBe("tools/run")
+      expect(call.body.update_page.command).toBe("update_content")
+      expect(call.body.update_page.content_updates).toHaveLength(1)
+      // The full-body fallback path stays unused on the happy path.
+      expect(base.updateMarkdownSpy).not.toHaveBeenCalled()
+    })
+
+    it("falls back to full-body replace when no fingerprinted revision exists", async () => {
+      // Pre-fingerprint legacy bodies (no `<!-- lore-topic-upsert-sha256:`
+      // marker) cannot anchor safely; the helper returns null and the
+      // canonical full-body path takes over. The flag-on test still
+      // produces correctly-revised output — the flag toggle must never
+      // break the save.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+        topicKey: "decision/legacy",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "decision",
+        title: "Legacy",
+      })
+      const base = makeUpsertClient({
+        findResults: [existing],
+        existingBody: "Plain body, no fingerprint.",
+      })
+      const { client, requestSpy } = makeRunToolClient(base)
+      const service = new MemoryService(client, db)
+
+      const result = await service.upsertByTopicKey({
+        topicKey: "decision/legacy",
+        projectIds: ["P1"],
+        title: "Legacy v2",
+        content: "new content",
+        kind: "decision",
+        today: "2026-05-01",
+      })
+
+      expect(result.upserted).toBe(true)
+      expect(requestSpy).not.toHaveBeenCalled()
+      expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("falls back to full-body replace when RunTool reports no_match", async () => {
+      // The anchor was structurally valid at compose time but the
+      // server saw a different body. Falling back to the full-body
+      // path lets the save land — anchored failures must NOT leave
+      // the revision unwritten.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "decision",
+        title: "JWT auth",
+        source: "manual",
+        confidence: "likely",
+      })
+      const { body } = fingerprintedRevisionBody({
+        title: "JWT auth",
+        content: "v1 content",
+      })
+      const base = makeUpsertClient({
+        findResults: [existing],
+        existingBody: body,
+      })
+      const noMatch = new APIResponseError({
+        code: APIErrorCode.ValidationError,
+        status: 400,
+        message: "old_str did not match any content on the page",
+        headers: new Headers(),
+        rawBodyText: "{}",
+        additional_data: undefined,
+        request_id: undefined,
+      })
+      const { client, requestSpy } = makeRunToolClient(base, () => {
+        throw noMatch
+      })
+      const service = new MemoryService(client, db)
+
+      const result = await service.upsertByTopicKey({
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        title: "JWT auth",
+        content: "v2 content",
+        kind: "decision",
+        today: "2026-05-01",
+      })
+
+      expect(result.upserted).toBe(true)
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("propagates non-validation RunTool errors verbatim (no silent fallback)", async () => {
+      // 401 / 5xx must reach the auth-refresh proxy and the caller's
+      // normal error path. Silently falling back here would mask a
+      // genuine outage and could lead to runaway retries.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "decision",
+        title: "JWT auth",
+        source: "manual",
+        confidence: "likely",
+      })
+      const { body } = fingerprintedRevisionBody({
+        title: "JWT auth",
+        content: "v1 content",
+      })
+      const base = makeUpsertClient({
+        findResults: [existing],
+        existingBody: body,
+      })
+      const unauthorized = new APIResponseError({
+        code: APIErrorCode.Unauthorized,
+        status: 401,
+        message: "unauthorized",
+        headers: new Headers(),
+        rawBodyText: "{}",
+        additional_data: undefined,
+        request_id: undefined,
+      })
+      const { client } = makeRunToolClient(base, () => {
+        throw unauthorized
+      })
+      const service = new MemoryService(client, db)
+
+      await expect(
+        service.upsertByTopicKey({
+          topicKey: "decision/jwt",
+          projectIds: ["P1"],
+          title: "JWT auth",
+          content: "v2 content",
+          kind: "decision",
+        })
+      ).rejects.toBe(unauthorized)
+      expect(base.updateMarkdownSpy).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      [
+        "multiple_matches",
+        new APIResponseError({
+          code: APIErrorCode.ValidationError,
+          status: 400,
+          message: "old_str matches more than once",
+          headers: new Headers(),
+          rawBodyText: "{}",
+          additional_data: undefined,
+          request_id: undefined,
+        }),
+      ],
+      [
+        "restricted_resource — integration-secret token can't pass actor check",
+        new APIResponseError({
+          code: APIErrorCode.RestrictedResource,
+          status: 403,
+          message: "Only public integrations can access this API.",
+          headers: new Headers(),
+          rawBodyText: "{}",
+          additional_data: undefined,
+          request_id: undefined,
+        }),
+      ],
+    ])(
+      "falls back to full-body replace on RunTool fall-back-able failure (%s)",
+      async (_label, err) => {
+        // Three of the four `RunToolBlockEditError` kinds drop the
+        // upsert into the canonical full-body path: `no_match`
+        // (covered above), `multiple_matches` (the body's anchor
+        // recurs), and `restricted_resource` (issue-#534 security
+        // review B1 — auth-class capability rejection that the
+        // auth-refresh proxy cannot repair). Pinning all three at
+        // the integration boundary so a future contributor narrowing
+        // the catch (e.g. on `kind === "no_match"` only) is caught
+        // by a failing test, not by a production outage on
+        // integration-secret operators.
+        process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+        const stderrSpy = vi
+          .spyOn(process.stderr, "write")
+          .mockImplementation(() => true)
+        try {
+          const existing = buildExistingMemoryPage(
+            "11111111111111111111111111111111",
+            {
+              topicKey: "decision/jwt",
+              projectIds: ["P1"],
+              revisionCount: 1,
+              kind: "decision",
+              title: "JWT auth",
+              source: "manual",
+              confidence: "likely",
+            }
+          )
+          const { body } = fingerprintedRevisionBody({
+            title: "JWT auth",
+            content: "v1 content",
+          })
+          const base = makeUpsertClient({
+            findResults: [existing],
+            existingBody: body,
+          })
+          const { client, requestSpy } = makeRunToolClient(base, () => {
+            throw err
+          })
+          const service = new MemoryService(client, db)
+
+          const result = await service.upsertByTopicKey({
+            topicKey: "decision/jwt",
+            projectIds: ["P1"],
+            title: "JWT auth",
+            content: "v2 content",
+            kind: "decision",
+            today: "2026-05-01",
+          })
+
+          expect(result.upserted).toBe(true)
+          expect(requestSpy).toHaveBeenCalledTimes(1)
+          expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+        } finally {
+          stderrSpy.mockRestore()
+        }
+      }
+    )
+
+    it("falls back to full-body replace on deletion_warning (200 + warning, no opt-in)", async () => {
+      // The server can return a 200 with a deletion warning when the
+      // edit would remove child pages and `allow_deleting_content`
+      // wasn't opted in. Wrapper raises `RunToolBlockEditError({
+      // kind: "deletion_warning" })`; the call site falls back so
+      // the existing SDK path's `allow_deleting_content: true`
+      // posture applies.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "decision",
+        title: "JWT auth",
+        source: "manual",
+        confidence: "likely",
+      })
+      const { body } = fingerprintedRevisionBody({
+        title: "JWT auth",
+        content: "v1 content",
+      })
+      const base = makeUpsertClient({
+        findResults: [existing],
+        existingBody: body,
+      })
+      const { client, requestSpy } = makeRunToolClient(base, () => ({
+        page_id: "11111111111111111111111111111111",
+        deletion_warning: { message: "would remove 1 child page" },
+      }))
+      const service = new MemoryService(client, db)
+
+      const result = await service.upsertByTopicKey({
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        title: "JWT auth",
+        content: "v2 content",
+        kind: "decision",
+      })
+
+      expect(result.upserted).toBe(true)
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("default-off: dispatches REST even when a flag-on path WOULD have used RunTool", async () => {
+      // Acceptance criterion #6 + Principal review #5: the
+      // tautological version of this test only proves the spy isn't
+      // invoked, which would also pass if `MemoryService` lost its
+      // RunTool import entirely. The meaningful version pairs
+      // flag-on (which MUST hit `client.request`) with flag-off
+      // (which MUST NOT) so the assertion's pass/fail is wired to
+      // the actual path-selection logic, not just to the spy's call
+      // count.
+      const existing = buildExistingMemoryPage("11111111111111111111111111111111", {
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        revisionCount: 1,
+        kind: "decision",
+        title: "JWT auth",
+        source: "manual",
+        confidence: "likely",
+      })
+      const { body } = fingerprintedRevisionBody({
+        title: "JWT auth",
+        content: "v1 content",
+      })
+
+      // Phase 1: with the flag ON, the fingerprinted body MUST drive
+      // a RunTool dispatch. If it doesn't, the fixture is broken and
+      // the flag-off assertion below is meaningless.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const baseOn = makeUpsertClient({
+        findResults: [existing],
+        existingBody: body,
+      })
+      const { client: clientOn, requestSpy: requestSpyOn } = makeRunToolClient(baseOn)
+      await new MemoryService(clientOn, db).upsertByTopicKey({
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        title: "JWT auth",
+        content: "v2 content",
+        kind: "decision",
+      })
+      expect(requestSpyOn).toHaveBeenCalledTimes(1) // Pins the fixture is wired.
+
+      // Phase 2: same fixture, flag OFF. The path-selection logic
+      // must skip RunTool and go through `pages.updateMarkdown`. A
+      // regression that lost the flag check in `memory.ts` would
+      // make this test fail.
+      delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
+      delete process.env.LORE_USE_RUNTOOL
+      const baseOff = makeUpsertClient({
+        findResults: [existing],
+        existingBody: body,
+      })
+      const { client: clientOff, requestSpy: requestSpyOff } =
+        makeRunToolClient(baseOff)
+      await new MemoryService(clientOff, db).upsertByTopicKey({
+        topicKey: "decision/jwt",
+        projectIds: ["P1"],
+        title: "JWT auth",
+        content: "v2 content",
+        kind: "decision",
+      })
+      expect(requestSpyOff).not.toHaveBeenCalled()
+      expect(baseOff.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    })
+  })
 })
 
 describe("computePromotionAdvisory (0.9.0/15)", () => {
@@ -4579,6 +5026,371 @@ describe("MemoryService.rekeyTopicKey (0.9.0/14)", () => {
     expect(querySpy).toHaveBeenCalledTimes(1)
     expect(updateSpy).not.toHaveBeenCalled()
     expect(updateMarkdownSpy).not.toHaveBeenCalled()
+  })
+
+  describe("LORE_USE_RUNTOOL_BLOCK_EDIT (issue #534)", () => {
+    function makeRekeyRunToolClient(
+      base: ReturnType<typeof makeRekeyClient>,
+      runToolBehavior: (body: unknown) => unknown = () => ({ page_id: "ok" })
+    ) {
+      const requestSpy = vi.fn(async (args: { path: string; body: unknown }) => {
+        if (args.path === "tools/run") return runToolBehavior(args.body)
+        throw new Error(`unexpected request path: ${args.path}`)
+      })
+      const wrapped = {
+        ...base.client,
+        request: requestSpy,
+      } as unknown as Client
+      return { client: wrapped, requestSpy }
+    }
+
+    afterEach(() => {
+      delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
+      delete process.env.LORE_USE_RUNTOOL
+    })
+
+    it("uses update_content via RunTool when the flag is on and the body has a unique tail anchor", async () => {
+      // The non-empty body trivially satisfies the tail-anchor
+      // uniqueness check (one occurrence). The audit append rides
+      // through `client.request` and the canonical
+      // `pages.updateMarkdown` path is NOT called.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const target = buildMemoryPage("11111111111111111111111111111111", {
+        title: "Use JWT",
+        topicKey: "decision/jwt-old",
+        projectIds: ["P1"],
+        revisionCount: 1,
+      })
+      const base = makeRekeyClient({
+        targetMemory: target,
+        targetMarkdown: "Distinct body content with the JWT decision details.",
+      })
+      const { client, requestSpy } = makeRekeyRunToolClient(base)
+      const service = new MemoryService(client, db)
+
+      const result = await service.rekeyTopicKey({
+        memoryId: "11111111111111111111111111111111",
+        newTopicKey: "decision/jwt-new",
+      })
+
+      expect(result.oldTopicKey).toBe("decision/jwt-old")
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      const call = requestSpy.mock.calls[0]![0] as {
+        path: string
+        body: { update_page: { command: string; content_updates: Array<unknown> } }
+      }
+      expect(call.path).toBe("tools/run")
+      expect(call.body.update_page.command).toBe("update_content")
+      expect(base.updateMarkdownSpy).not.toHaveBeenCalled()
+      // The property write (Topic Key) is unchanged from default-off.
+      expect(base.updateSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("falls back to full-body replace_content on empty body (no anchor available)", async () => {
+      // An empty body has no tail to anchor on; helper returns null
+      // and the canonical `replace_content` path with `new_str =
+      // auditBlock` runs. Mirrors the default-off behavior shape so a
+      // re-key against a freshly-seeded body still produces the audit
+      // block.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const target = buildMemoryPage("11111111111111111111111111111111", {
+        title: "Use JWT",
+        topicKey: "decision/jwt-old",
+        projectIds: ["P1"],
+        revisionCount: 1,
+      })
+      const base = makeRekeyClient({
+        targetMemory: target,
+        targetMarkdown: "",
+      })
+      const { client, requestSpy } = makeRekeyRunToolClient(base)
+      const service = new MemoryService(client, db)
+
+      await service.rekeyTopicKey({
+        memoryId: "11111111111111111111111111111111",
+        newTopicKey: "decision/jwt-new",
+      })
+
+      expect(requestSpy).not.toHaveBeenCalled()
+      expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("preserves the RekeyAuditError contract when the RunTool audit fails AND fallback also fails", async () => {
+      // Acceptance criterion #4: the partial-state error contract
+      // must hold across paths. RunTool's structured fall-back-able
+      // signals (no_match etc.) drop into the canonical path; that
+      // path's failures wrap as `RekeyAuditError` exactly as before.
+      // Here we force the canonical path to fail too so the error
+      // shape is observable end-to-end with the flag on.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const target = buildMemoryPage("11111111111111111111111111111111", {
+        title: "Use JWT",
+        topicKey: "decision/jwt-old",
+        projectIds: ["P1"],
+        revisionCount: 1,
+      })
+      const base = makeRekeyClient({
+        targetMemory: target,
+        targetMarkdown: "Some body content that is sufficient for an anchor.",
+      })
+      const noMatch = new APIResponseError({
+        code: APIErrorCode.ValidationError,
+        status: 400,
+        message: "old_str did not match any content on the page",
+        headers: new Headers(),
+        rawBodyText: "{}",
+        additional_data: undefined,
+        request_id: undefined,
+      })
+      const { client, requestSpy } = makeRekeyRunToolClient(base, () => {
+        throw noMatch
+      })
+      // Force the fallback canonical path to also fail.
+      base.updateMarkdownSpy.mockRejectedValueOnce(new Error("fallback failed"))
+      const service = new MemoryService(client, db)
+
+      await expect(
+        service.rekeyTopicKey({ memoryId: "11111111111111111111111111111111", newTopicKey: "decision/jwt-new" })
+      ).rejects.toMatchObject({
+        name: "RekeyAuditError",
+        memoryId: "11111111111111111111111111111111",
+        oldTopicKey: "decision/jwt-old",
+        newTopicKey: "decision/jwt-new",
+      })
+
+      // Both paths were attempted and the property write landed —
+      // load-bearing for the partial-state contract semantics.
+      expect(requestSpy).toHaveBeenCalledTimes(1)
+      expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+      expect(base.updateSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it("wraps RunTool non-validation failures as RekeyAuditError (not silent fallback)", async () => {
+      // 401 / 5xx from RunTool must not silently fall through to the
+      // canonical path — the partial state is the same shape (property
+      // wrote, audit didn't), so the operator gets the same
+      // diagnostic surface regardless of which transport the audit
+      // attempt used.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const target = buildMemoryPage("11111111111111111111111111111111", {
+        title: "Use JWT",
+        topicKey: "decision/jwt-old",
+        projectIds: ["P1"],
+        revisionCount: 1,
+      })
+      const base = makeRekeyClient({
+        targetMemory: target,
+        targetMarkdown: "Some body content that is sufficient for an anchor.",
+      })
+      const unauthorized = new APIResponseError({
+        code: APIErrorCode.Unauthorized,
+        status: 401,
+        message: "unauthorized",
+        headers: new Headers(),
+        rawBodyText: "{}",
+        additional_data: undefined,
+        request_id: undefined,
+      })
+      const { client } = makeRekeyRunToolClient(base, () => {
+        throw unauthorized
+      })
+      const service = new MemoryService(client, db)
+
+      await expect(
+        service.rekeyTopicKey({ memoryId: "11111111111111111111111111111111", newTopicKey: "decision/jwt-new" })
+      ).rejects.toMatchObject({
+        name: "RekeyAuditError",
+        memoryId: "11111111111111111111111111111111",
+      })
+
+      // The canonical fallback was NOT attempted — we want the
+      // operator to see the underlying transport failure rather than
+      // double up on writes.
+      expect(base.updateMarkdownSpy).not.toHaveBeenCalled()
+      expect(base.updateSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      [
+        "multiple_matches",
+        () => ({
+          throw: new APIResponseError({
+            code: APIErrorCode.ValidationError,
+            status: 400,
+            message: "old_str matches more than once",
+            headers: new Headers(),
+            rawBodyText: "{}",
+            additional_data: undefined,
+            request_id: undefined,
+          }),
+        }),
+      ],
+      [
+        "restricted_resource — integration-secret token can't pass actor check",
+        () => ({
+          throw: new APIResponseError({
+            code: APIErrorCode.RestrictedResource,
+            status: 403,
+            message: "Only public integrations can access this API.",
+            headers: new Headers(),
+            rawBodyText: "{}",
+            additional_data: undefined,
+            request_id: undefined,
+          }),
+        }),
+      ],
+      [
+        "deletion_warning — server reports child-page removal without opt-in",
+        () => ({
+          return: {
+            page_id: "11111111111111111111111111111111",
+            deletion_warning: { message: "would remove 1 child page" },
+          },
+        }),
+      ],
+    ])(
+      "falls back to canonical replace_content on RunTool fall-back-able failure (%s)",
+      async (_label, makeBehavior) => {
+        // Issue-#534 security review B1+B2: 403 RestrictedResource
+        // must drop into the canonical REST path instead of raising
+        // a misleading `RekeyAuditError`. Pinning all three
+        // fall-back-able kinds at the integration boundary so a
+        // future contributor narrowing the catch is caught by a
+        // failing test, not by a production false-positive
+        // partial-state error.
+        process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+        const stderrSpy = vi
+          .spyOn(process.stderr, "write")
+          .mockImplementation(() => true)
+        try {
+          const target = buildMemoryPage("11111111111111111111111111111111", {
+            title: "Use JWT",
+            topicKey: "decision/jwt-old",
+            projectIds: ["P1"],
+            revisionCount: 1,
+          })
+          const base = makeRekeyClient({
+            targetMemory: target,
+            targetMarkdown: "Some body content that is sufficient for an anchor.",
+          })
+          const behavior = makeBehavior()
+          const { client, requestSpy } = makeRekeyRunToolClient(base, () => {
+            if ("throw" in behavior) throw behavior.throw
+            return behavior.return
+          })
+          const service = new MemoryService(client, db)
+
+          await service.rekeyTopicKey({
+            memoryId: "11111111111111111111111111111111",
+            newTopicKey: "decision/jwt-new",
+          })
+
+          // RunTool was attempted, then the canonical REST path took
+          // over — and the property-write happened exactly once
+          // (load-bearing for the no-double-write contract).
+          expect(requestSpy).toHaveBeenCalledTimes(1)
+          expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+          expect(base.updateSpy).toHaveBeenCalledTimes(1)
+        } finally {
+          stderrSpy.mockRestore()
+        }
+      }
+    )
+
+    it("emits a LORE_DEBUG-gated stderr line when the rekey anchor is not unique (Principal review #4)", async () => {
+      // Operator observability for the anchor-miss case. The
+      // pickRekeyAuditAnchor fall-back is silent under default
+      // logging (correct; not noisy on every common case) but emits
+      // one stderr line under LORE_DEBUG=1 so an operator running
+      // dogfood can distinguish "RunTool engaged" from "anchor
+      // missed → REST fallback ran" without inspecting the wire.
+      const priorDebug = process.env.LORE_DEBUG
+      process.env.LORE_DEBUG = "1"
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(() => true)
+      try {
+        const target = buildMemoryPage("11111111111111111111111111111111", {
+          title: "Repetitive",
+          topicKey: "decision/old",
+          projectIds: ["P1"],
+          revisionCount: 1,
+        })
+        // Build a body whose 256-byte tail is NOT unique. The simplest
+        // shape: a body that's exactly the same 8-byte sequence
+        // repeated ~64 times — the tail substring recurs throughout.
+        const repetitive = "ABCDEFGH".repeat(64)
+        const base = makeRekeyClient({
+          targetMemory: target,
+          targetMarkdown: repetitive,
+        })
+        const { client, requestSpy } = makeRekeyRunToolClient(base)
+        const service = new MemoryService(client, db)
+
+        await service.rekeyTopicKey({
+          memoryId: "11111111111111111111111111111111",
+          newTopicKey: "decision/new",
+        })
+
+        const writes = stderrSpy.mock.calls.map((args) => String(args[0]))
+        expect(writes.some((w) => w.includes("rekey-anchor-miss"))).toBe(true)
+        // Anchor was not unique → the helper returned null → RunTool
+        // was never attempted.
+        expect(requestSpy).not.toHaveBeenCalled()
+        expect(base.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+      } finally {
+        if (priorDebug === undefined) delete process.env.LORE_DEBUG
+        else process.env.LORE_DEBUG = priorDebug
+        stderrSpy.mockRestore()
+      }
+    })
+
+    it("default-off: dispatches REST even when a flag-on path WOULD have used RunTool", async () => {
+      // Principal review #5: paired flag-on / flag-off assertion so
+      // the test cannot pass tautologically. With the flag on, the
+      // unique tail anchor MUST drive a `client.request` call; with
+      // the flag off, it MUST NOT. A regression that lost the flag
+      // check in `memory.ts` would trip Phase 2.
+      const target = buildMemoryPage("11111111111111111111111111111111", {
+        title: "Use JWT",
+        topicKey: "decision/jwt-old",
+        projectIds: ["P1"],
+        revisionCount: 1,
+      })
+      const targetMarkdown =
+        "Body content that is unique end-to-end so the tail anchor is well-formed."
+
+      // Phase 1: flag ON — must dispatch RunTool.
+      process.env.LORE_USE_RUNTOOL_BLOCK_EDIT = "1"
+      const baseOn = makeRekeyClient({
+        targetMemory: target,
+        targetMarkdown,
+      })
+      const { client: clientOn, requestSpy: requestSpyOn } =
+        makeRekeyRunToolClient(baseOn)
+      await new MemoryService(clientOn, db).rekeyTopicKey({
+        memoryId: "11111111111111111111111111111111",
+        newTopicKey: "decision/jwt-new",
+      })
+      expect(requestSpyOn).toHaveBeenCalledTimes(1) // Pins the fixture is wired.
+
+      // Phase 2: flag OFF — must skip RunTool and use the canonical path.
+      delete process.env.LORE_USE_RUNTOOL_BLOCK_EDIT
+      delete process.env.LORE_USE_RUNTOOL
+      const baseOff = makeRekeyClient({
+        targetMemory: target,
+        targetMarkdown,
+      })
+      const { client: clientOff, requestSpy: requestSpyOff } =
+        makeRekeyRunToolClient(baseOff)
+      await new MemoryService(clientOff, db).rekeyTopicKey({
+        memoryId: "11111111111111111111111111111111",
+        newTopicKey: "decision/jwt-new",
+      })
+      expect(requestSpyOff).not.toHaveBeenCalled()
+      expect(baseOff.updateMarkdownSpy).toHaveBeenCalledTimes(1)
+    })
   })
 })
 

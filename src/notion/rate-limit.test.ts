@@ -52,11 +52,17 @@ function makeObservableClient(callDurationMs = 20): {
       query: () => track(),
     },
     search: () => track(),
-    // Issue #533 — `client.request` is the SDK seam the RunTool
-    // wrapper dispatches through. The recursive Proxy already
-    // wraps it because `request` is a top-level method, but the
-    // invariant is easy to silently regress (see this module's
-    // CLAUDE.md "When adding a new SDK call site" rule).
+    // Top-level `client.request` is the SDK seam the RunTool wrapper
+    // dispatches through (issue #533 wired `create_pages`; issue #534
+    // wired `update_page`). The recursive Proxy already wraps it
+    // because `request` is a top-level method, but the invariant is
+    // easy to silently regress — a future SDK refactor that flipped
+    // `request` into a different shape (a function returning a
+    // function, a getter, etc.) could drop it out of the wrap with no
+    // type-level signal. The pacing/cap tests below pin the
+    // contract; without this stub neither would observe the SDK
+    // path. AGENTS.md's rate-limit module section codifies the rule:
+    // "every new SDK call site needs rate-limit coverage."
     request: () => track(),
   } as unknown as Client
 
@@ -138,7 +144,7 @@ describe("createLimitedClient — concurrency gate", () => {
           limited as unknown as {
             request: (args: Record<string, unknown>) => Promise<unknown>
           }
-        ).request({ method: "post", path: "/v1/tools/run", body: {} })
+        ).request({ method: "post", path: "tools/run", body: {} })
       )
     )
 
@@ -176,6 +182,31 @@ describe("createLimitedClient — concurrency gate", () => {
       limited.blocks.children.list({} as never),
       limited.search({} as never),
     ])
+
+    expect(callCount()).toBe(6)
+    expect(maxInFlight()).toBe(2)
+  })
+
+  it("caps concurrency on top-level client.request — RunTool dispatch path (issue #534)", async () => {
+    // RunTool dispatches via `client.request({ path: "tools/run",
+    // method: "post", body })` — the SDK-relative form, NOT
+    // `"/v1/tools/run"`. The Notion v5 SDK builds the wire URL as
+    // `${prefixUrl}${path}` where `prefixUrl = ${baseUrl}/v1/`, so a
+    // leading slash here would produce a double-prefix bug; the
+    // wire-URL contract is pinned in `src/notion/runtool/client.ts`'s
+    // `RUNTOOL_PATH` docstring and exercised by a real-Client test in
+    // `src/notion/runtool/update-page.test.ts`. The limiter must
+    // govern this path the same way it governs `client.search` —
+    // without this assertion a future SDK refactor that dropped
+    // `request` out of the wrap would silently bypass the
+    // concurrency cap and the token-bucket gate for every RunTool
+    // call site.
+    const { client, maxInFlight, callCount } = makeObservableClient()
+    const limited = createLimitedClient(client, { concurrency: 2, ...RATE_GATE_DISABLED })
+
+    await Promise.all(
+      Array.from({ length: 6 }, () => limited.request({} as never)),
+    )
 
     expect(callCount()).toBe(6)
     expect(maxInFlight()).toBe(2)
@@ -289,6 +320,38 @@ describe("createLimitedClient — token bucket pacing", () => {
     expect(callCount()).toBe(6)
 
     // Advance the rest.
+    await vi.advanceTimersByTimeAsync(700)
+    await Promise.all(promises)
+    expect(callCount()).toBe(10)
+  })
+
+  it("paces a burst of client.request calls beyond the bucket capacity (RunTool dispatch — issue #534)", async () => {
+    // Mirror of the typed-method pacing test for the top-level
+    // `request` path. RunTool's per-tool, per-actor server-side bucket
+    // is independent of REST's bucket but BOTH route through the same
+    // `Authorization` header on the wire — composing through this
+    // gate keeps Lore's outbound rate under the lower of the two
+    // ceilings without standing up a parallel pacer. Pinning the gate
+    // explicitly on `request` is the test contract from the
+    // src/notion/runtool/README.md "Rate-Limit Accounting" section.
+    const { client, callCount } = makeObservableClient(0)
+    const limited = createLimitedClient(client, {
+      concurrency: 10,
+      requestsPerSecond: 10,
+      burstSize: 3,
+    })
+
+    const promises = Array.from({ length: 10 }, () => limited.request({} as never))
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callCount()).toBe(3)
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(callCount()).toBe(4)
+
+    await vi.advanceTimersByTimeAsync(200)
+    expect(callCount()).toBe(6)
+
     await vi.advanceTimersByTimeAsync(700)
     await Promise.all(promises)
     expect(callCount()).toBe(10)

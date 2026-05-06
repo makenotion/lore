@@ -19,6 +19,68 @@ No domain logic lives here -- that belongs in `src/core/`.
 | `extractors.ts`          | Type-safe property value extractors for `PageObjectResponse`              |
 | `relation-properties.ts` | Paginates relation property values when page responses are truncated      |
 | `setup.ts`               | Creates and verifies the five-database vault structure                    |
+| `runtool/`               | Quarantined RunTool integration (issue #532 Phase 0 README; issue #534 narrow `update_page` wrapper) |
+
+## RunTool quarantine (issue #532 / #534)
+
+`runtool/` is the home for Lore's opt-in integration with Notion's
+internal `POST /v1/tools/run` API. Phase 0 (PR #536) shipped the
+contract reconnaissance README; issue #534 extends the directory with
+the first runtime consumer — a narrow `update_page` / `update_content`
+wrapper used by anchored markdown edits in `MemoryService`.
+
+Files:
+
+| File              | Responsibility |
+| ----------------- | -------------- |
+| `README.md`       | Pinned upstream contract (commit + blob SHAs); auth / rate-limit / response-shape facts. |
+| `flag.ts`         | `LORE_USE_RUNTOOL` parent kill-switch + `LORE_USE_RUNTOOL_BLOCK_EDIT` sub-flag with parent-inherit. Default off. |
+| `client.ts`       | `runUpdatePageContent` low-level dispatcher over `client.request`. Maps RunTool `ApiValidationError` shapes to fall-back-able `RunToolBlockEditError` (`no_match` / `multiple_matches` / `deletion_warning` / `restricted_resource`). |
+| `update-page.ts`  | `updatePageContentViaRunTool` high-level wrapper used by domain code. Pre-call validation rejects empty / duplicate `oldStr` and malformed `pageId`; deletion warnings without an explicit opt-in raise `RunToolBlockEditError`. |
+| `index.ts`        | Public surface — only what `update_page` callers need. Search / aggregate Phase 1+ deliverables from #532 are still pending. |
+| `*.test.ts`       | Mocked HTTP success / no-match / multiple-matches / deletion-warning / restricted-resource / 401 / 429 / 5xx / malformed coverage. |
+
+Why dispatch through `client.request`: the Notion v5 SDK's public
+`request<T>({ path, method, body })` API inherits the SDK's auth header,
+retry, timeout, `User-Agent`, and (because `createLimitedClient` /
+`createAuthRefreshingClient` recursively Proxy any callable property on
+the underlying client) the rate-limit + 401-refresh gates. Standing up a
+parallel `fetch` path would require re-implementing all of those —
+issue #532's "compose with the existing request pacing/backoff"
+non-goal pins this.
+
+Default-off contract for the block-edit path:
+
+- `LORE_USE_RUNTOOL_BLOCK_EDIT` defaults to the value of
+  `LORE_USE_RUNTOOL`. If neither is set, every consumer falls through
+  the existing REST/SDK path.
+- A flagged-on consumer that hits `RunToolBlockEditError` falls back
+  to the REST/SDK path **per call**, not per process — a stale anchor
+  in one save has no effect on the next.
+- **401 Unauthorized** propagates verbatim so the auth-refreshing
+  proxy gets its one-shot retry attempt before the error reaches user
+  code. **429 / 5xx** propagate so `createLimitedClient`'s shared
+  `Retry-After` backoff governs client-side pacing — the rate-limit
+  `extractRetryAfterMs` parser stays the single-source 429 path.
+- **403 RestrictedResource** is the deliberate exception in the
+  non-validation class: the auth-refresh proxy CANNOT repair it (it
+  refreshes only on 401), and the integration-secret legacy auth path
+  cannot pass RunTool's actor-type check by construction. Classifying
+  it as fall-back-able lets the REST/SDK path keep working for those
+  operators, with a once-per-process stderr warning so the silent
+  degrade is observable. Pinned by `runtool/README.md`'s "silently
+  degrade … but loud enough" mandate.
+
+### Cross-PR vocabulary contract
+
+The canonical name for the 403 capability-rejection kind is
+`restricted_resource` (matches `APIErrorCode.RestrictedResource`).
+Future RunTool consumer PRs (the search and aggregate wrappers from
+#532's Phase 1+, plus any new write-tool consumer) MUST use the same
+name. A different spelling on a sibling PR (e.g. PR #539's
+`"restricted"`) is a normalization debt that must be resolved IN that
+PR before it merges — not a follow-up. The shared dispatcher landing
+in #532's Phase 1 will key error-classification on this exact string.
 
 ## Notion SDK v5.x Specifics
 
