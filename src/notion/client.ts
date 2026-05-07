@@ -8,7 +8,7 @@ import {
 } from "@notionhq/client"
 import { redactDebugExtraInfo, redactDebugMessage } from "../debug-redact.js"
 
-const USER_AGENT = "lore/0.13.0"
+const USER_AGENT = "lore/0.13.1"
 
 export interface ClientAuthSnapshot {
   token: string
