@@ -1725,7 +1725,7 @@ describe("MCP tool surface", () => {
     // Combined ceiling. The surface has moved 7 → 8 → 7 across P3-01,
     // PF3-06, and the 0.6.0 purge; the budget covers the high-water
     // mark plus comfortable headroom so a future action lands without
-    // inviting a surface-doubling regression. Three recent bumps stack:
+    // inviting a surface-doubling regression. Four recent bumps stack:
     // (a) 7000 → 7100 in #265 to accommodate the `lore-task
     // action='create'` reuse note — agent-observable behavior change
     // that warranted a one-line schema signal alongside the
@@ -1734,15 +1734,23 @@ describe("MCP tool surface", () => {
     // `lore-context action='status'`'s description (now also names
     // the `Kind != decision` exclusion so an agent reading the schema
     // knows proposed-state decisions surface via `lore-decision`
-    // instead); and (c) 7200 → 7500 in issue #281 Phase 4 to absorb
+    // instead); (c) 7200 → 7500 in issue #281 Phase 4 to absorb
     // the `lore-memory action='approve' / 'reject'` inbox-review
-    // actions and their `reviewer` parameter (+300 chars). Each
+    // actions and their `reviewer` parameter (+300 chars); and
+    // (d) 7500 → 7900 in PR #550 / 0.13.1 to absorb the
+    // `lore-task` `CRITICAL SCOPE RULE` block (parallel to the
+    // existing `CRITICAL CLOSURE RULE`) and the matching tighten
+    // on the `create` bullet so live agents tokenize the
+    // tangential/out-of-scope rule with the same early-token
+    // weight the autosave subagent reads in `prompts.ts`. Each
     // delta stays within a "≤ ~300 chars per single-action-add"
-    // envelope; doc-string clauses dominate, not the action-name
-    // additions themselves. Future description adds should continue
-    // to stack the budget explicitly rather than burning headroom
-    // silently.
-    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7500
+    // envelope (delta (d) is +400 — a structural critical-rule
+    // block, larger than the per-action envelope and explicitly
+    // documented as such); doc-string clauses dominate, not the
+    // action-name additions themselves. Future description adds
+    // should continue to stack the budget explicitly rather than
+    // burning headroom silently.
+    const TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT = 7900
     const polymorphic = [
       "lore-context",
       "lore-memory",
@@ -1794,16 +1802,16 @@ describe("MCP tool surface", () => {
     registerProjectTools(mock.server, services)
     registerTaskTools(mock.server, services)
 
-    // Current observed lengths (Phase 1, post-#281 inbox-count line):
+    // Current observed lengths (post-#550 / 0.13.1 SCOPE RULE block):
     // lore-context: 1087, lore-memory: 1368, lore-query: 1038,
     // lore-fact: 1233, lore-decision: 848, lore-project: 323,
-    // lore-task: 1294. Each ceiling is `current + ~150 chars` —
+    // lore-task: 1704. Each ceiling is `current + ~150 chars` —
     // accommodates one single-action-add at the documented envelope
     // before the test fails LOUDLY and forces the contributor to
     // bump the entry here AND the combined ceiling above.
     //
-    // Sum of per-tool ceilings (~8270) deliberately exceeds the
-    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (7500) so the
+    // Sum of per-tool ceilings (~8670) deliberately exceeds the
+    // combined `TOTAL_POLYMORPHIC_DESCRIPTION_LIMIT` (7900) so the
     // combined ceiling stays the real envelope; per-tool ceilings
     // exist to catch lopsided growth (one tool absorbs all the
     // additions while the others stay quiet — hides the growth from
@@ -1818,7 +1826,7 @@ describe("MCP tool surface", () => {
       "lore-fact": 1390,
       "lore-decision": 1000,
       "lore-project": 480,
-      "lore-task": 1450,
+      "lore-task": 1850,
     }
     for (const [name, limit] of Object.entries(PER_TOOL_DESCRIPTION_LIMITS)) {
       const length = mock.description(name).length
