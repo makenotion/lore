@@ -913,9 +913,16 @@ export function registerTaskTools(server: McpServer, services: LoreServices): vo
         "CRITICAL CLOSURE RULE: close tasks (action='close') as soon as " +
         'work completes. Closed tasks are the source of truth for "done"; ' +
         "unclosed tasks keep surfacing in wake-up.\n\n" +
+        "CRITICAL SCOPE RULE: only file tasks for **tangential or " +
+        "out-of-scope** work — side-effect discoveries, deferred follow-ups, " +
+        "blocked items the session noticed but did not pick up. Never file " +
+        "your current in-flight objective: the conversation and plan already " +
+        "track it, so a Lore task adds noise and an immediate close burden, " +
+        "not signal.\n\n" +
         "Action-dispatched:\n\n" +
-        "- `action: 'create'` — open a new task (idempotent on exact " +
-        "`(subject, entity, projectIds)` match). Use `entity` when " +
+        "- `action: 'create'` — open a new task for tangential or " +
+        "out-of-scope work; do NOT file your current objective. Idempotent " +
+        "on exact `(subject, entity, projectIds)` match. Use `entity` when " +
         "the task is about a specific subject other facts/decisions " +
         "also reference; `lore-query` action='ask' surfaces it in " +
         "the Tasks bucket.\n" +

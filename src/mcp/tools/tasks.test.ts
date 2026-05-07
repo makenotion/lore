@@ -1472,6 +1472,33 @@ describe("closure CTA (issue 0.7.0/09)", () => {
     expect(ruleIdx).toBeLessThan(firstBulletIdx)
     expect(description).toContain("action='close'")
   })
+
+  it("leads the lore-task description with the CRITICAL SCOPE RULE before the bullets", async () => {
+    const svc = services()
+    const mockServer = createMockServer()
+    registerTaskTools(mockServer.server, svc as never)
+
+    const config = (
+      mockServer.server.registerTool as ReturnType<typeof vi.fn>
+    ).mock.calls.find(([name]) => name === "lore-task")?.[1] as
+      | { description?: string }
+      | undefined
+
+    // Mirrors the CLOSURE RULE position pin. The scope rule — file
+    // only tangential / out-of-scope work, never the current
+    // in-flight objective — needs the same early-token leverage to
+    // counteract the prior baseline where every "open loop" got
+    // filed regardless of whether it was the session's primary
+    // objective.
+    const description = config?.description ?? ""
+    const ruleIdx = description.indexOf("CRITICAL SCOPE RULE")
+    const firstBulletIdx = description.indexOf("- `action:")
+    expect(ruleIdx).toBeGreaterThan(-1)
+    expect(firstBulletIdx).toBeGreaterThan(-1)
+    expect(ruleIdx).toBeLessThan(firstBulletIdx)
+    expect(description).toContain("tangential or")
+    expect(description).toContain("out-of-scope")
+  })
 })
 
 /**

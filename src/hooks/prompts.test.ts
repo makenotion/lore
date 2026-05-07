@@ -414,7 +414,7 @@ describe("buildBackgroundSavePrompt", () => {
       2. An architectural decision with explicit rationale (→ lore-decision action='create')
       3. A runbook or policy worth reusing (→ lore-memory action='save' with kind: runbook or kind: policy)
       4. A fact about a system component worth linking (→ lore-fact action='create')
-      5. An open loop — work that needs action, is waiting on someone, or is blocked (→ lore-task action='create')
+      5. A tangential or out-of-scope open loop — work the session noticed but deliberately did not tackle (side-effect discoveries, deferred follow-ups, blocked work) that needs action, is waiting on someone, or is blocked (→ lore-task action='create'). Do NOT file the session's primary objective as a task: an unfinished primary objective is the next session's natural starting point, not a Lore task — filing it adds noise and an immediate close burden, not signal.
 
       Before saving, check whether a similar memory or decision already exists; if so, prefer lore-memory action='update' over creating a duplicate. Autosave fires every N messages in long sessions, so the same discovery can arrive twice.
 
@@ -425,7 +425,7 @@ describe("buildBackgroundSavePrompt", () => {
       • lore-memory action='save' — Save a durable discovery. Always pass kind ("note" | "decision" | "incident" | "runbook" | "postmortem" | "policy"), relevant tags, and topicName when the memory fits an existing topic.
       • lore-fact action='create' — Record entity relationships (subject —predicate→ object). Use uses / depends_on / is_a / replaces / extends / conflicts_with for structural relationships. Open work (needs_action / waiting_on / blocked_by) goes through lore-task action='create' instead, NOT lore-fact.
       • lore-decision action='create' — Use this (not lore-memory) for architectural decisions. Include rationale, alternatives considered, consequences, affects (entity names), and reviewBy.
-      • lore-task action='create' — Open a task for work that needs action, is waiting on someone, or is blocked. Pass subject (one-line title), state ("open" | "in-progress" | "blocked"), entity (the PR / service / person it's about), and dueDate (YYYY-MM-DD) when known. If state is "blocked", blockedBy is required.
+      • lore-task action='create' — Open a task for **tangential or out-of-scope** work the session surfaced but did not pick up: side-effect discoveries, deferred follow-ups, blocked work. Never file the session's primary objective as a task — that's the next session's starting point, not a tracked follow-up. Pass subject (one-line title), state ("open" | "in-progress" | "blocked"), entity (the PR / service / person it's about), and dueDate (YYYY-MM-DD) when known. If state is "blocked", blockedBy is required.
 
       Every lore-fact action='create' call MUST pass sourceMemoryId — either the ID of a memory you saved earlier in this turn, or the ID of an existing memory that supports the fact. Facts without a Source memory are rejected on create; lore-query action='ask' could not retrace them anyway. Alternatively, pass the same session value on both the lore-memory action='save' and lore-fact action='create' calls and sourceMemoryId will auto-link to the memory you just saved.
 
