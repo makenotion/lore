@@ -114,10 +114,12 @@ needs OS-specific code that didn't make this release
 file-mode storage at `~/.config/notion/auth.json`, which Lore
 reads directly.
 
-**This is a documented temporary coupling.** When the `ntn` CLI
-team ships an official token-export command, neither the env var
-nor the auth.json read will be needed (per
-DEFERRED-OFFICIAL-EXPORT).
+The public `ntn` CLI does not expose a token-export command, so
+the `NOTION_KEYRING=0` + `auth.json` read pair is the contract
+rather than a temporary bridge. Operators who'd rather not rely on
+the on-disk read can export `NOTION_API_TOKEN` directly (the
+highest-priority auth source); ntn itself reads the same env var,
+so the keychain default is bypassed end-to-end.
 
 **Engineers don't need to set `NOTION_KEYRING=0` in their shell
 rc** for the Lore install path. Lore's `runNtnLogin()` and
@@ -420,52 +422,34 @@ takes over again on the next `lore` invocation.
 Either rollback path is purely operator-side env manipulation;
 neither requires a Lore release rollback.
 
-## Asks to the `ntn` CLI team
+## The `auth.json` read is the contract
 
-Lore's 0.10.0 ships against the `auth.json` read because `ntn`
-0.12.0 doesn't expose a supported token-export command.
-DEFERRED-OFFICIAL-EXPORT in the milestone DEFERRED.md tracks the
-Lore-side migration; this section captures the asks back to the
-CLI team:
+The 0.10.0 release framed the `auth.json` read as a "temporary
+coupling pending an official `ntn auth token` export command"
+(see the historical CHANGELOG entry and the milestone-history row
+in `src/mcp/AGENTS.md`). That framing is superseded: the public
+`ntn` CLI (`github.com/makenotion/skills`) exposes only
+`ntn login` / `ntn logout` for the auth lifecycle and
+`NOTION_API_TOKEN` for injection — no token-export subcommand
+exists, and the maintainers have indicated none will ship.
 
-### Primary ask: `ntn auth token` (export command)
+Lore therefore treats the `auth.json` read as the contract for
+the `ntn login` flow, not a bridge to anything. Operators who
+prefer not to rely on the on-disk read can export `NOTION_API_TOKEN`
+(highest-priority source), which `ntn` itself reads as well.
 
-Add a top-level subcommand mirroring the existing
-`ntn workers oauth token` pattern:
+Open follow-ups that would still benefit Lore if the ntn team
+takes them on later — kept here as a reference rather than a
+blocking ask:
 
-```bash
-ntn auth token --plain   # just the token (for piping)
-ntn auth token --json    # structured: { workspace_id, workspace_name, token, base_url, expires_at? }
-ntn auth token --eval    # `export NOTION_API_TOKEN=...` (for shell rc)
-```
-
-The `--plain` shape already exists in `ntn workers oauth token`
-("Output as plain text (just the token, for piping)"). Applying
-the same pattern to the workspace-bot token issued by `login` is
-a small, safe addition that unblocks safe consumption by other
-internal tools (Lore today; hypothetical others later).
-
-When this ships, Lore swaps the `auth.json` reader for a
-`child_process.execFile("ntn", ["auth", "token", "--json"])`
-call. ~10 lines of code, zero behavior change for operators.
-
-### Secondary ask: stable `auth.json` shape OR explicit deprecation timeline
-
-If `ntn auth token` is more than a release away, request that the
-`auth.json` shape be explicitly versioned (e.g., a top-level
-`schema` field) so Lore's reader can detect format mismatches
-gracefully. Without that, Lore's reader silently breaks when the
-shape changes and operators see "auth.json malformed" without
-knowing whether to upgrade ntn or report a bug.
-
-### Tertiary ask: `ntn` exposes engineer identity
-
-DEFERRED-ATTRIBUTION in the milestone tracks per-user attribution
-on Lore's writes. If `ntn` exposes the authenticated engineer's
-identity via env (e.g., `NOTION_USER_EMAIL`) or via the official
-export command (`ntn auth token --json` returning
-`owner.user.{id,email,name}`), Lore can read it for free without
-calling `users.me`. Plausible but not blocking.
+- **Stable `auth.json` shape**: if the format ever changes, an
+  explicit schema marker (e.g. a top-level `schema` field) lets
+  the reader detect mismatches and surface an upgrade hint
+  instead of failing as "malformed".
+- **Engineer-identity exposure**: per-user attribution
+  (`DEFERRED-ATTRIBUTION`) currently round-trips `users.me`; an
+  env handoff like `NOTION_USER_EMAIL` from `ntn login` would
+  save the round-trip.
 
 ## Dogfood quality criteria
 

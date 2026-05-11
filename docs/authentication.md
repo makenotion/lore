@@ -33,9 +33,12 @@ lore install
 
 `lore install` auto-installs ntn if missing, runs `ntn login` if no auth
 resolves, and writes MCP config. Lore then reads
-`~/.config/notion/auth.json` to select the workspace bearer token. This direct
-read is a temporary coupling until ntn ships a supported token-export command.
-The implementation details live in [`src/auth/AGENTS.md`](../src/auth/AGENTS.md).
+`~/.config/notion/auth.json` to select the workspace bearer token. The public
+ntn CLI does not expose a token-export command, so the direct file read is the
+contract for the `ntn login` flow rather than a temporary bridge. Operators who
+want to bypass the on-disk read entirely set `NOTION_API_TOKEN` (the
+highest-priority auth source). Implementation details live in
+[`src/auth/AGENTS.md`](../src/auth/AGENTS.md).
 
 ntn defaults to the macOS keychain. Lore cannot read that storage mode in
 0.10.0, so Lore-managed `runNtnLogin()` and `installNtn()` calls force

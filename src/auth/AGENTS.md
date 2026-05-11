@@ -64,28 +64,36 @@ surfaces without an Author column. If a future product decision wants
 "last editor" attribution, add a separate property/contract rather
 than quietly changing the current Author semantics.
 
-## The auth.json read is a temporary coupling
+## The auth.json read is the contract
 
-`src/auth/ntn.ts` reads ntn's private storage at
-`~/.config/notion/auth.json`. **This is a deliberate bridge until
-`ntn` ships a supported token-export command.** The expected shape is
-`ntn auth token --plain` or equivalent. Every read site in this
-directory carries a `// TODO(ntn-export):` comment pointing at
-DEFERRED-OFFICIAL-EXPORT in the milestone DEFERRED.md.
+`src/auth/ntn.ts` reads ntn's on-disk storage at
+`~/.config/notion/auth.json`. The public `ntn` CLI
+(`github.com/makenotion/skills`) confirms this is the contract — its
+auth surface is just `ntn login` / `ntn logout` for the lifecycle and
+`NOTION_API_TOKEN` for injection. There is no token-export
+subcommand, and the maintainers have indicated none will ship. The
+0.10.0 milestone CHANGELOG entry (and `src/mcp/AGENTS.md`'s milestone
+history) preserve the historical framing of this read as a "bridge
+pending official export"; that framing is superseded by this section.
 
-When the supported command lands, `loadNtnToken`'s body changes to a
-`child_process.execFile` call. The function signature stays the
-same; consumers in `src/config.ts:resolveAuth` are unchanged. The
-swap is ~10 lines of code.
+Operators who want to bypass the on-disk read entirely set
+`NOTION_API_TOKEN`, which `resolveAuth` (`src/config.ts`) honors as
+the highest-priority source.
+
+The `auth.json` shape is undocumented but stable across the `ntn`
+versions Lore supports (`MIN_NTN_VERSION` onward). The reader
+degrades gracefully on any shape mismatch — malformed JSON, wrong
+root type, and missing string-valued workspace entries all return
+null with an actionable stderr hint, never a thrown exception. Future
+shape changes are handled by bumping `MIN_NTN_VERSION` and updating
+the reader; future contributors should NOT reintroduce a "temporary"
+framing or wait on an export command that isn't coming.
 
 ## ntn version policy
 
-`MIN_NTN_VERSION` is the tested-against floor. Bump only when:
-
-- A new ntn version ships an `auth.json` shape change Lore needs to
-  handle (read-shape compatibility), OR
-- DEFERRED-OFFICIAL-EXPORT lands and Lore prefers the supported ntn
-  token-export command (consume-shape compatibility).
+`MIN_NTN_VERSION` is the tested-against floor. Bump only when a new
+ntn version ships an `auth.json` shape change Lore needs to handle
+(read-shape compatibility).
 
 Lore prefers the operator's existing ntn install. The CLI never
 auto-upgrades; `checkNtnVersion()` returns `"too-old"`

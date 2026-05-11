@@ -1,17 +1,22 @@
 /**
  * ntn integration module — auth.json reader + interactive shell-out helpers.
  *
- * **TEMPORARY COUPLING WARNING.** This module reads `ntn`'s private
- * storage at `~/.config/notion/auth.json`. The format is undocumented
- * and may change unannounced when `ntn` ships a new version. The
- * coupling is a deliberate bridge until `ntn` ships a supported
- * token-export command — tracked as DEFERRED-OFFICIAL-EXPORT in the
- * milestone DEFERRED.md.
+ * The `auth.json` read is the contract. Lore reads ntn's on-disk
+ * storage at `~/.config/notion/auth.json` because the public `ntn`
+ * CLI (github.com/makenotion/skills) does not expose a token-export
+ * surface — only `ntn login` / `ntn logout` for the auth lifecycle
+ * and `NOTION_API_TOKEN` for injection. The maintainers have indicated
+ * no `ntn auth token` (or equivalent) command will ship. Operators who
+ * want to bypass the on-disk read entirely set `NOTION_API_TOKEN`,
+ * which `resolveAuth` (#01) honors as the highest-priority source.
  *
- * When `ntn auth token --plain` (or equivalent) ships, every read site
- * in this module flagged with `// TODO(ntn-export):` swaps for a
- * shell-out to that command. Function signatures stay the same;
- * consumers in `resolveAuth` (#01) are unchanged.
+ * The file format is undocumented but has been stable across the
+ * `ntn` versions Lore supports (`MIN_NTN_VERSION` onward). The reader
+ * degrades gracefully when the shape changes: malformed JSON, wrong
+ * root type, and missing string-valued workspace entries all return
+ * null with an actionable stderr hint, never a thrown exception. A
+ * future ntn shape change is handled by bumping `MIN_NTN_VERSION` and
+ * teaching the reader the new shape.
  */
 
 import { execFileSync, spawn } from "node:child_process"
@@ -71,9 +76,6 @@ export interface LoadNtnTokenInput {
 export async function loadNtnToken(
   input: LoadNtnTokenInput = {}
 ): Promise<NtnTokenRecord | null> {
-  // TODO(ntn-export): Replace this auth.json read with a shell-out to
-  // `ntn auth token --plain` (or equivalent) when DEFERRED-OFFICIAL-EXPORT
-  // ships. Function signature stays the same; consumers unchanged.
   const result = await readWorkspaceEntries()
   const quiet = input.quiet === true
 
@@ -216,10 +218,6 @@ async function readWorkspaceEntries(): Promise<WorkspaceEntriesResult> {
  * distinguishing reasons.
  */
 export async function listNtnWorkspaces(): Promise<string[]> {
-  // TODO(ntn-export): Replace this auth.json read with `ntn auth
-  // workspaces --json` (or equivalent) when DEFERRED-OFFICIAL-EXPORT
-  // ships. The shared `readWorkspaceEntries` helper localizes the
-  // single auth.json walk so both consumers swap together.
   const result = await readWorkspaceEntries()
   if (result.kind !== "ok") return []
   return result.entries.map(([workspaceId]) => workspaceId)
@@ -249,17 +247,15 @@ function ntnAuthJsonPath(): string {
  *   3. `undefined` — the SDK applies its prod default.
  *
  * The config.json shape is undocumented. Best-effort read with a
- * hard fallback. When DEFERRED-OFFICIAL-EXPORT ships, `ntn auth
- * token --json` likely returns the base URL alongside the token,
- * eliminating this read.
+ * hard fallback to `undefined` (SDK default = prod) when the file
+ * is missing or unparseable. Operators on dev / staging who want a
+ * deterministic override set `LORE_NOTION_BASE_URL` rather than
+ * relying on the config.json read.
  */
 async function resolveNtnBaseUrl(): Promise<string | undefined> {
   const { resolveOperatorBaseUrl, ntnEnvBaseUrl } = await import("./oauth.js")
   const fromEnv = resolveOperatorBaseUrl()
   if (fromEnv) return fromEnv
-  // TODO(ntn-export): Replace this config.json read with a value
-  // pulled from `ntn auth token --json` when DEFERRED-OFFICIAL-EXPORT
-  // ships.
   const configPath = ntnAuthJsonPath().replace(/auth\.json$/, "config.json")
   try {
     const raw = await readFile(configPath, "utf-8")
@@ -311,8 +307,7 @@ let cachedVersion: string | null | undefined = undefined
  * but the reader degrades gracefully (returns null).
  *
  * Bumped only when a new ntn version ships an `auth.json` shape
- * change Lore needs to handle, OR when DEFERRED-OFFICIAL-EXPORT
- * lands and Lore prefers `ntn auth token --plain`.
+ * change Lore needs to handle.
  */
 export const MIN_NTN_VERSION = "0.12.0"
 

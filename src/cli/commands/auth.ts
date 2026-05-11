@@ -345,13 +345,6 @@ export function printAuthSourceLines(auth: ResolvedAuth | undefined): void {
         console.log(`  Workspace: ${auth.workspaceId}`)
       }
       console.log("  Status: ✓ active")
-      console.log("")
-      console.log(
-        "  Note: reading auth.json directly is a temporary coupling.",
-      )
-      console.log(
-        "  When `ntn auth token` ships, this becomes a clean export.",
-      )
       break
     case "env-lore-notion-token":
       console.log("  Source: LORE_NOTION_TOKEN (env, soft-deprecated)")
@@ -834,9 +827,6 @@ export async function runLogout(): Promise<void> {
     case "env-notion-api-token":
       console.log("Lore is using NOTION_API_TOKEN from your environment.")
       console.log("To log out: unset NOTION_API_TOKEN")
-      console.log(
-        "(If this was set by `eval $(ntn auth token --eval)`, also run `ntn logout`.)",
-      )
       break
     case "ntn-auth-json":
       console.log("Lore is using your ntn-issued token (auth.json).")

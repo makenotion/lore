@@ -1829,7 +1829,7 @@ describe("printAuthSourceLines", () => {
     expect(stdoutText()).toContain("Status: ✓ active")
   })
 
-  it("prints ntn-auth-json source + workspace + temporary-coupling note", () => {
+  it("prints ntn-auth-json source + workspace + active status", () => {
     const auth: ResolvedAuth = {
       token: "tok",
       source: "ntn-auth-json",
@@ -1838,7 +1838,7 @@ describe("printAuthSourceLines", () => {
     printAuthSourceLines(auth)
     expect(stdoutText()).toContain("Source: ntn (auth.json)")
     expect(stdoutText()).toContain("Workspace: ws-1")
-    expect(stdoutText()).toContain("temporary coupling")
+    expect(stdoutText()).toContain("Status: ✓ active")
   })
 
   it("prints LORE_NOTION_TOKEN soft-deprecation + migrate recommendation", () => {

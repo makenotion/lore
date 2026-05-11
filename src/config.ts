@@ -212,12 +212,15 @@ export async function loadConfigAllowingInvalidHooks(
  * behavior, since every source produces a static bearer token with the same
  * SDK call shape.
  *
- * `env-notion-api-token` is the canonical source: ntn itself reads the same
- * env var, and a future `eval "$(ntn auth token --eval)"` shell-rc wiring
- * will land on path 1 directly. `ntn-auth-json` is the temporary bridge
- * that reads ntn's private storage until DEFERRED-OFFICIAL-EXPORT ships.
- * The remaining two sources are soft-deprecated and continue to work but
- * surface deprecation warnings on different cadences (#484).
+ * `env-notion-api-token` is the canonical injection source: ntn itself
+ * reads the same env var, so operators who export `NOTION_API_TOKEN`
+ * (e.g. from a secret manager) bypass `auth.json` entirely.
+ * `ntn-auth-json` is the read path for operators who use `ntn login`;
+ * the public ntn CLI does not expose a token-export command, so the
+ * direct file read is the contract rather than a temporary bridge
+ * (see `src/auth/AGENTS.md`). The remaining two sources are
+ * soft-deprecated and continue to work but surface deprecation warnings
+ * on different cadences (#484).
  * `LORE_NOTION_TOKEN` warns when selected, debounced to once per 24h per
  * config root, and silenceable via `LORE_SUPPRESS_DEPRECATIONS=1`. Config
  * `auth.token` warns on field presence (even when masked by a higher-
@@ -287,13 +290,16 @@ export interface ResolveAuthOptions {
 /**
  * Resolution priority for 0.10.0:
  *
- * 1. **`NOTION_API_TOKEN` env** — canonical. Set by the operator
- *    explicitly OR by a future `eval "$(ntn auth token --eval)"` shell-rc
- *    wiring once `ntn` ships official export (DEFERRED-OFFICIAL-EXPORT).
+ * 1. **`NOTION_API_TOKEN` env** — canonical injection. Operators export
+ *    it explicitly (often from a secret manager). ntn itself reads the
+ *    same env var, so this path is also how an operator who'd rather
+ *    not have Lore read `auth.json` opts out — exporting
+ *    `NOTION_API_TOKEN` short-circuits the file read entirely.
  * 2. **ntn-resolved (`auth.json` via `loadNtnToken`)** — picks a workspace
  *    token via `NOTION_WORKSPACE_ID` env / `auth.workspaceId` config /
- *    single-workspace auto-pick. Temporary coupling to ntn's private
- *    storage; removed when official export ships.
+ *    single-workspace auto-pick. The public `ntn` CLI does not expose a
+ *    token-export command, so the direct file read is the contract for
+ *    the `ntn login` flow (see `src/auth/AGENTS.md`).
  * 3. **`LORE_NOTION_TOKEN` env** — soft-deprecated. Returns
  *    `source: "env-lore-notion-token"` and emits a debounced deprecation
  *    warning on first call per session.
