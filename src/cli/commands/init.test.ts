@@ -60,6 +60,7 @@ vi.mock("./init-prompt.js", () => ({
 
 import {
   authBaseUrlMatchesEnv,
+  buildHookDisclosureLines,
   buildInitConfigYaml,
   createWorkspaceLevelPage,
   defaultVaultTitle,
@@ -147,6 +148,99 @@ describe("buildInitConfigYaml", () => {
     ])
   })
 
+  it("includes the issue #560 hook-disclosure block ABOVE the hooks: key", () => {
+    // Acceptance criteria for issue #560: the generated config carries
+    // an explanatory comment block immediately above `hooks:` so an
+    // operator who skims the YAML without reading docs/hooks.md still
+    // sees that the default-enabled background hooks write to / read
+    // from their own Notion vault, and how to opt out.
+    //
+    // Pin a substring from each load-bearing fragment of the block
+    // rather than the full string: yaml-lib renders `commentBefore`
+    // with a leading `#` per line; the prose can evolve, but each
+    // signal (privacy framing, descriptions of every default-true
+    // hook, the disable-knob name, the docs reference) must remain
+    // present.
+    const text = buildInitConfigYaml("abc123")
+    const hooksIdx = text.indexOf("hooks:")
+    expect(hooksIdx).toBeGreaterThan(-1)
+    const above = text.slice(0, hooksIdx)
+    expect(above).toContain("# Background hooks (issue #560 disclosure)")
+    // PR #567 round-2 review: privacy claim is honest about the
+    // background-agent LLM hop; the earlier "nothing leaves your
+    // account" copy elided the autosave transcript send to whichever
+    // model the operator has wired in.
+    expect(above).toContain("Writes land in your Notion vault")
+    expect(above).toContain("background-agent LLM")
+    // All four default-true hooks named, not just autoSave/wakeUp.
+    expect(above).toContain("autoSave")
+    expect(above).toContain("wakeUp")
+    expect(above).toContain("autoDigest")
+    expect(above).toContain("learningExtraction")
+    expect(above).toContain("saveInterval")
+    // PR #567 review: the disable hint must name the boolean knobs
+    // by name and explicitly call out that saveInterval is numeric.
+    // The earlier "Set any value below to `false`" wording would have
+    // misled an operator into typing `saveInterval: false`, which
+    // trips `parseConfigAllowingInvalidHooks` into dropping the
+    // entire hooks section and silently re-enabling the defaults.
+    expect(above).toContain("hooks.autoSave: false")
+    expect(above).toContain("hooks.wakeUp: false")
+    expect(above).toContain("hooks.autoDigest: false")
+    expect(above).toContain("hooks.learningExtraction: false")
+    // PR #567 round-2 concern #2: env kill switches are the natural
+    // one-session opt-out and must be discoverable from the
+    // disclosure copy itself.
+    expect(above).toContain("LORE_AUTOSAVE=false")
+    expect(above).toContain("LORE_AUTO_DIGEST=false")
+    expect(above).toContain("LORE_DISABLE_LEARNING_EXTRACTION=1")
+    expect(above).toContain("docs/hooks.md")
+  })
+
+  it("disclosure block disable hint is scoped to boolean knobs only (PR #567 review)", () => {
+    // Positive-shape replacement for the previous absence-only guard
+    // (round-2 nit #3): instead of asserting the broken
+    // "Set any value below to `false`" string is absent, assert the
+    // disable hint structurally — extract the sentence after
+    // "Disable in .lore.yaml" and confirm it lists each boolean knob
+    // exactly once and never names `saveInterval`. A future copy
+    // edit that uses synonyms like "any of the values" or "the
+    // settings below" still fails this test loudly.
+    const text = buildInitConfigYaml("abc123")
+    const hooksIdx = text.indexOf("hooks:")
+    const above = text.slice(0, hooksIdx)
+    const match = above.match(/Disable in \.lore\.yaml with any of: ([^\n]+)/)
+    expect(match).not.toBeNull()
+    if (!match) throw new Error("disable-hint sentence not found")
+    const hintBody = match[1]
+    expect(hintBody).toContain("hooks.autoSave: false")
+    expect(hintBody).toContain("hooks.wakeUp: false")
+    expect(hintBody).toContain("hooks.autoDigest: false")
+    expect(hintBody).toContain("hooks.learningExtraction: false")
+    // saveInterval is a number in the schema; the disable hint must
+    // not name it, no matter how the wording evolves.
+    expect(hintBody).not.toContain("saveInterval")
+  })
+
+  it("disclosure block does not contaminate the parsed YAML shape", () => {
+    // Defense against a future yaml-lib upgrade or a typo (missing
+    // leading space, broken commentBefore semantics) that would let
+    // the disclosure text leak into the active config as top-level
+    // keys. The block is comments only — `yamlParse` must return
+    // the same minimal shape with no extra keys.
+    const text = buildInitConfigYaml("abc123")
+    const parsed = yamlParse(text)
+    expect(parsed).toEqual({
+      vault: { pageId: "abc123" },
+      projects: [],
+      hooks: {
+        autoSave: true,
+        wakeUp: true,
+        saveInterval: 5,
+      },
+    })
+  })
+
   it("omits the auth: block when no workspaceId is provided (single-workspace operators)", () => {
     const text = buildInitConfigYaml("abc123")
     const parsed = yamlParse(text) as Record<string, unknown>
@@ -168,6 +262,82 @@ describe("buildInitConfigYaml", () => {
         saveInterval: 5,
       },
     })
+  })
+})
+
+describe("buildHookDisclosureLines", () => {
+  // Issue #560 disclosure helper. `lore init` and `lore install
+  // --client {claude,codex}` all print the returned lines verbatim
+  // (PR #567 round-2 review #2 added the install-time surface), so
+  // the wording lives in `src/cli/hook-disclosure.ts` as the single
+  // source of truth. These assertions pin the load-bearing signals
+  // so a future copy edit doesn't quietly drop the privacy framing,
+  // a default-true hook, or the env-override list.
+  it("returns a non-empty array of lines", () => {
+    const lines = buildHookDisclosureLines()
+    expect(Array.isArray(lines)).toBe(true)
+    expect(lines.length).toBeGreaterThan(0)
+  })
+
+  it("mentions every default-true hook by name (PR #567 round-2 blocker #1)", () => {
+    // Round-1 only named autoSave + wakeUp. Round-2 review pointed
+    // out `mergeHookDefaults` defaults FOUR hooks to true; the
+    // disclosure must surface all of them or it lies about the
+    // actual side-effect set.
+    const joined = buildHookDisclosureLines().join("\n")
+    expect(joined).toContain("autoSave")
+    expect(joined).toContain("wakeUp")
+    expect(joined).toContain("autoDigest")
+    expect(joined).toContain("learningExtraction")
+  })
+
+  it("names the exact .lore.yaml knobs an operator types to disable", () => {
+    // Discoverability is the whole point of the disclosure — print
+    // the literal config keys, not paraphrases. A future edit that
+    // says "in your config" instead of `hooks.autoSave: false` fails
+    // this test loudly.
+    const joined = buildHookDisclosureLines().join("\n")
+    expect(joined).toContain("hooks.autoSave: false")
+    expect(joined).toContain("hooks.wakeUp: false")
+    expect(joined).toContain("hooks.autoDigest: false")
+    expect(joined).toContain("hooks.learningExtraction: false")
+  })
+
+  it("names the per-session env-var overrides (PR #567 round-2 concern #2)", () => {
+    // The env knobs are the natural answer to "I want autosave off
+    // for this one session without touching .lore.yaml." Operators
+    // never discover them if the disclosure copy itself doesn't
+    // mention them.
+    const joined = buildHookDisclosureLines().join("\n")
+    expect(joined).toContain("LORE_AUTOSAVE=false")
+    expect(joined).toContain("LORE_AUTO_DIGEST=false")
+    expect(joined).toContain("LORE_DISABLE_LEARNING_EXTRACTION=1")
+  })
+
+  it("uses an accurate privacy framing (PR #567 round-2 concern #4)", () => {
+    // Round-1 said "nothing leaves your account" — true for the
+    // Memory-row writes but misleading about the autosave / learning-
+    // extraction transcript send to the configured background-agent
+    // LLM. Round-2 wording is structurally honest: writes land in
+    // Notion; transcript goes to the configured LLM.
+    const joined = buildHookDisclosureLines().join("\n")
+    expect(joined).toContain("Writes land in your Notion vault")
+    expect(joined).toContain("background-agent LLM")
+    expect(joined).not.toContain("nothing leaves your account")
+  })
+
+  it("uses ASCII bullets only (PR #567 round-2 nit #1)", () => {
+    // Round-1 used `•` which mojibakes on legacy Windows consoles.
+    // The CLI does run on Windows even though the hook runner is
+    // POSIX-only, so the install-time output needs to render
+    // cleanly on cmd.exe / PowerShell.
+    const joined = buildHookDisclosureLines().join("\n")
+    expect(joined).not.toContain("•")
+  })
+
+  it("points operators at the docs/hooks.md reference", () => {
+    const joined = buildHookDisclosureLines().join("\n")
+    expect(joined).toContain("docs/hooks.md")
   })
 })
 
@@ -428,6 +598,45 @@ describe("runNoArgInit", () => {
     // not a recovery-flow signal.
     expect(installNtn).not.toHaveBeenCalled()
     expect(runNtnLogin).not.toHaveBeenCalled()
+  })
+
+  it("post-init output prints the issue #560 hook-disclosure block before Next steps", async () => {
+    // The no-arg flow is the primary onboarding path for external
+    // users (`lore init` with no page id). The disclosure must
+    // appear here so a first-time user sees what the
+    // default-enabled hooks do before they hit the README.
+    setupTestCwd()
+    vi.mocked(resolveAuth).mockResolvedValue({
+      token: "tok-ntn",
+      baseUrl: undefined,
+      source: "ntn-auth-json",
+      workspaceId: "ws-1",
+    })
+    const create = vi.fn(async () => ({ id: "page-disclosure" }))
+    const { createClient } = await import("../../notion/client.js")
+    vi.mocked(createClient).mockReturnValue({
+      pages: { create },
+    } as unknown as ReturnType<typeof createClient>)
+    vi.mocked(verifyVaultAccess).mockResolvedValue({
+      kind: "ok",
+      pageTitle: null,
+    })
+    mockVaultInitSuccess()
+
+    await runNoArgInit({})
+
+    const log = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")
+    // Each disclosure line must surface verbatim from the shared helper.
+    for (const line of buildHookDisclosureLines()) {
+      expect(log).toContain(line)
+    }
+    // Order is contract: the disclosure sits above Next steps so an
+    // operator scanning the tail of the post-init output reads the
+    // privacy framing before being directed at follow-up commands.
+    const disclosureIdx = log.indexOf(buildHookDisclosureLines()[0])
+    const nextStepsIdx = log.indexOf("Next steps:")
+    expect(disclosureIdx).toBeGreaterThan(-1)
+    expect(nextStepsIdx).toBeGreaterThan(disclosureIdx)
   })
 
   it("uses --name to override the cwd-derived default title", async () => {
@@ -1538,6 +1747,29 @@ describe("runExplicitPageInit", () => {
 
     const log = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")
     expect(log).toContain("Entities DB:")
+  })
+
+  it("post-init output prints the issue #560 hook-disclosure block before Next steps (legacy path)", async () => {
+    // Both init paths share the same disclosure helper; pin the
+    // legacy path's wiring so a future contributor who only updates
+    // one branch fails this test loudly. Without this, the legacy
+    // path could regress to the pre-#560 silent post-init output
+    // while the no-arg path stays correct.
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+    setupTestCwd()
+    vi.mocked(verifyVaultAccess).mockResolvedValue({ kind: "ok", pageTitle: null })
+    mockVaultInitSuccess()
+
+    await runExplicitPageInit("explicit-disclosure", { token: "tok" })
+
+    const log = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")
+    for (const line of buildHookDisclosureLines()) {
+      expect(log).toContain(line)
+    }
+    const disclosureIdx = log.indexOf(buildHookDisclosureLines()[0])
+    const nextStepsIdx = log.indexOf("Next steps:")
+    expect(disclosureIdx).toBeGreaterThan(-1)
+    expect(nextStepsIdx).toBeGreaterThan(disclosureIdx)
   })
 
   it("threads ntn-resolved workspaceId into the generated YAML on the legacy path (regression: review #3)", async () => {

@@ -841,6 +841,29 @@ describe("runCodexInstall (integration)", () => {
     )
   })
 
+  it("prints the issue #560 hook-disclosure block on Codex installs (PR #567 round-2 blocker #2)", async () => {
+    // Pre-PR #567 round-2 the disclosure only fired from `lore init`;
+    // operators upgrading an existing install or cloning a teammate's
+    // already-initialized repo never saw it. The fix wires
+    // `printHookDisclosure` into `runCodexInstall` so the side-effect
+    // copy lands every time the host config is rewritten.
+    const projectDir = mkdtempSync(join(SCRATCH, "disclosure-"))
+    const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))
+
+    await runCodexInstall(makeContext(projectDir, pkgRoot), null)
+
+    const messages = consoleLogSpy.mock.calls.map((args) => args.join(" ")).join("\n")
+    // Pin the load-bearing fragments from the shared module rather
+    // than the full string — the assertion fails loud on copy drift
+    // without coupling to the exact wording.
+    expect(messages).toContain("Default-enabled hooks")
+    expect(messages).toContain("autoSave")
+    expect(messages).toContain("wakeUp")
+    expect(messages).toContain("autoDigest")
+    expect(messages).toContain("learningExtraction")
+    expect(messages).toContain("docs/hooks.md")
+  })
+
   it("rewrites stale Codex SessionStart wake-up entries to UserPromptSubmit", async () => {
     const projectDir = mkdtempSync(join(SCRATCH, "stale-session-start-"))
     const pkgRoot = mkdtempSync(join(SCRATCH, "pkg-"))

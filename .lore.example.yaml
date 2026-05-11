@@ -45,6 +45,35 @@ projects:
 #   exclude: ["node_modules"]
 
 # AI assistant hook settings
+#
+# Lore wires four background hooks into your assistant by default. Writes
+# land in your own Notion vault; transcript content is sent to your
+# configured background-agent LLM (Claude API by default; Codex if
+# LORE_AGENT_NAME=Codex). The canonical wording lives in
+# `src/cli/hook-disclosure.ts` and is asserted against this block.
+#
+# - autoSave: on assistant Stop, a detached background sub-agent writes
+#   a session synopsis to your vault as Memory rows.
+# - wakeUp: on session start (or first user prompt), the hook fetches
+#   recent memories, active facts, and the latest project digest and
+#   injects them into the assistant's context.
+# - autoDigest: after autosave, regenerates the weekly project digest in
+#   a detached background spawn (one extra Notion write per project per
+#   week, not per session).
+# - learningExtraction: the autosave sub-agent extracts atomic
+#   single-fact learnings from the transcript (up to 5 per save) and
+#   writes each as its own `note` memory.
+# - saveInterval: minimum minutes between autosave runs in the same
+#   session, so a long pairing session doesn't write a memory on every
+#   Stop event. 5 is a reasonable middle ground. Must be a positive
+#   integer; setting it to `false` is invalid and will silently fall
+#   back to hook defaults (re-enabling autoSave/wakeUp).
+#
+# Disable in .lore.yaml with any of: hooks.autoSave: false /
+# hooks.wakeUp: false / hooks.autoDigest: false /
+# hooks.learningExtraction: false.
+# Per-session env overrides: LORE_AUTOSAVE=false / LORE_AUTO_DIGEST=false /
+# LORE_DISABLE_LEARNING_EXTRACTION=1. Full reference: docs/hooks.md.
 hooks:
   autoSave: true
   wakeUp: true

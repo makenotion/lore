@@ -1,7 +1,7 @@
 import { Command } from "commander"
 import { access, writeFile } from "node:fs/promises"
 import { basename, resolve } from "node:path"
-import { Document, isMap } from "yaml"
+import { Document, isMap, isScalar } from "yaml"
 import type { Client, CreatePageParameters } from "@notionhq/client"
 import { createClient } from "../../notion/client.js"
 import { createLimitedClient } from "../../notion/rate-limit.js"
@@ -18,7 +18,19 @@ import {
   type NtnEnv,
 } from "../../auth/ntn.js"
 import type { LoreConfig } from "../../types.js"
+import {
+  buildHookDisclosureLines as buildHookDisclosureLinesShared,
+  buildHookYamlCommentBefore,
+} from "../hook-disclosure.js"
 import { confirmPrompt } from "./init-prompt.js"
+
+/**
+ * Re-export of the shared helper so existing import sites
+ * (`./init.test.ts`, in particular) keep working after the PR #567
+ * round-2 round of extraction into `src/cli/hook-disclosure.ts`. New
+ * call sites should import from `hook-disclosure.js` directly.
+ */
+export const buildHookDisclosureLines = buildHookDisclosureLinesShared
 
 /**
  * Build the `.lore.yaml` text emitted by `lore init`. Pure so tests can
@@ -55,6 +67,27 @@ export function buildInitConfigYaml(pageId: string, workspaceId?: string): strin
   }
 
   const doc = new Document(config)
+  // Leading hook-disclosure block, attached to the `hooks` key's
+  // commentBefore so it renders above the `hooks:` line in the output
+  // (issue #560). Operators who skim the generated config without
+  // reading docs/hooks.md still see (a) the two background side-
+  // effects are on by default, (b) writes go to their own vault via
+  // the auth chain above, and (c) the one-line shape of the disable
+  // knob. The trailing commented-default lines further down inside
+  // the map advertise additional opt-in knobs without changing
+  // behavior — both surfaces coexist.
+  const top = doc.contents
+  if (isMap(top)) {
+    const hooksPair = top.items.find(
+      (p) => isScalar(p.key) && (p.key as { value: unknown }).value === "hooks"
+    )
+    if (hooksPair && isScalar(hooksPair.key)) {
+      // Body assembled from the shared `hook-disclosure.ts` fragments
+      // so the example yaml, the generated yaml, and both CLI surfaces
+      // can't drift on wording or knob coverage.
+      hooksPair.key.commentBefore = buildHookYamlCommentBefore()
+    }
+  }
   const hooks = doc.get("hooks", true)
   if (isMap(hooks)) {
     // YAMLMap.comment renders after the map's last child at the map's
@@ -308,6 +341,10 @@ export async function runExplicitPageInit(
     // every subsequent command would re-discover.
     await writeFile(configPath, buildInitConfigYaml(pageId, workspaceId))
     console.log(`\nConfig written to ${configPath}`)
+    console.log("")
+    for (const line of buildHookDisclosureLines()) {
+      console.log(line)
+    }
     console.log("\nNext steps:")
     console.log("  1. Add projects to .lore.yaml")
     console.log("  2. Add the MCP server to your AI assistant config")
@@ -720,6 +757,11 @@ export async function runNoArgInit(opts: {
   await writeFile(configPath, buildInitConfigYaml(vaultPageId, auth.workspaceId))
   console.log("")
   console.log(`Config written to ${configPath}`)
+
+  console.log("")
+  for (const line of buildHookDisclosureLines()) {
+    console.log(line)
+  }
 
   console.log("")
   console.log("Next steps:")

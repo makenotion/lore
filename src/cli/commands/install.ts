@@ -30,6 +30,7 @@ import {
   RUNTIME_FORWARDED_KEYS,
   type RuntimeForwardedKey,
 } from "../../auth/forwarded-env.js"
+import { buildHookDisclosureLines } from "../hook-disclosure.js"
 
 export type InstallClient = "claude" | "codex" | "cursor" | "all"
 
@@ -2449,6 +2450,11 @@ async function runClaudeInstall(
   // as exposed as a `--client codex` operator — the configuration
   // applies regardless of which host registered the hook.
   printBackgroundAgentSummary(await resolveBackgroundAgentForInstall(context))
+  // Issue #560 / PR #567 round-2: surface hook-side-effects disclosure
+  // at install time, not just at `lore init`. Operators who clone a
+  // teammate's repo or upgrade an existing install pass through here,
+  // and the hooks start firing the moment this install completes.
+  printHookDisclosure()
 
   const allCurrent =
     isEffectivelyCurrent(autosaveStatus, context.legacyPaths) &&
@@ -2805,6 +2811,31 @@ export function printBackgroundAgentSummary(
   }
 }
 
+/**
+ * Print the issue #560 hook-disclosure block as part of the install
+ * preflight summary. Claude Code AND Codex installs both wire Lore's
+ * Stop / UserPromptSubmit hooks into the host config, which means the
+ * default-`true` hooks listed in `mergeHookDefaults` start firing the
+ * moment the install completes — regardless of whether the operator
+ * just ran `lore init` (PR #567 round-1 shape) or is upgrading an
+ * existing `.lore.yaml` install (PR #567 round-2 review #2).
+ *
+ * Cursor's MCP runtime doesn't activate these hooks (see
+ * `src/cli/AGENTS.md`), so `runCursorInstall` deliberately omits the
+ * disclosure — there's nothing to disclose on that host.
+ *
+ * The block sits between `printBackgroundAgentSummary` and the
+ * "Install Lore X integration?" confirm prompt so an operator with
+ * `--yes` automation also sees the lines flushed before any
+ * configuration write lands.
+ */
+export function printHookDisclosure(): void {
+  console.log("")
+  for (const line of buildHookDisclosureLines()) {
+    console.log(`  ${line}`)
+  }
+}
+
 export async function runCodexInstall(
   context: InstallContext,
   rl: ReturnType<typeof createInterface> | null,
@@ -2907,6 +2938,11 @@ export async function runCodexInstall(
   printBackgroundAgentSummary(
     await resolveBackgroundAgentForInstall(context, process.env, "Codex"),
   )
+  // Issue #560 / PR #567 round-2: parity with the Claude install path
+  // — surface the hook-side-effects disclosure on Codex too. The same
+  // Stop / UserPromptSubmit hooks fire under Codex once `features.codex_hooks`
+  // is set and the project is trusted.
+  printHookDisclosure()
 
   const allCurrent =
     isEffectivelyCurrent(mcpStatus, context.legacyPaths) &&
