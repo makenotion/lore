@@ -25,7 +25,8 @@
 | [`docs/conflict-detection.md`](docs/conflict-detection.md) | `lore conflicts scan` workflow and compare-verdict contract |
 | [`docs/topology.md`](docs/topology.md) | `lore status` topology section, health states, recovery workflow |
 | [`docs/hooks.md`](docs/hooks.md) | Installed hook behavior and auth forwarding |
-| [`docs/internal-rollout.md`](docs/internal-rollout.md) | Operator-facing ntn-first rollout runbook |
+| [`docs/team-setup.md`](docs/team-setup.md) | Public onboarding entry point: Entities cutover, direct-ntn-login gotcha, shared-vault hook config |
+| [`docs/internal-rollout.md`](docs/internal-rollout.md) | Full team-rollout playbook: per-engineer onboarding flow, `NOTION_API_TOKEN` fallback, fail-fast env mismatches (rename tracked in #571) |
 | [`docs/ci.md`](docs/ci.md) | Per-step CI contract: token/network/fixture needs and fork-safety rules |
 | [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md) | CLI and MCP user-facing reference |
 
@@ -133,13 +134,13 @@ Auth resolves in this priority order:
 4. `auth.token` in `.lore.yaml` soft-deprecated fallback
 
 Committed `.lore.yaml` files must contain only shared, non-secret config. Do
-not commit `auth.token`, personal scratch vault IDs, or maintainer-specific
-local values; Lore warns whenever `auth.token` is present in `.lore.yaml`,
-even if a higher-priority auth source wins.
+not commit `auth.token`, personal scratch vault IDs, or any
+contributor-specific local values; Lore warns whenever `auth.token` is present
+in `.lore.yaml`, even if a higher-priority auth source wins.
 
 Notion page IDs are access locators, not bearer secrets. A deliberately shared
 team vault ID in git history does not itself require history rewrite or
-integration-sharing rotation, but accidental maintainer-local or personal
+integration-sharing rotation, but accidentally committed private or personal
 scratch page IDs still need explicit owner review.
 
 ntn-issued tokens inherit the engineer's personal Notion permissions and have

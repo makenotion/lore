@@ -8,8 +8,8 @@ resolution point for the MCP server, CLI, and hooks.
 
 1. `NOTION_API_TOKEN` environment variable
 2. ntn-resolved token from `~/.config/notion/auth.json`
-3. `LORE_NOTION_TOKEN` environment variable, soft-deprecated in 0.10.0
-4. `auth.token` in `.lore.yaml`, soft-deprecated in 0.10.0
+3. `LORE_NOTION_TOKEN` environment variable, soft-deprecated migration fallback
+4. `auth.token` in `.lore.yaml`, soft-deprecated migration fallback
 
 ## `NOTION_API_TOKEN`
 
@@ -25,7 +25,7 @@ the unsafe field, not to which source supplied the runtime token.
 
 ## ntn-Resolved Auth
 
-Internal Notion engineers run:
+To set up ntn-based auth, run:
 
 ```bash
 lore install
@@ -40,8 +40,8 @@ want to bypass the on-disk read entirely set `NOTION_API_TOKEN` (the
 highest-priority auth source). Implementation details live in
 [`src/auth/AGENTS.md`](../src/auth/AGENTS.md).
 
-ntn defaults to the macOS keychain. Lore cannot read that storage mode in
-0.10.0, so Lore-managed `runNtnLogin()` and `installNtn()` calls force
+ntn defaults to the macOS keychain. Lore cannot read that storage mode yet,
+so Lore-managed `runNtnLogin()` and `installNtn()` calls force
 `NOTION_KEYRING=0` in the spawned environment. Engineers do not need to set this
 in their shell rc for the Lore install path.
 
@@ -75,8 +75,8 @@ Lore tests against `MIN_NTN_VERSION` in `src/auth/ntn.ts`, currently `0.12.0`.
 ## Legacy Sources
 
 `LORE_NOTION_TOKEN` and `auth.token` in `.lore.yaml` remain soft-deprecated
-migration fallbacks in 0.10.x. The two warnings have asymmetric cadences
-because they map to different threat models:
+migration fallbacks. The two warnings have asymmetric cadences because they
+map to different threat models:
 
 - `LORE_NOTION_TOKEN` warns when it is the selected source. Debounced once
   per 24-hour window per config root and silenceable via
@@ -100,8 +100,8 @@ values that look like Notion bearer tokens (`ntn_...` or `secret_...`); move
 those tokens to `NOTION_API_TOKEN` or ntn auth. `lore auth --migrate` walks
 operators through moving to ntn-issued auth.
 
-Hard removal is expected no earlier than 0.11.0 or 1.0.0, contingent on
-telemetry showing the internal team no longer relies on the legacy paths.
+Hard removal is planned for a future major release, contingent on telemetry
+showing no active deployments still rely on the legacy paths.
 
 `.lore.yaml` is committable only when it contains shared, non-secret config:
 team-owned `vault.pageId` values, project mappings, detection rules, and hook
@@ -115,10 +115,10 @@ present in `.lore.yaml`, even if `NOTION_API_TOKEN`, ntn auth, or
 Notion still enforces access through the resolved token's permissions. A
 deliberately shared team vault ID in git history does not, by itself, require
 history rewrite, token rotation, or integration-sharing rotation. Personal
-scratch page IDs and accidental maintainer-local page IDs are still outside the
-committed-config policy because they can reveal private workspace context; scrub
-them from the working copy and decide with the page owner whether to replace the
-page or rewrite history.
+scratch page IDs and accidentally committed private page IDs are still outside
+the committed-config policy because they can reveal private workspace context;
+scrub them from the working copy and decide with the page owner whether to
+replace the page or rewrite history.
 
 The Lore repo also installs a Git pre-commit guard during `npm install`. The
 guard reads the staged `.lore.yaml` from the Git index and blocks commits that
@@ -131,9 +131,9 @@ that hook.
 
 ## Rate Limits
 
-Notion rate limits are enforced per access token, not per integration. The
-0.10.0 move to ntn-issued per-user tokens prevents the old shared-token
-deployment from putting every engineer into the same rate-limit bucket.
+Notion rate limits are enforced per access token, not per integration.
+Using ntn-issued per-user tokens gives every engineer an independent rate-limit
+bucket; a shared integration token collapses everyone onto one bucket.
 
 Implications:
 
@@ -173,5 +173,11 @@ snapshot; the next unattributed write resolves under the new snapshot.
 | Direct `ntn login` used keychain mode              | Re-run `lore auth --login`, or set `NOTION_KEYRING=0` before direct ntn login.                                                                             |
 | Hook-spawned background save cannot read the vault | Check `spawnBackgroundSave` in `src/hooks/background.ts`; the child gets minimal env and discovers `.lore.yaml` by walking upward from the hook event cwd. |
 
-See [`docs/internal-rollout.md`](internal-rollout.md) for the operator-facing
-rollout runbook.
+See [`docs/team-setup.md`](team-setup.md) for the topics most teams hit
+during onboarding (Entities cutover, the direct-ntn-login gotcha,
+shared-vault hook configuration). The deeper team-rollout playbook —
+per-engineer onboarding flow, the `NOTION_API_TOKEN` fallback path,
+fail-fast env mismatches — lives in
+[`docs/internal-rollout.md`](internal-rollout.md). The rename to a
+public-friendly filename is tracked in
+[#571](https://github.com/makenotion/lore/issues/571).

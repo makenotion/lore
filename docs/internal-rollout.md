@@ -1,37 +1,47 @@
-# Lore — ntn-First Auth Internal Rollout Runbook
+# Adopting Lore on a Team
 
-> Audience: Team leads at Notion rolling Lore out to their teams in
-> the 0.10.0 internal-first dogfood window.
-> Status: Living. Owners: _TBD — fill in before dogfood kickoff_.
-> Last updated: 2026-05-01.
+> Audience: A team lead rolling Lore out to a shared Notion vault so every
+> engineer's AI assistants read and write the same memory.
+>
+> Last updated: 2026-05-11.
+
+This guide walks through the operator-facing pieces of standing up Lore for a
+team: prerequisites each engineer needs, the one-time per-engineer
+onboarding flow, common failures, and the fallback knobs available if ntn auth
+doesn't fit your environment. For the end-user quickstart, start with the
+[README](../README.md); for the auth contract in full, see
+[`authentication.md`](authentication.md).
 
 ## Prerequisites
 
-Each engineer needs:
+Each engineer needs **one** of the following Notion auth paths working before
+`lore install` will write a useful config:
 
-- [ ] `ntn` CLI installed. Lore tests against minimum version `0.12.0`
-      (`MIN_NTN_VERSION` in `src/auth/ntn.ts`) and prints a non-blocking
-      warning below that tested minimum. Lore offers to install ntn
-      automatically via the canonical command
-      (`curl -fsSL https://ntn.dev | bash`) when missing — see the
-      Auto-install section below.
-- [ ] Has run `ntn login` against a workspace containing their
-      team's Lore vault. Lore's `lore install` / `lore auth --login` /
-      `lore init` (no-arg) offer to run `ntn login` inline if it
-      hasn't been done. Lore handles the `NOTION_KEYRING=0` env
-      variable automatically inside its own ntn invocations — no
-      shell-rc edit required for the install path.
+- **`ntn` CLI** (recommended for teams). Per-user tokens that inherit each
+  engineer's personal Notion permissions, with an independent rate-limit
+  bucket per engineer. Lore tests against minimum version `0.12.0`
+  (`MIN_NTN_VERSION` in `src/auth/ntn.ts`) and prints a non-blocking warning
+  below that tested minimum. Lore offers to install ntn automatically via the
+  canonical command (`curl -fsSL https://ntn.dev | bash`) when missing — see
+  the Auto-install section below.
+- **`NOTION_API_TOKEN`** environment variable. A Notion integration token
+  shared with the vault page through Notion's UI. This is the simplest path
+  if your team already has a Notion integration set up; the trade-off is that
+  every engineer hits the same rate-limit bucket because rate limits are
+  per token.
 
-That's it. Two prerequisites the engineer might need to address;
-both are auto-remediated by Lore when missing.
+That's it. Both prerequisites are auto-remediated by Lore: missing ntn is
+offered for install, missing auth triggers a guided `ntn login`. If your team
+prefers the integration-token path, set `NOTION_API_TOKEN` in each engineer's
+shell rc and skip the ntn flow.
 
 ### Entities Database Cutover
 
-Lore versions after the #272 schema contract change require every vault
-page to contain five child databases: Projects, Topics, Memories,
-Entities, and Facts. Older PF3-01-era vaults may already have
+Current Lore versions require every vault page to contain five child
+databases: Projects, Topics, Memories, Entities, and Facts. Vaults
+created before the Entities database was introduced may have
 Projects/Topics/Memories/Facts but no Entities database. Those pages
-are partial vault schemas under the new contract.
+are partial vault schemas under the current contract.
 
 Do **not** run `lore init <page-id>` against a partial vault page.
 Initialization is only for empty pages; creating a second set of
@@ -89,7 +99,7 @@ auto-confirms for non-interactive automation.
 
 ### Version policy
 
-Lore's tested-against minimum is **0.12.0**. The policy:
+Lore's tested-against minimum ntn version is **0.12.0**. The policy:
 
 - **If ntn is already installed**, Lore uses whatever version is
   there. No auto-upgrade.
@@ -108,11 +118,9 @@ authenticated" rather than crashing).
 ### Why `NOTION_KEYRING=0` matters (and why engineers don't have to set it)
 
 `ntn` defaults to storing the operator's bearer token in the
-macOS Keychain. Lore can't read the keychain in 0.10.0 — that
-needs OS-specific code that didn't make this release
-(DEFERRED-KEYCHAIN-READ). `NOTION_KEYRING=0` forces ntn to
-file-mode storage at `~/.config/notion/auth.json`, which Lore
-reads directly.
+macOS Keychain. Lore does not read keychain-mode storage, so it
+relies on `NOTION_KEYRING=0` to force ntn to file-mode storage at
+`~/.config/notion/auth.json`, which Lore reads directly.
 
 The public `ntn` CLI does not expose a token-export command, so
 the `NOTION_KEYRING=0` + `auth.json` read pair is the contract
@@ -123,7 +131,7 @@ so the keychain default is bypassed end-to-end.
 
 **Engineers don't need to set `NOTION_KEYRING=0` in their shell
 rc** for the Lore install path. Lore's `runNtnLogin()` and
-`installNtn()` (#02) force the env var inside the spawn env they
+`installNtn()` force the env var inside the spawn env they
 pass to ntn, so any ntn invocation Lore triggers writes to file
 mode regardless of the operator's shell setup. The "seamless
 onboarding" property holds.
@@ -135,7 +143,7 @@ bidirectional consistency).
 
 ## Per-team onboarding
 
-For each team adopting Lore on ntn-first:
+For each team adopting Lore:
 
 ### Step 1 — Team lead prep
 
@@ -146,19 +154,36 @@ For each team adopting Lore on ntn-first:
       multi-workspace setup, also set `auth.workspaceId` (in the
       team's `.lore.yaml` under `auth: workspaceId: <id>`) to
       disambiguate.
-- [ ] Send the team this runbook + the line-items each engineer
+- [ ] Send the team this guide + the line-items each engineer
       needs to do.
 
-**No "share with integration" step.** ntn-issued tokens inherit
-each engineer's personal Notion permissions. As long as the
-engineer can open the vault page in Notion's UI, Lore can read it
-through their token.
+**No "share with integration" step** when using ntn-issued tokens.
+ntn-issued tokens inherit each engineer's personal Notion permissions, so
+as long as the engineer can open the vault page in Notion's UI, Lore can
+read it through their token. The `NOTION_API_TOKEN` path is different —
+share the page with the integration in Notion's UI before any engineer
+runs `lore install`.
 
 ### Step 2 — Each engineer runs (one-time, ~2 minutes)
 
+> **Pending first public publish.** `npm install -g @makenotion/lore` below
+> currently returns `E404` from `registry.npmjs.org` — the publish workflow
+> was retargeted to public npm in
+> [#561](https://github.com/makenotion/lore/pull/561) but the first release
+> tag has not been cut yet (tracked in
+> [#569](https://github.com/makenotion/lore/issues/569)). Until that lands,
+> install from a local clone instead:
+>
+> ```bash
+> git clone https://github.com/makenotion/lore.git
+> cd lore && npm install && npm run build && npm link
+> ```
+>
+> The post-publish steps below will work as-is once first publish succeeds.
+
 ```bash
-# 1. Update Lore (if not already on 0.10.x)
-npm install -g makenotion/lore
+# 1. Install Lore (if not already pinned as a devDependency in the team repo)
+npm install -g @makenotion/lore
 
 # 2. From the team repo:
 lore install
@@ -186,24 +211,29 @@ lore auth --login
 If the engineer has `LORE_NOTION_TOKEN` set in their shell rc:
 
 ```bash
-# Migrate from shared token to ntn-issued
+# Migrate from a legacy shared token to ntn-issued
 lore auth --migrate
 # Verifies the legacy token reaches the vault, confirms the new
 # ntn-issued token reaches the same vault, prints the unset
 # instruction. Run the unset, source the rc, done.
 ```
 
-### Dev-environment onboarding (Mail-style)
+### Dev-environment onboarding
 
-Engineers bootstrapping against `api-dev.notion.com` instead of prod
-pass `--ntn-env dev` to `lore init`. The flag sets `NOTION_ENV` for the
-spawned `ntn login`, so ntn writes `env: "dev"` into
-`~/.config/notion/config.json` and the post-login auth resolution
-surfaces the dev base URL automatically:
+> Skip this section unless your team runs Lore against a non-prod
+> Notion environment (Notion's `api-dev.notion.com`, a staging
+> deployment, etc.). For standard prod onboarding, the steps above
+> are complete.
+
+Engineers bootstrapping against a non-prod Notion environment
+(`api-dev.notion.com`, staging, etc.) instead of prod pass `--ntn-env dev`
+to `lore init`. The flag sets `NOTION_ENV` for the spawned `ntn login`, so
+ntn writes `env: "dev"` into `~/.config/notion/config.json` and the
+post-login auth resolution surfaces the dev base URL automatically:
 
 ```bash
 # Fresh dev onboarding (no prior ntn auth):
-cd ~/Developer/Mail
+cd <your repo>
 lore init --ntn-env dev
 # Flow:
 #   1. tryResolveAuth fails (no auth yet) → ntn install/login
@@ -220,7 +250,7 @@ ntn logout
 NOTION_KEYRING=0 NOTION_ENV=dev ntn login
 # Or: lore init --ntn-env dev (will spawn the login with
 # NOTION_KEYRING=0 forced if no auth resolves)
-cd ~/Developer/Mail-dev
+cd <your dev repo>
 lore init --ntn-env dev
 ```
 
@@ -254,9 +284,6 @@ re-authing. The recovery copy is source-aware:
 ```bash
 lore auth --whoami
 # Prints: <bot identity from users.me>
-# (Under ntn-first this is "Notion Workers CLI" plus possibly
-# the engineer's identity if Notion exposes it via users.me —
-# depends on response shape; see DEFERRED-ATTRIBUTION.)
 
 lore auth --status
 # Expected output includes:
@@ -322,9 +349,9 @@ shell rc for the Lore install path.**
 The gotcha: if an engineer later runs `ntn login` _directly_
 (outside Lore — e.g., to switch workspaces or use ntn for other
 purposes) without `NOTION_KEYRING=0` in their shell, ntn falls
-back to the macOS Keychain (its default). Lore can't read the
-keychain in 0.10.0 (DEFERRED-KEYCHAIN-READ), so subsequent `lore`
-commands fail to find a token.
+back to the macOS Keychain (its default). Lore doesn't read
+keychain-mode storage, so subsequent `lore` commands fail to find
+a token.
 
 Two paths back to a working state:
 
@@ -358,24 +385,25 @@ Engineers who use ntn for other purposes (workers, page
 management, etc.) and want bidirectional consistency should adopt
 path 2 as a one-time setup.
 
-## Rollback during the dogfood window
+## Falling back to a shared integration token
 
-If ntn-first surfaces real issues (e.g., `auth.json` shape
-changes break Lore's reader, or token expiry causes too many
-mid-session breaks), the release coordinator can flip dogfood
-teams back to the shared-token model.
+If ntn-first surfaces real issues for your team — `auth.json` shape
+mismatches break Lore's reader, frequent mid-session token expiry, or
+your team's existing tooling depends on a shared integration token —
+you can fall back to `NOTION_API_TOKEN` per engineer with no Lore-side
+changes.
 
-### Recommended path: `NOTION_API_TOKEN` (rank 1, no ntn mutation)
+### Recommended path: `NOTION_API_TOKEN` (highest-priority source, no ntn mutation)
 
-`NOTION_API_TOKEN` is the canonical rank-1 source in #01's
-priority order, ahead of ntn-resolved (rank 2). Setting it
-takes precedence over the ntn auth.json without touching ntn's
-private state, which keeps any other ntn-using tooling on the
-operator's machine working unchanged:
+`NOTION_API_TOKEN` is the highest-priority source in Lore's auth
+priority chain, ahead of ntn-resolved auth. Setting it takes
+precedence over the ntn `auth.json` without touching ntn's private
+state, which keeps any other ntn-using tooling on the operator's
+machine working unchanged:
 
 ```bash
-# 1. Set the shared token (e.g., from 1Password) in shell rc:
-export NOTION_API_TOKEN=<value-from-1Password>
+# 1. Set the shared integration token (e.g., from a secret manager) in shell rc:
+export NOTION_API_TOKEN=<value-from-secret-manager>
 
 # 2. New shell or source rc; verify with:
 lore auth --status
@@ -395,15 +423,15 @@ expects the soft-deprecated `LORE_NOTION_TOKEN` env var. Prefer
 `NOTION_API_TOKEN` above unless you have a concrete reason to
 stay on the legacy var.
 
-**Important:** because #01 ranks ntn (rank 2) above
-`LORE_NOTION_TOKEN` (rank 3), simply setting the env var on
-top of an existing ntn auth.json does NOT take precedence —
-Lore continues to resolve via ntn. To fall back via the legacy
-var, the operator must also rename the auth.json:
+**Important:** because Lore ranks ntn-resolved auth ahead of
+`LORE_NOTION_TOKEN`, simply setting the env var on top of an
+existing ntn `auth.json` does NOT take precedence — Lore
+continues to resolve via ntn. To fall back via the legacy var,
+the operator must also rename the auth.json:
 
 ```bash
 # 1. Set the legacy token in shell rc:
-export LORE_NOTION_TOKEN=<value-from-1Password>
+export LORE_NOTION_TOKEN=<value-from-secret-manager>
 
 # 2. Move auth.json out of the way so ntn-resolution returns null:
 mv ~/.config/notion/auth.json ~/.config/notion/auth.json.rollback
@@ -419,89 +447,42 @@ To restore ntn-first later: `mv ~/.config/notion/auth.json.rollback
 ~/.config/notion/auth.json` and unset `LORE_NOTION_TOKEN`. ntn
 takes over again on the next `lore` invocation.
 
-Either rollback path is purely operator-side env manipulation;
+Either fallback path is purely operator-side env manipulation;
 neither requires a Lore release rollback.
 
 ## The `auth.json` read is the contract
 
-The 0.10.0 release framed the `auth.json` read as a "temporary
-coupling pending an official `ntn auth token` export command"
-(see the historical CHANGELOG entry and the milestone-history row
-in `src/mcp/AGENTS.md`). That framing is superseded: the public
-`ntn` CLI (`github.com/makenotion/skills`) exposes only
-`ntn login` / `ntn logout` for the auth lifecycle and
-`NOTION_API_TOKEN` for injection — no token-export subcommand
-exists, and the maintainers have indicated none will ship.
+The public [`ntn` CLI](https://github.com/makenotion/skills) exposes
+only `ntn login` / `ntn logout` for the auth lifecycle and
+`NOTION_API_TOKEN` for injection — no token-export subcommand exists,
+and the maintainers have indicated none will ship. Earlier Lore
+releases framed the `~/.config/notion/auth.json` read as a "temporary
+coupling pending an official export command"; that framing is
+superseded.
 
-Lore therefore treats the `auth.json` read as the contract for
-the `ntn login` flow, not a bridge to anything. Operators who
-prefer not to rely on the on-disk read can export `NOTION_API_TOKEN`
+Lore therefore treats the `auth.json` read as the contract for the
+`ntn login` flow, not a bridge to anything. Operators who'd rather not
+rely on the on-disk read can export `NOTION_API_TOKEN`
 (highest-priority source), which `ntn` itself reads as well.
 
-Open follow-ups that would still benefit Lore if the ntn team
-takes them on later — kept here as a reference rather than a
-blocking ask:
+Open follow-ups that would still benefit Lore if the ntn maintainers
+take them on later — kept here as a reference rather than a blocking
+ask:
 
 - **Stable `auth.json` shape**: if the format ever changes, an
-  explicit schema marker (e.g. a top-level `schema` field) lets
-  the reader detect mismatches and surface an upgrade hint
-  instead of failing as "malformed".
-- **Engineer-identity exposure**: per-user attribution
-  (`DEFERRED-ATTRIBUTION`) currently round-trips `users.me`; an
-  env handoff like `NOTION_USER_EMAIL` from `ntn login` would
-  save the round-trip.
+  explicit schema marker (e.g. a top-level `schema` field) lets the
+  reader detect mismatches and surface an upgrade hint instead of
+  failing as "malformed".
+- **Engineer-identity exposure**: per-user attribution on saved
+  memories currently requires Lore to round-trip `users.me` against
+  the active token. An env handoff like `NOTION_USER_EMAIL` from
+  `ntn login` would save the round-trip.
 
-## Dogfood quality criteria
+## Shared-vault hook configuration
 
-The release coordinator (#10) checks these off before promoting
-0.10.0 from "internal dogfood" to "ready for general internal
-adoption":
-
-- [ ] At least 2 internal teams have rolled out and have been on
-      ntn-first auth for at least 1 week.
-- [ ] No `[lore] partial-failure` lines tied to authentication in
-      the dogfood teams' stderr logs over the dogfood window.
-- [ ] At least 1 engineer has confirmed the multi-workspace flow
-      (`NOTION_WORKSPACE_ID` env or `auth.workspaceId` config) works
-      as documented.
-- [ ] At least 1 engineer has run `lore auth --migrate` from a
-      legacy `LORE_NOTION_TOKEN` setup successfully.
-- [ ] At least 1 engineer has hit a mid-session token expiry and
-      the documented `lore auth --login` + bounded in-process retry has
-      worked. If the refreshed auth is unchanged or still rejected, the
-      fallback restart recovery also works.
-- [ ] No regressions in the existing test surface.
-- [ ] No regressions in the existing `lore status` output.
-
-## Telemetry
-
-For the dogfood window, optionally instrument:
-
-- [ ] One stderr line per `resolveAuth` resolution, recording
-      which source produced the token (`source: env-notion-api-token`
-      / `ntn-auth-json` / `env-lore-notion-token` /
-      `config-auth-token`). Gated by `LORE_DEBUG=1`. Helps the
-      release coordinator see how many engineers are actually on ntn
-      vs. fallbacks.
-
-This is optional and can ship as part of #01 / #06 if the team
-wants per-mode visibility during the rollout. Not a blocker.
-
-## Hard removal of `LORE_NOTION_TOKEN`
-
-Plausibly 0.11.0 or 1.0.0. Decision criteria:
-
-- All internal teams have completed migration to ntn-issued
-  tokens (target: 100%).
-- No CI scripts in any internal repo still reference
-  `LORE_NOTION_TOKEN` for anything other than service-account
-  workflows (which stay on integration-token auth deliberately —
-  CI is not an operator workflow).
-- No production hot path still uses it.
-
-Until those are met, the env-var path stays soft-deprecated.
-
-## Shared-vault hook configuration (issue #281)
+> Origin: [issue #281](https://github.com/makenotion/lore/issues/281)
+> (closed; live behavior documented in
+> [`memory-workflows.md`](memory-workflows.md)).
 
 For shared-vault deployments where many engineers share a single Lore
 workspace, set `hooks.proposeAutosaveLearnings: true` in `.lore.yaml`.
@@ -518,10 +499,10 @@ learning. Reviewers act on the inbox via `lore inbox list` /
 Both terminal verdicts drop the row out of the proposed-memory
 inbox: `approve` makes it eligible for default recall, `reject`
 keeps it off default recall (the
-`reviewTerminalStatusExclusionFilters` default-exclude this PR
-adds to `MemoryService.list` / `search` / `queryStaleConfidence`
-covers both `proposed` and `rejected`), so neither verdict
-pollutes shared recall with noisy auto-extractions. The inbox
+`reviewTerminalStatusExclusionFilters` default-exclude on
+`MemoryService.list` / `search` / `queryStaleConfidence` covers
+both `proposed` and `rejected`), so neither verdict pollutes
+shared recall with noisy auto-extractions. The inbox
 depth also surfaces in `lore status`'s **Proposed memories** line
 and the wake-up **Proposed Memories** section.
 

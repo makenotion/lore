@@ -281,8 +281,12 @@ The other subcommands:
 `NOTION_WORKSPACE_ID` env or `auth.workspaceId` in `.lore.yaml`
 when an operator's `auth.json` carries multiple workspaces. See
 the root `AGENTS.md` **Authentication** section for the full
-priority chain, and the [internal-rollout runbook](../../docs/internal-rollout.md)
-for the operator-facing onboarding flow.
+priority chain, [`docs/team-setup.md`](../../docs/team-setup.md) for
+the public-named onboarding entry point (Entities cutover,
+direct-ntn-outside-Lore gotcha, shared-vault hook config), and
+[`docs/internal-rollout.md`](../../docs/internal-rollout.md) for the
+deeper team-rollout playbook (rename tracked in
+[#571](https://github.com/makenotion/lore/issues/571)).
 
 ## The migrate Command
 
