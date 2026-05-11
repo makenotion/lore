@@ -59,12 +59,23 @@
     "node": ">=20"
   },
   "license": "MIT",
+  "author": "Notion Labs, Inc.",
+  "keywords": [
+    "notion",
+    "mcp",
+    "claude-code",
+    "cursor"
+  ],
+  "homepage": "https://github.com/makenotion/lore#readme",
+  "bugs": {
+    "url": "https://github.com/makenotion/lore/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/makenotion/lore.git"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   }
 }

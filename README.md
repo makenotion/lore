@@ -12,17 +12,26 @@ loading and session saving.
 
 ### 1. Install
 
+`@makenotion/lore` is published to public npm. No `.npmrc` or
+authentication setup is required.
+
+For CLI use:
+
 ```bash
-npm install makenotion/lore
+npm install -g @makenotion/lore
 ```
 
 ### Using `@makenotion/lore` as a Dev Dependency
 
-Internal repos can pin `@makenotion/lore` from GitHub Packages and commit
-portable assistant config that works across every engineer's checkout. See
-[`docs/dev-dependency-install.md`](docs/dev-dependency-install.md) for the
-GitHub Packages token setup, Yarn/npm wiring, and legacy `~/.lore` migration
-notes.
+To pin a specific version per-repo (rather than rely on a global install)
+and commit portable assistant config that works across every engineer's
+checkout:
+
+```bash
+npm install -D @makenotion/lore
+# or
+yarn add -D @makenotion/lore
+```
 
 #### Working on lore itself (this repo's committed configs)
 
