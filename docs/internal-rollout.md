@@ -156,7 +156,7 @@ through their token.
 
 ```bash
 # 1. Update Lore (if not already on 0.10.x)
-npm install -g makenotion/lore
+npm install -g @makenotion/lore
 
 # 2. From the team repo:
 lore install

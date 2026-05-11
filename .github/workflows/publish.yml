@@ -1,9 +1,8 @@
-name: Publish to GitHub Packages
+name: Publish to npm
 
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -12,10 +11,11 @@ concurrency:
 jobs:
   publish:
     name: Publish npm package
+    environment: npm-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
 
     steps:
       - name: Checkout
@@ -25,15 +25,19 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
-          registry-url: https://npm.pkg.github.com
+          registry-url: https://registry.npmjs.org
           scope: '@makenotion'
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      # Assumes GITHUB_REF_NAME is a release tag. Only safe because
+      # release:published is the only trigger; if workflow_dispatch is re-added,
+      # gate this step on github.event_name == 'release' and add an earlier ref
+      # / environment guard so checkout + npm ci do not run from the selected
+      # ref before this check fails.
       - name: Verify version matches release tag
-        if: github.event_name == 'release'
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -46,6 +50,6 @@ jobs:
         run: npm run build
 
       - name: Publish
-        run: npm publish
+        run: npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

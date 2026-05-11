@@ -1,72 +1,30 @@
 # Installing Lore as a Dev Dependency
 
-Internal repos can pin `@makenotion/lore` as a devDependency from GitHub
-Packages, then commit team-shared assistant config. Yarn PnP is the fully
+Internal repos can pin `@makenotion/lore` as a devDependency from public
+npm, then commit team-shared assistant config. Yarn PnP is the fully
 path-portable shape; npm / Yarn 1 bin-dispatch config may include a static
 `LORE_CONFIG_ROOT` so host-launched MCP children can find `.lore.yaml`.
 
 ## Engineer Setup
 
-If you're already authed with the [`gh` CLI](https://cli.github.com/):
+None required for installing the package itself: `@makenotion/lore` is
+published to public npm, so no `.npmrc` registry mapping, no
+`GITHUB_PACKAGES_TOKEN`, and no `gh auth` step is needed before
+`yarn install` / `npm install` resolves it.
 
-```bash
-gh auth refresh -h github.com -s read:packages
-
-# zsh
-echo 'export GITHUB_PACKAGES_TOKEN="$(gh auth token)"' >> ~/.zshrc
-source ~/.zshrc
-
-# bash
-echo 'export GITHUB_PACKAGES_TOKEN="$(gh auth token)"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-That's it. `gh` already manages the token; you just expose it under the name
-`.yarnrc.yml` / `.npmrc` reads.
-
-<details>
-<summary>If you don't use the <code>gh</code> CLI, or your org disables OAuth tokens for packages</summary>
-
-Create a Personal Access Token instead:
-
-1. Visit <https://github.com/settings/tokens/new> (Classic) or
-   <https://github.com/settings/personal-access-tokens/new> (Fine-grained,
-   preferred for least-privilege).
-2. Scope: **`read:packages`** (Classic) or **Repository → Packages: Read-only**
-   scoped to the package's source repo (Fine-grained).
-3. `export GITHUB_PACKAGES_TOKEN=<the-token>` in your shell rc.
-
-Both forms produce a token GitHub Packages accepts as a Bearer token. The PAT
-path is also what CI typically uses, via `secrets.GITHUB_TOKEN`.
-
-</details>
+The runtime auth Lore itself uses (Notion vault access) is covered
+separately under [Quick Start](../README.md#2-create-a-vault) and
+[docs/authentication.md](authentication.md).
 
 ## Wiring the Consumer Repo
 
-1. **Configure the registry mapping.** For Yarn 4 / Berry, add to
-   `.yarnrc.yml`:
-
-   ```yaml
-   npmScopes:
-     makenotion:
-       npmRegistryServer: "https://npm.pkg.github.com"
-       npmAuthToken: "${GITHUB_PACKAGES_TOKEN:-}"
-   ```
-
-   For npm / Yarn 1, copy `.npmrc.example` and adapt; see that file for the
-   details.
-
-   The `${VAR:-}` default-value form is load-bearing: it lets unrelated yarn
-   invocations (`yarn run -T lore mcp`, `yarn lint`, etc.) load the file without
-   a token. Only registry fetches need it.
-
-2. **Add the devDep.**
+1. **Add the devDep.**
 
    ```bash
    yarn add -D @makenotion/lore        # or `npm install -D @makenotion/lore`
    ```
 
-3. **Run `lore install` once locally.** From inside the consumer repo:
+2. **Run `lore install` once locally.** From inside the consumer repo:
 
    ```bash
    yarn run -T lore install -y  # Yarn PnP consumers
@@ -102,22 +60,21 @@ path is also what CI typically uses, via `secrets.GITHUB_TOKEN`.
    to each engineer; teammates should run `lore install` after checkout to
    write their own host hook config.
 
-4. **Teach the repo's agents to prefer Lore.** Add a short "Memory and
+3. **Teach the repo's agents to prefer Lore.** Add a short "Memory and
    note-taking" section to the repo's `AGENTS.md` and `CLAUDE.md` so agents know
    when to call Lore tools instead of writing local-only notes. See
    [Quick Start step 5](../README.md#5-teach-your-agents-to-use-lore) for a
    pasteable starter.
 
-5. **Commit the project-local diff.** Under the default `--client all` flow,
+4. **Commit the project-local diff.** Under the default `--client all` flow,
    commit the generated `.mcp.json`, `.codex/config.toml`, `.codex/hooks.json`,
    `.cursor/mcp.json`, and docs changes that landed in the repo. For Yarn PnP
    consumers, those committed files Just Work on any teammate's fresh checkout:
-   `yarn install` resolves `@makenotion/lore` from GitHub Packages using each
-   engineer's `GITHUB_PACKAGES_TOKEN`, and host assistants resolve `lore`
-   through Yarn's PnPAPI. For npm / Yarn 1 consumers, review any static
-   `LORE_CONFIG_ROOT` before treating the committed MCP config as portable
-   across checkout paths. Per-user Claude hook settings are not part of the
-   project diff.
+   `yarn install` resolves `@makenotion/lore` from public npm, and host
+   assistants resolve `lore` through Yarn's PnPAPI. For npm / Yarn 1 consumers,
+   review any static `LORE_CONFIG_ROOT` before treating the committed MCP config
+   as portable across checkout paths. Per-user Claude hook settings are not part
+   of the project diff.
 
 > **Don't have a global `lore` install on the same machine.** A global
 > `npm install -g @makenotion/lore` would shadow the project-local devDep on
