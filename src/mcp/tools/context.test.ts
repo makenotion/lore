@@ -1740,42 +1740,53 @@ describe("lore-wake-up — Part F: project framing block (issue 0.6.0/18)", () =
   })
 
   it("renders recent background hook failures as structured JSON on action='status'", async () => {
-    await withTempHookState(async () => {
-      recordBackgroundFailure(
-        "/repo",
-        {
-          kind: "digest-scheduler",
-          projectName: "Mail Backend",
-          sessionId: "sess-123",
-          code: "init-failed",
-          message: "init failed: unauthorized",
-        },
-        new Date("2026-04-24T12:00:00.000Z"),
-      )
-
-      const mockServer = createMockServer()
-      const services = makeWakeServices({ configRoot: "/repo" })
-      registerContextTools(mockServer.server, services as never)
-      const status = mockServer.getActionHandler("lore-context", "status")
-      const result = await status({} as never)
-
-      const text = extractText(result)
-      expect(extractBackgroundStatus(text)).toMatchObject({
-        observedScope:
-          "spawn/init/gather only; detached child exits are not tracked.",
-        failures: [
+    // Pin system time so the marker's occurredAt stays inside the 14-day
+    // staleness window that `collectBackgroundFailures` enforces against
+    // `new Date()`. Without this pin, the test silently rots as the calendar
+    // drifts past the window — same pattern as the Stale Confidence block
+    // below.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-04-25T12:00:00.000Z"))
+    try {
+      await withTempHookState(async () => {
+        recordBackgroundFailure(
+          "/repo",
           {
             kind: "digest-scheduler",
-            occurredAt: "2026-04-24T12:00:00.000Z",
-            scope: { projectName: "Mail Backend", sessionId: "sess-123" },
+            projectName: "Mail Backend",
+            sessionId: "sess-123",
             code: "init-failed",
             message: "init failed: unauthorized",
           },
-        ],
-        totalRecent: 1,
-        showing: 1,
+          new Date("2026-04-24T12:00:00.000Z"),
+        )
+
+        const mockServer = createMockServer()
+        const services = makeWakeServices({ configRoot: "/repo" })
+        registerContextTools(mockServer.server, services as never)
+        const status = mockServer.getActionHandler("lore-context", "status")
+        const result = await status({} as never)
+
+        const text = extractText(result)
+        expect(extractBackgroundStatus(text)).toMatchObject({
+          observedScope:
+            "spawn/init/gather only; detached child exits are not tracked.",
+          failures: [
+            {
+              kind: "digest-scheduler",
+              occurredAt: "2026-04-24T12:00:00.000Z",
+              scope: { projectName: "Mail Backend", sessionId: "sess-123" },
+              code: "init-failed",
+              message: "init failed: unauthorized",
+            },
+          ],
+          totalRecent: 1,
+          showing: 1,
+        })
       })
-    })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("renders clean background hook status when configRoot is absent", async () => {

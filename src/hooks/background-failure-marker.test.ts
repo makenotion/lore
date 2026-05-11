@@ -19,11 +19,20 @@ import { configKey } from "./marker-key.js"
 const CONFIG_ROOT = "/repo/lore"
 
 describe("background-failure-marker", () => {
+  // Pin Date so the 14-day staleness window in `listBackgroundFailures` /
+  // `collectBackgroundFailures` anchors against the same era the fixtures
+  // below use (April 2026). Tests that pass an explicit `now` are
+  // unaffected; tests that omit `occurredAt` record at the fake time and
+  // list against it. Without the pin, fixtures dated more than 14 days
+  // before the real wall clock silently drop out of the result set.
   beforeEach(() => {
     rmSync(getStateDir(), { recursive: true, force: true })
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-04-24T12:00:00.000Z"))
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     rmSync(getStateDir(), { recursive: true, force: true })
   })
 
