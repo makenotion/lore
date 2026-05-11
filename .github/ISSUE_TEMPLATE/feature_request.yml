@@ -1,0 +1,58 @@
+name: Feature request
+description: Suggest an improvement or new capability.
+title: "Feature: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. If your request involves private
+        vault content, Notion tokens, exploit details, or a possible
+        vulnerability, keep that sensitive detail out of the public issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user workflow or contributor need is blocked today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Lore do differently?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      multiple: true
+      options:
+        - CLI
+        - MCP server
+        - MCP tools
+        - Hooks or background jobs
+        - Notion vault setup or schema
+        - Auth
+        - Evals
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or different designs have you considered?
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration notes
+      description: Could this change existing CLI/MCP behavior, vault schema, stored data, or installed configs?
+  - type: textarea
+    id: contribution
+    attributes:
+      label: Contribution interest
+      description: Are you interested in implementing this? Link any draft design or branch.

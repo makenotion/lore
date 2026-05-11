@@ -112,7 +112,9 @@ describe("background-failure-marker", () => {
       new Date("2026-04-24T12:01:00.000Z")
     )
 
-    const markers = await listBackgroundFailures(CONFIG_ROOT)
+    const markers = await listBackgroundFailures(CONFIG_ROOT, {
+      now: new Date("2026-04-24T12:02:00.000Z"),
+    })
     expect(markers).toHaveLength(1)
     expect(markers[0]).toMatchObject({
       kind: "autosave",
@@ -174,7 +176,11 @@ describe("background-failure-marker", () => {
     await clearBackgroundFailure(CONFIG_ROOT, "autosave", scope, {
       before: new Date("2026-04-24T12:00:00.000Z"),
     })
-    expect(await listBackgroundFailures(CONFIG_ROOT)).toHaveLength(1)
+    expect(
+      await listBackgroundFailures(CONFIG_ROOT, {
+        now: new Date("2026-04-24T12:02:00.000Z"),
+      })
+    ).toHaveLength(1)
 
     await clearBackgroundFailure(CONFIG_ROOT, "autosave", scope, {
       before: new Date("2026-04-24T12:02:00.000Z"),
@@ -199,7 +205,11 @@ describe("background-failure-marker", () => {
       before: new Date("2026-04-24T12:00:00.000Z"),
     })
 
-    expect(await listBackgroundFailures(CONFIG_ROOT)).toHaveLength(1)
+    expect(
+      await listBackgroundFailures(CONFIG_ROOT, {
+        now: new Date("2026-04-24T12:00:01.000Z"),
+      })
+    ).toHaveLength(1)
   })
 
   it("prunes stale markers opportunistically on write", () => {

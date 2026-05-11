@@ -284,12 +284,11 @@ than a long stream of individual memories.
 
 ## MCP Tools
 
-Lore exposes seven polymorphic tools, each multiplexing several actions
-behind one MCP registration: `lore-context`, `lore-memory`, `lore-query`,
-`lore-fact`, `lore-decision`, `lore-project`, and `lore-task`. The prior
-single-purpose tool names and task aliases were removed in the 0.6.0
-deprecation purge. See [`docs/mcp-tools.md`](docs/mcp-tools.md) for the action
-reference and task/fact migration notes.
+Lore exposes a small set of polymorphic tools, each multiplexing several
+actions behind one MCP registration. The prior single-purpose tool names and
+task aliases were removed in the 0.6.0 deprecation purge. See
+[`docs/mcp-tools.md`](docs/mcp-tools.md) for the current tool list, action
+reference, and task/fact migration notes.
 
 ## CLI Commands
 
@@ -456,11 +455,11 @@ npm run test         # Run tests with vitest
 npm run dev          # Watch mode (tsup --watch)
 ```
 
-See [`AGENTS.md`](AGENTS.md) and the subsystem guides under `src/*/AGENTS.md`
-for contributor conventions, architecture notes, and the non-negotiable
-stability rules. If you are changing anything under `.github/workflows/`,
-read [`docs/ci.md`](docs/ci.md) first — it documents the fork-safety
-contract every workflow must keep.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md), and the
+subsystem guides under `src/*/AGENTS.md` for contributor conventions,
+architecture notes, and the non-negotiable stability rules. If you are changing
+anything under `.github/workflows/`, read [`docs/ci.md`](docs/ci.md) first —
+it documents the fork-safety contract every workflow must keep.
 
 ## Changelog
 
