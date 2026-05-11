@@ -473,6 +473,10 @@ npm run test         # Run tests with vitest
 npm run dev          # Watch mode (tsup --watch)
 ```
 
+If you are changing anything under `.github/workflows/`, read
+[`docs/ci.md`](docs/ci.md) first — it documents the fork-safety contract
+every workflow must keep.
+
 ## Changelog
 
 Notable user-facing changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).

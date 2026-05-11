@@ -15,3 +15,4 @@
 ## Changelog
 
 - [ ] Observable behavior changes are documented in `CHANGELOG.md` under `[Unreleased]`, or this PR intentionally has no user-facing changelog entry.
+- [ ] If this PR touches `.github/workflows/`, I have read [`docs/ci.md`](../docs/ci.md) and the workflow satisfies all seven rules in "Rules for new CI steps"; otherwise this PR does not touch CI.

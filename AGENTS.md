@@ -26,6 +26,7 @@
 | [`docs/topology.md`](docs/topology.md) | `lore status` topology section, health states, recovery workflow |
 | [`docs/hooks.md`](docs/hooks.md) | Installed hook behavior and auth forwarding |
 | [`docs/internal-rollout.md`](docs/internal-rollout.md) | Operator-facing ntn-first rollout runbook |
+| [`docs/ci.md`](docs/ci.md) | Per-step CI contract: token/network/fixture needs and fork-safety rules |
 | [`docs/cli.md`](docs/cli.md), [`docs/mcp-tools.md`](docs/mcp-tools.md) | CLI and MCP user-facing reference |
 
 ## Repo At A Glance

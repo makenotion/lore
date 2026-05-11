@@ -1,9 +1,25 @@
 name: CI
 
+# Fork-safety contract: every step in this workflow MUST run on a public-fork
+# PR with no repo secrets, no Notion token, and no internal-only fixtures.
+# Before adding a step, read docs/ci.md and confirm it satisfies all seven
+# rules in "Rules for new CI steps". Steps that need internal state belong
+# in a *separate workflow* that does NOT run on `pull_request` (a bare
+# `github.repository == 'makenotion/lore'` check is NOT fork-safe when the
+# workflow runs on `pull_request` — see docs/ci.md "Adding internal-state
+# workflows" for the safe shapes).
+
 on:
   push:
     branches: [main]
   pull_request:
+
+# Least-privilege ambient GITHUB_TOKEN: read-only for the entire workflow.
+# Repo-default permissions are policy-dependent; pinning at the workflow
+# level guarantees a fork-PR run cannot widen them. Tighten further at the
+# job level if a future job needs even less.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,10 +32,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -44,7 +60,7 @@ jobs:
 
       - name: Upload eval artifact
         if: ${{ always() && hashFiles('evals/results/lore-core-ci.json') != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lore-core-eval-result
           path: evals/results/lore-core-ci.json

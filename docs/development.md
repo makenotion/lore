@@ -143,6 +143,14 @@ This project uses `@notionhq/client` v5.x. Do not use v4 patterns.
 - Follow the test framework and patterns already used in the project. This repo
   uses Vitest.
 
+## Continuous Integration
+
+CI is fork-safe: every step in `.github/workflows/ci.yml` runs without a
+Notion token, without live vault access, and without internal-only fixtures.
+That envelope is contractual — see [`docs/ci.md`](./ci.md) for the per-step
+contract, the rules for adding new steps, and the local self-test recipe to
+verify fork-safety before opening a PR that touches CI.
+
 ## Debugging
 
 Always find the root cause. Never fix symptoms or add workarounds.
